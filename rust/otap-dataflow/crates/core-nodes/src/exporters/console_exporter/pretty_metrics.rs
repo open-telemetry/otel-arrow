@@ -454,10 +454,10 @@ fn write_optional_f64(w: &mut MetricsWriter<'_>, name: &str, value: Option<f64>)
 }
 
 fn write_average(writer: &mut MetricsWriter<'_>, sum: Option<f64>, count: u64) -> io::Result<()> {
-    if count > 0 {
-        if let Some(sum) = sum {
-            write!(writer, " avg={}", sum / count as f64)?;
-        }
+    if count > 0
+        && let Some(sum) = sum
+    {
+        write!(writer, " avg={}", sum / count as f64)?;
     }
     Ok(())
 }

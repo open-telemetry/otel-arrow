@@ -276,38 +276,37 @@ impl<'a> TreeNodeVisitor<'a> for ProjectedSchemaExprVisitor {
         // column. The way we reference these in the plans we build is using an expression like
         // `col("scope").field("name")` which produces a ScalarFunction expression invoking the
         // `GetFieldFunc` function with arguments ("scope", "name").
-        if let Expr::ScalarFunction(scalar_udf) = node {
-            if scalar_udf
+        if let Expr::ScalarFunction(scalar_udf) = node
+            && scalar_udf
                 .func
                 .as_ref()
                 .inner()
                 .as_any()
                 .is::<GetFieldFunc>()
-            {
-                let source = scalar_udf.args.first();
-                let field = scalar_udf.args.get(1);
-                match (source, field) {
-                    (
-                        Some(Expr::Column(col)),
-                        Some(Expr::Literal(ScalarValue::Utf8(Some(nested_col)), _)),
-                    ) => {
-                        let struct_fields = self
-                            .struct_columns
-                            .entry(col.name.clone())
-                            .or_insert(HashSet::new());
-                        _ = struct_fields.insert(nested_col.clone());
+        {
+            let source = scalar_udf.args.first();
+            let field = scalar_udf.args.get(1);
+            match (source, field) {
+                (
+                    Some(Expr::Column(col)),
+                    Some(Expr::Literal(ScalarValue::Utf8(Some(nested_col)), _)),
+                ) => {
+                    let struct_fields = self
+                        .struct_columns
+                        .entry(col.name.clone())
+                        .or_insert(HashSet::new());
+                    _ = struct_fields.insert(nested_col.clone());
 
-                        // don't continue as we've found a column. Otherwise this will continue
-                        // down the expression tree and we'll visit the Column expression twice.
-                        return Ok(TreeNodeRecursion::Jump);
-                    }
-                    unexpected_args => {
-                        let err_msg = format!(
-                            "Found unexpected arguments to `GetFieldFunc`. Expected (Col, Literal(Utf8)) found {:?}",
-                            unexpected_args
-                        );
-                        return Err(DataFusionError::Plan(err_msg));
-                    }
+                    // don't continue as we've found a column. Otherwise this will continue
+                    // down the expression tree and we'll visit the Column expression twice.
+                    return Ok(TreeNodeRecursion::Jump);
+                }
+                unexpected_args => {
+                    let err_msg = format!(
+                        "Found unexpected arguments to `GetFieldFunc`. Expected (Col, Literal(Utf8)) found {:?}",
+                        unexpected_args
+                    );
+                    return Err(DataFusionError::Plan(err_msg));
                 }
             }
         }

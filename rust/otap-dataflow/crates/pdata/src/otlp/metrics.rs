@@ -563,10 +563,10 @@ impl MetricsProtoBytesEncoder {
         }
 
         // encode schema url
-        if let Some(col) = &metrics_data_arrays.resource_arrays.schema_url {
-            if let Some(val) = col.str_at(index) {
-                result_buf.encode_string(RESOURCE_METRICS_SCHEMA_URL, val)?;
-            }
+        if let Some(col) = &metrics_data_arrays.resource_arrays.schema_url
+            && let Some(val) = col.str_at(index)
+        {
+            result_buf.encode_string(RESOURCE_METRICS_SCHEMA_URL, val)?;
         }
 
         Ok(())
@@ -623,10 +623,10 @@ impl MetricsProtoBytesEncoder {
         }
 
         // encode the schema url
-        if let Some(col) = &metrics_data_arrays.metrics_arrays.schema_url {
-            if let Some(val) = col.str_at(index) {
-                result_buf.encode_string(SCOPE_METRICS_SCHEMA_URL, val)?;
-            }
+        if let Some(col) = &metrics_data_arrays.metrics_arrays.schema_url
+            && let Some(val) = col.str_at(index)
+        {
+            result_buf.encode_string(SCOPE_METRICS_SCHEMA_URL, val)?;
         }
 
         Ok(())
@@ -648,16 +648,16 @@ impl MetricsProtoBytesEncoder {
             result_buf.encode_string(METRIC_NAME, val)?;
         }
 
-        if let Some(col) = &metrics_arrays.description {
-            if let Some(val) = col.str_at(index) {
-                result_buf.encode_string(METRIC_DESCRIPTION, val)?;
-            }
+        if let Some(col) = &metrics_arrays.description
+            && let Some(val) = col.str_at(index)
+        {
+            result_buf.encode_string(METRIC_DESCRIPTION, val)?;
         }
 
-        if let Some(col) = &metrics_arrays.unit {
-            if let Some(val) = col.str_at(index) {
-                result_buf.encode_string(METRIC_UNIT, val)?;
-            }
+        if let Some(col) = &metrics_arrays.unit
+            && let Some(val) = col.str_at(index)
+        {
+            result_buf.encode_string(METRIC_UNIT, val)?;
         }
 
         if let Some(metric_type_val) = &metrics_arrays.metric_type.value_at(index) {
@@ -692,18 +692,15 @@ impl MetricsProtoBytesEncoder {
             }
         }
 
-        if let Some(metrics_attrs) = metrics_data_arrays.metrics_attrs.as_ref() {
-            if let Some(id) = metrics_arrays.id.value_at(index) {
-                let attrs_index_iter = ChildIndexIter::new(
-                    id,
-                    &metrics_attrs.parent_id,
-                    &mut self.metrics_attrs_cursor,
-                );
-                for attr_index in attrs_index_iter {
-                    result_buf.encode_len_delimited(METRIC_METADATA, |result_buf| {
-                        encode_key_value(metrics_attrs, attr_index, result_buf)
-                    })?
-                }
+        if let Some(metrics_attrs) = metrics_data_arrays.metrics_attrs.as_ref()
+            && let Some(id) = metrics_arrays.id.value_at(index)
+        {
+            let attrs_index_iter =
+                ChildIndexIter::new(id, &metrics_attrs.parent_id, &mut self.metrics_attrs_cursor);
+            for attr_index in attrs_index_iter {
+                result_buf.encode_len_delimited(METRIC_METADATA, |result_buf| {
+                    encode_key_value(metrics_attrs, attr_index, result_buf)
+                })?
             }
         }
 

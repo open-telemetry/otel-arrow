@@ -427,15 +427,15 @@ impl FormatConfig {
         }
 
         // If both sizes are set, check max_size is >= the min_size.
-        if let (Some(max_size), Some(min_size)) = (self.max_size, self.min_size) {
-            if max_size < min_size {
-                return Err(ConfigError::InvalidUserConfig {
-                    error: format!(
-                        "max_size ({}) must be >= min_size ({}) or unset",
-                        max_size, min_size,
-                    ),
-                });
-            }
+        if let (Some(max_size), Some(min_size)) = (self.max_size, self.min_size)
+            && max_size < min_size
+        {
+            return Err(ConfigError::InvalidUserConfig {
+                error: format!(
+                    "max_size ({}) must be >= min_size ({}) or unset",
+                    max_size, min_size,
+                ),
+            });
         }
 
         // immediate_flush indicates there is not a time-based flush criteria, which
@@ -1663,6 +1663,7 @@ pub static OTAP_BATCH_PROCESSOR_FACTORY: otel_arrow_dfe_engine::ProcessorFactory
              _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities| {
                 create_otap_batch_processor(pipeline_ctx, node, node_config, proc_cfg)
             },
+        context_declarations: None,
         wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
         validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<Config>,
     };

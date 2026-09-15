@@ -530,10 +530,10 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
 
         loop {
             // Check for cancellation first
-            if let Some(token) = cancel {
-                if token.is_cancelled() {
-                    return Err(SubscriberError::cancelled("shutdown requested"));
-                }
+            if let Some(token) = cancel
+                && token.is_cancelled()
+            {
+                return Err(SubscriberError::cancelled("shutdown requested"));
             }
 
             // IMPORTANT: Register for notification BEFORE checking for bundles.

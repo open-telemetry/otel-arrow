@@ -322,6 +322,7 @@ pub static OTAP_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
                 exporter_config,
             ))
         },
+    context_declarations: None,
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config,
 };
@@ -2163,6 +2164,7 @@ mod tests {
                     pipeline_completion_msg_tx,
                     metrics_reporter,
                     Interests::empty(),
+                    otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
                 )
                 .await;
             Ok(())
@@ -2785,6 +2787,7 @@ mod tests {
                         pipeline_completion_msg_tx,
                         mr,
                         Interests::empty(),
+                        otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
                     )
                     .await;
             });
@@ -3005,6 +3008,7 @@ mod tests {
                         pipeline_completion_msg_tx,
                         mr,
                         Interests::empty(),
+                        otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
                     )
                     .await;
             });
@@ -3179,6 +3183,7 @@ mod tests {
                         pipeline_completion_msg_tx,
                         mr,
                         Interests::empty(),
+                        otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
                     )
                     .await;
             });
@@ -3699,6 +3704,7 @@ mod tests {
                         pipeline_completion_msg_tx,
                         metrics_reporter,
                         Interests::empty(),
+                        otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
                     )
                     .await
             });
@@ -3784,6 +3790,7 @@ mod tests {
                         pipeline_completion_msg_tx,
                         metrics_reporter,
                         Interests::empty(),
+                        otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
                     )
                     .await
             });

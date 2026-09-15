@@ -89,7 +89,7 @@ Examples:
 receiver.journald
 receiver.host_metrics
 processor.transform
-processor.filter.pdata
+processor.filter
 exporter.topic
 exporter.azure_monitor
 ```

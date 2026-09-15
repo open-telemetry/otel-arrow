@@ -697,33 +697,33 @@ fn merge_type_column<T: ArrowPrimitiveType>(
                 let count = run.end - run.start;
                 let attr_type = resolved_upsert.attr_value_type as u8;
 
-                if let Some(arr) = &resolved_upsert.new_values_array {
-                    if let Some(nulls) = arr.nulls() {
-                        // Array with nulls: write Empty for null values, attr_type for
-                        // non-null.
-                        let counter = &mut update_counters[idx];
-                        let validity_iter =
-                            BitSliceIterator::new(nulls.buffer().as_slice(), *counter, count);
-                        let mut last_valid_range_end = 0;
-                        for (start, end) in validity_iter {
-                            if start != last_valid_range_end {
-                                output.extend(std::iter::repeat_n(
-                                    AttributeValueType::Empty as u8,
-                                    start - last_valid_range_end,
-                                ));
-                            }
-                            output.extend(std::iter::repeat_n(attr_type, end - start));
-                            last_valid_range_end = end;
-                        }
-                        if last_valid_range_end != count {
+                if let Some(arr) = &resolved_upsert.new_values_array
+                    && let Some(nulls) = arr.nulls()
+                {
+                    // Array with nulls: write Empty for null values, attr_type for
+                    // non-null.
+                    let counter = &mut update_counters[idx];
+                    let validity_iter =
+                        BitSliceIterator::new(nulls.buffer().as_slice(), *counter, count);
+                    let mut last_valid_range_end = 0;
+                    for (start, end) in validity_iter {
+                        if start != last_valid_range_end {
                             output.extend(std::iter::repeat_n(
                                 AttributeValueType::Empty as u8,
-                                count - last_valid_range_end,
+                                start - last_valid_range_end,
                             ));
                         }
-                        *counter += count;
-                        continue;
+                        output.extend(std::iter::repeat_n(attr_type, end - start));
+                        last_valid_range_end = end;
                     }
+                    if last_valid_range_end != count {
+                        output.extend(std::iter::repeat_n(
+                            AttributeValueType::Empty as u8,
+                            count - last_valid_range_end,
+                        ));
+                    }
+                    *counter += count;
+                    continue;
                 }
 
                 // No nulls (or scalar): fill with this upsert's type discriminant.
@@ -735,37 +735,36 @@ fn merge_type_column<T: ArrowPrimitiveType>(
     // Insert rows: each upsert's type discriminant
     for resolved_upsert in resolved {
         let attr_type = resolved_upsert.attr_value_type as u8;
-        if let Some(arr) = &resolved_upsert.new_values_array {
-            if let Some(nulls) = arr.nulls() {
-                let validity_slice_iter = BitSliceIterator::new(
-                    nulls.buffer().as_slice(),
-                    resolved_upsert.num_updates,
-                    resolved_upsert.num_inserts,
-                );
-                let mut last_valid_range_end = 0;
-                for (start, end) in validity_slice_iter {
-                    // put the null range that came before the last valid range
-                    if start != last_valid_range_end {
-                        output.extend(std::iter::repeat_n(
-                            AttributeValueType::Empty as u8,
-                            start - last_valid_range_end,
-                        ));
-                    }
-                    output.extend(std::iter::repeat_n(attr_type, end - start));
-
-                    last_valid_range_end = end;
-                }
-
-                // put the remaining nulls
-                if last_valid_range_end != resolved_upsert.num_inserts {
+        if let Some(arr) = &resolved_upsert.new_values_array
+            && let Some(nulls) = arr.nulls()
+        {
+            let validity_slice_iter = BitSliceIterator::new(
+                nulls.buffer().as_slice(),
+                resolved_upsert.num_updates,
+                resolved_upsert.num_inserts,
+            );
+            let mut last_valid_range_end = 0;
+            for (start, end) in validity_slice_iter {
+                // put the null range that came before the last valid range
+                if start != last_valid_range_end {
                     output.extend(std::iter::repeat_n(
                         AttributeValueType::Empty as u8,
-                        resolved_upsert.num_inserts - last_valid_range_end,
+                        start - last_valid_range_end,
                     ));
                 }
+                output.extend(std::iter::repeat_n(attr_type, end - start));
 
-                continue;
+                last_valid_range_end = end;
             }
+
+            // put the remaining nulls
+            if last_valid_range_end != resolved_upsert.num_inserts {
+                output.extend(std::iter::repeat_n(
+                    AttributeValueType::Empty as u8,
+                    resolved_upsert.num_inserts - last_valid_range_end,
+                ));
+            }
+            continue;
         }
 
         output.extend(std::iter::repeat_n(attr_type, resolved_upsert.num_inserts));
@@ -1945,24 +1944,24 @@ fn create_new_value_column_batched<T: ArrowPrimitiveType>(
     let supports_dict_encoding = values_column_supports_dictionary_encoding(target_col_name);
 
     // Try dict encoding path first if supported.
-    if supports_dict_encoding {
-        if let Some(unified) = try_build_unified_dict_multi(None, resolved, target_col_name)? {
-            let field = Field::new(
-                target_col_name,
-                DataType::Dictionary(
-                    Box::new(DataType::UInt16),
-                    Box::new(unified.values.data_type().clone()),
-                ),
-                true,
-            );
-            return merge_values_with_unified_dict(
-                &field,
-                row_owners,
-                &unified,
-                resolved,
-                total_output_rows,
-            );
-        }
+    if supports_dict_encoding
+        && let Some(unified) = try_build_unified_dict_multi(None, resolved, target_col_name)?
+    {
+        let field = Field::new(
+            target_col_name,
+            DataType::Dictionary(
+                Box::new(DataType::UInt16),
+                Box::new(unified.values.data_type().clone()),
+            ),
+            true,
+        );
+        return merge_values_with_unified_dict(
+            &field,
+            row_owners,
+            &unified,
+            resolved,
+            total_output_rows,
+        );
     }
 
     // Fallback: primitive merge with decoded-to-plain sources.

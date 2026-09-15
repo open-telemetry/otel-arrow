@@ -262,6 +262,7 @@ pub static CLICKHOUSE_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
             ))
         },
     validate_config: validate_typed_config::<ConfigPatch>,
+    context_declarations: None,
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
 };
 
@@ -571,8 +572,11 @@ mod tests {
         otel_arrow_dfe_engine::control::PipelineCompletionMsgReceiver<OtapPdata>,
     ) {
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let mut effect_handler =
-            EffectHandler::new(test_node("clickhouse-completion-test"), metrics_reporter);
+        let mut effect_handler = EffectHandler::new(
+            test_node("clickhouse-completion-test"),
+            metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+        );
         let (completion_tx, completion_rx) = pipeline_completion_msg_channel(4);
         effect_handler.set_pipeline_completion_msg_sender(completion_tx);
         (effect_handler, completion_rx)
