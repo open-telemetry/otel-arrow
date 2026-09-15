@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789432026856,
+  "lastUpdate": 1789434900969,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -37736,6 +37736,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
             "value": 3.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 116.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 103.6,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "lalit_fin@yahoo.com",
+            "name": "Lalit Kumar Bhasin",
+            "username": "lalitb"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e60f9226522ac133957b0a77633856b935b23f70",
+          "message": "docs: design OTAP-native filelog receiver (#3939)\n\nThis PR proposes the architecture and normative Phase 1 contracts for an\nOTAP-native filelog receiver, tracking #2844.\n\nThe receiver owns file discovery, identity, source-byte progress,\ndecoding, framing, rotation, bounded reading, backpressure, and\nAck-gated checkpoints. Processors own semantic interpretation such as\ntimestamp parsing, JSON/CSV parsing, severity derivation, enrichment,\nfiltering, and routing.\n\nThis is a design PR. It defines the single-instance Phase 1 foundation\nbut does not close the complete epic or claim production readiness.\n\n## Documents\n\nA filelog receiver must handle changing files, rotation, record framing,\ndownstream Ack/Nack, restart recovery, and bounded resource use. The\ndesign is split into four documents so these concerns can be reviewed\nseparately:\n\n| Document | Review focus |\n| --- | --- |\n| `filelog-receiver.md` | Architecture, responsibility boundaries,\ndecisions, phases, guarantees, and tradeoffs |\n| `filelog-receiver-phase1-spec.md` | Exact Phase 1 runtime behavior and\nstate transitions |\n| `filelog-checkpoint-format.md` | Durable version-1 encoding, replay,\ncorruption, compaction, and migration behavior |\n| `filelog-receiver-phase1-conformance.md` | Resource models, telemetry\nsemantics, validation cases, and normative examples |\n\nAll four are required for Phase 1 conformance.\n\n## Phase 1 architecture\n\nPhase 1 intentionally uses one receiver instance, one discovery OS\nthread, one read/checkpoint OS thread, one async engine task, bounded\nchannels, one open or retained receiver-wide batch, and at most one\nalready-framed carry-over record.\n\nThis keeps the initial progress and recovery model tractable, but\ncreates receiver-wide Ack, checkpoint, retry, and drain coupling.\nIdentity and checkpoint keys remain independent of CPU count and runtime\nplacement so later execution and ownership changes do not redefine\ndurable source progress.\n\nThe architecture document contains the complete D1-D18 decision table.\nPlease review its **Decisions requested** section directly, especially\nthe receiver versus processor boundary, exact-locator recovery,\nAck-gated progress,\nfail-closed persistence, Phase 1 coupling, and Phase 3 ownership\nboundary.\n\n## Scope against #2844\n\n| Area | Status |\n| --- | --- |\n| Growing-file ingestion, include/exclude, `ignore_older_than` | Phase 1\n|\n| Bounded discovery, readers, descriptors, lines, records, batches,\nchannels, and retries | Phase 1 |\n| UTF-8, ASCII, UTF-16, raw, newline, and multiline framing | Phase 1 |\n| Raw OTAP logs with bounded file provenance | Phase 1 |\n| Ack-gated checkpoint progress, bounded Nack retry, and restart\nrecovery | Phase 1; engine Ack integration is a release gate |\n| Move/create rotation and copytruncate detection/reporting | Phase 1 |\n| Durable quarantine and supported administration | Phase 1 release\nrequirement |\n| Native filesystem-watch acceleration | Phase 2 candidate |\n| Reader shards, bounded read-ahead, multiple ordered batches,\nbackground compaction | Phase 2, measurement-gated |\n| Shared discovery/assignment coordinator | Phase 3 |\n| Assigned-files-only multi-instance reading | Phase 3 |\n| Exclusive fencing, revoke/assign handoff, readiness, and CPU resize |\nPhase 3 |\n| Fixed virtual partitions | Current epic target for Phase 3; changing\nthe mechanism requires separate review and maintainer agreement |\n| OPL/parser functions and representative processing/routing examples |\nCompanion processor work |\n| Header-content skipping, read-once/delete, archives, compressed\nstreams, network shares | Separately scoped |\n| NUMA-aware placement | Future, measurement-gated |\n| Structured-file interpretation such as CSV | Processor responsibility\n|\n\nPhase 1 satisfies the single-instance subset of #2844. Reviewers should\nexplicitly confirm whether deferring multi-instance assignment, handoff,\nfencing, readiness, and CPU-resize behavior is acceptable for this\nphase.\n\nThis design preserves the epic's fixed-virtual-partition target for\nPhase 3. Phase 1 keeps file identity and checkpoint keys independent of\nCPU count and receiver placement. Choosing a different assignment\nmechanism requires a separately reviewed Phase 3 proposal and explicit\nmaintainer agreement reflected in the epic.\n\n## What this PR does not establish\n\nApproval of this design does not establish an integrated or\nproduction-ready receiver. The following remain required:\n- Engine support for nonempty ready membership, automatic Ack\npropagation, and all-required aggregation; zero required subscribers\nmust never Ack.\n- Supported quarantine and namespace administration without manual\ncheckpoint editing.\n- Linux runtime, crash-consistency, rotation, resource, security,\nperformance, and fault-injection qualification.\n- Separate macOS and Windows evidence before enabling those platforms.\n\nPhase 1 also intentionally retains receiver-wide Ack/failure coupling,\nis not a durable telemetry spool, and cannot guarantee capture after\ncopytruncate or destruction of unread source bytes.\n\n## Suggested review path\n\n1. Review `filelog-receiver.md` for the responsibility boundary, D1-D18,\nPhase 1 scope, and Phase 2/3 deferrals.\n2. Review `filelog-receiver-phase1-spec.md` by subsystem:\ndiscovery/identity, reading/framing, delivery/checkpoints, and\n   rotation/lifecycle.\n3. Review `filelog-checkpoint-format.md` for byte layout, replay,\ncorruption, compaction, and administrative recovery.\n4. Use `filelog-receiver-phase1-conformance.md` as the\nimplementation-readiness and evidence checklist.\n\n\n## Validation\n\nThe documentation has been checked with:\n\n- Markdown lint and repository sanity checks;\n- cross-document links and anchors;\n- independently regenerated checkpoint constants and digest vectors; and\n- focused architecture, storage, runtime, and comparative reviews.\n\n---------\n\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>\nCopilot-Session: b1553fd3-596a-4990-b218-3ef4a259c950\nCopilot-Session: 2b906ddd-2f32-4cd3-b99a-9be423d77e82",
+          "timestamp": "2026-09-15T00:25:24Z",
+          "tree_id": "a6ac89fd655e2b59c9e611e293875f470e29fedf",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/e60f9226522ac133957b0a77633856b935b23f70"
+        },
+        "date": 1789434876531,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 84.09,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.73,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.87,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.71,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.53,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.01,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.97,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.68,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 71.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.83,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.54,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.32,
             "unit": "MB"
           },
           {
