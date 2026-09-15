@@ -82,12 +82,6 @@ const HTTP_AUTH_EVENTS: HttpClientAuthProviderEvents = HttpClientAuthProviderEve
     invalid: |source, error| {
         otel_warn!("otlp.exporter.http.auth.invalid", source = %source, error = %error);
     },
-    error: |source, error| {
-        otel_error!("otlp.exporter.http.auth.error", source = %source, error = %error);
-    },
-    retry: |source, error, consecutive_failures| {
-        otel_warn!("otlp.exporter.http.auth.retry", source = %source, error = %error, consecutive_failures = %consecutive_failures);
-    },
     stream_closed: |source| {
         otel_warn!(
             "otlp.exporter.http.auth.stream_closed",

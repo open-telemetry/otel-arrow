@@ -261,8 +261,6 @@ Authentication `source` is the registered provider name.
 | `otlp.exporter.http.zero_partial_rejected` | `debug` | A zero-length partial-success response was rejected. |
 | `otlp.exporter.http.export_error` | `warn` | An HTTP export request failed; non-success responses include bounded backend error details when available. |
 | `otlp.exporter.http.auth.invalid` | `warn` | A credential from the auth provider could not be turned into a valid header. |
-| `otlp.exporter.http.auth.error` | `error` | A credential could not be retrieved from the auth provider. |
-| `otlp.exporter.http.auth.retry` | `warn` | A credential retrieval failed and will be retried. |
 | `otlp.exporter.http.auth.stream_closed` | `warn` | The auth provider closed its refresh stream; the last credential (if any) is reused and no longer refreshes. |
 
 ## Limits

@@ -204,8 +204,6 @@ Authentication `source` is the registered provider name.
 | `otlp.exporter.grpc.export_error` | `warn` | A gRPC export request did not complete successfully. |
 | `otlp.exporter.grpc.header_skip` | `debug` | A propagated transport header was skipped while building gRPC metadata. |
 | `otlp.exporter.grpc.auth.invalid` | `warn` | A credential from the auth provider could not be turned into a valid header. |
-| `otlp.exporter.grpc.auth.error` | `error` | A credential could not be retrieved from the auth provider. |
-| `otlp.exporter.grpc.auth.retry` | `warn` | A credential retrieval failed and will be retried. |
 | `otlp.exporter.grpc.auth.stream_closed` | `warn` | The auth provider closed its refresh stream; the last credential (if any) is reused and no longer refreshes. |
 
 ## Limits

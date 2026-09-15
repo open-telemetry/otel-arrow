@@ -48,12 +48,6 @@ const AZURE_MONITOR_AUTH_EVENTS: HttpClientAuthProviderEvents = HttpClientAuthPr
     invalid: |source, error| {
         otel_warn!("azure_monitor_exporter.auth.invalid", source = %source, error = %error);
     },
-    error: |source, error| {
-        otel_error!("azure_monitor_exporter.auth.error", source = %source, error = %error);
-    },
-    retry: |source, error, consecutive_failures| {
-        otel_warn!("azure_monitor_exporter.auth.retry", source = %source, error = %error, consecutive_failures = %consecutive_failures);
-    },
     stream_closed: |source| {
         otel_warn!(
             "azure_monitor_exporter.auth.stream_closed",

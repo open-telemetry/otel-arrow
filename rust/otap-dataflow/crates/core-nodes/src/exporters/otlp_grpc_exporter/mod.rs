@@ -71,12 +71,6 @@ const GRPC_AUTH_EVENTS: HttpClientAuthProviderEvents = HttpClientAuthProviderEve
     invalid: |source, error| {
         otel_warn!("otlp.exporter.grpc.auth.invalid", source = %source, error = %error);
     },
-    error: |source, error| {
-        otel_error!("otlp.exporter.grpc.auth.error", source = %source, error = %error);
-    },
-    retry: |source, error, consecutive_failures| {
-        otel_warn!("otlp.exporter.grpc.auth.retry", source = %source, error = %error, consecutive_failures = %consecutive_failures);
-    },
     stream_closed: |source| {
         otel_warn!(
             "otlp.exporter.grpc.auth.stream_closed",

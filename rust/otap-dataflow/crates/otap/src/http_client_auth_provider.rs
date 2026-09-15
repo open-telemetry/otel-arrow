@@ -27,12 +27,6 @@ pub struct HttpClientAuthProviderEvents {
     /// A published credential could not be turned into a header.
     pub invalid: fn(HttpClientAuthProviderName, &str),
 
-    /// An error occurred publishing a credential.
-    pub error: fn(HttpClientAuthProviderName, &str),
-
-    /// A credential retrieval will be retried.
-    pub retry: fn(HttpClientAuthProviderName, &str, u32),
-
     /// The provider closed its stream; no further refreshes will arrive.
     pub stream_closed: fn(HttpClientAuthProviderName),
 }
@@ -41,21 +35,6 @@ impl HttpClientAuthProviderEvents {
     /// Emit an invalid event.
     pub fn emit_invalid(&self, source: &dyn HttpClientAuthProvider, error: &str) {
         (self.invalid)(source.name(), error)
-    }
-
-    /// Emit an error event.
-    pub fn emit_error(&self, source: &dyn HttpClientAuthProvider, error: &str) {
-        (self.error)(source.name(), error)
-    }
-
-    /// Emit a retry event.
-    pub fn emit_retry(
-        &self,
-        source: &dyn HttpClientAuthProvider,
-        error: &str,
-        consecutive_failures: u32,
-    ) {
-        (self.retry)(source.name(), error, consecutive_failures)
     }
 
     /// Emit a stream_closed event.
