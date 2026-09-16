@@ -14,6 +14,8 @@ use otel_arrow_dfe_telemetry::instrument::Counter;
 use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSetSnapshot};
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use otel_arrow_dfe_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
+use parking_lot::Mutex;
+use std::sync::Arc;
 
 /// Transport protocol used to receive an OTLP request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, AttributeEnum)]
@@ -146,6 +148,27 @@ impl OtlpReceiverMetrics {
             })
             .requests
             .inc();
+    }
+
+    /// Records a rate-limit refusal after its signal and encoded payload size are known.
+    pub fn record_rate_limit_refusal<E>(
+        metrics: &Arc<Mutex<Self>>,
+        signal: SignalType,
+        protocol: OtlpProtocol,
+        payload_size: usize,
+        error: E,
+    ) -> E {
+        let processing = metrics.lock().boundary.processing();
+        let completed = processing.run(|processing| {
+            processing.set_payload_size_with(|| payload_size);
+            Err::<(SignalType, ()), _>(processing.refused(signal, error))
+        });
+        let mut metrics = metrics.lock();
+        metrics.record_rejection(protocol, ReceiverRejectionErrorType::RateLimit);
+        match metrics.boundary.record(completed) {
+            Ok(()) => unreachable!("refused receiver processing cannot succeed"),
+            Err(error) => error,
+        }
     }
 
     /// Records the outcome of routing an acknowledgement response.

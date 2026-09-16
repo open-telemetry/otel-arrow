@@ -411,21 +411,27 @@ impl UnaryService<OtapPdata> for OtapBatchService {
                 AdmissionDecision::Admit => {}
                 AdmissionDecision::WouldThrottle => {}
                 AdmissionDecision::Throttle { retry_after_secs } => {
-                    rate_limit.metrics.lock().record_rejection(
-                        OtlpProtocol::Grpc,
-                        ReceiverRejectionErrorType::RateLimit,
-                    );
-                    return Box::pin(std::future::ready(Err(grpc_rate_limit_status(
-                        retry_after_secs,
-                    ))));
+                    let status = grpc_rate_limit_status(retry_after_secs);
+                    return Box::pin(std::future::ready(Err(
+                        OtlpReceiverMetrics::record_rate_limit_refusal(
+                            &rate_limit.metrics,
+                            self.signal,
+                            OtlpProtocol::Grpc,
+                            payload_size.expect("rate-limit payload size was validated"),
+                            status,
+                        ),
+                    )));
                 }
                 AdmissionDecision::Oversized => {
-                    rate_limit.metrics.lock().record_rejection(
-                        OtlpProtocol::Grpc,
-                        ReceiverRejectionErrorType::RateLimit,
-                    );
+                    let status = grpc_rate_limit_burst_exceeded_status();
                     return Box::pin(std::future::ready(Err(
-                        grpc_rate_limit_burst_exceeded_status(),
+                        OtlpReceiverMetrics::record_rate_limit_refusal(
+                            &rate_limit.metrics,
+                            self.signal,
+                            OtlpProtocol::Grpc,
+                            payload_size.expect("rate-limit payload size was validated"),
+                            status,
+                        ),
                     )));
                 }
             }
@@ -1275,6 +1281,121 @@ mod tests {
 
         assert_eq!(status.code(), Code::Internal);
         assert!(status.message().contains("does not expose"));
+    }
+
+    /// Scenario: a non-empty gRPC request exceeds the configured weighted rate-limit burst.
+    /// Guarantees: the request is refused and its shared receiver message and payload bytes are recorded.
+    #[tokio::test]
+    async fn weighted_rate_limit_rejection_records_grpc_boundary_metrics() {
+        use otel_arrow_dfe_config::policy::{
+            RateLimitAggregation, RateLimitEnforcement, RateLimitPressure, RateLimitUnit,
+            RateLimiterPolicy, TokenBucketPolicy,
+        };
+        use otel_arrow_dfe_engine::admission::{AdmissionBinder, AdmissionDimension};
+        use otel_arrow_dfe_engine::memory_limiter::{
+            MemoryPressureChanged, MemoryPressureLevel, MemoryPressureState,
+            SharedReceiverAdmissionState,
+        };
+
+        let metrics = new_test_metrics();
+        let memory_pressure_state = MemoryPressureState::default();
+        let admission_state =
+            SharedReceiverAdmissionState::from_process_state(&memory_pressure_state);
+        admission_state.apply(MemoryPressureChanged {
+            generation: 1,
+            level: MemoryPressureLevel::Soft,
+            retry_after_secs: 1,
+            usage_bytes: 0,
+        });
+        let policy = RateLimiterPolicy {
+            enforcement: RateLimitEnforcement::Enforce,
+            aggregation: RateLimitAggregation::ReceiverInstance,
+            unit: RateLimitUnit::RequestBytes,
+            pressure: RateLimitPressure::Soft,
+            token_bucket: TokenBucketPolicy {
+                allow: 1,
+                interval: std::time::Duration::from_secs(1),
+                burst: Some(1),
+            },
+        };
+        let rate_limiter = AdmissionBinder::configured("test", policy)
+            .bind_shared(AdmissionDimension::Bytes, admission_state)
+            .expect("bind test admission")
+            .expect("configured test admission");
+        let (msg_tx, mut msg_rx) = tokio_mpsc::channel(1);
+        let mut senders = HashMap::new();
+        let _ = senders.insert("default".into(), SharedSender::mpsc(msg_tx));
+        let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(1);
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let effect_handler = EffectHandler::new(
+            test_node("grpc_rate_limit_metrics"),
+            senders,
+            None,
+            ctrl_tx,
+            metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+        );
+        let mut service = OtapBatchService::new(
+            effect_handler,
+            None,
+            metrics.clone(),
+            SignalType::Logs,
+            Some(GrpcRateLimitContext {
+                rate_limiter,
+                metrics: metrics.clone(),
+            }),
+        );
+        let payload = Bytes::from_static(b"grpc-rate-limited-payload");
+        let payload_bytes = payload.len() as u64;
+        let pdata = OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(payload).into());
+
+        let result = UnaryService::call(&mut service, tonic::Request::new(pdata)).await;
+
+        assert_eq!(
+            result.expect_err("request rejected").code(),
+            Code::ResourceExhausted
+        );
+        assert!(msg_rx.try_recv().is_err());
+        let mut metrics = metrics.lock();
+        assert_eq!(
+            metrics
+                .rejections_for(OtlpProtocol::Grpc, ReceiverRejectionErrorType::RateLimit)
+                .requests
+                .get(),
+            1
+        );
+        assert_eq!(
+            metrics
+                .requests_for(SignalType::Logs, OtlpProtocol::Grpc)
+                .accepted
+                .get(),
+            0
+        );
+        let snapshots = metrics.boundary.terminal_snapshots();
+        assert!(snapshots.iter().any(|snapshot| {
+            snapshot.descriptor().name == "receiver.received"
+                && snapshot.measurement_attribute_value("signal") == Some("logs")
+                && snapshot.measurement_attribute_value("outcome") == Some("refused")
+                && snapshot
+                    .descriptor()
+                    .metrics
+                    .iter()
+                    .position(|metric| metric.name == "messages")
+                    .is_some_and(|index| snapshot.get_metrics()[index].to_u64_lossy() == 1)
+        }));
+        assert!(snapshots.iter().any(|snapshot| {
+            snapshot.descriptor().name == "receiver.received"
+                && snapshot.measurement_attribute_value("signal") == Some("logs")
+                && snapshot.measurement_attribute_value("outcome") == Some("refused")
+                && snapshot
+                    .descriptor()
+                    .metrics
+                    .iter()
+                    .position(|metric| metric.name == "payload.size")
+                    .is_some_and(|index| {
+                        snapshot.get_metrics()[index].to_u64_lossy() == payload_bytes
+                    })
+        }));
     }
 
     /// Scenario: a permanent downstream NACK is converted to a gRPC status.
