@@ -15,7 +15,7 @@ use super::*;
 fn reconcile_purges_revoked_partitions_from_tracker() {
     let cfg = make_config(&["traces"], &["metrics"], &[], MessageFormat::OtlpProto);
     assert!(!cfg.is_auto_commit());
-    let ctx = make_pipeline_ctx();
+    let ctx = make_pipeline_ctx(0, 1, 0);
     let mut receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
 
     // Simulate in-flight offsets across two partitions.
@@ -49,7 +49,7 @@ fn stale_revocation_preserves_reassigned_partition_state() {
     // generation.
     let cfg = make_config(&["traces"], &["metrics"], &[], MessageFormat::OtlpProto);
     assert!(!cfg.is_auto_commit());
-    let ctx = make_pipeline_ctx();
+    let ctx = make_pipeline_ctx(0, 1, 0);
     let mut receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
 
     // A new record for partition 0 was tracked under generation 2 (after a
@@ -79,7 +79,7 @@ fn stale_revocation_preserves_reassigned_partition_state() {
 fn stale_generation_records_not_committed_after_reassignment() {
     let cfg = make_config(&["traces"], &["metrics"], &[], MessageFormat::OtlpProto);
     assert!(!cfg.is_auto_commit());
-    let ctx = make_pipeline_ctx();
+    let ctx = make_pipeline_ctx(0, 1, 0);
     let mut receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
 
     // Generation 1: own partition 0, track and ack offsets 100..=104. The
@@ -152,7 +152,7 @@ fn stale_generation_records_not_committed_after_reassignment() {
 fn stale_generation_ack_does_not_advance_committable_offset() {
     let cfg = make_config(&["traces"], &["metrics"], &[], MessageFormat::OtlpProto);
     assert!(!cfg.is_auto_commit());
-    let ctx = make_pipeline_ctx();
+    let ctx = make_pipeline_ctx(0, 1, 0);
     let mut receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
 
     // Generation 1: own partition 0, track and ack offset 100 so there is an
@@ -240,7 +240,7 @@ fn retained_partition_generation_is_stable_across_unrelated_rebalance() {
     // (carrying the older generation) to be wrongly dropped as stale.
     let cfg = make_config(&["traces"], &["metrics"], &[], MessageFormat::OtlpProto);
     assert!(!cfg.is_auto_commit());
-    let ctx = make_pipeline_ctx();
+    let ctx = make_pipeline_ctx(0, 1, 0);
     let receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
 
     // Initial assignment: own partition 0.
@@ -274,7 +274,7 @@ fn retained_partition_generation_is_stable_across_unrelated_rebalance() {
 fn reconcile_folds_consumer_group_metrics() {
     let cfg = make_config(&["traces"], &["metrics"], &[], MessageFormat::OtlpProto);
     assert!(!cfg.is_auto_commit());
-    let ctx = make_pipeline_ctx();
+    let ctx = make_pipeline_ctx(0, 1, 0);
     let mut receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
 
     // Simulate a rebalance that assigns two partitions.
@@ -310,7 +310,7 @@ fn reconcile_folds_consumer_group_metrics() {
 fn records_in_flight_gauge_reflects_outstanding_offsets() {
     let cfg = make_config(&["traces"], &["metrics"], &[], MessageFormat::OtlpProto);
     assert!(!cfg.is_auto_commit());
-    let ctx = make_pipeline_ctx();
+    let ctx = make_pipeline_ctx(0, 1, 0);
     let mut receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
 
     // Own partition 0 and track three in-flight offsets under its generation.

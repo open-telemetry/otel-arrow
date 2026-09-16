@@ -59,10 +59,7 @@ async fn test_kafka_receiver_traces_header_extraction() {
 
             for i in 0..3 {
                 let mut pdata = receiver.recv_pdata().await;
-                let proto: OtlpProtoBytes = pdata
-                    .take_payload()
-                    .try_into_with_default()
-                    .expect("to OtlpProtoBytes");
+                let proto = take_otlp_proto(&mut pdata);
                 let result =
                     ExportTraceServiceRequest::decode(proto.as_bytes()).expect("decode result");
 
@@ -268,10 +265,7 @@ async fn test_kafka_receiver_logs_header_extraction_syslog() {
             let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
 
             let mut pdata = receiver.recv_pdata().await;
-            let otlp: OtlpProtoBytes = pdata
-                .take_payload()
-                .try_into_with_default()
-                .expect("convert Syslog Arrow logs to OTLP");
+            let otlp = take_otlp_proto(&mut pdata);
             let result =
                 ExportLogsServiceRequest::decode(otlp.as_bytes()).expect("decode OTLP logs");
             let resource = result.resource_logs[0]
@@ -542,10 +536,7 @@ async fn test_kafka_receiver_capture_policy_coexists_with_resource_attrs_from_he
             assert_eq!(tenant_headers[0].value_as_str(), Some("acme-corp"));
 
             // 2. Verify resource attributes were injected (resource_attrs_from_headers).
-            let proto: OtlpProtoBytes = pdata
-                .take_payload()
-                .try_into_with_default()
-                .expect("to OtlpProtoBytes");
+            let proto = take_otlp_proto(&mut pdata);
             let result =
                 ExportTraceServiceRequest::decode(proto.as_bytes()).expect("decode result");
             for rs in &result.resource_spans {

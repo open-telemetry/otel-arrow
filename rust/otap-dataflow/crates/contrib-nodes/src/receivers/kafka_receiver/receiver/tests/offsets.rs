@@ -113,7 +113,7 @@ fn classify_offset_feedback_commits_untracked_but_assigned_current_ack() {
 fn stale_same_gen_ack_dropped_after_reassignment_before_retrack() {
     let cfg = make_config(&["traces"], &["metrics"], &[], MessageFormat::OtlpProto);
     assert!(!cfg.is_auto_commit());
-    let ctx = make_pipeline_ctx();
+    let ctx = make_pipeline_ctx(0, 1, 0);
     let mut receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
 
     // Generation 1: own partition 0 and track a record at offset 100.
@@ -174,7 +174,7 @@ fn commit_path_purges_revoked_partitions_first() {
     // committed by `commit_offsets` / TimerTick / shutdown / poison-pill.
     let cfg = make_config(&["traces"], &["metrics"], &[], MessageFormat::OtlpProto);
     assert!(!cfg.is_auto_commit());
-    let ctx = make_pipeline_ctx();
+    let ctx = make_pipeline_ctx(0, 1, 0);
     let mut receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
 
     // In-flight offsets on two partitions.
@@ -216,7 +216,7 @@ fn commit_path_purges_revoked_partitions_first() {
 #[test]
 fn purge_revoked_partitions_is_noop_under_auto_commit() {
     let cfg = auto_traces_config("b:9092", "g", "c", "traces");
-    let ctx = make_pipeline_ctx();
+    let ctx = make_pipeline_ctx(0, 1, 0);
     let mut receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
 
     receiver.offset_tracker.track("traces", 0, 100, 0);
@@ -237,7 +237,7 @@ fn purge_revoked_partitions_is_noop_under_auto_commit() {
 #[test]
 fn reconcile_is_noop_under_auto_commit() {
     let cfg = auto_traces_config("b:9092", "g", "c", "traces");
-    let ctx = make_pipeline_ctx();
+    let ctx = make_pipeline_ctx(0, 1, 0);
     let mut receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
 
     receiver.offset_tracker.track("traces", 0, 100, 0);
@@ -258,7 +258,7 @@ fn reconcile_is_noop_under_auto_commit() {
 fn reconcile_folds_commit_callback_metrics() {
     let cfg = make_config(&["traces"], &["metrics"], &[], MessageFormat::OtlpProto);
     assert!(!cfg.is_auto_commit());
-    let ctx = make_pipeline_ctx();
+    let ctx = make_pipeline_ctx(0, 1, 0);
     let mut receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
 
     // Simulate commit-callback outcomes accumulated on the poll thread.
@@ -322,7 +322,7 @@ fn reconcile_folds_commit_callback_metrics() {
 fn commit_timeout_outcome_surfaces_as_offset_commit_error() {
     let cfg = make_config(&["traces"], &["metrics"], &[], MessageFormat::OtlpProto);
     assert!(!cfg.is_auto_commit());
-    let ctx = make_pipeline_ctx();
+    let ctx = make_pipeline_ctx(0, 1, 0);
     let mut receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
 
     // A commit that reached the broker succeeds; a later commit times out
@@ -363,7 +363,7 @@ fn commit_timeout_outcome_surfaces_as_offset_commit_error() {
 #[test]
 fn refresh_committable_snapshot_feeds_rebalance_state() {
     let cfg = make_config(&["traces"], &["metrics"], &[], MessageFormat::OtlpProto);
-    let ctx = make_pipeline_ctx();
+    let ctx = make_pipeline_ctx(0, 1, 0);
     let mut receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
 
     receiver.offset_tracker.track("traces", 0, 100, 0);
@@ -389,7 +389,7 @@ fn snapshot_reflects_committable_after_advance() {
     // watermark, and refreshing the snapshot must reflect it so a
     // subsequent pre-rebalance commit is not stale.
     let cfg = make_config(&["traces"], &["metrics"], &[], MessageFormat::OtlpProto);
-    let ctx = make_pipeline_ctx();
+    let ctx = make_pipeline_ctx(0, 1, 0);
     let mut receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
 
     receiver.offset_tracker.track("traces", 0, 100, 0);
@@ -432,13 +432,7 @@ async fn out_of_order_acks_commit_only_lowest_contiguous() {
 
             // Produce three records to the single partition; they receive
             // offsets 0, 1, 2 in order.
-            for i in 0..RECORDS {
-                let key = format!("rec-{i}");
-                producer
-                    .send_full(SendRecord::new(TOPIC, &bytes).key(key.as_bytes()))
-                    .await
-                    .expect("Failed to send message");
-            }
+            produce_traces(&producer, TOPIC, RECORDS, "rec", &bytes).await;
 
             // No safety-net timer: commits are driven purely by acks so the
             // watermark assertions are deterministic.
@@ -631,13 +625,7 @@ async fn auto_commit_mode_lets_librdkafka_own_offsets() {
             let producer = cluster.producer().build();
             let bytes = encoded_trace_fixture();
 
-            for i in 0..RECORDS {
-                let key = format!("rec-{i}");
-                producer
-                    .send_full(SendRecord::new(TOPIC, &bytes).key(key.as_bytes()))
-                    .await
-                    .expect("Failed to send message");
-            }
+            produce_traces(&producer, TOPIC, RECORDS, "rec", &bytes).await;
 
             let cfg = auto_config(
                 cluster.bootstrap_servers(),
@@ -794,7 +782,7 @@ async fn restart_redelivers_uncommitted_offsets() {
             let producer = cluster.producer().build();
             let bytes = encoded_trace_fixture();
 
-            produce_traces(&producer, TOPIC, RECORDS, &bytes).await;
+            produce_traces(&producer, TOPIC, RECORDS, "rec", &bytes).await;
 
             // First receiver: consume every record but NEVER ack, so no
             // offset is ever committed.
@@ -861,7 +849,7 @@ async fn safety_net_timer_commits_without_acks_drain_or_shutdown() {
         |cluster| async move {
             let producer = cluster.producer().build();
             let bytes = encoded_trace_fixture();
-            produce_traces(&producer, TOPIC, RECORDS, &bytes).await;
+            produce_traces(&producer, TOPIC, RECORDS, "rec", &bytes).await;
 
             // Short safety-net timer so the periodic commit fires well within
             // the assertion window; acks alone would also commit, but the

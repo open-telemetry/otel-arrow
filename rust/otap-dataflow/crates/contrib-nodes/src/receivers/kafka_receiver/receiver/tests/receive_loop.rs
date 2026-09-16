@@ -19,13 +19,7 @@ async fn test_kafka_receiver_traces() {
 
             let bytes = encoded_trace_fixture();
 
-            for i in 0..3 {
-                let key = format!("test-key-{i}");
-                producer
-                    .send_full(SendRecord::new(TOPIC, &bytes).key(key.as_bytes()))
-                    .await
-                    .expect("Failed to send message");
-            }
+            produce_traces(&producer, TOPIC, 3, "test-key", &bytes).await;
 
             let cfg = auto_config(
                 cluster.bootstrap_servers(),
@@ -39,10 +33,7 @@ async fn test_kafka_receiver_traces() {
 
             for _ in 0..3 {
                 let mut pdata = receiver.recv_pdata().await;
-                let proto: OtlpProtoBytes = pdata
-                    .take_payload()
-                    .try_into_with_default()
-                    .expect("to OtlpProtoBytes");
+                let proto = take_otlp_proto(&mut pdata);
                 assert!(matches!(proto, OtlpProtoBytes::ExportTracesRequest(_)));
                 assert_eq!(proto.as_bytes(), &bytes);
             }
@@ -69,13 +60,7 @@ async fn test_kafka_receiver_logs() {
             let mut bytes = vec![];
             req.encode(&mut bytes).expect("encode");
 
-            for i in 0..3 {
-                let key = format!("test-key-{i}");
-                producer
-                    .send_full(SendRecord::new(TOPIC, &bytes).key(key.as_bytes()))
-                    .await
-                    .expect("Failed to send message");
-            }
+            produce_traces(&producer, TOPIC, 3, "test-key", &bytes).await;
 
             let cfg = auto_config(
                 cluster.bootstrap_servers(),
@@ -89,10 +74,7 @@ async fn test_kafka_receiver_logs() {
 
             for _ in 0..3 {
                 let mut pdata = receiver.recv_pdata().await;
-                let proto: OtlpProtoBytes = pdata
-                    .take_payload()
-                    .try_into_with_default()
-                    .expect("to OtlpProtoBytes");
+                let proto = take_otlp_proto(&mut pdata);
                 assert!(matches!(proto, OtlpProtoBytes::ExportLogsRequest(_)));
                 assert_eq!(proto.as_bytes(), &bytes);
             }
@@ -119,13 +101,7 @@ async fn test_kafka_receiver_metrics() {
             let mut bytes = vec![];
             req.encode(&mut bytes).expect("encode");
 
-            for i in 0..3 {
-                let key = format!("test-key-{i}");
-                producer
-                    .send_full(SendRecord::new(TOPIC, &bytes).key(key.as_bytes()))
-                    .await
-                    .expect("Failed to send message");
-            }
+            produce_traces(&producer, TOPIC, 3, "test-key", &bytes).await;
 
             let cfg = auto_config(
                 cluster.bootstrap_servers(),
@@ -139,10 +115,7 @@ async fn test_kafka_receiver_metrics() {
 
             for _ in 0..3 {
                 let mut pdata = receiver.recv_pdata().await;
-                let proto: OtlpProtoBytes = pdata
-                    .take_payload()
-                    .try_into_with_default()
-                    .expect("to OtlpProtoBytes");
+                let proto = take_otlp_proto(&mut pdata);
                 assert!(matches!(proto, OtlpProtoBytes::ExportMetricsRequest(_)));
                 assert_eq!(proto.as_bytes(), &bytes);
             }
@@ -166,13 +139,7 @@ async fn test_kafka_receiver_traces_otap() {
 
             let bytes = create_traces_with_spans_otap_bytes();
 
-            for i in 0..3 {
-                let key = format!("test-key-{i}");
-                producer
-                    .send_full(SendRecord::new(TOPIC, &bytes).key(key.as_bytes()))
-                    .await
-                    .expect("Failed to send message");
-            }
+            produce_traces(&producer, TOPIC, 3, "test-key", &bytes).await;
 
             let cfg = auto_config(
                 cluster.bootstrap_servers(),
@@ -216,13 +183,7 @@ async fn test_kafka_receiver_metrics_otap() {
 
             let bytes = create_metrics_otap_arrow_records_bytes();
 
-            for i in 0..3 {
-                let key = format!("test-key-{i}");
-                producer
-                    .send_full(SendRecord::new(TOPIC, &bytes).key(key.as_bytes()))
-                    .await
-                    .expect("Failed to send message");
-            }
+            produce_traces(&producer, TOPIC, 3, "test-key", &bytes).await;
 
             let cfg = auto_config(
                 cluster.bootstrap_servers(),
@@ -265,13 +226,7 @@ async fn test_kafka_receiver_logs_otap() {
 
             let bytes = create_logs_otap_arrow_records_bytes();
 
-            for i in 0..3 {
-                let key = format!("test-key-{i}");
-                producer
-                    .send_full(SendRecord::new(TOPIC, &bytes).key(key.as_bytes()))
-                    .await
-                    .expect("Failed to send message");
-            }
+            produce_traces(&producer, TOPIC, 3, "test-key", &bytes).await;
 
             let cfg = auto_config(
                 cluster.bootstrap_servers(),
@@ -427,10 +382,7 @@ async fn multi_signal_topics_route_to_correct_decoders() {
             let mut saw_logs = false;
             for _ in 0..3 {
                 let mut pdata = receiver.recv_pdata().await;
-                let proto: OtlpProtoBytes = pdata
-                    .take_payload()
-                    .try_into_with_default()
-                    .expect("to OtlpProtoBytes");
+                let proto = take_otlp_proto(&mut pdata);
                 match proto {
                     OtlpProtoBytes::ExportTracesRequest(ref b) => {
                         assert_eq!(b.as_ref(), &traces_bytes, "traces payload preserved");
@@ -503,10 +455,7 @@ async fn regex_topic_subscription_consumes_all_matching_topics() {
             let mut delivered = 0;
             for _ in 0..3 {
                 let mut pdata = receiver.recv_pdata().await;
-                let proto: OtlpProtoBytes = pdata
-                    .take_payload()
-                    .try_into_with_default()
-                    .expect("to OtlpProtoBytes");
+                let proto = take_otlp_proto(&mut pdata);
                 assert!(matches!(proto, OtlpProtoBytes::ExportTracesRequest(_)));
                 assert_eq!(proto.as_bytes(), &bytes, "payload preserved");
                 delivered += 1;
@@ -547,7 +496,7 @@ async fn read_committed_isolation_delivers_and_commits() {
         |cluster| async move {
             let producer = cluster.producer().build();
             let bytes = encoded_trace_fixture();
-            produce_traces(&producer, TOPIC, RECORDS, &bytes).await;
+            produce_traces(&producer, TOPIC, RECORDS, "rec", &bytes).await;
 
             let builder = manual_traces_builder(cluster.bootstrap_servers(), group, TOPIC)
                 .with_isolation_level(IsolationLevel::ReadCommitted);

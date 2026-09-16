@@ -254,7 +254,7 @@ async fn recv_partition_delivery(
 #[test]
 fn reconcile_revocation_drops_active_retry_without_advancing_offset() {
     let cfg = make_config(&["traces"], &["metrics"], &[], MessageFormat::OtlpProto);
-    let ctx = make_pipeline_ctx();
+    let ctx = make_pipeline_ctx(0, 1, 0);
     let mut receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
     let mut assignment = TopicPartitionList::new();
     let _ = assignment.add_partition("traces", 0);
@@ -343,7 +343,7 @@ fn replay_operation_failures_preserve_failed_offset_watermark() {
             1,
             4,
         );
-        let ctx = make_pipeline_ctx();
+        let ctx = make_pipeline_ctx(0, 1, 0);
         let mut receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
         let mut assignment = TopicPartitionList::new();
         let _ = assignment.add_partition("traces", 0);
@@ -427,7 +427,7 @@ fn replay_phase_ownership_change_discards_stale_state_without_advancing_offset()
                 1,
                 4,
             );
-            let ctx = make_pipeline_ctx();
+            let ctx = make_pipeline_ctx(0, 1, 0);
             let mut receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
             let mut assignment = TopicPartitionList::new();
             let _ = assignment.add_partition("traces", 0);
@@ -760,7 +760,7 @@ async fn explicit_commit_and_skip_advances_transient_and_permanent_nacks() {
             let producer = cluster.producer().build();
             let bytes = encoded_trace_fixture();
 
-            produce_traces(&producer, TOPIC, RECORDS, &bytes).await;
+            produce_traces(&producer, TOPIC, RECORDS, "rec", &bytes).await;
 
             let cfg = manual_traces_config_with_commit_and_skip(
                 cluster.bootstrap_servers(),
@@ -817,7 +817,7 @@ async fn transient_nack_replays_without_committing_past_failure() {
         |cluster| async move {
             let producer = cluster.producer().build();
             let bytes = encoded_trace_fixture();
-            produce_traces(&producer, TOPIC, RECORDS, &bytes).await;
+            produce_traces(&producer, TOPIC, RECORDS, "rec", &bytes).await;
 
             let cfg = manual_traces_config_with_replay(cluster.bootstrap_servers(), group, TOPIC);
             let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
@@ -859,14 +859,12 @@ async fn transient_nack_replays_without_committing_past_failure() {
             }
 
             let brokers = cluster.bootstrap_servers().to_string();
-            let committed_before_replay_ack =
-                committed_offset(&brokers, group, TOPIC, 0).expect("committed-offset probe");
+            let committed_before_replay_ack = probe_committed_offset(&brokers, group, TOPIC);
             assert!(committed_before_replay_ack.is_none_or(|offset| offset <= 0));
 
             receiver.ack(replayed.remove(&1).expect("replayed offset 1"));
             receiver.wait_for_control_barrier().await;
-            let committed_out_of_order =
-                committed_offset(&brokers, group, TOPIC, 0).expect("committed-offset probe");
+            let committed_out_of_order = probe_committed_offset(&brokers, group, TOPIC);
             assert!(committed_out_of_order.is_none_or(|offset| offset <= 0));
 
             receiver.ack(replayed.remove(&0).expect("replayed offset 0"));

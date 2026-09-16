@@ -190,7 +190,7 @@ async fn compute_consumer_lag_none_when_deadline_already_passed() {
 #[tokio::test]
 async fn lag_apply_publishes_and_clears_on_completion() {
     let cfg = make_config(&["traces"], &["metrics"], &[], MessageFormat::OtlpProto);
-    let ctx = make_pipeline_ctx();
+    let ctx = make_pipeline_ctx(0, 1, 0);
     let mut receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
 
     // A finished worker that measured a mean of 42.0.
@@ -232,7 +232,7 @@ async fn lag_apply_publishes_and_clears_on_completion() {
 #[tokio::test(start_paused = true)]
 async fn lag_apply_keeps_in_flight_on_deadline_and_blocks_new_worker() {
     let cfg = make_config(&["traces"], &["metrics"], &[], MessageFormat::OtlpProto);
-    let ctx = make_pipeline_ctx();
+    let ctx = make_pipeline_ctx(0, 1, 0);
     let mut receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
 
     // Seed a known gauge value so we can prove it is retained on timeout.
@@ -294,7 +294,7 @@ async fn lag_apply_keeps_in_flight_on_deadline_and_blocks_new_worker() {
 #[tokio::test(start_paused = true)]
 async fn lag_apply_processes_completion_after_deadline() {
     let cfg = make_config(&["traces"], &["metrics"], &[], MessageFormat::OtlpProto);
-    let ctx = make_pipeline_ctx();
+    let ctx = make_pipeline_ctx(0, 1, 0);
     let mut receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
 
     let deadline = tokio::time::Instant::now() + LAG_REFRESH_TOTAL_DEADLINE;

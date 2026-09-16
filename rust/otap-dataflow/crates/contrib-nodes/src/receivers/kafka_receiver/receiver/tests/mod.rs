@@ -237,6 +237,16 @@ fn arrow_records_to_bytes(arrow_records: &mut OtapArrowRecords) -> Vec<u8> {
     bytes
 }
 
+/// Take the payload from `pdata` and convert it to `OtlpProtoBytes`, the common
+/// first step for tests that assert on the delivered signal's OTLP-proto bytes
+/// (e.g. via `matches!` on the request variant or `decode`).
+fn take_otlp_proto(pdata: &mut OtapPdata) -> OtlpProtoBytes {
+    pdata
+        .take_payload()
+        .try_into_with_default()
+        .expect("to OtlpProtoBytes")
+}
+
 /// Convert an `OtapPdata` (containing OTAP Arrow records) back to an OTLP
 /// `ExportTraceServiceRequest` so tests can assert against familiar protobuf
 /// structs instead of Arrow column internals.
@@ -348,6 +358,21 @@ where
         let pdata = receiver.recv_pdata().await;
         receiver.ack(pdata);
     }
+}
+
+/// Drain runtime control messages (skipping the timer-setup messages emitted
+/// during startup) until a `ReceiverDrained` signal arrives. Returns whether it
+/// was observed within a bounded number of polls, so callers keep their own
+/// assertion and context-specific message.
+async fn wait_for_receiver_drained(receiver: &mut KafkaReceiverHarness) -> bool {
+    for _ in 0..16 {
+        match receiver.try_recv_runtime(Duration::from_secs(5)).await {
+            Some(RuntimeControlMsg::ReceiverDrained { .. }) => return true,
+            Some(_) => continue,
+            None => return false,
+        }
+    }
+    false
 }
 
 /// Probe the committed offset for `(topic, partition 0)` in `group`, panicking
@@ -562,17 +587,7 @@ fn make_config(
     .expect("test config should be valid")
 }
 
-fn make_pipeline_ctx() -> PipelineContext {
-    make_pipeline_ctx_with(0, 1)
-}
-
-fn make_pipeline_ctx_with(core_id: usize, num_cores: usize) -> PipelineContext {
-    let registry = TelemetryRegistryHandle::new();
-    let controller_ctx = ControllerContext::new(registry);
-    controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), core_id, num_cores, 0)
-}
-
-fn make_pipeline_ctx_with_generation(
+fn make_pipeline_ctx(
     core_id: usize,
     num_cores: usize,
     deployment_generation: u64,
