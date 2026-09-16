@@ -942,13 +942,8 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                 // Reset the timer since we already built an arrow record batch due to size constraint
                                                 interval.reset();
 
-                                                let res = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into())).await;
-                                                // Do not propagate downstream send errors; keep running
-                                                // so that telemetry can still be collected (tests expect refused
-                                                // to be counted and reported).
-                                                if res.is_err() {
-                                                    // swallow error
-                                                }
+                                                // Do not propagate downstream send errors; keep the UDP receiver running.
+                                                let _ = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into())).await;
                                             }
                                             Err(e) => {
                                                 otel_warn!("syslog_cef_receiver.arrow_records.build_failed", error = %e, message = "Failed to build Arrow records, dropping batch");
@@ -979,12 +974,8 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                         // Reset the builder for the next batch
                                         arrow_records_builder = ArrowRecordsBuilder::new();
 
-                                        let res = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into())).await;
-                                        // Do not propagate downstream send errors; keep running
-                                        // so that telemetry can still be collected and reported.
-                                        if res.is_err() {
-                                            // swallow error (already counted above)
-                                        }
+                                        // Do not propagate downstream send errors; keep the UDP receiver running.
+                                        let _ = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into())).await;
                                     }
                                     Err(e) => {
                                         otel_warn!("syslog_cef_receiver.arrow_records.build_failed", error = %e, message = "Failed to build Arrow records, dropping batch");

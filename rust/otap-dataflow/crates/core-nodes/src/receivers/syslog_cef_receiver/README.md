@@ -467,9 +467,11 @@ append work. It excludes batch buffering and pipeline handoff.
 | `receiver.processing.duration` | `s` | Optional active receiver-local processing duration per external message, grouped by fixed entity attribute `protocol` set to `tcp` or `udp` and `signal=logs`. |
 
 `outcome=success` means receiver-local admission, parsing, and record append
-completed. `outcome=refused` means local validation or admission rejected the
-message, and `outcome=failure` means receiver-local processing failed. Batch
-buffering, downstream handoff, and Ack/Nack do not change this outcome.
+ completed. `outcome=refused` means memory-pressure or rate-limit admission
+rejected the message, or the framed input was rejected as invalid. The current
+implementation does not emit `outcome=failure`; that outcome is reserved for
+other receiver-local processing errors. Batch buffering, batch construction,
+downstream handoff, and Ack/Nack do not change this outcome.
 
 #### Node Diagnostics
 
