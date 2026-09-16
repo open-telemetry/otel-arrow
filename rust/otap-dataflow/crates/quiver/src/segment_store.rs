@@ -1120,9 +1120,17 @@ impl SegmentStore {
 
     /// Returns the segment bytes currently charged to the shared disk budget.
     pub(crate) fn tracked_disk_bytes(&self) -> u64 {
-        self.segments.read().values().fold(0, |total, handle| {
+        let segment_bytes = self.segments.read().values().fold(0u64, |total, handle| {
             total.saturating_add(handle.file_size_bytes)
-        })
+        });
+        let pending_delete_bytes = self
+            .pending_deletes
+            .lock()
+            .values()
+            .fold(0u64, |total, pending| {
+                total.saturating_add(pending.file_size)
+            });
+        segment_bytes.saturating_add(pending_delete_bytes)
     }
 
     /// Returns the finalized segment file size in bytes.
@@ -2061,6 +2069,49 @@ mod tests {
             "budget should be released even if file was already gone"
         );
         assert_eq!(store.pending_delete_count(), 0);
+    }
+
+    /// Scenario: A tracked segment deletion is deferred by a filesystem
+    /// failure. The test replaces the file with a directory only to make
+    /// `remove_file` fail deterministically across platforms; production
+    /// equivalents include sharing violations, permissions errors, and
+    /// transient filesystem failures.
+    /// Guarantees: `tracked_disk_bytes` continues to include the deferred
+    /// charge for failed-startup rollback until physical cleanup releases it.
+    #[test]
+    fn tracked_disk_bytes_includes_pending_delete_charges() {
+        let (store, budget, seq, file_size) = store_with_budget_and_segment();
+        let _ = store
+            .register_existing_segment(seq)
+            .expect("register segment");
+        assert_eq!(store.tracked_disk_bytes(), file_size);
+
+        let path = store.segment_path(seq);
+        std::fs::remove_file(&path).expect("remove segment file");
+        // This directory is deterministic cross-platform fault injection for
+        // `remove_file`, not a production scenario. It stands in for real
+        // deletion failures such as Windows sharing violations or permission
+        // and transient filesystem errors, including in privileged CI runs.
+        std::fs::create_dir(&path).expect("replace segment file with directory");
+
+        assert_eq!(
+            store.delete_segment(seq).expect("defer segment delete"),
+            None
+        );
+        assert_eq!(store.segment_count(), 0);
+        assert_eq!(store.pending_delete_count(), 1);
+        assert_eq!(
+            store.tracked_disk_bytes(),
+            file_size,
+            "deferred bytes must remain visible to rollback accounting"
+        );
+        assert_eq!(
+            budget.used(),
+            file_size,
+            "the shared budget must remain charged while deletion is deferred"
+        );
+
+        std::fs::remove_dir(&path).expect("remove replacement directory");
     }
 
     #[test]
