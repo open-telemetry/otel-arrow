@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 //! Declarative parsing and normalization of already-framed log records.
 
 otel_arrow_dfe_telemetry::otel_component_scope!(

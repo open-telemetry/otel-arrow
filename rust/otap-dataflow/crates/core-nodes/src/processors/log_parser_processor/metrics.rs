@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 //! Bounded operation and record-level metrics for declarative parsing.
 
 use otel_arrow_dfe_config::SignalType;

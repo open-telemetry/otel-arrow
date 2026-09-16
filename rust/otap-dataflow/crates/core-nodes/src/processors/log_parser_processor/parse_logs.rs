@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 //! Record-local extraction and normalization for already-framed logs.
 
 use chrono::{DateTime, Timelike};

@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 //! Record and native batch parsing throughput and requested-heap qualification.
 
 use otel_arrow_dfe_core_nodes::processors::log_parser_processor::BenchLogParser;

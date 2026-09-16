@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 use super::*;
 use otel_arrow_dfe_engine::{
     Interests,

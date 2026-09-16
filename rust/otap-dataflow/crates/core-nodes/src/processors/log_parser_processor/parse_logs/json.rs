@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 //! Bounded JSON storage and duplicate-aware extraction.
 
 use serde::de::{self, DeserializeSeed, MapAccess, SeqAccess, Visitor};

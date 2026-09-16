@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 //! Staged native OTAP field updates.
 
 use super::{Candidate, DataError, Parser};
