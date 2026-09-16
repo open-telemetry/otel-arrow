@@ -28,7 +28,7 @@ async fn transport_error_is_non_fatal_and_recovers() {
             let producer = cluster.producer().build();
             let bytes = encoded_trace_fixture();
 
-            produce_traces(&producer, TOPIC, RECORDS, "rec", &bytes).await;
+            produce_records(&producer, TOPIC, RECORDS, "rec", &bytes).await;
 
             // Inject a LONG run of fetch errors (consumed one-per-request in
             // order) so the fault stays active across the whole observation
@@ -94,7 +94,7 @@ async fn broker_outage_then_recovery_resumes_without_loss() {
             let producer = cluster.producer().build();
             let bytes = encoded_trace_fixture();
 
-            produce_traces(&producer, TOPIC, PRE, "pre", &bytes).await;
+            produce_records(&producer, TOPIC, PRE, "pre", &bytes).await;
 
             let cfg = manual_traces_config(cluster.bootstrap_servers(), group, TOPIC, 500, None);
             let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
@@ -115,7 +115,7 @@ async fn broker_outage_then_recovery_resumes_without_loss() {
 
             // Recover: bring brokers back and produce more records.
             cluster.faults().all_brokers_up();
-            produce_traces(&producer, TOPIC, POST, "post", &bytes).await;
+            produce_records(&producer, TOPIC, POST, "post", &bytes).await;
 
             // The same receiver must reconnect and deliver every post-outage
             // record without loss.
@@ -150,7 +150,7 @@ async fn intermittent_network_interruption_recovers_without_loss() {
             let producer = cluster.producer().build();
             let bytes = encoded_trace_fixture();
 
-            produce_traces(&producer, TOPIC, PRE, "pre", &bytes).await;
+            produce_records(&producer, TOPIC, PRE, "pre", &bytes).await;
 
             let cfg = manual_traces_config(cluster.bootstrap_servers(), group, TOPIC, 500, None);
             let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
@@ -166,7 +166,7 @@ async fn intermittent_network_interruption_recovers_without_loss() {
 
             // Produce during the interruption; nothing must be delivered while
             // it is active.
-            produce_traces(&producer, TOPIC, POST, "post", &bytes).await;
+            produce_records(&producer, TOPIC, POST, "post", &bytes).await;
             assert!(
                 receiver
                     .try_recv_pdata(Duration::from_secs(3))
@@ -221,7 +221,7 @@ async fn broker_latency_does_not_corrupt_offset_accounting() {
         |cluster| async move {
             let producer = cluster.producer().build();
             let bytes = encoded_trace_fixture();
-            produce_traces(&producer, TOPIC, RECORDS, "rec", &bytes).await;
+            produce_records(&producer, TOPIC, RECORDS, "rec", &bytes).await;
 
             // Inject a bounded per-request latency on all brokers. The broker
             // stays reachable; requests merely take longer.

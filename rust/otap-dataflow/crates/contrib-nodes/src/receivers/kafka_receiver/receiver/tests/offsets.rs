@@ -432,7 +432,7 @@ async fn out_of_order_acks_commit_only_lowest_contiguous() {
 
             // Produce three records to the single partition; they receive
             // offsets 0, 1, 2 in order.
-            produce_traces(&producer, TOPIC, RECORDS, "rec", &bytes).await;
+            produce_records(&producer, TOPIC, RECORDS, "rec", &bytes).await;
 
             // No safety-net timer: commits are driven purely by acks so the
             // watermark assertions are deterministic.
@@ -625,7 +625,7 @@ async fn auto_commit_mode_lets_librdkafka_own_offsets() {
             let producer = cluster.producer().build();
             let bytes = encoded_trace_fixture();
 
-            produce_traces(&producer, TOPIC, RECORDS, "rec", &bytes).await;
+            produce_records(&producer, TOPIC, RECORDS, "rec", &bytes).await;
 
             let cfg = auto_config(
                 cluster.bootstrap_servers(),
@@ -782,7 +782,7 @@ async fn restart_redelivers_uncommitted_offsets() {
             let producer = cluster.producer().build();
             let bytes = encoded_trace_fixture();
 
-            produce_traces(&producer, TOPIC, RECORDS, "rec", &bytes).await;
+            produce_records(&producer, TOPIC, RECORDS, "rec", &bytes).await;
 
             // First receiver: consume every record but NEVER ack, so no
             // offset is ever committed.
@@ -849,7 +849,7 @@ async fn safety_net_timer_commits_without_acks_drain_or_shutdown() {
         |cluster| async move {
             let producer = cluster.producer().build();
             let bytes = encoded_trace_fixture();
-            produce_traces(&producer, TOPIC, RECORDS, "rec", &bytes).await;
+            produce_records(&producer, TOPIC, RECORDS, "rec", &bytes).await;
 
             // Short safety-net timer so the periodic commit fires well within
             // the assertion window; acks alone would also commit, but the

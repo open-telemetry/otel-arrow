@@ -760,7 +760,7 @@ async fn explicit_commit_and_skip_advances_transient_and_permanent_nacks() {
             let producer = cluster.producer().build();
             let bytes = encoded_trace_fixture();
 
-            produce_traces(&producer, TOPIC, RECORDS, "rec", &bytes).await;
+            produce_records(&producer, TOPIC, RECORDS, "rec", &bytes).await;
 
             let cfg = manual_traces_config_with_commit_and_skip(
                 cluster.bootstrap_servers(),
@@ -817,7 +817,7 @@ async fn transient_nack_replays_without_committing_past_failure() {
         |cluster| async move {
             let producer = cluster.producer().build();
             let bytes = encoded_trace_fixture();
-            produce_traces(&producer, TOPIC, RECORDS, "rec", &bytes).await;
+            produce_records(&producer, TOPIC, RECORDS, "rec", &bytes).await;
 
             let cfg = manual_traces_config_with_replay(cluster.bootstrap_servers(), group, TOPIC);
             let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);

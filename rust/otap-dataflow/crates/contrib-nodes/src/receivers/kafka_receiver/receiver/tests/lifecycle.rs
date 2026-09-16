@@ -289,7 +289,7 @@ async fn drain_ingress_stops_polling_and_notifies_drained() {
             let bytes = encoded_trace_fixture();
 
             // Produce an initial batch that the receiver will consume before drain.
-            produce_traces(&producer, TOPIC, INITIAL, "pre", &bytes).await;
+            produce_records(&producer, TOPIC, INITIAL, "pre", &bytes).await;
 
             let cfg = manual_traces_config(cluster.bootstrap_servers(), group, TOPIC, 60_000, None);
             let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
@@ -305,12 +305,12 @@ async fn drain_ingress_stops_polling_and_notifies_drained() {
             // also carries timer-setup messages (StartTimer /
             // StartTelemetryTimer) emitted while the loop starts up, so skip
             // past those until the drain signal arrives.
-            let drained = wait_for_receiver_drained(&mut receiver).await;
+            let drained = wait_for_receiver_drained(&mut receiver, Duration::from_secs(10)).await;
             assert!(drained, "receiver never emitted ReceiverDrained");
 
             // After drain, produce more records. The receiver has stopped
             // polling, so none of these should be forwarded downstream.
-            produce_traces(&producer, TOPIC, INITIAL, "post", &bytes).await;
+            produce_records(&producer, TOPIC, INITIAL, "post", &bytes).await;
 
             // No further pdata should arrive within a reasonable window.
             assert!(
@@ -607,7 +607,7 @@ async fn drain_under_sustained_traffic_commits_and_stops_cleanly() {
             let bytes = encoded_trace_fixture();
 
             // Produce a first burst the receiver will consume and ack.
-            produce_traces(&producer, TOPIC, PRE_DRAIN, "pre", &bytes).await;
+            produce_records(&producer, TOPIC, PRE_DRAIN, "pre", &bytes).await;
 
             let cfg = manual_traces_config(cluster.bootstrap_servers(), group, TOPIC, 500, None);
             let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
@@ -621,11 +621,11 @@ async fn drain_under_sustained_traffic_commits_and_stops_cleanly() {
 
             // Keep producing after the drain: the receiver has stopped
             // polling, so none of these must be forwarded.
-            produce_traces(&producer, TOPIC, POST_DRAIN, "post", &bytes).await;
+            produce_records(&producer, TOPIC, POST_DRAIN, "post", &bytes).await;
 
             // The receiver must signal ReceiverDrained (skip past the
             // timer-setup runtime messages emitted during startup).
-            let drained = wait_for_receiver_drained(&mut receiver).await;
+            let drained = wait_for_receiver_drained(&mut receiver, Duration::from_secs(10)).await;
             assert!(
                 drained,
                 "receiver never emitted ReceiverDrained under traffic"
@@ -682,7 +682,7 @@ async fn drain_does_not_wait_for_inflight_downstream_acks() {
             let producer = cluster.producer().build();
             let bytes = encoded_trace_fixture();
 
-            produce_traces(&producer, TOPIC, RECORDS, "rec", &bytes).await;
+            produce_records(&producer, TOPIC, RECORDS, "rec", &bytes).await;
 
             let mut receiver = start_manual_traces_receiver(&cluster, group, TOPIC);
 
@@ -700,7 +700,7 @@ async fn drain_does_not_wait_for_inflight_downstream_acks() {
             // ReceiverDrained must arrive promptly -- well within the drain
             // deadline -- proving the drain did not block waiting for the
             // in-flight acks.
-            let drained = wait_for_receiver_drained(&mut receiver).await;
+            let drained = wait_for_receiver_drained(&mut receiver, Duration::from_secs(5)).await;
             assert!(
                 drained,
                 "receiver must signal ReceiverDrained without waiting for \
@@ -742,7 +742,7 @@ async fn shutdown_with_broker_unavailable_does_not_hang() {
             let producer = cluster.producer().build();
             let bytes = encoded_trace_fixture();
 
-            produce_traces(&producer, TOPIC, RECORDS, "rec", &bytes).await;
+            produce_records(&producer, TOPIC, RECORDS, "rec", &bytes).await;
 
             let mut receiver = start_manual_traces_receiver(&cluster, group, TOPIC);
 
@@ -807,7 +807,7 @@ async fn shutdown_with_lag_refresh_in_flight_still_terminates_within_deadline() 
         |cluster| async move {
             let producer = cluster.producer().build();
             let bytes = encoded_trace_fixture();
-            produce_traces(&producer, TOPIC, RECORDS, "rec", &bytes).await;
+            produce_records(&producer, TOPIC, RECORDS, "rec", &bytes).await;
 
             // Arm the lag refresh timer at a short interval so a lag-refresh
             // worker is repeatedly spawned.
@@ -860,7 +860,7 @@ async fn drain_deadline_forces_drained_when_commit_stalls() {
             let producer = cluster.producer().build();
             let bytes = encoded_trace_fixture();
 
-            produce_traces(&producer, TOPIC, RECORDS, "rec", &bytes).await;
+            produce_records(&producer, TOPIC, RECORDS, "rec", &bytes).await;
 
             let cfg = manual_traces_config_no_timer(cluster.bootstrap_servers(), group, TOPIC);
             let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
@@ -883,7 +883,7 @@ async fn drain_deadline_forces_drained_when_commit_stalls() {
             // ReceiverDrained must still arrive (skip past startup timer
             // runtime messages), proving the drain does not block on the
             // stalled commit.
-            let drained = wait_for_receiver_drained(&mut receiver).await;
+            let drained = wait_for_receiver_drained(&mut receiver, Duration::from_secs(5)).await;
             assert!(
                 drained,
                 "receiver must emit ReceiverDrained even when the drain-time \
@@ -938,7 +938,7 @@ async fn drain_unflushed_commit_redelivers_acked_records() {
             let producer = cluster.producer().build();
             let bytes = encoded_trace_fixture();
 
-            produce_traces(&producer, TOPIC, RECORDS, "rec", &bytes).await;
+            produce_records(&producer, TOPIC, RECORDS, "rec", &bytes).await;
 
             // Reject every OffsetCommit RPC so NO commit (steady-state async
             // per-ack, or the drain-time commit) can durably persist. This is
@@ -966,7 +966,7 @@ async fn drain_unflushed_commit_redelivers_acked_records() {
             // Drain: the receiver issues its final commit, which is also
             // rejected, then terminates.
             receiver.drain(Duration::from_secs(5));
-            let drained = wait_for_receiver_drained(&mut receiver).await;
+            let drained = wait_for_receiver_drained(&mut receiver, Duration::from_secs(5)).await;
             assert!(
                 drained,
                 "receiver must emit ReceiverDrained even when every offset \
@@ -1040,7 +1040,7 @@ async fn drain_stops_polling_no_pdata_after_deadline() {
             let producer = cluster.producer().build();
             let bytes = encoded_trace_fixture();
 
-            produce_traces(&producer, TOPIC, INITIAL, "pre", &bytes).await;
+            produce_records(&producer, TOPIC, INITIAL, "pre", &bytes).await;
 
             let cfg = manual_traces_config_no_timer(cluster.bootstrap_servers(), group, TOPIC);
             let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
@@ -1049,7 +1049,7 @@ async fn drain_stops_polling_no_pdata_after_deadline() {
 
             // Drain with a short deadline and wait for it to complete.
             receiver.drain(Duration::from_millis(500));
-            let drained = wait_for_receiver_drained(&mut receiver).await;
+            let drained = wait_for_receiver_drained(&mut receiver, Duration::from_secs(5)).await;
             assert!(drained, "receiver never emitted ReceiverDrained");
 
             // Ensure we are past the drain deadline before producing more.
@@ -1063,7 +1063,7 @@ async fn drain_stops_polling_no_pdata_after_deadline() {
                 RDKafkaRespErr::RD_KAFKA_RESP_ERR_NOT_LEADER_FOR_PARTITION,
             ]);
 
-            produce_traces(&producer, TOPIC, POST, "post", &bytes).await;
+            produce_records(&producer, TOPIC, POST, "post", &bytes).await;
 
             // No pdata may arrive after the drain deadline, even under the
             // retrying fetch path.
@@ -1106,7 +1106,7 @@ async fn drain_with_no_tracked_offsets_still_notifies_drained() {
 
             receiver.drain(Duration::from_secs(5));
 
-            let drained = wait_for_receiver_drained(&mut receiver).await;
+            let drained = wait_for_receiver_drained(&mut receiver, Duration::from_secs(5)).await;
             assert!(
                 drained,
                 "an idle receiver with no tracked offsets must still emit \
@@ -1137,7 +1137,7 @@ async fn drain_commits_only_lowest_contiguous_offset() {
             let producer = cluster.producer().build();
             let bytes = encoded_trace_fixture();
 
-            produce_traces(&producer, TOPIC, RECORDS, "rec", &bytes).await;
+            produce_records(&producer, TOPIC, RECORDS, "rec", &bytes).await;
 
             let cfg = manual_traces_config_no_timer(cluster.bootstrap_servers(), group, TOPIC);
             let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
@@ -1152,7 +1152,7 @@ async fn drain_commits_only_lowest_contiguous_offset() {
 
             receiver.drain(Duration::from_secs(5));
 
-            let drained = wait_for_receiver_drained(&mut receiver).await;
+            let drained = wait_for_receiver_drained(&mut receiver, Duration::from_secs(5)).await;
             assert!(drained, "receiver never emitted ReceiverDrained");
 
             receiver.await_stopped().await;
@@ -1196,7 +1196,7 @@ async fn drain_then_shutdown_drain_wins() {
             let producer = cluster.producer().build();
             let bytes = encoded_trace_fixture();
 
-            produce_traces(&producer, TOPIC, RECORDS, "rec", &bytes).await;
+            produce_records(&producer, TOPIC, RECORDS, "rec", &bytes).await;
 
             let cfg = manual_traces_config_no_timer(cluster.bootstrap_servers(), group, TOPIC);
             let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
@@ -1250,7 +1250,7 @@ async fn drain_under_auto_commit_terminates_cleanly() {
             let producer = cluster.producer().build();
             let bytes = encoded_trace_fixture();
 
-            produce_traces(&producer, TOPIC, INITIAL, "pre", &bytes).await;
+            produce_records(&producer, TOPIC, INITIAL, "pre", &bytes).await;
 
             // Auto-commit config: librdkafka owns commits, so the receiver's
             // manual final-commit block is skipped at drain.
@@ -1279,14 +1279,14 @@ async fn drain_under_auto_commit_terminates_cleanly() {
 
             receiver.drain(Duration::from_secs(5));
 
-            let drained = wait_for_receiver_drained(&mut receiver).await;
+            let drained = wait_for_receiver_drained(&mut receiver, Duration::from_secs(5)).await;
             assert!(
                 drained,
                 "an auto-commit receiver must still emit ReceiverDrained on drain",
             );
 
             // After drain, produced records must not be forwarded.
-            produce_traces(&producer, TOPIC, INITIAL, "post", &bytes).await;
+            produce_records(&producer, TOPIC, INITIAL, "post", &bytes).await;
             assert!(
                 receiver
                     .try_recv_pdata(Duration::from_secs(3))
@@ -1335,7 +1335,7 @@ async fn drain_multi_partition_commits_each_partition() {
 
             receiver.drain(Duration::from_secs(5));
 
-            let drained = wait_for_receiver_drained(&mut receiver).await;
+            let drained = wait_for_receiver_drained(&mut receiver, Duration::from_secs(5)).await;
             assert!(drained, "receiver never emitted ReceiverDrained");
 
             receiver.await_stopped().await;
@@ -1455,7 +1455,7 @@ async fn cutover_new_receiver_same_group_acquires_partition_before_old_drains() 
 
             // Engine order step 3: only now drain the OLD instance (A).
             receiver_a.drain(Duration::from_secs(5));
-            let drained = wait_for_receiver_drained(&mut receiver_a).await;
+            let drained = wait_for_receiver_drained(&mut receiver_a, Duration::from_secs(5)).await;
             assert!(
                 drained,
                 "old receiver must emit ReceiverDrained even after a concurrent \
@@ -1517,7 +1517,7 @@ async fn cutover_new_receiver_same_broker_distinct_group_starts_before_old_drain
             let producer = cluster.producer().build();
             let bytes = encoded_trace_fixture();
 
-            produce_traces(&producer, TOPIC, PRE, "pre", &bytes).await;
+            produce_records(&producer, TOPIC, PRE, "pre", &bytes).await;
 
             // OLD receiver (A, group A): consume and ack the initial batch.
             let cfg_a = cutover_traces_config(
@@ -1545,13 +1545,13 @@ async fn cutover_new_receiver_same_broker_distinct_group_starts_before_old_drain
 
             // Engine order step 3: only now drain the OLD instance (A).
             receiver_a.drain(Duration::from_secs(5));
-            let drained = wait_for_receiver_drained(&mut receiver_a).await;
+            let drained = wait_for_receiver_drained(&mut receiver_a, Duration::from_secs(5)).await;
             assert!(drained, "old receiver never emitted ReceiverDrained");
             receiver_a.await_stopped().await;
 
             // The NEW receiver keeps working after the OLD instance is gone:
             // it consumes and acks records produced post-cutover.
-            produce_traces(&producer, TOPIC, POST, "post", &bytes).await;
+            produce_records(&producer, TOPIC, POST, "post", &bytes).await;
             for _ in 0..POST {
                 let pdata = receiver_b
                     .try_recv_pdata(Duration::from_secs(15))
@@ -1688,7 +1688,7 @@ async fn cutover_new_receiver_distinct_generation_is_not_stalled() {
             // Drain the OLD instance (engine order): A drains cleanly and B
             // keeps owning a partition afterward.
             receiver_a.drain(Duration::from_secs(5));
-            let drained = wait_for_receiver_drained(&mut receiver_a).await;
+            let drained = wait_for_receiver_drained(&mut receiver_a, Duration::from_secs(5)).await;
             assert!(drained, "old receiver must drain cleanly");
             receiver_a.await_stopped().await;
 
@@ -1844,7 +1844,7 @@ async fn cutover_new_receiver_different_broker_starts_before_old_drains() {
 
             // OLD receiver (A) on broker A with some produced records.
             let producer_a = cluster_a.producer().build();
-            produce_traces(&producer_a, TOPIC_A, RECORDS, "a", &bytes).await;
+            produce_records(&producer_a, TOPIC_A, RECORDS, "a", &bytes).await;
             let cfg_a = cutover_traces_config(
                 cluster_a.bootstrap_servers(),
                 group,
@@ -1858,7 +1858,7 @@ async fn cutover_new_receiver_different_broker_starts_before_old_drains() {
             // Engine order step 1+2: start the NEW receiver (B) on broker B
             // and confirm it consumes from broker B (NEW Ready).
             let producer_b = cluster_b.producer().build();
-            produce_traces(&producer_b, TOPIC_B, RECORDS, "b", &bytes).await;
+            produce_records(&producer_b, TOPIC_B, RECORDS, "b", &bytes).await;
             let cfg_b = cutover_traces_config(
                 cluster_b.bootstrap_servers(),
                 group,
@@ -1872,7 +1872,7 @@ async fn cutover_new_receiver_different_broker_starts_before_old_drains() {
             // Engine order step 3: only now drain the OLD instance (A) on
             // broker A.
             receiver_a.drain(Duration::from_secs(5));
-            let drained = wait_for_receiver_drained(&mut receiver_a).await;
+            let drained = wait_for_receiver_drained(&mut receiver_a, Duration::from_secs(5)).await;
             assert!(drained, "old receiver never emitted ReceiverDrained");
             receiver_a.await_stopped().await;
 
@@ -1934,7 +1934,7 @@ async fn cutover_new_receiver_different_broker_shutdown_variant_starts_before_ol
             let bytes = encoded_trace_fixture();
 
             let producer_a = cluster_a.producer().build();
-            produce_traces(&producer_a, TOPIC_A, RECORDS, "a", &bytes).await;
+            produce_records(&producer_a, TOPIC_A, RECORDS, "a", &bytes).await;
             let cfg_a = cutover_traces_config(
                 cluster_a.bootstrap_servers(),
                 group,
@@ -1947,7 +1947,7 @@ async fn cutover_new_receiver_different_broker_shutdown_variant_starts_before_ol
 
             // NEW receiver (B) on broker B, consuming (NEW Ready).
             let producer_b = cluster_b.producer().build();
-            produce_traces(&producer_b, TOPIC_B, RECORDS, "b", &bytes).await;
+            produce_records(&producer_b, TOPIC_B, RECORDS, "b", &bytes).await;
             let cfg_b = cutover_traces_config(
                 cluster_b.bootstrap_servers(),
                 group,
@@ -2020,7 +2020,7 @@ async fn cutover_new_receiver_starts_before_old_drains_redelivers_uncommitted_si
             let producer = cluster.producer().build();
             let bytes = encoded_trace_fixture();
 
-            produce_traces(&producer, TOPIC, RECORDS, "rec", &bytes).await;
+            produce_records(&producer, TOPIC, RECORDS, "rec", &bytes).await;
 
             // OLD receiver (A): consume every record but NEVER ack, so no
             // offset is committable at drain time.
@@ -2052,7 +2052,7 @@ async fn cutover_new_receiver_starts_before_old_drains_redelivers_uncommitted_si
 
             // Engine order step 3: only now drain the OLD instance (A).
             receiver_a.drain(Duration::from_secs(5));
-            let drained = wait_for_receiver_drained(&mut receiver_a).await;
+            let drained = wait_for_receiver_drained(&mut receiver_a, Duration::from_secs(5)).await;
             assert!(drained, "old receiver never emitted ReceiverDrained");
             receiver_a.await_stopped().await;
 
@@ -2164,7 +2164,7 @@ async fn cutover_new_receiver_starts_before_old_drains_redelivers_uncommitted_mu
 
             // Engine order step 3: only now drain the OLD instance (A).
             receiver_a.drain(Duration::from_secs(5));
-            let drained = wait_for_receiver_drained(&mut receiver_a).await;
+            let drained = wait_for_receiver_drained(&mut receiver_a, Duration::from_secs(5)).await;
             assert!(drained, "old receiver never emitted ReceiverDrained");
             receiver_a.await_stopped().await;
 
@@ -2256,7 +2256,7 @@ async fn drain_multi_partition_commits_halt_at_each_partition_gap() {
             }
 
             receiver.drain(Duration::from_secs(5));
-            let drained = wait_for_receiver_drained(&mut receiver).await;
+            let drained = wait_for_receiver_drained(&mut receiver, Duration::from_secs(5)).await;
             assert!(drained, "receiver never emitted ReceiverDrained");
             receiver.await_stopped().await;
 

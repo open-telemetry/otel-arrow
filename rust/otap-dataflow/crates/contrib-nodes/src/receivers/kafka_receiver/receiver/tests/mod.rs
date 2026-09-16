@@ -270,13 +270,15 @@ fn encoded_trace_fixture() -> Vec<u8> {
     bytes
 }
 
-/// Produce `count` keyed OTLP-proto trace records (keys `{key_prefix}-{i}`)
-/// carrying `bytes` to `topic`, matching the canonical produce loop. The
+/// Produce `count` keyed records (keys `{key_prefix}-{i}`) carrying `bytes` to
+/// `topic`, matching the canonical produce loop. The payload is opaque to this
+/// helper: callers pass pre-encoded bytes for any signal (OTLP-proto or OTAP,
+/// traces/logs/metrics), and nothing here encodes or validates them. The
 /// `key_prefix` only distinguishes records within Kafka (e.g. `rec`, or
 /// `pre`/`post` for multi-phase tests); no test asserts on the key value.
 /// `count` accepts any integer type (e.g. `usize` or `i64`) used by the calling
 /// test's record constant.
-async fn produce_traces<C>(
+async fn produce_records<C>(
     producer: &TestProducer,
     topic: &str,
     count: C,
@@ -361,12 +363,17 @@ where
 }
 
 /// Drain runtime control messages (skipping the timer-setup messages emitted
-/// during startup) until a `ReceiverDrained` signal arrives. Returns whether it
-/// was observed within a bounded number of polls, so callers keep their own
-/// assertion and context-specific message.
-async fn wait_for_receiver_drained(receiver: &mut KafkaReceiverHarness) -> bool {
+/// during startup) until a `ReceiverDrained` signal arrives. Each poll waits up
+/// to `poll_timeout` for the next runtime message; the caller chooses that
+/// budget to match its own tolerance for a slow runtime. Returns whether the
+/// signal was observed within a bounded number of polls, so callers keep their
+/// own assertion and context-specific message.
+async fn wait_for_receiver_drained(
+    receiver: &mut KafkaReceiverHarness,
+    poll_timeout: Duration,
+) -> bool {
     for _ in 0..16 {
-        match receiver.try_recv_runtime(Duration::from_secs(5)).await {
+        match receiver.try_recv_runtime(poll_timeout).await {
             Some(RuntimeControlMsg::ReceiverDrained { .. }) => return true,
             Some(_) => continue,
             None => return false,

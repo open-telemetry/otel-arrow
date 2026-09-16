@@ -19,7 +19,7 @@ async fn test_kafka_receiver_traces() {
 
             let bytes = encoded_trace_fixture();
 
-            produce_traces(&producer, TOPIC, 3, "test-key", &bytes).await;
+            produce_records(&producer, TOPIC, 3, "test-key", &bytes).await;
 
             let cfg = auto_config(
                 cluster.bootstrap_servers(),
@@ -60,7 +60,7 @@ async fn test_kafka_receiver_logs() {
             let mut bytes = vec![];
             req.encode(&mut bytes).expect("encode");
 
-            produce_traces(&producer, TOPIC, 3, "test-key", &bytes).await;
+            produce_records(&producer, TOPIC, 3, "test-key", &bytes).await;
 
             let cfg = auto_config(
                 cluster.bootstrap_servers(),
@@ -101,7 +101,7 @@ async fn test_kafka_receiver_metrics() {
             let mut bytes = vec![];
             req.encode(&mut bytes).expect("encode");
 
-            produce_traces(&producer, TOPIC, 3, "test-key", &bytes).await;
+            produce_records(&producer, TOPIC, 3, "test-key", &bytes).await;
 
             let cfg = auto_config(
                 cluster.bootstrap_servers(),
@@ -139,7 +139,7 @@ async fn test_kafka_receiver_traces_otap() {
 
             let bytes = create_traces_with_spans_otap_bytes();
 
-            produce_traces(&producer, TOPIC, 3, "test-key", &bytes).await;
+            produce_records(&producer, TOPIC, 3, "test-key", &bytes).await;
 
             let cfg = auto_config(
                 cluster.bootstrap_servers(),
@@ -183,7 +183,7 @@ async fn test_kafka_receiver_metrics_otap() {
 
             let bytes = create_metrics_otap_arrow_records_bytes();
 
-            produce_traces(&producer, TOPIC, 3, "test-key", &bytes).await;
+            produce_records(&producer, TOPIC, 3, "test-key", &bytes).await;
 
             let cfg = auto_config(
                 cluster.bootstrap_servers(),
@@ -226,7 +226,7 @@ async fn test_kafka_receiver_logs_otap() {
 
             let bytes = create_logs_otap_arrow_records_bytes();
 
-            produce_traces(&producer, TOPIC, 3, "test-key", &bytes).await;
+            produce_records(&producer, TOPIC, 3, "test-key", &bytes).await;
 
             let cfg = auto_config(
                 cluster.bootstrap_servers(),
@@ -496,7 +496,7 @@ async fn read_committed_isolation_delivers_and_commits() {
         |cluster| async move {
             let producer = cluster.producer().build();
             let bytes = encoded_trace_fixture();
-            produce_traces(&producer, TOPIC, RECORDS, "rec", &bytes).await;
+            produce_records(&producer, TOPIC, RECORDS, "rec", &bytes).await;
 
             let builder = manual_traces_builder(cluster.bootstrap_servers(), group, TOPIC)
                 .with_isolation_level(IsolationLevel::ReadCommitted);
