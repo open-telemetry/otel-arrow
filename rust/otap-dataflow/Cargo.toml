@@ -351,6 +351,7 @@ azure-monitor-exporter = [
 # Contrib extensions (opt-in) - in contrib-extensions
 contrib-extensions = ["otel-arrow-dfe-contrib-extensions/contrib-extensions"]
 azure-identity-auth-extension = ["otel-arrow-dfe-contrib-extensions/azure-identity-auth-extension"]
+flat-file-user-pass-auth-extension = ["otel-arrow-dfe-contrib-extensions/flat-file-user-pass-auth-extension"]
 k8s-service-account-token-auth-extension = ["otel-arrow-dfe-contrib-extensions/k8s-service-account-token-auth-extension"]
 oauth2-client-auth-extension = ["otel-arrow-dfe-contrib-extensions/oauth2-client-auth-extension"]
 # Contrib receivers (opt-in) - now in contrib-nodes

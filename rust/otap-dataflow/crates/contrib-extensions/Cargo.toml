@@ -45,12 +45,15 @@ secrecy = { workspace = true, optional = true }
 kube = { workspace = true, optional = true }
 k8s-openapi = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }
+base64 = { workspace = true, optional = true }
 
 [features]
 # Umbrella feature enabling all contrib extensions.
-contrib-extensions = ["azure-identity-auth-extension", "k8s-service-account-token-auth-extension", "oauth2-client-auth-extension"]
+contrib-extensions = ["azure-identity-auth-extension", "flat-file-user-pass-auth-extension", "k8s-service-account-token-auth-extension", "oauth2-client-auth-extension"]
 # Azure Identity authentication extension (BearerTokenProvider capability).
 azure-identity-auth-extension = ["dep:azure_core", "dep:azure_identity", "dep:humantime-serde", "dep:rand"]
+# Flat file user pass authentication extension (BasicAuthProvider capability)
+flat-file-user-pass-auth-extension = ["dep:humantime-serde"]
 # Kubernetes service-account-token authorizer extension (BearerTokenAuthorizer
 # capability) validating tokens via the Kubernetes TokenReview API.
 k8s-service-account-token-auth-extension = ["dep:kube", "dep:k8s-openapi", "dep:humantime-serde", "dep:sha2"]
