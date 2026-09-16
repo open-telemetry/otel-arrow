@@ -9,9 +9,6 @@ use crate::pipeline::expr::eval::EvalContext;
 use crate::pipeline::expr::types::MetricDataPointType;
 use crate::pipeline::expr::{ChildRecordKind, RecordScope};
 use crate::pipeline::expr::{DataScope, ScopedExpr, ScopedValue, eval::resolve_attrs_payload_type};
-use crate::pipeline::filter::data_points::{
-    filter_metric_data_points, remove_all_metric_data_points,
-};
 use crate::pipeline::planner::{AttributesIdentifier, RecordType};
 use crate::pipeline::state::ExecutionState;
 
@@ -154,7 +151,10 @@ impl PipelineStage for FilterPipelineStage {
                         // does not exist, in which case the predicate should fail (unless the
                         // planner specifically planned it to pass, in which case null wouldn't
                         // have been returned here).
-                        remove_all_metric_data_points(&mut otap_batch, &metric_data_point_type);
+                        data_points::remove_all_metric_data_points(
+                            &mut otap_batch,
+                            &metric_data_point_type,
+                        );
                     }
                 }
             }
@@ -193,7 +193,10 @@ impl FilterPipelineStage {
                     }
                     ScalarValue::Boolean(_) => {
                         // no rows pass, data points must be removed
-                        remove_all_metric_data_points(otap_batch, metric_data_point_type);
+                        data_points::remove_all_metric_data_points(
+                            otap_batch,
+                            metric_data_point_type,
+                        );
                         Ok(())
                     }
                     _ => Err(Error::ExecutionError {
@@ -229,7 +232,7 @@ impl FilterPipelineStage {
                     })?;
 
                 let mut id_bitmap = self.id_bitmap_pool.acquire();
-                let result = filter_metric_data_points(
+                let result = data_points::filter_metric_data_points(
                     otap_batch,
                     metric_data_point_type,
                     selection_vec,
