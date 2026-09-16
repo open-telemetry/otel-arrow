@@ -145,11 +145,11 @@ const MAX_OPEN_SEGMENT_SIZE_MULTIPLE: u64 = 4;
 struct WriteState {
     /// Current open segment accumulator.
     open_segment: OpenSegment,
-    /// Estimated in-memory size of `open_segment`, refreshed on every append.
+    /// Estimated retained size of `open_segment`, refreshed on every append.
     ///
-    /// Cached because `OpenSegment::estimated_size_bytes` is linear in the
-    /// number of stream accumulators, and the ingest path consults the size
-    /// on every bundle.
+    /// Includes Arrow buffers and manifest entry storage. Cached because
+    /// calculating the Arrow buffer portion is linear in the number of stream
+    /// accumulators, and the ingest path consults the size on every bundle.
     open_segment_bytes: u64,
     /// Cursor representing all entries in the current open segment.
     /// Updated after each WAL append, used to advance WAL after finalization.
@@ -1065,7 +1065,7 @@ impl QuiverEngine {
             let _manifest_entry = segment.append(bundle)?;
 
             // Check if we should finalize based on size threshold
-            let estimated_size = segment.estimated_size_bytes();
+            let estimated_size = segment.estimated_retained_size_bytes();
             let target_size = self.config.segment.target_size_bytes.get() as usize;
             let size_exceeded = estimated_size >= target_size;
 
@@ -2291,10 +2291,13 @@ impl QuiverEngine {
         self.write_state.lock().open_segment.bundle_count()
     }
 
-    /// Returns the estimated in-memory size of the open segment.
+    /// Returns the estimated retained size of the open segment.
     #[cfg(test)]
     pub(crate) fn open_segment_estimated_size_bytes(&self) -> u64 {
-        self.write_state.lock().open_segment.estimated_size_bytes() as u64
+        self.write_state
+            .lock()
+            .open_segment
+            .estimated_retained_size_bytes() as u64
     }
 
     /// Returns the next sequence number that finalization will allocate.
@@ -2571,6 +2574,15 @@ mod tests {
                     "Logs",
                 )]),
                 batch,
+                byte_count: None,
+            }
+        }
+
+        fn without_slots() -> Self {
+            let schema = Arc::new(Schema::empty());
+            Self {
+                descriptor: BundleDescriptor::new(Vec::new()),
+                batch: arrow_array::RecordBatch::new_empty(schema),
                 byte_count: None,
             }
         }
@@ -7164,6 +7176,87 @@ mod tests {
         );
         engine
             .ingest(&DummyBundle::with_rows(50))
+            .await
+            .expect("ingestion resumes once the open segment drains");
+    }
+
+    /// Scenario: Empty-descriptor bundles accumulate while sequence reservation
+    /// repeatedly fails, adding manifest entries but no Arrow payload buffers.
+    /// Guarantees: Manifest storage contributes to finalization and capacity
+    /// thresholds, so ingestion is bounded well below the segment bundle limit
+    /// and resumes after the reservation fault clears.
+    #[tokio::test]
+    async fn empty_bundles_are_bounded_by_open_segment_capacity() {
+        let dir = tempdir().expect("tempdir");
+        let target_size_bytes = NonZeroU64::new(2048).expect("non-zero");
+        let config = QuiverConfig::builder()
+            .data_dir(dir.path())
+            .segment(SegmentConfig {
+                target_size_bytes,
+                ..Default::default()
+            })
+            .durability(DurabilityMode::SegmentOnly)
+            .build()
+            .expect("config");
+        let engine = QuiverEngine::open(config, test_budget())
+            .await
+            .expect("engine");
+
+        let blocker = dir
+            .path()
+            .join("segments")
+            .join(crate::segment_store::SEQ_SIDECAR_FILENAME);
+        fs::create_dir(&blocker).expect("create dir at sidecar path");
+
+        let limit = target_size_bytes.get() * MAX_OPEN_SEGMENT_SIZE_MULTIPLE;
+        let mut rejected_at_capacity = false;
+        for _ in 0..1000 {
+            match engine.ingest(&DummyBundle::without_slots()).await {
+                Err(QuiverError::OpenSegmentAtCapacity { .. }) => {
+                    rejected_at_capacity = true;
+                    break;
+                }
+                Ok(()) | Err(_) => {}
+            }
+        }
+
+        assert!(
+            rejected_at_capacity,
+            "manifest-only accumulation must reach the open segment limit"
+        );
+        assert!(
+            engine.open_segment_bundle_count() < 1000,
+            "capacity must be based on manifest memory, not the much larger \
+             serialized segment bundle limit"
+        );
+        assert!(
+            engine.open_segment_estimated_size_bytes() >= limit,
+            "manifest storage must contribute to the retained-size watermark"
+        );
+
+        let retained_bundles = engine.open_segment_bundle_count();
+        assert!(
+            engine
+                .ingest(&DummyBundle::without_slots())
+                .await
+                .is_err_and(|e| matches!(e, QuiverError::OpenSegmentAtCapacity { .. })),
+            "ingestion must remain rejected while the manifest is at capacity"
+        );
+        assert_eq!(
+            engine.open_segment_bundle_count(),
+            retained_bundles,
+            "a rejected empty bundle must not add another manifest entry"
+        );
+
+        fs::remove_dir(&blocker).expect("clear sidecar path");
+        engine.flush().await.expect("flush after fault clears");
+        assert_eq!(
+            engine.open_segment_bundle_count(),
+            0,
+            "successful finalization must drain retained empty bundles"
+        );
+        engine
+            .ingest(&DummyBundle::without_slots())
             .await
             .expect("ingestion resumes once the open segment drains");
     }

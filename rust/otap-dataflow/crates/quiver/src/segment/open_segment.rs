@@ -21,6 +21,7 @@
 //! [`SegmentWriter::write_segment`]: super::SegmentWriter::write_segment
 
 use std::collections::HashMap;
+use std::mem::size_of;
 use std::time::Instant;
 
 use arrow_schema::SchemaRef;
@@ -116,6 +117,20 @@ impl OpenSegment {
     #[must_use]
     pub fn estimated_size_bytes(&self) -> usize {
         self.streams.values().map(|acc| acc.buffer_size()).sum()
+    }
+
+    /// Returns the estimated retained size of accumulated data and manifest storage.
+    ///
+    /// Unlike [`Self::estimated_size_bytes`], this includes the allocation for
+    /// manifest entries. This matters for bundles with no payload slots, which
+    /// consume manifest memory without adding Arrow buffers.
+    #[must_use]
+    pub fn estimated_retained_size_bytes(&self) -> usize {
+        let manifest_bytes = self
+            .manifest
+            .capacity()
+            .saturating_mul(size_of::<ManifestEntry>());
+        self.estimated_size_bytes().saturating_add(manifest_bytes)
     }
 
     /// Appends a `RecordBundle` to this open segment.
