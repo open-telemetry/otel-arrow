@@ -152,6 +152,52 @@ Check for:
 Complex abstractions are acceptable only when they make behavior more reliable,
 composable, or maintainable.
 
+## Metric Instrumentation
+
+Treat metric names, attributes, boundaries, and recording cardinality as an
+operator-facing contract.
+
+Prefer a single metric with bounded enum attributes over separate instruments
+for each category. For example, use one counter with a closed `signal`,
+`outcome`, or `error.type` dimension instead of parallel counters for each enum
+value. Check that enum values are documented, lowercase unless an upstream
+semantic convention requires otherwise, stable, meaningful under aggregation,
+and small enough that the product of measurement dimensions remains bounded.
+Do not encode identifiers, raw errors, paths, or other unbounded values as
+metric attributes.
+
+Distinguish engine-owned PData metrics from node-owned instrumentation:
+
+```text
+external input -> receiver boundary -> node.output -> ... -> node.input
+node.input -> exporter boundary -> external output
+```
+
+The engine owns `node.input.*`, `node.output.*`, and
+`node.completion.duration`. Flag node code that re-counts the same PData
+messages, items, logical size, outcome, or completion duration. Node-owned
+metrics should instead describe a distinct component behavior, such as bounded
+diagnostics or external receiver and exporter boundaries.
+
+Receiver and exporter implementations should use the shared boundary metric
+contract rather than redefining common message, duration, payload-size, or item
+instruments. Review whether the implementation:
+
+- counts classified external receiver messages independently from emitted PData
+  messages
+- counts node-local exporter attempts independently from input PData messages
+- starts a fresh exporter attempt for each retry or fan-out submission
+- records aggregation as one attempt per external batch, not per contributing
+  PData message
+- documents stable timing, outcome, buffering, and ACK/NACK ownership boundaries
+- avoids doing optional metric work, such as clock reads, payload traversal, or
+  encoding, when the corresponding measurement is disabled
+
+Fan-out, aggregation, retries, generated data, and asynchronous buffering can
+break an assumed 1:1 relationship. Require explicit cardinality and ownership
+when these work shapes are present. Follow the
+[system metrics guide][metrics-guide] for the boundary-cardinality contract.
+
 ## Correctness, Security, and Portability
 
 Review Rust correctness and safety through the lens of the OTAP runtime model:
@@ -231,3 +277,5 @@ An agent reviewer should:
 
 Do not approve a design solely because tests pass. Tests are evidence, not a
 substitute for preserving OTAP architectural invariants.
+
+[metrics-guide]: ../telemetry/metrics-guide.md

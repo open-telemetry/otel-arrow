@@ -40,10 +40,34 @@ Both statements must be specific enough for a reviewer to understand the test's
 intent, and what must not regress, without reading its implementation. Flag new
 tests that omit them or that restate the test name.
 
+## 4. Protect metric instrumentation contracts
+
+Treat metric names, attributes, boundaries, and cardinality as stable
+operator-facing behavior.
+
+Flag separate instruments created for each value of a bounded category when one
+metric with an enum attribute expresses the same behavior. Enum attributes must
+be closed, documented, stable, meaningful under aggregation, and small enough
+to keep total series cardinality bounded.
+
+The engine owns `node.input.*`, `node.output.*`, and
+`node.completion.duration`. Flag node instrumentation that duplicates those
+PData message, item, logical-size, outcome, or completion-duration
+measurements.
+
+Receivers and exporters should use the shared boundary metrics for external
+work instead of redefining common instruments. Do not assume a 1:1 mapping:
+receiver metrics count classified external messages, while exporter metrics
+count node-local attempts. Review fan-out, aggregation, retries, generated
+data, and asynchronous buffering for explicit cardinality, timing, outcome,
+and ACK/NACK ownership. Consult the [system metrics guide][metrics-guide] for
+the boundary-cardinality contract.
+
 ## Out of scope for review comments
 
 Do not comment on non-ASCII characters in Rust source, or on missing changelog
 entries. Continuous integration already enforces both and fails the build, so
 review comments about them add noise without adding signal.
 
+[metrics-guide]: ../../rust/otap-dataflow/docs/telemetry/metrics-guide.md
 [review-guide]: ../../rust/otap-dataflow/docs/ai/ai-assisted-pr-review.md

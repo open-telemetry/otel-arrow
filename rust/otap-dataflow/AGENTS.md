@@ -99,6 +99,21 @@ exist for that component family, such as `.pdata` for pdata-specific metrics or
 existing `otap.*` component families. Do not introduce reversed or redundant
 names such as `journald.receiver.metrics`.
 
+## Metric instrumentation
+
+When adding or changing metrics, follow the
+[system metrics guide](docs/telemetry/metrics-guide.md) and
+[item attribute guide](docs/telemetry/item-attributes.md).
+
+- Model bounded categories such as signal, outcome, or error type as enum
+  attributes on one metric instead of creating an instrument per value.
+- Do not duplicate engine-owned `node.input.*`, `node.output.*`, or
+  `node.completion.duration` measurements in node code.
+- Use the shared receiver and exporter boundary metrics for external work.
+  Define cardinality, timing, outcome, buffering, and ACK/NACK ownership
+  explicitly when fan-out, aggregation, retries, generated data, asynchronous
+  buffering, or another non-1:1 work shape is present.
+
 ## After every Rust code change
 
 After modifying any Rust file, run a quick compile check on the affected crate:
