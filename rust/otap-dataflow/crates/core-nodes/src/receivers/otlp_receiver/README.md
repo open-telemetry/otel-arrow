@@ -61,6 +61,13 @@ extensions:
       audiences:
         - audience: "otlp-collector"
 
+policies:
+  authorized_identity:
+    - claim: sub
+      store_as: customer_id
+    - claim: groups
+      store_as: access_groups
+
 nodes:
   otlp_in:
     type: receiver:otlp
@@ -77,7 +84,26 @@ request payload. Authentication failures return `UNAUTHENTICATED`/HTTP 401 and
 policy denials return `PERMISSION_DENIED`/HTTP 403. An authorizer that cannot
 reach a decision fails closed with `UNAVAILABLE`/HTTP 503.
 
-Receivers with no `bearer_token_authorizer` binding accept traffic unchanged.
+Receivers with no `bearer_token_authorizer` binding accept traffic unchanged
+and produce no authorized identity entries. Only this OTLP receiver's HTTP and
+gRPC protocols currently honor `policies.authorized_identity`, and capture
+requires a bound `bearer_token_authorizer`.
+
+The policy can be configured at top-level, group, or pipeline scope. The
+nearest configured scope replaces the complete broader identity policy; entries
+are not merged across scopes. An empty list at a narrower scope disables
+inherited identity capture.
+
+Each listed verified claim is copied into pdata context under its `store_as`
+name. The `sub` claim is the authorized subject. Single- and multi-valued
+claims remain distinct, and an absent claim is omitted without rejecting the
+request. Configuring this policy on an unsupported receiver, or without an
+authorizer, captures nothing.
+
+Authorization-derived context entries are strongly typed and separate from
+transport headers. This policy only captures entries for downstream use; it
+does not propagate them as outbound headers or add routing, predicates,
+composites, required-entry enforcement, or generic context consumers.
 
 Common gRPC protocol fields include:
 

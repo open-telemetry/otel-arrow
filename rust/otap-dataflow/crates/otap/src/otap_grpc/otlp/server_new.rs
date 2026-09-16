@@ -463,6 +463,11 @@ impl UnaryService<OtapPdata> for OtapBatchService {
                 otap_batch.set_transport_headers(transport_headers);
             }
         }
+        if let Some(policy) = effect_handler.authorized_identity_policy()
+            && let Some(identity) = extensions.get::<AuthorizedIdentity>()
+        {
+            otap_batch.capture_authorized_identity(policy, identity);
+        }
 
         let state = self.state.clone();
         let metrics = self.metrics.clone();
@@ -580,6 +585,7 @@ pub struct AuthorizationLayer {
     authorizer: Arc<dyn BearerTokenAuthorizer>,
     metrics: Arc<Mutex<OtlpReceiverMetrics>>,
     timeout: std::time::Duration,
+    forward_authorized_identity: bool,
 }
 
 impl AuthorizationLayer {
@@ -589,11 +595,13 @@ impl AuthorizationLayer {
         authorizer: Arc<dyn BearerTokenAuthorizer>,
         metrics: Arc<Mutex<OtlpReceiverMetrics>>,
         timeout: std::time::Duration,
+        forward_authorized_identity: bool,
     ) -> Self {
         Self {
             authorizer,
             metrics,
             timeout,
+            forward_authorized_identity,
         }
     }
 }
@@ -607,6 +615,7 @@ impl<S> Layer<S> for AuthorizationLayer {
             authorizer: self.authorizer.clone(),
             metrics: self.metrics.clone(),
             timeout: self.timeout,
+            forward_authorized_identity: self.forward_authorized_identity,
         }
     }
 }
@@ -618,6 +627,7 @@ pub struct AuthorizationService<S> {
     authorizer: Arc<dyn BearerTokenAuthorizer>,
     metrics: Arc<Mutex<OtlpReceiverMetrics>>,
     timeout: std::time::Duration,
+    forward_authorized_identity: bool,
 }
 
 impl<S> Service<Request<Body>> for AuthorizationService<S>
@@ -636,15 +646,16 @@ where
         self.inner.poll_ready(cx)
     }
 
-    fn call(&mut self, req: Request<Body>) -> Self::Future {
+    fn call(&mut self, mut req: Request<Body>) -> Self::Future {
         let clone = self.inner.clone();
         let mut inner = mem::replace(&mut self.inner, clone);
         let authorizer = self.authorizer.clone();
         let metrics = self.metrics.clone();
         let timeout = self.timeout;
+        let forward_authorized_identity = self.forward_authorized_identity;
 
         Box::pin(async move {
-            let _authorized_identity = match authorize_request(
+            let authorized_identity = match authorize_request(
                 authorizer.as_ref(),
                 &metrics,
                 req.headers(),
@@ -655,6 +666,9 @@ where
                 Ok(identity) => identity,
                 Err(rejection) => return Ok(authorization_status(rejection).into_http()),
             };
+            if forward_authorized_identity {
+                _ = req.extensions_mut().insert(authorized_identity);
+            }
             inner.call(req).await
         })
     }
@@ -922,7 +936,9 @@ mod tests {
             credential: &BearerToken,
         ) -> Result<AuthzDecision, CapabilityError> {
             Ok(match credential.expose_token() {
-                "allowed" => AuthzDecision::allow_anonymous(),
+                "allowed" => {
+                    AuthzDecision::allow(AuthorizedIdentity::new().with_subject("test-subject"))
+                }
                 "invalid" => AuthzDecision::deny(DenyReason::InvalidCredential),
                 _ => AuthzDecision::deny(DenyReason::NotPermitted),
             })
@@ -955,6 +971,33 @@ mod tests {
             _credential: &BearerToken,
         ) -> Result<AuthzDecision, CapabilityError> {
             std::future::pending().await
+        }
+    }
+
+    #[derive(Clone)]
+    struct IdentityObservingService {
+        subject: Arc<Mutex<Option<String>>>,
+    }
+
+    impl Service<Request<Body>> for IdentityObservingService {
+        type Response = Response<Body>;
+        type Error = Infallible;
+        type Future = std::future::Ready<Result<Self::Response, Self::Error>>;
+
+        fn poll_ready(
+            &mut self,
+            _cx: &mut std::task::Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn call(&mut self, request: Request<Body>) -> Self::Future {
+            *self.subject.lock() = request
+                .extensions()
+                .get::<AuthorizedIdentity>()
+                .and_then(AuthorizedIdentity::subject)
+                .map(str::to_owned);
+            std::future::ready(Ok(Response::new(Body::default())))
         }
     }
 
@@ -1009,11 +1052,11 @@ mod tests {
             http::header::AUTHORIZATION,
             http::HeaderValue::from_static("Bearer allowed"),
         );
-        assert!(
-            authorize_request(&authorizer, &metrics, &headers, TEST_AUTHORIZATION_TIMEOUT,)
+        let identity =
+            authorize_request(&authorizer, &metrics, &headers, TEST_AUTHORIZATION_TIMEOUT)
                 .await
-                .is_ok()
-        );
+                .expect("allowed credential must be admitted");
+        assert_eq!(identity.subject(), Some("test-subject"));
 
         _ = headers.insert(
             http::header::AUTHORIZATION,
@@ -1059,6 +1102,64 @@ mod tests {
                 .get(),
             1
         );
+    }
+
+    /// Scenario: the gRPC authorization layer admits a request with a verified
+    /// subject.
+    /// Guarantees: the verified subject reaches the inner OTLP service through
+    /// request extensions for pdata context capture.
+    #[tokio::test]
+    async fn authorization_layer_forwards_identity_to_otlp_service() {
+        let observed_subject = Arc::new(Mutex::new(None));
+        let inner = IdentityObservingService {
+            subject: observed_subject.clone(),
+        };
+        let mut service = AuthorizationLayer::new(
+            Arc::new(TestAuthorizer),
+            new_test_metrics(),
+            TEST_AUTHORIZATION_TIMEOUT,
+            true,
+        )
+        .layer(inner);
+        let authorization = ["Bearer", "allowed"].join(" ");
+        let request = Request::builder()
+            .header(http::header::AUTHORIZATION, authorization)
+            .body(Body::default())
+            .expect("valid request");
+
+        let response = service.call(request).await.expect("infallible service");
+
+        assert_eq!(response.status(), http::StatusCode::OK);
+        assert_eq!(observed_subject.lock().as_deref(), Some("test-subject"));
+    }
+
+    /// Scenario: the gRPC authorization layer admits a request while identity
+    /// context capture is disabled.
+    /// Guarantees: authorization still succeeds without inserting the verified
+    /// identity into request extensions.
+    #[tokio::test]
+    async fn authorization_layer_skips_identity_handoff_when_capture_is_disabled() {
+        let observed_subject = Arc::new(Mutex::new(None));
+        let inner = IdentityObservingService {
+            subject: observed_subject.clone(),
+        };
+        let mut service = AuthorizationLayer::new(
+            Arc::new(TestAuthorizer),
+            new_test_metrics(),
+            TEST_AUTHORIZATION_TIMEOUT,
+            false,
+        )
+        .layer(inner);
+        let authorization = ["Bearer", "allowed"].join(" ");
+        let request = Request::builder()
+            .header(http::header::AUTHORIZATION, authorization)
+            .body(Body::default())
+            .expect("valid request");
+
+        let response = service.call(request).await.expect("infallible service");
+
+        assert_eq!(response.status(), http::StatusCode::OK);
+        assert_eq!(observed_subject.lock().as_deref(), None);
     }
 
     /// Scenario: gRPC authorization is attempted while the authorizer cannot
