@@ -984,12 +984,17 @@ impl QuiverEngine {
             .target_size_bytes
             .get()
             .saturating_mul(MAX_OPEN_SEGMENT_SIZE_MULTIPLE);
-        let accumulated_bytes = self.write_state.lock().open_segment_bytes;
+        let mut accumulated_bytes = self.write_state.lock().open_segment_bytes;
         if accumulated_bytes >= open_segment_limit {
-            return Err(QuiverError::OpenSegmentAtCapacity {
-                accumulated_bytes,
-                limit: open_segment_limit,
-            });
+            let finalize_result = self.finalize_segment_impl().await;
+            accumulated_bytes = self.write_state.lock().open_segment_bytes;
+            if accumulated_bytes >= open_segment_limit {
+                return Err(QuiverError::OpenSegmentAtCapacity {
+                    accumulated_bytes,
+                    limit: open_segment_limit,
+                });
+            }
+            finalize_result?;
         }
 
         // Step 0: Check budget watermark before doing any work.
@@ -7249,18 +7254,18 @@ mod tests {
             "a rejected ingest must not accumulate more data"
         );
 
-        // The retained bundles are not lost: once finalization works again
-        // they are written and delivered, and ingestion resumes.
+        // The retained bundles are not lost: once finalization works again,
+        // retrying ingest writes and delivers them without requiring a
+        // separate flush call.
         fs::remove_dir(&blocker).expect("clear sidecar path");
-        engine.flush().await.expect("flush after the fault clears");
-        assert!(
-            engine.poll_next_bundle(&sub_id).expect("poll").is_some(),
-            "retained bundles must be delivered once finalization recovers"
-        );
         engine
             .ingest(&DummyBundle::with_rows(50))
             .await
-            .expect("ingestion resumes once the open segment drains");
+            .expect("retry ingest after the fault clears");
+        assert!(
+            engine.poll_next_bundle(&sub_id).expect("poll").is_some(),
+            "retrying ingest must finalize and deliver retained bundles"
+        );
     }
 
     /// Scenario: Empty-descriptor bundles accumulate while sequence reservation
