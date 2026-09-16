@@ -462,9 +462,9 @@ append work. It excludes batch buffering and pipeline handoff.
 
 | Metric | Unit | Description |
 | --- | --- | --- |
-| `receiver.received.messages` | `{message}` | Number of classified external messages, grouped by `signal=logs` and terminal `outcome`. |
-| `receiver.received.payload.size` | `By` | Optional encoded application payload bytes visible before parsing, grouped by `signal=logs` and terminal `outcome`. |
-| `receiver.processing.duration` | `s` | Optional active receiver-local processing duration per external message, grouped by `signal=logs`. |
+| `receiver.received.messages` | `{message}` | Number of classified external messages, grouped by fixed entity attribute `protocol` set to `tcp` or `udp`, `signal=logs`, and terminal `outcome`. |
+| `receiver.received.payload.size` | `By` | Optional encoded application payload bytes visible before parsing, grouped by fixed entity attribute `protocol` set to `tcp` or `udp`, `signal=logs`, and terminal `outcome`. |
+| `receiver.processing.duration` | `s` | Optional active receiver-local processing duration per external message, grouped by fixed entity attribute `protocol` set to `tcp` or `udp` and `signal=logs`. |
 
 `outcome=success` means receiver-local admission, parsing, and record append
 completed. `outcome=refused` means local validation or admission rejected the

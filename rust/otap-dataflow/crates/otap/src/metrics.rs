@@ -24,6 +24,7 @@ use otel_arrow_dfe_telemetry::instrument::{Counter, HistogramNormal};
 use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSetSnapshot};
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use otel_arrow_dfe_telemetry_macros::metric_set;
+use std::borrow::Cow;
 use std::ops::AsyncFnOnce;
 use std::time::{Duration, Instant};
 
@@ -149,6 +150,20 @@ impl ReceiverMetrics {
             received: ReceiverReceivedMetrics::register(pipeline_ctx),
             payload: ReceiverReceivedPayloadMetrics::register(pipeline_ctx),
             processing: ReceiverProcessingMetrics::register(pipeline_ctx),
+            interests: pipeline_ctx.node_interests(),
+        }
+    }
+
+    /// Registers the shared receiver metric sets with a fixed protocol entity attribute.
+    #[must_use]
+    pub fn register_with_protocol(
+        pipeline_ctx: &PipelineContext,
+        protocol: Cow<'static, str>,
+    ) -> Self {
+        Self {
+            received: pipeline_ctx.register_measurement_metrics_with_protocol(protocol.clone()),
+            payload: pipeline_ctx.register_measurement_metrics_with_protocol(protocol.clone()),
+            processing: pipeline_ctx.register_measurement_metrics_with_protocol(protocol),
             interests: pipeline_ctx.node_interests(),
         }
     }

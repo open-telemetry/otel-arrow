@@ -110,6 +110,15 @@ enum Protocol {
     Udp(UdpConfig),
 }
 
+impl Protocol {
+    const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Tcp(_) => "tcp",
+            Self::Udp(_) => "udp",
+        }
+    }
+}
+
 /// Optional batching configuration for the syslog CEF receiver.
 ///
 /// Controls how incoming log records are accumulated into Arrow batches
@@ -229,7 +238,10 @@ struct SyslogCefReceiver {
 impl SyslogCefReceiver {
     /// Construct with pipeline context registering metrics
     fn with_pipeline(pipeline: PipelineContext, config: Config) -> Self {
-        let metrics = Rc::new(RefCell::new(SyslogCefReceiverMetrics::register(&pipeline)));
+        let metrics = Rc::new(RefCell::new(SyslogCefReceiverMetrics::register(
+            &pipeline,
+            config.protocol.as_str(),
+        )));
         SyslogCefReceiver {
             config,
             metrics,
@@ -1077,12 +1089,12 @@ pub struct SyslogCefReceiverMetrics {
 impl SyslogCefReceiverMetrics {
     /// Registers all syslog cef receiver metric sets for a pipeline node.
     #[must_use]
-    pub fn register(pipeline_ctx: &PipelineContext) -> Self {
+    pub fn register(pipeline_ctx: &PipelineContext, protocol: &'static str) -> Self {
         let signal_attrs = SignalRegistrationAttributes {
             signal: SignalType::Logs,
         };
         Self {
-            received: ReceiverMetrics::register(pipeline_ctx),
+            received: ReceiverMetrics::register_with_protocol(pipeline_ctx, protocol.into()),
             rejections: SyslogCefRejectionMetrics::register(pipeline_ctx, &signal_attrs),
             transport: SyslogCefTransportMetrics::register(pipeline_ctx),
             truncations: SyslogCefTruncationMetrics::register(pipeline_ctx, &signal_attrs),
@@ -1220,6 +1232,7 @@ mod tests {
                 config,
                 metrics: Rc::new(RefCell::new(SyslogCefReceiverMetrics::register(
                     &pipeline_ctx,
+                    "tcp",
                 ))),
                 admission_state: LocalReceiverAdmissionState::from_process_state(
                     &otel_arrow_dfe_engine::memory_limiter::MemoryPressureState::default(),
@@ -2320,6 +2333,46 @@ mod telemetry_tests {
 
     fn test_pipeline_context() -> PipelineContext {
         test_pipeline_ctx_with_interests(Interests::NODE_OUTPUT_METRICS).0
+    }
+
+    fn registered_shared_metric_protocol(config: Config) -> (Vec<String>, bool) {
+        let (pipeline, registry) = test_pipeline_ctx_with_interests(Interests::NODE_OUTPUT_METRICS);
+        let _receiver = SyslogCefReceiver::with_pipeline(pipeline, config);
+        let mut entities = Vec::new();
+        let mut protocol_is_measurement_attribute = false;
+        registry.visit_current_metrics_with_item_attrs(
+            |descriptor, entity, item_attributes, _| {
+                if descriptor.name == "receiver.received"
+                    || descriptor.name == "receiver.processing"
+                {
+                    entities.push(entity.attributes_to_string());
+                    protocol_is_measurement_attribute |=
+                        item_attributes.iter().any(|(key, _)| *key == "protocol");
+                }
+            },
+            true,
+        );
+        (entities, protocol_is_measurement_attribute)
+    }
+
+    /// Scenario: TCP and UDP Syslog receivers register shared receiver metrics.
+    /// Guarantees: every shared metric set carries the configured protocol as a fixed entity
+    /// attribute instead of adding protocol to per-message measurement attributes.
+    #[test]
+    fn shared_metrics_register_configured_protocol_entity_attribute() {
+        let (tcp, tcp_protocol_is_measurement_attribute) = registered_shared_metric_protocol(
+            Config::new_tcp("127.0.0.1:0".parse().expect("valid TCP address")),
+        );
+        assert!(!tcp.is_empty());
+        assert!(tcp.iter().all(|entity| entity.contains("protocol=tcp")));
+        assert!(!tcp_protocol_is_measurement_attribute);
+
+        let (udp, udp_protocol_is_measurement_attribute) = registered_shared_metric_protocol(
+            Config::new_udp("127.0.0.1:0".parse().expect("valid UDP address")),
+        );
+        assert!(!udp.is_empty());
+        assert!(udp.iter().all(|entity| entity.contains("protocol=udp")));
+        assert!(!udp_protocol_is_measurement_attribute);
     }
 
     fn received_count(
@@ -3453,7 +3506,7 @@ mod telemetry_tests {
     #[test]
     fn terminal_snapshots_preserve_enum_attribute_values_once() {
         let pipeline_ctx = test_pipeline_context();
-        let mut metrics = SyslogCefReceiverMetrics::register(&pipeline_ctx);
+        let mut metrics = SyslogCefReceiverMetrics::register(&pipeline_ctx, "tcp");
 
         let completed = metrics.received.processing().run(|processing| {
             processing.set_payload_size_with(|| 64);

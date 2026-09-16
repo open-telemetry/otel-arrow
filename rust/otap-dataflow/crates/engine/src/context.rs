@@ -9,7 +9,8 @@ use crate::attributes::{
     EngineAttributeSet, EngineEntityAttributeSet, ExtensionAttributeSet,
     ExtensionChannelAttributeSet, ExtensionScopeAttributeSet, NodeAttributeSet,
     NodeChannelAttributeSet, NodeWithCustomAttributeSet, NodeWithCustomChannelAttributeSet,
-    NodeWithCustomTopicAttributeSet, NodeWithTopicAttributeSet, PipelineAttributeSet,
+    NodeWithCustomProtocolAttributeSet, NodeWithCustomTopicAttributeSet,
+    NodeWithProtocolAttributeSet, NodeWithTopicAttributeSet, PipelineAttributeSet,
     config_map_to_telemetry,
 };
 use crate::context_declaration::CompiledContextBindings;
@@ -630,6 +631,46 @@ impl PipelineContext {
     ) -> MeasurementMetricSet<T> {
         let entity_key = self.register_topic_entity(topic);
 
+        let metrics = self
+            .controller_context
+            .telemetry_registry_handle
+            .register_metric_set_with_measurement_attributes_for_entity::<T>(entity_key);
+
+        if let Some(telemetry) = current_node_telemetry_handle() {
+            telemetry.track_metric_set(metrics.metric_set_key());
+            telemetry.track_entity(entity_key);
+        }
+
+        metrics
+    }
+
+    fn register_protocol_entity(&self, protocol: Cow<'static, str>) -> EntityKey {
+        if self.node_telemetry_attrs.is_empty() {
+            self.controller_context
+                .telemetry_registry_handle
+                .register_entity(NodeWithProtocolAttributeSet {
+                    node_attrs: self.node_attribute_set(),
+                    protocol,
+                })
+        } else {
+            self.controller_context
+                .telemetry_registry_handle
+                .register_entity(NodeWithCustomProtocolAttributeSet {
+                    node_custom_attrs: self.node_with_custom_attribute_set(),
+                    protocol,
+                })
+        }
+    }
+
+    /// Registers a measurement metric set for the current node entity, scoped by a fixed `protocol` attribute.
+    #[must_use]
+    pub fn register_measurement_metrics_with_protocol<
+        T: MeasurementMetricSetHandler + Debug + Send + Sync,
+    >(
+        &self,
+        protocol: Cow<'static, str>,
+    ) -> MeasurementMetricSet<T> {
+        let entity_key = self.register_protocol_entity(protocol);
         let metrics = self
             .controller_context
             .telemetry_registry_handle
@@ -1420,5 +1461,46 @@ mod tests {
             rendered.contains("topic=test-topic") && rendered.contains("node.id=test-node"),
             "base topic attributes must be preserved: {rendered}"
         );
+    }
+
+    /// Scenario: a node registers measurement metrics with a fixed protocol dimension.
+    /// Guarantees: the protocol entity preserves node and custom identity attributes while
+    /// omitting an empty custom attribute for nodes without configured identity extensions.
+    #[test]
+    fn register_measurement_metrics_with_protocol_preserves_node_identity() {
+        use crate::flow_metrics::FlowInputMessageMetrics;
+
+        let registry = TelemetryRegistryHandle::new();
+        let ctx = pipeline_ctx_with_custom_attrs(registry.clone(), HashMap::new());
+        let metrics = ctx.register_measurement_metrics_with_protocol::<FlowInputMessageMetrics>(
+            Cow::Borrowed("tcp"),
+        );
+        let (schema, rendered) = registry
+            .visit_entity(metrics.entity_key(), |attrs| {
+                (attrs.schema_name(), attrs.attributes_to_string())
+            })
+            .expect("protocol entity registered without custom attrs");
+        assert_eq!(schema, "node.protocol.attrs");
+        assert!(rendered.contains("protocol=tcp") && rendered.contains("node.id=test-node"));
+        assert!(!rendered.contains("custom="));
+
+        let registry = TelemetryRegistryHandle::new();
+        let mut custom = HashMap::new();
+        let _ = custom.insert(
+            "custom.identity.foo".to_string(),
+            TelemetryAttribute::new(AttributeValue::String("bar".to_string())),
+        );
+        let ctx = pipeline_ctx_with_custom_attrs(registry.clone(), custom);
+        let metrics = ctx.register_measurement_metrics_with_protocol::<FlowInputMessageMetrics>(
+            Cow::Borrowed("udp"),
+        );
+        let (schema, rendered) = registry
+            .visit_entity(metrics.entity_key(), |attrs| {
+                (attrs.schema_name(), attrs.attributes_to_string())
+            })
+            .expect("protocol entity registered with custom attrs");
+        assert_eq!(schema, "node.custom.protocol.attrs");
+        assert!(rendered.contains("protocol=udp") && rendered.contains("node.id=test-node"));
+        assert!(rendered.contains("custom={custom.identity.foo=bar}"));
     }
 }

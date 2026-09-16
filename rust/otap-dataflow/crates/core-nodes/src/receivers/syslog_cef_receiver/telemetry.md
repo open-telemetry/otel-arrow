@@ -14,9 +14,9 @@ diagnostics.
 
 | Metric name | Type | Unit | Description | Produced in file |
 | --- | --- | --- | --- | --- |
-| `receiver.received.messages` | Counter | `{message}` | Classified external messages grouped by `signal=logs` and node-local terminal `outcome`; batching and downstream handoff do not change it. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
-| `receiver.received.payload.size` | Counter | `By` | Optional encoded payload bytes visible before parsing, excluding the TCP newline delimiter, grouped by node-local terminal `outcome`. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
-| `receiver.processing.duration` | Histogram | `s` | Optional active admission, parsing, and record append time, excluding batch buffering and pipeline handoff. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
+| `receiver.received.messages` | Counter | `{message}` | Classified external messages grouped by fixed entity attribute `protocol` set to `tcp` or `udp`, `signal=logs`, and node-local terminal `outcome`; batching and downstream handoff do not change it. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
+| `receiver.received.payload.size` | Counter | `By` | Optional encoded payload bytes visible before parsing, excluding the TCP newline delimiter, grouped by fixed entity attribute `protocol` set to `tcp` or `udp` and node-local terminal `outcome`. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
+| `receiver.processing.duration` | Histogram | `s` | Optional active admission, parsing, and record append time, grouped by fixed entity attribute `protocol` set to `tcp` or `udp` and excluding batch buffering and pipeline handoff. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
 | `receiver.syslog_cef.rejections.items` | Counter | `{item}` | Rejected messages grouped by bounded `protocol` and `error.type`. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
 | `receiver.syslog_cef.truncations.items` | Counter | `{item}` | Payloads that reached the fixed `MAX_MESSAGE_SIZE` receive limit. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
 | `receiver.syslog_cef.transport.errors` | Counter | `{error}` | Transport-level errors grouped by `protocol`. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
