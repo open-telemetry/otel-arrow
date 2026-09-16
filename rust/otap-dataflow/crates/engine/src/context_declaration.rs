@@ -14,7 +14,8 @@
 //! - `ConfigNodeContextDeclaration`: typed component configs that derive and validate declarations.
 //! - `NodeContextDeclarations`: a sorted, deduplicated declaration set for one node.
 //! - `CompiledContextBindings`: compiled node bindings for every pipeline in a configuration.
-//! - `CompiledNodeBindings`: component declarations and transport-header behavior for one node.
+//! - `CompiledNodeBindings`: component declarations, transport-header behavior, and authorized
+//!   identity capture for one node.
 //! - `ContextDeclarationsByPipeline`: declarations indexed by pipeline and node.
 //! - `ContextRuntimeRequirements`: immutable engine-lifetime requirements for binding preparation.
 //! - `OriginalNameRetention`: the default and per-name original-header retention disposition.
@@ -23,6 +24,7 @@
 
 use crate::PipelineFactory;
 use crate::error::Error as EngineError;
+use otel_arrow_dfe_config::authorized_identity_policy::AuthorizedIdentityPolicy;
 use otel_arrow_dfe_config::engine::ResolvedOtelDataflowSpec;
 use otel_arrow_dfe_config::error::Error;
 use otel_arrow_dfe_config::node::{NodeKind, NodeUserConfig};
@@ -89,6 +91,11 @@ pub enum ContextDeclaration {
         /// Resolved propagation policy.
         policy: HeaderPropagationPolicy,
     },
+    /// Declares the receiver's authorized identity claim projection policy.
+    AuthorizedIdentityCapture {
+        /// Resolved authorized identity policy.
+        policy: AuthorizedIdentityPolicy,
+    },
 }
 
 impl ContextDeclaration {
@@ -115,7 +122,8 @@ impl ContextDeclaration {
                 selector: ContextConsumerSelector::AllStored,
             }
             | Self::Produces { .. }
-            | Self::HeaderCapture { .. } => {}
+            | Self::HeaderCapture { .. }
+            | Self::AuthorizedIdentityCapture { .. } => {}
             Self::HeaderPropagation { policy } => {
                 requirements
                     .original_name_retention
@@ -259,6 +267,8 @@ struct CompiledNodeBindings {
     header_capture: Option<CompiledHeaderCapturePolicy>,
     /// Exporter header propagation policy resolved from node or pipeline config.
     header_propagation: Option<HeaderPropagationPolicy>,
+    /// Receiver authorized identity claim projection policy.
+    authorized_identity_capture: Option<AuthorizedIdentityPolicy>,
 }
 
 /// Declarations indexed by pipeline and node identifiers.
@@ -395,6 +405,7 @@ impl CompiledNodeBindings {
         let mut component_declarations = Vec::new();
         let mut header_capture = None;
         let mut header_propagation = None;
+        let mut authorized_identity_capture = None;
         for declaration in declarations {
             match declaration {
                 declaration @ (ContextDeclaration::Produces { .. }
@@ -408,6 +419,9 @@ impl CompiledNodeBindings {
                 ContextDeclaration::HeaderPropagation { policy } => {
                     header_propagation = Some(policy);
                 }
+                ContextDeclaration::AuthorizedIdentityCapture { policy } => {
+                    authorized_identity_capture = Some(policy);
+                }
             }
         }
 
@@ -415,6 +429,7 @@ impl CompiledNodeBindings {
             component_declarations: component_declarations.into_iter().collect(),
             header_capture,
             header_propagation,
+            authorized_identity_capture,
         }
     }
 
@@ -422,6 +437,7 @@ impl CompiledNodeBindings {
         self.component_declarations.is_empty()
             && self.header_capture.is_none()
             && self.header_propagation.is_none()
+            && self.authorized_identity_capture.is_none()
     }
 }
 
@@ -480,6 +496,19 @@ impl CompiledContextBindings {
             .get(pipeline)?
             .get(node)?
             .header_propagation
+            .as_ref()
+    }
+
+    /// Returns the node's authorized identity claim projection policy.
+    pub(crate) fn authorized_identity_policy(
+        &self,
+        pipeline: &PipelineKey,
+        node: &ConfigNodeId,
+    ) -> Option<&AuthorizedIdentityPolicy> {
+        self.by_pipeline
+            .get(pipeline)?
+            .get(node)?
+            .authorized_identity_capture
             .as_ref()
     }
 
@@ -588,13 +617,14 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
                     node_config.r#type.as_ref(),
                     &node_config.config,
                 )?;
-                let wrapper_declaration = Self::wrapper_context_declaration(
+                let wrapper_declarations = Self::wrapper_context_declarations(
                     node_config,
                     &pipeline.policies.transport_headers,
+                    &pipeline.policies.authorized_identity,
                 );
                 let declarations = component_declarations
                     .into_iter()
-                    .chain(wrapper_declaration)
+                    .chain(wrapper_declarations)
                     .collect();
                 let _ = declarations_by_node.insert(node_id.clone(), declarations);
             }
@@ -604,10 +634,11 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
         Ok(declarations)
     }
 
-    fn wrapper_context_declaration(
+    fn wrapper_context_declarations(
         node: &NodeUserConfig,
         pipeline_policy: &Option<TransportHeadersPolicy>,
-    ) -> Option<ContextDeclaration> {
+        authorized_identity: &Option<AuthorizedIdentityPolicy>,
+    ) -> NodeContextDeclarations {
         match node.kind() {
             NodeKind::Receiver => node
                 .header_capture
@@ -618,7 +649,16 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
                         .map(|policy| &policy.header_capture)
                 })
                 .cloned()
-                .map(|policy| ContextDeclaration::HeaderCapture { policy }),
+                .map(|policy| ContextDeclaration::HeaderCapture { policy })
+                .into_iter()
+                .chain(
+                    authorized_identity
+                        .as_ref()
+                        .filter(|policy| !policy.is_empty())
+                        .cloned()
+                        .map(|policy| ContextDeclaration::AuthorizedIdentityCapture { policy }),
+                )
+                .collect(),
             NodeKind::Exporter => node
                 .header_propagation
                 .as_ref()
@@ -628,8 +668,10 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
                         .map(|policy| &policy.header_propagation)
                 })
                 .cloned()
-                .map(|policy| ContextDeclaration::HeaderPropagation { policy }),
-            NodeKind::Processor => None,
+                .map(|policy| ContextDeclaration::HeaderPropagation { policy })
+                .into_iter()
+                .collect(),
+            NodeKind::Processor => NodeContextDeclarations::default(),
         }
     }
 
@@ -987,10 +1029,14 @@ mod tests {
         );
     }
 
-    /// Scenario: node and pipeline header policies are configured.
-    /// Guarantees: node policies take precedence. Pipeline policies provide the fallback.
+    /// Scenario: node and pipeline header policies and an identity policy are configured.
+    /// Guarantees: node header policies take precedence, pipeline headers provide the fallback,
+    /// and authorized identity capture is declared only for receivers.
     #[test]
     fn wrapper_declarations_resolve_policy_precedence() {
+        let identity_policy: AuthorizedIdentityPolicy =
+            serde_json::from_value(serde_json::json!([{"claim": "sub", "store_as": "tenant"}]))
+                .expect("valid authorized identity policy");
         let node_capture = HeaderCapturePolicy::new(
             CaptureDefaults::default(),
             vec![CaptureRule {
@@ -1016,49 +1062,137 @@ mod tests {
         receiver.header_capture = Some(node_capture.clone());
 
         assert_eq!(
-            PipelineFactory::<()>::wrapper_context_declaration(
+            PipelineFactory::<()>::wrapper_context_declarations(
                 &receiver,
                 &Some(pipeline_policy.clone()),
+                &Some(identity_policy.clone()),
             ),
-            Some(ContextDeclaration::HeaderCapture {
-                policy: node_capture,
-            }),
+            [
+                ContextDeclaration::HeaderCapture {
+                    policy: node_capture,
+                },
+                ContextDeclaration::AuthorizedIdentityCapture {
+                    policy: identity_policy.clone(),
+                },
+            ]
+            .into_iter()
+            .collect(),
         );
 
         let receiver = NodeUserConfig::new_receiver_config("urn:test:receiver:example");
         assert_eq!(
-            PipelineFactory::<()>::wrapper_context_declaration(
+            PipelineFactory::<()>::wrapper_context_declarations(
                 &receiver,
                 &Some(pipeline_policy.clone()),
+                &Some(identity_policy.clone()),
             ),
-            Some(ContextDeclaration::HeaderCapture {
-                policy: pipeline_policy.header_capture.clone(),
-            }),
+            [
+                ContextDeclaration::HeaderCapture {
+                    policy: pipeline_policy.header_capture.clone(),
+                },
+                ContextDeclaration::AuthorizedIdentityCapture {
+                    policy: identity_policy.clone(),
+                },
+            ]
+            .into_iter()
+            .collect(),
         );
 
         let mut exporter = NodeUserConfig::new_exporter_config("urn:test:exporter:example");
         let node_propagation = HeaderPropagationPolicy::default();
         exporter.header_propagation = Some(node_propagation.clone());
         assert_eq!(
-            PipelineFactory::<()>::wrapper_context_declaration(
+            PipelineFactory::<()>::wrapper_context_declarations(
                 &exporter,
                 &Some(pipeline_policy.clone()),
+                &Some(identity_policy.clone()),
             ),
-            Some(ContextDeclaration::HeaderPropagation {
+            [ContextDeclaration::HeaderPropagation {
                 policy: node_propagation,
-            }),
+            }]
+            .into_iter()
+            .collect(),
         );
 
         let exporter = NodeUserConfig::new_exporter_config("urn:test:exporter:example");
         assert_eq!(
-            PipelineFactory::<()>::wrapper_context_declaration(
+            PipelineFactory::<()>::wrapper_context_declarations(
                 &exporter,
                 &Some(pipeline_policy.clone()),
+                &Some(identity_policy),
             ),
-            Some(ContextDeclaration::HeaderPropagation {
+            [ContextDeclaration::HeaderPropagation {
                 policy: pipeline_policy.header_propagation,
-            }),
+            }]
+            .into_iter()
+            .collect(),
         );
+    }
+
+    /// Scenario: a receiver has an absent or explicitly empty authorized identity policy.
+    /// Guarantees: neither form creates an authorized identity declaration or non-empty binding.
+    #[test]
+    fn empty_authorized_identity_policy_produces_no_binding() {
+        let receiver = NodeUserConfig::new_receiver_config("urn:test:receiver:example");
+
+        for policy in [None, Some(AuthorizedIdentityPolicy::default())] {
+            let declarations =
+                PipelineFactory::<()>::wrapper_context_declarations(&receiver, &None, &policy);
+            assert!(declarations.is_empty());
+
+            let compiled = compiled_bindings(declarations);
+            let node = compiled
+                .by_pipeline
+                .get(&pipeline("group", "pipeline"))
+                .and_then(|nodes| nodes.get(&ConfigNodeId::from("node")))
+                .expect("compiled node binding");
+            assert!(node.is_empty());
+            assert!(
+                compiled
+                    .authorized_identity_policy(
+                        &pipeline("group", "pipeline"),
+                        &ConfigNodeId::from("node"),
+                    )
+                    .is_none()
+            );
+        }
+    }
+
+    /// Scenario: a receiver declares an authorized identity claim projection.
+    /// Guarantees: compiled node bindings retain the exact policy and
+    /// live-update compatibility rejects changed projections in either
+    /// comparison direction.
+    #[test]
+    fn authorized_identity_policy_is_a_compiled_receiver_binding() {
+        let policy: AuthorizedIdentityPolicy =
+            serde_json::from_value(serde_json::json!([{"claim": "sub", "store_as": "tenant"}]))
+                .expect("valid authorized identity policy");
+        let declarations: NodeContextDeclarations =
+            [ContextDeclaration::AuthorizedIdentityCapture {
+                policy: policy.clone(),
+            }]
+            .into_iter()
+            .collect();
+        let compiled = compiled_bindings(declarations);
+        let changed_policy: AuthorizedIdentityPolicy = serde_json::from_value(
+            serde_json::json!([{"claim": "groups", "store_as": "access_groups"}]),
+        )
+        .expect("valid changed authorized identity policy");
+        let changed = compiled_bindings(
+            [ContextDeclaration::AuthorizedIdentityCapture {
+                policy: changed_policy,
+            }]
+            .into_iter()
+            .collect(),
+        );
+        let pipeline = pipeline("group", "pipeline");
+
+        assert_eq!(
+            compiled.authorized_identity_policy(&pipeline, &ConfigNodeId::from("node")),
+            Some(&policy),
+        );
+        assert!(!compiled.pipeline_bindings_match(&changed, &pipeline));
+        assert!(!changed.pipeline_bindings_match(&compiled, &pipeline));
     }
 
     /// Scenario: a node declares a context read and a propagation policy.
