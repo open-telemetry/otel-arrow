@@ -411,26 +411,24 @@ impl UnaryService<OtapPdata> for OtapBatchService {
                 AdmissionDecision::Admit => {}
                 AdmissionDecision::WouldThrottle => {}
                 AdmissionDecision::Throttle { retry_after_secs } => {
-                    let status = grpc_rate_limit_status(retry_after_secs);
                     return Box::pin(std::future::ready(Err(
                         OtlpReceiverMetrics::record_rate_limit_refusal(
                             &rate_limit.metrics,
                             self.signal,
                             OtlpProtocol::Grpc,
                             payload_size.expect("rate-limit payload size was validated"),
-                            status,
+                            grpc_rate_limit_status(retry_after_secs),
                         ),
                     )));
                 }
                 AdmissionDecision::Oversized => {
-                    let status = grpc_rate_limit_burst_exceeded_status();
                     return Box::pin(std::future::ready(Err(
                         OtlpReceiverMetrics::record_rate_limit_refusal(
                             &rate_limit.metrics,
                             self.signal,
                             OtlpProtocol::Grpc,
                             payload_size.expect("rate-limit payload size was validated"),
-                            status,
+                            grpc_rate_limit_burst_exceeded_status(),
                         ),
                     )));
                 }
