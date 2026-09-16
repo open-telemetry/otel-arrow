@@ -1,7 +1,6 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use std::any::Any;
 use std::sync::Arc;
 
 use arrow::array::{
@@ -39,10 +38,6 @@ impl SubstringFunc {
 }
 
 impl ScalarUDFImpl for SubstringFunc {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn name(&self) -> &str {
         "substring"
     }
@@ -173,9 +168,9 @@ fn string_substr(
                         // + 1 offset b/c get_true_start_end is indexed starting from 1-based offset
                         // (like in PostgreSQL):
                         start + 1,
-                        Some(len as u64),
+                        Some(len),
                         enable_ascii_fast_path,
-                    );
+                    )?;
                     result_builder.append_value(&source[start..end])
                 }
                 _ => {
@@ -194,7 +189,7 @@ fn string_substr(
                         start + 1,
                         None,
                         enable_ascii_fast_path,
-                    );
+                    )?;
                     result_builder.append_value(&source[start..end])
                 }
                 _ => {

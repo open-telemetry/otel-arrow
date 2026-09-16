@@ -473,12 +473,16 @@ fn merge_parent_id_column<T: ArrowPrimitiveType>(
     let mut mutable = MutableArrayData::new(sources, false, total_output_rows);
 
     // Bulk copy existing rows.
-    mutable.extend(0, 0, num_existing);
+    mutable
+        .try_extend(0, 0, num_existing)
+        .expect("valid array extension");
 
     // Append insert portions from each upsert.
     for (i, r) in resolved.iter().enumerate() {
         if r.num_inserts > 0 {
-            mutable.extend(i + 1, r.num_updates, r.num_updates + r.num_inserts);
+            mutable
+                .try_extend(i + 1, r.num_updates, r.num_updates + r.num_inserts)
+                .expect("valid array extension");
         }
     }
 
@@ -1203,21 +1207,29 @@ fn merge_value_column<T: ArrowPrimitiveType>(
         let count = run.end - run.start;
         match run.owner {
             None => {
-                mutable.extend(0, run.start, run.end);
+                mutable
+                    .try_extend(0, run.start, run.end)
+                    .expect("valid array extension");
             }
             Some(owner_idx) => {
                 if let Some(active) = &active_sources[owner_idx] {
                     if active.is_scalar {
                         for _ in 0..count {
-                            mutable.extend(active.source_idx, 0, 1);
+                            mutable
+                                .try_extend(active.source_idx, 0, 1)
+                                .expect("valid array extension");
                         }
                     } else {
                         let counter = &mut update_counters[owner_idx];
-                        mutable.extend(active.source_idx, *counter, *counter + count);
+                        mutable
+                            .try_extend(active.source_idx, *counter, *counter + count)
+                            .expect("valid array extension");
                         *counter += count;
                     }
                 } else {
-                    mutable.extend_nulls(count);
+                    mutable
+                        .try_extend_nulls(count)
+                        .expect("valid null extension");
                 }
             }
         }
@@ -1231,17 +1243,23 @@ fn merge_value_column<T: ArrowPrimitiveType>(
         if let Some(active) = &active_sources[upsert_idx] {
             if active.is_scalar {
                 for _ in 0..r.num_inserts {
-                    mutable.extend(active.source_idx, 0, 1);
+                    mutable
+                        .try_extend(active.source_idx, 0, 1)
+                        .expect("valid array extension");
                 }
             } else {
-                mutable.extend(
-                    active.source_idx,
-                    active.num_updates,
-                    active.num_updates + active.num_inserts,
-                );
+                mutable
+                    .try_extend(
+                        active.source_idx,
+                        active.num_updates,
+                        active.num_updates + active.num_inserts,
+                    )
+                    .expect("valid array extension");
             }
         } else {
-            mutable.extend_nulls(r.num_inserts);
+            mutable
+                .try_extend_nulls(r.num_inserts)
+                .expect("valid null extension");
         }
     }
 
@@ -1500,7 +1518,9 @@ fn try_build_unified_dict_multi<T: ArrowPrimitiveType>(
                     let key = array_value_as_bytes(existing_values_arr, i)?;
                     let idx = num_distinct as u16;
                     let _ = value_to_idx.insert(key, idx);
-                    unified_builder.extend(0, i, i + 1);
+                    unified_builder
+                        .try_extend(0, i, i + 1)
+                        .expect("valid array extension");
                     old_to_new[i] = idx;
                     num_distinct += 1;
                 }
@@ -1530,7 +1550,9 @@ fn try_build_unified_dict_multi<T: ArrowPrimitiveType>(
                         }
                         let idx = num_distinct as u16;
                         let _ = value_to_idx.insert(key, idx);
-                        unified_builder.extend(0, row, row + 1);
+                        unified_builder
+                            .try_extend(0, row, row + 1)
+                            .expect("valid array extension");
                         num_distinct += 1;
                         remap[row] = idx;
                     }
@@ -1565,7 +1587,9 @@ fn try_build_unified_dict_multi<T: ArrowPrimitiveType>(
                 }
                 let idx = num_distinct as u16;
                 let _ = value_to_idx.insert(key_byte, idx);
-                unified_builder.extend(mutable_source_idx, 0, 1);
+                unified_builder
+                    .try_extend(mutable_source_idx, 0, 1)
+                    .expect("valid array extension");
                 num_distinct += 1;
                 idx
             };
@@ -1656,7 +1680,9 @@ fn build_values_remap<'a>(
         }
         let idx = *num_distinct as u16;
         let _ = value_to_idx.insert(key, idx);
-        unified_builder.extend(source_idx, i, i + 1);
+        unified_builder
+            .try_extend(source_idx, i, i + 1)
+            .expect("valid array extension");
         *num_distinct += 1;
         remap.push(idx);
     }
@@ -1896,18 +1922,26 @@ fn merge_passthrough_column(
     let mut pos = 0;
     for (start, end) in SlicesIterator::new(mask) {
         if pos < start {
-            mutable.extend(0, pos, start);
+            mutable
+                .try_extend(0, pos, start)
+                .expect("valid array extension");
         }
-        mutable.extend_nulls(end - start);
+        mutable
+            .try_extend_nulls(end - start)
+            .expect("valid null extension");
         pos = end;
     }
     if pos < existing_col.len() {
-        mutable.extend(0, pos, existing_col.len());
+        mutable
+            .try_extend(0, pos, existing_col.len())
+            .expect("valid array extension");
     }
 
     // append nulls for inserts
     if num_inserts > 0 {
-        mutable.extend_nulls(num_inserts);
+        mutable
+            .try_extend_nulls(num_inserts)
+            .expect("valid null extension");
     }
 
     let result = make_array(mutable.freeze());
@@ -2013,22 +2047,30 @@ fn create_new_value_column_batched<T: ArrowPrimitiveType>(
         match run.owner {
             None => {
                 // For ranges we are not updating, insert nulls (column didn't exist before).
-                mutable.extend_nulls(count);
+                mutable
+                    .try_extend_nulls(count)
+                    .expect("valid null extension");
             }
             Some(owner_idx) => {
                 if let Some(active) = &active_sources[owner_idx] {
                     if active.is_scalar {
                         for _ in 0..count {
-                            mutable.extend(active.source_idx, 0, 1);
+                            mutable
+                                .try_extend(active.source_idx, 0, 1)
+                                .expect("valid array extension");
                         }
                     } else {
                         let counter = &mut update_counters[owner_idx];
-                        mutable.extend(active.source_idx, *counter, *counter + count);
+                        mutable
+                            .try_extend(active.source_idx, *counter, *counter + count)
+                            .expect("valid array extension");
                         *counter += count;
                     }
                 } else {
                     // inactive: update must be for a different column. write nulls in this column
-                    mutable.extend_nulls(count);
+                    mutable
+                        .try_extend_nulls(count)
+                        .expect("valid null extension");
                 }
             }
         }
@@ -2042,18 +2084,24 @@ fn create_new_value_column_batched<T: ArrowPrimitiveType>(
         if let Some(active) = &active_sources[upsert_idx] {
             if active.is_scalar {
                 for _ in 0..r.num_inserts {
-                    mutable.extend(active.source_idx, 0, 1);
+                    mutable
+                        .try_extend(active.source_idx, 0, 1)
+                        .expect("valid array extension");
                 }
             } else {
-                mutable.extend(
-                    active.source_idx,
-                    active.num_updates,
-                    active.num_updates + active.num_inserts,
-                );
+                mutable
+                    .try_extend(
+                        active.source_idx,
+                        active.num_updates,
+                        active.num_updates + active.num_inserts,
+                    )
+                    .expect("valid array extension");
             }
         } else {
             // inactive: insert must be for a different column. write nulls in this column
-            mutable.extend_nulls(r.num_inserts);
+            mutable
+                .try_extend_nulls(r.num_inserts)
+                .expect("valid null extension");
         }
     }
 

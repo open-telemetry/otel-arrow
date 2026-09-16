@@ -1,8 +1,6 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use std::any::Any;
-
 use arrow::array::{Array, BooleanArray, BooleanBufferBuilder};
 use arrow::buffer::BooleanBuffer;
 use arrow::datatypes::{DataType, TimeUnit};
@@ -114,10 +112,6 @@ fn evaluate_anyvalue_subtype(arr: &arrow::array::ArrayRef, target: u8) -> Result
 }
 
 impl ScalarUDFImpl for IsTypeFunc {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn name(&self) -> &str {
         "is_type"
     }

@@ -1,7 +1,6 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use std::any::Any;
 use std::sync::Arc;
 
 use arrow::array::{
@@ -37,10 +36,6 @@ impl Xxh3Func {
 }
 
 impl ScalarUDFImpl for Xxh3Func {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn name(&self) -> &str {
         "xxh3"
     }

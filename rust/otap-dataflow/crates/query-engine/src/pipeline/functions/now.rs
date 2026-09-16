@@ -1,7 +1,6 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use std::any::Any;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use arrow::datatypes::{DataType, TimeUnit};
@@ -36,10 +35,6 @@ impl NowFunc {
 }
 
 impl ScalarUDFImpl for NowFunc {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn name(&self) -> &str {
         "now"
     }

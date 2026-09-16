@@ -1,7 +1,6 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use std::any::Any;
 use std::sync::Arc;
 
 use arrow::array::GenericStringBuilder;
@@ -40,10 +39,6 @@ impl UuidV7Func {
 }
 
 impl ScalarUDFImpl for UuidV7Func {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn name(&self) -> &str {
         "uuidv7"
     }
