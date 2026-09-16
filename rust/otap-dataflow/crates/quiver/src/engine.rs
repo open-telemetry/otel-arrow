@@ -7299,12 +7299,11 @@ mod tests {
         let limit = target_size_bytes.get() * MAX_OPEN_SEGMENT_SIZE_MULTIPLE;
         let mut rejected_at_capacity = false;
         for _ in 0..1000 {
-            match engine.ingest(&DummyBundle::without_slots()).await {
-                Err(QuiverError::OpenSegmentAtCapacity { .. }) => {
-                    rejected_at_capacity = true;
-                    break;
-                }
-                Ok(()) | Err(_) => {}
+            if let Err(QuiverError::OpenSegmentAtCapacity { .. }) =
+                engine.ingest(&DummyBundle::without_slots()).await
+            {
+                rejected_at_capacity = true;
+                break;
             }
         }
 
