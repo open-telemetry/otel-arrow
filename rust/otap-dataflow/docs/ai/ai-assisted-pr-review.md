@@ -190,8 +190,8 @@ instruments. Review whether the implementation:
 - records aggregation as one attempt per external batch, not per contributing
   PData message
 - documents stable timing, outcome, buffering, and ACK/NACK ownership boundaries
-- avoids doing optional metric work, such as clock reads, payload traversal, or
-  encoding, when the corresponding measurement is disabled
+- avoids measurement-only work, such as clock reads or payload traversal, when the
+  corresponding measurement is disabled; required encoding for delivery must still run
 
 Fan-out, aggregation, retries, generated data, and asynchronous buffering can
 break an assumed 1:1 relationship. Require explicit cardinality and ownership
