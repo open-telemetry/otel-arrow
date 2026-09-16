@@ -1,0 +1,13 @@
+change_type: new_component
+
+component: pipeline
+
+note: Add the `flat_file_user_pass_auth` extension, a `BasicAuthProvider` backed by flat files.
+
+issues: [3901]
+
+subtext: |
+  Feature `flat-file-user-pass-auth-extension`, URN
+  `urn:otel:extension:flat_file_user_pass_auth`. This extension provides a
+  `BasicAuthProvider` that can be used in pipelines to authenticate users based
+  on username and password stored in flat files.
