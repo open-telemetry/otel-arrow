@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789495736673,
+  "lastUpdate": 1789516852952,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -38645,6 +38645,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 103.66,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "161134993+Dipanshusinghh@users.noreply.github.com",
+            "name": "Dipanshu singh",
+            "username": "Dipanshusinghh"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "973e6f5d9060af2460d8532487a35552ec34f480",
+          "message": "refactor(metrics): Migrate journald_receiver telemetry to enum attributes (#3889)\n\n## Change summary\n\nThis PR migrates the `journald_receiver` component telemetry to use the\nnew `MeasurementMetricSet` and enum-based attributes, continuing the\neffort to standardize our telemetry structures.\n\n**Specific Changes:**\n* Replaced flat counters with dimensioned metrics using enum attributes:\n* `starts`, `drains`, `shutdowns` ->\n`transitions{transition_type=\"Start\" | \"Drain\" | \"Shutdown\"}`\n  * `acks`, `nacks` -> `completions{outcome=\"Ack\" | \"Nack\"}`\n* `cursor_commits`, `checkpoint_failures` ->\n`checkpoints{outcome=\"Success\" | \"Failure\"}`\n* `source_failures`, `source_dropped_fields`, `rewinds` ->\n`source{event_type=\"ReadFailure\" | \"DroppedField\" | \"Rewind\"}`\n* Retained scalar metrics (`batches_sent`, `records_sent`) under a\ngrouped `other` metric set.\n* Updated `README.md` to reflect the new dimensional metric table.\n\n## Related issue\n\n* Part of #3530\n\n## Validation\n\n* Successfully compiled and passed `cargo clippy --all-targets\n--all-features -D warnings` on the `core-nodes` crate.\n* Included `.chloggen` breaking change file to satisfy `chloggen\nvalidate` checks.\n\n## User-facing changes\n\nYes. Users consuming metrics from `journald_receiver` will need to\nupdate their dashboards and alerting queries to use the dimensioned\nformat.",
+          "timestamp": "2026-09-15T23:05:44Z",
+          "tree_id": "e6f01f762b4883ea64dd8e800f26d8a9644310ba",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/973e6f5d9060af2460d8532487a35552ec34f480"
+        },
+        "date": 1789516838216,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 84.12,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.85,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.71,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.01,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.97,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.68,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 71.44,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.84,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.54,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.36,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.16,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 116.33,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 103.6,
             "unit": "MB"
           }
         ]
