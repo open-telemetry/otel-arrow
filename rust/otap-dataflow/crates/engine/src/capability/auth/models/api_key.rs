@@ -3,6 +3,7 @@
 
 //! The shared [`ApiKey`] credential.
 
+use base64::{Engine as _, engine::general_purpose};
 use secrecy::{ExposeSecret, SecretString};
 use serde_json::{Map, Value};
 use std::sync::Arc;
@@ -45,6 +46,16 @@ impl ApiKey {
             attributes: None,
             expires_on: None,
         }
+    }
+
+    /// Creates an API Key from its binary value.
+    ///
+    /// Note: Binary value is base64 encoded.
+    #[must_use]
+    pub fn from_binary(value: &[u8]) -> Self {
+        let secret = general_purpose::STANDARD.encode(value);
+
+        Self::new(secret)
     }
 
     /// Adds attributes to an API Key.
