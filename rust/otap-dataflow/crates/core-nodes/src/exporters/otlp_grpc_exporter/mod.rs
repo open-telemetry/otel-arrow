@@ -1431,8 +1431,10 @@ mod tests {
     use http::header;
     use otel_arrow_dfe_config::ContextEntryName;
     use otel_arrow_dfe_config::node::NodeUserConfig;
+    use otel_arrow_dfe_engine::capability::auth::ApiKey;
     use otel_arrow_dfe_otap::http_client_auth_provider::test_support::MockHttpClientAuthProvider;
     use std::collections::HashMap;
+    use std::str::FromStr;
 
     use otel_arrow_dfe_config::transport_headers::{
         TransportHeader, TransportHeaders, ValueKind,
@@ -3255,6 +3257,33 @@ mod tests {
         let bin_val = metadata
             .get_bin("custom-binary-bin")
             .expect("custom-binary-bin should be present (suffix appended)");
+        assert_eq!(bin_val.to_bytes().unwrap(), binary_value.as_slice());
+    }
+
+    #[test]
+    fn test_build_grpc_metadata_supports_binary_api_key_headers() {
+        let handler = make_effect_handler_with_policy(Some(propagate_all_policy()));
+
+        let binary_value = [115, 101, 99, 114, 101, 116];
+
+        let api_key = ApiKey::from_binary(&binary_value);
+
+        let context = context_without_headers();
+
+        let metadata = build_grpc_metadata(
+            &handler,
+            &context,
+            None,
+            Some((
+                HeaderName::from_str("x-custom-bin").expect("valid header name"),
+                HeaderValue::from_str(api_key.expose_value()).expect("valid header value"),
+            )),
+        )
+        .expect("should produce metadata");
+
+        let bin_val = metadata
+            .get_bin("x-custom-bin")
+            .expect("x-custom-bin should be present");
         assert_eq!(bin_val.to_bytes().unwrap(), binary_value.as_slice());
     }
 
