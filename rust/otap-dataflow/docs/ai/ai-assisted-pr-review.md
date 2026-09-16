@@ -23,9 +23,9 @@ If an agent only has time for one focused pass, it should:
 
 - inspect the full diff and relevant nearby code before forming conclusions
 - run targeted searches for runtime-risk patterns when Rust async or runtime
-  code changes, such as `tokio::spawn`, `spawn_blocking`, `Arc<Mutex`,
-  `RwLock`, `unbounded_channel`, `block_on`, `std::fs`,
-  `std::thread::sleep`, `unwrap(`, `expect(`, and `unreachable!`
+  code changes, such as `tokio::spawn`, `spawn_blocking`, `Arc<Mutex`, `RwLock`,
+  `unbounded_channel`, `block_on`, `std::fs`, `std::thread::sleep`, `unwrap(`,
+  `expect(`, and `unreachable!`
 - use `rust/otap-dataflow/scripts/check-async-blocking.sh` from the repository
   root as a review aid when async/runtime paths are touched
 - report only risks supported by the diff, nearby code, or project guidance
@@ -61,8 +61,8 @@ Check that changes preserve the thread-per-core, share-nothing design:
 
 Check that single-threaded async runtime responsiveness is preserved. Each
 pipeline instance runs on a single-threaded async runtime, so blocking or
-monopolizing that thread can stall data processing, backpressure, shutdown,
-live reconfiguration, telemetry, and ack/nack progress.
+monopolizing that thread can stall data processing, backpressure, shutdown, live
+reconfiguration, telemetry, and ack/nack progress.
 
 Flag runtime-path work that can block or monopolize the core:
 
@@ -78,8 +78,8 @@ record important assumptions that are not visible at the call site. Reviewers
 should look for whether the library can block, start threads, use shared or
 global state, allocate or buffer substantially, retry internally, or hide
 backpressure. Evidence can be a library source or documentation link, a code
-comment, a component development note, or a focused test or benchmark. Dependency
-upgrades that affect such calls should re-check these assumptions.
+comment, a component development note, or a focused test or benchmark.
+Dependency upgrades that affect such calls should re-check these assumptions.
 
 `spawn_blocking` is not automatically acceptable. Blocking offload must be
 bounded, cancel-aware, backpressure-integrated, observable, and justified
@@ -137,13 +137,13 @@ Check for:
 - useful telemetry, diagnostics, and controllable debug features
 - live reconfiguration and restart-free operation, when relevant
 - compatibility with OTLP, OTAP, and Collector integration expectations
-- clear operator-facing behavior for configuration, defaults, validation
-  errors, unsupported platforms, and documentation examples
+- clear operator-facing behavior for configuration, defaults, validation errors,
+  unsupported platforms, and documentation examples
 - stable telemetry contracts, including metric names, label cardinality,
   deterministic label order, and explicit collision handling
 - precise telemetry semantics, including instrument kind, aggregation cadence,
-  numerator/denominator consistency, monotonicity, units, dimensions, and
-  scrape or reporting timing
+  numerator/denominator consistency, monotonicity, units, dimensions, and scrape
+  or reporting timing
 - intentional shutdown, drain, flush, cancellation, and pending-message behavior
   for async tasks, streams, channels, and metric updates
 - reuse of existing engine, Query Engine, pdata view, decoder, validation, or
@@ -162,9 +162,9 @@ for each category. For example, use one counter with a closed `signal`,
 `outcome`, or `error.type` dimension instead of parallel counters for each enum
 value. Check that enum values are documented, lowercase unless an upstream
 semantic convention requires otherwise, stable, meaningful under aggregation,
-and small enough that the product of measurement dimensions remains bounded.
-Do not encode identifiers, raw errors, paths, or other unbounded values as
-metric attributes.
+and small enough that the product of measurement dimensions remains bounded. Do
+not encode identifiers, raw errors, paths, or other unbounded values as metric
+attributes.
 
 Distinguish engine-owned PData metrics from node-owned instrumentation:
 
@@ -173,11 +173,11 @@ external input -> receiver boundary -> node.output -> ... -> node.input
 node.input -> exporter boundary -> external output
 ```
 
-The engine owns `node.input.*`, `node.output.*`, and
-`node.completion.duration`. Flag node code that re-counts the same PData
-messages, items, logical size, outcome, or completion duration. Node-owned
-metrics should instead describe a distinct component behavior, such as bounded
-diagnostics or external receiver and exporter boundaries.
+The engine owns `node.input.*`, `node.output.*`, and `node.completion.duration`.
+Flag node code that re-counts the same PData messages, items, logical size,
+outcome, or completion duration. Node-owned metrics should instead describe a
+distinct component behavior, such as bounded diagnostics or external receiver
+and exporter boundaries.
 
 Receiver and exporter implementations should use the shared boundary metric
 contract rather than redefining common message, duration, payload-size, or item
@@ -190,13 +190,14 @@ instruments. Review whether the implementation:
 - records aggregation as one attempt per external batch, not per contributing
   PData message
 - documents stable timing, outcome, buffering, and ACK/NACK ownership boundaries
-- avoids measurement-only work, such as clock reads or payload traversal, when the
-  corresponding measurement is disabled; required encoding for delivery must still run
+- avoids measurement-only work, such as clock reads or payload traversal, when
+  the corresponding measurement is disabled; required encoding for delivery must
+  still run
 
 Fan-out, aggregation, retries, generated data, and asynchronous buffering can
 break an assumed 1:1 relationship. Require explicit cardinality and ownership
-when these work shapes are present. Follow the
-[system metrics guide][metrics-guide] for the boundary-cardinality contract.
+when these work shapes are present. Follow the [system metrics
+guide][metrics-guide] for the boundary-cardinality contract.
 
 ## Correctness, Security, and Portability
 
