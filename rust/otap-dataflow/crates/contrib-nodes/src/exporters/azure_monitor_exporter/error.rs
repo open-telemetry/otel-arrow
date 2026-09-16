@@ -213,6 +213,7 @@ impl Error {
         match self {
             Error::Auth { .. } | Error::PayloadTooLarge | Error::RateLimited { .. } => true,
             Error::UnexpectedStatus { status, .. } => status.is_client_error(),
+            Error::ExportFailed { last_error, .. } => last_error.is_refusal(),
             _ => false,
         }
     }

@@ -227,8 +227,17 @@ impl AzureMonitorExporter {
     ) -> Result<(), EngineError> {
         // Export failed - Nack ALL messages in this batch, remove entirely
         let failed_messages = self.state.remove_batch_failure(batch_id);
+        // A 4xx client-error status is a backend refusal, not an exporter
+        // failure; classify the terminal batch outcome the same way the shared
+        // per-attempt metrics do. `is_refusal` unwraps the retry-exhausted
+        // `ExportFailed` wrapper so a non-retryable 4xx still reports `refused`.
+        let outcome = if error.is_refusal() {
+            Outcome::Refused
+        } else {
+            Outcome::Failure
+        };
         self.metrics.borrow_mut().record_completed_batch(
-            Outcome::Failure,
+            outcome,
             compressed_size,
             uncompressed_size,
         );
@@ -916,8 +925,56 @@ mod tests {
         assert!(exporter.state.msg_to_data.is_empty());
     }
 
-    /// Scenario: Azure Monitor returns HTTP 401 for an export stamped with the
-    /// currently cached bearer-token generation.
+    /// Scenario: A completed export terminates on a 4xx backend refusal (429).
+    /// Guarantees: The terminal batch is recorded under `refused`, not `failure`,
+    /// so `exporter.azure_monitor.batches` and both batch-size instruments expose
+    /// the refused backend rejection.
+    #[tokio::test]
+    async fn refused_export_records_terminal_batch_as_refused() {
+        let config = create_test_config();
+        let pipeline_ctx = create_test_pipeline_ctx();
+        let mut exporter =
+            AzureMonitorExporter::new(pipeline_ctx, config, Box::new(MockTokenProvider)).unwrap();
+
+        let (_, reporter) = MetricsReporter::create_new_and_receiver(10);
+        let node_id = NodeId {
+            index: 0,
+            name: "test_exporter".to_string().into(),
+        };
+        let effect_handler = EffectHandler::new(
+            node_id,
+            reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+        );
+
+        let batch_id = 1;
+        let msg_id = 100;
+        let context = Context::default();
+        let payload = OtapPayload::from(OtlpProtoBytes::ExportLogsRequest(Bytes::from("test")));
+
+        exporter
+            .state
+            .add_msg_to_data(msg_id, context.clone(), payload);
+        exporter.state.add_batch_msg_relationship(batch_id, msg_id);
+
+        // Retry-exhausted 429 refusal wrapped in `ExportFailed`, mirroring what
+        // `LogsIngestionClient::export` returns after exhausting retries.
+        let error = Error::ExportFailed {
+            attempts: 3,
+            last_error: Box::new(Error::RateLimited {
+                body: "Too Many Requests".to_string(),
+                retry_after: None,
+            }),
+        };
+
+        let _ = exporter
+            .handle_export_failure(&effect_handler, batch_id, error, 0, 0)
+            .await;
+
+        let m = exporter.metrics.borrow();
+        assert_eq!(m.batch_for(Outcome::Refused).batches.get(), 1);
+        assert_eq!(m.batch_for(Outcome::Failure).batches.get(), 0);
+    }
     /// Guarantees: completion handling invalidates that generation so the exporter
     /// stops accepting pdata until the provider publishes a replacement token.
     #[tokio::test]
@@ -1023,6 +1080,19 @@ mod tests {
             exporter.state.batch_to_msg.is_empty(),
             "the undispatchable batch must be failed, not stranded"
         );
+        // The reaped 401 is a 4xx backend refusal, so its terminal batch lands
+        // in the `refused` bucket. The batch that could not be stamped failed
+        // locally with no bearer token, so it lands in the `failure` bucket.
+        assert_eq!(
+            exporter
+                .metrics
+                .borrow()
+                .batch_for(Outcome::Refused)
+                .batches
+                .get(),
+            1,
+            "the 401-completed batch must be recorded as refused"
+        );
         assert_eq!(
             exporter
                 .metrics
@@ -1030,7 +1100,8 @@ mod tests {
                 .batch_for(Outcome::Failure)
                 .batches
                 .get(),
-            2
+            1,
+            "the batch that could not be stamped must be recorded as failed"
         );
     }
 

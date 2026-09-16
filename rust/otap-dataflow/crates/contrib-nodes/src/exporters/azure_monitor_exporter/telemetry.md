@@ -36,9 +36,12 @@ metrics that realize it are:
 
 Shared attempt outcomes use `success` for HTTP 2xx responses, `refused` for
 explicit Azure rejections (including HTTP 429), and `failure` for transport or
-backend failures. Enable optional component duration, item counts, and payload
-size with `runtime_metrics: detailed` or the corresponding per-node telemetry
-policy.
+backend failures. The terminal batch metrics (`exporter.azure_monitor.batches`,
+`batch_size`, and `batch_uncompressed_size`) reuse the same classification: a
+batch whose final result is a 4xx refusal is recorded under `outcome=refused`,
+while transport and 5xx failures use `outcome=failure`. Enable optional component
+duration, item counts, and payload size with `runtime_metrics: detailed` or the
+corresponding per-node telemetry policy.
 
 ## Logs
 

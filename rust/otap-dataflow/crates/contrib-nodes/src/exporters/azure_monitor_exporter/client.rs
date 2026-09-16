@@ -415,6 +415,17 @@ mod tests {
     }
 
     fn attempted_messages(snapshots: &[MetricSetSnapshot], outcome: Outcome) -> u64 {
+        attempted_metric(snapshots, outcome, "messages")
+    }
+
+    /// Reads one metric from the shared `exporter.attempted` snapshot for a
+    /// given outcome bucket. Lets tests assert the optional `items`,
+    /// `payload.size`, and `duration` instruments in addition to `messages`.
+    fn attempted_metric(
+        snapshots: &[MetricSetSnapshot],
+        outcome: Outcome,
+        metric: &str,
+    ) -> u64 {
         let outcome = match outcome {
             Outcome::Success => "success",
             Outcome::Failure => "failure",
@@ -426,15 +437,50 @@ mod tests {
                 snapshot.descriptor().name == "exporter.attempted"
                     && snapshot.measurement_attribute_value("signal") == Some("logs")
                     && snapshot.measurement_attribute_value("outcome") == Some(outcome)
+                    && snapshot
+                        .descriptor()
+                        .metrics
+                        .iter()
+                        .any(|m| m.name == metric)
             })
-            .expect("exporter attempt snapshot");
-        let messages = snapshot
+            .unwrap_or_else(|| panic!("exporter attempt snapshot for {metric}"));
+        let index = snapshot
             .descriptor()
             .metrics
             .iter()
-            .position(|metric| metric.name == "messages")
-            .expect("messages metric");
-        snapshot.get_metrics()[messages].to_u64_lossy()
+            .position(|m| m.name == metric)
+            .unwrap_or_else(|| panic!("{metric} metric"));
+        snapshot.get_metrics()[index].to_u64_lossy()
+    }
+
+    /// Returns true when the shared `exporter.attempted` snapshot recorded a
+    /// non-empty observation for `metric` in the given outcome bucket. Works
+    /// for the `duration` histogram, whose distribution value cannot be read
+    /// with `to_u64_lossy`.
+    fn attempted_recorded(
+        snapshots: &[MetricSetSnapshot],
+        outcome: Outcome,
+        metric: &str,
+    ) -> bool {
+        let outcome = match outcome {
+            Outcome::Success => "success",
+            Outcome::Failure => "failure",
+            Outcome::Refused => "refused",
+        };
+        snapshots.iter().any(|snapshot| {
+            if snapshot.descriptor().name != "exporter.attempted"
+                || snapshot.measurement_attribute_value("signal") != Some("logs")
+                || snapshot.measurement_attribute_value("outcome") != Some(outcome)
+            {
+                return false;
+            }
+            snapshot
+                .descriptor()
+                .metrics
+                .iter()
+                .position(|m| m.name == metric)
+                .is_some_and(|index| !snapshot.get_metrics()[index].is_zero())
+        })
     }
 
     /// Scenario: Azure Monitor returns classified client-error and unclassified HTTP statuses.
@@ -526,6 +572,20 @@ mod tests {
         assert_eq!(attempted_messages(&snapshots, Outcome::Success), 1);
         assert_eq!(attempted_messages(&snapshots, Outcome::Refused), 1);
         assert_eq!(attempted_messages(&snapshots, Outcome::Failure), 1);
+        // Optional item/payload/duration instruments must carry each attempt's
+        // real counts, not just the `messages` counter. `payload` is 7 bytes
+        // and every attempt reports `items = 3`.
+        for outcome in [Outcome::Success, Outcome::Refused, Outcome::Failure] {
+            assert_eq!(attempted_metric(&snapshots, outcome, "items"), 3);
+            assert_eq!(
+                attempted_metric(&snapshots, outcome, "payload.size"),
+                b"payload".len() as u64
+            );
+            assert!(
+                attempted_recorded(&snapshots, outcome, "duration"),
+                "missing duration observation for {outcome:?}"
+            );
+        }
     }
 
     /// Scenario: A retried batch first receives a 500 and then a 204 on the retry.
@@ -572,6 +632,19 @@ mod tests {
         let snapshots = metrics.borrow_mut().boundary.terminal_snapshots();
         assert_eq!(attempted_messages(&snapshots, Outcome::Success), 1);
         assert_eq!(attempted_messages(&snapshots, Outcome::Failure), 1);
+        // Both the failed first attempt and the successful retry must carry
+        // their own optional item/payload/duration observations.
+        for outcome in [Outcome::Success, Outcome::Failure] {
+            assert_eq!(attempted_metric(&snapshots, outcome, "items"), 3);
+            assert_eq!(
+                attempted_metric(&snapshots, outcome, "payload.size"),
+                b"payload".len() as u64
+            );
+            assert!(
+                attempted_recorded(&snapshots, outcome, "duration"),
+                "missing duration observation for {outcome:?}"
+            );
+        }
     }
 
     // ==================== Construction Tests ====================
