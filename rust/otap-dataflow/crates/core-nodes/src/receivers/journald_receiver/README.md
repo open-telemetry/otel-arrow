@@ -159,13 +159,38 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 
 ### Metric Sets
 
-#### `receiver.journald`
+#### `receiver.journald.lifecycle`
 
-| Metric | Unit | Description |
-| --- | --- | --- |
-| `receiver.journald.starts` | `{start}` | Number of times the receiver was started. |
-| `receiver.journald.drains` | `{drain}` | Number of clean drain transitions. |
-| `receiver.journald.shutdowns` | `{shutdown}` | Number of clean shutdown transitions. |
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `receiver.journald.lifecycle.transitions` | `{transition}` | `transition.type` | Number of receiver lifecycle transitions (`start`, `drain`, `shutdown`). |
+
+#### `receiver.journald.acknowledgements`
+
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `receiver.journald.acknowledgements.responses` | `{response}` | `outcome` | Number of downstream acknowledgement responses (`success`, `refused`). |
+| `receiver.journald.acknowledgements.rewinds` | `{rewind}` | `outcome` | Number of stream rewinds triggered by downstream NACKs (`refused`). |
+
+#### `receiver.journald.checkpoints`
+
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `receiver.journald.checkpoints.commits` | `{commit}` | `outcome` | Number of durable cursor checkpoint commits (`success`, `failure`). |
+
+#### `receiver.journald.source`
+
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `receiver.journald.source.events` | `{event}` | `error.type` | Number of journald source read failures (`permission`, `corrupt_journal`, `io_failure`, `other`). |
+
+#### `receiver.journald.output`
+
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `receiver.journald.output.batches` | `{batch}` | | Number of log batches emitted downstream. |
+| `receiver.journald.output.records` | `{record}` | | Number of log records emitted downstream. |
+| `receiver.journald.output.dropped_fields` | `{field}` | | Number of journald fields dropped by extraction limits. |
 
 ### Events
 
