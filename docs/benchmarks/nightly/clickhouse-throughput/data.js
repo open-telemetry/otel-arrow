@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789507123263,
+  "lastUpdate": 1789524515691,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -3768,6 +3768,64 @@ window.BENCHMARK_DATA = {
           {
             "name": "log_rows_written_rate",
             "value": 100076.15405372092,
+            "unit": "rows/sec",
+            "extra": "ClickHouse OTAP Logs/OTAP-IN-BATCHED-100K - ClickHouse rows written"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Drew Relmas",
+            "username": "drewrelmas",
+            "email": "drewrelmas@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "0ebbefc60e0c8c1cabb8c4cf532330201b31ee5a",
+          "message": "feat(geneva_exporter): Migrate to shared exporter and enum attribute metrics (#4075)\n\n# Change summary\n\n- Replace Geneva's flat per-signal metrics with bounded enum-attribute\nmetric sets\n- Adopt `exporter.attempted` for each encoded Geneva batch, including\noutcome, duration, record count, and compressed application-payload size\n- Retain Geneva-specific encoding, failure classification, and\nempty-payload diagnostics\n\n## Related issue\n\n- Part of #3530\n- Part of #3822\n\n## Validation\n\nUnit tests\n\n## User-facing changes\n\nReplace `otap.exporter.geneva` queries with `exporter.attempted` for\nbatch uploads and `exporter.geneva.{encoding,failures,skipped}` for\ncomponent diagnostics. Duration values now use seconds.",
+          "timestamp": "2026-09-15T23:47:53Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/0ebbefc60e0c8c1cabb8c4cf532330201b31ee5a"
+        },
+        "date": 1789524514757,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "log_rows_written_rate",
+            "value": 99251.17850460493,
+            "unit": "rows/sec",
+            "extra": "OTel Collector ClickHouse Logs/OTELCOL-OTLP-TRANSFORMED-100K - ClickHouse rows written"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 100682.4289161574,
+            "unit": "rows/sec",
+            "extra": "OTel Collector ClickHouse Logs/OTELCOL-OTLP-TRANSFORMED-100K - logs produced"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 100672.96690398027,
+            "unit": "rows/sec",
+            "extra": "ClickHouse OTAP Logs/OTLP-IN-BATCHED-100K - logs_produced"
+          },
+          {
+            "name": "log_rows_written_rate",
+            "value": 99928.88394425967,
+            "unit": "rows/sec",
+            "extra": "ClickHouse OTAP Logs/OTLP-IN-BATCHED-100K - ClickHouse rows written"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 100443.78575641829,
+            "unit": "rows/sec",
+            "extra": "ClickHouse OTAP Logs/OTAP-IN-BATCHED-100K - logs_produced"
+          },
+          {
+            "name": "log_rows_written_rate",
+            "value": 99927.38609943441,
             "unit": "rows/sec",
             "extra": "ClickHouse OTAP Logs/OTAP-IN-BATCHED-100K - ClickHouse rows written"
           }
