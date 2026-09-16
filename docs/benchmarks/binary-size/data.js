@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789586564655,
+  "lastUpdate": 1789589654752,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -39219,6 +39219,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 103.6,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "drewrelmas@gmail.com",
+            "name": "Drew Relmas",
+            "username": "drewrelmas"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "0210cdff9bbe9124b1071f9210907477bca3c73b",
+          "message": "feat(otlp): Adopt shared receiver and exporter metrics in OTLP nodes (#4044)\n\n# Change summary\n\n- Adopt the shared `receiver.received`, `receiver.processing`, and\n`exporter.attempted` metrics in the OTLP receiver and OTLP HTTP and gRPC\nexporters.\n- Preserve OTLP-specific bounded diagnostics and existing\nauthentication, admission, retry, reconnect, partial-success, and\nAck/Nack behavior.\n- Record encoded application payload size consistently before HTTP or\ngRPC transport compression.\n\n## Related issue\n\n* Implementation of #3822 for OTLP nodes\n\n## Validation\n\nRan `configs/otlp-component-boundary-metrics.yaml`, which sends\ngenerated logs through independent gRPC and HTTP loopback pipelines and\nprints only the affected metrics.\n\n### gRPC loopback pipeline\n\n| Prefix | Observed metrics |\n| --- | --- |\n| `exporter.*` |\n`attempted.messages{signal=logs,outcome=success}=2`<br>`attempted.duration{signal=logs,outcome=success}:\ncount=2, sum=0.007409712s, min=0.002427904s,\nmax=0.004981808s`<br>`attempted.payload.size{signal=logs,outcome=success}=4,896\nBy`<br>`attempted.items{signal=logs,outcome=success}=20`<br>`otlp_grpc.failures.messages`:\nnot emitted |\n| `receiver.*` |\n`received.messages{signal=logs,outcome=success}=2`<br>`received.payload.size{signal=logs,outcome=success}=4,896\nBy`<br>`processing.duration{signal=logs}: count=2, sum=0.0000168s,\nmin=0.0000075s,\nmax=0.0000093s`<br>`otlp.requests.accepted{signal=logs,protocol=grpc}=2`<br>`otlp.requests.rejected`:\nnot emitted |\n| `node.*` | Receiver\n`output.messages{signal=logs,outcome=success}=2`<br>Receiver\n`output.items{signal=logs,outcome=success}=20` |\n\n### HTTP loopback pipeline\n\n| Prefix | Observed metrics |\n| --- | --- |\n| `exporter.*` |\n`attempted.messages{signal=logs,outcome=success}=2`<br>`attempted.duration{signal=logs,outcome=success}:\ncount=2, sum=0.004414406s, min=0.001932503s,\nmax=0.002481903s`<br>`attempted.payload.size{signal=logs,outcome=success}=4,896\nBy`<br>`attempted.items{signal=logs,outcome=success}=20`<br>`otlp_http.failures.messages`:\nnot emitted |\n| `receiver.*` |\n`received.messages{signal=logs,outcome=success}=2`<br>`received.payload.size{signal=logs,outcome=success}=4,896\nBy`<br>`processing.duration{signal=logs}: count=2, sum=0.0000103s,\nmin=0.0000051s,\nmax=0.0000052s`<br>`otlp.requests.accepted{signal=logs,protocol=http}=2`<br>`otlp.requests.rejected`:\nnot emitted |\n| `node.*` | Receiver\n`output.messages{signal=logs,outcome=success}=2`<br>Receiver\n`output.items{signal=logs,outcome=success}=20` |\n\n## User-facing changes\n\n- Replace `receiver.otlp.requests.started`, `completed`, and\n`payload_size` with `receiver.otlp.requests.accepted`,\n`receiver.received.*`, and `receiver.processing.duration`.\n- Replace `receiver.otlp.rejections.requests` with\n`receiver.otlp.requests.rejected`.\n- Replace `exporter.exports.*` with `exporter.attempted.*`.",
+          "timestamp": "2026-09-16T19:16:16Z",
+          "tree_id": "0bc7628562305d41d0e4afe8e5356afc535f41fe",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/0210cdff9bbe9124b1071f9210907477bca3c73b"
+        },
+        "date": 1789589638494,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 84.22,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.76,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.89,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.71,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.53,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.01,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.97,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.68,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 71.59,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.84,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.54,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.39,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 116.45,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 103.73,
             "unit": "MB"
           }
         ]
