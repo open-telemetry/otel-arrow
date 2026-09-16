@@ -149,6 +149,7 @@ fn validate_log_parser_config(config: &Value) -> Result<(), ConfigError> {
 pub static LOG_PARSER_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFactory {
     name: LOG_PARSER_PROCESSOR_URN,
     create: create_log_parser_processor,
+    context_declarations: None,
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config: validate_log_parser_config,
 };
