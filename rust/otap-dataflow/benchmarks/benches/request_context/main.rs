@@ -9,6 +9,7 @@ use std::mem::size_of;
 use std::sync::Arc;
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
+use http::{HeaderMap, HeaderName, HeaderValue};
 use otel_arrow_dfe_config::ContextEntryName;
 use otel_arrow_dfe_config::transport_headers::{TransportHeader, TransportHeaders, ValueKind};
 use otel_arrow_dfe_config::transport_headers_policy::{
@@ -94,9 +95,57 @@ fn context_name(raw: impl AsRef<str>) -> ContextEntryName {
 
 fn main_benchmarks(c: &mut Criterion) {
     bench_receive(c);
+    bench_receive_http(c);
     bench_end_to_end(c);
+    bench_lookup_and_clone(c);
     bench_receive_kafka_original(c);
     bench_end_to_end_kafka_original(c);
+}
+
+fn bench_receive_http(c: &mut Criterion) {
+    let mut group = c.benchmark_group("request_context/receive_http");
+    for header_count in HEADER_COUNTS {
+        for producer in PRODUCER_CASES {
+            for consumer in RECEIVE_CONSUMER_CASES {
+                let preserve_original_names = consumer.preserves_original_names();
+                let capture =
+                    capture_policy(header_count, producer).compile(|_| preserve_original_names);
+                let headers = inbound_http_headers(header_count);
+                let _ = group.bench_with_input(
+                    BenchmarkId::new(case_name(producer, consumer), header_count),
+                    &header_count,
+                    |b, _| {
+                        b.iter(|| {
+                            let mut context = TransportHeaders::new();
+                            let _ = black_box(&capture)
+                                .capture_from_http_headers(black_box(&headers), &mut context);
+                            black_box(context)
+                        });
+                    },
+                );
+            }
+        }
+    }
+    group.finish();
+}
+
+fn bench_lookup_and_clone(c: &mut Criterion) {
+    assert_eq!(size_of::<TransportHeaders>(), size_of::<usize>());
+    let capture = capture_policy(32, ProducerCase::Renamed).compile(|_| true);
+    let metadata = inbound_metadata(32);
+    let context = receive_metadata(&capture, &metadata);
+
+    let _ = c.bench_function("request_context/lookup/stored_name", |b| {
+        b.iter(|| {
+            black_box(&context)
+                .find_by_name("context_30")
+                .next()
+                .map(|header| header.value.bytes.len())
+        });
+    });
+    let _ = c.bench_function("request_context/clone", |b| {
+        b.iter(|| black_box(context.clone()));
+    });
 }
 
 #[derive(Clone)]
@@ -309,6 +358,29 @@ fn inbound_metadata(header_count: usize) -> MetadataMap {
     metadata
 }
 
+fn inbound_http_headers(header_count: usize) -> HeaderMap {
+    let mut headers = HeaderMap::with_capacity(header_count + 4);
+    for index in 0..header_count {
+        let name = HeaderName::try_from(format!("x-context-{index}"))
+            .expect("valid benchmark HTTP header name");
+        let value = HeaderValue::try_from(format!("value-{index:02}-0123456789abcdef"))
+            .expect("valid benchmark HTTP header value");
+        let _ = headers.append(name, value);
+    }
+    for (name, value) in [
+        ("content-type", "application/json"),
+        ("user-agent", "otel-collector/0.99.0"),
+        ("content-encoding", "gzip"),
+        ("x-timeout", "30S"),
+    ] {
+        let _ = headers.append(
+            HeaderName::from_static(name),
+            HeaderValue::from_static(value),
+        );
+    }
+    headers
+}
+
 fn capture_match_names(header_count: usize) -> Vec<ContextEntryName> {
     (0..header_count)
         .map(|index| context_name(format!("x-context-{index}")))
@@ -430,7 +502,7 @@ fn propagate_kafka_current(context: &CurrentHeaders) -> OwnedHeaders {
         let _ = black_box(&header.value.value_kind);
         headers = headers.insert(Header {
             key: header.wire_name(),
-            value: Some(header.value.bytes.as_ref()),
+            value: Some(header.value.bytes),
         });
     }
     headers

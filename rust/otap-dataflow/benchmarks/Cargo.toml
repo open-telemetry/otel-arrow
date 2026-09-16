@@ -18,6 +18,7 @@ otel-arrow-dfe-otap = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true, features = ["html_reports", "async_tokio"] }
+http = { workspace = true }
 tonic = { workspace = true }
 prost = { workspace = true }
 rdkafka.workspace = true

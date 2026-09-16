@@ -21,7 +21,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use otel_arrow_dfe_config::authorized_identity_policy::AuthorizedIdentityPolicy;
 use otel_arrow_dfe_config::transport_headers::TransportHeaders;
-use otel_arrow_dfe_config::{ContextEntryName, PortName, SignalFormat, SignalType};
+use otel_arrow_dfe_config::{PortName, SignalFormat, SignalType};
 use otel_arrow_dfe_engine::_private::AckNackRouting;
 use otel_arrow_dfe_engine::capability::auth::{AuthorizedIdentity, ClaimValue};
 use otel_arrow_dfe_engine::control::{
@@ -37,91 +37,293 @@ use otel_arrow_dfe_engine::{
 };
 use otel_arrow_dfe_pdata::OtapPayload;
 
+const AUTHORIZED_ENTRY_LEN: usize = 20;
+const AUTHORIZED_VALUE_LEN: usize = 8;
+
 /// A verified authorization claim stored under a configured context entry name.
-#[derive(Clone, PartialEq, Eq)]
-pub struct AuthorizedIdentityEntry {
-    name: ContextEntryName,
-    value: ClaimValue,
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct AuthorizedIdentityEntry<'a> {
+    name: &'a str,
+    value: AuthorizedClaimValue<'a>,
 }
 
-impl fmt::Debug for AuthorizedIdentityEntry {
+impl fmt::Debug for AuthorizedIdentityEntry<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("AuthorizedIdentityEntry")
             .field("name", &self.name)
-            .field("value_count", &self.value.as_slice().len())
+            .field("value_count", &self.value.len())
             .finish()
     }
 }
 
-impl AuthorizedIdentityEntry {
+impl<'a> AuthorizedIdentityEntry<'a> {
     /// Returns the configured context entry name.
     #[must_use]
-    pub fn name(&self) -> &ContextEntryName {
-        &self.name
+    pub const fn name(&self) -> &'a str {
+        self.name
     }
 
     /// Returns the verified claim value without flattening its cardinality.
     #[must_use]
-    pub fn value(&self) -> &ClaimValue {
-        &self.value
+    pub const fn value(&self) -> AuthorizedClaimValue<'a> {
+        self.value
     }
+}
+
+/// Borrowed single- or multi-valued authorized claim.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct AuthorizedClaimValue<'a> {
+    storage: &'a PackedAuthorizedIdentity,
+    first_value: usize,
+    value_count: usize,
+    many: bool,
+}
+
+impl fmt::Debug for AuthorizedClaimValue<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AuthorizedClaimValue")
+            .field("value_count", &self.value_count)
+            .field("many", &self.many)
+            .finish()
+    }
+}
+
+impl<'a> AuthorizedClaimValue<'a> {
+    /// Returns the single value, or `None` when the source claim was multi-valued.
+    #[must_use]
+    pub fn as_str(&self) -> Option<&'a str> {
+        (!self.many && self.value_count == 1)
+            .then(|| self.storage.value(self.first_value))
+            .flatten()
+    }
+
+    /// Iterates values in source order.
+    pub fn values(&self) -> impl Iterator<Item = &'a str> + '_ {
+        (0..self.value_count)
+            .filter_map(move |offset| self.storage.value(self.first_value + offset))
+    }
+
+    /// Returns the number of values.
+    #[must_use]
+    pub const fn len(&self) -> usize {
+        self.value_count
+    }
+
+    /// Returns whether the claim contains no values.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.value_count == 0
+    }
+
+    /// Returns whether the source claim used multi-valued cardinality.
+    #[must_use]
+    pub const fn is_many(&self) -> bool {
+        self.many
+    }
+}
+
+#[derive(PartialEq, Eq)]
+struct PackedAuthorizedIdentity {
+    bytes: Box<[u8]>,
+    entry_count: usize,
+    value_count: usize,
 }
 
 /// Immutable authorization-derived context entries.
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct AuthorizedIdentityEntries {
-    entries: Arc<Vec<AuthorizedIdentityEntry>>,
+    packed: Option<Arc<PackedAuthorizedIdentity>>,
 }
 
 impl fmt::Debug for AuthorizedIdentityEntries {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("AuthorizedIdentityEntries")
-            .field("entries", &self.entries)
+            .field("entries", &self.iter().collect::<Vec<_>>())
             .finish()
     }
 }
 
 impl AuthorizedIdentityEntries {
     fn capture(policy: &AuthorizedIdentityPolicy, identity: &AuthorizedIdentity) -> Option<Self> {
-        let entries = policy
-            .iter()
-            .filter_map(|projection| {
-                identity
-                    .claim(&projection.claim)
-                    .cloned()
-                    .map(|value| AuthorizedIdentityEntry {
-                        name: projection.store_as.clone(),
-                        value,
-                    })
-            })
-            .collect::<Vec<_>>();
-        (!entries.is_empty()).then(|| Self {
-            entries: Arc::new(entries),
+        PackedAuthorizedIdentity::capture(policy, identity).map(|packed| Self {
+            packed: Some(Arc::new(packed)),
         })
     }
 
     /// Returns the number of captured entries.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.entries.len()
+        self.packed.as_ref().map_or(0, |packed| packed.entry_count)
     }
 
     /// Returns whether no entries were captured.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
+        self.len() == 0
     }
 
     /// Iterates over captured entries in policy order.
-    pub fn iter(&self) -> impl Iterator<Item = &AuthorizedIdentityEntry> {
-        self.entries.iter()
+    pub fn iter(&self) -> impl Iterator<Item = AuthorizedIdentityEntry<'_>> {
+        (0..self.len()).filter_map(|index| self.packed.as_deref()?.entry(index))
     }
 
     /// Finds an entry by exact configured name.
     #[must_use]
-    pub fn get(&self, name: &str) -> Option<&AuthorizedIdentityEntry> {
-        self.entries.iter().find(|entry| entry.name == name)
+    pub fn get(&self, name: &str) -> Option<AuthorizedIdentityEntry<'_>> {
+        self.iter().find(|entry| entry.name == name)
     }
+}
+
+impl PackedAuthorizedIdentity {
+    fn capture(policy: &AuthorizedIdentityPolicy, identity: &AuthorizedIdentity) -> Option<Self> {
+        let mut entry_count = 0usize;
+        let mut value_count = 0usize;
+        let mut blob_len = 0usize;
+        for projection in policy.iter() {
+            let Some(claim) = identity.claim(&projection.claim) else {
+                continue;
+            };
+            entry_count = entry_count
+                .checked_add(1)
+                .expect("authorized identity entry count overflow");
+            value_count = value_count
+                .checked_add(claim.as_slice().len())
+                .expect("authorized identity value count overflow");
+            blob_len = claim
+                .as_slice()
+                .iter()
+                .try_fold(
+                    blob_len
+                        .checked_add(projection.store_as.as_str().len())
+                        .expect("authorized identity blob length overflow"),
+                    |total, value| total.checked_add(value.len()),
+                )
+                .expect("authorized identity blob length overflow");
+        }
+        if entry_count == 0 {
+            return None;
+        }
+        let entry_bytes = entry_count
+            .checked_mul(AUTHORIZED_ENTRY_LEN)
+            .expect("authorized identity entry descriptor length overflow");
+        let value_bytes = value_count
+            .checked_mul(AUTHORIZED_VALUE_LEN)
+            .expect("authorized identity value descriptor length overflow");
+        let descriptor_len = entry_bytes
+            .checked_add(value_bytes)
+            .expect("authorized identity descriptor length overflow");
+        let mut bytes = vec![
+            0;
+            descriptor_len
+                .checked_add(blob_len)
+                .expect("authorized identity packed length overflow")
+        ];
+        let mut blob_at = descriptor_len;
+        let mut value_index = 0;
+
+        let mut entry_index = 0;
+        for projection in policy.iter() {
+            let Some(claim) = identity.claim(&projection.claim) else {
+                continue;
+            };
+            let entry_at = entry_index * AUTHORIZED_ENTRY_LEN;
+            let name_range = write_context_blob(
+                &mut bytes,
+                &mut blob_at,
+                projection.store_as.as_str().as_bytes(),
+            )
+            .expect("preallocated authorized identity name range");
+            write_context_range(&mut bytes, entry_at, name_range)
+                .expect("authorized identity name range fits descriptor");
+            write_context_u32(&mut bytes, entry_at + 8, value_index)
+                .expect("authorized identity first value fits descriptor");
+            write_context_u32(&mut bytes, entry_at + 12, claim.as_slice().len())
+                .expect("authorized identity value count fits descriptor");
+            bytes[entry_at + 16] = u8::from(matches!(claim, ClaimValue::Many(_)));
+
+            for value in claim.as_slice() {
+                let range = write_context_blob(&mut bytes, &mut blob_at, value.as_bytes())
+                    .expect("preallocated authorized identity value range");
+                let value_at = entry_bytes + value_index * AUTHORIZED_VALUE_LEN;
+                write_context_range(&mut bytes, value_at, range)
+                    .expect("authorized identity value range fits descriptor");
+                value_index += 1;
+            }
+            entry_index += 1;
+        }
+
+        Some(Self {
+            bytes: bytes.into_boxed_slice(),
+            entry_count,
+            value_count,
+        })
+    }
+
+    fn entry(&self, index: usize) -> Option<AuthorizedIdentityEntry<'_>> {
+        if index >= self.entry_count {
+            return None;
+        }
+        let at = index.checked_mul(AUTHORIZED_ENTRY_LEN)?;
+        let name = read_context_str(&self.bytes, read_context_range(&self.bytes, at)?)?;
+        let first_value = read_context_u32(&self.bytes, at + 8)?;
+        let value_count = read_context_u32(&self.bytes, at + 12)?;
+        let _ = first_value
+            .checked_add(value_count)
+            .filter(|end| *end <= self.value_count)?;
+        Some(AuthorizedIdentityEntry {
+            name,
+            value: AuthorizedClaimValue {
+                storage: self,
+                first_value,
+                value_count,
+                many: *self.bytes.get(at + 16)? != 0,
+            },
+        })
+    }
+
+    fn value(&self, index: usize) -> Option<&str> {
+        if index >= self.value_count {
+            return None;
+        }
+        let values_at = self.entry_count.checked_mul(AUTHORIZED_ENTRY_LEN)?;
+        let at = values_at.checked_add(index.checked_mul(AUTHORIZED_VALUE_LEN)?)?;
+        read_context_str(&self.bytes, read_context_range(&self.bytes, at)?)
+    }
+}
+
+fn write_context_blob(bytes: &mut [u8], at: &mut usize, value: &[u8]) -> Option<(usize, usize)> {
+    let start = *at;
+    let end = start.checked_add(value.len())?;
+    bytes.get_mut(start..end)?.copy_from_slice(value);
+    *at = end;
+    Some((start, value.len()))
+}
+
+fn write_context_range(bytes: &mut [u8], at: usize, range: (usize, usize)) -> Option<()> {
+    write_context_u32(bytes, at, range.0)?;
+    write_context_u32(bytes, at + 4, range.1)
+}
+
+fn write_context_u32(bytes: &mut [u8], at: usize, value: usize) -> Option<()> {
+    bytes
+        .get_mut(at..at.checked_add(4)?)?
+        .copy_from_slice(&u32::try_from(value).ok()?.to_le_bytes());
+    Some(())
+}
+
+fn read_context_range(bytes: &[u8], at: usize) -> Option<(usize, usize)> {
+    Some((
+        read_context_u32(bytes, at)?,
+        read_context_u32(bytes, at + 4)?,
+    ))
+}
+
+fn read_context_u32(bytes: &[u8], at: usize) -> Option<usize> {
+    Some(u32::from_le_bytes(bytes.get(at..at.checked_add(4)?)?.try_into().ok()?) as usize)
+}
+
+fn read_context_str(bytes: &[u8], range: (usize, usize)) -> Option<&str> {
+    std::str::from_utf8(bytes.get(range.0..range.0.checked_add(range.1)?)?).ok()
 }
 
 /// Context for OTAP requests.
@@ -2763,11 +2965,37 @@ mod test {
             .get("access_groups")
             .expect("groups destination exists")
             .value();
-        assert_eq!(
-            groups.as_slice(),
-            &["reader".to_string(), "writer".to_string()]
-        );
+        assert_eq!(groups.values().collect::<Vec<_>>(), ["reader", "writer"]);
+        assert!(groups.is_many());
         assert!(entries.get("missing_entry").is_none());
+    }
+
+    /// Scenario: one claim is encoded as `One` and another as one-element `Many`.
+    /// Guarantees: packed storage preserves cardinality instead of inferring it from count.
+    #[test]
+    fn authorized_identity_capture_preserves_single_value_cardinality() {
+        let policy: AuthorizedIdentityPolicy = serde_json::from_value(serde_json::json!([
+            {"claim": "sub", "store_as": "subject"},
+            {"claim": "groups", "store_as": "groups"}
+        ]))
+        .expect("valid authorized identity policy");
+        let identity = AuthorizedIdentity::new()
+            .with_subject("reader")
+            .with_claim_values("groups", ["reader"]);
+        let mut pdata = create_test_pdata();
+
+        pdata.capture_authorized_identity(&policy, &identity);
+
+        let entries = pdata
+            .authorized_identity_entries()
+            .expect("selected claims captured");
+        let subject = entries.get("subject").expect("subject entry").value();
+        let groups = entries.get("groups").expect("groups entry").value();
+        assert_eq!(subject.as_str(), Some("reader"));
+        assert!(!subject.is_many());
+        assert_eq!(groups.as_str(), None);
+        assert!(groups.is_many());
+        assert_eq!(groups.values().collect::<Vec<_>>(), ["reader"]);
     }
 
     /// Scenario: pdata carries authorized identity entries captured from
