@@ -111,7 +111,7 @@ const SUPPORTED_ARROW_PAYLOAD_TYPES: &[ArrowPayloadType] = &[
 pub struct ClickhouseExporter {
     config: Config,
     pdata_metrics: MeasurementMetricSet<ExporterExportMetrics>,
-    ch_metrics: MetricSet<ClickhouseExporterMetrics>,
+    ch_metrics: ClickhouseExporterMetrics,
 }
 
 impl ClickhouseExporter {
@@ -120,7 +120,7 @@ impl ClickhouseExporter {
         pipeline_ctx: PipelineContext,
         config: &serde_json::Value,
     ) -> Result<Self, otel_arrow_dfe_config::error::Error> {
-        let ch_metrics = pipeline_ctx.register_metrics::<ClickhouseExporterMetrics>();
+        let ch_metrics = ClickhouseExporterMetrics::new(&pipeline_ctx);
         let pdata_metrics = ExporterExportMetrics::register(&pipeline_ctx);
 
         let patch: ConfigPatch = serde_json::from_value(config.clone()).map_err(|e| {
@@ -146,7 +146,7 @@ impl ClickhouseExporter {
     fn terminal_state(
         deadline: Instant,
         mut pdata_metrics: MeasurementMetricSet<ExporterExportMetrics>,
-        ch_metrics: MetricSet<ClickhouseExporterMetrics>,
+        ch_metrics: ClickhouseExporterMetrics,
     ) -> TerminalState {
         let mut snapshots = Vec::new();
 
@@ -354,7 +354,7 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
                     mut metrics_reporter,
                 }) => {
                     _ = metrics_reporter.report_measurement(&mut self.pdata_metrics);
-                    _ = metrics_reporter.report(&mut self.ch_metrics);
+                    _ = self.ch_metrics.report(&mut metrics_reporter);
                 }
                 Message::PData(pdata) => {
                     let export_started_at = Instant::now();
