@@ -421,11 +421,7 @@ mod tests {
     /// Reads one metric from the shared `exporter.attempted` snapshot for a
     /// given outcome bucket. Lets tests assert the optional `items`,
     /// `payload.size`, and `duration` instruments in addition to `messages`.
-    fn attempted_metric(
-        snapshots: &[MetricSetSnapshot],
-        outcome: Outcome,
-        metric: &str,
-    ) -> u64 {
+    fn attempted_metric(snapshots: &[MetricSetSnapshot], outcome: Outcome, metric: &str) -> u64 {
         let outcome = match outcome {
             Outcome::Success => "success",
             Outcome::Failure => "failure",
@@ -457,11 +453,7 @@ mod tests {
     /// non-empty observation for `metric` in the given outcome bucket. Works
     /// for the `duration` histogram, whose distribution value cannot be read
     /// with `to_u64_lossy`.
-    fn attempted_recorded(
-        snapshots: &[MetricSetSnapshot],
-        outcome: Outcome,
-        metric: &str,
-    ) -> bool {
+    fn attempted_recorded(snapshots: &[MetricSetSnapshot], outcome: Outcome, metric: &str) -> bool {
         let outcome = match outcome {
             Outcome::Success => "success",
             Outcome::Failure => "failure",
