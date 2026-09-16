@@ -291,9 +291,11 @@ Result:
 The receiver reports bounded, enum-based measurement attributes across both
 protocols:
 
-- `receiver.otlp.requests.started`, `completed`, and `payload_size` use
-  `signal` and `protocol`.
-- `receiver.otlp.rejections.requests` uses `protocol` and `error.type`.
+- `receiver.otlp.requests.accepted` uses `signal` and `protocol`.
+- `receiver.otlp.requests.rejected` uses `protocol` and `error.type`.
+- `receiver.received.messages` and `receiver.received.payload.size` use
+  `signal` and `outcome`.
+- `receiver.processing.duration` uses `signal`.
 - `receiver.otlp.acknowledgements.responses` uses `signal` and `outcome`.
 - `receiver.otlp.transport.errors` uses `protocol`.
 
