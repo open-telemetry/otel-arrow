@@ -1,0 +1,16 @@
+[package]
+name = "otel-arrow-dfe-scraper"
+description = "Shared scraper runtimes for OTAP receivers"
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+license.workspace = true
+readme = "README.md"
+publish = true
+keywords = ["telemetry", "opentelemetry", "otlp", "database", "scraper"]
+categories = ["asynchronous", "database"]
+edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true

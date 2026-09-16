@@ -7922,6 +7922,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "otel-arrow-dfe-scraper"
+version = "0.56.0"
+
+[[package]]
 name = "otel-arrow-dfe-state"
 version = "0.56.0"
 dependencies = [

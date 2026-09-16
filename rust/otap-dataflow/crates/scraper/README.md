@@ -1,0 +1,32 @@
+# Shared scraper infrastructure
+
+This crate is the shared, database-neutral home for OTAP receiver scraping.
+The initial change establishes the crate and dependency boundary only: it does
+not implement polling, open database connections, register a receiver, or enable
+new behavior in `df_engine`.
+
+## Dependency boundary
+
+- Database receiver modules in `contrib-nodes` may depend on shared scraper
+  contracts and their own optional database drivers.
+- Shared scraper code must not depend on a vendor receiver or database driver.
+- The executable composes registered components and owns application startup.
+- Helm charts, container images, and installation scripts are deployment assets,
+  not dependencies of the shared runtime.
+- Runtime integration reuses the existing engine, telemetry, and pdata APIs.
+  Local async contracts preserve the engine's thread-per-core model.
+
+## Follow-on changes
+
+Introduce database-neutral query, row, cursor, and driver contracts before adding
+business logic. The polling controller first depends on abstract progress and
+ownership contracts; filesystem implementations follow separately.
+Add vendor-specific adapters last, behind
+optional features, without duplicating the shared polling and delivery runtime.
+
+Database authentication through extension capabilities is a separate follow-up,
+not a new credential mechanism introduced by this skeleton.
+
+See [the database receiver RFC](https://github.com/open-telemetry/otel-arrow/issues/3918)
+for the broader design. This crate scaffold does not claim that the full RFC is
+implemented.
