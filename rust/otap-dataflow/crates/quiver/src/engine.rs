@@ -1574,11 +1574,12 @@ impl QuiverEngine {
                 return Ok(());
             }
             if state.next_seq >= state.reserved_through {
-                Some(state.next_seq.checked_add(SEQ_RESERVATION_BATCH).ok_or(
-                    QuiverError::SegmentSequenceExhausted {
+                if state.next_seq == u64::MAX {
+                    return Err(QuiverError::SegmentSequenceExhausted {
                         next_seq: state.next_seq,
-                    },
-                )?)
+                    });
+                }
+                Some(state.next_seq.saturating_add(SEQ_RESERVATION_BATCH))
             } else {
                 None
             }
@@ -7375,6 +7376,91 @@ mod tests {
         assert!(
             reopened.next_segment_seq() > highest_used,
             "a restarted engine must never reallocate a used sequence number"
+        );
+    }
+
+    /// Scenario: Only the final sequence number below `u64::MAX` remains when
+    /// finalization needs to refresh its durable reservation. This boundary is
+    /// not expected to be reachable in production; the test protects the
+    /// allocator arithmetic and exhaustion contract.
+    /// Guarantees: The partial reservation ending at the exclusive
+    /// `u64::MAX` floor permits sequence `u64::MAX - 1`, then reports
+    /// exhaustion without creating a segment at `u64::MAX`.
+    #[tokio::test]
+    async fn final_partial_sequence_reservation_uses_last_available_sequence() {
+        let dir = tempdir().expect("tempdir");
+        let segment_dir = dir.path().join("segments");
+        fs::create_dir_all(&segment_dir).expect("create segments dir");
+        let store = SegmentStore::new(&segment_dir);
+        store
+            .persist_next_seq(u64::MAX - 1)
+            .await
+            .expect("persist floor");
+
+        let config = QuiverConfig::builder()
+            .data_dir(dir.path())
+            .segment(SegmentConfig {
+                target_size_bytes: NonZeroU64::new(1_000_000).expect("non-zero"),
+                ..Default::default()
+            })
+            .durability(DurabilityMode::SegmentOnly)
+            .build()
+            .expect("config");
+        let engine = QuiverEngine::open(config, test_budget())
+            .await
+            .expect("engine");
+
+        engine
+            .ingest(&DummyBundle::with_rows(1))
+            .await
+            .expect("ingest final available sequence");
+        engine
+            .flush()
+            .await
+            .expect("final available sequence must be usable");
+
+        assert!(
+            engine
+                .segment_store()
+                .segment_sequences()
+                .contains(&SegmentSeq::new(u64::MAX - 1)),
+            "the final available sequence must be written"
+        );
+        assert_eq!(
+            engine.segment_store().read_persisted_next_seq(),
+            Some(u64::MAX),
+            "the exclusive durable floor must reserve the remaining range"
+        );
+        assert_eq!(
+            engine.next_segment_seq(),
+            u64::MAX,
+            "allocating the final available sequence must exhaust the space"
+        );
+
+        engine
+            .ingest(&DummyBundle::with_rows(1))
+            .await
+            .expect("retain bundle awaiting exhausted finalization");
+        let result = engine.flush().await;
+        assert!(
+            matches!(
+                result,
+                Err(QuiverError::SegmentSequenceExhausted { next_seq })
+                    if next_seq == u64::MAX
+            ),
+            "the next finalization must report sequence exhaustion, got {result:?}"
+        );
+        assert!(
+            !engine
+                .segment_store()
+                .segment_sequences()
+                .contains(&SegmentSeq::new(u64::MAX)),
+            "sequence u64::MAX must never be allocated"
+        );
+        assert_eq!(
+            engine.open_segment_bundle_count(),
+            1,
+            "the bundle must remain retained when sequence space is exhausted"
         );
     }
 
