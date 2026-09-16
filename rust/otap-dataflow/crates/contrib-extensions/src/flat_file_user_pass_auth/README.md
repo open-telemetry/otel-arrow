@@ -76,9 +76,9 @@ pipeline starts, so a mistake fails at startup rather than on the first export.
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
-| `username` | string | *required* | Token endpoint URL (RFC 6749 section 3.2). Must be non-empty. Use `https://` in production; `http://` is accepted but logs the `oauth2_client_auth.insecure_token_url` warning. |
-| `password_secret` | string | *none* | Client identifier. Required unless `password_secret_file` is set. |
+| `username` | string | *required* | Basic authentication username. Must be non-empty. |
+| `password_secret` | string | *none* | Password supplied inline. Required unless `password_secret_file` is set; prefer the file form for secrets. |
 | `password_secret_file` | path | *none* | File holding the password. Re-read on each acquisition; takes precedence over `password_secret`. |
-| `password_secret_file_refresh` | duration | `1h` | How often to refresh the `password_secret_file`. |
+| `password_secret_file_refresh` | duration | `1h` | How often to refresh the password file. |
 
 Duration fields accept human-readable values such as `30s`, `5m`, or `1h`.

@@ -53,7 +53,7 @@ contrib-extensions = ["azure-identity-auth-extension", "flat-file-user-pass-auth
 # Azure Identity authentication extension (BearerTokenProvider capability).
 azure-identity-auth-extension = ["dep:azure_core", "dep:azure_identity", "dep:humantime-serde", "dep:rand"]
 # Flat file user pass authentication extension (BasicAuthProvider capability)
-flat-file-user-pass-auth-extension = ["dep:humantime-serde"]
+flat-file-user-pass-auth-extension = ["dep:humantime-serde", "dep:secrecy"]
 # Kubernetes service-account-token authorizer extension (BearerTokenAuthorizer
 # capability) validating tokens via the Kubernetes TokenReview API.
 k8s-service-account-token-auth-extension = ["dep:kube", "dep:k8s-openapi", "dep:humantime-serde", "dep:sha2"]

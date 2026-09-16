@@ -125,7 +125,7 @@ fn create(
 #[distributed_slice(OTAP_EXTENSION_FACTORIES)]
 pub static FLAT_FILE_USER_PASS_AUTH_EXTENSION: ExtensionFactory = ExtensionFactory {
     name: FLAT_FILE_USER_PASS_AUTH_URN,
-    description: "Active+Shared extension exposing BasicAuthProvider via the suppied username and password",
+    description: "Active+Shared extension exposing BasicAuthProvider via the supplied username and password",
     documentation_url: "",
     capabilities: Some(extension_capabilities!(
         shared: FlatFileUserPassAuthExtension => [BasicAuthProvider]
