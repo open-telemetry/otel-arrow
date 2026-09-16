@@ -26,6 +26,9 @@ pub use otap::OtapArrowRecords;
 pub use otlp::OtlpProtoBytes;
 pub use payload::{OtapPayload, OtapPayloadHelpers, PayloadData};
 
+// Re-export dependencies that are part of OTAP pdata public API
+pub use arrow;
+
 /// Testing support
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
