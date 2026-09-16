@@ -218,6 +218,12 @@ pub struct QuiverEngine {
     cumulative_wal_bytes: AtomicU64,
     /// Cumulative bytes written to segments (never decreases, even after cleanup).
     cumulative_segment_bytes: AtomicU64,
+    /// Segment bytes charged after file creation but before store registration.
+    ///
+    /// Normally this returns to zero immediately. Startup rollback uses it to
+    /// release a replayed segment charge when cursor persistence fails before
+    /// the segment can be registered.
+    unregistered_segment_bytes: AtomicU64,
     /// Count of segments force-dropped due to DropOldest policy.
     force_dropped_segments: AtomicU64,
     /// Count of bundles lost due to force-dropped segments.
@@ -687,6 +693,7 @@ impl QuiverEngine {
             segments_finalized: AtomicU64::new(recovered_segments),
             cumulative_wal_bytes: AtomicU64::new(0),
             cumulative_segment_bytes: AtomicU64::new(0),
+            unregistered_segment_bytes: AtomicU64::new(0),
             force_dropped_segments: AtomicU64::new(0),
             force_dropped_bundles: AtomicU64::new(0),
             force_dropped_items: AtomicU64::new(0),
@@ -1696,6 +1703,9 @@ impl QuiverEngine {
         // Record the segment's bytes in the budget.
         // This is safe: the soft_cap reserves headroom for exactly this.
         self.budget.add(bytes_written);
+        let _ = self
+            .unregistered_segment_bytes
+            .fetch_add(bytes_written, Ordering::Relaxed);
 
         // Advance WAL cursor now that segment is durable
         {
@@ -1715,7 +1725,12 @@ impl QuiverEngine {
         // Register segment with store (triggers subscriber notification).
         // Budget was already recorded above, so register_segment will skip
         // duplicate accounting (the file size was already added).
-        let _ = self.segment_store.register_new_segment(seq);
+        if self.segment_store.register_new_segment(seq).is_ok() {
+            let previously_unregistered = self
+                .unregistered_segment_bytes
+                .fetch_sub(bytes_written, Ordering::Relaxed);
+            debug_assert!(previously_unregistered >= bytes_written);
+        }
 
         Ok(())
     }
@@ -2327,6 +2342,8 @@ impl QuiverEngine {
     async fn rollback_startup_budget(&self) {
         let wal_writer = self.wal_writer.lock().await;
         rollback_startup_budget(&self.budget, &wal_writer, &self.segment_store);
+        self.budget
+            .remove(self.unregistered_segment_bytes.swap(0, Ordering::Relaxed));
     }
 }
 
@@ -6625,6 +6642,71 @@ mod tests {
             budget.used(),
             baseline_usage,
             "failed startup must preserve only unrelated shared-budget usage"
+        );
+    }
+
+    /// Scenario: WAL replay writes and charges a segment, then cursor
+    /// persistence fails before the segment is registered.
+    /// Guarantees: Failed startup releases the unregistered segment charge
+    /// along with WAL and registered-segment charges, preserving unrelated
+    /// usage in a shared budget so a retry does not inherit stale accounting.
+    #[tokio::test]
+    async fn wal_replay_cursor_failure_rolls_back_unregistered_segment_bytes() {
+        let dir = tempdir().expect("tempdir");
+        let target_size_bytes = NonZeroU64::new(100).expect("non-zero");
+        let config = QuiverConfig::builder()
+            .data_dir(dir.path())
+            .segment(SegmentConfig {
+                target_size_bytes,
+                ..Default::default()
+            })
+            .durability(DurabilityMode::Wal)
+            .build()
+            .expect("config");
+
+        {
+            let engine = QuiverEngine::open(config.clone(), test_budget())
+                .await
+                .expect("seed engine");
+            let blocker = dir
+                .path()
+                .join("segments")
+                .join(crate::segment_store::SEQ_SIDECAR_FILENAME);
+            fs::create_dir(&blocker).expect("block sequence sidecar");
+
+            assert!(
+                engine.ingest(&DummyBundle::with_rows(50)).await.is_err(),
+                "reservation failure must leave the bundle only in the WAL"
+            );
+            fs::remove_dir(&blocker).expect("unblock sequence sidecar");
+        }
+
+        let budget = test_budget();
+        let baseline_usage = 1234;
+        budget.add(baseline_usage);
+        WalWriter::test_inject_cursor_persist_failure();
+
+        let result = QuiverEngine::open(config.clone(), budget.clone()).await;
+        assert!(
+            result.is_err(),
+            "injected cursor persistence failure must abort WAL replay startup"
+        );
+        assert_eq!(
+            budget.used(),
+            baseline_usage,
+            "failed replay startup must release the unregistered segment charge"
+        );
+
+        let reopened = QuiverEngine::open(config, budget.clone())
+            .await
+            .expect("retry open");
+        assert!(
+            reopened.segment_store().segment_count() > 0,
+            "retry must recover the segment left by failed replay"
+        );
+        assert!(
+            budget.used() > baseline_usage,
+            "successful retry must charge the files it recovered"
         );
     }
 

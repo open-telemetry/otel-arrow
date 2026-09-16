@@ -665,6 +665,11 @@ impl WalWriter {
             .await
     }
 
+    #[cfg(test)]
+    pub(crate) fn test_inject_cursor_persist_failure() {
+        test_support::inject_crash(test_support::CrashInjection::BeforeSidecarRename);
+    }
+
     /// Returns the number of WAL file rotations performed during this writer's lifetime.
     pub(crate) const fn rotation_count(&self) -> u64 {
         self.coordinator.rotation_count
