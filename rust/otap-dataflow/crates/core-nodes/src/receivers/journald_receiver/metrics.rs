@@ -139,7 +139,7 @@ impl JournaldReceiverMetrics {
             acknowledgements: JournaldAcknowledgmentMetrics::register(pipeline_ctx),
             checkpoints: JournaldCheckpointMetrics::register(pipeline_ctx),
             source_errors: JournaldSourceErrorMetrics::register(pipeline_ctx),
-            output: pipeline_ctx.register_metrics::<JournaldOutputMetrics>(),
+            output: JournaldOutputMetricspipeline_ctx.register_metrics::<>(),
         }
     }
 
