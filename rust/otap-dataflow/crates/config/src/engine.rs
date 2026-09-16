@@ -446,6 +446,7 @@ impl EngineObservabilityPolicies {
             resources: None,
             runtime_recovery: None,
             transport_headers: None,
+            authorized_identity: None,
         }
     }
 
@@ -2848,8 +2849,12 @@ groups:
         );
     }
 
+    /// Scenario: top-level transport-header and authorized-identity policies
+    /// are resolved with the internal observability pipeline.
+    /// Guarantees: internal observability excludes user-facing receiver
+    /// policies while regular pipelines continue to inherit them.
     #[test]
-    fn resolve_observability_pipeline_has_no_transport_headers() {
+    fn resolve_observability_pipeline_has_no_user_facing_receiver_policies() {
         let yaml = r#"
 version: otel_dataflow/v1
 policies:
@@ -2857,6 +2862,9 @@ policies:
     header_capture:
       headers:
         - match_names: ["x-engine-header"]
+  authorized_identity:
+    - claim: sub
+      store_as: customer_id
 engine:
   observability:
     pipeline:
@@ -2888,8 +2896,6 @@ groups:
         let config = OtelDataflowSpec::from_yaml(yaml).expect("should parse");
         let resolved = config.resolve();
 
-        // The observability pipeline should NOT inherit transport_headers from
-        // the engine level (it's explicitly set to None during resolution).
         let obs = resolved
             .pipelines
             .iter()
@@ -2899,8 +2905,11 @@ groups:
             obs.policies.transport_headers.is_none(),
             "observability pipeline should not have transport_headers"
         );
+        assert!(
+            obs.policies.authorized_identity.is_none(),
+            "observability pipeline should not have authorized_identity"
+        );
 
-        // Regular pipelines should still inherit engine-level transport_headers.
         let main = resolved
             .pipelines
             .iter()
@@ -2909,6 +2918,10 @@ groups:
         assert!(
             main.policies.transport_headers.is_some(),
             "regular pipelines should inherit transport_headers from engine level"
+        );
+        assert!(
+            main.policies.authorized_identity.is_some(),
+            "regular pipelines should inherit authorized_identity from engine level"
         );
     }
 
