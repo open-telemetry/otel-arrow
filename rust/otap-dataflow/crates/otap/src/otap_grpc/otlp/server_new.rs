@@ -364,20 +364,6 @@ impl OtapBatchService {
     }
 }
 
-/// Records request completion when the gRPC future returns or is cancelled.
-struct RequestCompletionGuard {
-    metrics: Arc<Mutex<OtlpReceiverMetrics>>,
-    signal: SignalType,
-}
-
-impl Drop for RequestCompletionGuard {
-    fn drop(&mut self) {
-        self.metrics
-            .lock()
-            .record_request_completed(self.signal, OtlpProtocol::Grpc);
-    }
-}
-
 /// Guard mechanism for cancelling a slot when Tonic timeout
 /// drops the future.
 pub(crate) struct SlotGuard {
@@ -425,29 +411,29 @@ impl UnaryService<OtapPdata> for OtapBatchService {
                 AdmissionDecision::Admit => {}
                 AdmissionDecision::WouldThrottle => {}
                 AdmissionDecision::Throttle { retry_after_secs } => {
-                    rate_limit.metrics.lock().record_rejection(
-                        OtlpProtocol::Grpc,
-                        ReceiverRejectionErrorType::RateLimit,
-                    );
-                    return Box::pin(std::future::ready(Err(grpc_rate_limit_status(
-                        retry_after_secs,
-                    ))));
+                    return Box::pin(std::future::ready(Err(
+                        OtlpReceiverMetrics::record_rate_limit_refusal(
+                            &rate_limit.metrics,
+                            self.signal,
+                            OtlpProtocol::Grpc,
+                            payload_size.expect("rate-limit payload size was validated"),
+                            grpc_rate_limit_status(retry_after_secs),
+                        ),
+                    )));
                 }
                 AdmissionDecision::Oversized => {
-                    rate_limit.metrics.lock().record_rejection(
-                        OtlpProtocol::Grpc,
-                        ReceiverRejectionErrorType::RateLimit,
-                    );
                     return Box::pin(std::future::ready(Err(
-                        grpc_rate_limit_burst_exceeded_status(),
+                        OtlpReceiverMetrics::record_rate_limit_refusal(
+                            &rate_limit.metrics,
+                            self.signal,
+                            OtlpProtocol::Grpc,
+                            payload_size.expect("rate-limit payload size was validated"),
+                            grpc_rate_limit_burst_exceeded_status(),
+                        ),
                     )));
                 }
             }
         }
-
-        // Payload size is required only by byte admission. When admission is
-        // disabled, missing optional size telemetry must never reject traffic.
-        let payload_bytes = payload_size.and_then(|size| u64::try_from(size).ok());
 
         // Propagate the receiver-observed peer address so downstream processors
         // (e.g. k8sattributes) can correlate telemetry with the originating socket.
@@ -491,35 +477,45 @@ impl UnaryService<OtapPdata> for OtapBatchService {
         let metrics = self.metrics.clone();
         let signal = self.signal;
         Box::pin(async move {
-            let cancel_rx = if let Some(state) = state {
-                let (key, rx) = match state.allocate_slot() {
-                    None => {
-                        metrics.lock().record_rejection(
-                            OtlpProtocol::Grpc,
-                            ReceiverRejectionErrorType::ConcurrencyLimit,
-                        );
-                        return Err(Status::resource_exhausted("Too many concurrent requests"));
-                    }
-                    Some(pair) => pair,
+            let processing = metrics.lock().boundary.processing();
+            let completed = processing.run(|processing| {
+                if let Some(payload_size) = payload_size {
+                    processing.set_payload_size_with(|| payload_size);
+                }
+
+                let cancel_rx = if let Some(state) = state {
+                    let (key, rx) = match state.allocate_slot() {
+                        None => {
+                            metrics.lock().record_rejection(
+                                OtlpProtocol::Grpc,
+                                ReceiverRejectionErrorType::ConcurrencyLimit,
+                            );
+                            return Err(processing.refused(
+                                signal,
+                                Status::resource_exhausted("Too many concurrent requests"),
+                            ));
+                        }
+                        Some(pair) => pair,
+                    };
+
+                    // Enter the subscription. Slot key becomes calldata.
+                    effect_handler.subscribe_to(
+                        Interests::ACKS | Interests::NACKS,
+                        key.into(),
+                        &mut otap_batch,
+                    );
+                    Some((SlotGuard { key, state }, rx))
+                } else {
+                    None
                 };
 
-                // Enter the subscription. Slot key becomes calldata.
-                effect_handler.subscribe_to(
-                    Interests::ACKS | Interests::NACKS,
-                    key.into(),
-                    &mut otap_batch,
-                );
-                Some((SlotGuard { key, state }, rx))
-            } else {
-                None
-            };
-
-            metrics
-                .lock()
-                .record_request_admitted(signal, OtlpProtocol::Grpc, payload_bytes);
-            let _completion_guard = RequestCompletionGuard {
-                metrics: metrics.clone(),
-                signal,
+                Ok((signal, (otap_batch, cancel_rx)))
+            });
+            let (otap_batch, cancel_rx) = {
+                let mut metrics = metrics.lock();
+                let result = metrics.boundary.record(completed)?;
+                metrics.record_request_admitted(signal, OtlpProtocol::Grpc);
+                result
             };
 
             // Send and wait for Ack/Nack
@@ -926,8 +922,8 @@ mod tests {
     use otel_arrow_dfe_engine::control::runtime_ctrl_msg_channel;
     use otel_arrow_dfe_engine::shared::message::SharedSender;
     use otel_arrow_dfe_engine::testing::test_node;
+    use otel_arrow_dfe_engine::testing::test_pipeline_ctx_with_interests;
     use otel_arrow_dfe_pdata::OtlpProtoBytes;
-    use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
     use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
     use std::collections::HashMap;
     use tokio::sync::mpsc as tokio_mpsc;
@@ -1010,10 +1006,8 @@ mod tests {
     }
 
     fn new_test_metrics() -> Arc<Mutex<OtlpReceiverMetrics>> {
-        let registry = TelemetryRegistryHandle::new();
-        let controller = otel_arrow_dfe_engine::context::ControllerContext::new(registry);
-        let pipeline_ctx =
-            controller.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let (pipeline_ctx, _registry) =
+            test_pipeline_ctx_with_interests(Interests::NODE_OUTPUT_METRICS | Interests::NODE_SIZE);
         Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx)))
     }
 
@@ -1287,6 +1281,121 @@ mod tests {
         assert!(status.message().contains("does not expose"));
     }
 
+    /// Scenario: a non-empty gRPC request exceeds the configured weighted rate-limit burst.
+    /// Guarantees: the request is refused and its shared receiver message and payload bytes are recorded.
+    #[tokio::test]
+    async fn weighted_rate_limit_rejection_records_grpc_boundary_metrics() {
+        use otel_arrow_dfe_config::policy::{
+            RateLimitAggregation, RateLimitEnforcement, RateLimitPressure, RateLimitUnit,
+            RateLimiterPolicy, TokenBucketPolicy,
+        };
+        use otel_arrow_dfe_engine::admission::{AdmissionBinder, AdmissionDimension};
+        use otel_arrow_dfe_engine::memory_limiter::{
+            MemoryPressureChanged, MemoryPressureLevel, MemoryPressureState,
+            SharedReceiverAdmissionState,
+        };
+
+        let metrics = new_test_metrics();
+        let memory_pressure_state = MemoryPressureState::default();
+        let admission_state =
+            SharedReceiverAdmissionState::from_process_state(&memory_pressure_state);
+        admission_state.apply(MemoryPressureChanged {
+            generation: 1,
+            level: MemoryPressureLevel::Soft,
+            retry_after_secs: 1,
+            usage_bytes: 0,
+        });
+        let policy = RateLimiterPolicy {
+            enforcement: RateLimitEnforcement::Enforce,
+            aggregation: RateLimitAggregation::ReceiverInstance,
+            unit: RateLimitUnit::RequestBytes,
+            pressure: RateLimitPressure::Soft,
+            token_bucket: TokenBucketPolicy {
+                allow: 1,
+                interval: std::time::Duration::from_secs(1),
+                burst: Some(1),
+            },
+        };
+        let rate_limiter = AdmissionBinder::configured("test", policy)
+            .bind_shared(AdmissionDimension::Bytes, admission_state)
+            .expect("bind test admission")
+            .expect("configured test admission");
+        let (msg_tx, mut msg_rx) = tokio_mpsc::channel(1);
+        let mut senders = HashMap::new();
+        let _ = senders.insert("default".into(), SharedSender::mpsc(msg_tx));
+        let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(1);
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let effect_handler = EffectHandler::new(
+            test_node("grpc_rate_limit_metrics"),
+            senders,
+            None,
+            ctrl_tx,
+            metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+        );
+        let mut service = OtapBatchService::new(
+            effect_handler,
+            None,
+            metrics.clone(),
+            SignalType::Logs,
+            Some(GrpcRateLimitContext {
+                rate_limiter,
+                metrics: metrics.clone(),
+            }),
+        );
+        let payload = Bytes::from_static(b"grpc-rate-limited-payload");
+        let payload_bytes = payload.len() as u64;
+        let pdata = OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(payload).into());
+
+        let result = UnaryService::call(&mut service, tonic::Request::new(pdata)).await;
+
+        assert_eq!(
+            result.expect_err("request rejected").code(),
+            Code::ResourceExhausted
+        );
+        assert!(msg_rx.try_recv().is_err());
+        let mut metrics = metrics.lock();
+        assert_eq!(
+            metrics
+                .rejections_for(OtlpProtocol::Grpc, ReceiverRejectionErrorType::RateLimit)
+                .requests
+                .get(),
+            1
+        );
+        assert_eq!(
+            metrics
+                .requests_for(SignalType::Logs, OtlpProtocol::Grpc)
+                .accepted
+                .get(),
+            0
+        );
+        let snapshots = metrics.boundary.terminal_snapshots();
+        assert!(snapshots.iter().any(|snapshot| {
+            snapshot.descriptor().name == "receiver.received"
+                && snapshot.measurement_attribute_value("signal") == Some("logs")
+                && snapshot.measurement_attribute_value("outcome") == Some("refused")
+                && snapshot
+                    .descriptor()
+                    .metrics
+                    .iter()
+                    .position(|metric| metric.name == "messages")
+                    .is_some_and(|index| snapshot.get_metrics()[index].to_u64_lossy() == 1)
+        }));
+        assert!(snapshots.iter().any(|snapshot| {
+            snapshot.descriptor().name == "receiver.received"
+                && snapshot.measurement_attribute_value("signal") == Some("logs")
+                && snapshot.measurement_attribute_value("outcome") == Some("refused")
+                && snapshot
+                    .descriptor()
+                    .metrics
+                    .iter()
+                    .position(|metric| metric.name == "payload.size")
+                    .is_some_and(|index| {
+                        snapshot.get_metrics()[index].to_u64_lossy() == payload_bytes
+                    })
+        }));
+    }
+
     /// Scenario: a permanent downstream NACK is converted to a gRPC status.
     /// Guarantees: the client receives `INTERNAL` with both the generic pipeline
     /// failure context and the specific permanent failure reason.
@@ -1345,8 +1454,8 @@ mod tests {
         );
     }
 
-    /// Scenario: A non-empty gRPC request does not require an acknowledgement slot.
-    /// Guarantees: Successful admission records its started, completed, and payload-byte values.
+    /// Scenario: A non-empty gRPC request is admitted with receiver size telemetry enabled.
+    /// Guarantees: The OTLP accepted counter and shared payload metric each record the request.
     #[tokio::test]
     async fn admitted_grpc_request_records_payload_bytes() {
         let metrics = new_test_metrics();
@@ -1359,17 +1468,29 @@ mod tests {
 
         assert!(result.is_ok());
         let _ = msg_rx.recv().await.expect("request forwarded downstream");
-        let metrics = metrics.lock();
+        let mut metrics = metrics.lock();
         let requests = metrics.requests_for(SignalType::Logs, OtlpProtocol::Grpc);
-        assert_eq!(requests.started.get(), 1);
-        assert_eq!(requests.completed.get(), 1);
-        assert_eq!(requests.payload_size.get(), payload_bytes);
+        assert_eq!(requests.accepted.get(), 1);
+        let snapshots = metrics.boundary.terminal_snapshots();
+        assert!(snapshots.iter().any(|snapshot| {
+            snapshot.descriptor().name == "receiver.received"
+                && snapshot.measurement_attribute_value("signal") == Some("logs")
+                && snapshot.measurement_attribute_value("outcome") == Some("success")
+                && snapshot
+                    .descriptor()
+                    .metrics
+                    .iter()
+                    .position(|metric| metric.name == "payload.size")
+                    .is_some_and(|index| {
+                        snapshot.get_metrics()[index].to_u64_lossy() == payload_bytes
+                    })
+        }));
     }
 
     /// Scenario: A non-empty gRPC request cannot allocate its acknowledgement slot.
-    /// Guarantees: The request is rejected without recording admission, completion, or payload bytes.
+    /// Guarantees: The request is rejected without incrementing the OTLP accepted counter.
     #[tokio::test]
-    async fn rejected_grpc_request_does_not_record_payload_bytes() {
+    async fn rejected_grpc_request_is_not_accepted() {
         let metrics = new_test_metrics();
         let (mut service, mut msg_rx) = new_test_service(Some(AckSlot::new(0)), metrics.clone());
         let payload = Bytes::from_static(b"grpc-rejected-payload");
@@ -1384,9 +1505,7 @@ mod tests {
         assert!(msg_rx.try_recv().is_err());
         let metrics = metrics.lock();
         let requests = metrics.requests_for(SignalType::Logs, OtlpProtocol::Grpc);
-        assert_eq!(requests.started.get(), 0);
-        assert_eq!(requests.completed.get(), 0);
-        assert_eq!(requests.payload_size.get(), 0);
+        assert_eq!(requests.accepted.get(), 0);
         assert_eq!(
             metrics
                 .rejections_for(
