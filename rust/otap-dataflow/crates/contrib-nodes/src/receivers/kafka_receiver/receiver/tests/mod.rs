@@ -18,12 +18,13 @@ use crate::common::kafka::node_harness::KafkaReceiverHarness;
 use crate::common::kafka::node_harness::node_metrics::{FoldedMetrics, metric_value};
 use crate::common::kafka::test::cluster::KafkaTestCluster;
 use crate::common::kafka::test::consumer::{RebalanceTrigger, committed_offset};
-use crate::common::kafka::test::producer::SendRecord;
+use crate::common::kafka::test::producer::{SendRecord, TestProducer};
 use crate::common::kafka::test::wait::poll_until;
 use crate::common::kafka::test::with_cluster;
 use otel_arrow_dfe_config::transport_headers_policy::{CaptureDefaults, CaptureRule};
 use otel_arrow_dfe_engine::context::ControllerContext;
 use otel_arrow_dfe_engine::control::RuntimeControlMsg;
+use otel_arrow_dfe_engine::terminal_state::TerminalState;
 use otel_arrow_dfe_pdata::OtlpProtoBytes;
 use otel_arrow_dfe_pdata::Producer;
 use otel_arrow_dfe_pdata::otap::{Logs, Metrics};
@@ -236,6 +237,16 @@ fn arrow_records_to_bytes(arrow_records: &mut OtapArrowRecords) -> Vec<u8> {
     bytes
 }
 
+/// Take the payload from `pdata` and convert it to `OtlpProtoBytes`, the common
+/// first step for tests that assert on the delivered signal's OTLP-proto bytes
+/// (e.g. via `matches!` on the request variant or `decode`).
+fn take_otlp_proto(pdata: &mut OtapPdata) -> OtlpProtoBytes {
+    pdata
+        .take_payload()
+        .try_into_with_default()
+        .expect("to OtlpProtoBytes")
+}
+
 /// Convert an `OtapPdata` (containing OTAP Arrow records) back to an OTLP
 /// `ExportTraceServiceRequest` so tests can assert against familiar protobuf
 /// structs instead of Arrow column internals.
@@ -245,6 +256,154 @@ fn otap_pdata_to_traces(pdata: &mut OtapPdata) -> ExportTraceServiceRequest {
         .try_into_with_default()
         .expect("OTAP -> OTLP conversion");
     ExportTraceServiceRequest::decode(otlp.as_bytes()).expect("decode OTLP traces")
+}
+
+// ---- Integration-test lifecycle helpers ----
+
+/// Encode the canonical two-span trace fixture into OTLP-proto wire bytes,
+/// ready to be produced to Kafka.
+fn encoded_trace_fixture() -> Vec<u8> {
+    let mut bytes = vec![];
+    create_traces_with_spans()
+        .encode(&mut bytes)
+        .expect("encode traces fixture");
+    bytes
+}
+
+/// Produce `count` keyed records (keys `{key_prefix}-{i}`) carrying `bytes` to
+/// `topic`, matching the canonical produce loop. The payload is opaque to this
+/// helper: callers pass pre-encoded bytes for any signal (OTLP-proto or OTAP,
+/// traces/logs/metrics), and nothing here encodes or validates them. The
+/// `key_prefix` only distinguishes records within Kafka (e.g. `rec`, or
+/// `pre`/`post` for multi-phase tests); no test asserts on the key value.
+/// `count` accepts any integer type (e.g. `usize` or `i64`) used by the calling
+/// test's record constant.
+async fn produce_records<C>(
+    producer: &TestProducer,
+    topic: &str,
+    count: C,
+    key_prefix: &str,
+    bytes: &[u8],
+) where
+    C: TryInto<usize>,
+    C::Error: std::fmt::Debug,
+{
+    let count = count.try_into().expect("record count fits in usize");
+    for i in 0..count {
+        let key = format!("{key_prefix}-{i}");
+        producer
+            .send_full(SendRecord::new(topic, bytes).key(key.as_bytes()))
+            .await
+            .expect("send record");
+    }
+}
+
+/// Start a manual-commit (no safety-net timer) traces receiver harness on the
+/// shared base builder for `group`/`topic`.
+fn start_manual_traces_receiver(
+    cluster: &KafkaTestCluster,
+    group: &str,
+    topic: &str,
+) -> KafkaReceiverHarness {
+    let cfg = manual_traces_config_no_timer(cluster.bootstrap_servers(), group, topic);
+    KafkaReceiverHarness::start(cluster, cfg)
+}
+
+/// Standard receiver teardown: request shutdown with a 5s deadline, then await
+/// the node's terminal stop. Consumes the harness.
+async fn shutdown_receiver(receiver: KafkaReceiverHarness) {
+    receiver.shutdown(Duration::from_secs(5));
+    receiver.await_stopped().await;
+}
+
+/// Request shutdown with `deadline`, then await and return the node's
+/// [`TerminalState`] so the caller can assert on its metrics/outcome. Consumes
+/// the harness. Use this instead of [`shutdown_receiver`] when the test needs
+/// the terminal state rather than a plain stop.
+async fn shutdown_and_terminal(
+    receiver: KafkaReceiverHarness,
+    deadline: Duration,
+) -> TerminalState {
+    receiver.shutdown(deadline);
+    receiver.await_terminal_state().await
+}
+
+/// Request shutdown with `deadline`, then await terminal state bounded by an
+/// outer `timeout`, panicking if the receiver does not terminate in time.
+/// Returns the wall-clock time elapsed since the shutdown request so the caller
+/// can assert termination was bounded by the deadline rather than an unrelated
+/// broker stall. Consumes the harness.
+async fn shutdown_bounded_terminal(
+    receiver: KafkaReceiverHarness,
+    deadline: Duration,
+    timeout: Duration,
+) -> Duration {
+    let shutdown_at = tokio::time::Instant::now();
+    receiver.shutdown(deadline);
+    let _terminal = tokio::time::timeout(timeout, receiver.await_terminal_state())
+        .await
+        .expect("receiver must terminate within the bounded outer timeout");
+    shutdown_at.elapsed()
+}
+
+/// Receive `n` pdata batches in order, acking each immediately. Used by tests
+/// that only need to drain and acknowledge a known count without inspecting the
+/// payloads. `n` accepts any integer type (e.g. `usize` or `i64`) used by the
+/// calling test's record constant.
+async fn recv_and_ack<C>(receiver: &mut KafkaReceiverHarness, n: C)
+where
+    C: TryInto<usize>,
+    C::Error: std::fmt::Debug,
+{
+    let n = n.try_into().expect("record count fits in usize");
+    for _ in 0..n {
+        let pdata = receiver.recv_pdata().await;
+        receiver.ack(pdata);
+    }
+}
+
+/// Drain runtime control messages (skipping the timer-setup messages emitted
+/// during startup) until a `ReceiverDrained` signal arrives. Each poll waits up
+/// to `poll_timeout` for the next runtime message; the caller chooses that
+/// budget to match its own tolerance for a slow runtime. Returns whether the
+/// signal was observed within a bounded number of polls, so callers keep their
+/// own assertion and context-specific message.
+async fn wait_for_receiver_drained(
+    receiver: &mut KafkaReceiverHarness,
+    poll_timeout: Duration,
+) -> bool {
+    for _ in 0..16 {
+        match receiver.try_recv_runtime(poll_timeout).await {
+            Some(RuntimeControlMsg::ReceiverDrained { .. }) => return true,
+            Some(_) => continue,
+            None => return false,
+        }
+    }
+    false
+}
+
+/// Probe the committed offset for `(topic, partition 0)` in `group`, panicking
+/// with a uniform message if the probe itself fails. Returns the committed
+/// offset if present, or `None` when the partition has no committed offset yet.
+fn probe_committed_offset(brokers: &str, group: &str, topic: &str) -> Option<i64> {
+    committed_offset(brokers, group, topic, 0).expect("kafka-test: committed-offset probe failed")
+}
+
+/// Poll (up to `timeout`, every `interval`) until the committed offset for
+/// `(topic, partition 0)` in `group` reaches at least `min`. Returns whether
+/// the threshold was reached so callers keep their own assertion and message.
+async fn poll_committed_offset(
+    brokers: &str,
+    group: &str,
+    topic: &str,
+    min: i64,
+    timeout: Duration,
+    interval: Duration,
+) -> bool {
+    poll_until(timeout, interval, || {
+        probe_committed_offset(brokers, group, topic).is_some_and(|o| o >= min)
+    })
+    .await
 }
 
 /// Builds an auto-commit [`KafkaReceiverConfig`] for the given per-signal
@@ -284,6 +443,50 @@ fn auto_config(
     .expect("test config valid")
 }
 
+/// Builds an auto-commit [`KafkaReceiverConfig`] for a single traces topic
+/// (default encoding, 1s commit interval, read-uncommitted). Used by tests
+/// that exercise the librdkafka-owned commit path where the receiver's manual
+/// commit logic is inert.
+fn auto_traces_config(
+    brokers: &str,
+    group_id: &str,
+    client_id: &str,
+    traces_topic: &str,
+) -> KafkaReceiverConfig {
+    KafkaReceiverConfig::try_from(
+        KafkaReceiverConfigBuilder::new(brokers, group_id, client_id)
+            .with_traces(SignalConfig::new(vec![traces_topic.to_string()]))
+            .with_commit(CommitConfig {
+                mode: ConfigCommitMode::Auto,
+                interval_ms: Some(1000),
+            })
+            .with_isolation_level(IsolationLevel::ReadUncommitted),
+    )
+    .expect("test config should be valid")
+}
+
+/// Base manual-commit [`KafkaReceiverConfigBuilder`] shared by the single-topic
+/// traces helpers: a single OTLP-proto traces topic, manual commit with NO
+/// safety-net timer, earliest offset reset, and read-uncommitted isolation.
+/// Each helper layers only its relevant delta on top of this base.
+fn manual_traces_builder(
+    brokers: &str,
+    group_id: &str,
+    traces_topic: &str,
+) -> KafkaReceiverConfigBuilder {
+    KafkaReceiverConfigBuilder::new(brokers, group_id, "test-client")
+        .with_traces(
+            SignalConfig::new(vec![traces_topic.to_string()])
+                .with_encoding(MessageFormat::OtlpProto),
+        )
+        .with_commit(CommitConfig {
+            mode: ConfigCommitMode::Manual,
+            interval_ms: None,
+        })
+        .with_auto_offset_reset(AutoOffsetReset::Earliest)
+        .with_isolation_level(IsolationLevel::ReadUncommitted)
+}
+
 /// Builds a manual-commit [`KafkaReceiverConfig`] for a single traces topic,
 /// with an explicit consumer-group id, a safety-net commit timer, and an
 /// optional partition-assignment strategy. Mirrors the config logic of the
@@ -295,17 +498,11 @@ fn manual_traces_config(
     commit_interval_ms: u64,
     rebalance_strategy: Option<RebalanceStrategy>,
 ) -> KafkaReceiverConfig {
-    let mut builder = KafkaReceiverConfigBuilder::new(brokers, group_id, "test-client")
-        .with_traces(
-            SignalConfig::new(vec![traces_topic.to_string()])
-                .with_encoding(MessageFormat::OtlpProto),
-        )
-        .with_commit(CommitConfig {
+    let mut builder =
+        manual_traces_builder(brokers, group_id, traces_topic).with_commit(CommitConfig {
             mode: ConfigCommitMode::Manual,
             interval_ms: Some(commit_interval_ms),
-        })
-        .with_auto_offset_reset(AutoOffsetReset::Earliest)
-        .with_isolation_level(IsolationLevel::ReadUncommitted);
+        });
     if let Some(strategy) = rebalance_strategy {
         builder = builder.with_rebalance_strategy(strategy);
     }
@@ -321,17 +518,26 @@ fn manual_traces_config_no_timer(
     group_id: &str,
     traces_topic: &str,
 ) -> KafkaReceiverConfig {
-    let builder = KafkaReceiverConfigBuilder::new(brokers, group_id, "test-client")
-        .with_traces(
-            SignalConfig::new(vec![traces_topic.to_string()])
-                .with_encoding(MessageFormat::OtlpProto),
-        )
-        .with_commit(CommitConfig {
-            mode: ConfigCommitMode::Manual,
-            interval_ms: None,
-        })
-        .with_auto_offset_reset(AutoOffsetReset::Earliest)
-        .with_isolation_level(IsolationLevel::ReadUncommitted);
+    KafkaReceiverConfig::try_from(manual_traces_builder(brokers, group_id, traces_topic))
+        .expect("test config valid")
+}
+
+/// Like [`manual_traces_config_no_timer`] but with an explicit `client_id`
+/// and an optional `group.instance.id` (static membership). Used by the
+/// live-reconfiguration cutover tests that run two receivers concurrently and
+/// need to control each member's identity within a shared consumer group.
+fn cutover_traces_config(
+    brokers: &str,
+    group_id: &str,
+    client_id: &str,
+    traces_topic: &str,
+    group_instance_id: Option<&str>,
+) -> KafkaReceiverConfig {
+    let mut builder =
+        manual_traces_builder(brokers, group_id, traces_topic).with_client_id(client_id);
+    if let Some(id) = group_instance_id {
+        builder = builder.with_group_instance_id(id);
+    }
     KafkaReceiverConfig::try_from(builder).expect("test config valid")
 }
 
@@ -344,17 +550,7 @@ fn manual_traces_config_with_lag_refresh(
     traces_topic: &str,
     lag_refresh_interval_ms: u64,
 ) -> KafkaReceiverConfig {
-    let builder = KafkaReceiverConfigBuilder::new(brokers, group_id, "test-client")
-        .with_traces(
-            SignalConfig::new(vec![traces_topic.to_string()])
-                .with_encoding(MessageFormat::OtlpProto),
-        )
-        .with_commit(CommitConfig {
-            mode: ConfigCommitMode::Manual,
-            interval_ms: None,
-        })
-        .with_auto_offset_reset(AutoOffsetReset::Earliest)
-        .with_isolation_level(IsolationLevel::ReadUncommitted)
+    let builder = manual_traces_builder(brokers, group_id, traces_topic)
         .with_lag_refresh_interval_ms(Some(lag_refresh_interval_ms));
     KafkaReceiverConfig::try_from(builder).expect("test config valid")
 }
@@ -367,17 +563,9 @@ fn manual_otap_traces_config_no_timer(
     group_id: &str,
     traces_topic: &str,
 ) -> KafkaReceiverConfig {
-    let builder = KafkaReceiverConfigBuilder::new(brokers, group_id, "test-client")
-        .with_traces(
-            SignalConfig::new(vec![traces_topic.to_string()])
-                .with_encoding(MessageFormat::OtapProto),
-        )
-        .with_commit(CommitConfig {
-            mode: ConfigCommitMode::Manual,
-            interval_ms: None,
-        })
-        .with_auto_offset_reset(AutoOffsetReset::Earliest)
-        .with_isolation_level(IsolationLevel::ReadUncommitted);
+    let builder = manual_traces_builder(brokers, group_id, traces_topic).with_traces(
+        SignalConfig::new(vec![traces_topic.to_string()]).with_encoding(MessageFormat::OtapProto),
+    );
     KafkaReceiverConfig::try_from(builder).expect("test config valid")
 }
 
@@ -406,14 +594,21 @@ fn make_config(
     .expect("test config should be valid")
 }
 
-fn make_pipeline_ctx() -> PipelineContext {
-    make_pipeline_ctx_with(0, 1)
-}
-
-fn make_pipeline_ctx_with(core_id: usize, num_cores: usize) -> PipelineContext {
+fn make_pipeline_ctx(
+    core_id: usize,
+    num_cores: usize,
+    deployment_generation: u64,
+) -> PipelineContext {
     let registry = TelemetryRegistryHandle::new();
     let controller_ctx = ControllerContext::new(registry);
-    controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), core_id, num_cores, 0)
+    controller_ctx.pipeline_context_with_generation(
+        "grp".into(),
+        "pipeline".into(),
+        core_id,
+        num_cores,
+        0,
+        deployment_generation,
+    )
 }
 
 fn make_config_with_group_instance_id(instance_id: &str) -> KafkaReceiverConfig {

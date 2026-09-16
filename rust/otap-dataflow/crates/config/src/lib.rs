@@ -16,9 +16,12 @@ use serde::{Deserialize, Serialize, ser::Serializer};
 use std::borrow::Cow;
 use std::hash::Hash;
 
+pub mod authorized_identity_policy;
 pub mod byte_units;
 /// Config URI providers for resolving configuration from file:, env:, or bare paths.
 pub mod config_provider;
+/// Context entry names.
+pub mod context;
 pub mod conversion;
 pub mod engine;
 /// Environment variable substitution for raw config text.
@@ -53,6 +56,7 @@ pub use topic::{
 /// Validation helpers for node configuration.
 pub mod validation;
 
+pub use context::ContextEntryName;
 pub use conversion::ConversionOptions;
 
 /// Signal types
