@@ -207,7 +207,7 @@ impl<
 {
     const DESCENDANT_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
     const SUPERVISOR_SHUTDOWN_TIMEOUT: Duration = RunningExtensionScopeSupervisor::SHUTDOWN_TIMEOUT
-        .saturating_add(ControllerRuntime::<PData>::OBSERVABILITY_SHUTDOWN_TIMEOUT)
+        .saturating_add(ControllerRuntime::<PData>::OBSERVABILITY_SHUTDOWN_COMPLETION_TIMEOUT)
         .saturating_add(Duration::from_secs(1));
 
     fn new(

@@ -8623,6 +8623,35 @@ fn global_shutdown_activation_recognizes_clean_exit_before_send_failure() {
     assert!(!runtime.has_fatal_runtime_error());
 }
 
+/// Scenario: scope-host shutdown is followed by observability draining and runtime completion.
+/// Guarantees: the default supervisor join includes completion grace and coordination slack.
+#[test]
+fn extension_scope_supervisor_guard_budget_includes_observability_completion_grace() {
+    let runtime = test_runtime(&empty_engine_config());
+    let handle = spawn_thread_local_task(
+        "test-scope-observability-completion-budget",
+        TracingSetup::new(ProviderSetup::Noop, LogLevel::default(), engine_context),
+        move |cancellation_token| async move {
+            cancellation_token.cancelled().await;
+            Ok::<(), Error>(())
+        },
+    )
+    .expect("test extension scope supervisor should spawn");
+    let guard = ExtensionScopeSupervisorGuard::new(handle, runtime);
+    let scope_shutdown_start = Instant::now();
+    let observability_drain_deadline = scope_shutdown_start
+        + RunningExtensionScopeSupervisor::SHUTDOWN_TIMEOUT
+        + ControllerRuntime::<()>::OBSERVABILITY_SHUTDOWN_TIMEOUT;
+    let observability_completion_deadline =
+        pipeline_shutdown_completion_deadline(observability_drain_deadline);
+
+    assert_eq!(
+        guard.supervisor_shutdown_timeout,
+        observability_completion_deadline.duration_since(scope_shutdown_start)
+            + Duration::from_secs(1)
+    );
+}
+
 /// Scenario: an early controller error drops the extension scope supervisor
 /// guard while a reserved pipeline thread is still alive.
 /// Guarantees: the guard closes launch admission and waits for the descendant

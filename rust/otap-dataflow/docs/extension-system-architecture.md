@@ -170,14 +170,17 @@ never touch pipeline data directly.
    share a five-second grace period, followed by a separate
    five-second engine-host grace period. Each host phase allows
    another 500 ms to abort and join stragglers. Observability then
-   receives its own five-second drain window. Repeated requests
+   receives its own five-second drain window and an additional
+   ten-second completion grace for pipeline-local extension
+   shutdown and runtime exit. Repeated requests
    do not reset an active phase's deadline. Each host owns its phase
    deadline: an extension can limit its own terminal reporting, but
    cannot shorten a peer's reporting window or the host's final flush.
    Pre-shutdown failures use bounded local deadlines without starting
    the host's shutdown clock. The controller's bounded
-   supervisor join covers the provider and observability windows,
-   plus thread-coordination slack. If it times out, teardown reports
+   supervisor join covers the provider windows and the full
+   observability drain and completion budgets, plus
+   thread-coordination slack. If it times out, teardown reports
    an error, but the detached thread retains telemetry support until
    all remaining producers and observability actually exit.
 

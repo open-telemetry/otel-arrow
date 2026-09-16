@@ -83,6 +83,10 @@ impl<
     /// Final drain window, independent of producer and extension-scope shutdown.
     pub(crate) const OBSERVABILITY_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
+    /// Full observability drain and runtime-completion budget.
+    pub(crate) const OBSERVABILITY_SHUTDOWN_COMPLETION_TIMEOUT: Duration =
+        Self::OBSERVABILITY_SHUTDOWN_TIMEOUT.saturating_add(PIPELINE_SHUTDOWN_COMPLETION_GRACE);
+
     /// Launches one regular pipeline instance on a specific core and generation.
     pub(super) fn launch_regular_pipeline_instance(
         self: &Arc<Self>,
