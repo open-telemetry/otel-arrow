@@ -225,6 +225,7 @@ impl OtelDataflowSpec {
         // user-facing receiver policies.
         policies.resources = ResolvedResourcesPolicy::default();
         policies.transport_headers = None;
+        policies.authorized_identity = None;
         policies.rate_limiters.clear();
         policies.rate_limiter_scope = None;
         pipelines.push(ResolvedPipelineConfig {

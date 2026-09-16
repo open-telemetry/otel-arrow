@@ -739,7 +739,7 @@ impl HttpHandler {
                 return Err(rate_limit_saturated());
             }
 
-            let _authorized_identity = if let Some(authorizer) = &self.authorizer {
+            let authorized_identity = if let Some(authorizer) = &self.authorizer {
                 match authorize_bearer(authorizer.as_ref(), req.headers(), None).await {
                     Ok(identity) => Some(identity),
                     Err(rejection) => {
@@ -844,6 +844,12 @@ impl HttpHandler {
                 if !transport_headers.is_empty() {
                     pdata.set_transport_headers(transport_headers);
                 }
+            }
+            if let (Some(policy), Some(identity)) = (
+                self.effect_handler.authorized_identity_policy(),
+                authorized_identity.as_ref(),
+            ) {
+                pdata.capture_authorized_identity(policy, identity);
             }
 
             let cancel_rx = if self.settings.wait_for_result {
