@@ -10,6 +10,6 @@ component: pipeline
 note: Add a dedicated log parser processor for configurable regex, JSON and headerless CSV parsing of framed log bodies.
 
 # Tracking issue or PR number is assigned when this change is submitted.
-issues: []
+issues: [2844]
 
 subtext: Map body, RFC 3339 event time and severity atomically while preserving malformed records, provenance and downstream delivery completion. Configure explicit input and scratch limits.
