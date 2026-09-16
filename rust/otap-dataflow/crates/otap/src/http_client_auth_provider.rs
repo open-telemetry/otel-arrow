@@ -6,7 +6,7 @@ use std::{borrow::Cow, time::Instant};
 use bitflags::bitflags;
 use http::{HeaderName, HeaderValue};
 use otel_arrow_dfe_engine::{
-    capability::registry::Capabilities,
+    capability::{ExtensionCapability, registry::Capabilities},
     local::capability::auth::bearer_token_provider::BearerTokenProvider,
 };
 use tonic::async_trait;
@@ -126,9 +126,25 @@ pub fn apply_auth_rejection(
     }
 }
 
+/// An abstraction over [`Capabilities`] to enable testing.
+pub trait CapabilityResolver {
+    /// See [`Capabilities::optional_local`].
+    fn optional_local<C: ExtensionCapability>(
+        &self,
+    ) -> Result<Option<Box<C::Local>>, otel_arrow_dfe_engine::capability::registry::Error>;
+}
+
+impl CapabilityResolver for Capabilities {
+    fn optional_local<C: ExtensionCapability>(
+        &self,
+    ) -> Result<Option<Box<C::Local>>, otel_arrow_dfe_engine::capability::registry::Error> {
+        self.optional_local::<C>()
+    }
+}
+
 /// Create an [`HttpClientAuthProvider`] using the registered [`Capabilities`].
-pub fn new_http_client_auth_provider(
-    capabilities: &Capabilities,
+pub fn new_http_client_auth_provider<T: CapabilityResolver>(
+    capabilities: &T,
     supported_providers: HttpClientAuthProviders,
 ) -> Result<Option<Box<dyn HttpClientAuthProvider>>, otel_arrow_dfe_config::error::Error> {
     let mut providers: Vec<Box<dyn HttpClientAuthProvider>> = vec![];
@@ -360,17 +376,76 @@ pub mod test_support {
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        any::{Any, TypeId},
+        cell::RefCell,
+        collections::HashMap,
+        sync::Arc,
+    };
+
     use otel_arrow_dfe_engine::{
         capability::{
             CapabilityError,
-            auth::{api_key_provider::ApiKeyStream, bearer_token_provider::TokenStream, *},
+            auth::{
+                agent_fed_credential_provider::{
+                    AgentFedCredentialSnapshot, AgentFedCredentialSnapshotStream,
+                },
+                api_key_provider::ApiKeyStream,
+                basic_auth_provider::BasicAuthCredentialStream,
+                bearer_token_provider::TokenStream,
+                *,
+            },
         },
-        local::capability::auth::api_key_provider::ApiKeyProvider,
+        local::capability::auth::{
+            agent_fed_credential_provider::AgentFedCredentialProvider,
+            api_key_provider::ApiKeyProvider, basic_auth_provider::BasicAuthProvider,
+        },
     };
 
     use super::*;
     use futures::StreamExt;
     use futures::stream;
+
+    struct MockCapabilities {
+        registrations: RefCell<HashMap<TypeId, Box<dyn Any>>>,
+    }
+
+    impl MockCapabilities {
+        pub fn new() -> MockCapabilities {
+            Self {
+                registrations: HashMap::new().into(),
+            }
+        }
+
+        pub fn with_local<C: ExtensionCapability>(self, provider: Box<C::Local>) -> Self {
+            let type_id = TypeId::of::<C>();
+
+            let any: Box<dyn Any> = Box::new(provider);
+
+            _ = self.registrations.borrow_mut().insert(type_id, any);
+
+            self
+        }
+    }
+
+    impl CapabilityResolver for MockCapabilities {
+        fn optional_local<C: ExtensionCapability>(
+            &self,
+        ) -> Result<Option<Box<C::Local>>, otel_arrow_dfe_engine::capability::registry::Error>
+        {
+            let type_id = TypeId::of::<C>();
+
+            match self.registrations.borrow_mut().remove(&type_id) {
+                None => Ok(None),
+                Some(any) => match any.downcast::<Box<C::Local>>().map(|v| *v) {
+                    Ok(typed) => Ok(Some(typed)),
+                    Err(_) => {
+                        panic!("Capability type mismatch")
+                    }
+                },
+            }
+        }
+    }
 
     struct MockBearerTokenProvider {}
 
@@ -381,6 +456,19 @@ mod tests {
         }
 
         fn token_stream(&self) -> TokenStream {
+            stream::empty().boxed_local()
+        }
+    }
+
+    struct MockAgentFedCredentialProvider {}
+
+    #[async_trait(?Send)]
+    impl AgentFedCredentialProvider for MockAgentFedCredentialProvider {
+        async fn get_credential(&self) -> Result<Arc<AgentFedCredentialSnapshot>, CapabilityError> {
+            unreachable!()
+        }
+
+        fn credential_stream(&self) -> AgentFedCredentialSnapshotStream {
             stream::empty().boxed_local()
         }
     }
@@ -396,6 +484,93 @@ mod tests {
         fn api_key_stream(&self) -> ApiKeyStream {
             stream::empty().boxed_local()
         }
+    }
+
+    struct MockBasicAuthProvider {}
+
+    #[async_trait(?Send)]
+    impl BasicAuthProvider for MockBasicAuthProvider {
+        async fn get_credential(&self) -> Result<BasicAuthCredential, CapabilityError> {
+            unreachable!()
+        }
+
+        fn credential_stream(&self) -> BasicAuthCredentialStream {
+            stream::empty().boxed_local()
+        }
+    }
+
+    #[test]
+    fn resolve_bearer_auth_from_bearer_token_provider() {
+        let capabilities = MockCapabilities::new()
+            .with_local::<bearer_token_provider::BearerTokenProvider>(Box::new(
+                MockBearerTokenProvider {},
+            ));
+
+        assert!(
+            new_http_client_auth_provider(&capabilities, HttpClientAuthProviders::empty())
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            new_http_client_auth_provider(&capabilities, HttpClientAuthProviders::BEARER_TOKEN)
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn resolve_bearer_auth_from_agent_fed_credential_provider() {
+        let capabilities = MockCapabilities::new()
+            .with_local::<agent_fed_credential_provider::AgentFedCredentialProvider>(
+            Box::new(MockAgentFedCredentialProvider {}),
+        );
+
+        assert!(
+            new_http_client_auth_provider(&capabilities, HttpClientAuthProviders::empty())
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            new_http_client_auth_provider(&capabilities, HttpClientAuthProviders::BEARER_TOKEN)
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn resolve_api_key_auth_from_api_key_provider() {
+        let capabilities = MockCapabilities::new()
+            .with_local::<api_key_provider::ApiKeyProvider>(Box::new(MockApiKeyProvider {}));
+
+        assert!(
+            new_http_client_auth_provider(&capabilities, HttpClientAuthProviders::empty())
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            new_http_client_auth_provider(&capabilities, HttpClientAuthProviders::API_KEY)
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn resolve_basic_auth_from_basic_auth_provider() {
+        let capabilities = MockCapabilities::new()
+            .with_local::<basic_auth_provider::BasicAuthProvider>(Box::new(
+                MockBasicAuthProvider {},
+            ));
+
+        assert!(
+            new_http_client_auth_provider(&capabilities, HttpClientAuthProviders::empty())
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            new_http_client_auth_provider(&capabilities, HttpClientAuthProviders::BASIC)
+                .unwrap()
+                .is_some()
+        );
     }
 
     #[test]
