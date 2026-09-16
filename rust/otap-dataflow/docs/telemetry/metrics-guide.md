@@ -251,8 +251,9 @@ N:1   several inputs aggregate into one output
 N:M   inputs and outputs are regrouped across independently owned batches
 ```
 
-Boundary metrics count external work; node metrics count PData. Do not force
-their cardinalities to match.
+Receiver metrics count classified external messages. Exporter metrics count
+node-local attempts, including work that ends before submission. Node metrics
+count PData. Do not force their cardinalities to match.
 
 `receiver.received` applies to ingress receivers with independently
 classifiable external messages. Scrapers, generators, and similar receivers
@@ -362,11 +363,16 @@ let completed = self
 // Shared instrumentation: records one terminal attempt and returns its result.
 let result = self.metrics.boundary.record(completed);
 
-// Node-specific: record bounded diagnostics and apply Ack/Nack semantics.
-if let Err(error_type) = result {
-    self.metrics.record_error(signal, error_type);
+// Node-specific: record diagnostics and apply Ack/Nack policy.
+match result {
+    Ok(_) => effect_handler.notify_ack(AckMsg::new(data)).await?,
+    Err(error_type) => {
+        self.metrics.record_error(signal, error_type);
+        effect_handler
+            .notify_nack(NackMsg::new("export attempt failed", data))
+            .await?;
+    }
 }
-effect_handler.notify_ack(AckMsg::new(data)).await?;
 ```
 
 Record payload size when encoded bytes are available. Use `attempt.failed` for

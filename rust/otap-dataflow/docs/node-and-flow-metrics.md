@@ -71,14 +71,15 @@ counts:
 
 ```text
 receiver.received = classified external messages
-node.output       = emitted PData messages
-node.input        = consumed PData messages
+node.output       = terminal PData lifecycle at the output boundary
+node.input        = terminal PData lifecycle at the input boundary
 exporter.attempted = node-local export attempts
 ```
 
 Fan-out, aggregation, batching, and retries can make these counts differ.
 Receivers without classifiable external messages may omit
-`receiver.received`.
+`receiver.received`. Use `channel.sender.messages` and
+`channel.receiver.messages` for immediate channel transport counts.
 
 `receiver.received` success means receiver acceptance; `node.output` describes
 the resulting PData lifecycle. For exporters, `node.input` success means the

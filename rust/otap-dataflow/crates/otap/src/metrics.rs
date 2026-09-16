@@ -274,8 +274,8 @@ impl ReceiverProcessing {
 struct ExporterAttemptedMetrics {
     /// Number of node-local delivery attempts.
     ///
-    /// Retries count again. This differs from `node.input.messages`, which
-    /// counts PData messages entering the exporter.
+    /// Retries represented as shared attempts count again. This differs from
+    /// `node.input.messages`, which counts PData messages entering the exporter.
     #[metric(unit = "{message}")]
     messages: Counter<u64>,
 }
@@ -353,7 +353,7 @@ impl ExporterAttemptedItemsMetrics {
 /// An attempt usually owns one external submission, but it can terminate
 /// during preparation or as a successful no-op. Fan-out creates one attempt
 /// per external submission; aggregation creates one attempt per external
-/// batch; retries create new attempts.
+/// batch. Retries represented as shared attempts create new attempts.
 #[derive(Debug)]
 pub struct ExporterAttempt {
     signal: SignalType,
@@ -403,8 +403,8 @@ impl ExporterMetrics {
     ///
     /// Start before preparation owned by this attempt. Shared preparation that
     /// precedes discovery of fan-out submissions requires separate
-    /// node-specific telemetry. A retry starts a new attempt with a fresh
-    /// timing origin.
+    /// node-specific telemetry. A retry represented as a shared attempt starts
+    /// a new attempt with a fresh timing origin.
     #[must_use]
     pub fn attempt(&self, signal: SignalType) -> ExporterAttempt {
         ExporterAttempt {
