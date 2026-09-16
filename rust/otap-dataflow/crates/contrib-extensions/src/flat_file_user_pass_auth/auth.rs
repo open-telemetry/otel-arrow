@@ -53,11 +53,11 @@ async fn read_credential(
                     path: path.clone(),
                     source,
                 })?;
+        let contents = String::from_utf8(contents).map_err(|_| Error::CredentialAcquisition {
+            message: format!("`{field}_file` does not contain valid UTF-8"),
+        })?;
         return Ok((
-            contents
-                .trim_end_matches('\n')
-                .trim_end_matches('\r')
-                .to_owned(),
+            contents.trim_end_matches(&['\r', '\n'][..]).to_string(),
             Some(file_refresh),
         ));
     }

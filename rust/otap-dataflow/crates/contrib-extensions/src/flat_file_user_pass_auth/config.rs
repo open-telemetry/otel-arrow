@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use secrecy::SecretString;
+use secrecy::{ExposeSecret, SecretString};
 use serde::Deserialize;
 
 /// Default password secret file refresh (~1 hr).
@@ -51,8 +51,15 @@ impl Config {
     ///
     /// Rejects a secret.
     pub fn validate(&self) -> Result<(), String> {
-        let secret_fields_set =
-            self.password_secret.is_some() || self.password_secret_file.is_some();
+        if self.username.expose_secret().is_empty() {
+            return Err("`username` must be specified".to_string());
+        }
+
+        let secret_fields_set = self
+            .password_secret
+            .as_ref()
+            .is_some_and(|s| !s.expose_secret().is_empty())
+            || self.password_secret_file.is_some();
 
         if !secret_fields_set {
             return Err(
