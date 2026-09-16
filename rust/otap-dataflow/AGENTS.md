@@ -94,10 +94,10 @@ exporter.topic
 exporter.azure_monitor
 ```
 
-Use established component-specific prefixes or suffixes only when they already
-exist for that component family, such as `.pdata` for pdata-specific metrics or
-existing `otap.*` component families. Do not introduce reversed or redundant
-names such as `journald.receiver.metrics`.
+Do not copy legacy `.pdata` suffixes or `otap.*` prefixes into new metric-set
+names. They remain only where existing instrumentation has not yet migrated.
+Do not introduce reversed or redundant names such as
+`journald.receiver.metrics`.
 
 ## Metric instrumentation
 
