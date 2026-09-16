@@ -61,7 +61,7 @@ impl FanoutMetrics {
         max_inflight: usize,
         destinations: impl IntoIterator<Item = String>,
     ) -> Self {
-        let mut operational = pipeline_ctx.register_metrics::<FanoutOperationalMetrics>();
+        let mut operational = FanoutOperationalMetrics::register(pipeline_ctx);
         operational.max_inflight_config.set(max_inflight as u64);
         let timeouts = destinations
             .into_iter()

@@ -7,15 +7,13 @@ use http::StatusCode;
 use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_engine::context::PipelineContext;
 use otel_arrow_dfe_otap::http_client_auth_provider::HttpClientAuthProvider;
-use otel_arrow_dfe_otap::metrics::ExporterExportMetrics;
-use otel_arrow_dfe_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
+use otel_arrow_dfe_otap::metrics::ExporterMetrics;
 use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
 use otel_arrow_dfe_telemetry::instrument::Counter;
 use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSet, MetricSetSnapshot};
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use otel_arrow_dfe_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
 use std::borrow::Cow;
-use std::time::Duration;
 
 /// Actionable category for a failed OTLP HTTP export.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, AttributeEnum)]
@@ -65,6 +63,19 @@ impl OtlpHttpExporterErrorType {
             _ => Self::Other,
         }
     }
+
+    /// Returns whether the destination refused the attempt without an exporter failure.
+    #[must_use]
+    pub(super) const fn is_refusal(self) -> bool {
+        matches!(
+            self,
+            Self::Authentication
+                | Self::Authorization
+                | Self::Throttled
+                | Self::Rejected
+                | Self::PartialRejection
+        )
+    }
 }
 
 /// Signal and error dimensions for failed OTLP HTTP exports.
@@ -110,7 +121,7 @@ struct OtlpHttpExporterAuthMetrics {
 
 /// Terminal outcome and failure metrics emitted by an OTLP HTTP exporter.
 pub(super) struct OtlpHttpExporterMetrics {
-    pub(super) exports: MeasurementMetricSet<ExporterExportMetrics>,
+    pub(super) boundary: ExporterMetrics,
     failures: MeasurementMetricSet<OtlpHttpExporterFailureMetrics>,
     auth: Option<MetricSet<OtlpHttpExporterAuthMetrics>>,
 }
@@ -123,7 +134,7 @@ impl OtlpHttpExporterMetrics {
         auth: Option<&dyn HttpClientAuthProvider>,
     ) -> Self {
         Self {
-            exports: ExporterExportMetrics::register(pipeline_ctx),
+            boundary: ExporterMetrics::register(pipeline_ctx),
             failures: OtlpHttpExporterFailureMetrics::register(pipeline_ctx),
             auth: auth.map(|a| {
                 OtlpHttpExporterAuthMetrics::register(
@@ -141,29 +152,12 @@ impl OtlpHttpExporterMetrics {
         }
     }
 
-    /// Records one successful terminal export.
-    pub(super) fn record_success(&mut self, signal: SignalType, duration: Duration) {
-        self.exports
-            .with(SignalOutcomeAttributes {
-                signal,
-                outcome: Outcome::Success,
-            })
-            .record(duration);
-    }
-
-    /// Records one failed terminal export and exactly one diagnostic category.
+    /// Records one failed terminal export diagnostic category.
     pub(super) fn record_failure(
         &mut self,
         signal: SignalType,
         error_type: OtlpHttpExporterErrorType,
-        duration: Duration,
     ) {
-        self.exports
-            .with(SignalOutcomeAttributes {
-                signal,
-                outcome: Outcome::Failure,
-            })
-            .record(duration);
         self.failures
             .with(OtlpHttpFailureAttributes { signal, error_type })
             .messages
@@ -172,9 +166,9 @@ impl OtlpHttpExporterMetrics {
 
     /// Reports all touched OTLP HTTP exporter metric buckets.
     pub(super) fn report(&mut self, reporter: &mut MetricsReporter) -> Result<(), TelemetryError> {
+        self.boundary.report(reporter)?;
         reporter
-            .report_measurement(&mut self.exports)
-            .and_then(|()| reporter.report_measurement(&mut self.failures))
+            .report_measurement(&mut self.failures)
             .and_then(|()| {
                 if let Some(auth) = self.auth.as_mut() {
                     reporter.report(auth)
@@ -187,7 +181,7 @@ impl OtlpHttpExporterMetrics {
     /// Takes terminal snapshots of all touched metric buckets.
     #[must_use]
     pub(super) fn terminal_snapshots(&mut self) -> Vec<MetricSetSnapshot> {
-        let mut snapshots = self.exports.terminal_snapshots();
+        let mut snapshots = self.boundary.terminal_snapshots();
         snapshots.extend(self.failures.terminal_snapshots());
         if let Some(auth) = self.auth.as_mut() {
             snapshots.extend(auth.terminal_snapshots());
@@ -199,14 +193,12 @@ impl OtlpHttpExporterMetrics {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otel_arrow_dfe_engine::context::ControllerContext;
-    use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
+    use otel_arrow_dfe_engine::Interests;
+    use otel_arrow_dfe_engine::testing::test_pipeline_ctx_with_interests;
+    use otel_arrow_dfe_otap::metrics::ErrorWithOutcome;
 
     fn new_metrics() -> OtlpHttpExporterMetrics {
-        let registry = TelemetryRegistryHandle::new();
-        let controller = ControllerContext::new(registry);
-        let pipeline_ctx =
-            controller.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(Interests::NODE_INPUT_METRICS);
         OtlpHttpExporterMetrics::register(&pipeline_ctx, None)
     }
 
@@ -261,35 +253,34 @@ mod tests {
     #[test]
     fn failure_classification_is_paired_with_the_terminal_outcome() {
         let mut metrics = new_metrics();
-        metrics.record_success(SignalType::Metrics, Duration::from_millis(10));
-        metrics.record_failure(
-            SignalType::Metrics,
-            OtlpHttpExporterErrorType::Throttled,
-            Duration::from_millis(20),
+        let completed = futures::executor::block_on(
+            metrics
+                .boundary
+                .attempt(SignalType::Metrics)
+                .run(async |_| Ok::<_, ErrorWithOutcome<OtlpHttpExporterErrorType>>(())),
         );
+        metrics.boundary.record(completed).unwrap();
+        let completed =
+            futures::executor::block_on(metrics.boundary.attempt(SignalType::Metrics).run(
+                async |attempt| Err::<(), _>(attempt.refused(OtlpHttpExporterErrorType::Throttled)),
+            ));
+        let error_type = metrics.boundary.record(completed).unwrap_err();
+        metrics.record_failure(SignalType::Metrics, error_type);
 
-        assert_eq!(
-            metrics
-                .exports
-                .get(SignalOutcomeAttributes {
-                    signal: SignalType::Metrics,
-                    outcome: Outcome::Success,
-                })
-                .messages
-                .get(),
-            1
-        );
-        assert_eq!(
-            metrics
-                .exports
-                .get(SignalOutcomeAttributes {
-                    signal: SignalType::Metrics,
-                    outcome: Outcome::Failure,
-                })
-                .messages
-                .get(),
-            1
-        );
+        let snapshots = metrics.boundary.terminal_snapshots();
+        for outcome in ["success", "refused"] {
+            assert!(snapshots.iter().any(|snapshot| {
+                snapshot.descriptor().name == "exporter.attempted"
+                    && snapshot.measurement_attribute_value("signal") == Some("metrics")
+                    && snapshot.measurement_attribute_value("outcome") == Some(outcome)
+                    && snapshot
+                        .descriptor()
+                        .metrics
+                        .iter()
+                        .position(|metric| metric.name == "messages")
+                        .is_some_and(|index| snapshot.get_metrics()[index].to_u64_lossy() == 1)
+            }));
+        }
         assert_eq!(
             metrics
                 .failures
