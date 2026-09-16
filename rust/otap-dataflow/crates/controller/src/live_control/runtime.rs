@@ -23,6 +23,7 @@ struct RuntimeRecoveryAttempt {
     target_key: DeployedPipelineKey,
     resolved: ResolvedPipelineConfig,
     inherited_extensions: InheritedExtensionRegistrations,
+    context_bindings: Arc<CompiledContextBindings>,
     placement: LivePipelinePlacement,
     backoff: Duration,
 }
@@ -87,6 +88,7 @@ impl<
         self: &Arc<Self>,
         resolved_pipeline: &ResolvedPipelineConfig,
         inherited_extensions: &InheritedExtensionRegistrations,
+        context_bindings: Arc<CompiledContextBindings>,
         placement: &LivePipelinePlacement,
         core_id: usize,
         deployment_generation: u64,
@@ -116,11 +118,11 @@ impl<
             CoreId { id: core_id },
             core_placement.numa_node_id,
             Arc::clone(&placement.listener_group_snapshot),
+            context_bindings,
             num_cores,
             resolved_pipeline.pipeline.clone(),
             resolved_pipeline.policies.channel_capacity.clone(),
             resolved_pipeline.policies.telemetry.clone(),
-            resolved_pipeline.policies.transport_headers.clone(),
             resolved_pipeline.policies.rate_limiters.clone(),
             resolved_pipeline.policies.rate_limiter_scope.clone(),
             inherited_extensions.clone(),
@@ -143,6 +145,7 @@ impl<
     pub(crate) fn reserve_instance_launch(
         &self,
         pipeline_key: &DeployedPipelineKey,
+        context_bindings: Arc<CompiledContextBindings>,
     ) -> Result<(), Error> {
         let mut state = self
             .state
@@ -167,7 +170,7 @@ impl<
                 source: Box::new(io::Error::other(message)),
             });
         }
-        let already_live = state.launching_instances.contains(pipeline_key)
+        let already_live = state.launching_instances.contains_key(pipeline_key)
             || state
                 .runtime_instances
                 .get(pipeline_key)
@@ -182,7 +185,9 @@ impl<
                 ))),
             });
         }
-        let _ = state.launching_instances.insert(pipeline_key.clone());
+        let _ = state
+            .launching_instances
+            .insert(pipeline_key.clone(), context_bindings);
         state.active_instances += 1;
         self.state_changed.notify_all();
         Ok(())
@@ -194,7 +199,7 @@ impl<
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if state.launching_instances.remove(pipeline_key) {
+        if state.launching_instances.remove(pipeline_key).is_some() {
             state.active_instances = state.active_instances.saturating_sub(1);
             self.state_changed.notify_all();
         }
@@ -213,14 +218,13 @@ impl<
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if !state.launching_instances.remove(&pipeline_key) {
-            return None;
-        }
+        let context_bindings = state.launching_instances.remove(&pipeline_key)?;
         let is_observability = is_observability_instance(&pipeline_key);
         let _ = state.runtime_instances.insert(
             pipeline_key,
             RuntimeInstanceRecord {
                 control_sender: Some(control_sender),
+                context_bindings,
                 lifecycle: RuntimeInstanceLifecycle::Active,
             },
         );
@@ -299,6 +303,7 @@ impl<
                     launched.pipeline_key.clone(),
                     RuntimeInstanceRecord {
                         control_sender: None,
+                        context_bindings: Arc::clone(&launched.context_bindings),
                         lifecycle: RuntimeInstanceLifecycle::Exited(exit.clone()),
                     },
                 );
@@ -321,12 +326,15 @@ impl<
             }
             self.state_changed.notify_all();
             if let RuntimeInstanceExit::Error(error) = exit {
-                self.schedule_runtime_recovery(launched.pipeline_key, error);
+                self.schedule_runtime_recovery(
+                    launched.pipeline_key,
+                    launched.context_bindings,
+                    error,
+                );
             }
             return;
         }
-
-        self.reserve_instance_launch(&launched.pipeline_key)
+        self.reserve_instance_launch(&launched.pipeline_key, launched.context_bindings)
             .expect("synthetic runtime instance should reserve");
         let _ = self.activate_instance_launch(launched.pipeline_key, launched.control_sender);
     }
@@ -438,16 +446,17 @@ impl<
             }
         }
 
-        let (should_compact, exit_was_applied) = {
+        let (should_compact, exit_was_applied, context_bindings) = {
             let mut state = self
                 .state
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if state.launching_instances.remove(&pipeline_key) {
+            if let Some(context_bindings) = state.launching_instances.remove(&pipeline_key) {
                 let _ = state.runtime_instances.insert(
                     pipeline_key.clone(),
                     RuntimeInstanceRecord {
                         control_sender: None,
+                        context_bindings: Arc::clone(&context_bindings),
                         lifecycle: RuntimeInstanceLifecycle::Exited(exit.clone()),
                     },
                 );
@@ -462,24 +471,22 @@ impl<
                         &logical_pipeline_key,
                     ),
                     true,
+                    Some(context_bindings),
                 )
-            } else if state.runtime_instances.contains_key(&pipeline_key) {
+            } else if let Some(instance) = state.runtime_instances.get(&pipeline_key) {
                 let exit_was_applied =
-                    state
-                        .runtime_instances
-                        .get(&pipeline_key)
-                        .is_some_and(|instance| {
-                            matches!(instance.lifecycle, RuntimeInstanceLifecycle::Active)
-                        });
+                    matches!(instance.lifecycle, RuntimeInstanceLifecycle::Active);
+                let context_bindings = Arc::clone(&instance.context_bindings);
                 (
                     Self::apply_instance_exit_locked(&mut state, &pipeline_key, &exit),
                     exit_was_applied,
+                    Some(context_bindings),
                 )
             } else {
                 _ = state
                     .pending_instance_exits
                     .insert(pipeline_key.clone(), exit.clone());
-                (false, false)
+                (false, false, None)
             }
         };
         if should_compact {
@@ -492,7 +499,11 @@ impl<
         }
         self.state_changed.notify_all();
         if exit_was_applied && let RuntimeInstanceExit::Error(error) = exit {
-            self.schedule_runtime_recovery(pipeline_key, error);
+            self.schedule_runtime_recovery(
+                pipeline_key,
+                context_bindings.expect("exit context"),
+                error,
+            );
         }
     }
 
@@ -500,12 +511,15 @@ impl<
     fn defer_runtime_recovery_locked(
         state: &mut ControllerRuntimeState,
         failed_key: DeployedPipelineKey,
+        context_bindings: Arc<CompiledContextBindings>,
         error: RuntimeInstanceError,
     ) {
         // Deployed keys are unique and operation overlap is bounded by assigned
         // cores plus rollout candidates, so this queue cannot grow independently
         // of controller-owned runtime state.
-        let _ = state.deferred_runtime_recoveries.insert(failed_key, error);
+        let _ = state
+            .deferred_runtime_recoveries
+            .insert(failed_key, (context_bindings, error));
     }
 
     /// Restarts failures deferred for one pipeline after ownership handoff.
@@ -536,18 +550,18 @@ impl<
                     state
                         .deferred_runtime_recoveries
                         .remove(&deployed_key)
-                        .map(|error| (deployed_key, error))
+                        .map(|(context_bindings, error)| (deployed_key, context_bindings, error))
                 })
                 .collect::<Vec<_>>()
         };
-        deferred.sort_by_key(|(deployed_key, _)| {
+        deferred.sort_by_key(|(deployed_key, _, _)| {
             (deployed_key.core_id, deployed_key.deployment_generation)
         });
-        for (deployed_key, error) in deferred {
+        for (deployed_key, context_bindings, error) in deferred {
             // schedule_runtime_recovery revalidates the committed serving
             // generation, so failures for candidates retired by the operation
             // are ignored while failures for its winner are restarted.
-            self.schedule_runtime_recovery(deployed_key, error);
+            self.schedule_runtime_recovery(deployed_key, context_bindings, error);
         }
     }
 
@@ -582,6 +596,7 @@ impl<
     fn schedule_runtime_recovery(
         self: &Arc<Self>,
         failed_key: DeployedPipelineKey,
+        context_bindings: Arc<CompiledContextBindings>,
         error: RuntimeInstanceError,
     ) {
         let pipeline_key = PipelineKey::new(
@@ -604,7 +619,12 @@ impl<
                 // can fail after its one-time readiness check. Retain the exit so
                 // ownership release can recover whichever generation ultimately
                 // remains serving.
-                Self::defer_runtime_recovery_locked(&mut state, failed_key, error);
+                Self::defer_runtime_recovery_locked(
+                    &mut state,
+                    failed_key,
+                    context_bindings,
+                    error,
+                );
                 return;
             }
             state.logical_pipelines.get(&pipeline_key).cloned()
@@ -643,7 +663,12 @@ impl<
                 return;
             }
             if state.recovery_preempted(&pipeline_key) {
-                Self::defer_runtime_recovery_locked(&mut state, failed_key, error);
+                Self::defer_runtime_recovery_locked(
+                    &mut state,
+                    failed_key,
+                    Arc::clone(&context_bindings),
+                    error,
+                );
                 return;
             }
 
@@ -653,6 +678,7 @@ impl<
                 .entry(recovery_key)
                 .or_insert_with(|| RuntimeRecoveryState {
                     serving_generation: current_record.active_generation,
+                    context_bindings: Arc::clone(&context_bindings),
                     restart_count: 0,
                     ready_since: None,
                     worker_id: None,
@@ -670,6 +696,7 @@ impl<
                 // superseded. Only the selected serving generation may recover.
                 return;
             }
+            recovery.context_bindings = Arc::clone(&context_bindings);
             if runtime_recovery_streak_expired(
                 recovery.ready_since,
                 policy.reset_after,
@@ -873,6 +900,7 @@ impl<
             let target_key = match self.launch_regular_pipeline_instance(
                 &attempt.resolved,
                 &attempt.inherited_extensions,
+                Arc::clone(&attempt.context_bindings),
                 &attempt.placement,
                 core_id,
                 attempt.target_key.deployment_generation,
@@ -1063,6 +1091,7 @@ impl<
         else {
             return RuntimeRecoveryAttemptDecision::Exhausted;
         };
+        let context_bindings = Arc::clone(&recovery.context_bindings);
         let placement =
             self.live_pipeline_placement_from(&resolved, placement, placement_generation);
         let attempt = recovery.restart_count + 1;
@@ -1094,6 +1123,7 @@ impl<
             },
             resolved,
             inherited_extensions,
+            context_bindings,
             placement,
             backoff: runtime_recovery_backoff(policy, attempt),
         }))
@@ -1336,6 +1366,11 @@ impl<
         let should_defer = state.recovery_preempted(pipeline_key)
             && !state.recovery_in_shutdown_context(pipeline_key);
         if should_defer {
+            let context_bindings = state
+                .runtime_recoveries
+                .get(&recovery_key)
+                .map(|recovery| Arc::clone(&recovery.context_bindings))
+                .expect("recovery worker ownership requires recovery state");
             Self::defer_runtime_recovery_locked(
                 &mut state,
                 DeployedPipelineKey {
@@ -1344,6 +1379,7 @@ impl<
                     core_id,
                     deployment_generation: failed_generation,
                 },
+                context_bindings,
                 RuntimeInstanceError::runtime(error),
             );
         }
@@ -1529,6 +1565,17 @@ impl<
         timeout_secs: u64,
         reason: &str,
     ) -> Result<(), String> {
+        let drain_deadline = Instant::now() + Duration::from_secs(timeout_secs.max(1));
+        self.request_instance_shutdown_until(deployed_key, drain_deadline, reason)
+    }
+
+    /// Sends shutdown with an absolute drain deadline.
+    pub(super) fn request_instance_shutdown_until(
+        &self,
+        deployed_key: &DeployedPipelineKey,
+        drain_deadline: Instant,
+        reason: &str,
+    ) -> Result<(), String> {
         let sender = {
             let state = self
                 .state
@@ -1563,10 +1610,7 @@ impl<
             })?
         };
 
-        if let Err(err) = sender.try_send_shutdown(
-            Instant::now() + Duration::from_secs(timeout_secs.max(1)),
-            reason.to_owned(),
-        ) {
+        if let Err(err) = sender.try_send_shutdown(drain_deadline, reason.to_owned()) {
             return match self.instance_exit(deployed_key) {
                 Some(RuntimeInstanceExit::Success) => Ok(()),
                 Some(RuntimeInstanceExit::Error(error)) => Err(error.message),
@@ -1602,7 +1646,7 @@ impl<
 
             let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
                 return Err(format!(
-                    "timed out waiting for pipeline {}:{} core={} generation={} to drain",
+                    "timed out waiting for pipeline {}:{} core={} generation={} to shut down",
                     deployed_key.pipeline_group_id.as_ref(),
                     deployed_key.pipeline_id.as_ref(),
                     deployed_key.core_id,
@@ -1634,7 +1678,7 @@ impl<
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         loop {
-            if state.launching_instances.contains(deployed_key) {
+            if state.launching_instances.contains_key(deployed_key) {
                 let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
                     return Err(format!(
                         "timed out waiting for pipeline {} to finish launching and drain before system observability shutdown",
@@ -1666,7 +1710,7 @@ impl<
 
             let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
                 return Err(format!(
-                    "timed out waiting for pipeline {} to drain before system observability shutdown",
+                    "timed out waiting for pipeline {} to shut down before system observability shutdown",
                     deployed_instance_label(deployed_key)
                 ));
             };
@@ -1685,10 +1729,11 @@ impl<
         timeout_secs: u64,
         reason: &str,
     ) -> Result<(), String> {
-        self.request_instance_shutdown(deployed_key, timeout_secs, reason)?;
+        let drain_deadline = Instant::now() + Duration::from_secs(timeout_secs.max(1));
+        self.request_instance_shutdown_until(deployed_key, drain_deadline, reason)?;
         self.wait_for_instance_exit(
             deployed_key,
-            Instant::now() + Duration::from_secs(timeout_secs.max(1)),
+            pipeline_shutdown_completion_deadline(drain_deadline),
         )
     }
 
@@ -1814,7 +1859,7 @@ impl<
             producer_keys.extend(
                 state
                     .launching_instances
-                    .iter()
+                    .keys()
                     .filter(|deployed_key| !is_observability_instance(deployed_key))
                     .cloned(),
             );
@@ -1937,18 +1982,20 @@ impl<
         &self,
         producer_keys: Vec<DeployedPipelineKey>,
         observability_senders: Vec<(DeployedPipelineKey, Arc<dyn PipelineAdminSender>)>,
-        shutdown_deadline: Instant,
+        producer_deadline: Instant,
     ) {
         let mut wait_failures = Vec::new();
+        let producer_completion_deadline = pipeline_shutdown_completion_deadline(producer_deadline);
         for deployed_key in &producer_keys {
-            if let Err(error) = self.wait_for_global_shutdown_exit(deployed_key, shutdown_deadline)
+            if let Err(error) =
+                self.wait_for_global_shutdown_exit(deployed_key, producer_completion_deadline)
             {
                 wait_failures.push(error);
             }
         }
         if !wait_failures.is_empty() {
             self.record_async_global_shutdown_failure(format!(
-                "producer drain failed before system observability shutdown: {}",
+                "producer shutdown failed before system observability shutdown: {}",
                 wait_failures.join("; ")
             ));
         }
@@ -1961,7 +2008,7 @@ impl<
             producer_keys
                 .iter()
                 .filter(|deployed_key| {
-                    state.launching_instances.contains(*deployed_key)
+                    state.launching_instances.contains_key(*deployed_key)
                         || matches!(
                             state.runtime_instances.get(*deployed_key),
                             Some(RuntimeInstanceRecord {
@@ -1985,16 +2032,17 @@ impl<
         if observability_senders.is_empty() {
             return;
         }
-        let shutdown_deadline = self.observability_shutdown_deadline_or_insert();
+        let observability_deadline = self.observability_shutdown_deadline_or_insert();
         let mut observability_keys = Vec::new();
         for (deployed_key, sender) in observability_senders {
             let final_error = loop {
-                match sender.try_send_shutdown(shutdown_deadline, "global shutdown".to_owned()) {
+                match sender.try_send_shutdown(observability_deadline, "global shutdown".to_owned())
+                {
                     Ok(()) => break None,
                     Err(error) => match self.instance_exit(&deployed_key) {
                         Some(RuntimeInstanceExit::Success) => break None,
                         Some(RuntimeInstanceExit::Error(exit)) => break Some(exit.message),
-                        None if Instant::now() < shutdown_deadline => {
+                        None if Instant::now() < observability_deadline => {
                             thread::sleep(Duration::from_millis(10));
                         }
                         None => break Some(error.to_string()),
@@ -2029,8 +2077,11 @@ impl<
             }
         }
 
+        let observability_completion_deadline =
+            pipeline_shutdown_completion_deadline(observability_deadline);
         for deployed_key in observability_keys {
-            if let Err(error) = self.wait_for_global_shutdown_exit(&deployed_key, shutdown_deadline)
+            if let Err(error) =
+                self.wait_for_global_shutdown_exit(&deployed_key, observability_completion_deadline)
             {
                 self.record_async_global_shutdown_failure(format!(
                     "system observability shutdown did not complete: {error}"
@@ -2379,7 +2430,7 @@ impl<
     fn has_live_producer_instances_locked(state: &ControllerRuntimeState) -> bool {
         state
             .launching_instances
-            .iter()
+            .keys()
             .any(|key| !is_observability_instance(key))
             || state.runtime_instances.iter().any(|(key, instance)| {
                 matches!(instance.lifecycle, RuntimeInstanceLifecycle::Active)

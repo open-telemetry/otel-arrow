@@ -454,6 +454,7 @@ fn probe_receiver_create(
 const PROBE_RECEIVER_FACTORY: ReceiverFactory<()> = ReceiverFactory {
     name: PROBE_RECEIVER_URN,
     create: probe_receiver_create,
+    context_declarations: None,
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config: otel_arrow_dfe_config::validation::no_config,
 };
@@ -501,6 +502,7 @@ fn noop_exporter_create(
 const NOOP_EXPORTER_FACTORY: ExporterFactory<()> = ExporterFactory {
     name: NOOP_EXPORTER_URN,
     create: noop_exporter_create,
+    context_declarations: None,
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config: otel_arrow_dfe_config::validation::no_config,
 };
@@ -1949,6 +1951,7 @@ const PROBE_PROCESSOR_FACTORY: otel_arrow_dfe_engine::ProcessorFactory<()> =
     otel_arrow_dfe_engine::ProcessorFactory {
         name: PROBE_PROCESSOR_URN,
         create: probe_processor_create,
+        context_declarations: None,
         wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
         validate_config: otel_arrow_dfe_config::validation::no_config,
     };
@@ -2031,6 +2034,7 @@ fn probe_exporter_create(
 const PROBE_EXPORTER_FACTORY: ExporterFactory<()> = ExporterFactory {
     name: PROBE_EXPORTER_URN,
     create: probe_exporter_create,
+    context_declarations: None,
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config: otel_arrow_dfe_config::validation::no_config,
 };
@@ -2162,7 +2166,6 @@ fn build_test_runtime_pipeline(
             config,
             ChannelCapacityPolicy::default(),
             TelemetryPolicy::default(),
-            None,
             std::collections::BTreeMap::new(),
             None,
             None,
@@ -2193,7 +2196,6 @@ fn build_test_pipeline_with_unconsumed_explicit_binding(
         config,
         ChannelCapacityPolicy::default(),
         TelemetryPolicy::default(),
-        None,
         std::collections::BTreeMap::from([("ingress".to_owned(), policy)]),
         None,
         None,
@@ -2473,7 +2475,6 @@ groups:
                             pipeline_config,
                             ChannelCapacityPolicy::default(),
                             TelemetryPolicy::default(),
-                            None,
                             std::collections::BTreeMap::new(),
                             None,
                             None,
@@ -2589,7 +2590,6 @@ groups:
                                 pipeline_config.clone(),
                                 ChannelCapacityPolicy::default(),
                                 TelemetryPolicy::default(),
-                                None,
                                 std::collections::BTreeMap::new(),
                                 None,
                                 None,
@@ -5301,7 +5301,6 @@ fn build_runtime_pipeline_with_ready_gate(
             config,
             ChannelCapacityPolicy::default(),
             TelemetryPolicy::default(),
-            None,
             std::collections::BTreeMap::new(),
             None,
             None,

@@ -161,6 +161,7 @@ pub static TOPIC_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
                 exporter_config,
             ))
         },
+    context_declarations: None,
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config: |config| TopicExporter::parse_config(config).map(|_| ()),
 };
@@ -715,6 +716,7 @@ mod tests {
                         pipeline_completion_tx,
                         metrics_reporter,
                         Interests::empty(),
+                        otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
                     )
                     .await
             });
@@ -858,6 +860,7 @@ mod tests {
                         pipeline_completion_tx,
                         metrics_reporter,
                         Interests::empty(),
+                        otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
                     )
                     .await
             });
@@ -1025,6 +1028,7 @@ mod tests {
                         pipeline_completion_tx,
                         metrics_reporter,
                         Interests::empty(),
+                        otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
                     )
                     .await
             });
@@ -1205,6 +1209,7 @@ mod tests {
                         pipeline_completion_tx,
                         metrics_reporter,
                         Interests::empty(),
+                        otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
                     )
                     .await
             });

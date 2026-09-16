@@ -3,6 +3,7 @@
 
 use super::*;
 use async_trait::async_trait;
+use otel_arrow_dfe_config::ContextEntryName;
 use otel_arrow_dfe_config::engine::ResolvedPipelineRole;
 use otel_arrow_dfe_config::extension::ExtensionUserConfig;
 use otel_arrow_dfe_config::observed_state::ObservedStateSettings;
@@ -13,6 +14,10 @@ use otel_arrow_dfe_engine::config::{
     ExporterConfig, ExtensionConfig, ProcessorConfig, ReceiverConfig,
 };
 use otel_arrow_dfe_engine::context::ExtensionContext;
+use otel_arrow_dfe_engine::context_declaration::{
+    ConfigNodeContextDeclaration, ContextDeclaration, ContextDeclarationProvider,
+    NodeContextDeclarations,
+};
 use otel_arrow_dfe_engine::control::{
     ExtensionControlMsg, NodeControlMsg, RuntimeControlMsg, RuntimeCtrlMsgReceiver,
     runtime_ctrl_msg_channel,
@@ -44,6 +49,7 @@ use otel_arrow_dfe_telemetry::metrics::{
 };
 use otel_arrow_dfe_telemetry::tracing_init::ProviderSetup;
 use otel_arrow_dfe_telemetry::{InternalTelemetrySystem, TracingSetup};
+use serde::Deserialize;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio_util::sync::CancellationToken;
@@ -76,6 +82,109 @@ fn test_validate_config(
     _config: &serde_json::Value,
 ) -> Result<(), otel_arrow_dfe_config::error::Error> {
     Ok(())
+}
+
+const CONTEXT_BINDINGS_TEST_RECEIVER_URN: &str = "urn:test:receiver:context-bindings";
+static CONTEXT_BINDINGS_TEST_LOCK: Mutex<()> = Mutex::new(());
+static CONTEXT_BINDINGS_TEST_CAPTURE: Mutex<Option<std::sync::Weak<CompiledContextBindings>>> =
+    Mutex::new(None);
+static CONTEXT_BINDINGS_TEST_RUNTIME: Mutex<Option<std::sync::Weak<ControllerRuntime<()>>>> =
+    Mutex::new(None);
+static CONTEXT_BINDINGS_TEST_DECLARATION_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+fn reset_context_bindings_test_capture() {
+    *CONTEXT_BINDINGS_TEST_CAPTURE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+}
+
+fn wait_for_context_bindings_test_capture() -> std::sync::Weak<CompiledContextBindings> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(policy) = CONTEXT_BINDINGS_TEST_CAPTURE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+        {
+            return policy;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for context binding installation"
+        );
+        thread::sleep(Duration::from_millis(25));
+    }
+}
+
+#[derive(Deserialize)]
+struct ContextBindingsTestConfig {
+    produces: ContextEntryName,
+    #[serde(default)]
+    probe_controller_lock: bool,
+}
+
+impl ConfigNodeContextDeclaration for ContextBindingsTestConfig {
+    fn context_declarations(&self) -> NodeContextDeclarations {
+        vec![ContextDeclaration::Produces {
+            entry: self.produces.clone(),
+        }]
+        .into_iter()
+        .collect()
+    }
+}
+
+fn context_bindings_test_declarations(
+    value: &serde_json::Value,
+) -> Result<NodeContextDeclarations, otel_arrow_dfe_config::error::Error> {
+    let config: ContextBindingsTestConfig =
+        serde_json::from_value(value.clone()).map_err(|error| {
+            otel_arrow_dfe_config::error::Error::InvalidUserConfig {
+                error: error.to_string(),
+            }
+        })?;
+    if config.probe_controller_lock {
+        let runtime = CONTEXT_BINDINGS_TEST_RUNTIME
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+            .and_then(std::sync::Weak::upgrade);
+        if let Some(runtime) = runtime {
+            let _state = runtime.state.try_lock().map_err(|_| {
+                otel_arrow_dfe_config::error::Error::InvalidUserConfig {
+                    error: "context declarations compiled while controller state was locked"
+                        .to_owned(),
+                }
+            })?;
+            let _ = CONTEXT_BINDINGS_TEST_DECLARATION_CALLS.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+    Ok(config.context_declarations())
+}
+
+fn context_bindings_test_receiver_create(
+    pipeline_ctx: PipelineContext,
+    node: otel_arrow_dfe_engine::node::NodeId,
+    node_config: Arc<NodeUserConfig>,
+    receiver_config: &ReceiverConfig,
+    _capabilities: &Capabilities,
+) -> Result<ReceiverWrapper<()>, otel_arrow_dfe_config::error::Error> {
+    let config: ContextBindingsTestConfig = serde_json::from_value(node_config.config.clone())
+        .map_err(
+            |error| otel_arrow_dfe_config::error::Error::InvalidUserConfig {
+                error: error.to_string(),
+            },
+        )?;
+    config.validate_context_declarations(&pipeline_ctx)?;
+    let policy = pipeline_ctx.compiled_context_bindings();
+    *CONTEXT_BINDINGS_TEST_CAPTURE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Arc::downgrade(policy));
+    Ok(ReceiverWrapper::local(
+        RecoveryTestReceiver,
+        node,
+        node_config,
+        receiver_config,
+    ))
 }
 
 fn test_receiver_create(
@@ -432,6 +541,7 @@ fn variant_reload_receiver_create(
 const VARIANT_RELOAD_RECEIVER_FACTORY: ReceiverFactory<()> = ReceiverFactory {
     name: VARIANT_RELOAD_RECEIVER_URN,
     create: variant_reload_receiver_create,
+    context_declarations: None,
     wiring_contract: WiringContract::UNRESTRICTED,
     validate_config: test_validate_config,
 };
@@ -658,6 +768,7 @@ fn outer_scope_live_reconfig_receiver_create(
 const OUTER_SCOPE_LIVE_RECONFIG_RECEIVER_FACTORY: ReceiverFactory<()> = ReceiverFactory {
     name: OUTER_SCOPE_LIVE_RECONFIG_RECEIVER_URN,
     create: outer_scope_live_reconfig_receiver_create,
+    context_declarations: None,
     wiring_contract: WiringContract::UNRESTRICTED,
     validate_config: test_validate_config,
 };
@@ -666,6 +777,7 @@ static TEST_RECEIVER_FACTORIES: &[ReceiverFactory<()>] = &[
     ReceiverFactory {
         name: "urn:test:receiver:example",
         create: test_receiver_create,
+        context_declarations: None,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
     },
@@ -673,18 +785,21 @@ static TEST_RECEIVER_FACTORIES: &[ReceiverFactory<()>] = &[
     ReceiverFactory {
         name: "urn:otel:receiver:topic",
         create: test_receiver_create,
+        context_declarations: None,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
     },
     ReceiverFactory {
         name: "urn:otel:receiver:otlp",
         create: test_receiver_create,
+        context_declarations: None,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
     },
     ReceiverFactory {
         name: "urn:otel:receiver:internal_telemetry",
         create: test_receiver_create,
+        context_declarations: None,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
     },
@@ -693,6 +808,7 @@ static TEST_RECEIVER_FACTORIES: &[ReceiverFactory<()>] = &[
 static TEST_PROCESSOR_FACTORIES: &[ProcessorFactory<()>] = &[ProcessorFactory {
     name: "urn:otel:processor:type_router",
     create: test_processor_create,
+    context_declarations: None,
     wiring_contract: WiringContract::UNRESTRICTED,
     validate_config: test_validate_config,
 }];
@@ -701,24 +817,28 @@ static TEST_EXPORTER_FACTORIES: &[ExporterFactory<()>] = &[
     ExporterFactory {
         name: "urn:test:exporter:example",
         create: test_exporter_create,
+        context_declarations: None,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
     },
     ExporterFactory {
         name: "urn:otel:exporter:topic",
         create: test_exporter_create,
+        context_declarations: None,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
     },
     ExporterFactory {
         name: "urn:otel:exporter:console",
         create: test_exporter_create,
+        context_declarations: None,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
     },
     ExporterFactory {
         name: "urn:otel:exporter:noop",
         create: test_exporter_create,
+        context_declarations: None,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
     },
@@ -762,16 +882,70 @@ static TEST_PIPELINE_FACTORY: PipelineFactory<()> = PipelineFactory::new(
     TEST_EXTENSION_FACTORIES,
 );
 
+static CONTEXT_BINDINGS_TEST_RECEIVER_FACTORIES: &[ReceiverFactory<()>] = &[
+    ReceiverFactory {
+        name: CONTEXT_BINDINGS_TEST_RECEIVER_URN,
+        create: context_bindings_test_receiver_create,
+        context_declarations: Some(ContextDeclarationProvider {
+            declarations: context_bindings_test_declarations,
+        }),
+        wiring_contract: WiringContract::UNRESTRICTED,
+        validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<
+            ContextBindingsTestConfig,
+        >,
+    },
+    ReceiverFactory {
+        name: "urn:otel:receiver:internal_telemetry",
+        create: test_receiver_create,
+        context_declarations: None,
+        wiring_contract: WiringContract::UNRESTRICTED,
+        validate_config: test_validate_config,
+    },
+];
+
+static CONTEXT_BINDINGS_TEST_EXPORTER_FACTORIES: &[ExporterFactory<()>] = &[
+    ExporterFactory {
+        name: "urn:test:exporter:example",
+        create: recovery_test_exporter_create,
+        context_declarations: None,
+        wiring_contract: WiringContract::UNRESTRICTED,
+        validate_config: test_validate_config,
+    },
+    ExporterFactory {
+        name: "urn:otel:exporter:console",
+        create: test_exporter_create,
+        context_declarations: None,
+        wiring_contract: WiringContract::UNRESTRICTED,
+        validate_config: test_validate_config,
+    },
+    ExporterFactory {
+        name: "urn:otel:exporter:noop",
+        create: test_exporter_create,
+        context_declarations: None,
+        wiring_contract: WiringContract::UNRESTRICTED,
+        validate_config: test_validate_config,
+    },
+];
+
+static CONTEXT_BINDINGS_TEST_PIPELINE_FACTORY: PipelineFactory<()> = PipelineFactory::new(
+    CONTEXT_BINDINGS_TEST_RECEIVER_FACTORIES,
+    TEST_PROCESSOR_FACTORIES,
+    CONTEXT_BINDINGS_TEST_EXPORTER_FACTORIES,
+    &[],
+);
+
 static RECOVERY_TEST_RECEIVER_FACTORIES: &[ReceiverFactory<()>] = &[
     ReceiverFactory {
         name: "urn:test:receiver:example",
         create: recovery_test_receiver_create,
+        context_declarations: None,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
     },
     ReceiverFactory {
         name: "urn:otel:receiver:internal_telemetry",
         create: recovery_test_receiver_create,
+        context_declarations: None,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
     },
@@ -781,18 +955,21 @@ static RECOVERY_TEST_EXPORTER_FACTORIES: &[ExporterFactory<()>] = &[
     ExporterFactory {
         name: "urn:test:exporter:example",
         create: recovery_test_exporter_create,
+        context_declarations: None,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
     },
     ExporterFactory {
         name: "urn:otel:exporter:console",
         create: recovery_test_exporter_create,
+        context_declarations: None,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
     },
     ExporterFactory {
         name: "urn:otel:exporter:noop",
         create: recovery_test_exporter_create,
+        context_declarations: None,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
     },
@@ -810,6 +987,7 @@ static VARIANT_RELOAD_TEST_RECEIVER_FACTORIES: &[ReceiverFactory<()>] = &[
     ReceiverFactory {
         name: "urn:otel:receiver:internal_telemetry",
         create: recovery_test_receiver_create,
+        context_declarations: None,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
     },
@@ -830,6 +1008,7 @@ static OUTER_SCOPE_LIVE_RECONFIG_TEST_RECEIVER_FACTORIES: &[ReceiverFactory<()>]
     ReceiverFactory {
         name: "urn:otel:receiver:internal_telemetry",
         create: recovery_test_receiver_create,
+        context_declarations: None,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
     },
@@ -974,6 +1153,10 @@ fn test_runtime_with_supplied_log_filter_topology_and_extension_scope_registry(
         Controller::<()>::declare_topics(config).expect("declared topics should be valid");
     let (memory_pressure_tx, _memory_pressure_rx) =
         tokio::sync::watch::channel(MemoryPressureChanged::initial());
+    let context = pipeline_factory
+        .compile_initial_context(&config.resolve())
+        .expect("test context bindings should compile");
+
     (
         Arc::new(ControllerRuntime::new(
             pipeline_factory,
@@ -984,6 +1167,8 @@ fn test_runtime_with_supplied_log_filter_topology_and_extension_scope_registry(
             metrics_reporter,
             extension_scope_registry,
             declared_topics,
+            context.runtime_requirements,
+            context.bindings,
             available_core_ids(),
             topology,
             TracingSetup::new(ProviderSetup::Noop, LogLevel::default(), engine_context)
@@ -1166,7 +1351,14 @@ fn launch_committed_test_pipeline(
         0,
     );
     let deployed_key = runtime
-        .launch_regular_pipeline_instance(&resolved, &inherited_extensions, &live_placement, 0, 0)
+        .launch_regular_pipeline_instance(
+            &resolved,
+            &inherited_extensions,
+            current_test_context_bindings(runtime),
+            &live_placement,
+            0,
+            0,
+        )
         .expect("initial test pipeline should launch");
     runtime
         .wait_for_pipeline_ready(&deployed_key, Instant::now() + Duration::from_secs(5))
@@ -1646,6 +1838,14 @@ fn register_existing_pipeline(runtime: &ControllerRuntime<()>, config: &OtelData
     register_pipeline(runtime, config, "g1", "p1");
 }
 
+fn current_test_context_bindings(runtime: &ControllerRuntime<()>) -> Arc<CompiledContextBindings> {
+    let state = runtime
+        .state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    Arc::clone(&state.latest_context_bindings)
+}
+
 fn register_pipeline(
     runtime: &ControllerRuntime<()>,
     config: &OtelDataflowSpec,
@@ -1683,6 +1883,7 @@ fn register_runtime_instance(
         .state
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let context_bindings = Arc::clone(&state.latest_context_bindings);
     _ = state.runtime_instances.insert(
         DeployedPipelineKey {
             pipeline_group_id: pipeline_group_id.to_owned().into(),
@@ -1692,6 +1893,7 @@ fn register_runtime_instance(
         },
         RuntimeInstanceRecord {
             control_sender: Some(control_sender),
+            context_bindings,
             lifecycle,
         },
     );
@@ -1712,10 +1914,12 @@ fn register_runtime_instance_with_sender(
         .state
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let context_bindings = Arc::clone(&state.latest_context_bindings);
     _ = state.runtime_instances.insert(
         pipeline_key,
         RuntimeInstanceRecord {
             control_sender: Some(control_sender),
+            context_bindings,
             lifecycle,
         },
     );
@@ -1823,6 +2027,7 @@ impl PipelineAdminSender for ExitThenFailPipelineAdminSender {
 }
 
 fn launched_runtime_instance(
+    runtime: &ControllerRuntime<()>,
     pipeline_group_id: &str,
     pipeline_id: &str,
     core_id: usize,
@@ -1830,6 +2035,13 @@ fn launched_runtime_instance(
 ) -> LaunchedPipelineThread<()> {
     let (tx, _rx) = runtime_ctrl_msg_channel::<()>(4);
     let control_sender: Arc<dyn PipelineAdminSender> = Arc::new(tx);
+    let context_bindings = {
+        let state = runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        Arc::clone(&state.latest_context_bindings)
+    };
     LaunchedPipelineThread {
         pipeline_key: DeployedPipelineKey {
             pipeline_group_id: pipeline_group_id.to_owned().into(),
@@ -1838,6 +2050,7 @@ fn launched_runtime_instance(
             deployment_generation: generation,
         },
         control_sender,
+        context_bindings,
         _marker: std::marker::PhantomData,
     }
 }
@@ -4592,10 +4805,12 @@ fn rollback_replace_rollout_restores_recovered_serving_generation() {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let _ = state.generation_counters.insert(pipeline_key.clone(), 2);
+        let context_bindings = Arc::clone(&state.latest_context_bindings);
         let _ = state.runtime_recoveries.insert(
             (pipeline_key.clone(), 0),
             RuntimeRecoveryState {
                 serving_generation: 1,
+                context_bindings,
                 restart_count: 1,
                 ready_since: Some(Instant::now()),
                 worker_id: None,
@@ -5112,6 +5327,565 @@ fn delete_pipeline_removes_stopped_pipeline_from_live_config() {
             .pipelines
             .contains_key(&pipeline_id)
     );
+}
+
+/// Scenario: a pipeline with context declarations is launched and deleted.
+/// Guarantees: the runtime receives its policy. Deletion updates the policy and releases the old one.
+#[test]
+fn delete_pipeline_recompiles_context_bindings_without_removed_declarations() {
+    let _capture_guard = CONTEXT_BINDINGS_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    reset_context_bindings_test_capture();
+    let config = engine_config_with_pipeline(
+        r#"
+        nodes:
+          receiver:
+            type: "urn:test:receiver:context-bindings"
+            config:
+              produces: X-Tenant
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+        "#,
+    );
+    let runtime = test_runtime_with_factory(&config, &CONTEXT_BINDINGS_TEST_PIPELINE_FACTORY);
+    let _runner = ObservedStateRunner::start(&runtime);
+    let initial_bindings = {
+        let state = runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        Arc::clone(&state.latest_context_bindings)
+    };
+    let resolved = config
+        .resolve()
+        .pipelines
+        .into_iter()
+        .find(|pipeline| {
+            pipeline.role == ResolvedPipelineRole::Regular
+                && pipeline.pipeline_group_id.as_ref() == "g1"
+                && pipeline.pipeline_id.as_ref() == "p1"
+        })
+        .expect("resolved pipeline should exist");
+    let placement = runtime
+        .pipeline_placement_for_resolved(&resolved)
+        .expect("resolved pipeline placement should exist");
+    let live_placement = runtime.live_pipeline_placement_from(&resolved, placement.clone(), 0);
+    runtime.register_committed_pipeline(resolved.clone(), placement, 0);
+    let core_id = live_placement
+        .placement
+        .cores
+        .first()
+        .expect("pipeline should have a core")
+        .core_id
+        .id;
+    let _deployed_key = runtime
+        .launch_regular_pipeline_instance(
+            &resolved,
+            &runtime
+                .inherited_extensions_for_pipeline(&resolved.pipeline_group_id, &resolved.pipeline),
+            Arc::clone(&initial_bindings),
+            &live_placement,
+            core_id,
+            0,
+        )
+        .expect("pipeline should launch");
+    let installed_bindings = wait_for_context_bindings_test_capture();
+    assert!(Arc::ptr_eq(
+        &initial_bindings,
+        &installed_bindings
+            .upgrade()
+            .expect("installed policy should be live")
+    ));
+    drop(initial_bindings);
+
+    let status = runtime
+        .request_delete_pipeline("g1", "p1", 5)
+        .expect("stopped pipeline should be deleted");
+    assert_eq!(status.state, "succeeded");
+
+    let (committed_config, committed_policy) = {
+        let state = runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        (
+            state.live_config.clone(),
+            Arc::clone(&state.latest_context_bindings),
+        )
+    };
+    let expected_bindings = CONTEXT_BINDINGS_TEST_PIPELINE_FACTORY
+        .compile_initial_context(&committed_config.resolve())
+        .expect("post-delete policy should compile")
+        .bindings;
+
+    assert!(committed_policy.eq(&expected_bindings));
+    assert!(
+        installed_bindings.upgrade().is_none(),
+        "deleted pipeline policy should be released"
+    );
+}
+
+/// Scenario: deleting a pipeline recompiles declarations for a remaining pipeline.
+/// Guarantees: declaration callbacks run without holding the controller state lock.
+#[test]
+fn delete_pipeline_compiles_context_bindings_outside_controller_lock() {
+    let _capture_guard = CONTEXT_BINDINGS_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let config = OtelDataflowSpec::from_yaml(
+        r#"
+version: otel_dataflow/v1
+groups:
+  g1:
+    pipelines:
+      delete:
+        nodes:
+          receiver:
+            type: "urn:test:receiver:context-bindings"
+            config:
+              produces: delete-marker
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+      remain:
+        nodes:
+          receiver:
+            type: "urn:test:receiver:context-bindings"
+            config:
+              produces: remain-marker
+              probe_controller_lock: true
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#,
+    )
+    .expect("engine config should parse");
+    let runtime = test_runtime_with_factory(&config, &CONTEXT_BINDINGS_TEST_PIPELINE_FACTORY);
+    CONTEXT_BINDINGS_TEST_DECLARATION_CALLS.store(0, Ordering::Relaxed);
+    *CONTEXT_BINDINGS_TEST_RUNTIME
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Arc::downgrade(&runtime));
+
+    let status = runtime
+        .request_delete_pipeline("g1", "delete", 5)
+        .expect("deletion should compile declarations without the state lock");
+
+    *CONTEXT_BINDINGS_TEST_RUNTIME
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+    assert_eq!(status.state, "succeeded");
+    assert_eq!(
+        CONTEXT_BINDINGS_TEST_DECLARATION_CALLS.load(Ordering::Relaxed),
+        1
+    );
+}
+
+/// Scenario: reconfiguration changes a deployed pipeline's context declaration.
+/// Guarantees: the update is rejected because old and new generations may overlap.
+#[test]
+fn reconfigure_rejects_context_bindings_changes_to_target_pipeline() {
+    let config = engine_config_with_pipeline(
+        r#"
+        nodes:
+          receiver:
+            type: "urn:test:receiver:context-bindings"
+            config:
+              produces: X-Tenant
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+        "#,
+    );
+    let runtime = test_runtime_with_factory(&config, &CONTEXT_BINDINGS_TEST_PIPELINE_FACTORY);
+    register_existing_pipeline(&runtime, &config);
+
+    let replacement = PipelineConfig::from_yaml(
+        "g1".into(),
+        "p1".into(),
+        r#"
+nodes:
+  receiver:
+    type: "urn:test:receiver:context-bindings"
+    config:
+      produces: X-Account
+  exporter:
+    type: "urn:test:exporter:example"
+    config: null
+connections:
+  - from: receiver
+    to: exporter
+"#,
+    )
+    .expect("replacement should parse");
+    let error = runtime
+        .prepare_rollout_plan(
+            "g1",
+            "p1",
+            &ReconfigureRequest {
+                pipeline: replacement,
+                step_timeout_secs: 5,
+                drain_timeout_secs: 5,
+            },
+        )
+        .expect_err("target pipeline context binding changes should be rejected");
+
+    match error {
+        ControlPlaneError::InvalidRequest { message } => {
+            assert!(message.contains("g1:p1"), "{message}");
+            assert!(message.contains("restart the engine"), "{message}");
+        }
+        other => panic!("expected invalid request, got {other:?}"),
+    }
+}
+
+/// Scenario: one pipeline starts requiring original names that the engine currently discards.
+/// Guarantees: the live update is rejected because the engine-wide representation is immutable.
+#[test]
+fn reconfigure_rejects_context_bindings_changes_to_other_pipelines() {
+    let config = OtelDataflowSpec::from_yaml(
+        r#"
+version: otel_dataflow/v1
+groups:
+  g1:
+    pipelines:
+      capture:
+        nodes:
+          receiver:
+            type: "urn:test:receiver:context-bindings"
+            header_capture:
+              headers:
+                - match_names: ["x-tenant-id"]
+                  store_as: tenant
+            config:
+              produces: capture-marker
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+      propagate:
+        nodes:
+          receiver:
+            type: "urn:test:receiver:context-bindings"
+            config:
+              produces: source-marker
+          exporter:
+            type: "urn:test:exporter:example"
+            header_propagation:
+              default:
+                selector:
+                  type: all_captured
+                name: stored_name
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#,
+    )
+    .expect("engine config should parse");
+    let runtime = test_runtime_with_factory(&config, &CONTEXT_BINDINGS_TEST_PIPELINE_FACTORY);
+    register_pipeline(&runtime, &config, "g1", "capture");
+    register_pipeline(&runtime, &config, "g1", "propagate");
+
+    let replacement = PipelineConfig::from_yaml(
+        "g1".into(),
+        "propagate".into(),
+        r#"
+nodes:
+  receiver:
+    type: "urn:test:receiver:context-bindings"
+    config:
+      produces: source-marker
+  exporter:
+    type: "urn:test:exporter:example"
+    header_propagation:
+      default:
+        selector:
+          type: all_captured
+        name: preserve
+    config: null
+connections:
+  - from: receiver
+    to: exporter
+"#,
+    )
+    .expect("replacement should parse");
+
+    let error = runtime
+        .prepare_rollout_plan(
+            "g1",
+            "propagate",
+            &ReconfigureRequest {
+                pipeline: replacement,
+                step_timeout_secs: 5,
+                drain_timeout_secs: 5,
+            },
+        )
+        .expect_err("cross-pipeline context binding changes should be rejected");
+
+    match error {
+        ControlPlaneError::InvalidRequest { message } => {
+            assert!(
+                message.contains("original transport-header names"),
+                "{message}"
+            );
+            assert!(message.contains("restart the engine"), "{message}");
+        }
+        other => panic!("expected invalid request, got {other:?}"),
+    }
+}
+
+/// Scenario: deleting the last original-name consumer leaves a capture pipeline deployed.
+/// Guarantees: deletion succeeds and the remaining generation keeps preserving original names.
+#[test]
+fn delete_preserves_installed_context_runtime_requirements() {
+    let config = OtelDataflowSpec::from_yaml(
+        r#"
+version: otel_dataflow/v1
+groups:
+  g1:
+    pipelines:
+      capture:
+        nodes:
+          receiver:
+            type: "urn:test:receiver:context-bindings"
+            header_capture:
+              headers:
+                - match_names: ["x-tenant-id"]
+                  store_as: tenant
+            config:
+              produces: capture-marker
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+      propagate:
+        nodes:
+          receiver:
+            type: "urn:test:receiver:context-bindings"
+            config:
+              produces: source-marker
+          exporter:
+            type: "urn:test:exporter:example"
+            header_propagation:
+              default:
+                selector:
+                  type: all_captured
+                name: preserve
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#,
+    )
+    .expect("engine config should parse");
+    let runtime = test_runtime_with_factory(&config, &CONTEXT_BINDINGS_TEST_PIPELINE_FACTORY);
+    register_pipeline(&runtime, &config, "g1", "capture");
+    register_pipeline(&runtime, &config, "g1", "propagate");
+    let initial_bindings = {
+        let state = runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        Arc::clone(&state.latest_context_bindings)
+    };
+
+    let status = runtime
+        .request_delete_pipeline("g1", "propagate", 5)
+        .expect("removing an original-name consumer should remain compatible");
+
+    let state = runtime
+        .state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert_eq!(status.state, "succeeded");
+    assert!(
+        !state.live_config.groups[&PipelineGroupId::from("g1")]
+            .pipelines
+            .contains_key(&PipelineId::from("propagate"))
+    );
+    assert!(initial_bindings.pipeline_bindings_match(
+        &state.latest_context_bindings,
+        &PipelineKey::new("g1".into(), "capture".into())
+    ));
+    let unpinned_bindings = CONTEXT_BINDINGS_TEST_PIPELINE_FACTORY
+        .compile_initial_context(&state.live_config.resolve())
+        .expect("remaining config should compile without installed requirements")
+        .bindings;
+    assert!(!state.latest_context_bindings.pipeline_bindings_match(
+        &unpinned_bindings,
+        &PipelineKey::new("g1".into(), "capture".into())
+    ));
+}
+
+/// Scenario: a new pipeline requires an original name already preserved by the engine.
+/// Guarantees: the compatible pipeline is accepted without changing deployed bindings.
+#[test]
+fn reconfigure_accepts_supported_context_runtime_requirements() {
+    let config = engine_config_with_pipeline(
+        r#"
+        nodes:
+          receiver:
+            type: "urn:test:receiver:context-bindings"
+            config:
+              produces: source-marker
+          exporter:
+            type: "urn:test:exporter:example"
+            header_propagation:
+              default:
+                selector:
+                  type: named
+                  named: [x-tenant]
+                name: preserve
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+        "#,
+    );
+    let runtime = test_runtime_with_factory(&config, &CONTEXT_BINDINGS_TEST_PIPELINE_FACTORY);
+    register_existing_pipeline(&runtime, &config);
+    let pipeline =
+        config.groups[&PipelineGroupId::from("g1")].pipelines[&PipelineId::from("p1")].clone();
+
+    let plan = runtime
+        .prepare_rollout_plan(
+            "g1",
+            "p2",
+            &ReconfigureRequest {
+                pipeline,
+                step_timeout_secs: 5,
+                drain_timeout_secs: 5,
+            },
+        )
+        .expect("installed original-name requirements should support the new pipeline");
+
+    assert_eq!(plan.action, RolloutAction::Create);
+}
+
+/// Scenario: recovery restarts a failed pipeline generation.
+/// Guarantees: recovery reuses that generation's binding snapshot.
+#[test]
+fn runtime_recovery_reuses_context_bindings_snapshot() {
+    assert_runtime_recovery_reuses_context_bindings_snapshot(false);
+}
+
+/// Scenario: a reserved pipeline fails before activation after the controller's latest bindings change.
+/// Guarantees: recovery retains the failed launch's compiled context snapshot rather than the latest one.
+#[test]
+fn runtime_recovery_before_activation_reuses_context_bindings_snapshot() {
+    assert_runtime_recovery_reuses_context_bindings_snapshot(true);
+}
+
+fn assert_runtime_recovery_reuses_context_bindings_snapshot(exit_before_activation: bool) {
+    let _capture_guard = CONTEXT_BINDINGS_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    reset_context_bindings_test_capture();
+    let config = engine_config_with_pipeline(
+        r#"
+        policies:
+          runtime_recovery:
+            max_restarts: 1
+            initial_backoff: 1ms
+            max_backoff: 1ms
+            startup_timeout: 2s
+            reset_after: 1m
+        nodes:
+          receiver:
+            type: "urn:test:receiver:context-bindings"
+            config:
+              produces: X-Tenant
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+        "#,
+    );
+    let runtime = test_runtime_with_factory(&config, &CONTEXT_BINDINGS_TEST_PIPELINE_FACTORY);
+    let _runner = ObservedStateRunner::start(&runtime);
+    register_existing_pipeline(&runtime, &config);
+    let expected_bindings = {
+        let state = runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        Arc::clone(&state.latest_context_bindings)
+    };
+    let _runtime_control = if exit_before_activation {
+        runtime
+            .reserve_instance_launch(
+                &deployed_key("g1", "p1", 0, 0),
+                Arc::clone(&expected_bindings),
+            )
+            .expect("launch should reserve its context snapshot");
+        None
+    } else {
+        Some(register_runtime_instance(
+            &runtime,
+            "g1",
+            "p1",
+            0,
+            0,
+            RuntimeInstanceLifecycle::Active,
+        ))
+    };
+    report_ready(&runtime, deployed_key("g1", "p1", 0, 0));
+
+    let latest_bindings = runtime
+        .pipeline_factory
+        .compile_initial_context(&empty_engine_config().resolve())
+        .expect("new context snapshot should compile")
+        .bindings;
+    assert!(!Arc::ptr_eq(&expected_bindings, &latest_bindings));
+    runtime
+        .state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .latest_context_bindings = latest_bindings;
+
+    runtime.note_instance_exit(
+        deployed_key("g1", "p1", 0, 0),
+        RuntimeInstanceExit::Error(RuntimeInstanceError::runtime("boom".to_owned())),
+    );
+
+    let recovered_bindings = wait_for_context_bindings_test_capture()
+        .upgrade()
+        .expect("recovered policy should remain installed");
+    assert!(Arc::ptr_eq(&expected_bindings, &recovered_bindings));
+
+    let pipeline_key = PipelineKey::new("g1".into(), "p1".into());
+    let _ = wait_for_observed_status(&runtime, &pipeline_key, |status| {
+        status
+            .instance_status(0, 1)
+            .is_some_and(|instance| matches!(instance.phase(), PipelinePhase::Running))
+    });
+    runtime
+        .request_instance_shutdown(
+            &deployed_key("g1", "p1", 0, 1),
+            2,
+            "context binding recovery test cleanup",
+        )
+        .expect("recovered runtime should accept shutdown");
 }
 
 /// Scenario: a control-plane caller deletes a pipeline that cannot be found.
@@ -5719,27 +6493,144 @@ fn reconcile_engine_config_deletes_missing_resources_by_default() {
     );
 }
 
-/// Scenario: a full-config reconciliation request omits live resources with
-/// `delete_missing` disabled.
-/// Guarantees: reconciliation succeeds without deleting the omitted group or
-/// pipeline.
+/// Scenario: reconciliation retains one pipeline and omits another pipeline
+/// with context declarations while `delete_missing` is enabled.
+/// Guarantees: the retained pipeline is a no-op and the omitted pipeline is deleted.
 #[test]
-fn reconcile_engine_config_preserves_missing_resources_when_requested() {
-    let config = engine_config_with_pipeline(simple_pipeline_yaml());
-    let runtime = test_runtime(&config);
+fn reconcile_engine_config_deletes_missing_context_pipeline() {
+    let config = OtelDataflowSpec::from_yaml(
+        r#"
+version: otel_dataflow/v1
+groups:
+  g1:
+    policies:
+      resources:
+        core_allocation:
+          type: core_set
+          set:
+            - start: 0
+              end: 0
+    pipelines:
+      p1:
+        nodes:
+          receiver:
+            type: "urn:test:receiver:context-bindings"
+            config:
+              produces: retained-marker
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+      p2:
+        nodes:
+          receiver:
+            type: "urn:test:receiver:context-bindings"
+            config:
+              produces: X-Tenant
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#,
+    )
+    .expect("engine config should parse");
+    let mut desired = config.clone();
+    _ = desired
+        .groups
+        .get_mut(&PipelineGroupId::from("g1"))
+        .expect("test group should exist")
+        .pipelines
+        .remove(&PipelineId::from("p2"));
+    let runtime = test_runtime_with_factory(&config, &CONTEXT_BINDINGS_TEST_PIPELINE_FACTORY);
+    register_pipeline(&runtime, &config, "g1", "p1");
+    register_pipeline(&runtime, &config, "g1", "p2");
+    let _p1_runtime =
+        register_runtime_instance(&runtime, "g1", "p1", 0, 0, RuntimeInstanceLifecycle::Active);
 
     let status = runtime
-        .reconcile_engine_config(reconcile_request(empty_engine_config(), false))
+        .reconcile_engine_config(reconcile_request(desired, true))
+        .expect("missing context pipeline should be deleted");
+
+    assert_eq!(status.state, EngineConfigReconcileState::Succeeded);
+    assert_eq!(
+        status
+            .changes
+            .iter()
+            .map(|change| (
+                change.pipeline_id.as_ref().map(|id| id.as_ref()),
+                change.action,
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            (Some("p1"), ConfigChangeAction::Noop),
+            (Some("p2"), ConfigChangeAction::Delete),
+        ]
+    );
+}
+
+/// Scenario: a partial reconciliation requests unchanged pipeline p1 while
+/// omitting deployed pipeline p2 with context declarations.
+/// Guarantees: `delete_missing=false` plans p1 as a no-op and retains p2.
+#[test]
+fn reconcile_engine_config_preserves_missing_resources_when_requested() {
+    let desired_config = engine_config_with_pipeline(
+        r#"
+        policies:
+          resources:
+            core_allocation:
+              type: core_set
+              set:
+                - start: 0
+                  end: 0
+        nodes:
+          receiver:
+            type: "urn:test:receiver:context-bindings"
+            config:
+              produces: X-Tenant
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#,
+    );
+    let mut config = desired_config.clone();
+    let retained_pipeline =
+        config.groups[&PipelineGroupId::from("g1")].pipelines[&PipelineId::from("p1")].clone();
+    _ = config
+        .groups
+        .get_mut(&PipelineGroupId::from("g1"))
+        .expect("test group should exist")
+        .pipelines
+        .insert("p2".into(), retained_pipeline);
+    let runtime = test_runtime_with_factory(&config, &CONTEXT_BINDINGS_TEST_PIPELINE_FACTORY);
+    register_existing_pipeline(&runtime, &config);
+    register_pipeline(&runtime, &config, "g1", "p2");
+    let _p1_runtime =
+        register_runtime_instance(&runtime, "g1", "p1", 0, 0, RuntimeInstanceLifecycle::Active);
+    let _p2_runtime =
+        register_runtime_instance(&runtime, "g1", "p2", 0, 0, RuntimeInstanceLifecycle::Active);
+
+    let status = runtime
+        .reconcile_engine_config(reconcile_request(desired_config, false))
         .expect("missing resources should be preserved");
 
     assert_eq!(status.state, EngineConfigReconcileState::Succeeded);
-    assert!(status.changes.is_empty());
+    assert_eq!(status.changes.len(), 1);
+    assert_eq!(status.changes[0].action, ConfigChangeAction::Noop);
     let snapshot = runtime.engine_config_snapshot();
-    assert!(
-        snapshot.groups[&PipelineGroupId::from("g1")]
-            .pipelines
-            .contains_key(&PipelineId::from("p1"))
-    );
+    for pipeline_id in ["p1", "p2"] {
+        assert!(
+            snapshot.groups[&PipelineGroupId::from("g1")]
+                .pipelines
+                .contains_key(&PipelineId::from(pipeline_id))
+        );
+    }
 }
 
 /// Scenario: full-config reconciliation is rejected after validation because a
@@ -6364,6 +7255,55 @@ fn explicit_shutdown_retains_initiator_in_status() {
     );
 }
 
+/// Scenario: an instance can only finish after the engine reaches its graceful
+/// drain deadline and force-stops unresolved node work.
+/// Guarantees: the controller allows bounded post-deadline completion time and
+/// does not falsely report the forced runtime exit as a drain timeout.
+#[test]
+fn shutdown_instance_waits_for_exit_after_graceful_drain_deadline() {
+    let config = engine_config_with_pipeline(simple_pipeline_yaml());
+    let runtime = test_runtime(&config);
+    register_existing_pipeline(&runtime, &config);
+    let deployed_key = deployed_key("g1", "p1", 0, 0);
+    let mut notifications =
+        register_runtime_instance(&runtime, "g1", "p1", 0, 0, RuntimeInstanceLifecycle::Active);
+    {
+        // A rollout retains the terminal runtime record long enough for its
+        // worker to observe the exit rather than compacting it immediately.
+        let mut state = runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        _ = state.active_rollouts.insert(
+            PipelineKey::new("g1".into(), "p1".into()),
+            "deadline-completion-test".to_owned(),
+        );
+    }
+
+    let exit_runtime = Arc::clone(&runtime);
+    let exit_key = deployed_key.clone();
+    let exit_thread = thread::spawn(move || {
+        let RuntimeControlMsg::Shutdown { deadline, .. } =
+            wait_for_shutdown_message(&mut notifications)
+        else {
+            panic!("instance should receive shutdown");
+        };
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            thread::sleep(remaining.min(Duration::from_millis(10)));
+        }
+        exit_runtime.note_instance_exit(exit_key, RuntimeInstanceExit::Success);
+    });
+
+    runtime
+        .shutdown_instance(&deployed_key, 1, "deadline completion test")
+        .expect("forced shutdown should complete during the controller grace period");
+    exit_thread.join().expect("exit reporter should not panic");
+}
+
 /// Scenario: a shutdown request targets one logical pipeline while other
 /// pipelines and exited instances still exist in the runtime registry.
 /// Guarantees: only active instances for the requested logical pipeline
@@ -6711,10 +7651,12 @@ fn request_shutdown_all_does_not_wait_for_recovery_worker_release() {
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let context_bindings = Arc::clone(&state.latest_context_bindings);
         _ = state.runtime_recoveries.insert(
             (pipeline_key, 0),
             RuntimeRecoveryState {
                 serving_generation: 0,
+                context_bindings,
                 restart_count: 0,
                 ready_since: None,
                 worker_id: Some(42),
@@ -6963,7 +7905,7 @@ fn global_shutdown_late_observability_launch_gets_its_own_deadline() {
             0,
         );
         runtime
-            .reserve_instance_launch(&key)
+            .reserve_instance_launch(&key, current_test_context_bindings(&runtime))
             .expect("observability launch should reserve");
         let producer_deadline = Instant::now() - Duration::from_secs(1);
         runtime
@@ -7024,10 +7966,10 @@ fn global_shutdown_late_observability_launch_waits_for_remaining_producer() {
         0,
     );
     runtime
-        .reserve_instance_launch(&producer_key)
+        .reserve_instance_launch(&producer_key, current_test_context_bindings(&runtime))
         .expect("producer launch should reserve");
     runtime
-        .reserve_instance_launch(&observability_key)
+        .reserve_instance_launch(&observability_key, current_test_context_bindings(&runtime))
         .expect("observability launch should reserve");
     runtime
         .request_shutdown_all(5)
@@ -7419,7 +8361,7 @@ fn launch_reservation_counts_liveness_before_activation() {
     let deployed_key = deployed_key("g1", "p1", 0, 7);
 
     runtime
-        .reserve_instance_launch(&deployed_key)
+        .reserve_instance_launch(&deployed_key, current_test_context_bindings(&runtime))
         .expect("launch reservation should succeed");
     {
         let state = runtime
@@ -7427,7 +8369,7 @@ fn launch_reservation_counts_liveness_before_activation() {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         assert_eq!(state.active_instances, 1);
-        assert!(state.launching_instances.contains(&deployed_key));
+        assert!(state.launching_instances.contains_key(&deployed_key));
         assert!(!state.runtime_instances.contains_key(&deployed_key));
     }
 
@@ -7438,7 +8380,48 @@ fn launch_reservation_counts_liveness_before_activation() {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     assert_eq!(state.active_instances, 0);
-    assert!(!state.launching_instances.contains(&deployed_key));
+    assert!(!state.launching_instances.contains_key(&deployed_key));
+}
+
+/// Scenario: the controller's latest context snapshot changes between launch reservation and activation.
+/// Guarantees: the activated runtime retains the reserved generation's snapshot rather than the latest one.
+#[test]
+fn launch_activation_retains_reserved_context_bindings() {
+    let config = empty_engine_config();
+    let runtime = test_runtime(&config);
+    let key = deployed_key("g1", "p1", 0, 7);
+    let reserved_bindings = current_test_context_bindings(&runtime);
+    runtime
+        .reserve_instance_launch(&key, Arc::clone(&reserved_bindings))
+        .expect("launch reservation should succeed");
+    let latest_bindings = runtime
+        .pipeline_factory
+        .compile_initial_context(&config.resolve())
+        .expect("new context snapshot should compile")
+        .bindings;
+    assert!(!Arc::ptr_eq(&reserved_bindings, &latest_bindings));
+    runtime
+        .state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .latest_context_bindings = latest_bindings;
+
+    let (sender, _calls) = recording_admin_sender(None);
+    runtime.complete_instance_launch(key.clone(), sender);
+    {
+        let state = runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let instance = state
+            .runtime_instances
+            .get(&key)
+            .expect("activated instance");
+        assert!(Arc::ptr_eq(&reserved_bindings, &instance.context_bindings));
+        assert!(!state.launching_instances.contains_key(&key));
+    }
+    runtime.note_instance_exit(key, RuntimeInstanceExit::Success);
+    assert!(runtime.all_instances_exited());
 }
 
 /// Scenario: shutdown-when-done observes a producer whose launch is reserved
@@ -7450,7 +8433,7 @@ fn producer_wait_includes_launch_reservations() {
     let runtime = test_runtime(&empty_engine_config());
     let deployed_key = deployed_key("g1", "p1", 0, 7);
     runtime
-        .reserve_instance_launch(&deployed_key)
+        .reserve_instance_launch(&deployed_key, current_test_context_bindings(&runtime))
         .expect("launch reservation should succeed");
 
     let waiter = {
@@ -7476,7 +8459,7 @@ fn producer_wait_honors_fatal_release_latch() {
     let runtime = test_runtime(&empty_engine_config());
     let deployed_key = deployed_key("g1", "p1", 0, 7);
     runtime
-        .reserve_instance_launch(&deployed_key)
+        .reserve_instance_launch(&deployed_key, current_test_context_bindings(&runtime))
         .expect("launch reservation should succeed");
 
     let waiter = {
@@ -7503,7 +8486,10 @@ fn closed_launch_admission_preserves_fatal_runtime_error() {
     runtime.close_pipeline_launches();
 
     let error = runtime
-        .reserve_instance_launch(&deployed_key("g1", "p1", 0, 8))
+        .reserve_instance_launch(
+            &deployed_key("g1", "p1", 0, 8),
+            current_test_context_bindings(&runtime),
+        )
         .expect_err("launch admission should be closed");
     assert!(error.to_string().contains("engine extension `auth` failed"));
 }
@@ -7519,7 +8505,7 @@ fn exit_before_activation_consumes_launch_reservation_once() {
     let (sender, _calls) = recording_admin_sender(None);
 
     runtime
-        .reserve_instance_launch(&deployed_key)
+        .reserve_instance_launch(&deployed_key, current_test_context_bindings(&runtime))
         .expect("launch reservation should succeed");
     runtime.note_instance_exit(deployed_key.clone(), RuntimeInstanceExit::Success);
     assert!(
@@ -7533,7 +8519,7 @@ fn exit_before_activation_consumes_launch_reservation_once() {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     assert_eq!(state.active_instances, 0);
-    assert!(!state.launching_instances.contains(&deployed_key));
+    assert!(!state.launching_instances.contains_key(&deployed_key));
     assert!(!state.runtime_instances.contains_key(&deployed_key));
 }
 
@@ -7559,7 +8545,7 @@ fn global_shutdown_catches_inflight_launch_activation() {
         RuntimeInstanceLifecycle::Active,
     );
     runtime
-        .reserve_instance_launch(&in_flight_key)
+        .reserve_instance_launch(&in_flight_key, current_test_context_bindings(&runtime))
         .expect("in-flight launch should reserve");
 
     runtime
@@ -7583,7 +8569,10 @@ fn global_shutdown_catches_inflight_launch_activation() {
     );
     assert!(
         runtime
-            .reserve_instance_launch(&deployed_key("g1", "p1", 1, 9))
+            .reserve_instance_launch(
+                &deployed_key("g1", "p1", 1, 9),
+                current_test_context_bindings(&runtime),
+            )
             .is_err()
     );
 
@@ -7611,7 +8600,7 @@ fn global_shutdown_activation_recognizes_clean_exit_before_send_failure() {
     let runtime = test_runtime(&empty_engine_config());
     let in_flight_key = deployed_key("g1", "p1", 0, 10);
     runtime
-        .reserve_instance_launch(&in_flight_key)
+        .reserve_instance_launch(&in_flight_key, current_test_context_bindings(&runtime))
         .expect("in-flight launch should reserve");
     runtime
         .request_shutdown_all(1)
@@ -7643,7 +8632,7 @@ fn extension_scope_supervisor_guard_keeps_hosts_alive_until_reserved_pipeline_ex
     let runtime = test_runtime(&empty_engine_config());
     let in_flight_key = deployed_key("g1", "p1", 0, 10);
     runtime
-        .reserve_instance_launch(&in_flight_key)
+        .reserve_instance_launch(&in_flight_key, current_test_context_bindings(&runtime))
         .expect("launch reservation should succeed");
 
     let (started_tx, started_rx) = std::sync::mpsc::channel();
@@ -7693,10 +8682,12 @@ fn extension_scope_supervisor_guard_cancels_recovery_without_live_producer() {
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let context_bindings = Arc::clone(&state.latest_context_bindings);
         _ = state.runtime_recoveries.insert(
             (pipeline_key.clone(), 0),
             RuntimeRecoveryState {
                 serving_generation: 0,
+                context_bindings,
                 restart_count: 0,
                 ready_since: None,
                 worker_id: Some(43),
@@ -7765,7 +8756,7 @@ fn extension_scope_supervisor_guard_returns_after_descendant_timeout() {
     let runtime = test_runtime(&empty_engine_config());
     let stalled_key = deployed_key("g1", "p1", 0, 11);
     runtime
-        .reserve_instance_launch(&stalled_key)
+        .reserve_instance_launch(&stalled_key, current_test_context_bindings(&runtime))
         .expect("launch reservation should succeed");
 
     let (stopped_tx, stopped_rx) = std::sync::mpsc::channel();
@@ -8085,7 +9076,7 @@ fn register_launched_instance_reconciles_early_exit_without_leaking_active_count
     let deployed_key = deployed_key("g1", "p1", 0, 0);
     runtime.note_instance_exit(deployed_key.clone(), RuntimeInstanceExit::Success);
 
-    runtime.register_launched_instance(launched_runtime_instance("g1", "p1", 0, 0));
+    runtime.register_launched_instance(launched_runtime_instance(&runtime, "g1", "p1", 0, 0));
 
     let state = runtime
         .state
@@ -8107,7 +9098,7 @@ fn release_instance_wait_unblocks_wait_with_active_instances() {
     let runtime = test_runtime(&empty_engine_config());
 
     // Simulate a launched, still-active pipeline instance that never exits.
-    runtime.register_launched_instance(launched_runtime_instance("g1", "p1", 0, 0));
+    runtime.register_launched_instance(launched_runtime_instance(&runtime, "g1", "p1", 0, 0));
     assert_eq!(
         runtime
             .state

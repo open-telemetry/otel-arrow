@@ -301,9 +301,7 @@ impl UserEventsReceiver {
             drain,
             batching,
             cpu_id: pipeline.core_id(),
-            metrics: Rc::new(RefCell::new(
-                pipeline.register_metrics::<UserEventsReceiverMetrics>(),
-            )),
+            metrics: Rc::new(RefCell::new(UserEventsReceiverMetrics::register(&pipeline))),
             admission_state: LocalReceiverAdmissionState::from_process_state(
                 &pipeline.memory_pressure_state(),
             ),
@@ -589,6 +587,7 @@ pub static USER_EVENTS_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
                 receiver_config,
             ))
         },
+    context_declarations: None,
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<
         UserEventsReceiverConfig,
@@ -1149,9 +1148,9 @@ mod config_tests {
 
     fn test_metrics() -> Rc<RefCell<MetricSet<UserEventsReceiverMetrics>>> {
         let (pipeline_ctx, _) = test_pipeline_ctx();
-        Rc::new(RefCell::new(
-            pipeline_ctx.register_metrics::<UserEventsReceiverMetrics>(),
-        ))
+        Rc::new(RefCell::new(UserEventsReceiverMetrics::register(
+            &pipeline_ctx,
+        )))
     }
 
     fn test_effect_handler(
@@ -1178,6 +1177,7 @@ mod config_tests {
                 None,
                 runtime_tx,
                 metrics_reporter,
+                otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
             ),
             rx,
         )

@@ -285,6 +285,7 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
                     pipeline_completion_msg_tx,
                     metrics_reporter_start,
                     Interests::empty(),
+                    super::create_test_pipeline_runtime_services(),
                 )
                 .await
                 .map(|terminal_state| {

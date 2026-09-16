@@ -48,7 +48,7 @@ use crate::thread_task::{
 use core_affinity::CoreId;
 use otel_arrow_dfe_admin::ControlPlane;
 use otel_arrow_dfe_config::engine::{
-    OtelDataflowSpec, ResolvedPipelineConfig, ResolvedPipelineRole,
+    OtelDataflowSpec, ResolvedOtelDataflowSpec, ResolvedPipelineConfig, ResolvedPipelineRole,
     SYSTEM_OBSERVABILITY_PIPELINE_ID, SYSTEM_PIPELINE_GROUP_ID,
 };
 use otel_arrow_dfe_config::extension::{ExtensionUrn, ExtensionUserConfig};
@@ -64,7 +64,6 @@ use otel_arrow_dfe_config::topic::{
     TopicAckPropagationMode, TopicBackendKind, TopicBroadcastAckMode, TopicBroadcastOnLagPolicy,
     TopicImplSelectionPolicy, TopicSpec,
 };
-use otel_arrow_dfe_config::transport_headers_policy::TransportHeadersPolicy;
 use otel_arrow_dfe_config::{
     DeployedPipelineKey, ExtensionId, PipelineGroupId, PipelineId, PipelineKey,
     SubscriptionGroupName, TopicName, pipeline::PipelineConfig,
@@ -73,6 +72,9 @@ use otel_arrow_dfe_engine::PipelineFactory;
 use otel_arrow_dfe_engine::ReceivedAtNode;
 use otel_arrow_dfe_engine::Unwindable;
 use otel_arrow_dfe_engine::context::{ControllerContext, PipelineContext};
+use otel_arrow_dfe_engine::context_declaration::{
+    CompiledContextBindings, ContextRuntimeRequirements,
+};
 use otel_arrow_dfe_engine::control::{
     PipelineAdminSender, PipelineCompletionMsgReceiver, PipelineCompletionMsgSender,
     RuntimeCtrlMsgReceiver, RuntimeCtrlMsgSender, pipeline_completion_msg_channel,
@@ -1505,6 +1507,12 @@ impl<
 
         let num_pipeline_groups = engine_config.groups.len();
         let resolved_config = engine_config.resolve();
+        let context = self
+            .pipeline_factory
+            .compile_initial_context(&resolved_config)
+            .map_err(|source| Error::PipelineRuntimeError {
+                source: Box::new(source),
+            })?;
         let (mut engine, pipelines, observability_pipeline) = resolved_config.into_parts();
         let observability_pipeline =
             observability_pipeline.ok_or_else(|| Error::PipelineRuntimeError {
@@ -1732,6 +1740,8 @@ impl<
             metrics_reporter.clone(),
             extension_scope_registry.clone(),
             declared_topics,
+            context.runtime_requirements,
+            Arc::clone(&context.bindings),
             all_cores.clone(),
             topology,
             telemetry_system.engine_tracing_setup(),
@@ -1922,6 +1932,7 @@ impl<
             observability_core,
             observability_pipeline,
             &engine_config,
+            Arc::clone(&context.bindings),
             &telemetry_system,
             self.pipeline_factory,
             &controller_ctx,
@@ -2055,11 +2066,11 @@ impl<
                     placement.core_id,
                     placement.numa_node_id,
                     Arc::clone(&listener_group_snapshot),
+                    Arc::clone(&context.bindings),
                     num_cores,
                     pipeline_entry.pipeline.clone(),
                     pipeline_entry.policies.channel_capacity.clone(),
                     pipeline_entry.policies.telemetry.clone(),
-                    pipeline_entry.policies.transport_headers.clone(),
                     pipeline_entry.policies.rate_limiters.clone(),
                     pipeline_entry.policies.rate_limiter_scope.clone(),
                     inherited_extensions.clone(),
@@ -2908,11 +2919,11 @@ impl<
         core_id: CoreId,
         numa_node_id: usize,
         listener_group_snapshot: Arc<ListenerGroupSnapshot>,
+        context_bindings: Arc<CompiledContextBindings>,
         num_cores: usize,
         pipeline_config: PipelineConfig,
         channel_capacity_policy: ChannelCapacityPolicy,
         telemetry_policy: TelemetryPolicy,
-        transport_headers_policy: Option<TransportHeadersPolicy>,
         rate_limiter_policies: BTreeMap<String, RateLimiterPolicy>,
         rate_limiter_scope: Option<otel_arrow_dfe_config::policy::RateLimiterDeclarationScope>,
         inherited_extensions: InheritedExtensionRegistrations,
@@ -2949,6 +2960,7 @@ impl<
         )?;
         pipeline_ctx.set_topic_set(topic_set);
         pipeline_ctx.set_listener_group_snapshot_arc(listener_group_snapshot);
+        pipeline_ctx.set_compiled_context_bindings(Arc::clone(&context_bindings));
         let (runtime_ctrl_msg_tx, runtime_ctrl_msg_rx) =
             runtime_ctrl_msg_channel(channel_capacity_policy.control.pipeline);
         let (pipeline_completion_msg_tx, pipeline_completion_msg_rx) =
@@ -2965,7 +2977,7 @@ impl<
         let run_key = pipeline_key.clone();
         let runtime_key = pipeline_key.clone();
         let runtime_thread_name = thread_name.clone();
-        runtime.reserve_instance_launch(&pipeline_key)?;
+        runtime.reserve_instance_launch(&pipeline_key, context_bindings)?;
         let runtime_weak = Arc::downgrade(runtime);
         let spawn_result = thread::Builder::new()
             .name(thread_name.clone())
@@ -2977,7 +2989,6 @@ impl<
                         pipeline_config,
                         channel_capacity_policy,
                         telemetry_policy,
-                        transport_headers_policy,
                         rate_limiter_policies,
                         rate_limiter_scope,
                         inherited_extensions,
@@ -3035,6 +3046,7 @@ impl<
         observability_core: CoreId,
         observability_pipeline: ResolvedPipelineConfig,
         config: &OtelDataflowSpec,
+        context_bindings: Arc<CompiledContextBindings>,
         telemetry_system: &InternalTelemetrySystem,
         pipeline_factory: &'static PipelineFactory<PData>,
         controller_ctx: &ControllerContext,
@@ -3063,11 +3075,11 @@ impl<
             observability_core,
             observability_numa_node_id,
             Arc::new(ListenerGroupSnapshot::empty()),
+            context_bindings,
             1,
             pipeline_config,
             channel_capacity_policy,
             telemetry_policy,
-            None,
             BTreeMap::new(),
             None,
             InheritedExtensionRegistrations::default(),
@@ -3116,7 +3128,6 @@ impl<
         pipeline_config: PipelineConfig,
         channel_capacity_policy: ChannelCapacityPolicy,
         telemetry_policy: TelemetryPolicy,
-        transport_headers_policy: Option<TransportHeadersPolicy>,
         rate_limiter_policies: BTreeMap<String, RateLimiterPolicy>,
         rate_limiter_scope: Option<otel_arrow_dfe_config::policy::RateLimiterDeclarationScope>,
         inherited_extensions: InheritedExtensionRegistrations,
@@ -3177,7 +3188,6 @@ impl<
                     pipeline_config.clone(),
                     channel_capacity_policy,
                     telemetry_policy,
-                    transport_headers_policy,
                     rate_limiter_policies,
                     rate_limiter_scope,
                     internal_telemetry_settings,
@@ -3633,16 +3643,27 @@ connections:
         ))
     }
 
-    static TEST_OBSERVABILITY_RECEIVERS: &[ReceiverFactory<()>] = &[ReceiverFactory {
-        name: "urn:otel:receiver:internal_telemetry",
-        create: create_test_observability_receiver,
-        wiring_contract: WiringContract::UNRESTRICTED,
-        validate_config: accept_any_test_config,
-    }];
+    static TEST_OBSERVABILITY_RECEIVERS: &[ReceiverFactory<()>] = &[
+        ReceiverFactory {
+            name: "urn:otel:receiver:internal_telemetry",
+            create: create_test_observability_receiver,
+            context_declarations: None,
+            wiring_contract: WiringContract::UNRESTRICTED,
+            validate_config: accept_any_test_config,
+        },
+        ReceiverFactory {
+            name: "urn:test:receiver:example",
+            create: create_test_observability_receiver,
+            context_declarations: None,
+            wiring_contract: WiringContract::UNRESTRICTED,
+            validate_config: accept_any_test_config,
+        },
+    ];
 
     static TEST_OBSERVABILITY_PROCESSORS: &[ProcessorFactory<()>] = &[ProcessorFactory {
         name: "urn:otel:processor:type_router",
         create: create_test_observability_processor,
+        context_declarations: None,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: accept_any_test_config,
     }];
@@ -3651,12 +3672,21 @@ connections:
         ExporterFactory {
             name: "urn:otel:exporter:console",
             create: create_test_observability_exporter,
+            context_declarations: None,
             wiring_contract: WiringContract::UNRESTRICTED,
             validate_config: accept_any_test_config,
         },
         ExporterFactory {
             name: "urn:otel:exporter:noop",
             create: create_test_observability_exporter,
+            context_declarations: None,
+            wiring_contract: WiringContract::UNRESTRICTED,
+            validate_config: accept_any_test_config,
+        },
+        ExporterFactory {
+            name: "urn:test:exporter:example",
+            create: create_test_observability_exporter,
+            context_declarations: None,
             wiring_contract: WiringContract::UNRESTRICTED,
             validate_config: accept_any_test_config,
         },

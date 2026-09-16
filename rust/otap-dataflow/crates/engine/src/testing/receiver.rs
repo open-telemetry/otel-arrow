@@ -20,6 +20,7 @@ use crate::receiver::ReceiverWrapper;
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::testing::{CtrlMsgCounters, setup_test_runtime};
 use otel_arrow_dfe_channel::error::RecvError;
+use otel_arrow_dfe_config::authorized_identity_policy::AuthorizedIdentityPolicy;
 use otel_arrow_dfe_config::transport_headers_policy::HeaderCapturePolicy;
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use serde_json::Value;
@@ -238,7 +239,19 @@ impl<PData: Debug + 'static> TestPhase<PData> {
     /// Sets a capture policy on the receiver wrapper for transport header testing.
     #[must_use]
     pub fn with_capture_policy(mut self, policy: Option<HeaderCapturePolicy>) -> Self {
-        self.receiver = self.receiver.with_capture_policy(policy);
+        self.receiver = self
+            .receiver
+            .with_capture_policy(policy.map(|policy| policy.compile(|_| true)));
+        self
+    }
+
+    /// Sets an authorized identity policy on the receiver wrapper for testing.
+    #[must_use]
+    pub fn with_authorized_identity_policy(
+        mut self,
+        policy: Option<AuthorizedIdentityPolicy>,
+    ) -> Self {
+        self.receiver = self.receiver.with_authorized_identity_policy(policy);
         self
     }
 
@@ -298,6 +311,7 @@ impl<PData: Debug + 'static> TestPhase<PData> {
                     pipeline_completion_msg_tx,
                     metrics_reporter,
                     Interests::empty(),
+                    super::create_test_pipeline_runtime_services(),
                 )
                 .await
                 .expect("Receiver event loop failed");

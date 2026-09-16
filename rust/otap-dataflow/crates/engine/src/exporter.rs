@@ -22,6 +22,7 @@ use crate::local::exporter as local;
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::message::{ExporterInbox, Receiver, Sender};
 use crate::node::{Node, NodeId, NodeWithPDataReceiver};
+use crate::runtime_services::PipelineRuntimeServices;
 use crate::shared::exporter as shared;
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::terminal_state::TerminalState;
@@ -283,13 +284,14 @@ impl<PData> ExporterWrapper<PData> {
         }
     }
 
-    /// Starts the exporter and begins exporting incoming data.
+    /// Starts the exporter using the services owned by its pipeline runtime.
     pub async fn start(
         self,
         runtime_ctrl_msg_tx: RuntimeCtrlMsgSender<PData>,
         pipeline_completion_msg_tx: PipelineCompletionMsgSender<PData>,
         metrics_reporter: MetricsReporter,
         node_interests: Interests,
+        runtime_services: PipelineRuntimeServices,
     ) -> Result<TerminalState, Error> {
         self.start_with_completion_metrics(
             runtime_ctrl_msg_tx,
@@ -297,6 +299,7 @@ impl<PData> ExporterWrapper<PData> {
             metrics_reporter,
             node_interests,
             None,
+            runtime_services,
         )
         .await
     }
@@ -308,6 +311,7 @@ impl<PData> ExporterWrapper<PData> {
         metrics_reporter: MetricsReporter,
         node_interests: Interests,
         completion_emission_metrics: Option<CompletionEmissionMetricsHandle>,
+        runtime_services: PipelineRuntimeServices,
     ) -> Result<TerminalState, Error> {
         match (self, metrics_reporter) {
             (
@@ -321,8 +325,11 @@ impl<PData> ExporterWrapper<PData> {
                 },
                 metrics_reporter,
             ) => {
-                let mut effect_handler =
-                    local::EffectHandler::new(node_id.clone(), metrics_reporter);
+                let mut effect_handler = local::EffectHandler::new(
+                    node_id.clone(),
+                    metrics_reporter,
+                    runtime_services.clone(),
+                );
                 let pdata_rx = pdata_receiver.ok_or_else(|| Error::ExporterError {
                     exporter: effect_handler.exporter_id(),
                     kind: ExporterErrorKind::Configuration,
@@ -360,7 +367,7 @@ impl<PData> ExporterWrapper<PData> {
                 metrics_reporter,
             ) => {
                 let mut effect_handler =
-                    shared::EffectHandler::new(node_id.clone(), metrics_reporter);
+                    shared::EffectHandler::new(node_id.clone(), metrics_reporter, runtime_services);
                 let pdata_rx = pdata_receiver.ok_or_else(|| Error::ExporterError {
                     exporter: effect_handler.exporter_id(),
                     kind: ExporterErrorKind::Configuration,

@@ -107,10 +107,9 @@ impl OtelDataflowSpec {
             });
         } else {
             let pipeline_cfg = observability_pipeline.clone().into_pipeline_config();
-            if let Err(e) = pipeline_cfg.validate_with_visible_extensions(
+            if let Err(e) = pipeline_cfg.validate(
                 &SYSTEM_PIPELINE_GROUP_ID.into(),
                 &SYSTEM_OBSERVABILITY_PIPELINE_ID.into(),
-                |_| false,
             ) {
                 errors.push(e);
             }
