@@ -62,7 +62,7 @@ impl TryFrom<&str> for ContextEntryName {
         {
             return Err(Error::InvalidUserConfig {
                 error: format!(
-                    "invalid transport-header context entry name `{value}`; expected a single printable ASCII name"
+                    "invalid context entry name `{value}`; expected a single printable ASCII name"
                 ),
             });
         }

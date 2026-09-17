@@ -6,7 +6,7 @@
 use otel_arrow_dfe_engine::context::PipelineContext;
 use otel_arrow_dfe_telemetry::common_attributes::Outcome;
 use otel_arrow_dfe_telemetry::instrument::{Counter, Gauge, HistogramNormal, Mmsc};
-use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSet, MetricSetSnapshot};
+use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSet, MetricSetSnapshot, MetricSetRegistrar};
 use otel_arrow_dfe_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
 
 // -- Smooth-run outcome attributes ---------------------------------------------
@@ -145,7 +145,7 @@ impl TrafficGeneratorMetrics {
                 pipeline_ctx,
             ),
             smooth_send: TrafficGeneratorSmoothSendMetrics::register(pipeline_ctx),
-            other: pipeline_ctx.register_metrics::<TrafficGeneratorOtherMetrics>(),
+            other: pipeline_ctx.register_metric_set::<TrafficGeneratorOtherMetrics>(),
         }
     }
 
