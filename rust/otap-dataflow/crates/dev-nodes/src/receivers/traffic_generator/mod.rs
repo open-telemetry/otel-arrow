@@ -498,9 +498,8 @@ impl TrafficGeneratorReceiver {
         handler: &local::EffectHandler<OtapPdata>,
         mut pdata: OtapPdata,
     ) -> Result<Result<u64, OtapPdata>, Error> {
-        let signal = pdata.signal_type();
         let count = pdata.num_items() as u64;
-        let payload_bytes = pdata.num_bytes();
+
         match handler.try_send_message_with_source_node(pdata) {
             Ok(()) => {
                 if self.config.enable_ack_nack() {
@@ -510,11 +509,7 @@ impl TrafficGeneratorReceiver {
                         .completion_pending
                         .set(self.pending_completions);
                 }
-                if matches!(signal, otel_arrow_dfe_config::SignalType::Logs)
-                    && let Some(bytes) = payload_bytes
-                {
-                    self.metrics.other.logs_bytes_produced.add(bytes as u64);
-                }
+
                 Ok(Ok(count))
             }
             Err(e) => {

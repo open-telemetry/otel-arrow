@@ -80,46 +80,41 @@ pub struct TrafficGeneratorSmoothSendMetrics {
 // -- Other (non-dimensionable) metrics ----------------------------------------
 
 /// Scalar metrics for the traffic generator that do not fit a single enum dimension.
-#[metric_set(name = "receiver.traffic_generator.other")]
+#[metric_set(name = "receiver.traffic_generator")]
 #[derive(Debug, Default, Clone)]
 pub struct TrafficGeneratorOtherMetrics {
-    /// Total uncompressed bytes of log payloads produced (protobuf-encoded size before
-    /// compression). Together with the engine's `node.output.items` (where `signal=logs`),
-    /// this yields the average uncompressed bytes per log record for compression-ratio analysis.
-    #[metric(unit = "By")]
-    pub logs_bytes_produced: Counter<u64>,
     /// Number of smooth-mode production runs started.
-    #[metric(name = "smooth.runs.started", unit = "{run}")]
+    #[metric(name = "smooth.runs_started", unit = "{run}")]
     pub smooth_runs_started: Counter<u64>,
     /// Number of times smooth mode detects a missed scheduling boundary.
-    #[metric(name = "smooth.schedule.deadline_misses", unit = "{miss}")]
+    #[metric(name = "smooth.schedule_deadline_misses", unit = "{miss}")]
     pub smooth_schedule_deadline_misses: Counter<u64>,
     /// Number of subscribed batches waiting for Ack/Nack completion.
     #[metric(name = "completion.pending", unit = "{batch}")]
     pub completion_pending: Gauge<u64>,
     /// Number of drains forced to finish with unresolved batches at the deadline.
-    #[metric(name = "completion.drain.deadline_forced", unit = "{drain}")]
+    #[metric(name = "completion.drain_deadline_forced", unit = "{drain}")]
     pub completion_drain_deadline_forced: Counter<u64>,
     /// Number of batches remaining when smooth mode detects that a run is late.
-    #[metric(name = "smooth.late.remaining.batches", unit = "{batch}")]
+    #[metric(name = "smooth.late_remaining_batches", unit = "{batch}")]
     pub smooth_late_remaining_batches: Mmsc,
     /// Number of signal items remaining when smooth mode detects that a run is late.
-    #[metric(name = "smooth.late.remaining.items", unit = "{item}")]
+    #[metric(name = "smooth.late_remaining_items", unit = "{item}")]
     pub smooth_late_remaining_items: Mmsc,
     /// Smooth-mode configured batches per one-second run.
-    #[metric(name = "smooth.run.batches", unit = "{batch}")]
+    #[metric(name = "smooth.run_batches", unit = "{batch}")]
     pub smooth_run_batches: Gauge<u64>,
     /// Smooth-mode configured interval between batches.
-    #[metric(name = "smooth.batch.interval", unit = "ns")]
+    #[metric(name = "smooth.batch_interval", unit = "ns")]
     pub smooth_batch_interval_ns: Gauge<u64>,
     /// Lateness of smooth-mode batch ticks relative to their scheduled instant.
-    #[metric(name = "smooth.batch.tick.lateness.duration", unit = "ns")]
+    #[metric(name = "smooth.batch_tick_lateness_duration", unit = "ns")]
     pub smooth_batch_tick_lateness_duration_ns: Mmsc,
     /// Wall-clock time spent generating or cloning one smooth-mode payload.
-    #[metric(name = "smooth.payload.generate.duration", unit = "ns")]
+    #[metric(name = "smooth.payload_generate_duration", unit = "ns")]
     pub smooth_payload_generate_duration_ns: HistogramNormal,
     /// Wall-clock time spent sending one smooth-mode payload into the downstream channel.
-    #[metric(name = "smooth.payload.send.duration", unit = "ns")]
+    #[metric(name = "smooth.payload_send_duration", unit = "ns")]
     pub smooth_payload_send_duration_ns: HistogramNormal,
 }
 
@@ -236,7 +231,6 @@ mod tests {
             .add(2);
 
         // Record other
-        metrics.other.logs_bytes_produced.add(4096);
         metrics.other.completion_pending.set(2);
 
         let snapshots = metrics.terminal_snapshots();
@@ -258,7 +252,7 @@ mod tests {
         assert!(
             snapshots
                 .iter()
-                .any(|s| s.descriptor().name == "receiver.traffic_generator.other")
+                .any(|s| s.descriptor().name == "receiver.traffic_generator")
         );
 
         // MeasurementMetricSet snapshots are terminal - they should not reappear
@@ -271,14 +265,14 @@ mod tests {
 
         let other_second_snapshot = snapshots2
             .iter()
-            .find(|s| s.descriptor().name == "receiver.traffic_generator.other")
+            .find(|s| s.descriptor().name == "receiver.traffic_generator")
             .unwrap();
         // The fixed metric set is returned again, but delta counters like `smooth_runs_started` must have been cleared (value 0)
         let started_idx = other_second_snapshot
             .descriptor()
             .metrics
             .iter()
-            .position(|m| m.name == "smooth.runs.started")
+            .position(|m| m.name == "smooth.runs_started")
             .unwrap();
         let started_val = &other_second_snapshot.get_metrics()[started_idx];
         if let otel_arrow_dfe_telemetry::metrics::MetricValue::U64(val) = started_val {
