@@ -248,13 +248,67 @@ pub(crate) struct CapturedTransportHeader<'name, 'value> {
 enum TransportHeadersStorage {
     Owned(Vec<TransportHeader>),
     Packed(PackedTransportHeaders),
+    Overlay {
+        base: Arc<TransportHeadersStorage>,
+        appended: Vec<TransportHeader>,
+    },
+}
+
+impl TransportHeadersStorage {
+    fn len(&self) -> usize {
+        match self {
+            Self::Owned(headers) => headers.len(),
+            Self::Packed(packed) => packed.count,
+            Self::Overlay { base, appended } => base
+                .len()
+                .checked_add(appended.len())
+                .expect("transport header count overflow"),
+        }
+    }
+
+    fn get(&self, index: usize) -> Option<TransportHeaderRef<'_>> {
+        match self {
+            Self::Owned(headers) => headers.get(index).map(TransportHeaderRef::from),
+            Self::Packed(packed) => packed.get(index),
+            Self::Overlay { base, appended } => {
+                let base_len = base.len();
+                if index < base_len {
+                    base.get(index)
+                } else {
+                    appended
+                        .get(index.checked_sub(base_len)?)
+                        .map(TransportHeaderRef::from)
+                }
+            }
+        }
+    }
+
+    fn stored_name_matches(&self, index: usize, name: &str) -> bool {
+        match self {
+            Self::Owned(headers) => headers
+                .get(index)
+                .is_some_and(|header| header.name.as_str() == name),
+            Self::Packed(packed) => packed.stored_name_matches(index, name),
+            Self::Overlay { base, appended } => {
+                let base_len = base.len();
+                if index < base_len {
+                    base.stored_name_matches(index, name)
+                } else {
+                    appended
+                        .get(index.saturating_sub(base_len))
+                        .is_some_and(|header| header.name.as_str() == name)
+                }
+            }
+        }
+    }
 }
 
 /// An ordered collection of captured transport headers.
 ///
 /// Captured names, values, and descriptors share one immutable packed byte
-/// block. Cloning is a reference-count bump, while iteration returns borrowed
-/// views without rebuilding owned headers.
+/// block. Headers appended later remain in a small copy-on-write overlay.
+/// Cloning is a reference-count bump, while iteration returns borrowed views
+/// without rebuilding owned headers.
 #[derive(Clone, Default)]
 pub struct TransportHeaders {
     storage: Option<Arc<TransportHeadersStorage>>,
@@ -299,19 +353,51 @@ impl TransportHeaders {
 
     /// Add a header to the collection.
     ///
-    /// The first mutation of packed or shared storage materializes a uniquely
-    /// owned vector. Later pushes reuse that vector while it remains unique.
+    /// Packed storage remains shared and immutable. Appended headers use a
+    /// copy-on-write overlay that is reused while uniquely owned.
     pub fn push(&mut self, header: TransportHeader) {
-        if let Some(TransportHeadersStorage::Owned(headers)) =
-            self.storage.as_mut().and_then(Arc::get_mut)
-        {
-            headers.push(header);
-            return;
+        if let Some(storage) = self.storage.as_mut().and_then(Arc::get_mut) {
+            match storage {
+                TransportHeadersStorage::Owned(headers)
+                | TransportHeadersStorage::Overlay {
+                    appended: headers, ..
+                } => {
+                    headers.push(header);
+                    return;
+                }
+                TransportHeadersStorage::Packed(_) => {}
+            }
         }
 
-        let mut headers = self.iter().map(TransportHeader::from).collect::<Vec<_>>();
-        headers.push(header);
-        self.storage = Some(Arc::new(TransportHeadersStorage::Owned(headers)));
+        let storage = self.storage.take();
+        let replacement = match storage {
+            None => TransportHeadersStorage::Owned(vec![header]),
+            Some(storage) if matches!(storage.as_ref(), TransportHeadersStorage::Packed(_)) => {
+                TransportHeadersStorage::Overlay {
+                    base: storage,
+                    appended: vec![header],
+                }
+            }
+            Some(storage) => match storage.as_ref() {
+                TransportHeadersStorage::Owned(headers) => {
+                    let mut headers = headers.clone();
+                    headers.push(header);
+                    TransportHeadersStorage::Owned(headers)
+                }
+                TransportHeadersStorage::Overlay { base, appended } => {
+                    let mut appended = appended.clone();
+                    appended.push(header);
+                    TransportHeadersStorage::Overlay {
+                        base: Arc::clone(base),
+                        appended,
+                    }
+                }
+                TransportHeadersStorage::Packed(_) => {
+                    unreachable!("packed storage handled before shared storage")
+                }
+            },
+        };
+        self.storage = Some(Arc::new(replacement));
     }
 
     /// Replaces this collection with packed headers.
@@ -337,10 +423,9 @@ impl TransportHeaders {
     /// Returns the number of headers.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.storage.as_deref().map_or(0, |storage| match storage {
-            TransportHeadersStorage::Owned(headers) => headers.len(),
-            TransportHeadersStorage::Packed(packed) => packed.count,
-        })
+        self.storage
+            .as_deref()
+            .map_or(0, TransportHeadersStorage::len)
     }
 
     /// Iterate over all headers.
@@ -355,12 +440,7 @@ impl TransportHeaders {
     /// Returns the header at `index`.
     #[must_use]
     pub fn get(&self, index: usize) -> Option<TransportHeaderRef<'_>> {
-        match self.storage.as_deref()? {
-            TransportHeadersStorage::Owned(headers) => {
-                headers.get(index).map(TransportHeaderRef::from)
-            }
-            TransportHeadersStorage::Packed(packed) => packed.get(index),
-        }
+        self.storage.as_deref()?.get(index)
     }
 
     /// Finds headers by exact stored name.
@@ -566,29 +646,18 @@ impl<'a> Iterator for TransportHeadersIter<'a> {
 
     fn next(&mut self) -> Option<Self::Item> {
         let storage = self.storage?;
-        let count = match storage {
-            TransportHeadersStorage::Owned(headers) => headers.len(),
-            TransportHeadersStorage::Packed(packed) => packed.count,
-        };
+        let count = storage.len();
         if self.index >= count {
             return None;
         }
 
         let index = self.index;
         self.index += 1;
-        match storage {
-            TransportHeadersStorage::Owned(headers) => {
-                headers.get(index).map(TransportHeaderRef::from)
-            }
-            TransportHeadersStorage::Packed(packed) => Some(packed.decode(index)),
-        }
+        storage.get(index)
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let count = self.storage.map_or(0, |storage| match storage {
-            TransportHeadersStorage::Owned(headers) => headers.len(),
-            TransportHeadersStorage::Packed(packed) => packed.count,
-        });
+        let count = self.storage.map_or(0, TransportHeadersStorage::len);
         let remaining = count.saturating_sub(self.index);
         (remaining, Some(remaining))
     }
@@ -608,38 +677,20 @@ impl<'a> Iterator for TransportHeadersFindIter<'a> {
 
     fn next(&mut self) -> Option<Self::Item> {
         let storage = self.storage?;
-        let count = match storage {
-            TransportHeadersStorage::Owned(headers) => headers.len(),
-            TransportHeadersStorage::Packed(packed) => packed.count,
-        };
+        let count = storage.len();
 
         while self.index < count {
             let index = self.index;
             self.index += 1;
-            match storage {
-                TransportHeadersStorage::Owned(headers) => {
-                    let header = headers
-                        .get(index)
-                        .expect("owned transport header index must be in bounds");
-                    if header.name.as_str() == self.name {
-                        return Some(TransportHeaderRef::from(header));
-                    }
-                }
-                TransportHeadersStorage::Packed(packed) => {
-                    if packed.stored_name_matches(index, self.name) {
-                        return Some(packed.decode(index));
-                    }
-                }
+            if storage.stored_name_matches(index, self.name) {
+                return storage.get(index);
             }
         }
         None
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let count = self.storage.map_or(0, |storage| match storage {
-            TransportHeadersStorage::Owned(headers) => headers.len(),
-            TransportHeadersStorage::Packed(packed) => packed.count,
-        });
+        let count = self.storage.map_or(0, TransportHeadersStorage::len);
         (0, Some(count.saturating_sub(self.index)))
     }
 }
@@ -862,28 +913,77 @@ mod tests {
         let _ = headers.iter().next();
     }
 
-    /// Scenario: multiple headers are pushed after capture produced packed storage.
-    /// Guarantees: the first push converts to owned storage and later pushes reuse it.
+    /// Scenario: a cloned packed collection receives multiple appended headers.
+    /// Guarantees: packed bytes stay shared, order is preserved, and unique pushes reuse the overlay.
     #[test]
-    fn pushed_packed_headers_convert_once_and_reuse_owned_storage() {
-        let mut headers = TransportHeaders::new();
-        headers.replace(vec![header("tenant", "X-Tenant", b"acme")]);
+    fn pushed_packed_headers_share_base_and_reuse_overlay() {
+        let mut original = TransportHeaders::new();
+        original.replace(vec![header("tenant", "X-Tenant", b"acme")]);
+        let mut changed = original.clone();
 
-        headers.push(header("partition", "X-Partition", b"first"));
-        let storage = headers.storage.as_ref().expect("storage after first push");
-        assert!(matches!(
-            storage.as_ref(),
-            TransportHeadersStorage::Owned(values) if values.len() == 2
+        changed.push(header("partition", "X-Partition", b"first"));
+        let storage = changed.storage.as_ref().expect("storage after first push");
+        let TransportHeadersStorage::Overlay { base, appended } = storage.as_ref() else {
+            panic!("expected appended transport header overlay");
+        };
+        assert!(Arc::ptr_eq(
+            base,
+            original.storage.as_ref().expect("original packed storage")
         ));
+        assert_eq!(appended.len(), 1);
         let storage_ptr = Arc::as_ptr(storage);
+        assert_eq!(original.len(), 1);
+        assert_eq!(changed.len(), 2);
+        assert_eq!(changed.get(0).expect("packed header").value.bytes, b"acme");
+        assert_eq!(
+            changed.get(1).expect("appended header").value.bytes,
+            b"first"
+        );
+        assert_eq!(changed.find_by_name("partition").count(), 1);
 
-        headers.push(header("partition", "X-Partition", b"second"));
-        let storage = headers.storage.as_ref().expect("storage after second push");
+        changed.push(header("partition", "X-Partition", b"second"));
+        let storage = changed.storage.as_ref().expect("storage after second push");
         assert_eq!(Arc::as_ptr(storage), storage_ptr);
         assert!(matches!(
             storage.as_ref(),
-            TransportHeadersStorage::Owned(values) if values.len() == 3
+            TransportHeadersStorage::Overlay { appended, .. } if appended.len() == 2
         ));
+        assert_eq!(changed.len(), 3);
+        assert_eq!(changed.find_by_name("partition").count(), 2);
+        let names: Vec<_> = changed.iter().map(|header| header.name.as_str()).collect();
+        assert_eq!(names, ["tenant", "partition", "partition"]);
+    }
+
+    /// Scenario: a collection with appended headers is cloned and mutated.
+    /// Guarantees: both overlays share packed bytes while their appended headers remain independent.
+    #[test]
+    fn pushed_shared_overlay_preserves_copy_on_write() {
+        let mut original = TransportHeaders::new();
+        original.replace(vec![header("tenant", "X-Tenant", b"acme")]);
+        original.push(header("partition", "X-Partition", b"first"));
+        let mut changed = original.clone();
+
+        changed.push(header("partition", "X-Partition", b"second"));
+
+        let TransportHeadersStorage::Overlay {
+            base: original_base,
+            appended: original_appended,
+        } = original.storage.as_deref().expect("original overlay")
+        else {
+            panic!("expected original appended transport header overlay");
+        };
+        let TransportHeadersStorage::Overlay {
+            base: changed_base,
+            appended: changed_appended,
+        } = changed.storage.as_deref().expect("changed overlay")
+        else {
+            panic!("expected changed appended transport header overlay");
+        };
+        assert!(Arc::ptr_eq(original_base, changed_base));
+        assert_eq!(original_appended.len(), 1);
+        assert_eq!(changed_appended.len(), 2);
+        assert_eq!(original.len(), 2);
+        assert_eq!(changed.len(), 3);
     }
 
     /// Scenario: an iterator advances over packed transport headers.
