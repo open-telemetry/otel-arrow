@@ -308,7 +308,7 @@ impl KafkaReceiverMetrics {
             acknowledgements: KafkaReceiverAcknowledgementMetrics::register(pipeline_ctx),
             rejections: KafkaReceiverRejectionMetrics::register(pipeline_ctx),
             offset_commits: KafkaReceiverOffsetCommitMetrics::register(pipeline_ctx),
-            consumer: pipeline_ctx.register_metrics::<KafkaReceiverConsumerMetrics>(),
+            consumer: KafkaReceiverConsumerMetrics::register(pipeline_ctx),
             transport: KafkaReceiverTransportMetrics::register(pipeline_ctx),
         }
     }
