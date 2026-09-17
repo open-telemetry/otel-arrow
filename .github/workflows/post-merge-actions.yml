@@ -99,5 +99,5 @@ jobs:
       - name: Warm required build cache
         if: steps.rust-cache.outputs.cache-hit != 'true'
         # Keep the feature set synchronized with rust-ci.yml's required Windows build.
-        run: cargo nextest list --locked --no-default-features --features=crypto-symcrypt,mimalloc,azure,aws,azure-monitor-exporter,geneva-exporter,contrib-processors,unsafe-optimizations --workspace --list-type binaries-only --message-format json
+        run: cargo nextest list --locked --no-default-features --features=crypto-symcrypt,mimalloc,azure,aws,azure-monitor-exporter,geneva-exporter,contrib-processors,unsafe-optimizations --workspace --exclude otel-arrow-dfe-component-inventory --list-type binaries-only --message-format json
         working-directory: ./rust/otap-dataflow

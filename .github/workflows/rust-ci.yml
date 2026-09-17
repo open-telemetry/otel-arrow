@@ -601,7 +601,10 @@ jobs:
       - name: Build and archive tests
         # Keep this feature set synchronized with the Windows post-merge cache
         # warmer so PR and merge-queue builds can reuse its target artifacts.
-        run: cargo nextest archive --locked --no-default-features --features=crypto-symcrypt,mimalloc,azure,aws,azure-monitor-exporter,geneva-exporter,contrib-processors,unsafe-optimizations --workspace --archive-file nextest-archive.tar.zst
+        # The complete component inventory is validated by the Linux all-feature
+        # build; including its dev-dependencies here would pull Kafka and OpenSSL
+        # into this reduced-feature SymCrypt build.
+        run: cargo nextest archive --locked --no-default-features --features=crypto-symcrypt,mimalloc,azure,aws,azure-monitor-exporter,geneva-exporter,contrib-processors,unsafe-optimizations --workspace --exclude otel-arrow-dfe-component-inventory --archive-file nextest-archive.tar.zst
         working-directory: ./rust/otap-dataflow
       - name: Upload nextest archive
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
