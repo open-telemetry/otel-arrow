@@ -15,7 +15,7 @@ diagnostics.
 | Metric name | Type | Unit | Description | Produced in file |
 | --- | --- | --- | --- | --- |
 | `receiver.received.messages` | Counter | `{message}` | Classified external messages grouped by fixed entity attribute `protocol` set to `tcp` or `udp`, `signal=logs`, and node-local terminal `outcome`; batching and downstream handoff do not change it. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
-| `receiver.received.payload.size` | Counter | `By` | Optional encoded payload bytes visible before parsing, excluding the TCP newline delimiter, grouped by fixed entity attribute `protocol` set to `tcp` or `udp` and node-local terminal `outcome`. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
+| `receiver.received.payload.size` | Counter | `By` | Optional encoded payload bytes visible after transport framing is removed, grouped by fixed entity attribute `protocol` set to `tcp` or `udp` and node-local terminal `outcome`. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
 | `receiver.processing.duration` | Histogram | `s` | Optional active admission, parsing, and record append time, grouped by fixed entity attribute `protocol` set to `tcp` or `udp` and excluding batch buffering and pipeline handoff. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
 | `receiver.syslog_cef.rejections.items` | Counter | `{item}` | Rejected messages grouped by bounded `protocol` and `error.type`. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
 | `receiver.syslog_cef.truncations.items` | Counter | `{item}` | Payloads that reached the fixed `MAX_MESSAGE_SIZE` receive limit. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
@@ -27,11 +27,13 @@ diagnostics.
 
 | Event name | Level | Description | Produced in file |
 | --- | --- | --- | --- |
-| `syslog_cef_receiver.start` | `info` | Receiver startup with protocol (TCP or UDP) and listening address. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
+| `syslog_cef_receiver.start` | `info` | Receiver startup with protocol and listening address; TCP events also include the configured framing mode. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
 | `syslog_cef_receiver.tls_enabled` | `info` | TLS has been enabled for the TCP receiver. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
 | `syslog_cef_receiver.tls.handshake.success` | `debug` | TLS handshake completed successfully for an incoming connection. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
 | `syslog_cef_receiver.tls.handshake.failed` | `warn` | TLS handshake failed; the connection is closed. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
 | `syslog_cef_receiver.drain_ingress.timeout` | `warn` | Ingress drain timeout expired with connection tasks still active during shutdown. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
+| `syslog_cef_receiver.tcp.read_error` | `warn` | A TCP read failed and the connection is closed. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
+| `syslog_cef_receiver.tcp.framing_error` | `warn` | An invalid, incomplete, or oversized TCP frame caused the connection to close. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
 | `syslog_cef_receiver.arrow_records.build_failed` | `warn` | Failed to build Arrow records from a parsed batch; the batch is dropped. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
 
 ## Maintenance

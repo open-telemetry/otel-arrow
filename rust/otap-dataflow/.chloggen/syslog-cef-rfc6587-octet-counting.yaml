@@ -1,0 +1,5 @@
+change_type: enhancement
+component: pipeline
+note: "Allow the Syslog CEF receiver to ingest RFC 6587 octet-counted TCP messages."
+issues: [4098]
+subtext: "Configure TCP framing as `newline`, `octet_counting`, or `auto`. Existing configurations continue to use newline framing by default."
