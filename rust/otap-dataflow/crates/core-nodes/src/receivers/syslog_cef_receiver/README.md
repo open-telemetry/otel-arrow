@@ -87,6 +87,12 @@ Exactly one of `protocol.tcp` or `protocol.udp` must be configured.
 defaults to `newline`. Auto framing treats messages starting with an ASCII
 digit from `1` through `9` as RFC 6587 octet-counted and all other messages as
 newline-delimited.
+
+> **Note:** Auto framing follows the RFC 6587 detection heuristic, so a
+> newline-delimited message beginning with `1` through `9` is interpreted as
+> octet-counted. If digit-leading newline messages are possible, configure
+> `framing: newline` explicitly to avoid framing errors and connection closure.
+
 `protocol.tcp.tls` enables secure TCP (RFC 5425). `batch.max_batch_duration_ms`
 defaults to `100`, and `batch.max_size` defaults to `100`.
 
