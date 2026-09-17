@@ -6,7 +6,9 @@
 use otel_arrow_dfe_engine::context::PipelineContext;
 use otel_arrow_dfe_telemetry::common_attributes::Outcome;
 use otel_arrow_dfe_telemetry::instrument::{Counter, Gauge, HistogramNormal, Mmsc};
-use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSet, MetricSetSnapshot, MetricSetRegistrar};
+use otel_arrow_dfe_telemetry::metrics::{
+    MeasurementMetricSet, MetricSet, MetricSetRegistrar, MetricSetSnapshot,
+};
 use otel_arrow_dfe_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
 
 // -- Smooth-run outcome attributes ---------------------------------------------
