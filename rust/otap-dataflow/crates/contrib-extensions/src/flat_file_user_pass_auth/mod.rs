@@ -13,6 +13,9 @@ pub mod config;
 pub mod error;
 mod metrics;
 
+#[cfg(test)]
+mod tests;
+
 use std::sync::Arc;
 use std::time::Duration;
 

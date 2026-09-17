@@ -10,7 +10,7 @@ use secrecy::{ExposeSecret, SecretString};
 use serde::Deserialize;
 
 /// Default password secret file refresh (~1 hr).
-fn default_password_secret_file_refresh() -> Duration {
+pub(crate) fn default_password_secret_file_refresh() -> Duration {
     Duration::from_secs(60 * 60)
 }
 
