@@ -115,6 +115,16 @@ core-exporters = [
     "topic-exporter",
 ]
 
+# Protocol capability aliases. These are convenience bundles over the leaf
+# features below; consumers can still select one direction or transport.
+otap = ["otap-receiver", "otap-exporter"]
+otlp = [
+    "otlp-receiver",
+    "otlp-grpc-exporter",
+    "otlp-http-exporter",
+]
+topic = ["topic-receiver", "topic-exporter"]
+
 # Receivers: gate the module in `src/receivers/mod.rs`, list the feature in
 # `core-receivers`, and gate significant receiver-specific dependency subtrees.
 host-metrics-receiver = []

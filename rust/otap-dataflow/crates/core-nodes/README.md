@@ -112,6 +112,19 @@ Exporters send data out of a pipeline.
 
 <!-- markdownlint-enable MD013 -->
 
+## Feature Aggregates
+
+- `core-nodes`: enables all core receivers, processors, and exporters.
+- `core-receivers`: enables all core receivers.
+- `core-processors`: enables all core processors.
+- `core-exporters`: enables all core exporters.
+- `otap`: enables the OTAP receiver and exporter.
+- `otlp`: enables the OTLP receiver plus the OTLP gRPC and HTTP exporters.
+- `topic`: enables the in-process topic receiver and exporter.
+
+Capability aliases are convenience bundles. Use the exact leaf features from
+the tables above when a build needs only one protocol direction or transport.
+
 ## Maintenance Notes
 
 - Add a `<name>-receiver`, `<name>-processor`, or `<name>-exporter` feature for
@@ -128,6 +141,8 @@ Exporters send data out of a pipeline.
   to maintain than the dependency reduction justifies.
 - Forward every node and aggregate feature from the top-level `df_engine`
   package.
+- Add protocol capability aliases when multiple nodes form one user-facing
+  capability, while retaining the leaf features for precise selection.
 - Add the component inventory annotation and baseline entry described in the
   [Component Inventory Guide](../../docs/component-inventory.md).
 - Any crate that depends on `otel-arrow-dfe-core-nodes` must make its selection

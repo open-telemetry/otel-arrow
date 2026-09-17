@@ -114,6 +114,10 @@ contrib-exporters = [
     "kafka-exporter",
 ]
 
+# Protocol capability aliases. These are convenience bundles over the leaf
+# features below; consumers can still select one direction.
+kafka = ["kafka-receiver", "kafka-exporter"]
+
 # Receivers: gate the module in `src/receivers/mod.rs`, list the feature in
 # `contrib-receivers`, and activate component-specific dependencies with `dep:`.
 etw-receiver = ["dep:one_collect", "dep:humantime-serde"]

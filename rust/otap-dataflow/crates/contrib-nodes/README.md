@@ -85,9 +85,13 @@ Exporters send data out of a pipeline.
 - `contrib-receivers`: enables all contrib receivers.
 - `contrib-processors`: enables all contrib processors.
 - `contrib-exporters`: enables all contrib exporters.
+- `kafka`: enables both the Kafka receiver and exporter.
 
 When these features are enabled in the top-level binary, their factories are
 registered into the OTAP pipeline factory maps.
+
+Capability aliases are convenience bundles. Use the exact leaf feature when a
+build needs only one protocol direction.
 
 ## Maintenance Notes
 
@@ -104,6 +108,8 @@ registered into the OTAP pipeline factory maps.
   subtree.
 - Forward every node and aggregate feature from the top-level `df_engine`
   package.
+- Add protocol capability aliases when multiple nodes form one user-facing
+  capability, while retaining the leaf features for precise selection.
 - Add the exact feature name to the node catalog above.
 - Add the component inventory annotation and baseline entry described in the
   [Component Inventory Guide](../../docs/component-inventory.md).

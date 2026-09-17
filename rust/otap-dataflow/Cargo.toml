@@ -334,6 +334,10 @@ core-nodes = ["otel-arrow-dfe-core-nodes/core-nodes"]
 core-receivers = ["otel-arrow-dfe-core-nodes/core-receivers"]
 core-processors = ["otel-arrow-dfe-core-nodes/core-processors"]
 core-exporters = ["otel-arrow-dfe-core-nodes/core-exporters"]
+# Core protocol capability aliases.
+otap = ["otel-arrow-dfe-core-nodes/otap"]
+otlp = ["otel-arrow-dfe-core-nodes/otlp"]
+topic = ["otel-arrow-dfe-core-nodes/topic"]
 
 # Core receivers.
 host-metrics-receiver = ["otel-arrow-dfe-core-nodes/host-metrics-receiver"]
@@ -382,6 +386,8 @@ crypto-openssl = ["otel-arrow-dfe-otap/crypto-openssl", "otel-arrow-dfe-contrib-
 # Contrib-node feature forwarding. Keep this list aligned with
 # `crates/contrib-nodes/Cargo.toml`.
 contrib-nodes = ["otel-arrow-dfe-contrib-nodes/contrib-nodes"]
+# Contrib protocol capability aliases
+kafka = ["otel-arrow-dfe-contrib-nodes/kafka"]
 
 # Contrib exporters.
 contrib-exporters = ["otel-arrow-dfe-contrib-nodes/contrib-exporters"]
