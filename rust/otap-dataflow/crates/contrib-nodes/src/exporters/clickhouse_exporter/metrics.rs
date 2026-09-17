@@ -1,12 +1,12 @@
-﻿// Copyright The OpenTelemetry Authors
+// Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
 //! Metrics specific to the Clickhouse lifecycle.
 
+use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_engine::context::PipelineContext;
 use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otel_arrow_dfe_telemetry::common_attributes::SignalAttributes;
-use otel_arrow_dfe_telemetry::config::SignalType;
 use otel_arrow_dfe_telemetry::error::Error;
 use otel_arrow_dfe_telemetry::instrument::Counter;
 use otel_arrow_dfe_telemetry::metrics::MeasurementMetricSet;
@@ -128,5 +128,65 @@ impl ClickhouseExporterMetrics {
             .transformed
             .inc();
     }
+
+    /// Returns the terminal snapshots of the metrics.
+    pub fn terminal_snapshots(
+        &mut self,
+    ) -> Vec<otel_arrow_dfe_telemetry::metrics::MetricSetSnapshot> {
+        let mut snapshots = Vec::new();
+        snapshots.extend(self.row_metrics.terminal_snapshots());
+        snapshots.extend(self.batch_metrics.terminal_snapshots());
+        snapshots
+    }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_clickhouse_transform_path() {
+        assert_eq!(
+            ClickhouseTransformPath::FastPath,
+            ClickhouseTransformPath::FastPath
+        );
+        assert_eq!(
+            ClickhouseTransformPath::GenericFallback,
+            ClickhouseTransformPath::GenericFallback
+        );
+        assert_eq!(
+            ClickhouseTransformPath::OtlpDirect,
+            ClickhouseTransformPath::OtlpDirect
+        );
+        assert_eq!(
+            ClickhouseTransformPath::OtlpLegacyFallback,
+            ClickhouseTransformPath::OtlpLegacyFallback
+        );
+        assert_ne!(
+            ClickhouseTransformPath::FastPath,
+            ClickhouseTransformPath::GenericFallback
+        );
+    }
+
+    #[test]
+    fn test_clickhouse_transform_attributes() {
+        let attr = ClickhouseTransformAttributes {
+            path: ClickhouseTransformPath::FastPath,
+        };
+        assert_eq!(attr.path, ClickhouseTransformPath::FastPath);
+    }
+
+    #[test]
+    fn test_clickhouse_row_metrics() {
+        let mut m = ClickhouseRowMetrics::default();
+        m.written.add(10);
+        assert_eq!(m.written.get(), 10);
+    }
+
+    #[test]
+    fn test_clickhouse_batch_metrics() {
+        let mut m = ClickhouseBatchMetrics::default();
+        m.transformed.inc();
+        assert_eq!(m.transformed.get(), 1);
+    }
+}
