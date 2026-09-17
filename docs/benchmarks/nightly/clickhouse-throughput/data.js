@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789580422223,
+  "lastUpdate": 1789609776664,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -3886,6 +3886,64 @@ window.BENCHMARK_DATA = {
             "value": 99942.36656861211,
             "unit": "rows/sec",
             "extra": "ClickHouse OTAP Logs/OTAP-IN-BATCHED-100K - ClickHouse rows written"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Drew Relmas",
+            "username": "drewrelmas",
+            "email": "drewrelmas@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "47c3a6060c73c6a522db756ee196b4cc4d9365b8",
+          "message": "chore(docs): Improve shared Receiver and Exporter boundary metric cardinality documentation (#4079)\n\n# Chore summary\n\nImplementing the shared receiver and exporter metrics in the first few\nnodes exposed work shapes more complex than one PData message mapping to\none external message or submission. Fan-out, aggregation, many-to-many\nbatching, retries, generated data, and asynchronous buffering require\nnode authors to make explicit decisions about metric cardinality,\ntiming, and ACK/NACK ownership.\n\nThis adds that guidance to the telemetry metrics guide, with concise\npointers from the OTAP crate and operator documentation. It\ndistinguishes external work from PData work, logical batches from\nnode-local attempts, and pushed ingress from receiver-initiated\ngeneration.\n\n### Cardinality guidance\n\n`R = receiver.received.messages`, `O = node.output.messages`, `I =\nnode.input.messages`, and `A = exporter.attempted.messages`.\n\n| Work shape | Receiver boundary | Exporter boundary |\n| --- | --- | --- |\n| 1:1 | `R=1`, `O=1`: one external message produces one PData message. |\n`I=1`, `A=1`: one PData message produces one node-local delivery\nattempt. |\n| 1:N | `R=1`, `O=N`: record one local outcome for the external message.\n| `I=1`, `A=N`: record each external submission independently when\nfan-out succeeds. |\n| N:1 | `R=N`, `O=1`: record each external message independently. |\n`I=N`, `A=1`: record the external batch rather than each contributing\nPData message. |\n| N:M | `R=N`, `O=M`: track external-message-to-PData ownership\nindependently. | `I=N`, `A=M`: track logical batches for ACK/NACK and\nrecord each node-local attempt independently. |\n\nReceivers without independently classifiable external messages can have\n`R=0`, `O=N`; they omit `receiver.received` rather than inventing\nexternal messages.\n\nCurrent node mappings:\n\n- **OTLP receiver (#4044) -- 1:1:** each HTTP or gRPC request produces\none PData message, so `R=1` and `O=1`.\n- **OTLP HTTP and gRPC exporters (#4044) -- 1:1:** each PData message\nproduces one request, so `I=1` and `A=1`; preparation failures still\nrecord one attempt.\n- **Syslog receiver (#3899) -- N:1:** each framed TCP message or UDP\ndatagram records a received outcome, while several accepted messages can\nform one PData batch, so `R=N` and `O=1`.\n- **Azure Monitor exporter (#4059) -- N:M:** PData messages are\nregrouped across logical gzip batches, so ACK/NACK follows explicit\nPData-to-batch ownership while each physical submission and retry\nrecords an attempt.\n- **Geneva exporter (#4075) -- 1:N:** one PData message can produce\nseveral encoded upload batches, so `I=1` and `A=N`; sibling attempts own\nindependent sizes, item counts, and outcomes.\n\n## Related issue\n\n- Related to #3822",
+          "timestamp": "2026-09-16T22:48:58Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/47c3a6060c73c6a522db756ee196b4cc4d9365b8"
+        },
+        "date": 1789609775275,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "log_rows_written_rate",
+            "value": 99498.0854704249,
+            "unit": "rows/sec",
+            "extra": "OTel Collector ClickHouse Logs/OTELCOL-OTLP-TRANSFORMED-100K - ClickHouse rows written"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 99002.00854592166,
+            "unit": "rows/sec",
+            "extra": "OTel Collector ClickHouse Logs/OTELCOL-OTLP-TRANSFORMED-100K - logs produced"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 100376.63866776587,
+            "unit": "rows/sec",
+            "extra": "ClickHouse OTAP Logs/OTAP-IN-BATCHED-100K - logs_produced"
+          },
+          {
+            "name": "log_rows_written_rate",
+            "value": 100071.3201896764,
+            "unit": "rows/sec",
+            "extra": "ClickHouse OTAP Logs/OTAP-IN-BATCHED-100K - ClickHouse rows written"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 100824.80403102943,
+            "unit": "rows/sec",
+            "extra": "ClickHouse OTAP Logs/OTLP-IN-BATCHED-100K - logs_produced"
+          },
+          {
+            "name": "log_rows_written_rate",
+            "value": 99934.87577262151,
+            "unit": "rows/sec",
+            "extra": "ClickHouse OTAP Logs/OTLP-IN-BATCHED-100K - ClickHouse rows written"
           }
         ]
       }
