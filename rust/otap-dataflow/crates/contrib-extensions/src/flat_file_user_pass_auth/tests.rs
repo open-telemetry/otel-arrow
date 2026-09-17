@@ -49,14 +49,21 @@ fn config_defaults_apply() {
 }
 
 #[test]
-fn config_username_required() {
+fn config_username_required_non_empty() {
+    assert!(
+        config_from_json(serde_json::json!({
+           "username": ""
+        }))
+        .is_err()
+    );
+
     assert!(
         config_from_json(serde_json::json!({
            "password_secret": "<test_secret>",
            "password_secret_file": "<test_secret_path>"
         }))
         .is_err()
-    )
+    );
 }
 
 #[test]
@@ -71,7 +78,14 @@ fn config_secret_required() {
 
 #[test]
 fn config_password_secret_file_refresh_rejects_zero() {
-    assert!(config_from_json(serde_json::json!({ "password_secret_file_refresh": "0s" })).is_err())
+    assert!(
+        config_from_json(serde_json::json!({
+        "username": "test",
+        "password_secret": "<test_secret>",
+        "password_secret_file": "<test_secret_path>",
+        "password_secret_file_refresh": "0s" }))
+        .is_err()
+    )
 }
 
 // -- Factory tests ------------------------------------------
@@ -142,15 +156,19 @@ fn create_rejects_an_invalid_config() {
 // -- Token acquisition / cache tests ---------------------------
 
 fn make_extension() -> FlatFileUserPassAuthExtension {
+    make_extension_with_config(Config {
+        username: "test_user".into(),
+        password_secret: Some("test_pass".into()),
+        password_secret_file: None,
+        password_secret_file_refresh: Duration::from_secs(60),
+    })
+}
+
+fn make_extension_with_config(config: Config) -> FlatFileUserPassAuthExtension {
     let (tx, _rx) = watch::channel(None);
     FlatFileUserPassAuthExtension::new(
         "test-ext",
-        FlatFileUserPassAuth::new(Config {
-            username: "test_user".into(),
-            password_secret: Some("test_pass".into()),
-            password_secret_file: None,
-            password_secret_file_refresh: Duration::from_secs(60),
-        }),
+        FlatFileUserPassAuth::new(config),
         BackgroundProviderRefreshPolicy::new(
             BASIC_AUTH_CREDENTIAL_USABLE_MARGIN,
             NON_EXPIRING_BASIC_AUTH_CREDENTIAL_REFRESH_INTERVAL,
@@ -175,6 +193,19 @@ async fn get_credential() {
     let credential = ext.get_credential().await.expect("first acquisition");
     assert_eq!(credential.expose_username(), "test_user");
     assert_eq!(credential.expose_password(), "test_pass");
+    assert!(credential.expires_on().is_some());
+}
+
+#[tokio::test]
+async fn get_credential_failure() {
+    let ext = make_extension_with_config(Config {
+        username: "test_user".into(),
+        password_secret: None,
+        password_secret_file: Some("/ext/invalid_file_secret".into()),
+        password_secret_file_refresh: Duration::from_secs(10),
+    });
+
+    assert!(ext.get_credential().await.is_err())
 }
 
 #[tokio::test]
