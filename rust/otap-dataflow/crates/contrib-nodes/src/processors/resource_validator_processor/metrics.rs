@@ -14,6 +14,8 @@ use otel_arrow_dfe_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
 /// Reason for a batch rejection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, AttributeEnum)]
 pub enum RejectReason {
+    #[attribute_value = ""]
+    None,
     Missing,
     NotAllowed,
     InvalidType,
@@ -26,7 +28,7 @@ pub enum RejectReason {
 pub struct ValidatorBatchAttributes {
     pub outcome: Outcome,
     #[attribute_key = "reason"]
-    pub reason: Option<RejectReason>,
+    pub reason: RejectReason,
 }
 
 #[metric_set(
@@ -49,12 +51,16 @@ pub struct ValidatorItemMetrics {
     pub items: Counter<u64>,
 }
 
+/// Container for Resource Validator metrics
 pub struct ResourceValidatorMetrics {
+    /// Batch level metrics
     pub batch_metrics: MeasurementMetricSet<ValidatorBatchMetrics>,
+    /// Item level metrics
     pub item_metrics: MeasurementMetricSet<ValidatorItemMetrics>,
 }
 
 impl ResourceValidatorMetrics {
+    /// Creates a new ResourceValidatorMetrics instance
     pub fn new(pipeline_ctx: &PipelineContext) -> Self {
         Self {
             batch_metrics: ValidatorBatchMetrics::register(pipeline_ctx),
@@ -62,19 +68,22 @@ impl ResourceValidatorMetrics {
         }
     }
 
+    /// Reports the metrics
     pub fn report(&mut self, reporter: &mut MetricsReporter) -> Result<(), Error> {
         reporter
             .report_measurement(&mut self.batch_metrics)
             .and_then(|()| reporter.report_measurement(&mut self.item_metrics))
     }
 
+    /// Records a batch outcome
     pub fn record_batch(&mut self, outcome: Outcome, reason: Option<RejectReason>) {
         self.batch_metrics
-            .with(ValidatorBatchAttributes { outcome, reason })
+            .with(ValidatorBatchAttributes { outcome, reason: reason.unwrap_or(RejectReason::None) })
             .batches
             .inc();
     }
 
+    /// Records items outcome
     pub fn record_items(&mut self, outcome: Outcome, count: u64) {
         self.item_metrics
             .with(OutcomeAttributes { outcome })
