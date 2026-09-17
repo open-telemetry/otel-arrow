@@ -31,11 +31,18 @@ pub enum ValueKind {
 }
 
 impl ValueKind {
+    const fn encode(self) -> u8 {
+        match self {
+            Self::Text => 0,
+            Self::Binary => 1,
+        }
+    }
+
     fn decode(value: u8) -> Option<Self> {
         match value {
             0 => Some(Self::Text),
             1 => Some(Self::Binary),
-            _ => None,
+            2..=u8::MAX => None,
         }
     }
 }
@@ -426,7 +433,7 @@ impl PackedTransportHeaders {
                 .expect("original header name range fits packed descriptor");
             write_range(&mut bytes, descriptor_at + 16, value)
                 .expect("transport header value range fits packed descriptor");
-            bytes[descriptor_at + 24] = header.value.value_kind as u8;
+            bytes[descriptor_at + 24] = header.value.value_kind.encode();
         }
 
         Some(Self {
@@ -490,7 +497,7 @@ impl PackedTransportHeaders {
                 .expect("original header name range fits packed descriptor");
             write_range(&mut bytes, descriptor_at + 16, value)
                 .expect("transport header value range fits packed descriptor");
-            bytes[descriptor_at + 24] = header.value_kind as u8;
+            bytes[descriptor_at + 24] = header.value_kind.encode();
         }
 
         Some(Self {
@@ -566,7 +573,18 @@ impl<'a> Iterator for TransportHeadersIter<'a> {
         }
         header
     }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let count = self.storage.map_or(0, |storage| match storage {
+            TransportHeadersStorage::Owned(headers) => headers.len(),
+            TransportHeadersStorage::Packed(packed) => packed.count,
+        });
+        let remaining = count.saturating_sub(self.index);
+        (remaining, Some(remaining))
+    }
 }
+
+impl ExactSizeIterator for TransportHeadersIter<'_> {}
 
 impl<'a> From<&'a TransportHeader> for TransportHeaderRef<'a> {
     fn from(header: &'a TransportHeader) -> Self {
@@ -681,6 +699,18 @@ mod tests {
         assert_eq!(h.value_as_str(), None);
     }
 
+    /// Scenario: every value kind is encoded into and decoded from packed storage.
+    /// Guarantees: known wire values round-trip and unknown values remain invalid.
+    #[test]
+    fn value_kind_wire_encoding_round_trips() {
+        for kind in [ValueKind::Text, ValueKind::Binary] {
+            assert_eq!(ValueKind::decode(kind.encode()), Some(kind));
+        }
+        assert_eq!(ValueKind::Text.encode(), 0);
+        assert_eq!(ValueKind::Binary.encode(), 1);
+        assert_eq!(ValueKind::decode(u8::MAX), None);
+    }
+
     // -- Capture engine tests ------------------------------------------------
 
     fn make_capture_policy(rules: Vec<CaptureRule>) -> HeaderCapturePolicy {
@@ -780,6 +810,27 @@ mod tests {
             storage.as_ref(),
             TransportHeadersStorage::Owned(values) if values.len() == 3
         ));
+    }
+
+    /// Scenario: an iterator advances over packed transport headers.
+    /// Guarantees: its exact size hint tracks the number of remaining headers.
+    #[test]
+    fn packed_header_iterator_reports_remaining_length() {
+        let mut headers = TransportHeaders::new();
+        headers.replace(vec![
+            header("tenant", "X-Tenant", b"acme"),
+            header("request", "X-Request", b"123"),
+        ]);
+
+        let mut iter = headers.iter();
+        assert_eq!(iter.size_hint(), (2, Some(2)));
+        assert_eq!(iter.len(), 2);
+        let _ = iter.next().expect("first packed header");
+        assert_eq!(iter.size_hint(), (1, Some(1)));
+        assert_eq!(iter.len(), 1);
+        let _ = iter.next().expect("second packed header");
+        assert_eq!(iter.size_hint(), (0, Some(0)));
+        assert_eq!(iter.len(), 0);
     }
 
     /// Scenario: a cloned manually-built collection is mutated.
