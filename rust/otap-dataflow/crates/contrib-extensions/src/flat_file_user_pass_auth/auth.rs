@@ -93,7 +93,9 @@ impl BackgroundProviderSource<BasicAuthCredential> for FlatFileUserPassAuth {
                 })?;
 
         if let Some(expiry) = expiry {
-            credential = credential.with_expiry(Instant::now() + expiry);
+            credential = credential.with_expiry(
+                Instant::now() + expiry.max(super::BASIC_AUTH_CREDENTIAL_EXPIRY_BUFFER_SECS * 2),
+            );
         }
 
         Ok(credential)
