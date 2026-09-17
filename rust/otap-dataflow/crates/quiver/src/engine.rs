@@ -1592,12 +1592,13 @@ impl QuiverEngine {
         // happens before anything is written, and the transaction lock keeps
         // any other finalization from consuming the reservation in between.
         let reservation = {
-            let state = self.write_state.lock();
+            let mut state = self.write_state.lock();
             if state.open_segment.is_empty() {
                 return Ok(());
             }
             if state.next_seq >= state.reserved_through {
                 if state.next_seq == u64::MAX {
+                    state.finalization_retry_required = true;
                     return Err(QuiverError::SegmentSequenceExhausted {
                         next_seq: state.next_seq,
                     });
@@ -1639,6 +1640,7 @@ impl QuiverEngine {
             // not durably reserved is the reuse bug this design exists to
             // prevent, so the check must hold in release builds too.
             if state.next_seq >= state.reserved_through {
+                state.finalization_retry_required = true;
                 return Err(QuiverError::SegmentSequenceExhausted {
                     next_seq: state.next_seq,
                 });
@@ -7633,6 +7635,20 @@ mod tests {
             engine.open_segment_bundle_count(),
             1,
             "the bundle must remain retained when sequence space is exhausted"
+        );
+        let retry_result = engine.ingest(&DummyBundle::with_rows(1)).await;
+        assert!(
+            matches!(
+                retry_result,
+                Err(QuiverError::SegmentSequenceExhausted { next_seq })
+                    if next_seq == u64::MAX
+            ),
+            "later ingestion must retry finalization and report exhaustion, got {retry_result:?}"
+        );
+        assert_eq!(
+            engine.open_segment_bundle_count(),
+            1,
+            "sequence exhaustion must prevent accepting another bundle"
         );
     }
 

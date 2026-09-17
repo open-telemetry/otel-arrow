@@ -832,13 +832,13 @@ impl SegmentStore {
         self.segment_dir.join(SEQ_SIDECAR_FILENAME)
     }
 
-    /// Reads the durably persisted "next segment sequence" counter, if present.
+    /// Reads the persisted sequence floor for tests that created valid data.
     ///
-    /// Returns `None` if the sidecar is missing or corrupt. An existing but
-    /// unreadable sidecar also yields `None` here; callers that must not
-    /// mistake it for "absent" should use [`Self::load_seq_sidecar`].
+    /// Production paths use [`Self::load_seq_sidecar`] so missing and
+    /// unverifiable sidecars remain distinguishable.
+    #[cfg(test)]
     #[must_use]
-    pub fn read_persisted_next_seq(&self) -> Option<u64> {
+    pub(crate) fn read_persisted_next_seq(&self) -> Option<u64> {
         self.load_seq_sidecar().ok().flatten()
     }
 
