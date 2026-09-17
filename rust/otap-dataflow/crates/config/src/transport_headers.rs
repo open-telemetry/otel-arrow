@@ -291,6 +291,9 @@ impl TransportHeaders {
     }
 
     /// Add a header to the collection.
+    ///
+    /// The first mutation of packed or shared storage materializes a uniquely
+    /// owned vector. Later pushes reuse that vector while it remains unique.
     pub fn push(&mut self, header: TransportHeader) {
         if let Some(TransportHeadersStorage::Owned(headers)) =
             self.storage.as_mut().and_then(Arc::get_mut)
@@ -753,6 +756,30 @@ mod tests {
         packed.bytes[0..4].copy_from_slice(&u32::MAX.to_le_bytes());
 
         let _ = headers.iter().next();
+    }
+
+    /// Scenario: multiple headers are pushed after capture produced packed storage.
+    /// Guarantees: the first push converts to owned storage and later pushes reuse it.
+    #[test]
+    fn pushed_packed_headers_convert_once_and_reuse_owned_storage() {
+        let mut headers = TransportHeaders::new();
+        headers.replace(vec![header("tenant", "X-Tenant", b"acme")]);
+
+        headers.push(header("partition", "X-Partition", b"first"));
+        let storage = headers.storage.as_ref().expect("storage after first push");
+        assert!(matches!(
+            storage.as_ref(),
+            TransportHeadersStorage::Owned(values) if values.len() == 2
+        ));
+        let storage_ptr = Arc::as_ptr(storage);
+
+        headers.push(header("partition", "X-Partition", b"second"));
+        let storage = headers.storage.as_ref().expect("storage after second push");
+        assert_eq!(Arc::as_ptr(storage), storage_ptr);
+        assert!(matches!(
+            storage.as_ref(),
+            TransportHeadersStorage::Owned(values) if values.len() == 3
+        ));
     }
 
     /// Scenario: a cloned manually-built collection is mutated.
