@@ -319,7 +319,7 @@ async fn read_tcp_frame<R: AsyncBufRead + Unpin + ?Sized>(
             let Some(&first_byte) = available.first() else {
                 return Ok(BoundedReadResult::Eof);
             };
-            let detected_framing = if first_byte.is_ascii_digit() {
+            let detected_framing = if matches!(first_byte, b'1'..=b'9') {
                 TcpFraming::OctetCounting
             } else {
                 TcpFraming::Newline
@@ -2450,6 +2450,21 @@ mod tcp_frame_reader_tests {
             .unwrap();
         assert!(matches!(second, BoundedReadResult::Complete));
         assert_eq!(state.message, b"<34>second\n");
+    }
+
+    /// Scenario: An auto-framed newline message begins with the ASCII digit zero.
+    /// Guarantees: Only RFC 6587 NONZERO-DIGIT prefixes select octet-counting.
+    #[tokio::test]
+    async fn auto_treats_leading_zero_as_newline_framing() {
+        let mut reader = make_reader(b"0 newline message\n").await;
+        let mut state = TcpFrameState::new();
+
+        let result = read_tcp_frame(&mut reader, TcpFraming::Auto, &mut state, 64)
+            .await
+            .unwrap();
+
+        assert!(matches!(result, BoundedReadResult::Complete));
+        assert_eq!(state.message, b"0 newline message\n");
     }
 
     /// Scenario: Auto mode discards a digit-leading continuation of a newline frame.
