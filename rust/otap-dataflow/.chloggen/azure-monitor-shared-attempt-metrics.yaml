@@ -3,4 +3,4 @@ component: observability
 note: Align Azure Monitor exporter metrics with shared per-attempt telemetry and outcome-partitioned terminal batch metrics.
 issues: [3822]
 subtext: |
-  Migration: `exports.{items,messages,bytes}` become per-attempt `exporter.attempted.{items,messages,payload.size,duration}` (retries counted separately). `exports.batches` becomes terminal `exporter.azure_monitor.batches`; batch count/sizes group by `signal`/`outcome`; 4xx recorded as `refused`.
+  Migration: `exports.{items,messages,bytes}` become per-attempt `exporter.attempted.{items,messages,payload.size,duration}`. `exports.batches` becomes `exporter.azure_monitor.batches`; node metrics use underscore names (`batch_size`); counts group by `signal`/`outcome`; 4xx are `refused`.

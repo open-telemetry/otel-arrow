@@ -33,14 +33,14 @@ pub type AzureMonitorExporterMetricsRc = Rc<RefCell<AzureMonitorExporterMetricsT
 #[derive(Debug, Default, Clone)]
 pub struct AzureMonitorExporterOperationalMetrics {
     /// Current number of in-flight export requests.
-    #[metric(unit = "{export}")]
+    #[metric(unit = "{export}", name = "in_flight_exports")]
     pub in_flight_exports: Gauge<u64>,
     /// Current number of log records in-flight at the exporter (enqueued export
     /// requests awaiting completion, including records being retried).
-    #[metric(unit = "{log}")]
+    #[metric(unit = "{log}", name = "in_flight_log_records")]
     pub in_flight_log_records: Gauge<u64>,
     /// Number of log entries rejected for exceeding the batch size limit.
-    #[metric(unit = "{entry}")]
+    #[metric(unit = "{entry}", name = "log_entries_too_large")]
     pub log_entries_too_large: Counter<u64>,
 }
 
@@ -59,10 +59,10 @@ pub struct AzureMonitorExporterBatchMetrics {
     #[metric(unit = "{batch}")]
     pub batches: Counter<u64>,
     /// Compressed batch size in bytes.
-    #[metric(unit = "By")]
+    #[metric(unit = "By", name = "batch_size")]
     pub batch_size: Mmsc,
     /// Uncompressed batch size in bytes.
-    #[metric(unit = "By")]
+    #[metric(unit = "By", name = "batch_uncompressed_size")]
     pub batch_uncompressed_size: Mmsc,
 }
 
