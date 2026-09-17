@@ -92,15 +92,13 @@ impl<'a> AuthorizedClaimValue<'a> {
     /// Returns the single value, or `None` when the source claim was multi-valued.
     #[must_use]
     pub fn as_str(&self) -> Option<&'a str> {
-        (!self.many && self.value_count == 1)
-            .then(|| self.storage.value(self.first_value))
-            .flatten()
+        (!self.many && self.value_count == 1).then(|| self.storage.decode_value(self.first_value))
     }
 
     /// Iterates values in source order.
     pub fn values(&self) -> impl Iterator<Item = &'a str> + '_ {
         (0..self.value_count)
-            .filter_map(move |offset| self.storage.value(self.first_value + offset))
+            .map(move |offset| self.storage.decode_value(self.first_value + offset))
     }
 
     /// Returns the number of values.
@@ -297,6 +295,15 @@ impl PackedAuthorizedIdentity {
         let values_at = self.entry_count.checked_mul(AUTHORIZED_ENTRY_LEN)?;
         let at = values_at.checked_add(index.checked_mul(AUTHORIZED_VALUE_LEN)?)?;
         read_context_str(&self.bytes, read_context_range(&self.bytes, at)?)
+    }
+
+    fn decode_value(&self, index: usize) -> &str {
+        debug_assert!(
+            index < self.value_count,
+            "packed authorized identity value index must be in bounds"
+        );
+        self.value(index)
+            .expect("in-bounds packed authorized identity value must decode")
     }
 }
 
@@ -3025,6 +3032,47 @@ mod test {
         packed.bytes[0..4].copy_from_slice(&u32::MAX.to_le_bytes());
 
         let _ = entries.iter().next();
+    }
+
+    fn corrupt_first_authorized_identity_value(entries: &mut AuthorizedIdentityEntries) {
+        let packed = Arc::get_mut(entries.packed.as_mut().expect("packed storage is present"))
+            .expect("packed storage is uniquely owned");
+        let value_at = packed.entry_count * AUTHORIZED_ENTRY_LEN;
+        packed.bytes[value_at..value_at + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+    }
+
+    /// Scenario: a single-valued authorized claim has a corrupted value descriptor.
+    /// Guarantees: scalar access detects the violated decode invariant instead of returning `None`.
+    #[test]
+    #[should_panic(expected = "in-bounds packed authorized identity value must decode")]
+    fn authorized_identity_scalar_value_decode_failure_fails_fast() {
+        let policy: AuthorizedIdentityPolicy =
+            serde_json::from_value(serde_json::json!([{"claim": "sub", "store_as": "subject"}]))
+                .expect("valid authorized identity policy");
+        let identity = AuthorizedIdentity::new().with_subject("reader");
+        let mut entries =
+            AuthorizedIdentityEntries::capture(&policy, &identity).expect("captured identity");
+        corrupt_first_authorized_identity_value(&mut entries);
+
+        let value = entries.get("subject").expect("subject entry").value();
+        let _ = value.as_str();
+    }
+
+    /// Scenario: a multi-valued authorized claim has a corrupted value descriptor.
+    /// Guarantees: iteration detects the violated decode invariant instead of omitting the value.
+    #[test]
+    #[should_panic(expected = "in-bounds packed authorized identity value must decode")]
+    fn authorized_identity_iterated_value_decode_failure_fails_fast() {
+        let policy: AuthorizedIdentityPolicy =
+            serde_json::from_value(serde_json::json!([{"claim": "groups", "store_as": "groups"}]))
+                .expect("valid authorized identity policy");
+        let identity = AuthorizedIdentity::new().with_claim_values("groups", ["reader", "writer"]);
+        let mut entries =
+            AuthorizedIdentityEntries::capture(&policy, &identity).expect("captured identity");
+        corrupt_first_authorized_identity_value(&mut entries);
+
+        let value = entries.get("groups").expect("groups entry").value();
+        let _ = value.values().next();
     }
 
     /// Scenario: pdata carries authorized identity entries captured from

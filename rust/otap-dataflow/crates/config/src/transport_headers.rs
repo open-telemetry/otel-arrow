@@ -709,7 +709,10 @@ impl<'a> Iterator for TransportHeadersFindIter<'a> {
                     self.index += 1;
                     if index < base_len {
                         if base.stored_name_matches(index, self.name) {
-                            return base.get(index);
+                            return Some(
+                                base.get(index)
+                                    .expect("matched overlay base transport header must decode"),
+                            );
                         }
                     } else {
                         let appended_index = index - base_len;
@@ -836,6 +839,23 @@ mod tests {
         assert_eq!(tenants[1].value.bytes, b"c");
     }
 
+    /// Scenario: the same stored name occurs in a packed base and its appended overlay.
+    /// Guarantees: lookup returns both matching values in insertion order.
+    #[test]
+    fn find_by_name_spans_packed_base_and_overlay() {
+        let mut headers = TransportHeaders::new();
+        headers.replace(vec![
+            header("tenant", "X-Tenant", b"a"),
+            header("request-id", "X-Request-Id", b"b"),
+        ]);
+        headers.push(header("tenant", "X-Tenant", b"c"));
+
+        let tenants: Vec<_> = headers.find_by_name("tenant").collect();
+        assert_eq!(tenants.len(), 2);
+        assert_eq!(tenants[0].value.bytes, b"a");
+        assert_eq!(tenants[1].value.bytes, b"c");
+    }
+
     /// Scenario: two headers have the same name.
     /// Guarantees: neither header replaces the other.
     #[test]
@@ -948,6 +968,34 @@ mod tests {
         packed.bytes[0..4].copy_from_slice(&u32::MAX.to_le_bytes());
 
         let _ = headers.iter().next();
+    }
+
+    /// Scenario: a matching packed header in an overlay base has a corrupted value descriptor.
+    /// Guarantees: lookup reports the violated decode invariant instead of ending iteration.
+    #[test]
+    #[should_panic(expected = "in-bounds packed transport header must decode")]
+    fn overlay_lookup_corrupted_packed_base_fails_fast() {
+        let mut headers = TransportHeaders::new();
+        headers.replace(vec![header("tenant", "X-Tenant", b"acme")]);
+        headers.push(header("partition", "X-Partition", b"first"));
+
+        let storage = Arc::get_mut(
+            headers
+                .storage
+                .as_mut()
+                .expect("overlay storage is present"),
+        )
+        .expect("overlay storage is uniquely owned");
+        let TransportHeadersStorage::Overlay { base, .. } = storage else {
+            panic!("expected appended transport header overlay");
+        };
+        let base = Arc::get_mut(base).expect("packed base is uniquely owned");
+        let TransportHeadersStorage::Packed(packed) = base else {
+            panic!("expected packed transport header base");
+        };
+        packed.bytes[16..20].copy_from_slice(&u32::MAX.to_le_bytes());
+
+        let _ = headers.find_by_name("tenant").next();
     }
 
     /// Scenario: a cloned packed collection receives multiple appended headers.
