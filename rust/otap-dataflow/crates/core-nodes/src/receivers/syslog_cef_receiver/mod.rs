@@ -979,9 +979,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                         Err(e) => {
                                                             match &e {
                                                                 TcpFrameReadError::MessageTooLarge => {
-                                                                    let mut metrics = metrics.borrow_mut();
-                                                                    metrics.record_truncation();
-                                                                    metrics.record_rejection(
+                                                                    metrics.borrow_mut().record_rejection(
                                                                         SyslogCefProtocol::Tcp,
                                                                         ReceiverRejectionErrorType::InvalidRequest,
                                                                         1,
