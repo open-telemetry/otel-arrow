@@ -78,7 +78,10 @@ impl ResourceValidatorMetrics {
     /// Records a batch outcome
     pub fn record_batch(&mut self, outcome: Outcome, reason: Option<RejectReason>) {
         self.batch_metrics
-            .with(ValidatorBatchAttributes { outcome, reason: reason.unwrap_or(RejectReason::None) })
+            .with(ValidatorBatchAttributes {
+                outcome,
+                reason: reason.unwrap_or(RejectReason::None),
+            })
             .batches
             .inc();
     }
