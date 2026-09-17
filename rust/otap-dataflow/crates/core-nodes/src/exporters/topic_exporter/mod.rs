@@ -45,21 +45,26 @@ use std::sync::Arc;
 pub const TOPIC_EXPORTER_URN: &str = "urn:otel:exporter:topic";
 
 use otel_arrow_dfe_telemetry::metrics::{
-    MeasurementMetricSet, MetricSetRegistrar, MetricSetSnapshot,
+    MeasurementMetricSet, MetricSetSnapshot,
 };
 use otel_arrow_dfe_telemetry_macros::{AttributeEnum, attribute_set};
 
 // -- Drop reason attributes ---------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, AttributeEnum)]
+/// Reason a message was dropped.
 pub enum DropReason {
+    /// The queue was full.
     QueueFull,
+    /// Outcome tracking capacity was exhausted.
     OutcomeCapacity,
 }
 
 #[attribute_set(item, measurement)]
 #[derive(Debug, Clone, Copy)]
+/// Attributes for dropped messages.
 pub struct DropAttributes {
+    /// The reason the message was dropped.
     pub reason: DropReason,
 }
 
@@ -68,23 +73,31 @@ pub struct DropAttributes {
     measurement_attributes = DropAttributes
 )]
 #[derive(Debug, Default, Clone)]
+/// Metrics for dropped messages.
 pub struct TopicExporterDroppedMetrics {
     #[metric(unit = "{item}")]
+    /// Number of dropped messages.
     pub messages: Counter<u64>,
 }
 
 // -- End-to-end response attributes -------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, AttributeEnum)]
+/// Type of end-to-end response bridged back to upstream.
 pub enum ResponseType {
+    /// Positive acknowledgement.
     Ack,
+    /// Negative acknowledgement.
     Nack,
+    /// Negative acknowledgement during shutdown.
     ShutdownNack,
 }
 
 #[attribute_set(item, measurement)]
 #[derive(Debug, Clone, Copy)]
+/// Attributes for end-to-end responses.
 pub struct ResponseAttributes {
+    /// The response type.
     pub response_type: ResponseType,
 }
 
@@ -93,8 +106,10 @@ pub struct ResponseAttributes {
     measurement_attributes = ResponseAttributes
 )]
 #[derive(Debug, Default, Clone)]
+/// Metrics for end-to-end responses.
 pub struct TopicExporterResponseMetrics {
     #[metric(unit = "{item}")]
+    /// Number of responses.
     pub responses: Counter<u64>,
 }
 
@@ -102,24 +117,33 @@ pub struct TopicExporterResponseMetrics {
 
 #[metric_set(name = "exporter.topic.other")]
 #[derive(Debug, Default, Clone)]
+/// Other metrics for topic exporter.
 pub struct TopicExporterOtherMetrics {
     #[metric(unit = "{item}")]
+    /// Number of messages published.
     pub published_messages: Counter<u64>,
     #[metric(unit = "{item}")]
+    /// Current number of tracked publishes in flight.
     pub tracked_in_flight: Gauge<u64>,
     #[metric(unit = "{item}")]
+    /// Number of publishes that timed out.
     pub outcome_timeouts: Counter<u64>,
 }
 
 // -- Top-level wrapper ---------------------------------------------------------
 
+/// Container for topic exporter metrics.
 pub struct TopicExporterMetrics {
+    /// Dropped metrics.
     pub dropped: MeasurementMetricSet<TopicExporterDroppedMetrics>,
+    /// Response metrics.
     pub responses: MeasurementMetricSet<TopicExporterResponseMetrics>,
+    /// Other scalar metrics.
     pub other: MetricSet<TopicExporterOtherMetrics>,
 }
 
 impl TopicExporterMetrics {
+    /// Registers all metrics with the pipeline context.
     pub fn register(pipeline_ctx: &PipelineContext, topic_name: &str) -> Self {
         Self {
             dropped: pipeline_ctx
@@ -136,6 +160,7 @@ impl TopicExporterMetrics {
         }
     }
 
+    /// Generates final snapshots of the metrics.
     pub fn terminal_snapshots(&mut self) -> Vec<MetricSetSnapshot> {
         let mut snapshots = self.dropped.terminal_snapshots();
         snapshots.extend(self.responses.terminal_snapshots());
@@ -143,6 +168,7 @@ impl TopicExporterMetrics {
         snapshots
     }
 
+    /// Reports modified metrics to the provided reporter.
     pub fn report(
         &mut self,
         reporter: &mut otel_arrow_dfe_telemetry::reporter::MetricsReporter,
