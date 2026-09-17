@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789601715783,
+  "lastUpdate": 1789604823215,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -39462,6 +39462,148 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
             "value": 3.36,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 116.45,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 103.73,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Drew Relmas",
+            "username": "drewrelmas",
+            "email": "drewrelmas@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "47c3a6060c73c6a522db756ee196b4cc4d9365b8",
+          "message": "chore(docs): Improve shared Receiver and Exporter boundary metric cardinality documentation (#4079)\n\n# Chore summary\n\nImplementing the shared receiver and exporter metrics in the first few\nnodes exposed work shapes more complex than one PData message mapping to\none external message or submission. Fan-out, aggregation, many-to-many\nbatching, retries, generated data, and asynchronous buffering require\nnode authors to make explicit decisions about metric cardinality,\ntiming, and ACK/NACK ownership.\n\nThis adds that guidance to the telemetry metrics guide, with concise\npointers from the OTAP crate and operator documentation. It\ndistinguishes external work from PData work, logical batches from\nnode-local attempts, and pushed ingress from receiver-initiated\ngeneration.\n\n### Cardinality guidance\n\n`R = receiver.received.messages`, `O = node.output.messages`, `I =\nnode.input.messages`, and `A = exporter.attempted.messages`.\n\n| Work shape | Receiver boundary | Exporter boundary |\n| --- | --- | --- |\n| 1:1 | `R=1`, `O=1`: one external message produces one PData message. |\n`I=1`, `A=1`: one PData message produces one node-local delivery\nattempt. |\n| 1:N | `R=1`, `O=N`: record one local outcome for the external message.\n| `I=1`, `A=N`: record each external submission independently when\nfan-out succeeds. |\n| N:1 | `R=N`, `O=1`: record each external message independently. |\n`I=N`, `A=1`: record the external batch rather than each contributing\nPData message. |\n| N:M | `R=N`, `O=M`: track external-message-to-PData ownership\nindependently. | `I=N`, `A=M`: track logical batches for ACK/NACK and\nrecord each node-local attempt independently. |\n\nReceivers without independently classifiable external messages can have\n`R=0`, `O=N`; they omit `receiver.received` rather than inventing\nexternal messages.\n\nCurrent node mappings:\n\n- **OTLP receiver (#4044) -- 1:1:** each HTTP or gRPC request produces\none PData message, so `R=1` and `O=1`.\n- **OTLP HTTP and gRPC exporters (#4044) -- 1:1:** each PData message\nproduces one request, so `I=1` and `A=1`; preparation failures still\nrecord one attempt.\n- **Syslog receiver (#3899) -- N:1:** each framed TCP message or UDP\ndatagram records a received outcome, while several accepted messages can\nform one PData batch, so `R=N` and `O=1`.\n- **Azure Monitor exporter (#4059) -- N:M:** PData messages are\nregrouped across logical gzip batches, so ACK/NACK follows explicit\nPData-to-batch ownership while each physical submission and retry\nrecords an attempt.\n- **Geneva exporter (#4075) -- 1:N:** one PData message can produce\nseveral encoded upload batches, so `I=1` and `A=N`; sibling attempts own\nindependent sizes, item counts, and outcomes.\n\n## Related issue\n\n- Related to #3822",
+          "timestamp": "2026-09-16T22:48:58Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/47c3a6060c73c6a522db756ee196b4cc4d9365b8"
+        },
+        "date": 1789604806465,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 84.22,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.76,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.71,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.53,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.01,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.97,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.68,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 71.59,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.84,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.54,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.39,
             "unit": "MB"
           },
           {
