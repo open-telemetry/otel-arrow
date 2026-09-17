@@ -7175,8 +7175,76 @@ mod tests {
         assert_eq!(
             engine.wal_bytes_written(),
             wal_bytes_before,
-            "a bundle rejected at the capacity gate must not be appended to the WAL"
+            "a bundle rejected by the retry gate must not be appended to the WAL"
         );
+    }
+
+    /// Scenario: The test preloads the open segment past its 4x limit to model
+    /// bundles admitted concurrently while a pre-write finalization was in
+    /// flight, then makes that finalization fail during sequence reservation.
+    /// Guarantees: The capacity fallback rejects the next bundle before its WAL
+    /// append and does not add it to the already-retained open segment.
+    #[tokio::test]
+    async fn concurrent_open_segment_capacity_rejects_before_wal_append() {
+        let dir = tempdir().expect("tempdir");
+        let target_size_bytes = NonZeroU64::new(2048).expect("non-zero");
+        let config = QuiverConfig::builder()
+            .data_dir(dir.path())
+            .segment(SegmentConfig {
+                target_size_bytes,
+                ..Default::default()
+            })
+            .durability(DurabilityMode::Wal)
+            .build()
+            .expect("config");
+        let engine = QuiverEngine::open(config, test_budget())
+            .await
+            .expect("engine");
+        let retained_bundle = DummyBundle::with_rows(50);
+        let limit = target_size_bytes.get() * MAX_OPEN_SEGMENT_SIZE_MULTIPLE;
+
+        {
+            let mut state = engine.write_state.lock();
+            while state.open_segment_bytes < limit {
+                let _ = state
+                    .open_segment
+                    .append(&retained_bundle)
+                    .expect("preload retained bundle");
+                state.open_segment_bytes =
+                    state.open_segment.estimated_retained_size_bytes() as u64;
+            }
+        }
+
+        let retained_bundles = engine.open_segment_bundle_count();
+        let wal_bytes_before = engine.wal_bytes_written();
+        let blocker = dir
+            .path()
+            .join("segments")
+            .join(crate::segment_store::SEQ_SIDECAR_FILENAME);
+        fs::create_dir(&blocker).expect("block sequence sidecar");
+
+        let result = engine.ingest(&DummyBundle::with_rows(1)).await;
+
+        assert!(
+            matches!(&result, Err(QuiverError::OpenSegmentAtCapacity { .. })),
+            "the 4x fallback must return a capacity error, got {result:?}"
+        );
+        assert!(
+            result.is_err_and(|e| e.is_at_capacity() && e.is_recoverable()),
+            "the capacity fallback must remain retryable"
+        );
+        assert_eq!(
+            engine.wal_bytes_written(),
+            wal_bytes_before,
+            "the rejected bundle must not be appended to the WAL"
+        );
+        assert_eq!(
+            engine.open_segment_bundle_count(),
+            retained_bundles,
+            "the rejected bundle must not extend the retained open segment"
+        );
+
+        fs::remove_dir(&blocker).expect("clear sequence sidecar");
     }
 
     /// Returns whether the current process ignores Unix permission bits (e.g.
