@@ -94,3 +94,35 @@ impl ResourceValidatorMetrics {
             .add(count);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_reject_reason() {
+        assert_eq!(RejectReason::None, RejectReason::None);
+        assert_eq!(RejectReason::Missing, RejectReason::Missing);
+        assert_eq!(RejectReason::NotAllowed, RejectReason::NotAllowed);
+        assert_eq!(RejectReason::InvalidType, RejectReason::InvalidType);
+        assert_eq!(RejectReason::ConversionError, RejectReason::ConversionError);
+    }
+
+    #[test]
+    fn test_validator_batch_attributes() {
+        let attr = ValidatorBatchAttributes {
+            outcome: Outcome::Success,
+            reason: RejectReason::None,
+        };
+        assert_eq!(attr.outcome, Outcome::Success);
+        assert_eq!(attr.reason, RejectReason::None);
+    }
+
+    #[test]
+    fn test_outcome_attributes() {
+        let attr = OutcomeAttributes {
+            outcome: Outcome::Failure,
+        };
+        assert_eq!(attr.outcome, Outcome::Failure);
+    }
+}
