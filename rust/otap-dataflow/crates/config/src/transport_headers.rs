@@ -365,11 +365,13 @@ impl TransportHeaders {
 
     /// Finds headers by exact stored name.
     /// Uses a linear scan for validation.
-    pub fn find_by_name<'a>(
-        &'a self,
-        name: &'a str,
-    ) -> impl Iterator<Item = TransportHeaderRef<'a>> {
-        self.iter().filter(move |header| header.name.0 == name)
+    #[must_use]
+    pub fn find_by_name<'a>(&'a self, name: &'a str) -> TransportHeadersFindIter<'a> {
+        TransportHeadersFindIter {
+            storage: self.storage.as_deref(),
+            name,
+            index: 0,
+        }
     }
 }
 
@@ -519,6 +521,18 @@ impl PackedTransportHeaders {
             .expect("in-bounds packed transport header must decode")
     }
 
+    fn stored_name_matches(&self, index: usize, name: &str) -> bool {
+        debug_assert!(index < self.count, "packed header index must be in bounds");
+        self.try_stored_name_bytes(index)
+            .expect("in-bounds packed transport header name must decode")
+            == name.as_bytes()
+    }
+
+    fn try_stored_name_bytes(&self, index: usize) -> Option<&[u8]> {
+        let descriptor_at = index.checked_mul(PACKED_HEADER_LEN)?;
+        read_bytes(&self.bytes, read_range(&self.bytes, descriptor_at)?)
+    }
+
     fn try_decode(&self, index: usize) -> Option<TransportHeaderRef<'_>> {
         let descriptor_at = index.checked_mul(PACKED_HEADER_LEN)?;
         let stored = read_range(&self.bytes, descriptor_at)?;
@@ -581,6 +595,54 @@ impl<'a> Iterator for TransportHeadersIter<'a> {
 }
 
 impl ExactSizeIterator for TransportHeadersIter<'_> {}
+
+/// Iterator over transport headers with an exact stored-name match.
+pub struct TransportHeadersFindIter<'a> {
+    storage: Option<&'a TransportHeadersStorage>,
+    name: &'a str,
+    index: usize,
+}
+
+impl<'a> Iterator for TransportHeadersFindIter<'a> {
+    type Item = TransportHeaderRef<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let storage = self.storage?;
+        let count = match storage {
+            TransportHeadersStorage::Owned(headers) => headers.len(),
+            TransportHeadersStorage::Packed(packed) => packed.count,
+        };
+
+        while self.index < count {
+            let index = self.index;
+            self.index += 1;
+            match storage {
+                TransportHeadersStorage::Owned(headers) => {
+                    let header = headers
+                        .get(index)
+                        .expect("owned transport header index must be in bounds");
+                    if header.name.as_str() == self.name {
+                        return Some(TransportHeaderRef::from(header));
+                    }
+                }
+                TransportHeadersStorage::Packed(packed) => {
+                    if packed.stored_name_matches(index, self.name) {
+                        return Some(packed.decode(index));
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let count = self.storage.map_or(0, |storage| match storage {
+            TransportHeadersStorage::Owned(headers) => headers.len(),
+            TransportHeadersStorage::Packed(packed) => packed.count,
+        });
+        (0, Some(count.saturating_sub(self.index)))
+    }
+}
 
 impl<'a> From<&'a TransportHeader> for TransportHeaderRef<'a> {
     fn from(header: &'a TransportHeader) -> Self {
@@ -662,6 +724,23 @@ mod tests {
         headers.push(header("tenant", "X-Tenant", b"a"));
         headers.push(header("request-id", "X-Request-Id", b"b"));
         headers.push(header("tenant", "X-Tenant", b"c"));
+
+        let tenants: Vec<_> = headers.find_by_name("tenant").collect();
+        assert_eq!(tenants.len(), 2);
+        assert_eq!(tenants[0].value.bytes, b"a");
+        assert_eq!(tenants[1].value.bytes, b"c");
+    }
+
+    /// Scenario: matching and nonmatching packed headers are interleaved.
+    /// Guarantees: packed lookup preserves all matching values in order.
+    #[test]
+    fn find_by_name_returns_matching_packed_headers() {
+        let mut headers = TransportHeaders::new();
+        headers.replace(vec![
+            header("tenant", "X-Tenant", b"a"),
+            header("request-id", "X-Request-Id", b"b"),
+            header("tenant", "X-Tenant", b"c"),
+        ]);
 
         let tenants: Vec<_> = headers.find_by_name("tenant").collect();
         assert_eq!(tenants.len(), 2);
