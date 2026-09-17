@@ -40,7 +40,7 @@ otel-arrow-dfe-config.workspace = true
 otel-arrow-dfe-contrib-extensions.workspace = true
 otel-arrow-dfe-contrib-nodes.workspace = true
 otel-arrow-dfe-controller.workspace = true
-otel-arrow-dfe-core-nodes.workspace = true
+otel-arrow-dfe-core-nodes = { workspace = true, default-features = false }
 otel-arrow-dfe-dev-nodes = { workspace = true, optional = true }
 otel-arrow-dfe-engine.workspace = true
 otel-arrow-dfe-otap.workspace = true
@@ -63,7 +63,7 @@ otel-arrow-dfe-contrib-extensions = { version = "0.56.0", path = "crates/contrib
 otel-arrow-dfe-contrib-nodes = { version = "0.56.0", path = "crates/contrib-nodes" }
 otel-arrow-dfe-control-channel = { path = "crates/control-channel" }
 otel-arrow-dfe-controller = { version = "0.56.0", path = "crates/controller" }
-otel-arrow-dfe-core-nodes = { version = "0.56.0", path = "crates/core-nodes" }
+otel-arrow-dfe-core-nodes = { version = "0.56.0", path = "crates/core-nodes", default-features = false }
 otel-arrow-dfe-dev-nodes = { path = "crates/dev-nodes" }
 otel-arrow-dfe-engine = { version = "0.56.0", path = "crates/engine" }
 otel-arrow-dfe-expohisto = { version = "0.56.0", path = "crates/expohisto" }
@@ -299,7 +299,7 @@ opentelemetry-resource-detectors = "0.12.0"
 otel-arrow-dfe-pdata-views = { path = "crates/pdata-views" }
 
 [features]
-default = ["jemalloc", "crypto-ring", "dev-tools", "admin-live-logs-ws"]
+default = ["jemalloc", "crypto-ring", "dev-tools", "admin-live-logs-ws", "core-nodes"]
 jemalloc = [
     "dep:tikv-jemallocator",
     "otel-arrow-dfe-engine/jemalloc",
@@ -327,6 +327,48 @@ dev-tools = [
     "otel-arrow-dfe-core-nodes/dev-tools",
 ]
 
+# Core-node feature forwarding. Keep this list aligned with
+# `crates/core-nodes/Cargo.toml` so binary consumers can select exact nodes
+# without depending on the implementation crate directly.
+core-nodes = ["otel-arrow-dfe-core-nodes/core-nodes"]
+core-receivers = ["otel-arrow-dfe-core-nodes/core-receivers"]
+core-processors = ["otel-arrow-dfe-core-nodes/core-processors"]
+core-exporters = ["otel-arrow-dfe-core-nodes/core-exporters"]
+
+# Core receivers.
+host-metrics-receiver = ["otel-arrow-dfe-core-nodes/host-metrics-receiver"]
+internal-telemetry-receiver = ["otel-arrow-dfe-core-nodes/internal-telemetry-receiver"]
+journald-receiver = ["otel-arrow-dfe-core-nodes/journald-receiver"]
+otap-receiver = ["otel-arrow-dfe-core-nodes/otap-receiver"]
+otlp-receiver = ["otel-arrow-dfe-core-nodes/otlp-receiver"]
+syslog-cef-receiver = ["otel-arrow-dfe-core-nodes/syslog-cef-receiver"]
+topic-receiver = ["otel-arrow-dfe-core-nodes/topic-receiver"]
+
+# Core processors.
+attributes-processor = ["otel-arrow-dfe-core-nodes/attributes-processor"]
+batch-processor = ["otel-arrow-dfe-core-nodes/batch-processor"]
+content-router-processor = ["otel-arrow-dfe-core-nodes/content-router-processor"]
+debug-processor = ["otel-arrow-dfe-core-nodes/debug-processor"]
+durable-buffer-processor = ["otel-arrow-dfe-core-nodes/durable-buffer-processor"]
+fanout-processor = ["otel-arrow-dfe-core-nodes/fanout-processor"]
+filter-processor = ["otel-arrow-dfe-core-nodes/filter-processor"]
+log-sampling-processor = ["otel-arrow-dfe-core-nodes/log-sampling-processor"]
+partition-processor = ["otel-arrow-dfe-core-nodes/partition-processor"]
+retry-processor = ["otel-arrow-dfe-core-nodes/retry-processor"]
+signal-type-router-processor = ["otel-arrow-dfe-core-nodes/signal-type-router-processor"]
+temporal-reaggregation-processor = ["otel-arrow-dfe-core-nodes/temporal-reaggregation-processor"]
+transform-processor = ["otel-arrow-dfe-core-nodes/transform-processor"]
+
+# Core exporters.
+console-exporter = ["otel-arrow-dfe-core-nodes/console-exporter"]
+file-exporter = ["otel-arrow-dfe-core-nodes/file-exporter"]
+noop-exporter = ["otel-arrow-dfe-core-nodes/noop-exporter"]
+otap-exporter = ["otel-arrow-dfe-core-nodes/otap-exporter"]
+otlp-grpc-exporter = ["otel-arrow-dfe-core-nodes/otlp-grpc-exporter"]
+otlp-http-exporter = ["otel-arrow-dfe-core-nodes/otlp-http-exporter"]
+parquet-exporter = ["otel-arrow-dfe-core-nodes/parquet-exporter"]
+topic-exporter = ["otel-arrow-dfe-core-nodes/topic-exporter"]
+
 # Admin UI live log streaming over WebSocket.
 admin-live-logs-ws = ["otel-arrow-dfe-controller/admin-live-logs-ws"]
 
@@ -337,7 +379,11 @@ crypto-aws-lc = ["otel-arrow-dfe-otap/crypto-aws-lc", "otel-arrow-dfe-contrib-ex
 crypto-symcrypt = ["otel-arrow-dfe-otap/crypto-symcrypt"]
 crypto-openssl = ["otel-arrow-dfe-otap/crypto-openssl", "otel-arrow-dfe-contrib-extensions/crypto-openssl"]
 
-# Contrib exporters (opt-in) - now in contrib-nodes
+# Contrib-node feature forwarding. Keep this list aligned with
+# `crates/contrib-nodes/Cargo.toml`.
+contrib-nodes = ["otel-arrow-dfe-contrib-nodes/contrib-nodes"]
+
+# Contrib exporters.
 contrib-exporters = ["otel-arrow-dfe-contrib-nodes/contrib-exporters"]
 geneva-exporter = ["otel-arrow-dfe-contrib-nodes/geneva-exporter"]
 geneva-certificate-auth = ["geneva-exporter", "otel-arrow-dfe-contrib-nodes/geneva-certificate-auth"]
@@ -353,18 +399,18 @@ contrib-extensions = ["otel-arrow-dfe-contrib-extensions/contrib-extensions"]
 azure-identity-auth-extension = ["otel-arrow-dfe-contrib-extensions/azure-identity-auth-extension"]
 k8s-service-account-token-auth-extension = ["otel-arrow-dfe-contrib-extensions/k8s-service-account-token-auth-extension"]
 oauth2-client-auth-extension = ["otel-arrow-dfe-contrib-extensions/oauth2-client-auth-extension"]
-# Contrib receivers (opt-in) - now in contrib-nodes
+# Contrib receivers.
 contrib-receivers = ["otel-arrow-dfe-contrib-nodes/contrib-receivers"]
 kafka-receiver = ["otel-arrow-dfe-contrib-nodes/kafka-receiver"]
 user_events-receiver = ["otel-arrow-dfe-contrib-nodes/user_events-receiver"]
 user_events-eventheader = ["otel-arrow-dfe-contrib-nodes/user_events-eventheader"]
 clickhouse-exporter = ["otel-arrow-dfe-contrib-nodes/clickhouse-exporter"]
-# Contrib processors (opt-in) - now in contrib-nodes
+# Contrib processors.
 contrib-processors = ["otel-arrow-dfe-contrib-nodes/contrib-processors"]
 condense-attributes-processor = ["otel-arrow-dfe-contrib-nodes/condense-attributes-processor"]
 recordset-kql-processor = ["otel-arrow-dfe-contrib-nodes/recordset-kql-processor"]
 resource-validator-processor = ["otel-arrow-dfe-contrib-nodes/resource-validator-processor"]
-# Contrib receivers (opt-in) - Windows-only
+# Windows-only contrib receivers.
 etw-receiver = ["otel-arrow-dfe-contrib-nodes/etw-receiver"]
 
 # Experimental WASM host-kernel processor plugin runtime (opt-in). Off by

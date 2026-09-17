@@ -20,7 +20,7 @@ workspace = true
 otel-arrow-dfe-channel = { workspace = true }
 otel-arrow-dfe-config = { workspace = true }
 otel-arrow-dfe-engine = { workspace = true }
-otel-arrow-dfe-core-nodes = { workspace = true, optional = true }
+otel-arrow-dfe-core-nodes = { workspace = true, optional = true, default-features = false }
 otel-arrow-dfe-otap = { workspace = true }
 otel-arrow-dfe-pdata = { workspace = true }
 otel-arrow-dfe-pdata-views = { workspace = true }
@@ -94,30 +94,36 @@ one_collect = { workspace = true, optional = true }
 tracepoint_decode = { workspace = true, optional = true }
 
 [features]
-etw-receiver = ["dep:one_collect", "dep:humantime-serde"]
-kafka-receiver = [
-    "dep:otel-arrow-dfe-core-nodes",
-    "dep:rdkafka",
-    "dep:smallvec",
-    "dep:regex",
-    "dep:tokio-util",
-]
-kafka-exporter = [
-    "dep:rdkafka",
-    "dep:futures-channel",
-    "dep:futures-util",
-    "dep:xxhash-rust",
-    "dep:hex",
-    "dep:regex",
-]
-aws = [
-    "dep:aws-config",
-    "dep:aws-msk-iam-sasl-signer",
-]
+# Keep these umbrella lists exhaustive. Every public node feature must appear in
+# exactly one category so `contrib-nodes` remains the complete contrib inventory.
+contrib-nodes = ["contrib-receivers", "contrib-processors", "contrib-exporters"]
 contrib-receivers = [
     "etw-receiver",
     "kafka-receiver",
     "user_events-receiver",
+]
+contrib-processors = [
+    "condense-attributes-processor",
+    "recordset-kql-processor",
+    "resource-validator-processor",
+]
+contrib-exporters = [
+    "azure-monitor-exporter",
+    "clickhouse-exporter",
+    "geneva-exporter",
+    "kafka-exporter",
+]
+
+# Receivers: gate the module in `src/receivers/mod.rs`, list the feature in
+# `contrib-receivers`, and activate component-specific dependencies with `dep:`.
+etw-receiver = ["dep:one_collect", "dep:humantime-serde"]
+kafka-receiver = [
+    "dep:otel-arrow-dfe-core-nodes",
+    "otel-arrow-dfe-core-nodes/syslog-cef-receiver",
+    "dep:rdkafka",
+    "dep:smallvec",
+    "dep:regex",
+    "dep:tokio-util",
 ]
 user_events-receiver = [
     "dep:base64",
@@ -129,11 +135,35 @@ user_events-eventheader = [
     "user_events-receiver",
     "dep:tracepoint_decode",
 ]
-contrib-exporters = [
-    "geneva-exporter",
-    "azure-monitor-exporter",
-    "kafka-exporter",
-    "clickhouse-exporter",
+
+# Processors: gate the module in `src/processors/mod.rs`, list the feature in
+# `contrib-processors`, and activate component-specific dependencies with `dep:`.
+condense-attributes-processor = []
+condense-attributes-processor-bench = ["condense-attributes-processor"]
+recordset-kql-processor = [
+    "dep:otel-arrow-contrib-data-engine-expressions",
+    "dep:otel-arrow-contrib-data-engine-kql-parser",
+    "dep:otel-arrow-contrib-data-engine-recordset",
+    "dep:regex",
+    "dep:chrono",
+]
+resource-validator-processor = []
+
+# Exporters: gate the module in `src/exporters/mod.rs`, list the feature in
+# `contrib-exporters`, and activate component-specific dependencies with `dep:`.
+azure-monitor-exporter = [
+    "dep:opentelemetry-proto",
+    "dep:reqwest",
+    "dep:ahash",
+    "dep:sysinfo",
+    "dep:chrono",
+    "dep:flate2",
+    "dep:http",
+    "dep:humantime-serde",
+    "dep:itoa",
+    "dep:rand",
+    "dep:ryu",
+    "dep:urlencoding",
 ]
 clickhouse-exporter = [
     "dep:clickhouse",
@@ -160,36 +190,20 @@ geneva-certificate-auth = [
     "geneva-exporter",
     "geneva-uploader/certificate-auth",
 ]
-azure-monitor-exporter = [
-    "dep:opentelemetry-proto",
-    "dep:reqwest",
-    "dep:ahash",
-    "dep:sysinfo",
-    "dep:chrono",
-    "dep:flate2",
-    "dep:http",
-    "dep:humantime-serde",
-    "dep:itoa",
-    "dep:rand",
-    "dep:ryu",
-    "dep:urlencoding",
+kafka-exporter = [
+    "dep:rdkafka",
+    "dep:futures-channel",
+    "dep:futures-util",
+    "dep:xxhash-rust",
+    "dep:hex",
+    "dep:regex",
 ]
 
-contrib-processors = [
-    "condense-attributes-processor",
-    "recordset-kql-processor",
-    "resource-validator-processor",
+# Cross-cutting capabilities layered onto node features.
+aws = [
+    "dep:aws-config",
+    "dep:aws-msk-iam-sasl-signer",
 ]
-condense-attributes-processor = []
-condense-attributes-processor-bench = ["condense-attributes-processor"]
-recordset-kql-processor = [
-    "dep:otel-arrow-contrib-data-engine-expressions",
-    "dep:otel-arrow-contrib-data-engine-kql-parser",
-    "dep:otel-arrow-contrib-data-engine-recordset",
-    "dep:regex",
-    "dep:chrono",
-]
-resource-validator-processor = []
 
 [dev-dependencies]
 axum.workspace = true
@@ -205,7 +219,7 @@ otel-arrow-dfe-channel = { workspace = true }
 opentelemetry-proto.workspace = true
 otel-arrow-dfe-engine = { workspace = true, features = ["test-utils"] }
 otel-arrow-dfe-otap = { workspace = true, features = ["test-utils"] }
-otel-arrow-dfe-core-nodes.workspace = true
+otel-arrow-dfe-core-nodes = { workspace = true, features = ["core-nodes"] }
 otel-arrow-dfe-pdata = { workspace = true, features = ["testing"] }
 otel-arrow-dfe-state.workspace = true
 pretty_assertions.workspace = true

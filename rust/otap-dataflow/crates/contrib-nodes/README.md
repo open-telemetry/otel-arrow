@@ -81,9 +81,32 @@ Exporters send data out of a pipeline.
 
 ## Feature Aggregates
 
+- `contrib-nodes`: enables all contrib receivers, processors, and exporters.
 - `contrib-receivers`: enables all contrib receivers.
 - `contrib-processors`: enables all contrib processors.
 - `contrib-exporters`: enables all contrib exporters.
 
 When these features are enabled in the top-level binary, their factories are
 registered into the OTAP pipeline factory maps.
+
+## Maintenance Notes
+
+- Add a `<name>-receiver`, `<name>-processor`, or `<name>-exporter` feature for
+  every public node.
+- Add that feature to exactly one of `contrib-receivers`,
+  `contrib-processors`, or `contrib-exporters`. The `contrib-nodes` feature
+  includes all three category umbrellas.
+- Gate the module declaration in the category's `mod.rs` with
+  `#[cfg(feature = "<feature>")]`. This gates both compilation and the
+  `linkme` factory registration inside the module.
+- Keep node-specific dependencies optional and activate them from the node
+  feature with `dep:<dependency>` so disabling a node removes its dependency
+  subtree.
+- Forward every node and aggregate feature from the top-level `df_engine`
+  package.
+- Add the exact feature name to the node catalog above.
+- Add the component inventory annotation and baseline entry described in the
+  [Component Inventory Guide](../../docs/component-inventory.md).
+- When a contrib node reuses a core-node implementation, depend on
+  `otel-arrow-dfe-core-nodes` with `default-features = false` and enable only
+  the exact core feature required.
