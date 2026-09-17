@@ -373,6 +373,9 @@ pub struct SegmentStore {
     /// One-shot pause used to coordinate sequence persistence fault tests.
     #[cfg(test)]
     seq_sidecar_persist_pause: Mutex<Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>>,
+    /// One-shot failure used to test post-write registration errors.
+    #[cfg(test)]
+    fail_next_new_segment_registration: Mutex<bool>,
 }
 
 impl std::fmt::Debug for SegmentStore {
@@ -406,6 +409,8 @@ impl SegmentStore {
             seq_sidecar_lock: TokioMutex::new(()),
             #[cfg(test)]
             seq_sidecar_persist_pause: Mutex::new(None),
+            #[cfg(test)]
+            fail_next_new_segment_registration: Mutex::new(false),
         }
     }
 
@@ -427,6 +432,8 @@ impl SegmentStore {
             seq_sidecar_lock: TokioMutex::new(()),
             #[cfg(test)]
             seq_sidecar_persist_pause: Mutex::new(None),
+            #[cfg(test)]
+            fail_next_new_segment_registration: Mutex::new(false),
         }
     }
 
@@ -439,6 +446,12 @@ impl SegmentStore {
         let resume = Arc::new(tokio::sync::Notify::new());
         *self.seq_sidecar_persist_pause.lock() = Some((Arc::clone(&entered), Arc::clone(&resume)));
         (entered, resume)
+    }
+
+    /// Makes the next newly written segment registration fail.
+    #[cfg(test)]
+    pub(crate) fn fail_next_new_segment_registration(&self) {
+        *self.fail_next_new_segment_registration.lock() = true;
     }
 
     /// Inserts or replaces a pending-delete entry, preserving the attempt
@@ -522,6 +535,13 @@ impl SegmentStore {
     /// Returns an error if the segment file cannot be opened.
     pub fn register_new_segment(&self, seq: SegmentSeq) -> Result<u32> {
         let path = self.segment_path(seq);
+        #[cfg(test)]
+        if std::mem::take(&mut *self.fail_next_new_segment_registration.lock()) {
+            return Err(SubscriberError::segment_io(
+                path,
+                std::io::Error::other("injected new segment registration failure"),
+            ));
+        }
         let handle = SegmentHandle::open(seq, path, self.read_mode)?;
         let bundle_count = handle.bundle_count;
 
