@@ -7,6 +7,7 @@ use futures::stream::{FuturesUnordered, StreamExt};
 use std::future::Future;
 
 /// Default maximum number of concurrent in-flight export requests.
+#[must_use]
 pub const fn default_max_in_flight() -> usize {
     5
 }
@@ -24,6 +25,7 @@ where
     Fut: Future<Output = Output>,
 {
     /// Creates an empty in-flight export queue.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             futures: FuturesUnordered::new(),
