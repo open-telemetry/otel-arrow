@@ -454,6 +454,7 @@ impl CompiledContextBindings {
     }
 
     /// Returns the node's compiled header capture policy.
+    #[must_use]
     pub fn header_capture_policy(
         &self,
         pipeline: &PipelineKey,
@@ -467,6 +468,7 @@ impl CompiledContextBindings {
     }
 
     /// Returns the node's compiled header propagation policy.
+    #[must_use]
     pub fn header_propagation_policy(
         &self,
         pipeline: &PipelineKey,

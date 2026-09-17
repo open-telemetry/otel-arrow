@@ -23,7 +23,6 @@ use tonic::metadata::{KeyAndValueRef, MetadataKey, MetadataMap, MetadataValue};
 const HEADER_COUNTS: [usize; 4] = [1, 4, 16, 32];
 const PRODUCER_CASES: [ProducerCase; 2] = [ProducerCase::Unrenamed, ProducerCase::Renamed];
 // Stored-name and absent consumers compile the same receive policy.
-const RECEIVE_CONSUMER_CASES: [ConsumerCase; 2] = [ConsumerCase::None, ConsumerCase::Original];
 const CONSUMER_CASES: [ConsumerCase; 3] = [
     ConsumerCase::None,
     ConsumerCase::Stored,
