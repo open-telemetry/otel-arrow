@@ -8,7 +8,7 @@ use std::hint::black_box;
 use std::mem::size_of;
 use std::sync::Arc;
 
-use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
+use criterion::{BatchSize, BenchmarkId, Criterion, criterion_group, criterion_main};
 use http::{HeaderMap, HeaderName, HeaderValue};
 use otel_arrow_dfe_config::ContextEntryName;
 use otel_arrow_dfe_config::transport_headers::{TransportHeader, TransportHeaders, ValueKind};
@@ -97,7 +97,7 @@ fn main_benchmarks(c: &mut Criterion) {
     bench_receive(c);
     bench_receive_http(c);
     bench_end_to_end(c);
-    bench_lookup_and_clone(c);
+    bench_lookup_clone_and_append(c);
     bench_receive_kafka_original(c);
     bench_end_to_end_kafka_original(c);
 }
@@ -112,7 +112,27 @@ fn bench_receive_http(c: &mut Criterion) {
                     capture_policy(header_count, producer).compile(|_| preserve_original_names);
                 let headers = inbound_http_headers(header_count);
                 let _ = group.bench_with_input(
-                    BenchmarkId::new(case_name(producer, consumer), header_count),
+                    BenchmarkId::new(
+                        format!("generic_string_adapter/{}", case_name(producer, consumer)),
+                        header_count,
+                    ),
+                    &header_count,
+                    |b, _| {
+                        b.iter(|| {
+                            let mut context = TransportHeaders::new();
+                            let pairs = black_box(&headers)
+                                .iter()
+                                .map(|(name, value)| (name.as_str(), value.as_bytes()));
+                            let _ = black_box(&capture).capture_from_pairs(pairs, &mut context);
+                            black_box(context)
+                        });
+                    },
+                );
+                let _ = group.bench_with_input(
+                    BenchmarkId::new(
+                        format!("native_header_name/{}", case_name(producer, consumer)),
+                        header_count,
+                    ),
                     &header_count,
                     |b, _| {
                         b.iter(|| {
@@ -129,23 +149,93 @@ fn bench_receive_http(c: &mut Criterion) {
     group.finish();
 }
 
-fn bench_lookup_and_clone(c: &mut Criterion) {
+fn bench_lookup_clone_and_append(c: &mut Criterion) {
     assert_eq!(size_of::<TransportHeaders>(), size_of::<usize>());
-    let capture = capture_policy(32, ProducerCase::Renamed).compile(|_| true);
-    let metadata = inbound_metadata(32);
-    let context = receive_metadata(&capture, &metadata);
 
-    let _ = c.bench_function("request_context/lookup/stored_name", |b| {
-        b.iter(|| {
-            black_box(&context)
-                .find_by_name("context_30")
-                .next()
-                .map(|header| header.value.bytes.len())
-        });
-    });
-    let _ = c.bench_function("request_context/clone", |b| {
-        b.iter(|| black_box(context.clone()));
-    });
+    {
+        let mut group = c.benchmark_group("request_context/lookup");
+        for header_count in HEADER_COUNTS {
+            let (packed, previous, lookup_name) = comparison_headers(header_count);
+            let _ = group.bench_with_input(
+                BenchmarkId::new("previous_arc_vec", header_count),
+                &header_count,
+                |b, _| {
+                    b.iter(|| {
+                        black_box(&previous)
+                            .find_by_name(black_box(&lookup_name))
+                            .map(|header| header.value.bytes.len())
+                    });
+                },
+            );
+            let _ = group.bench_with_input(
+                BenchmarkId::new("packed", header_count),
+                &header_count,
+                |b, _| {
+                    b.iter(|| {
+                        black_box(&packed)
+                            .find_by_name(black_box(&lookup_name))
+                            .next()
+                            .map(|header| header.value.bytes.len())
+                    });
+                },
+            );
+        }
+        group.finish();
+    }
+
+    {
+        let mut group = c.benchmark_group("request_context/clone");
+        for header_count in HEADER_COUNTS {
+            let (packed, previous, _) = comparison_headers(header_count);
+            let _ = group.bench_with_input(
+                BenchmarkId::new("previous_arc_vec", header_count),
+                &header_count,
+                |b, _| b.iter(|| black_box(previous.clone())),
+            );
+            let _ = group.bench_with_input(
+                BenchmarkId::new("packed", header_count),
+                &header_count,
+                |b, _| b.iter(|| black_box(packed.clone())),
+            );
+        }
+        group.finish();
+    }
+
+    {
+        let mut group = c.benchmark_group("request_context/append_after_capture");
+        for header_count in HEADER_COUNTS {
+            let (packed, previous, _) = comparison_headers(header_count);
+            let _ = group.bench_with_input(
+                BenchmarkId::new("previous_arc_vec", header_count),
+                &header_count,
+                |b, _| {
+                    b.iter_batched(
+                        || (previous.clone(), partition_header()),
+                        |(mut headers, header)| {
+                            headers.push(header);
+                            black_box(headers)
+                        },
+                        BatchSize::SmallInput,
+                    );
+                },
+            );
+            let _ = group.bench_with_input(
+                BenchmarkId::new("packed", header_count),
+                &header_count,
+                |b, _| {
+                    b.iter_batched(
+                        || (packed.clone(), partition_header()),
+                        |(mut headers, header)| {
+                            headers.push(header);
+                            black_box(headers)
+                        },
+                        BatchSize::SmallInput,
+                    );
+                },
+            );
+        }
+        group.finish();
+    }
 }
 
 #[derive(Clone)]
@@ -154,8 +244,20 @@ struct LegacyHeaders {
 }
 
 #[derive(Clone)]
-struct CurrentHeaders {
+struct ArcVecHeaders {
     headers: Arc<Vec<TransportHeader>>,
+}
+
+impl ArcVecHeaders {
+    fn find_by_name(&self, name: &str) -> Option<&TransportHeader> {
+        self.headers
+            .iter()
+            .find(|header| header.name.as_str() == name)
+    }
+
+    fn push(&mut self, header: TransportHeader) {
+        Arc::make_mut(&mut self.headers).push(header);
+    }
 }
 
 enum LegacyHeaderName {
@@ -381,6 +483,38 @@ fn inbound_http_headers(header_count: usize) -> HeaderMap {
     headers
 }
 
+fn previous_headers(header_count: usize) -> ArcVecHeaders {
+    ArcVecHeaders {
+        headers: Arc::new(
+            (0..header_count)
+                .map(|index| {
+                    TransportHeader::captured(
+                        context_name(format!("context_{index}")),
+                        &format!("x-context-{index}"),
+                        true,
+                        ValueKind::Text,
+                        format!("value-{index:02}-0123456789abcdef").as_bytes(),
+                    )
+                })
+                .collect(),
+        ),
+    }
+}
+
+fn comparison_headers(header_count: usize) -> (TransportHeaders, ArcVecHeaders, String) {
+    let capture = capture_policy(header_count, ProducerCase::Renamed).compile(|_| true);
+    let metadata = inbound_metadata(header_count);
+    (
+        receive_metadata(&capture, &metadata),
+        previous_headers(header_count),
+        format!("context_{}", header_count - 1),
+    )
+}
+
+fn partition_header() -> TransportHeader {
+    TransportHeader::text(context_name("partition"), b"partition-0")
+}
+
 fn capture_match_names(header_count: usize) -> Vec<ContextEntryName> {
     (0..header_count)
         .map(|index| context_name(format!("x-context-{index}")))
@@ -447,8 +581,8 @@ fn receive_kafka_legacy(match_names: &[ContextEntryName], headers: &OwnedHeaders
 fn receive_kafka_current(
     match_names: &[ContextEntryName],
     headers: &OwnedHeaders,
-) -> CurrentHeaders {
-    CurrentHeaders {
+) -> ArcVecHeaders {
+    ArcVecHeaders {
         headers: capture_kafka_headers(
             match_names,
             headers,
@@ -493,7 +627,7 @@ fn propagate_metadata(context: &TransportHeaders, policy: &HeaderPropagationPoli
     metadata
 }
 
-fn propagate_kafka_current(context: &CurrentHeaders) -> OwnedHeaders {
+fn propagate_kafka_current(context: &ArcVecHeaders) -> OwnedHeaders {
     let mut headers = OwnedHeaders::new().insert(Header {
         key: "encoding",
         value: Some(b"otlp".as_slice()),
