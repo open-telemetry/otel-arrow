@@ -531,14 +531,37 @@ impl<'a> Iterator for TransportHeadersIter<'a> {
     type Item = TransportHeaderRef<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let header = match self.storage? {
-            TransportHeadersStorage::Owned(headers) => {
-                TransportHeaderRef::from(headers.get(self.index)?)
-            }
-            TransportHeadersStorage::Packed(packed) => packed.get(self.index)?,
+        let storage = self.storage?;
+        let count = match storage {
+            TransportHeadersStorage::Owned(headers) => headers.len(),
+            TransportHeadersStorage::Packed(packed) => packed.count,
         };
+        if self.index >= count {
+            return None;
+        }
+
+        let index = self.index;
         self.index += 1;
-        Some(header)
+        let header = match storage {
+            TransportHeadersStorage::Owned(headers) => {
+                headers.get(index).map(TransportHeaderRef::from)
+            }
+            TransportHeadersStorage::Packed(packed) => packed.get(index),
+        };
+        if header.is_none() {
+            tracing::error!(
+                name: "context.transport_headers.decode_failed",
+                header_index = index,
+                header_count = count,
+                message = "Packed transport header could not be decoded",
+            );
+            debug_assert!(
+                header.is_some(),
+                "packed transport header {index} of {count} must decode"
+            );
+            self.index = count;
+        }
+        header
     }
 }
 
@@ -712,6 +735,24 @@ mod tests {
             result.storage.as_deref(),
             Some(TransportHeadersStorage::Packed(_))
         ));
+    }
+
+    /// Scenario: a packed header descriptor is corrupted below its declared count.
+    /// Guarantees: iteration detects the violated decode invariant instead of failing silently.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "packed transport header 0 of 1 must decode")]
+    fn packed_header_decode_failure_triggers_debug_assertion() {
+        let mut headers = TransportHeaders::new();
+        headers.replace(vec![header("tenant", "X-Tenant", b"acme")]);
+        let storage = Arc::get_mut(headers.storage.as_mut().expect("packed storage is present"))
+            .expect("packed storage is uniquely owned");
+        let TransportHeadersStorage::Packed(packed) = storage else {
+            panic!("expected packed transport header storage");
+        };
+        packed.bytes[0..4].copy_from_slice(&u32::MAX.to_le_bytes());
+
+        let _ = headers.iter().next();
     }
 
     /// Scenario: a cloned manually-built collection is mutated.

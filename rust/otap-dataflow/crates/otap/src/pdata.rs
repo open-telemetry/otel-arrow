@@ -164,7 +164,25 @@ impl AuthorizedIdentityEntries {
 
     /// Iterates over captured entries in policy order.
     pub fn iter(&self) -> impl Iterator<Item = AuthorizedIdentityEntry<'_>> {
-        (0..self.len()).filter_map(|index| self.packed.as_deref()?.entry(index))
+        let packed = self.packed.as_deref();
+        (0..self.len()).filter_map(move |index| {
+            let packed = packed?;
+            let entry = packed.entry(index);
+            if entry.is_none() {
+                otel_arrow_dfe_telemetry::otel_error!(
+                    "context.authorized_identity.decode_failed",
+                    entry_index = index,
+                    entry_count = packed.entry_count,
+                    message = "Packed authorized identity entry could not be decoded",
+                );
+                debug_assert!(
+                    entry.is_some(),
+                    "packed authorized identity entry {index} of {} must decode",
+                    packed.entry_count
+                );
+            }
+            entry
+        })
     }
 
     /// Finds an entry by exact configured name.
@@ -2997,6 +3015,25 @@ mod test {
         assert_eq!(groups.as_str(), None);
         assert!(groups.is_many());
         assert_eq!(groups.values().collect::<Vec<_>>(), ["reader"]);
+    }
+
+    /// Scenario: a packed authorized identity descriptor is corrupted below its declared count.
+    /// Guarantees: iteration detects the violated decode invariant instead of omitting it silently.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "packed authorized identity entry 0 of 1 must decode")]
+    fn authorized_identity_decode_failure_triggers_debug_assertion() {
+        let policy: AuthorizedIdentityPolicy =
+            serde_json::from_value(serde_json::json!([{"claim": "sub", "store_as": "subject"}]))
+                .expect("valid authorized identity policy");
+        let identity = AuthorizedIdentity::new().with_subject("reader");
+        let mut entries =
+            AuthorizedIdentityEntries::capture(&policy, &identity).expect("captured identity");
+        let packed = Arc::get_mut(entries.packed.as_mut().expect("packed storage is present"))
+            .expect("packed storage is uniquely owned");
+        packed.bytes[0..4].copy_from_slice(&u32::MAX.to_le_bytes());
+
+        let _ = entries.iter().next();
     }
 
     /// Scenario: pdata carries authorized identity entries captured from
