@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789604823215,
+  "lastUpdate": 1789662510490,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -39649,6 +39649,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 103.73,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "pritishnahar@gmail.com",
+            "name": "Pritish Nahar",
+            "username": "pritishnahar95"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "44b5a56a58bfefb9f4ecea48c8f9a76243e809f1",
+          "message": "feat(metrics): migrate syslog receiver to shared metrics (#3899)\n\n# Change summary\n\nMigrate the Syslog CEF receiver to the shared external-boundary metric\ncontract introduced in #3852.\n\nThe receiver now reports:\n\n```text\nreceiver.received.{messages,payload.size,duration}{signal,outcome}\n```\n\nEach UDP datagram or emitted TCP frame produces one terminal observation\nafter signal classification. The observation covers receiver-local\nprocessing through pipeline handoff, refusal, or failure, including time\nspent waiting in a batch. TCP payload size excludes the newline\ndelimiter.\n\nThe overlapping component-specific `receiver.syslog_cef.received` and\n`receiver.syslog_cef.forwards` metric sets are removed. Richer Syslog\nCEF diagnostics for rejection reasons, truncation, transport errors, and\nconnection state remain unchanged.\n\nBuffered messages are recorded as `refused` when immediate shutdown\nprevents handoff. Receiver-first drain continues to flush buffered\nmessages when possible.\n\n## Related issue\n\n* Part of #3822\n\n## Validation\n\n* `cargo test -p otel-arrow-dfe-core-nodes syslog_cef_receiver` - 126\npassed\n* `cargo check -p otel-arrow-dfe-core-nodes`\n* `cargo clippy -p otel-arrow-dfe-core-nodes --lib --tests -- -D\nwarnings`\n* `cargo xtask check`\n* `npx markdownlint-cli2\ncrates/core-nodes/src/receivers/syslog_cef_receiver/README.md\ncrates/core-nodes/src/receivers/syslog_cef_receiver/telemetry.md`\n* `python3 tools/sanitycheck.py`\n\n## User-facing changes\n\nSyslog CEF receiver telemetry now uses the shared `receiver.received`\nmessage, payload-size, and duration metrics with bounded `signal` and\n`outcome` dimensions. The removed component-specific received and\nforwards metrics are replaced by this shared contract.",
+          "timestamp": "2026-09-17T15:13:01Z",
+          "tree_id": "c6872cadd1b46c3f8f5c052a9693cfc1001e3433",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/44b5a56a58bfefb9f4ecea48c8f9a76243e809f1"
+        },
+        "date": 1789662496303,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 84.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.97,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.71,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.97,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.68,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 71.59,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.86,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.54,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.16,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 116.51,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 103.85,
             "unit": "MB"
           }
         ]
