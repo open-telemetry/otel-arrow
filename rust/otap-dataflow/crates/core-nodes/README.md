@@ -55,13 +55,13 @@ Receivers ingest data into a pipeline.
 
 | Type | Feature | Stability | Description |
 | --- | --- | --- | --- |
-| [`receiver:host_metrics`](src/receivers/host_metrics_receiver/README.md) | `host-metrics-receiver` | experimental | Emits Linux `system.*` host metrics from procfs and sysfs. |
-| [`receiver:internal_telemetry`](src/receivers/internal_telemetry_receiver/README.md) | `internal-telemetry-receiver` | experimental | Consumes internal engine log events for observability pipelines. |
-| [`receiver:journald`](src/receivers/journald_receiver/README.md) | `journald-receiver` | experimental | Reads local `systemd-journald` records with journald source filters. |
-| [`receiver:otap`](src/receivers/otap_receiver/README.md) | `otap-receiver` | experimental | Accepts OTAP Arrow streams over gRPC. |
-| [`receiver:otlp`](src/receivers/otlp_receiver/README.md) | `otlp-receiver` | experimental | Accepts OTLP/gRPC, OTLP/HTTP, or both. |
-| [`receiver:syslog_cef`](src/receivers/syslog_cef_receiver/README.md) | `syslog-cef-receiver` | experimental | Ingests syslog RFC 3164, syslog RFC 5424, and CEF messages. |
-| [`receiver:topic`](src/receivers/topic_receiver/README.md) | `topic-receiver` | experimental | Subscribes to a named in-process topic. |
+| [`receiver:host_metrics`](src/receivers/host_metrics_receiver/README.md) | `host-metrics` | experimental | Emits Linux `system.*` host metrics from procfs and sysfs. |
+| [`receiver:internal_telemetry`](src/receivers/internal_telemetry_receiver/README.md) | Always enabled | experimental | Consumes internal engine log events for observability pipelines. |
+| [`receiver:journald`](src/receivers/journald_receiver/README.md) | `journald` | experimental | Reads local `systemd-journald` records with journald source filters. |
+| [`receiver:otap`](src/receivers/otap_receiver/README.md) | `otap` | experimental | Accepts OTAP Arrow streams over gRPC. |
+| [`receiver:otlp`](src/receivers/otlp_receiver/README.md) | `otlp` | experimental | Accepts OTLP/gRPC, OTLP/HTTP, or both. |
+| [`receiver:syslog_cef`](src/receivers/syslog_cef_receiver/README.md) | `syslog-cef` | experimental | Ingests syslog RFC 3164, syslog RFC 5424, and CEF messages. |
+| [`receiver:topic`](src/receivers/topic_receiver/README.md) | `topic` | experimental | Subscribes to a named in-process topic. |
 
 <!-- markdownlint-enable MD013 -->
 
@@ -74,19 +74,19 @@ through a pipeline.
 
 | Type | Feature | Stability | Description |
 | --- | --- | --- | --- |
-| [`processor:attribute`](src/processors/attributes_processor/README.md) | `attributes-processor` | experimental | Mutates OpenTelemetry attributes in OTAP batches. |
-| [`processor:batch`](src/processors/batch_processor/README.md) | `batch-processor` | experimental | Combines OTAP and OTLP payloads before forwarding. |
-| [`processor:content_router`](src/processors/content_router/README.md) | `content-router-processor` | experimental | Routes telemetry to named output ports based on content. |
-| [`processor:debug`](src/processors/debug_processor/README.md) | `debug-processor` | experimental | Observes passing data and emits diagnostic output. |
-| [`processor:durable_buffer`](src/processors/durable_buffer_processor/README.md) | `durable-buffer-processor` | experimental | Adds crash-resilient buffering through a local durable queue. |
-| [`processor:fanout`](src/processors/fanout_processor/README.md) | `fanout-processor` | experimental | Clones incoming data to multiple downstream destinations. |
-| [`processor:filter`](src/processors/filter_processor/README.md) | `filter-processor` | experimental | Drops logs or traces according to include and exclude rules. |
-| [`processor:log_sampling`](src/processors/log_sampling_processor/README.md) | `log-sampling-processor` | experimental | Reduces log volume by discarding selected log records. |
-| [`processor:partition`](src/processors/partition_processor/) | `partition-processor` | experimental | Splits by expression and adds a partition transport header. |
-| [`processor:retry`](src/processors/retry_processor/README.md) | `retry-processor` | experimental | Retries downstream delivery when it receives a NACK. |
-| [`processor:type_router`](src/processors/signal_type_router/README.md) | `signal-type-router-processor` | experimental | Routes OTAP payloads to output ports by signal type. |
-| [`processor:temporal_reaggregation`](src/processors/temporal_reaggregation_processor/README.md) | `temporal-reaggregation-processor` | experimental | Reaggregates high-frequency metrics into lower-frequency output. |
-| [`processor:transform`](src/processors/transform_processor/README.md) | `transform-processor` | experimental | Applies query-language transformations to OTAP batches. |
+| [`processor:attribute`](src/processors/attributes_processor/README.md) | Always enabled | experimental | Mutates OpenTelemetry attributes in OTAP batches. |
+| [`processor:batch`](src/processors/batch_processor/README.md) | Always enabled | experimental | Combines OTAP and OTLP payloads before forwarding. |
+| [`processor:content_router`](src/processors/content_router/README.md) | Always enabled | experimental | Routes telemetry to named output ports based on content. |
+| [`processor:debug`](src/processors/debug_processor/README.md) | Always enabled | experimental | Observes passing data and emits diagnostic output. |
+| [`processor:durable_buffer`](src/processors/durable_buffer_processor/README.md) | `durable-buffer` | experimental | Adds crash-resilient buffering through a local durable queue. |
+| [`processor:fanout`](src/processors/fanout_processor/README.md) | Always enabled | experimental | Clones incoming data to multiple downstream destinations. |
+| [`processor:filter`](src/processors/filter_processor/README.md) | Always enabled | experimental | Drops logs or traces according to include and exclude rules. |
+| [`processor:log_sampling`](src/processors/log_sampling_processor/README.md) | Always enabled | experimental | Reduces log volume by discarding selected log records. |
+| [`processor:partition`](src/processors/partition_processor/) | `partition` | experimental | Splits by expression and adds a partition transport header. |
+| [`processor:retry`](src/processors/retry_processor/README.md) | Always enabled | experimental | Retries downstream delivery when it receives a NACK. |
+| [`processor:type_router`](src/processors/signal_type_router/README.md) | Always enabled | experimental | Routes OTAP payloads to output ports by signal type. |
+| [`processor:temporal_reaggregation`](src/processors/temporal_reaggregation_processor/README.md) | Always enabled | experimental | Reaggregates high-frequency metrics into lower-frequency output. |
+| [`processor:transform`](src/processors/transform_processor/README.md) | `transform` | experimental | Applies query-language transformations to OTAP batches. |
 
 <!-- markdownlint-enable MD013 -->
 
@@ -97,41 +97,42 @@ For a behavioral processor taxonomy, see
 
 Exporters send data out of a pipeline.
 
-<!-- markdownlint-disable MD013 -->
-
 | Type | Feature | Stability | Description |
 | --- | --- | --- | --- |
-| [`exporter:console`](src/exporters/console_exporter/README.md) | `console-exporter` | experimental | Prints logs and pretty metrics; record JSON is logs-only. |
-| [`exporter:file`](src/exporters/file_exporter/README.md) | `file-exporter` | experimental | Writes signal-exclusive OTLP JSON Lines files. |
-| [`exporter:noop`](src/exporters/noop_exporter/README.md) | `noop-exporter` | experimental | Acknowledges and discards every received message. |
-| [`exporter:otap`](src/exporters/otap_exporter/README.md) | `otap-exporter` | experimental | Sends OTAP Arrow payloads over gRPC streams. |
-| [`exporter:otlp_grpc`](src/exporters/otlp_grpc_exporter/README.md) | `otlp-grpc-exporter` | experimental | Sends telemetry as unary OTLP/gRPC export requests. |
-| [`exporter:otlp_http`](src/exporters/otlp_http_exporter/README.md) | `otlp-http-exporter` | experimental | Sends telemetry to OTLP/HTTP endpoints. |
-| [`exporter:parquet`](src/exporters/parquet_exporter/README.md) | `parquet-exporter` | experimental | Writes OTAP batches as Parquet files. |
-| [`exporter:topic`](src/exporters/topic_exporter/README.md) | `topic-exporter` | experimental | Publishes data to a named in-process topic. |
-
-<!-- markdownlint-enable MD013 -->
+| [`exporter:console`](src/exporters/console_exporter/README.md) | Always enabled | experimental | Prints logs and pretty metrics; record JSON is logs-only. |
+| [`exporter:file`](src/exporters/file_exporter/README.md) | `file` | experimental | Writes signal-exclusive OTLP JSON Lines files. |
+| [`exporter:noop`](src/exporters/noop_exporter/README.md) | Always enabled | experimental | Acknowledges and discards every received message. |
+| [`exporter:otap`](src/exporters/otap_exporter/README.md) | `otap` | experimental | Sends OTAP Arrow payloads over gRPC streams. |
+| [`exporter:otlp_grpc`](src/exporters/otlp_grpc_exporter/README.md) | `otlp` | experimental | Sends telemetry as unary OTLP/gRPC export requests. |
+| [`exporter:otlp_http`](src/exporters/otlp_http_exporter/README.md) | `otlp` | experimental | Sends telemetry to OTLP/HTTP endpoints. |
+| [`exporter:parquet`](src/exporters/parquet_exporter/README.md) | `parquet` | experimental | Writes OTAP batches as Parquet files. |
+| [`exporter:topic`](src/exporters/topic_exporter/README.md) | `topic` | experimental | Publishes data to a named in-process topic. |
 
 ## Feature Aggregates
 
 - `core-nodes`: enables all core receivers, processors, and exporters.
 - `core-receivers`: enables all core receivers.
-- `core-processors`: enables all core processors.
+- `core-processors`: enables processors with optional dependency subtrees.
 - `core-exporters`: enables all core exporters.
 - `otap`: enables the OTAP receiver and exporter.
 - `otlp`: enables the OTLP receiver plus the OTLP gRPC and HTTP exporters.
 - `topic`: enables the in-process topic receiver and exporter.
 
-Capability aliases are convenience bundles. Use the exact leaf features from
-the tables above when a build needs only one protocol direction or transport.
+Features describe what the build includes rather than implementation
+directions. Each uses an unsuffixed name so future source or destination nodes
+can join it without changing the public feature contract.
 
 ## Maintenance Notes
 
-- Add a `<name>-receiver`, `<name>-processor`, or `<name>-exporter` feature for
-  every public node.
-- Add that feature to exactly one of `core-receivers`, `core-processors`, or
-  `core-exporters`. The `core-nodes` compatibility feature includes all three
-  category umbrellas.
+- Add or reuse an unsuffixed feature when excluding a node removes a meaningful
+  dependency or external integration surface.
+- Keep lightweight built-in routing, batching, filtering, debugging, and
+  observability nodes always enabled.
+- Keep `receiver:internal_telemetry` unconditional because every valid engine
+  configuration requires it for the engine observability pipeline.
+- When an integration has both source and destination nodes, gate all of them
+  with the same feature and list it in both relevant categories.
+- The `core-nodes` compatibility feature includes all three category umbrellas.
 - Gate the module declaration in the category's `mod.rs` with
   `#[cfg(feature = "<feature>")]`. This gates both compilation and the
   `linkme` factory registration inside the module.
@@ -141,8 +142,8 @@ the tables above when a build needs only one protocol direction or transport.
   to maintain than the dependency reduction justifies.
 - Forward every node and aggregate feature from the top-level `df_engine`
   package.
-- Add protocol capability aliases when multiple nodes form one user-facing
-  capability, while retaining the leaf features for precise selection.
+- Do not expose direction- or transport-specific features when the nodes share
+  the same integration dependency surface.
 - Add the component inventory annotation and baseline entry described in the
   [Component Inventory Guide](../../docs/component-inventory.md).
 - Any crate that depends on `otel-arrow-dfe-core-nodes` must make its selection

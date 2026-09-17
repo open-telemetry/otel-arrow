@@ -94,68 +94,66 @@ one_collect = { workspace = true, optional = true }
 tracepoint_decode = { workspace = true, optional = true }
 
 [features]
-# Keep these umbrella lists exhaustive. Every public node feature must appear in
-# exactly one category so `contrib-nodes` remains the complete contrib inventory.
+# Keep these umbrella lists exhaustive. Features can appear in both directional
+# categories when they intentionally include source and destination nodes.
 contrib-nodes = ["contrib-receivers", "contrib-processors", "contrib-exporters"]
 contrib-receivers = [
-    "etw-receiver",
-    "kafka-receiver",
-    "user_events-receiver",
+    "etw",
+    "kafka",
+    "user-events",
 ]
 contrib-processors = [
-    "condense-attributes-processor",
-    "recordset-kql-processor",
-    "resource-validator-processor",
+    "condense-attributes",
+    "recordset-kql",
+    "resource-validator",
 ]
 contrib-exporters = [
-    "azure-monitor-exporter",
-    "clickhouse-exporter",
-    "geneva-exporter",
-    "kafka-exporter",
+    "azure-monitor",
+    "clickhouse",
+    "geneva",
+    "kafka",
 ]
 
-# Protocol capability aliases. These are convenience bundles over the leaf
-# features below; consumers can still select one direction.
-kafka = ["kafka-receiver", "kafka-exporter"]
-
-# Receivers: gate the module in `src/receivers/mod.rs`, list the feature in
-# `contrib-receivers`, and activate component-specific dependencies with `dep:`.
-etw-receiver = ["dep:one_collect", "dep:humantime-serde"]
-kafka-receiver = [
+# Integrations with both sources and destinations.
+kafka = [
     "dep:otel-arrow-dfe-core-nodes",
-    "otel-arrow-dfe-core-nodes/syslog-cef-receiver",
+    # Kafka currently reuses the Syslog CEF parser. Upcoming codec extraction
+    # work will remove the need to include the full Syslog CEF receiver.
+    "otel-arrow-dfe-core-nodes/syslog-cef",
     "dep:rdkafka",
+    "dep:futures-channel",
+    "dep:futures-util",
+    "dep:xxhash-rust",
+    "dep:hex",
     "dep:smallvec",
     "dep:regex",
     "dep:tokio-util",
 ]
-user_events-receiver = [
+
+# Receivers.
+etw = ["dep:one_collect", "dep:humantime-serde"]
+user-events = [
     "dep:base64",
     "dep:chrono",
     "dep:humantime-serde",
     "dep:one_collect",
-]
-user_events-eventheader = [
-    "user_events-receiver",
     "dep:tracepoint_decode",
 ]
 
-# Processors: gate the module in `src/processors/mod.rs`, list the feature in
-# `contrib-processors`, and activate component-specific dependencies with `dep:`.
-condense-attributes-processor = []
-condense-attributes-processor-bench = ["condense-attributes-processor"]
-recordset-kql-processor = [
+# Processors.
+condense-attributes = []
+condense-attributes-bench = ["condense-attributes"]
+recordset-kql = [
     "dep:otel-arrow-contrib-data-engine-expressions",
     "dep:otel-arrow-contrib-data-engine-kql-parser",
     "dep:otel-arrow-contrib-data-engine-recordset",
     "dep:regex",
     "dep:chrono",
 ]
-resource-validator-processor = []
+resource-validator = []
 
-# Exporters: gate the module in `src/exporters/mod.rs`, list the feature in
-# `contrib-exporters`, and activate component-specific dependencies with `dep:`.
-azure-monitor-exporter = [
+# Exporters.
+azure-monitor = [
     "dep:opentelemetry-proto",
     "dep:reqwest",
     "dep:ahash",
@@ -169,7 +167,7 @@ azure-monitor-exporter = [
     "dep:ryu",
     "dep:urlencoding",
 ]
-clickhouse-exporter = [
+clickhouse = [
     "dep:clickhouse",
     "dep:clickhouse-ext-arrow",
     "dep:secrecy",
@@ -184,26 +182,18 @@ clickhouse-exporter = [
     "dep:itoa",
     "dep:ryu",
 ]
-clickhouse-exporter-bench = ["clickhouse-exporter"]
-geneva-exporter = [
+clickhouse-bench = ["clickhouse"]
+geneva = [
     "dep:geneva-uploader",
     "dep:opentelemetry-proto",
     "dep:url",
 ]
 geneva-certificate-auth = [
-    "geneva-exporter",
+    "geneva",
     "geneva-uploader/certificate-auth",
 ]
-kafka-exporter = [
-    "dep:rdkafka",
-    "dep:futures-channel",
-    "dep:futures-util",
-    "dep:xxhash-rust",
-    "dep:hex",
-    "dep:regex",
-]
 
-# Cross-cutting capabilities layered onto node features.
+# Cross-cutting integration support.
 aws = [
     "dep:aws-config",
     "dep:aws-msk-iam-sasl-signer",
@@ -245,48 +235,48 @@ tracelogging_dynamic.workspace = true
 name = "azure_monitor_transformer"
 path = "benches/exporters/azure_monitor_exporter/transformer.rs"
 harness = false
-required-features = ["azure-monitor-exporter"]
+required-features = ["azure-monitor"]
 
 [[bench]]
 name = "clickhouse_logs_transformer"
 path = "benches/exporters/clickhouse_exporter/logs_transformer.rs"
 harness = false
-required-features = ["clickhouse-exporter-bench"]
+required-features = ["clickhouse-bench"]
 
 [[bench]]
 name = "azure_monitor_gzip_batcher"
 path = "benches/exporters/azure_monitor_exporter/gzip_batcher.rs"
 harness = false
-required-features = ["azure-monitor-exporter"]
+required-features = ["azure-monitor"]
 
 [[bench]]
 name = "otlp_bridge_extend"
 path = "benches/processors/recordset_kql_processor/extend.rs"
 harness = false
-required-features = ["recordset-kql-processor"]
+required-features = ["recordset-kql"]
 
 [[bench]]
 name = "condense_attributes"
 path = "benches/processors/condense_attributes_processor.rs"
 harness = false
-required-features = ["condense-attributes-processor-bench"]
+required-features = ["condense-attributes-bench"]
 
 [[test]]
 name = "otlp_kql_recordset"
 path = "tests/processors/recordset_kql_processor/otlp_kql_recordset.rs"
-required-features = ["recordset-kql-processor"]
+required-features = ["recordset-kql"]
 
 [[example]]
 name = "mock_la_server"
 path = "examples/mock_la_server.rs"
-required-features = ["azure-monitor-exporter"]
+required-features = ["azure-monitor"]
 
 [[example]]
 name = "user_events_tracefs_producer"
 path = "src/receivers/user_events_receiver/examples/tracefs_producer.rs"
-required-features = ["user_events-receiver"]
+required-features = ["user-events"]
 
 [[example]]
 name = "user_events_eventheader_producer"
 path = "src/receivers/user_events_receiver/examples/eventheader_producer.rs"
-required-features = ["user_events-eventheader"]
+required-features = ["user-events"]

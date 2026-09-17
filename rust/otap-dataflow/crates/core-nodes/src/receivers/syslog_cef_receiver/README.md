@@ -5,7 +5,7 @@
 ## Metadata
 
 - Type: `receiver:syslog_cef` (`urn:otel:receiver:syslog_cef`)
-- Feature gate: Default
+- Feature gate: `syslog-cef`
 - Stability: Experimental
 
 ## Overview

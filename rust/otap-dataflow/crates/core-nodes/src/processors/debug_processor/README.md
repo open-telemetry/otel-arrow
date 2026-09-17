@@ -5,7 +5,7 @@
 ## Metadata
 
 - Type: `processor:debug` (`urn:otel:processor:debug`)
-- Feature gate: Default
+- Feature gate: Always enabled
 - Stability: Experimental
 
 ## Overview

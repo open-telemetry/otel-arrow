@@ -77,110 +77,68 @@ nix.workspace = true
 # Minimal consumers should use `default-features = false` and select exact nodes.
 default = ["core-nodes"]
 
-# Keep these umbrella lists exhaustive. Every public node feature must appear in
-# exactly one category so `core-nodes` remains the complete built-in inventory.
+# Keep these umbrella lists exhaustive. Features can appear in both directional
+# categories when they intentionally include source and destination nodes.
 core-nodes = ["core-receivers", "core-processors", "core-exporters"]
 core-receivers = [
-    "host-metrics-receiver",
-    "internal-telemetry-receiver",
-    "journald-receiver",
-    "otap-receiver",
-    "otlp-receiver",
-    "syslog-cef-receiver",
-    "topic-receiver",
+    "host-metrics",
+    "journald",
+    "otap",
+    "otlp",
+    "syslog-cef",
+    "topic",
 ]
 core-processors = [
-    "attributes-processor",
-    "batch-processor",
-    "content-router-processor",
-    "debug-processor",
-    "durable-buffer-processor",
-    "fanout-processor",
-    "filter-processor",
-    "log-sampling-processor",
-    "partition-processor",
-    "retry-processor",
-    "signal-type-router-processor",
-    "temporal-reaggregation-processor",
-    "transform-processor",
+    "durable-buffer",
+    "partition",
+    "transform",
 ]
 core-exporters = [
-    "console-exporter",
-    "file-exporter",
-    "noop-exporter",
-    "otap-exporter",
-    "otlp-grpc-exporter",
-    "otlp-http-exporter",
-    "parquet-exporter",
-    "topic-exporter",
+    "file",
+    "otap",
+    "otlp",
+    "parquet",
+    "topic",
 ]
 
-# Protocol capability aliases. These are convenience bundles over the leaf
-# features below; consumers can still select one direction or transport.
-otap = ["otap-receiver", "otap-exporter"]
-otlp = [
-    "otlp-receiver",
-    "otlp-grpc-exporter",
-    "otlp-http-exporter",
-]
-topic = ["topic-receiver", "topic-exporter"]
+# Integrations with both sources and destinations.
+otap = []
+otlp = []
+topic = []
 
-# Receivers: gate the module in `src/receivers/mod.rs`, list the feature in
-# `core-receivers`, and gate significant receiver-specific dependency subtrees.
-host-metrics-receiver = []
-internal-telemetry-receiver = []
-journald-receiver = []
-otap-receiver = []
-otlp-receiver = []
-syslog-cef-receiver = []
-topic-receiver = []
+# Receivers.
+host-metrics = []
+journald = []
+syslog-cef = []
 
-# Processors: gate the module in `src/processors/mod.rs`, list the feature in
-# `core-processors`, and gate significant processor-specific dependency subtrees.
-attributes-processor = []
-batch-processor = []
-content-router-processor = []
-debug-processor = []
-durable-buffer-processor = ["dep:otel-arrow-dfe-quiver"]
-fanout-processor = []
-filter-processor = []
-log-sampling-processor = []
-partition-processor = [
+# Processors.
+durable-buffer = ["dep:otel-arrow-dfe-quiver"]
+partition = [
     "dep:otel-arrow-dfe-query-engine",
     "dep:otel-arrow-dfe-query-engine-languages",
 ]
-retry-processor = []
-signal-type-router-processor = []
-temporal-reaggregation-processor = []
-transform-processor = [
+transform = [
     "dep:otel-arrow-contrib-data-engine-expressions",
     "dep:otel-arrow-contrib-data-engine-kql-parser",
     "dep:otel-arrow-dfe-query-engine",
     "dep:otel-arrow-dfe-query-engine-languages",
 ]
 
-# Exporters: gate the module in `src/exporters/mod.rs`, list the feature in
-# `core-exporters`, and gate significant exporter-specific dependency subtrees.
-console-exporter = []
-file-exporter = []
-noop-exporter = []
-otap-exporter = []
-otlp-grpc-exporter = []
-otlp-http-exporter = []
-parquet-exporter = [
+# Exporters.
+file = []
+parquet = [
     "dep:object_store",
     "dep:parquet",
 ]
-topic-exporter = []
 
-# Cross-cutting capabilities. These may imply a node when the capability has no
-# meaning on its own; for example, Azure storage implies the Parquet exporter.
+# Cross-cutting features may imply a node when they have no meaning on their
+# own; for example, Azure storage implies the Parquet exporter.
+# Azure Blob Storage backend for the Parquet exporter.
+azure = ["parquet", "otel-arrow-dfe-otap/azure"]
+bench = []
 # Enables Weaver-backed semantic-convention assertions in core-node tests.
 # Weaver remains a dev-dependency and is not part of the published crate graph.
 dev-tools = []
-# Azure Blob Storage backend for the Parquet exporter.
-azure = ["parquet-exporter", "otel-arrow-dfe-otap/azure"]
-bench = []
 
 [dev-dependencies]
 arrow-ipc.workspace = true
@@ -212,10 +170,10 @@ weaver_semconv.workspace = true
 name = "temporal_reaggregation_processor"
 harness = false
 path = "benches/temporal_reaggregation_processor/main.rs"
-required-features = ["bench", "temporal-reaggregation-processor"]
+required-features = ["bench"]
 
 [[bench]]
 name = "journald_decode"
 harness = false
 path = "benches/journald_decode/main.rs"
-required-features = ["bench", "journald-receiver"]
+required-features = ["bench", "journald"]
