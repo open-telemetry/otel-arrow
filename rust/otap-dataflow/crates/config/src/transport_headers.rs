@@ -305,6 +305,7 @@ impl TransportHeadersStorage {
 
 /// An ordered collection of captured transport headers.
 ///
+/// Insertion order and duplicate stored names are preserved.
 /// Captured names, values, and descriptors share one immutable packed byte
 /// block. Headers appended later remain in a small copy-on-write overlay.
 /// Cloning is a reference-count bump, while iteration returns borrowed views
@@ -820,6 +821,13 @@ mod tests {
         assert_eq!(tenants.len(), 2);
         assert_eq!(tenants[0].value.bytes, b"a");
         assert_eq!(tenants[1].value.bytes, b"c");
+    }
+
+    /// Scenario: transport header storage is embedded in pdata request context.
+    /// Guarantees: the collection remains pointer-width when empty or populated.
+    #[test]
+    fn transport_headers_remains_pointer_width() {
+        assert_eq!(size_of::<TransportHeaders>(), size_of::<usize>());
     }
 
     /// Scenario: matching and nonmatching packed headers are interleaved.

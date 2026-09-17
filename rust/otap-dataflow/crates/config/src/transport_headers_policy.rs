@@ -23,8 +23,11 @@ use std::hash::{Hash, Hasher};
 
 // -- Stats types --------------------------------------------------------------
 
-/// Counts headers skipped by capture limits.
-/// Reported by [`CompiledHeaderCapturePolicy::capture_from_pairs`].
+/// Counts matching headers skipped by capture limits.
+///
+/// Returned by the generic and native HTTP capture paths. Capture continues
+/// after a limit violation so callers can retain accepted headers and decide
+/// separately how to observe the skipped entries.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CaptureStats {
     /// Matching headers skipped because `max_entries` was already reached.
@@ -157,6 +160,10 @@ impl HeaderCapturePolicy {
     }
 
     /// Indexes capture rules and resolves original-name retention.
+    ///
+    /// Match names that are not valid HTTP header-name tokens remain available
+    /// to generic transports but are omitted from the native HTTP index because
+    /// they cannot occur in an [`HeaderMap`].
     #[must_use]
     pub fn compile(
         self,
@@ -230,7 +237,13 @@ impl CompiledHeaderCapturePolicy {
     /// Captures directly from HTTP headers using compiler-prepared native keys.
     ///
     /// This avoids string conversion, repeated validation, and case
-    /// normalization on the per-request path.
+    /// normalization on the per-request path. Repeated values are retained in
+    /// the order exposed by [`HeaderMap`], and the `result` collection is
+    /// cleared before populating.
+    ///
+    /// Returns `None` when all matching headers were captured successfully,
+    /// or `Some(CaptureStats)` when one or more matching headers were skipped
+    /// due to policy limits.
     pub fn capture_from_http_headers(
         &self,
         headers: &HeaderMap,
@@ -862,10 +875,10 @@ mod tests {
         );
     }
 
-    /// Scenario: HTTP headers are captured through compiler-prepared native names.
-    /// Guarantees: matching remains case-insensitive and preserves the configured stored name.
+    /// Scenario: an HTTP request repeats a header that is captured under a renamed entry.
+    /// Guarantees: native lookup preserves value order, the stored name, and normalized wire name.
     #[test]
-    fn capture_from_http_headers_uses_compiled_native_names() {
+    fn capture_from_http_headers_preserves_repeated_values_and_names() {
         let policy = HeaderCapturePolicy::new(
             CaptureDefaults::default(),
             vec![CaptureRule {
@@ -875,20 +888,94 @@ mod tests {
                 value_kind: None,
             }],
         )
-        .compile(|_| false);
-        let headers = HeaderMap::from_iter([(
+        .compile(|_| true);
+        let mut headers = HeaderMap::new();
+        _ = headers.append(
             HeaderName::from_static("x-tenant"),
             http::HeaderValue::from_static("acme"),
-        )]);
+        );
+        _ = headers.append(
+            HeaderName::from_static("x-tenant"),
+            http::HeaderValue::from_static("globex"),
+        );
         let mut captured = TransportHeaders::new();
 
         let stats = policy.capture_from_http_headers(&headers, &mut captured);
 
         assert!(stats.is_none());
-        let header = captured.get(0).expect("captured HTTP header");
-        assert_eq!(header.name, "TenantID");
-        assert_eq!(header.wire_name(), "TenantID");
-        assert_eq!(header.value.bytes, b"acme");
+        let captured: Vec<_> = captured.iter().collect();
+        assert_eq!(captured.len(), 2);
+        assert_eq!(captured[0].name, "TenantID");
+        assert_eq!(captured[0].wire_name(), "x-tenant");
+        assert_eq!(captured[0].value.bytes, b"acme");
+        assert_eq!(captured[1].name, "TenantID");
+        assert_eq!(captured[1].wire_name(), "x-tenant");
+        assert_eq!(captured[1].value.bytes, b"globex");
+    }
+
+    /// Scenario: repeated HTTP values cross both value-size and entry-count limits.
+    /// Guarantees: accepted values remain captured and each skipped category is counted.
+    #[test]
+    fn capture_from_http_headers_reports_limit_stats() {
+        let policy = HeaderCapturePolicy::new(
+            CaptureDefaults {
+                max_entries: 1,
+                max_value_bytes: 3,
+                ..CaptureDefaults::default()
+            },
+            vec![CaptureRule {
+                match_names: vec![context_name("x-tenant")],
+                store_as: None,
+                sensitive: false,
+                value_kind: None,
+            }],
+        )
+        .compile(|_| false);
+        let mut headers = HeaderMap::new();
+        for value in ["oversized", "ok", "end"] {
+            _ = headers.append(
+                HeaderName::from_static("x-tenant"),
+                http::HeaderValue::from_static(value),
+            );
+        }
+        let mut captured = TransportHeaders::new();
+
+        let stats = policy
+            .capture_from_http_headers(&headers, &mut captured)
+            .expect("capture limits exceeded");
+
+        assert_eq!(captured.len(), 1);
+        assert_eq!(captured.get(0).expect("accepted value").value.bytes, b"ok");
+        assert_eq!(stats.skipped_max_entries, 1);
+        assert_eq!(stats.skipped_name_too_long, 0);
+        assert_eq!(stats.skipped_value_too_long, 1);
+    }
+
+    /// Scenario: a generic capture rule uses a name that is not a valid HTTP token.
+    /// Guarantees: generic transports retain the rule while the native HTTP index omits it.
+    #[test]
+    fn capture_policy_omits_non_http_names_only_from_native_index() {
+        let policy = HeaderCapturePolicy::new(
+            CaptureDefaults::default(),
+            vec![CaptureRule {
+                match_names: vec![context_name("x@tenant")],
+                store_as: None,
+                sensitive: false,
+                value_kind: None,
+            }],
+        )
+        .compile(|_| false);
+        let mut captured = TransportHeaders::new();
+
+        let stats = policy.capture_from_pairs(
+            [("X@Tenant", b"acme".as_slice())].into_iter(),
+            &mut captured,
+        );
+
+        assert!(stats.is_none());
+        assert_eq!(captured.len(), 1);
+        assert_eq!(captured.get(0).expect("generic capture").name, "x@tenant");
+        assert!(policy.http_captures.is_empty());
     }
 
     /// Scenario: YAML sets capture limits, renaming, and sensitive headers.

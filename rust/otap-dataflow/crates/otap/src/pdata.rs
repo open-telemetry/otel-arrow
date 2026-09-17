@@ -133,10 +133,18 @@ pub struct AuthorizedIdentityEntries {
     packed: Option<Arc<PackedAuthorizedIdentity>>,
 }
 
+struct AuthorizedIdentityEntriesDebug<'a>(&'a AuthorizedIdentityEntries);
+
+impl fmt::Debug for AuthorizedIdentityEntriesDebug<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_list().entries(self.0.iter()).finish()
+    }
+}
+
 impl fmt::Debug for AuthorizedIdentityEntries {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("AuthorizedIdentityEntries")
-            .field("entries", &self.iter().collect::<Vec<_>>())
+            .field("entries", &AuthorizedIdentityEntriesDebug(self))
             .finish()
     }
 }
