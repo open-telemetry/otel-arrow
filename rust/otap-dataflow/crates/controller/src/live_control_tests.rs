@@ -5921,7 +5921,6 @@ fn request_shutdown_all_attempts_all_active_instances_before_returning_error() {
 /// observability sender is not called until every regular instance reports its
 /// terminal exit, preserving their final internal telemetry.
 #[test]
-#[test]
 fn request_shutdown_all_retries_failed_sends() {
     let runtime = test_runtime(&engine_config_with_pipeline(simple_pipeline_yaml()));
     let key0 = deployed_key("g1", "p1", 0, 0);
@@ -5992,6 +5991,82 @@ fn request_shutdown_all_retries_failed_sends() {
 }
 
 #[test]
+fn register_launched_instance_retries_failed_sends() {
+    let runtime = test_runtime(&engine_config_with_pipeline(simple_pipeline_yaml()));
+    let key0 = deployed_key("g1", "p1", 0, 0);
+
+    // First request global shutdown.
+    let _ = runtime.request_shutdown_all(5);
+
+    // Fails on the first try (during late registration), succeeds on the second try.
+    let (sender0, calls0) = retrying_admin_sender(1);
+
+    let context_bindings = {
+        let state = runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        Arc::clone(&state.latest_context_bindings)
+    };
+
+    let launched = LaunchedPipelineThread {
+        pipeline_key: key0.clone(),
+        control_sender: sender0,
+        context_bindings,
+        _marker: std::marker::PhantomData,
+    };
+
+    // Late registration should attempt to send shutdown immediately, which will fail.
+    runtime.register_launched_instance(launched);
+
+    // Sender should still be retained because it failed.
+    let state = runtime
+        .state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert!(
+        state
+            .runtime_instances
+            .get(&key0)
+            .and_then(|instance| instance.control_sender.as_ref())
+            .is_some(),
+        "failed late-registration shutdown send should retain control sender"
+    );
+    drop(state);
+
+    // Second attempt via explicit request_shutdown_all should succeed.
+    runtime
+        .request_shutdown_all(5)
+        .expect("retry should succeed");
+
+    // Sender should now be released.
+    let state = runtime
+        .state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert!(
+        state
+            .runtime_instances
+            .get(&key0)
+            .and_then(|instance| instance.control_sender.as_ref())
+            .is_none(),
+        "successful shutdown send should release control sender"
+    );
+    drop(state);
+
+    // Should have been called twice.
+    assert_eq!(
+        *calls0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        vec![
+            "global shutdown (late registration)".to_owned(),
+            "global shutdown".to_owned()
+        ]
+    );
+}
+
+#[test]
 fn register_launched_instance_respects_global_shutdown_timeout() {
     let runtime = test_runtime(&engine_config_with_pipeline(simple_pipeline_yaml()));
     let key0 = deployed_key("g1", "p1", 0, 0);
@@ -6032,6 +6107,7 @@ fn register_launched_instance_respects_global_shutdown_timeout() {
     );
 }
 
+#[test]
 fn request_shutdown_all_stops_observability_after_regular_instances_exit() {
     let runtime = test_runtime(&engine_config_with_pipeline(simple_pipeline_yaml()));
     let regular_key0 = deployed_key("g1", "p1", 0, 0);

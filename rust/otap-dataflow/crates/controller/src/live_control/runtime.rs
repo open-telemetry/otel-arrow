@@ -197,6 +197,8 @@ impl<
                     error = ?err,
                     message = "Failed to dispatch global shutdown to pipeline instance.",
                 );
+            } else {
+                self.release_instance_control_sender(&launched.pipeline_key);
             }
         }
 
