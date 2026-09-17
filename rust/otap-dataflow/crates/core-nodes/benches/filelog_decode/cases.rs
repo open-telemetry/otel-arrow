@@ -7,7 +7,7 @@ use criterion::{BenchmarkId, Criterion, Throughput};
 
 use super::{
     Encoding, OnDecodeError,
-    decoder::{DecodeEvent, DecodedValue, StreamDecoder},
+    decoder::{DecodeEvent, DecodeStart, DecodedValue, StreamDecoder},
 };
 
 #[derive(Debug, Default, Eq, PartialEq)]
@@ -50,7 +50,7 @@ impl Scan {
 }
 
 fn scan(data: &[u8], encoding: Encoding, policy: OnDecodeError, chunk: usize) -> Scan {
-    let mut decoder = StreamDecoder::new(encoding, policy, 0, true);
+    let mut decoder = StreamDecoder::new(encoding, policy, DecodeStart::NewStream);
     let mut result = Scan::default();
     for input in data.chunks(chunk) {
         let mut used = 0;
@@ -82,7 +82,8 @@ fn scan(data: &[u8], encoding: Encoding, policy: OnDecodeError, chunk: usize) ->
 // Experimental caller batching, not a decoder API. Its consumer elects to stop
 // only after `capacity` units; a framer needing an earlier stop cannot use it.
 fn buffered_scan(data: &[u8], capacity: usize) -> Scan {
-    let mut decoder = StreamDecoder::new(Encoding::Utf8, OnDecodeError::Fail, 0, true);
+    let mut decoder =
+        StreamDecoder::new(Encoding::Utf8, OnDecodeError::Fail, DecodeStart::NewStream);
     let mut result = Scan::default();
     let mut output = [None; 64];
     let mut used = 0;

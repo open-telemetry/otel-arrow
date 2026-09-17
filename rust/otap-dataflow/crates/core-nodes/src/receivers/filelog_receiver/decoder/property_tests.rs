@@ -7,7 +7,7 @@ use rand::{RngExt, SeedableRng, rngs::StdRng};
 
 use super::super::DecoderState;
 use super::{
-    DecodeError, DecodeEvent, DecodedValue, Encoding, OnDecodeError, StreamDecoder,
+    DecodeError, DecodeEvent, DecodeStart, DecodedValue, Encoding, OnDecodeError, StreamDecoder,
     decode_all_partitions, unit,
 };
 
@@ -66,7 +66,12 @@ fn observe(
     chunks: &[usize],
     finish: bool,
 ) -> Observation {
-    let mut decoder = StreamDecoder::new(encoding, policy, start, true);
+    let decode_start = if start == 0 {
+        DecodeStart::NewStream
+    } else {
+        DecodeStart::ResumeAt(start)
+    };
+    let mut decoder = StreamDecoder::new(encoding, policy, decode_start);
     let mut events = Vec::new();
     let mut error = None;
     let mut used = 0;
@@ -180,7 +185,11 @@ fn every_unicode_scalar_decodes_with_its_original_width() {
         };
         let mut utf8 = [0; 4];
         let bytes = value.encode_utf8(&mut utf8).as_bytes();
-        let mut decoder = StreamDecoder::new(Encoding::Utf8, OnDecodeError::Fail, 11, false);
+        let mut decoder = StreamDecoder::new(
+            Encoding::Utf8,
+            OnDecodeError::Fail,
+            DecodeStart::ResumeAt(11),
+        );
         let step = decoder.next(11, bytes).expect("encoded scalar is valid");
         assert_eq!(step.consumed, bytes.len());
         assert_eq!(
@@ -201,7 +210,8 @@ fn every_unicode_scalar_decodes_with_its_original_width() {
                 bytes[index * 2..index * 2 + 2].copy_from_slice(&encoded);
             }
             let bytes = &bytes[..units.len() * 2];
-            let mut decoder = StreamDecoder::new(encoding, OnDecodeError::Fail, 11, false);
+            let mut decoder =
+                StreamDecoder::new(encoding, OnDecodeError::Fail, DecodeStart::ResumeAt(11));
             let step = decoder
                 .next(11, bytes)
                 .expect("encoded UTF-16 scalar is valid");
@@ -249,7 +259,7 @@ fn additional_unicode_maximal_subpart_vectors_are_independent() {
                 })
                 .collect();
             assert_eq!(
-                decode_all_partitions(Encoding::Utf8, policy, false, data),
+                decode_all_partitions(Encoding::Utf8, policy, DecodeStart::ResumeAt(0), data),
                 expected
             );
         }
@@ -262,7 +272,8 @@ fn additional_unicode_maximal_subpart_vectors_are_independent() {
 fn all_ascii_bytes_have_independent_expected_outcomes() {
     for byte in 0..=255 {
         for policy in POLICIES {
-            let mut decoder = StreamDecoder::new(Encoding::Ascii, policy, 29, false);
+            let mut decoder =
+                StreamDecoder::new(Encoding::Ascii, policy, DecodeStart::ResumeAt(29));
             let result = decoder.next(29, &[byte]);
             if byte > 0x7f && policy == OnDecodeError::Fail {
                 let failure = result.expect_err("non-ASCII byte");
@@ -411,7 +422,8 @@ fn long_discard_scan_retains_constant_state() {
     assert!(!mem::needs_drop::<StreamDecoder>());
     assert!(size_of::<StreamDecoder>() <= 192);
     let scratch = [b'x'; 4096];
-    let mut decoder = StreamDecoder::new(Encoding::Utf8, OnDecodeError::Fail, 0, true);
+    let mut decoder =
+        StreamDecoder::new(Encoding::Utf8, OnDecodeError::Fail, DecodeStart::NewStream);
     for _ in 0..1024 {
         let mut used = 0;
         while used < scratch.len() {

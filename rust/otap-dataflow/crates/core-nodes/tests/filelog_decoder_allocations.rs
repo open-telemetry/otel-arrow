@@ -6,7 +6,7 @@
 use std::{hint::black_box, mem};
 
 use otel_arrow_dfe_core_nodes::receivers::filelog_receiver::decoder::{
-    Encoding, OnDecodeError, StreamDecoder,
+    DecodeStart, Encoding, OnDecodeError, StreamDecoder,
 };
 
 #[global_allocator]
@@ -66,7 +66,7 @@ fn filelog_decoder_heap_allocation_is_zero() {
             OnDecodeError::Fail,
         ] {
             for chunk in [1, scratch.len()] {
-                let mut decoder = StreamDecoder::new(encoding, policy, 0, true);
+                let mut decoder = StreamDecoder::new(encoding, policy, DecodeStart::NewStream);
                 for _ in 0..128 {
                     if !discard(&mut decoder, black_box(&scratch), chunk) {
                         break;
@@ -84,7 +84,7 @@ fn filelog_decoder_heap_allocation_is_zero() {
         OnDecodeError::Replace,
         OnDecodeError::Fail,
     ] {
-        let mut decoder = StreamDecoder::new(Encoding::Utf8, policy, 0, true);
+        let mut decoder = StreamDecoder::new(Encoding::Utf8, policy, DecodeStart::NewStream);
         assert!(discard(&mut decoder, &[0xef, 0xbb], 1));
         let _ = black_box(decoder.finish_incomplete_unit());
         let _ = black_box(decoder.finish_incomplete_unit());

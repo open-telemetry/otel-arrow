@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::{
-    DecodeError, DecodeEvent, DecodedValue, Encoding, OnDecodeError, SourceRange, StreamDecoder,
-    decode_chunks, unit,
+    DecodeError, DecodeEvent, DecodeStart, DecodedValue, Encoding, OnDecodeError, SourceRange,
+    StreamDecoder, decode_chunks, unit,
 };
 
 /// Scenario: A consumer stops at LF while later malformed input was offered in the same source turn.
@@ -11,7 +11,8 @@ use super::{
 #[test]
 fn complete_record_precedes_later_error() {
     let input = b"ok\r\n\xff";
-    let mut decoder = StreamDecoder::new(Encoding::Utf8, OnDecodeError::Fail, 0, true);
+    let mut decoder =
+        StreamDecoder::new(Encoding::Utf8, OnDecodeError::Fail, DecodeStart::NewStream);
     let mut body = String::new();
     let mut used = 0;
     loop {
@@ -51,7 +52,11 @@ fn complete_record_precedes_later_error() {
 #[test]
 fn consumer_can_stop_at_an_exact_safe_source_boundary() {
     let data = [0x3d, 0xd8, 0x00, 0xde, 0x00, 0xdc];
-    let mut decoder = StreamDecoder::new(Encoding::Utf16Le, OnDecodeError::Fail, 0, true);
+    let mut decoder = StreamDecoder::new(
+        Encoding::Utf16Le,
+        OnDecodeError::Fail,
+        DecodeStart::NewStream,
+    );
     let step = decoder.next(0, &data).expect("complete pair");
     let event = step.event.expect("pair event");
     assert_eq!(
@@ -75,7 +80,7 @@ fn discard_scan_does_not_hide_later_malformed_units() {
         OnDecodeError::Replace,
         OnDecodeError::Fail,
     ] {
-        let mut decoder = StreamDecoder::new(Encoding::Utf8, policy, 0, true);
+        let mut decoder = StreamDecoder::new(Encoding::Utf8, policy, DecodeStart::NewStream);
         let mut kept = [0; 4];
         let mut kept_len = 0;
         let mut used = 0;
@@ -126,7 +131,11 @@ fn discard_scan_does_not_hide_later_malformed_units() {
 #[test]
 fn clean_first_fragment_has_exact_raw_evidence() {
     let input = [b'A', 0, b'B', 0, 0x00, 0xdc, b'\n', 0];
-    let mut decoder = StreamDecoder::new(Encoding::Utf16Le, OnDecodeError::PreserveRaw, 0, false);
+    let mut decoder = StreamDecoder::new(
+        Encoding::Utf16Le,
+        OnDecodeError::PreserveRaw,
+        DecodeStart::ResumeAt(0),
+    );
     let mut first_fragment = [0; 4];
     for start in [0, 2] {
         let step = decoder
@@ -160,27 +169,33 @@ fn clean_first_fragment_has_exact_raw_evidence() {
 /// Guarantees: BOM probes, scalar prefixes and surrogate lookahead own their pending bytes and resume without redecoding.
 #[test]
 fn pause_and_input_buffer_reuse_preserve_pending_ownership() {
-    let cases: &[(Encoding, bool, &[u8], usize, char)] = &[
-        (Encoding::Utf8, false, &[0xe2, 0x82, 0xac], 1, '\u{20ac}'),
+    let cases: &[(Encoding, DecodeStart, &[u8], usize, char)] = &[
+        (
+            Encoding::Utf8,
+            DecodeStart::ResumeAt(0),
+            &[0xe2, 0x82, 0xac],
+            1,
+            '\u{20ac}',
+        ),
         (
             Encoding::Utf16Le,
-            false,
+            DecodeStart::ResumeAt(0),
             &[0x3d, 0xd8, 0x00, 0xde],
             3,
             '\u{1f600}',
         ),
         (
             Encoding::Utf16Be,
-            false,
+            DecodeStart::ResumeAt(0),
             &[0xd8, 0x3d, 0xde, 0x00],
             2,
             '\u{1f600}',
         ),
     ];
-    for &(encoding, new_stream, bytes, cut, value) in cases {
+    for &(encoding, decode_start, bytes, cut, value) in cases {
         let mut scratch = [0; 4];
         scratch[..cut].copy_from_slice(&bytes[..cut]);
-        let mut decoder = StreamDecoder::new(encoding, OnDecodeError::Fail, 0, new_stream);
+        let mut decoder = StreamDecoder::new(encoding, OnDecodeError::Fail, decode_start);
         let first = decoder.next(0, &scratch[..cut]).expect("partial read");
         assert_eq!(first.consumed, cut);
         assert!(first.event.is_none());
@@ -206,7 +221,8 @@ fn pause_and_input_buffer_reuse_preserve_pending_ownership() {
         assert_eq!(step.event.expect("owned result").source().as_slice(), bytes);
     }
     let mut scratch = [0xef, 0xbb, 0];
-    let mut decoder = StreamDecoder::new(Encoding::Utf8, OnDecodeError::Fail, 0, true);
+    let mut decoder =
+        StreamDecoder::new(Encoding::Utf8, OnDecodeError::Fail, DecodeStart::NewStream);
     assert!(
         decoder
             .next(0, &scratch[..2])
@@ -228,7 +244,12 @@ fn pause_and_input_buffer_reuse_preserve_pending_ownership() {
 #[test]
 fn text_controls_and_embedded_lf_byte_are_not_normalized() {
     let bytes = [0x0a, 0x01, 0x00, 0x00, 0x0d, 0x00, 0x0a, 0x00];
-    let (events, _) = decode_chunks(Encoding::Utf16Le, OnDecodeError::Fail, 0, true, &[&bytes]);
+    let (events, _) = decode_chunks(
+        Encoding::Utf16Le,
+        OnDecodeError::Fail,
+        DecodeStart::NewStream,
+        &[&bytes],
+    );
     assert_eq!(
         events,
         vec![
@@ -281,7 +302,7 @@ fn clean_line_feed_reconstruction_matches_continuous_decoding() {
         ] {
             for chunk in [1, 2, 3, data.len()] {
                 let run = |reconstruct: bool| {
-                    let mut decoder = StreamDecoder::new(encoding, policy, 0, true);
+                    let mut decoder = StreamDecoder::new(encoding, policy, DecodeStart::NewStream);
                     let mut events = Vec::new();
                     let mut used = 0;
                     let mut yields = 0;
@@ -310,7 +331,9 @@ fn clean_line_feed_reconstruction_matches_continuous_decoding() {
                                         yields += 1;
                                         if reconstruct {
                                             decoder = StreamDecoder::new(
-                                                encoding, policy, boundary, false,
+                                                encoding,
+                                                policy,
+                                                DecodeStart::ResumeAt(boundary),
                                             );
                                         }
                                     }

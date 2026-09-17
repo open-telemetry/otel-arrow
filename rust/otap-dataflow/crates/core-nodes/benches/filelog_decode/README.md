@@ -249,4 +249,4 @@ No production, zero-overhead, cross-platform, ARM or end-to-end throughput
 claim follows from this measurement. Qualify the integrated framer/receiver
 again with its actual stop decisions, output copies and resource bounds.
 
-[module]: ../../src/receivers/filelog_receiver/README.md
+[module]: ../../src/receivers/filelog_receiver/docs/decoder.md

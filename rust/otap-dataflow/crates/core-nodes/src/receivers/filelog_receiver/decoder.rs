@@ -5,7 +5,7 @@
 //!
 //! Each call returns at most one source unit, so a caller can stop at a framing
 //! boundary before decoding later input. Empty input drains buffered events,
-//! never finalizes an incomplete unit. See the sibling README for the complete
+//! never finalizes an incomplete unit. See `docs/decoder.md` for the complete
 //! ownership, malformed-unit grouping, and caller-authorized boundary contract.
 
 use std::{fmt, str};
@@ -28,6 +28,10 @@ pub enum Encoding {
 }
 
 /// Decoder-side malformed-input policy, independent of YAML configuration.
+///
+/// - [`Self::PreserveRaw`] prioritizes fidelity.
+/// - [`Self::Replace`] prioritizes textual availability.
+/// - [`Self::Fail`] prioritizes strict validation.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum OnDecodeError {
     /// Return malformed evidence and a replacement shadow scalar.
@@ -202,6 +206,17 @@ pub struct DecodeFailure {
     pub error: DecodeError,
 }
 
+/// Starting position and initial byte-order-mark handling for a decoder.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DecodeStart {
+    /// Start at offset zero and inspect the initial BOM for text encodings.
+    /// Raw encoding never probes or strips a BOM.
+    NewStream,
+    /// Resume at the exact caller-authorized offset without BOM probing,
+    /// including when the offset is zero.
+    ResumeAt(u64),
+}
+
 /// A constant-state, one-event-at-a-time decoder for a single source stream.
 ///
 /// Owns no heap allocations or input borrows. Keep this object across empty
@@ -222,21 +237,21 @@ impl StreamDecoder {
     /// Maximum fresh input bytes consumed by one call, including lookahead.
     pub const MAX_INPUT_BYTES_PER_CALL: usize = 4;
 
-    /// Creates a decoder at `source_offset`.
+    /// Creates a decoder at the specified starting position.
     ///
-    /// Byte-order-mark probing is enabled only when `new_stream_start` is
-    /// true and `source_offset` is zero.
+    /// [`DecodeStart::NewStream`] starts at zero and enables byte-order-mark
+    /// probing for text encodings. [`DecodeStart::ResumeAt`] disables probing,
+    /// even at zero.
     ///
-    /// At any other position, decoding starts exactly at the supplied offset:
+    /// When resuming, decoding starts exactly at the supplied offset:
     /// there is no alignment, rewind or search for a character boundary. The
     /// caller must establish a safe resume boundary or intentional exclusion.
     #[must_use]
-    pub fn new(
-        encoding: Encoding,
-        policy: OnDecodeError,
-        source_offset: u64,
-        new_stream_start: bool,
-    ) -> Self {
+    pub fn new(encoding: Encoding, policy: OnDecodeError, start: DecodeStart) -> Self {
+        let source_offset = match start {
+            DecodeStart::NewStream => 0,
+            DecodeStart::ResumeAt(offset) => offset,
+        };
         let state = match encoding {
             Encoding::Utf8 => DecoderState::Utf8(Utf8State::default()),
             Encoding::Ascii => DecoderState::Ascii,
@@ -244,7 +259,7 @@ impl StreamDecoder {
             Encoding::Utf16Be => DecoderState::Utf16(Utf16State::new(Endian::Big)),
             Encoding::Raw => DecoderState::Raw,
         };
-        let bom_probe = (new_stream_start && source_offset == 0 && encoding != Encoding::Raw)
+        let bom_probe = (start == DecodeStart::NewStream && encoding != Encoding::Raw)
             .then(|| BomProbe::new(source_offset, encoding));
 
         Self {

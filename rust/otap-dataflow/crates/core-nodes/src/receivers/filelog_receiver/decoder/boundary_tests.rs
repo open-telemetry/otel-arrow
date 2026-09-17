@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::{
-    DecodeError, DecodeEvent, DecodeFailure, DecodedValue, Encoding, OnDecodeError, SourceBytes,
-    SourceRange, StreamDecoder, decode_all_partitions, decode_chunks, drain_events, encoded_a,
-    unit,
+    DecodeError, DecodeEvent, DecodeFailure, DecodeStart, DecodedValue, Encoding, OnDecodeError,
+    SourceBytes, SourceRange, StreamDecoder, decode_all_partitions, decode_chunks, drain_events,
+    encoded_a, unit,
 };
 
 const POLICIES: [OnDecodeError; 3] = [
@@ -42,7 +42,7 @@ fn assert_terminal(decoder: &mut StreamDecoder, error: DecodeError) {
 fn empty_stream_does_not_manufacture_output_or_reset_bom_state() {
     for encoding in TEXT_ENCODINGS.into_iter().chain([Encoding::Raw]) {
         for policy in POLICIES {
-            let mut decoder = StreamDecoder::new(encoding, policy, 0, true);
+            let mut decoder = StreamDecoder::new(encoding, policy, DecodeStart::NewStream);
             for _ in 0..3 {
                 let step = decoder.next(0, &[]).expect("empty input");
                 assert_eq!(step.consumed, 0);
@@ -70,7 +70,8 @@ fn eligible_partial_bom_is_atomic_in_every_text_encoding() {
     for encoding in TEXT_ENCODINGS {
         for policy in POLICIES {
             for prefix in [&[0xef][..], &[0xef, 0xbb], &[0xff], &[0xfe]] {
-                let (events, mut decoder) = decode_chunks(encoding, policy, 0, true, &[prefix]);
+                let (events, mut decoder) =
+                    decode_chunks(encoding, policy, DecodeStart::NewStream, &[prefix]);
                 assert!(events.is_empty());
                 for _ in 0..3 {
                     let step = decoder
@@ -143,7 +144,8 @@ fn eligible_encoding_tails_cover_their_exact_source_range() {
     ];
     for &(encoding, tail) in cases {
         for policy in POLICIES {
-            let (events, mut decoder) = decode_chunks(encoding, policy, 17, false, &[tail]);
+            let (events, mut decoder) =
+                decode_chunks(encoding, policy, DecodeStart::ResumeAt(17), &[tail]);
             assert!(events.is_empty());
             assert_eq!(decoder.pending_source_start(), Some(17));
             assert_eq!(decoder.highest_delivered_source_boundary(), 17);
@@ -196,7 +198,7 @@ fn resolved_utf16_tails_allow_clean_continuation() {
     ] {
         for (tail, tail_end, a_end) in [(&[0xff][..], 18, 20), (high_tail.as_slice(), 20, 22)] {
             for policy in [OnDecodeError::PreserveRaw, OnDecodeError::Replace] {
-                let mut decoder = StreamDecoder::new(encoding, policy, 17, false);
+                let mut decoder = StreamDecoder::new(encoding, policy, DecodeStart::ResumeAt(17));
                 assert_state(&decoder, 17, 17, None);
 
                 let step = decoder.next(17, tail).expect("incomplete tail");
@@ -269,7 +271,7 @@ fn queued_utf16_units_must_be_drained_before_completion() {
         for next_unit in [valid, high] {
             for policy in [OnDecodeError::PreserveRaw, OnDecodeError::Replace] {
                 let data = [high[0], high[1], next_unit[0], next_unit[1]];
-                let mut decoder = StreamDecoder::new(encoding, policy, 0, false);
+                let mut decoder = StreamDecoder::new(encoding, policy, DecodeStart::ResumeAt(0));
                 let first = decoder.next(0, &data).expect("malformed first surrogate");
                 assert_eq!(first.consumed, 4);
                 assert_eq!(
@@ -314,7 +316,8 @@ fn queued_utf16_units_must_be_drained_before_completion() {
 fn divergent_bom_replay_must_be_drained_before_completion() {
     let data = [0xef, 0xbb, b'X'];
     for encoding in [Encoding::Utf8, Encoding::Ascii, Encoding::Utf16Le] {
-        let mut decoder = StreamDecoder::new(encoding, OnDecodeError::Replace, 0, true);
+        let mut decoder =
+            StreamDecoder::new(encoding, OnDecodeError::Replace, DecodeStart::NewStream);
         let first = decoder.next(0, &data).expect("divergent BOM");
         assert_eq!(first.consumed, 3);
         let mut events = vec![first.event.expect("first unit")];
@@ -355,21 +358,66 @@ fn divergent_bom_replay_must_be_drained_before_completion() {
 /// Guarantees: Failures report exact consumption and evidence, never advance delivery, and cannot be retried past.
 #[test]
 fn fatal_decode_paths_latch_error_and_consumption() {
-    let cases: &[(Encoding, bool, &[u8], usize, usize)] = &[
-        (Encoding::Utf8, false, &[0xff], 1, 1),
-        (Encoding::Ascii, false, &[0xff], 1, 1),
-        (Encoding::Utf8, false, &[0xe2, 0x82, b'A'], 2, 2),
-        (Encoding::Utf16Le, false, &[0x00, 0xdc], 2, 2),
-        (Encoding::Utf16Be, false, &[0xdc, 0x00], 2, 2),
-        (Encoding::Utf16Le, false, &[0x00, 0xd8, b'A', 0], 4, 2),
-        (Encoding::Utf16Be, false, &[0xd8, 0x00, 0, b'A'], 4, 2),
-        (Encoding::Ascii, true, &[0xef, 0xbb, b'X'], 3, 1),
-        (Encoding::Utf16Be, true, &[0xef, 0xbb, 0xbf], 3, 3),
-        (Encoding::Utf8, true, &[0xff, 0xfe], 2, 2),
+    let cases: &[(Encoding, DecodeStart, &[u8], usize, usize)] = &[
+        (Encoding::Utf8, DecodeStart::ResumeAt(10), &[0xff], 1, 1),
+        (Encoding::Ascii, DecodeStart::ResumeAt(10), &[0xff], 1, 1),
+        (
+            Encoding::Utf8,
+            DecodeStart::ResumeAt(10),
+            &[0xe2, 0x82, b'A'],
+            2,
+            2,
+        ),
+        (
+            Encoding::Utf16Le,
+            DecodeStart::ResumeAt(10),
+            &[0x00, 0xdc],
+            2,
+            2,
+        ),
+        (
+            Encoding::Utf16Be,
+            DecodeStart::ResumeAt(10),
+            &[0xdc, 0x00],
+            2,
+            2,
+        ),
+        (
+            Encoding::Utf16Le,
+            DecodeStart::ResumeAt(10),
+            &[0x00, 0xd8, b'A', 0],
+            4,
+            2,
+        ),
+        (
+            Encoding::Utf16Be,
+            DecodeStart::ResumeAt(10),
+            &[0xd8, 0x00, 0, b'A'],
+            4,
+            2,
+        ),
+        (
+            Encoding::Ascii,
+            DecodeStart::NewStream,
+            &[0xef, 0xbb, b'X'],
+            3,
+            1,
+        ),
+        (
+            Encoding::Utf16Be,
+            DecodeStart::NewStream,
+            &[0xef, 0xbb, 0xbf],
+            3,
+            3,
+        ),
+        (Encoding::Utf8, DecodeStart::NewStream, &[0xff, 0xfe], 2, 2),
     ];
-    for &(encoding, new_stream, data, consumed, malformed_len) in cases {
-        let start = if new_stream { 0 } else { 10 };
-        let mut decoder = StreamDecoder::new(encoding, OnDecodeError::Fail, start, new_stream);
+    for &(encoding, decode_start, data, consumed, malformed_len) in cases {
+        let start = match decode_start {
+            DecodeStart::NewStream => 0,
+            DecodeStart::ResumeAt(offset) => offset,
+        };
+        let mut decoder = StreamDecoder::new(encoding, OnDecodeError::Fail, decode_start);
         let failure = decoder.next(start, data).expect_err("malformed unit");
         let error = DecodeError::FatalMalformed {
             range: SourceRange {
@@ -392,7 +440,11 @@ fn fatal_decode_paths_latch_error_and_consumption() {
 /// Guarantees: Zero current-call consumption does not lose the prior range or authorize skipping the valid successor.
 #[test]
 fn fatal_incomplete_prefix_does_not_consume_valid_successor() {
-    let mut decoder = StreamDecoder::new(Encoding::Utf8, OnDecodeError::Fail, 100, false);
+    let mut decoder = StreamDecoder::new(
+        Encoding::Utf8,
+        OnDecodeError::Fail,
+        DecodeStart::ResumeAt(100),
+    );
     assert!(
         decoder
             .next(100, &[0xe2, 0x82])
@@ -421,7 +473,11 @@ fn fatal_incomplete_prefix_does_not_consume_valid_successor() {
 #[test]
 fn offset_overflow_is_immediate_and_sticky_without_wrapping() {
     for encoding in [Encoding::Utf8, Encoding::Ascii, Encoding::Raw] {
-        let mut decoder = StreamDecoder::new(encoding, OnDecodeError::Replace, u64::MAX - 1, false);
+        let mut decoder = StreamDecoder::new(
+            encoding,
+            OnDecodeError::Replace,
+            DecodeStart::ResumeAt(u64::MAX - 1),
+        );
         let step = decoder
             .next(u64::MAX - 1, b"AB")
             .expect("last representable byte");
@@ -439,7 +495,8 @@ fn offset_overflow_is_immediate_and_sticky_without_wrapping() {
         ] {
             for available in 1..4 {
                 let start = u64::MAX - available;
-                let mut decoder = StreamDecoder::new(encoding, policy, start, false);
+                let mut decoder =
+                    StreamDecoder::new(encoding, policy, DecodeStart::ResumeAt(start));
                 let failure = decoder
                     .next(start, data)
                     .expect_err("unit crosses offset ceiling");
@@ -454,11 +511,12 @@ fn offset_overflow_is_immediate_and_sticky_without_wrapping() {
 }
 
 /// Scenario: BOM-shaped content follows a pause or an explicit new-stream reconstruction.
-/// Guarantees: Only reconstruction at offset zero re-enables stripping; resume never rewinds or aligns the supplied offset.
+/// Guarantees: NewStream re-enables stripping; ResumeAt preserves BOM content even at zero and never aligns the offset.
 #[test]
 fn new_stream_reset_is_distinct_from_pause_and_resume() {
     let bom = [0xef, 0xbb, 0xbf];
-    let mut decoder = StreamDecoder::new(Encoding::Utf8, OnDecodeError::Fail, 0, true);
+    let mut decoder =
+        StreamDecoder::new(Encoding::Utf8, OnDecodeError::Fail, DecodeStart::NewStream);
     assert!(matches!(
         decoder.next(0, &bom).expect("initial BOM").event,
         Some(DecodeEvent::StrippedBom { .. })
@@ -468,13 +526,17 @@ fn new_stream_reset_is_distinct_from_pause_and_resume() {
         decoder.next(3, &bom).expect("ordinary content").event,
         Some(unit(3, &bom, DecodedValue::Scalar('\u{feff}'), false))
     );
-    decoder = StreamDecoder::new(Encoding::Utf8, OnDecodeError::Fail, 0, true);
+    decoder = StreamDecoder::new(Encoding::Utf8, OnDecodeError::Fail, DecodeStart::NewStream);
     assert!(matches!(
         decoder.next(0, &bom).expect("explicit new stream").event,
         Some(DecodeEvent::StrippedBom { .. })
     ));
     for start in [0, 3, 91] {
-        let mut resumed = StreamDecoder::new(Encoding::Utf16Le, OnDecodeError::Fail, start, false);
+        let mut resumed = StreamDecoder::new(
+            Encoding::Utf16Le,
+            OnDecodeError::Fail,
+            DecodeStart::ResumeAt(start),
+        );
         assert_eq!(
             resumed
                 .next(start, &[0xff, 0xfe])
@@ -497,7 +559,7 @@ fn bom_recognizer_is_explicit_and_does_not_reject_noncharacters() {
     let events = decode_all_partitions(
         Encoding::Utf16Le,
         OnDecodeError::Fail,
-        true,
+        DecodeStart::NewStream,
         &[0xff, 0xfe, 0, 0],
     );
     assert_eq!(
@@ -514,7 +576,12 @@ fn bom_recognizer_is_explicit_and_does_not_reject_noncharacters() {
         (Encoding::Utf16Le, [0xfe, 0xff]),
         (Encoding::Utf16Be, [0xff, 0xfe]),
     ] {
-        let (events, _) = decode_chunks(encoding, OnDecodeError::Fail, 7, true, &[&source]);
+        let (events, _) = decode_chunks(
+            encoding,
+            OnDecodeError::Fail,
+            DecodeStart::ResumeAt(7),
+            &[&source],
+        );
         assert_eq!(
             events,
             vec![unit(7, &source, DecodedValue::Scalar('\u{fffe}'), false)]

@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::{
-    DecodeError, DecodeEvent, DecodeFailure, DecodedValue, Encoding, OnDecodeError, SourceBytes,
-    SourceRange, StreamDecoder,
+    DecodeError, DecodeEvent, DecodeFailure, DecodeStart, DecodedValue, Encoding, OnDecodeError,
+    SourceBytes, SourceRange, StreamDecoder,
 };
 
 #[path = "boundary_tests.rs"]
@@ -37,11 +37,10 @@ fn encoded_a(encoding: Encoding) -> &'static [u8] {
 fn decode_chunks(
     encoding: Encoding,
     policy: OnDecodeError,
-    source_offset: u64,
-    new_stream_start: bool,
+    decode_start: DecodeStart,
     chunks: &[&[u8]],
 ) -> (Vec<DecodeEvent>, StreamDecoder) {
-    let mut decoder = StreamDecoder::new(encoding, policy, source_offset, new_stream_start);
+    let mut decoder = StreamDecoder::new(encoding, policy, decode_start);
     let mut events = Vec::new();
 
     for chunk in chunks {
@@ -84,10 +83,10 @@ fn drain_events(decoder: &mut StreamDecoder, events: &mut Vec<DecodeEvent>) {
 fn decode_all_partitions(
     encoding: Encoding,
     policy: OnDecodeError,
-    new_stream_start: bool,
+    decode_start: DecodeStart,
     data: &[u8],
 ) -> Vec<DecodeEvent> {
-    let baseline = decode_chunks(encoding, policy, 0, new_stream_start, &[data]).0;
+    let baseline = decode_chunks(encoding, policy, decode_start, &[data]).0;
     if data.len() <= 1 {
         return baseline;
     }
@@ -103,24 +102,14 @@ fn decode_all_partitions(
             }
         }
         chunks.push(&data[start..]);
-        let actual = decode_chunks(encoding, policy, 0, new_stream_start, &chunks).0;
+        let actual = decode_chunks(encoding, policy, decode_start, &chunks).0;
         assert_eq!(actual, baseline, "partition mask {mask:#x}");
     }
     baseline
 }
 
-fn fail_for_chunks(
-    encoding: Encoding,
-    source_offset: u64,
-    new_stream_start: bool,
-    chunks: &[&[u8]],
-) -> DecodeError {
-    let mut decoder = StreamDecoder::new(
-        encoding,
-        OnDecodeError::Fail,
-        source_offset,
-        new_stream_start,
-    );
+fn fail_for_chunks(encoding: Encoding, decode_start: DecodeStart, chunks: &[&[u8]]) -> DecodeError {
+    let mut decoder = StreamDecoder::new(encoding, OnDecodeError::Fail, decode_start);
     for chunk in chunks {
         let mut cursor = 0;
         loop {
@@ -158,7 +147,7 @@ fn matching_boms_are_stripped_across_all_partitions() {
         let mut data = bom.to_vec();
         data.extend_from_slice(payload);
         for policy in policies {
-            let actual = decode_all_partitions(encoding, policy, true, &data);
+            let actual = decode_all_partitions(encoding, policy, DecodeStart::NewStream, &data);
             assert_eq!(
                 actual,
                 vec![
@@ -206,7 +195,7 @@ fn conflicting_boms_follow_each_decode_error_policy() {
                 let payload = encoded_a(encoding);
                 let mut data = bom.to_vec();
                 data.extend_from_slice(payload);
-                let actual = decode_all_partitions(encoding, policy, true, &data);
+                let actual = decode_all_partitions(encoding, policy, DecodeStart::NewStream, &data);
                 assert_eq!(
                     actual,
                     vec![
@@ -219,7 +208,7 @@ fn conflicting_boms_follow_each_decode_error_policy() {
 
             let chunks: Vec<&[u8]> = bom.chunks(1).collect();
             assert_eq!(
-                fail_for_chunks(encoding, 0, true, &chunks),
+                fail_for_chunks(encoding, DecodeStart::NewStream, &chunks),
                 DecodeError::FatalMalformed {
                     range: SourceRange {
                         start: 0,
@@ -252,7 +241,8 @@ fn partial_boms_remain_pending_under_every_policy() {
     for prefix in prefixes {
         for encoding in encodings {
             for policy in policies {
-                let (events, decoder) = decode_chunks(encoding, policy, 0, true, &[prefix]);
+                let (events, decoder) =
+                    decode_chunks(encoding, policy, DecodeStart::NewStream, &[prefix]);
                 assert!(events.is_empty());
                 assert_eq!(decoder.pending_source_start(), Some(0));
                 assert_eq!(decoder.highest_delivered_source_boundary(), 0);
@@ -274,7 +264,8 @@ fn divergent_bom_prefixes_are_replayed_without_loss() {
     ];
     for &(data, malformed_len) in cases {
         for policy in [OnDecodeError::PreserveRaw, OnDecodeError::Replace] {
-            let actual = decode_all_partitions(Encoding::Utf8, policy, true, data);
+            let actual =
+                decode_all_partitions(Encoding::Utf8, policy, DecodeStart::NewStream, data);
             assert_eq!(
                 actual,
                 vec![
@@ -296,8 +287,7 @@ fn divergent_bom_prefixes_are_replayed_without_loss() {
         assert_eq!(
             fail_for_chunks(
                 Encoding::Utf8,
-                0,
-                true,
+                DecodeStart::NewStream,
                 &[&data[..malformed_len], &data[malformed_len..]]
             ),
             DecodeError::FatalMalformed {
@@ -328,7 +318,7 @@ fn divergent_bom_prefixes_can_form_valid_configured_units() {
             OnDecodeError::Fail,
         ] {
             assert_eq!(
-                decode_all_partitions(encoding, policy, true, data),
+                decode_all_partitions(encoding, policy, DecodeStart::NewStream, data),
                 vec![unit(0, data, DecodedValue::Scalar(scalar), false)]
             );
         }
@@ -346,7 +336,7 @@ fn midstream_boms_are_ordinary_content() {
     ] {
         let utf8 = [b'A', 0xef, 0xbb, 0xbf];
         assert_eq!(
-            decode_all_partitions(Encoding::Utf8, policy, true, &utf8),
+            decode_all_partitions(Encoding::Utf8, policy, DecodeStart::NewStream, &utf8),
             vec![
                 unit(0, b"A", DecodedValue::Scalar('A'), false),
                 unit(
@@ -360,7 +350,7 @@ fn midstream_boms_are_ordinary_content() {
 
         let utf16 = [b'A', 0, 0xff, 0xfe];
         assert_eq!(
-            decode_all_partitions(Encoding::Utf16Le, policy, false, &utf16),
+            decode_all_partitions(Encoding::Utf16Le, policy, DecodeStart::ResumeAt(0), &utf16),
             vec![
                 unit(0, &[b'A', 0], DecodedValue::Scalar('A'), false),
                 unit(2, &[0xff, 0xfe], DecodedValue::Scalar('\u{feff}'), false,),
@@ -371,8 +361,7 @@ fn midstream_boms_are_ordinary_content() {
     let restarted = decode_chunks(
         Encoding::Utf8,
         OnDecodeError::Fail,
-        5,
-        true,
+        DecodeStart::ResumeAt(5),
         &[&[0xef, 0xbb, 0xbf]],
     )
     .0;
@@ -389,7 +378,7 @@ fn midstream_boms_are_ordinary_content() {
     let ascii = [b'A', 0xef, 0xbb, 0xbf];
     for policy in [OnDecodeError::PreserveRaw, OnDecodeError::Replace] {
         assert_eq!(
-            decode_all_partitions(Encoding::Ascii, policy, true, &ascii),
+            decode_all_partitions(Encoding::Ascii, policy, DecodeStart::NewStream, &ascii),
             vec![
                 unit(0, b"A", DecodedValue::Scalar('A'), false),
                 unit(1, &[0xef], DecodedValue::Scalar('\u{fffd}'), true),
@@ -399,7 +388,7 @@ fn midstream_boms_are_ordinary_content() {
         );
     }
     assert_eq!(
-        fail_for_chunks(Encoding::Ascii, 0, true, &[&ascii]),
+        fail_for_chunks(Encoding::Ascii, DecodeStart::NewStream, &[&ascii]),
         DecodeError::FatalMalformed {
             range: SourceRange { start: 1, end: 2 },
             source_bytes: SourceBytes::from_slice(&[0xef]),
@@ -414,7 +403,12 @@ fn utf8_valid_scalars_decode_at_every_partition() {
     let data = [
         0x00, b'A', 0xc2, 0xa2, 0xe2, 0x82, 0xac, 0xf0, 0x9f, 0x98, 0x80, b'\n',
     ];
-    let actual = decode_all_partitions(Encoding::Utf8, OnDecodeError::PreserveRaw, false, &data);
+    let actual = decode_all_partitions(
+        Encoding::Utf8,
+        OnDecodeError::PreserveRaw,
+        DecodeStart::ResumeAt(0),
+        &data,
+    );
     assert_eq!(
         actual,
         vec![
@@ -461,7 +455,8 @@ fn utf8_malformed_prefixes_are_exact_at_every_partition() {
 
     for &(data, expected_sources) in cases {
         for policy in [OnDecodeError::PreserveRaw, OnDecodeError::Replace] {
-            let actual = decode_all_partitions(Encoding::Utf8, policy, false, data);
+            let actual =
+                decode_all_partitions(Encoding::Utf8, policy, DecodeStart::ResumeAt(0), data);
             let mut offset = 0;
             let expected: Vec<_> = expected_sources
                 .iter()
@@ -494,7 +489,8 @@ fn utf8_incomplete_trailing_prefixes_remain_pending() {
             OnDecodeError::Replace,
             OnDecodeError::Fail,
         ] {
-            let (events, decoder) = decode_chunks(Encoding::Utf8, policy, 0, false, &[&data]);
+            let (events, decoder) =
+                decode_chunks(Encoding::Utf8, policy, DecodeStart::ResumeAt(0), &[&data]);
             assert_eq!(
                 events,
                 vec![unit(0, b"A", DecodedValue::Scalar('A'), false)]
@@ -513,7 +509,7 @@ fn ascii_nul_and_non_ascii_bytes_are_handled_per_byte() {
     let data = [0, 0x7f, 0x80, 0xff];
     for policy in [OnDecodeError::PreserveRaw, OnDecodeError::Replace] {
         assert_eq!(
-            decode_all_partitions(Encoding::Ascii, policy, false, &data),
+            decode_all_partitions(Encoding::Ascii, policy, DecodeStart::ResumeAt(0), &data),
             vec![
                 unit(0, &[0], DecodedValue::Scalar('\0'), false),
                 unit(1, &[0x7f], DecodedValue::Scalar('\u{7f}'), false),
@@ -523,7 +519,7 @@ fn ascii_nul_and_non_ascii_bytes_are_handled_per_byte() {
         );
     }
     assert_eq!(
-        fail_for_chunks(Encoding::Ascii, 0, false, &[&data]),
+        fail_for_chunks(Encoding::Ascii, DecodeStart::ResumeAt(0), &[&data]),
         DecodeError::FatalMalformed {
             range: SourceRange { start: 2, end: 3 },
             source_bytes: SourceBytes::from_slice(&[0x80]),
@@ -546,7 +542,12 @@ fn utf16_endianness_bmp_controls_and_surrogate_pairs_decode() {
         ),
     ];
     for &(encoding, data) in cases {
-        let actual = decode_all_partitions(encoding, OnDecodeError::PreserveRaw, false, data);
+        let actual = decode_all_partitions(
+            encoding,
+            OnDecodeError::PreserveRaw,
+            DecodeStart::ResumeAt(0),
+            data,
+        );
         assert_eq!(actual.len(), 4);
         assert_eq!(
             actual.iter().map(event_value).collect::<Vec<_>>(),
@@ -598,7 +599,8 @@ fn utf16_live_incomplete_units_remain_pending() {
             OnDecodeError::Replace,
             OnDecodeError::Fail,
         ] {
-            let (events, decoder) = decode_chunks(Encoding::Utf16Le, policy, 0, false, &[data]);
+            let (events, decoder) =
+                decode_chunks(Encoding::Utf16Le, policy, DecodeStart::ResumeAt(0), &[data]);
             assert_eq!(
                 events,
                 vec![unit(0, &[b'A', 0], DecodedValue::Scalar('A'), false)]
@@ -617,14 +619,24 @@ fn utf16_lone_and_reprocessed_surrogates_are_exact() {
     let high_then_a = [0x3d, 0xd8, b'A', 0];
     for policy in [OnDecodeError::PreserveRaw, OnDecodeError::Replace] {
         assert_eq!(
-            decode_all_partitions(Encoding::Utf16Le, policy, false, &low_then_a),
+            decode_all_partitions(
+                Encoding::Utf16Le,
+                policy,
+                DecodeStart::ResumeAt(0),
+                &low_then_a
+            ),
             vec![
                 unit(0, &[0x00, 0xdc], DecodedValue::Scalar('\u{fffd}'), true,),
                 unit(2, &[b'A', 0], DecodedValue::Scalar('A'), false),
             ]
         );
         assert_eq!(
-            decode_all_partitions(Encoding::Utf16Le, policy, false, &high_then_a),
+            decode_all_partitions(
+                Encoding::Utf16Le,
+                policy,
+                DecodeStart::ResumeAt(0),
+                &high_then_a
+            ),
             vec![
                 unit(0, &[0x3d, 0xd8], DecodedValue::Scalar('\u{fffd}'), true,),
                 unit(2, &[b'A', 0], DecodedValue::Scalar('A'), false),
@@ -632,7 +644,11 @@ fn utf16_lone_and_reprocessed_surrogates_are_exact() {
         );
     }
 
-    let mut decoder = StreamDecoder::new(Encoding::Utf16Le, OnDecodeError::Replace, 0, false);
+    let mut decoder = StreamDecoder::new(
+        Encoding::Utf16Le,
+        OnDecodeError::Replace,
+        DecodeStart::ResumeAt(0),
+    );
     let first = decoder.next(0, &high_then_a).expect("first event");
     assert_eq!(first.consumed, 4);
     assert!(matches!(
@@ -661,7 +677,7 @@ fn utf16_queued_high_surrogate_can_start_a_valid_pair() {
     let data = [0x3d, 0xd8, 0x3e, 0xd8, 0x00, 0xdc];
     for policy in [OnDecodeError::PreserveRaw, OnDecodeError::Replace] {
         assert_eq!(
-            decode_all_partitions(Encoding::Utf16Le, policy, false, &data),
+            decode_all_partitions(Encoding::Utf16Le, policy, DecodeStart::ResumeAt(0), &data),
             vec![
                 unit(0, &[0x3d, 0xd8], DecodedValue::Scalar('\u{fffd}'), true,),
                 unit(
@@ -677,8 +693,7 @@ fn utf16_queued_high_surrogate_can_start_a_valid_pair() {
     assert_eq!(
         fail_for_chunks(
             Encoding::Utf16Le,
-            0,
-            false,
+            DecodeStart::ResumeAt(0),
             &[&data[..2], &data[2..4], &data[4..]]
         ),
         DecodeError::FatalMalformed {
@@ -693,7 +708,11 @@ fn utf16_queued_high_surrogate_can_start_a_valid_pair() {
 #[test]
 fn fail_policy_reports_exact_malformed_evidence() {
     assert_eq!(
-        fail_for_chunks(Encoding::Utf8, 10, false, &[&[0xf0], &[0x90], b"("]),
+        fail_for_chunks(
+            Encoding::Utf8,
+            DecodeStart::ResumeAt(10),
+            &[&[0xf0], &[0x90], b"("]
+        ),
         DecodeError::FatalMalformed {
             range: SourceRange { start: 10, end: 12 },
             source_bytes: SourceBytes::from_slice(&[0xf0, 0x90]),
@@ -702,8 +721,7 @@ fn fail_policy_reports_exact_malformed_evidence() {
     assert_eq!(
         fail_for_chunks(
             Encoding::Utf16Le,
-            20,
-            false,
+            DecodeStart::ResumeAt(20),
             &[&[0x3d], &[0xd8, b'A'], &[0]]
         ),
         DecodeError::FatalMalformed {
@@ -712,7 +730,11 @@ fn fail_policy_reports_exact_malformed_evidence() {
         }
     );
     assert_eq!(
-        fail_for_chunks(Encoding::Utf16Be, 0, true, &[&[0xef], &[0xbb], &[0xbf]]),
+        fail_for_chunks(
+            Encoding::Utf16Be,
+            DecodeStart::NewStream,
+            &[&[0xef], &[0xbb], &[0xbf]]
+        ),
         DecodeError::FatalMalformed {
             range: SourceRange { start: 0, end: 3 },
             source_bytes: SourceBytes::from_slice(&[0xef, 0xbb, 0xbf]),
@@ -730,7 +752,7 @@ fn raw_mode_emits_every_byte_without_bom_handling() {
         OnDecodeError::Replace,
         OnDecodeError::Fail,
     ] {
-        let actual = decode_all_partitions(Encoding::Raw, policy, true, &data);
+        let actual = decode_all_partitions(Encoding::Raw, policy, DecodeStart::NewStream, &data);
         let expected: Vec<_> = data
             .iter()
             .enumerate()
@@ -746,7 +768,11 @@ fn raw_mode_emits_every_byte_without_bom_handling() {
 /// Guarantees: Discontinuity is retryable; overflow fails immediately with exact per-call consumption.
 #[test]
 fn offset_discontinuity_and_overflow_are_reported() {
-    let mut decoder = StreamDecoder::new(Encoding::Raw, OnDecodeError::PreserveRaw, 7, false);
+    let mut decoder = StreamDecoder::new(
+        Encoding::Raw,
+        OnDecodeError::PreserveRaw,
+        DecodeStart::ResumeAt(7),
+    );
     assert_eq!(
         decoder.next(8, b"x"),
         Err(DecodeFailure {
@@ -760,8 +786,11 @@ fn offset_discontinuity_and_overflow_are_reported() {
     assert!(decoder.terminal_error().is_none());
     assert_eq!(decoder.next(7, b"x").expect("corrected offset").consumed, 1);
 
-    let mut decoder =
-        StreamDecoder::new(Encoding::Raw, OnDecodeError::PreserveRaw, u64::MAX, false);
+    let mut decoder = StreamDecoder::new(
+        Encoding::Raw,
+        OnDecodeError::PreserveRaw,
+        DecodeStart::ResumeAt(u64::MAX),
+    );
     assert_eq!(
         decoder.next(u64::MAX, b"x"),
         Err(DecodeFailure {
@@ -773,8 +802,7 @@ fn offset_discontinuity_and_overflow_are_reported() {
     let mut decoder = StreamDecoder::new(
         Encoding::Utf16Le,
         OnDecodeError::PreserveRaw,
-        u64::MAX - 1,
-        false,
+        DecodeStart::ResumeAt(u64::MAX - 1),
     );
     assert_eq!(
         decoder.next(u64::MAX - 1, &[b'A', 0]),
@@ -797,40 +825,41 @@ fn offset_discontinuity_and_overflow_are_reported() {
 /// Guarantees: Event order, ranges, source evidence, and malformed markers are chunk-partition independent.
 #[test]
 fn event_streams_are_deterministic_across_all_chunk_partitions() {
-    let cases: &[(Encoding, bool, &[u8])] = &[
+    let cases: &[(Encoding, DecodeStart, &[u8])] = &[
         (
             Encoding::Utf8,
-            true,
+            DecodeStart::NewStream,
             &[0xef, 0xbb, 0xbf, b'A', 0xe2, b'(', 0xa1, 0],
         ),
-        (Encoding::Ascii, true, &[b'A', 0x80, 0, b'\n', 0xff]),
+        (
+            Encoding::Ascii,
+            DecodeStart::NewStream,
+            &[b'A', 0x80, 0, b'\n', 0xff],
+        ),
         (
             Encoding::Utf16Le,
-            true,
+            DecodeStart::NewStream,
             &[
                 0xff, 0xfe, b'A', 0, 0x3d, 0xd8, b'B', 0, 0x00, 0xdc, b'\n', 0,
             ],
         ),
         (
             Encoding::Utf16Be,
-            false,
+            DecodeStart::ResumeAt(0),
             &[0, b'A', 0xd8, 0x3d, 0xde, 0x00, 0, b'\n'],
         ),
-        (Encoding::Raw, true, &[0xef, 0xbb, 0xbf, 0, b'\n', 0xff]),
+        (
+            Encoding::Raw,
+            DecodeStart::NewStream,
+            &[0xef, 0xbb, 0xbf, 0, b'\n', 0xff],
+        ),
     ];
 
-    for &(encoding, new_stream_start, data) in cases {
-        let baseline =
-            decode_all_partitions(encoding, OnDecodeError::Replace, new_stream_start, data);
+    for &(encoding, decode_start, data) in cases {
+        let baseline = decode_all_partitions(encoding, OnDecodeError::Replace, decode_start, data);
         let byte_chunks: Vec<&[u8]> = data.chunks(1).collect();
-        let bytewise = decode_chunks(
-            encoding,
-            OnDecodeError::Replace,
-            0,
-            new_stream_start,
-            &byte_chunks,
-        )
-        .0;
+        let bytewise =
+            decode_chunks(encoding, OnDecodeError::Replace, decode_start, &byte_chunks).0;
         assert_eq!(bytewise, baseline);
     }
 }
