@@ -227,28 +227,6 @@ pub struct NodeWithCustomTopicAttributeSet {
     pub topic: Cow<'static, str>,
 }
 
-/// Node attributes extended with a transport protocol.
-#[attribute_set(scope, name = "node.protocol.attrs")]
-#[derive(Debug, Clone, Default, Hash)]
-pub struct NodeWithProtocolAttributeSet {
-    /// Base node attributes.
-    #[compose]
-    pub node_attrs: NodeAttributeSet,
-    /// Transport protocol associated with the node metrics.
-    pub protocol: Cow<'static, str>,
-}
-
-/// Node attributes (including custom telemetry attributes) extended with a transport protocol.
-#[attribute_set(scope, name = "node.custom.protocol.attrs")]
-#[derive(Debug, Clone, Default, Hash)]
-pub struct NodeWithCustomProtocolAttributeSet {
-    /// Base node + custom telemetry attributes.
-    #[compose]
-    pub node_custom_attrs: NodeWithCustomAttributeSet,
-    /// Transport protocol associated with the node metrics.
-    pub protocol: Cow<'static, str>,
-}
-
 /// A custom attribute set that holds arbitrary key-value pairs as a single
 /// "custom" attribute with a `Map` value. This allows extending telemetry
 /// with user-defined attributes without requiring static descriptors.

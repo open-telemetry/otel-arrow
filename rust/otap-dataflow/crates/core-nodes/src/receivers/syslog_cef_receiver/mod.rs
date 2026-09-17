@@ -15,7 +15,9 @@ use otel_arrow_dfe_engine::admission::{
     AdmissionContext, AdmissionDecision, AdmissionDimension, LocalAdmissionGate,
 };
 use otel_arrow_dfe_engine::config::ReceiverConfig;
-use otel_arrow_dfe_engine::context::PipelineContext;
+use otel_arrow_dfe_engine::context::{
+    NodeAttributeSet, NodeWithCustomAttributeSet, PipelineContext,
+};
 use otel_arrow_dfe_engine::control::NodeControlMsg;
 use otel_arrow_dfe_engine::memory_limiter::LocalReceiverAdmissionState;
 use otel_arrow_dfe_engine::node::NodeId;
@@ -36,6 +38,7 @@ use otel_arrow_dfe_telemetry::instrument::{Counter, UpDownCounter};
 use otel_arrow_dfe_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
 use serde::Deserialize;
 use serde_json::Value;
+use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::net::SocketAddr;
 use std::num::{NonZeroU16, NonZeroU64};
@@ -1000,6 +1003,45 @@ pub enum SyslogCefProtocol {
     Udp,
 }
 
+/// Node identity extended with the configured Syslog transport protocol.
+#[attribute_set(scope, name = "node.protocol.attrs")]
+#[derive(Debug, Clone, Default, Hash)]
+struct NodeWithProtocolAttributeSet {
+    /// Base node attributes.
+    #[compose]
+    node_attrs: NodeAttributeSet,
+    /// Transport protocol associated with the receiver metrics.
+    protocol: Cow<'static, str>,
+}
+
+/// Custom node identity extended with the configured Syslog transport protocol.
+#[attribute_set(scope, name = "node.custom.protocol.attrs")]
+#[derive(Debug, Clone, Default, Hash)]
+struct NodeWithCustomProtocolAttributeSet {
+    /// Base node and custom telemetry attributes.
+    #[compose]
+    node_custom_attrs: NodeWithCustomAttributeSet,
+    /// Transport protocol associated with the receiver metrics.
+    protocol: Cow<'static, str>,
+}
+
+fn register_syslog_entity(
+    pipeline_ctx: &PipelineContext,
+    protocol: &'static str,
+) -> otel_arrow_dfe_telemetry::registry::EntityKey {
+    if pipeline_ctx.has_custom_node_attributes() {
+        pipeline_ctx.register_entity(NodeWithCustomProtocolAttributeSet {
+            node_custom_attrs: pipeline_ctx.node_with_custom_attribute_set(),
+            protocol: protocol.into(),
+        })
+    } else {
+        pipeline_ctx.register_entity(NodeWithProtocolAttributeSet {
+            node_attrs: pipeline_ctx.node_attribute_set(),
+            protocol: protocol.into(),
+        })
+    }
+}
+
 /// Protocol and bounded error type dimensions for a rejected syslog request.
 #[attribute_set(item, measurement)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1084,8 +1126,10 @@ impl SyslogCefReceiverMetrics {
         let signal_attrs = SignalRegistrationAttributes {
             signal: SignalType::Logs,
         };
+        let entity = register_syslog_entity(pipeline_ctx, protocol);
+        let registrar = pipeline_ctx.metric_set_registrar_for_entity(entity);
         Self {
-            received: ReceiverMetrics::register_with_protocol(pipeline_ctx, protocol.into()),
+            received: ReceiverMetrics::register_with(&registrar, pipeline_ctx.node_interests()),
             rejections: SyslogCefRejectionMetrics::register(pipeline_ctx, &signal_attrs),
             transport: SyslogCefTransportMetrics::register(pipeline_ctx),
             truncations: SyslogCefTruncationMetrics::register(pipeline_ctx, &signal_attrs),
@@ -2364,6 +2408,61 @@ mod telemetry_tests {
         assert!(!udp.is_empty());
         assert!(udp.iter().all(|entity| entity.contains("protocol=udp")));
         assert!(!udp_protocol_is_measurement_attribute);
+    }
+
+    /// Scenario: a Syslog receiver node has a custom telemetry identity attribute.
+    /// Guarantees: the Syslog-owned protocol entity composes custom node identity without
+    /// exposing protocol as a per-message measurement attribute.
+    #[test]
+    fn shared_metrics_protocol_entity_preserves_custom_node_identity() {
+        use otel_arrow_dfe_config::node::NodeKind;
+        use otel_arrow_dfe_config::pipeline::telemetry::{
+            AttributeValue as ConfigAttributeValue, TelemetryAttribute,
+        };
+        use otel_arrow_dfe_engine::context::ControllerContext;
+        use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
+        use std::collections::HashMap;
+
+        let registry = TelemetryRegistryHandle::new();
+        let controller = ControllerContext::new(registry.clone());
+        let mut custom = HashMap::new();
+        let _ = custom.insert(
+            "custom.identity.foo".to_string(),
+            TelemetryAttribute::new(ConfigAttributeValue::String("bar".to_string())),
+        );
+        let pipeline = controller
+            .pipeline_context_with("test_grp".into(), "test_pipeline".into(), 0, 1, 0)
+            .with_node_context(
+                "syslog".into(),
+                SYSLOG_CEF_RECEIVER_URN.into(),
+                NodeKind::Receiver,
+                custom,
+            );
+
+        let _metrics = SyslogCefReceiverMetrics::register(&pipeline, "tcp");
+        let mut entities = Vec::new();
+        registry.visit_current_metrics_with_item_attrs(
+            |descriptor, entity, _, _| {
+                if descriptor.name == "receiver.received"
+                    || descriptor.name == "receiver.processing"
+                {
+                    entities.push((entity.schema_name(), entity.attributes_to_string()));
+                }
+            },
+            true,
+        );
+
+        assert!(!entities.is_empty());
+        assert!(
+            entities
+                .iter()
+                .all(|(schema, _)| *schema == "node.custom.protocol.attrs")
+        );
+        assert!(entities.iter().all(|(_, rendered)| {
+            rendered.contains("protocol=tcp")
+                && rendered.contains("node.id=syslog")
+                && rendered.contains("custom={custom.identity.foo=bar}")
+        }));
     }
 
     fn received_count(
