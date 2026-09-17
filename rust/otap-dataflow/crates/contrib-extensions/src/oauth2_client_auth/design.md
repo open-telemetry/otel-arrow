@@ -631,7 +631,7 @@ effect.
   [Refresh Loop](#refresh-loop)) keep those uncoordinated loops from realigning.
   A future move to group/engine scope would share one instance across cores
   without code changes (see
-  [Extension Scopes](../../../../docs/extension-requirements.md#extension-scopes)).
+  [Extension Declaration Scopes](../../../../docs/extension-requirements.md#extension-declaration-scopes)).
 - **Runtime discipline.** The refresh loop runs on the per-core async runtime;
   all token I/O is async (`reqwest` HTTP), so it never blocks other futures on
   the core. TLS handshakes and JWT signing for the `jwt-bearer` grant happen only
@@ -679,7 +679,7 @@ OAuth-specific coverage:
 
 - **Broader extension scope.** Hoist to group/engine scope for genuine
   cross-core token-cache sharing (see
-  [Extension Scopes](../../../../docs/extension-requirements.md#extension-scopes)).
+  [Extension Declaration Scopes](../../../../docs/extension-requirements.md#extension-declaration-scopes)).
 
 ## References
 
