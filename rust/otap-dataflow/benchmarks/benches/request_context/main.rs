@@ -502,7 +502,7 @@ fn propagate_kafka_current(context: &CurrentHeaders) -> OwnedHeaders {
         let _ = black_box(&header.value.value_kind);
         headers = headers.insert(Header {
             key: header.wire_name(),
-            value: Some(header.value.bytes),
+            value: Some(header.value.bytes.as_ref()),
         });
     }
     headers

@@ -346,11 +346,11 @@ pub struct Context {
     stack: Vec<Frame>,
     /// Transport headers captured from inbound protocol metadata.
     ///
-    /// `None` when no headers have been captured (the common case, zero
+    /// Empty when no headers have been captured (the common case, zero
     /// additional allocation).
-    transport_headers: Option<TransportHeaders>,
+    transport_headers: TransportHeaders,
     /// Verified authorization claims selected by policy.
-    authorized_identity: Option<AuthorizedIdentityEntries>,
+    authorized_identity: AuthorizedIdentityEntries,
     /// Peer address observed by the receiving socket at request acceptance
     /// time. `None` for receivers without a real socket.
     peer_addr: Option<SocketAddr>,
@@ -380,8 +380,8 @@ impl Context {
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             stack: Vec::with_capacity(capacity),
-            transport_headers: None,
-            authorized_identity: None,
+            transport_headers: TransportHeaders::default(),
+            authorized_identity: AuthorizedIdentityEntries::default(),
             peer_addr: None,
             flow_compute_ns: None,
             signal: None,
@@ -706,24 +706,24 @@ impl Context {
     /// Returns a reference to the captured transport headers, if any.
     #[must_use]
     pub fn transport_headers(&self) -> Option<&TransportHeaders> {
-        self.transport_headers.as_ref()
+        (!self.transport_headers.is_empty()).then_some(&self.transport_headers)
     }
 
     /// Takes and returns the captured transport headers, if any.
     #[must_use]
     pub fn take_transport_headers(&mut self) -> Option<TransportHeaders> {
-        self.transport_headers.take()
+        (!self.transport_headers.is_empty()).then(|| std::mem::take(&mut self.transport_headers))
     }
 
     /// Set the transport headers for this context.
     pub fn set_transport_headers(&mut self, headers: TransportHeaders) {
-        self.transport_headers = Some(headers);
+        self.transport_headers = headers;
     }
 
     /// Returns the authorization-derived context entries, if any.
     #[must_use]
     pub fn authorized_identity_entries(&self) -> Option<&AuthorizedIdentityEntries> {
-        self.authorized_identity.as_ref()
+        (!self.authorized_identity.is_empty()).then_some(&self.authorized_identity)
     }
 
     fn capture_authorized_identity(
@@ -731,7 +731,8 @@ impl Context {
         policy: &AuthorizedIdentityPolicy,
         identity: &AuthorizedIdentity,
     ) {
-        self.authorized_identity = AuthorizedIdentityEntries::capture(policy, identity);
+        self.authorized_identity =
+            AuthorizedIdentityEntries::capture(policy, identity).unwrap_or_default();
     }
 
     /// Returns the peer address observed by the receiving socket, if any.

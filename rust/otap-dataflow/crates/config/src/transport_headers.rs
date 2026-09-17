@@ -261,7 +261,10 @@ impl fmt::Debug for TransportHeaders {
 
 impl PartialEq for TransportHeaders {
     fn eq(&self, other: &Self) -> bool {
-        self.len() == other.len() && self.iter().eq(other.iter())
+        match (&self.storage, &other.storage) {
+            (Some(left), Some(right)) if Arc::ptr_eq(left, right) => true,
+            _ => self.len() == other.len() && self.iter().eq(other.iter()),
+        }
     }
 }
 
@@ -277,9 +280,13 @@ impl TransportHeaders {
     /// Create an empty header collection with space for at least `capacity` headers.
     #[must_use]
     pub fn with_capacity(capacity: usize) -> Self {
+        if capacity == 0 {
+            return Self::default();
+        }
         Self {
-            storage: (capacity > 0)
-                .then(|| Arc::new(TransportHeadersStorage::Owned(Vec::with_capacity(capacity)))),
+            storage: Some(Arc::new(TransportHeadersStorage::Owned(
+                Vec::with_capacity(capacity),
+            ))),
         }
     }
 
