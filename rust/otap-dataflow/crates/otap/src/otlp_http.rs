@@ -854,14 +854,7 @@ impl HttpHandler {
                 // Capture transport headers from HTTP headers when a capture policy is configured.
                 if let Some(policy) = self.effect_handler.capture_policy() {
                     let mut transport_headers = TransportHeaders::new();
-                    if let Some(stats) =
-                        policy.capture_from_http_headers(&headers, &mut transport_headers)
-                    {
-                        otel_arrow_dfe_telemetry::otel_error!(
-                            "otlp_http.capture_policy.limits_exceeded",
-                            stats = %stats,
-                        );
-                    }
+                    _ = policy.capture_from_http_headers(&headers, &mut transport_headers);
                     if !transport_headers.is_empty() {
                         pdata.set_transport_headers(transport_headers);
                     }
