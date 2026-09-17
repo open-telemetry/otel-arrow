@@ -3,12 +3,15 @@
 
 //! Unit tests for the flat file user pass extension.
 
+use std::io::Write;
+
 use futures::StreamExt;
 use otel_arrow_dfe_config::error::Error as ConfigError;
 use otel_arrow_dfe_engine::shared::capability::auth::basic_auth_provider::BasicAuthProvider;
 use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
 use otel_arrow_dfe_telemetry::testing::EmptyAttributes;
 use secrecy::{ExposeSecret, SecretString};
+use tempfile::NamedTempFile;
 
 use super::config::Config;
 use super::*;
@@ -193,11 +196,33 @@ async fn get_credential() {
     let credential = ext.get_credential().await.expect("first acquisition");
     assert_eq!(credential.expose_username(), "test_user");
     assert_eq!(credential.expose_password(), "test_pass");
+    assert!(credential.expires_on().is_none());
+}
+
+#[tokio::test]
+async fn get_credential_file_success() {
+    let mut named_file = NamedTempFile::new().expect("file created");
+
+    let content = "test_pass  \r\n";
+    named_file
+        .write_all(content.as_bytes())
+        .expect("content written");
+
+    let ext = make_extension_with_config(Config {
+        username: "test_user".into(),
+        password_secret: None,
+        password_secret_file: Some(named_file.path().into()),
+        password_secret_file_refresh: Duration::from_secs(10),
+    });
+
+    let credential = ext.get_credential().await.expect("first acquisition");
+    assert_eq!(credential.expose_username(), "test_user");
+    assert_eq!(credential.expose_password(), "test_pass  ");
     assert!(credential.expires_on().is_some());
 }
 
 #[tokio::test]
-async fn get_credential_failure() {
+async fn get_credential_file_failure() {
     let ext = make_extension_with_config(Config {
         username: "test_user".into(),
         password_secret: None,
