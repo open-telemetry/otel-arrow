@@ -24,7 +24,7 @@ otel-arrow-dfe-otap = { workspace = true }
 otel-arrow-dfe-pdata = { workspace = true }
 otel-arrow-dfe-pdata-views = { workspace = true }
 otel-arrow-dfe-query-engine = { workspace = true, optional = true }
-otel-arrow-dfe-quiver = { workspace = true }
+otel-arrow-dfe-quiver = { workspace = true, optional = true }
 otel-arrow-dfe-telemetry = { workspace = true }
 otel-arrow-dfe-telemetry-macros = { workspace = true }
 
@@ -141,7 +141,7 @@ attributes-processor = []
 batch-processor = []
 content-router-processor = []
 debug-processor = []
-durable-buffer-processor = []
+durable-buffer-processor = ["dep:otel-arrow-dfe-quiver"]
 fanout-processor = []
 filter-processor = []
 log-sampling-processor = []
