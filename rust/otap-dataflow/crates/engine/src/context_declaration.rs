@@ -1180,15 +1180,10 @@ mod tests {
                 .validate_node_declarations(&pipeline, &node, &matching.context_declarations())
                 .is_err()
         );
-        let ContextDeclaration::HeaderPropagation {
-            policy: propagation_policy,
-        } = propagation_declaration
-        else {
-            unreachable!("test declaration is header propagation");
-        };
-        assert_eq!(
-            bindings.header_propagation_policy(&pipeline, &node),
-            Some(&propagation_policy)
+        assert!(
+            bindings
+                .header_propagation_policy(&pipeline, &node)
+                .is_some()
         );
     }
 

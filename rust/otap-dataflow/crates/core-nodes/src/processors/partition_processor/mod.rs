@@ -552,7 +552,6 @@ mod test {
             PipelineCompletionMsg, pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
         },
         testing::{
-            install_test_context_bindings,
             processor::{TestContext, TestRuntime},
             test_node,
         },
@@ -570,7 +569,6 @@ mod test {
         TransportHeader::new(context_name(name.as_ref()), value_kind, value)
     }
     use otel_arrow_dfe_otap::{
-        OTAP_PIPELINE_FACTORY,
         pdata::Context,
         testing::{TestCallData, next_ack, next_nack},
     };
@@ -615,16 +613,6 @@ mod test {
         let policy = partition_test_context(&typed, &pipeline_context)?;
         pipeline_context.set_compiled_context_bindings(Arc::new(policy));
         let node_id = test_node("partition_processor");
-        let pipeline_config = serde_json::from_value(serde_json::json!({
-            "nodes": { "partition_processor": &node_config }
-        }))
-        .expect("test pipeline configuration");
-        install_test_context_bindings(
-            &mut pipeline_context,
-            &OTAP_PIPELINE_FACTORY,
-            pipeline_config,
-        )
-        .expect("test context bindings should compile");
         let pipeline_context = pipeline_context.with_node_context(
             "partition_processor".into(),
             node_config.r#type.clone(),
@@ -651,10 +639,10 @@ mod test {
             CompiledContextBindings, DeclaredContextPolicy,
         };
         CompiledContextBindings::compile(DeclaredContextPolicy {
-            nodes: std::collections::HashMap::from([(
+            nodes: HashMap::from([(
                 context.pipeline_key(),
-                std::collections::HashMap::from([
-                    (context.node_id(), config.context_declarations()),
+                HashMap::from([
+                    ("partition_processor".into(), config.context_declarations()),
                     (
                         "input".into(),
                         [ContextDeclaration::Produces {

@@ -280,6 +280,36 @@ fn original_name_retention_follows_selected_source_fields() {
     );
 }
 
+/// Scenario: a mixed-case capture rule receives a lowercase wire name without `store_as`.
+/// Guarantees: preserve and stored-name propagation both retain the captured stored spelling.
+#[test]
+fn primitive_propagation_does_not_replace_captured_casing_with_schema_casing() {
+    let capture_policy: HeaderCapturePolicy =
+        serde_yaml::from_str("headers: [{match_names: [X-Tenant]}]").unwrap();
+    let layout = ContextLayout::compile(
+        capture_policy.context_primitives().collect(),
+        BTreeSet::new(),
+    )
+    .unwrap();
+
+    for naming in [NameStrategy::Preserve, NameStrategy::StoredName] {
+        let sink = sink(layout.clone(), &["X-Tenant"], naming);
+        let required: BTreeSet<_> = sink.original_name_fields().collect();
+        let source = capture_policy
+            .clone()
+            .compile_bound(layout.clone(), &pipeline(), |field| {
+                required.contains(&field)
+            })
+            .unwrap();
+        let context = message(&source, &[("x-tenant", b"value")]);
+        let propagated: Vec<_> = sink.propagate(&context).unwrap().collect();
+
+        assert_eq!(context.as_slice()[0].name.as_str(), "x-tenant");
+        assert!(context.as_slice()[0].value.original_name.is_none());
+        assert_eq!(propagated[0].header_name, "x-tenant");
+    }
+}
+
 /// Scenario: a repeated environment field contains both production and development values.
 /// Guarantees: explicit all-values guards reject the group without treating one matching value as sufficient.
 #[test]

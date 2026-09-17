@@ -30,8 +30,10 @@ Bare `x-workspace` is not a valid reference in this configuration. Reference
 resolution never searches inside arbitrary composites and never falls back
 from a qualified member to an independent entry.
 
-Names are normalized to lowercase. The `:` separator is reserved for member
-qualification; entry and member names cannot themselves contain `:`.
+Configured entry and member spelling is preserved and remains case-sensitive.
+Transport protocols may still match wire header names case-insensitively at
+their boundary. The `:` separator is reserved for member qualification; entry
+and member names cannot themselves contain `:`.
 Unknown entries, unknown members, conflicting visible definitions, and
 unqualified composite references in field-only positions are configuration
 errors, not runtime absence.

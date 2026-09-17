@@ -132,8 +132,13 @@ impl TransportHeader {
 /// methods (`push`, `clear`) use copy-on-write via `Arc::make_mut`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TransportHeaders {
-    headers: Arc<Vec<TransportHeader>>,
-    index: Option<Arc<ContextIndex>>,
+    inner: Arc<TransportHeadersInner>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct TransportHeadersInner {
+    headers: Vec<TransportHeader>,
+    index: Option<ContextIndex>,
 }
 
 impl TransportHeaders {
@@ -141,8 +146,7 @@ impl TransportHeaders {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            headers: Arc::new(Vec::new()),
-            index: None,
+            inner: Arc::new(TransportHeadersInner::default()),
         }
     }
 
@@ -150,28 +154,31 @@ impl TransportHeaders {
     #[must_use]
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
-            headers: Arc::new(Vec::with_capacity(capacity)),
-            index: None,
+            inner: Arc::new(TransportHeadersInner {
+                headers: Vec::with_capacity(capacity),
+                index: None,
+            }),
         }
     }
 
     /// Add a header to the collection.
     pub fn push(&mut self, header: TransportHeader) {
-        // Raw mutation cannot assert that a new field belongs to the compiled layout.
-        self.index = None;
-        Arc::make_mut(&mut self.headers).push(header);
+        self.detach_without_index().headers.push(header);
     }
 
     /// Clears the headers and reserves space for `capacity` entries.
     pub(crate) fn clear_and_reserve(&mut self, capacity: usize) -> &mut Vec<TransportHeader> {
-        self.index = None;
-        if Arc::strong_count(&self.headers) != 1 {
-            self.headers = Arc::new(Vec::with_capacity(capacity));
+        if Arc::strong_count(&self.inner) != 1 {
+            self.inner = Arc::new(TransportHeadersInner {
+                headers: Vec::with_capacity(capacity),
+                index: None,
+            });
         }
-        let headers = Arc::make_mut(&mut self.headers);
-        headers.clear();
-        headers.reserve(capacity);
-        headers
+        let inner = Arc::make_mut(&mut self.inner);
+        inner.index = None;
+        inner.headers.clear();
+        inner.headers.reserve(capacity);
+        &mut inner.headers
     }
 
     pub(crate) fn index_with(
@@ -181,13 +188,21 @@ impl TransportHeaders {
         fields: Vec<ContextFieldId>,
         names_preserved: Arc<[ContextFieldId]>,
     ) {
-        self.index = Some(Arc::new(ContextIndex::build(
+        let index = ContextIndex::build(
             layout,
             entries,
             fields,
             names_preserved,
-            &self.headers,
-        )));
+            &self.inner.headers,
+        );
+        if Arc::strong_count(&self.inner) != 1 {
+            self.inner = Arc::new(TransportHeadersInner {
+                headers: self.inner.headers.clone(),
+                index: Some(index),
+            });
+        } else {
+            Arc::make_mut(&mut self.inner).index = Some(index);
+        }
     }
 
     pub(crate) fn bind_fields(
@@ -208,11 +223,13 @@ impl TransportHeaders {
         header: TransportHeader,
     ) {
         let mut fields = self
+            .inner
             .index
             .as_ref()
             .map(|index| index.fields.clone())
             .unwrap_or_default();
         let mut names_preserved: std::collections::BTreeSet<_> = self
+            .inner
             .index
             .as_ref()
             .into_iter()
@@ -228,7 +245,7 @@ impl TransportHeaders {
             let _ = names_preserved.insert(field);
         }
         fields.push(field);
-        Arc::make_mut(&mut self.headers).push(header);
+        self.detach_without_index().headers.push(header);
         self.index_with(
             layout,
             &entries,
@@ -241,40 +258,59 @@ impl TransportHeaders {
         &self,
         layout: &Arc<ContextLayout>,
     ) -> Result<&ContextIndex, ContextAccessError> {
-        let index = self.index.as_deref().ok_or(ContextAccessError::Unbound)?;
+        let index = self
+            .inner
+            .index
+            .as_ref()
+            .ok_or(ContextAccessError::Unbound)?;
         if !Arc::ptr_eq(&index.layout, layout) && index.layout != *layout {
             return Err(ContextAccessError::IncompatibleLayout);
         }
         Ok(index)
     }
 
+    fn detach_without_index(&mut self) -> &mut TransportHeadersInner {
+        if Arc::strong_count(&self.inner) != 1 {
+            self.inner = Arc::new(TransportHeadersInner {
+                headers: self.inner.headers.clone(),
+                index: None,
+            });
+        }
+        let inner = Arc::make_mut(&mut self.inner);
+        inner.index = None;
+        inner
+    }
+
     /// Returns `true` if there are no headers.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.headers.is_empty()
+        self.inner.headers.is_empty()
     }
 
     /// Returns the number of headers.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.headers.len()
+        self.inner.headers.len()
     }
 
     /// Iterate over all headers.
     pub fn iter(&self) -> impl Iterator<Item = &TransportHeader> {
-        self.headers.iter()
+        self.inner.headers.iter()
     }
 
     /// Finds headers by exact stored name.
     /// Uses a linear scan for validation.
     pub fn find_by_name<'a>(&'a self, name: &'a str) -> impl Iterator<Item = &'a TransportHeader> {
-        self.headers.iter().filter(move |h| h.name.as_str() == name)
+        self.inner
+            .headers
+            .iter()
+            .filter(move |h| h.name.as_str() == name)
     }
 
     /// Returns a slice of all headers.
     #[must_use]
     pub fn as_slice(&self) -> &[TransportHeader] {
-        &self.headers
+        &self.inner.headers
     }
 }
 

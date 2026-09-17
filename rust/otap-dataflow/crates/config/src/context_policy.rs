@@ -174,10 +174,10 @@ mod tests {
     use super::*;
 
     /// Scenario: references select a whole entry or a qualified member.
-    /// Guarantees: normalization is deterministic and malformed qualification is rejected.
+    /// Guarantees: configured casing is preserved and malformed qualification is rejected.
     #[test]
     fn strict_context_references() {
-        for (input, expected) in [("Standalone", "standalone"), ("Entry:FIELD", "entry:field")] {
+        for (input, expected) in [("Standalone", "Standalone"), ("Entry:FIELD", "Entry:FIELD")] {
             let reference = ContextEntryRef::try_from(input).expect("valid reference");
             assert_eq!(reference.to_string(), expected);
         }
@@ -192,13 +192,12 @@ mod tests {
         }
     }
 
-    /// Scenario: entry definitions contain case-only duplicate names or reserved separators.
-    /// Guarantees: deserialization rejects ambiguous identities rather than overwriting definitions.
+    /// Scenario: entry definitions use case-distinct names or reserved separators.
+    /// Guarantees: configured casing remains significant while qualified map keys are rejected.
     #[test]
-    fn duplicate_and_qualified_entry_names_are_rejected() {
-        for input in ["entries: {Tenant: [], tenant: []}", "entries: {'a:b': []}"] {
-            assert!(serde_yaml::from_str::<ContextPolicy>(input).is_err());
-        }
+    fn case_distinct_entry_names_are_allowed_but_qualified_names_are_rejected() {
+        assert!(serde_yaml::from_str::<ContextPolicy>("entries: {Tenant: [], tenant: []}").is_ok());
+        assert!(serde_yaml::from_str::<ContextPolicy>("entries: {'a:b': []}").is_err());
     }
 
     /// Scenario: a composite condition compares a potentially repeated header.

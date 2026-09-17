@@ -727,12 +727,15 @@ impl CompiledHeaderPropagationPolicy {
                     return None;
                 }
                 let header_name = match step.naming {
-                    NameStrategy::StoredName => self.layout.entries[step.entry.0].name.as_str(),
+                    NameStrategy::StoredName if self.layout.entries[step.entry.0].derived => {
+                        self.layout.entries[step.entry.0].name.as_str()
+                    }
+                    NameStrategy::StoredName => header.name.as_str(),
                     NameStrategy::Preserve => header
                         .value
                         .original_name
                         .as_deref()
-                        .unwrap_or(self.layout.fields[field.0].field.as_str()),
+                        .unwrap_or(header.name.as_str()),
                 };
                 Some(PropagatedHeader {
                     header_name,
