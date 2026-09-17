@@ -677,13 +677,50 @@ impl<'a> Iterator for TransportHeadersFindIter<'a> {
 
     fn next(&mut self) -> Option<Self::Item> {
         let storage = self.storage?;
-        let count = storage.len();
-
-        while self.index < count {
-            let index = self.index;
-            self.index += 1;
-            if storage.stored_name_matches(index, self.name) {
-                return storage.get(index);
+        match storage {
+            TransportHeadersStorage::Owned(headers) => {
+                while self.index < headers.len() {
+                    let index = self.index;
+                    self.index += 1;
+                    let header = headers
+                        .get(index)
+                        .expect("owned transport header index must be in bounds");
+                    if header.name.as_str() == self.name {
+                        return Some(TransportHeaderRef::from(header));
+                    }
+                }
+            }
+            TransportHeadersStorage::Packed(packed) => {
+                while self.index < packed.count {
+                    let index = self.index;
+                    self.index += 1;
+                    if packed.stored_name_matches(index, self.name) {
+                        return Some(packed.decode(index));
+                    }
+                }
+            }
+            TransportHeadersStorage::Overlay { base, appended } => {
+                let base_len = base.len();
+                let count = base_len
+                    .checked_add(appended.len())
+                    .expect("transport header count overflow");
+                while self.index < count {
+                    let index = self.index;
+                    self.index += 1;
+                    if index < base_len {
+                        if base.stored_name_matches(index, self.name) {
+                            return base.get(index);
+                        }
+                    } else {
+                        let appended_index = index - base_len;
+                        let header = appended
+                            .get(appended_index)
+                            .expect("appended transport header index must be in bounds");
+                        if header.name.as_str() == self.name {
+                            return Some(TransportHeaderRef::from(header));
+                        }
+                    }
+                }
             }
         }
         None
