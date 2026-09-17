@@ -27,7 +27,6 @@ schemars = { workspace = true }
 byte-unit = { workspace = true }
 humantime-serde = { workspace = true }
 reqwest = { workspace = true, features = ["blocking"] }
-tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [dev-dependencies]

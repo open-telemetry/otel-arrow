@@ -510,6 +510,16 @@ impl PackedTransportHeaders {
         if index >= self.count {
             return None;
         }
+        Some(self.decode(index))
+    }
+
+    fn decode(&self, index: usize) -> TransportHeaderRef<'_> {
+        debug_assert!(index < self.count, "packed header index must be in bounds");
+        self.try_decode(index)
+            .expect("in-bounds packed transport header must decode")
+    }
+
+    fn try_decode(&self, index: usize) -> Option<TransportHeaderRef<'_>> {
         let descriptor_at = index.checked_mul(PACKED_HEADER_LEN)?;
         let stored = read_range(&self.bytes, descriptor_at)?;
         let original = read_range(&self.bytes, descriptor_at + 8)?;
@@ -552,26 +562,12 @@ impl<'a> Iterator for TransportHeadersIter<'a> {
 
         let index = self.index;
         self.index += 1;
-        let header = match storage {
+        match storage {
             TransportHeadersStorage::Owned(headers) => {
                 headers.get(index).map(TransportHeaderRef::from)
             }
-            TransportHeadersStorage::Packed(packed) => packed.get(index),
-        };
-        if header.is_none() {
-            tracing::error!(
-                name: "context.transport_headers.decode_failed",
-                header_index = index,
-                header_count = count,
-                message = "Packed transport header could not be decoded",
-            );
-            debug_assert!(
-                header.is_some(),
-                "packed transport header {index} of {count} must decode"
-            );
-            self.index = count;
+            TransportHeadersStorage::Packed(packed) => Some(packed.decode(index)),
         }
-        header
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -772,10 +768,9 @@ mod tests {
 
     /// Scenario: a packed header descriptor is corrupted below its declared count.
     /// Guarantees: iteration detects the violated decode invariant instead of failing silently.
-    #[cfg(debug_assertions)]
     #[test]
-    #[should_panic(expected = "packed transport header 0 of 1 must decode")]
-    fn packed_header_decode_failure_triggers_debug_assertion() {
+    #[should_panic(expected = "in-bounds packed transport header must decode")]
+    fn packed_header_decode_failure_fails_fast() {
         let mut headers = TransportHeaders::new();
         headers.replace(vec![header("tenant", "X-Tenant", b"acme")]);
         let storage = Arc::get_mut(headers.storage.as_mut().expect("packed storage is present"))

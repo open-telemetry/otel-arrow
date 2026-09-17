@@ -164,25 +164,10 @@ impl AuthorizedIdentityEntries {
 
     /// Iterates over captured entries in policy order.
     pub fn iter(&self) -> impl Iterator<Item = AuthorizedIdentityEntry<'_>> {
-        let packed = self.packed.as_deref();
-        (0..self.len()).filter_map(move |index| {
-            let packed = packed?;
-            let entry = packed.entry(index);
-            if entry.is_none() {
-                otel_arrow_dfe_telemetry::otel_error!(
-                    "context.authorized_identity.decode_failed",
-                    entry_index = index,
-                    entry_count = packed.entry_count,
-                    message = "Packed authorized identity entry could not be decoded",
-                );
-                debug_assert!(
-                    entry.is_some(),
-                    "packed authorized identity entry {index} of {} must decode",
-                    packed.entry_count
-                );
-            }
-            entry
-        })
+        self.packed
+            .as_deref()
+            .into_iter()
+            .flat_map(|packed| (0..packed.entry_count).map(|index| packed.decode_entry(index)))
     }
 
     /// Finds an entry by exact configured name.
@@ -277,10 +262,16 @@ impl PackedAuthorizedIdentity {
         })
     }
 
-    fn entry(&self, index: usize) -> Option<AuthorizedIdentityEntry<'_>> {
-        if index >= self.entry_count {
-            return None;
-        }
+    fn decode_entry(&self, index: usize) -> AuthorizedIdentityEntry<'_> {
+        debug_assert!(
+            index < self.entry_count,
+            "packed authorized identity index must be in bounds"
+        );
+        self.try_decode_entry(index)
+            .expect("in-bounds packed authorized identity entry must decode")
+    }
+
+    fn try_decode_entry(&self, index: usize) -> Option<AuthorizedIdentityEntry<'_>> {
         let at = index.checked_mul(AUTHORIZED_ENTRY_LEN)?;
         let name = read_context_str(&self.bytes, read_context_range(&self.bytes, at)?)?;
         let first_value = read_context_u32(&self.bytes, at + 8)?;
@@ -3021,8 +3012,8 @@ mod test {
     /// Guarantees: iteration detects the violated decode invariant instead of omitting it silently.
     #[cfg(debug_assertions)]
     #[test]
-    #[should_panic(expected = "packed authorized identity entry 0 of 1 must decode")]
-    fn authorized_identity_decode_failure_triggers_debug_assertion() {
+    #[should_panic(expected = "in-bounds packed authorized identity entry must decode")]
+    fn authorized_identity_decode_failure_fails_fast() {
         let policy: AuthorizedIdentityPolicy =
             serde_json::from_value(serde_json::json!([{"claim": "sub", "store_as": "subject"}]))
                 .expect("valid authorized identity policy");
