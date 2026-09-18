@@ -9,6 +9,10 @@ pub mod etw_receiver;
 #[cfg(feature = "kafka-receiver")]
 pub mod kafka_receiver;
 
+/// Oracle database receiver.
+#[cfg(feature = "oracle-receiver")]
+pub mod oracle_receiver;
+
 /// Linux user_events receiver.
 #[cfg(all(feature = "user_events-receiver", target_os = "linux"))]
 pub mod user_events_receiver;
