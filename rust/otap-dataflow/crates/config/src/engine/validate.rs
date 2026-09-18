@@ -8,6 +8,7 @@ use crate::engine::{
     SYSTEM_OBSERVABILITY_PIPELINE_ID, SYSTEM_PIPELINE_GROUP_ID,
 };
 use crate::error::Error;
+use std::collections::BTreeMap;
 
 impl OtelDataflowSpec {
     /// Validates the engine configuration and returns a [`Error::InvalidConfiguration`] error
@@ -173,6 +174,34 @@ impl OtelDataflowSpec {
                 });
             }
             for (pipeline_id, pipeline) in &pipeline_group.pipelines {
+                let mut visible_context_entries = BTreeMap::new();
+                for (path, policies) in [
+                    ("policies".to_owned(), Some(&self.policies)),
+                    (
+                        format!("groups.{pipeline_group_id}.policies"),
+                        pipeline_group.policies.as_ref(),
+                    ),
+                    (
+                        format!("groups.{pipeline_group_id}.pipelines.{pipeline_id}.policies"),
+                        pipeline.policies(),
+                    ),
+                ] {
+                    let Some(context) = policies.and_then(|policies| policies.context.as_ref())
+                    else {
+                        continue;
+                    };
+                    for name in context.entries.keys() {
+                        if let Some(previous_path) =
+                            visible_context_entries.insert(name.clone(), path.clone())
+                        {
+                            errors.push(Error::InvalidUserConfig {
+                                error: format!(
+                                    "{path}.context.entries.{name} conflicts with visible declaration {previous_path}.context.entries.{name}; context entries cannot shadow one another"
+                                ),
+                            });
+                        }
+                    }
+                }
                 if pipeline
                     .policies()
                     .and_then(|policies| policies.resources.as_ref())
