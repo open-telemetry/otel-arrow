@@ -151,7 +151,7 @@ fn validate_config_impl(config: &Value) -> Result<Config, otel_arrow_dfe_config:
 impl TrafficGeneratorReceiver {
     /// creates a new TrafficGeneratorReceiver
     pub fn new(pipeline_ctx: PipelineContext, config: Config) -> Result<Self, ConfigError> {
-        let metrics = pipeline_ctx.register_metrics::<TrafficGeneratorReceiverMetrics>();
+        let metrics = TrafficGeneratorReceiverMetrics::register(&pipeline_ctx);
         Ok(Self {
             config,
             metrics,
