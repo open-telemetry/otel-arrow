@@ -17,15 +17,15 @@ pub mod attributes_processor;
 pub mod content_router;
 
 /// Durable buffer processor.
+#[cfg(feature = "durable-buffer")]
 pub mod durable_buffer_processor;
 
 /// Partition processor.
+#[cfg(feature = "partition")]
 pub mod partition_processor;
 
-/// Retry processor.
-pub mod retry_processor;
-
 /// Transform processor.
+#[cfg(feature = "transform")]
 pub mod transform_processor;
 
 /// Declarative framed log parser processor.
@@ -45,3 +45,6 @@ pub mod log_sampling_processor;
 
 /// Temporal reaggregation processor.
 pub mod temporal_reaggregation_processor;
+
+/// Retry processor.
+pub mod retry_processor;
