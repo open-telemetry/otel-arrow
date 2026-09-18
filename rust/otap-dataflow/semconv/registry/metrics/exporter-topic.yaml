@@ -1,0 +1,124 @@
+file_format: definition/2
+metrics:
+- name: exporter.topic.dropped.messages.on.full
+  brief: Number of messages dropped due to queue full policy.
+  instrument: counter
+  unit: '{item}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node.topic
+    - otap.node.custom.topic
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: exporter.topic
+- name: exporter.topic.dropped.messages.on.outcome.capacity
+  brief: Number of messages rejected because tracked outcome capacity was exhausted.
+  instrument: counter
+  unit: '{item}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node.topic
+    - otap.node.custom.topic
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: exporter.topic
+- name: exporter.topic.end.to.end.acks
+  brief: Number of end-to-end acks bridged back to upstream.
+  instrument: counter
+  unit: '{item}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node.topic
+    - otap.node.custom.topic
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: exporter.topic
+- name: exporter.topic.end.to.end.nacks
+  brief: Number of end-to-end nacks bridged back to upstream.
+  instrument: counter
+  unit: '{item}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node.topic
+    - otap.node.custom.topic
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: exporter.topic
+- name: exporter.topic.outcome.timeouts
+  brief: 'Number of tracked publishes that resolved by timeout. Future: add an outcome-latency histogram
+    once histogram instruments are available in the telemetry layer.'
+  instrument: counter
+  unit: '{item}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node.topic
+    - otap.node.custom.topic
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: exporter.topic
+- name: exporter.topic.published.messages
+  brief: Number of messages published to the topic.
+  instrument: counter
+  unit: '{item}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node.topic
+    - otap.node.custom.topic
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: exporter.topic
+- name: exporter.topic.shutdown.nacks
+  brief: Number of pending end-to-end messages nacked during shutdown.
+  instrument: counter
+  unit: '{item}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node.topic
+    - otap.node.custom.topic
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: exporter.topic
+- name: exporter.topic.tracked.in.flight
+  brief: 'Current number of tracked publishes waiting for a terminal outcome. Future: add a pending-bytes
+    gauge once retained payload size accounting is available for tracked publishes.'
+  instrument: gauge
+  unit: '{item}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node.topic
+    - otap.node.custom.topic
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: exporter.topic

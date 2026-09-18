@@ -1,16 +1,12 @@
 name: df-engine-internal-observability
 
-# Validates that df_engine's internal observability surface (events,
-# and eventually metrics + attributes) matches the in-tree semantic-
-# conventions registry under `rust/otap-dataflow/semconv/`.
+# Validates that df_engine's internal observability surface matches the
+# semantic-convention v2 registry under `rust/otap-dataflow/semconv/`.
 #
-# The job boots `weaver registry live-check` against the in-tree
-# registry, runs df_engine wired to emit its internal telemetry into
-# weaver via OTLP, exercises every declared event with per-event
-# triggers, and fails if any declared event receives zero samples or
-# has an event-level violation. Attribute-level findings (attributes
-# emitted by the engine but not yet declared) are tolerated today and
-# tightened in follow-up PRs as the registry is filled in.
+# Weaver first checks the static registry, then live-checks telemetry emitted
+# by an exercised df_engine scenario. The scenario manifest defines the events
+# that run must cover; other emitted telemetry is still included in Weaver's
+# report and can be tightened as the registry and scenarios mature.
 #
 # Long-term intent: this is the authoritative gate ensuring df_engine's
 # self-reported telemetry stays conformant with its declared contract.
@@ -60,6 +56,8 @@ jobs:
         uses: open-telemetry/weaver/.github/actions/setup-weaver@26c685ff52b925056ff1d53476c6022638c01220 # v0.25.1
         with:
           version: ${{ env.WEAVER_VERSION }}
+      - name: Validate semantic-convention v2 registry
+        run: weaver registry check --v2 --registry rust/otap-dataflow/semconv
       - name: Generate self-signed TLS cert
         run: |
           set -euo pipefail
@@ -83,6 +81,7 @@ jobs:
         uses: open-telemetry/weaver/.github/actions/weaver-live-check-start@26c685ff52b925056ff1d53476c6022638c01220 # v0.25.1
         with:
           registry: rust/otap-dataflow/semconv
+          config: rust/otap-dataflow/semconv/live-check.weaver.toml
           otlp-grpc-port: '4317'
           admin-port: '4320'
           # Generous safety net: the listener uses `--output http` so the
@@ -97,6 +96,8 @@ jobs:
           state-dir: ${{ runner.temp }}/weaver-live-check-df-engine
       - name: Start df_engine
         working-directory: ${{ github.workspace }}
+        env:
+          RUST_LOG: info,otel.exporter.otlp_grpc=debug
         run: |
           set -euo pipefail
           mkdir -p live-check-report
@@ -125,9 +126,9 @@ jobs:
           # Run every script in the trigger directory. These exist solely
           # to fire events that need active driving (e.g. network calls);
           # passive events fire from the engine config on its own and need
-          # no script here. Adding a new event: declare it in
-          # `semconv/groups/event.<name>.yaml`; if it cannot be exercised
-          # purely by the engine config, drop a script in
+          # no script here. Add events covered by this scenario to
+          # `semconv-live-check/internal-events.yaml`; if one cannot be
+          # exercised purely by the engine config, add a script under
           # `semconv/triggers/` that drives it.
           shopt -s nullglob
           for trigger in rust/otap-dataflow/semconv/triggers/*.sh; do
@@ -159,16 +160,14 @@ jobs:
           # Match the explicit state dir from the start action so this
           # works even if start failed before exporting it via env.
           state-dir: ${{ runner.temp }}/weaver-live-check-df-engine
-          # Tolerate weaver's global findings exit code today: the
-          # registry is not yet exhaustive, so attribute-level
-          # violations from undeclared attributes are expected. The
-          # substantive gate is the registry-driven event coverage
-          # check in the next step.
+          # Keep global findings report-only: generic resource attributes and
+          # advisory-level findings are not yet suitable as a global gate. The
+          # next step gates the project events this scenario must exercise.
           fail-on: 'none'
           # Keep using our own bundled upload (which also includes the
           # df_engine and weaver logs) below.
           upload-report: 'false'
-      - name: Assert every registered event was validated
+      - name: Assert every scenario event was validated
         if: always()
         working-directory: ${{ github.workspace }}
         env:
@@ -181,18 +180,13 @@ jobs:
             exit 1
           fi
 
-          # The two gates below (zero-sample detection and severity-scoped
-          # exit code) are workarounds; weaver's native exit code does not
-          # yet express them. They can be removed once both upstream
-          # features land:
-          #   - https://github.com/open-telemetry/weaver/issues/1473
-          #     `--fail-on` for severity-based exit code
+          # The zero-sample coverage gate below is a workaround until Weaver
+          # can enforce scenario coverage directly:
           #   - https://github.com/open-telemetry/weaver/issues/1474
           #     coverage / `--fail-on-coverage-below`
-          # The expected event set is enumerated directly from
-          # `semconv/groups/*.yaml` -- the registry is the single source
-          # of truth, and `semconv/triggers/` is just a bag of scripts
-          # to run before validation.
+          # Coverage is scenario-specific: the exhaustive v2 registry contains
+          # events that cannot all be produced by one engine configuration.
+          # The scenario manifest lists the events this run must exercise.
           {
             echo "## df_engine events live-check"
             echo
@@ -201,12 +195,12 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
           mapfile -t expected < <(
-            yq eval-all '.groups[] | select(.type == "event") | .name' \
-              rust/otap-dataflow/semconv/groups/*.yaml \
+            yq eval '.events[].name' \
+              rust/otap-dataflow/semconv-live-check/internal-events.yaml \
               | grep -Ev '^(---|null)$' | sort -u
           )
           if [ "${#expected[@]}" -eq 0 ]; then
-            echo "::error::No events discovered under semconv/groups/"
+            echo "::error::No events declared by the internal-events live-check scenario"
             exit 1
           fi
 
@@ -228,7 +222,7 @@ jobs:
               | @tsv' "$REPORT")
             echo "| \`$name\` | $count | $worst |" >> "$GITHUB_STEP_SUMMARY"
             if [ "$count" = "0" ]; then
-              echo "::error::declared event \`$name\` received zero samples"
+              echo "::error::scenario event \`$name\` received zero samples"
               fail=1
             elif [ "$worst" = "violation" ]; then
               echo "::error::event \`$name\` has event-level violations"

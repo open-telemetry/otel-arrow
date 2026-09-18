@@ -1,0 +1,22 @@
+file_format: definition/2
+metrics:
+- name: exporter.otlp_http.failures.messages
+  brief: Number of PData messages that failed for the classified error type.
+  instrument: counter
+  unit: '{message}'
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error.type
+    requirement_level: recommended
+  - ref: signal
+    requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: exporter.otlp_http.failures

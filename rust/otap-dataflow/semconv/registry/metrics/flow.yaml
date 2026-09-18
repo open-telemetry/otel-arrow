@@ -1,0 +1,66 @@
+file_format: definition/2
+metrics:
+- name: flow.compute.duration
+  brief: Sum of per-node compute durations (nanoseconds) for messages traversing the flow range.
+  instrument: histogram
+  unit: ns
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: signal
+    requirement_level: recommended
+  entity_associations:
+  - otap.flow
+  annotations:
+    code_generation:
+      metric_value_type: double
+    otap_dataflow:
+      metric_set: flow
+- name: flow.consumed.items
+  brief: Number of signal items (log records, spans, or metric data points) entering the flow range.
+  instrument: counter
+  unit: '{item}'
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: signal
+    requirement_level: recommended
+  entity_associations:
+  - otap.flow
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: flow
+- name: flow.dropped.items
+  brief: Number of signal items (log records, spans, or metric data points) a decision node chose to drop.
+  instrument: counter
+  unit: '{item}'
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: signal
+    requirement_level: recommended
+  entity_associations:
+  - otap.flow
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: flow
+- name: flow.produced.items
+  brief: Number of signal items (log records, spans, or metric data points) leaving the flow range.
+  instrument: counter
+  unit: '{item}'
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: signal
+    requirement_level: recommended
+  entity_associations:
+  - otap.flow
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: flow

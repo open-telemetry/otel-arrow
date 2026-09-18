@@ -1,0 +1,1361 @@
+file_format: definition/2
+events:
+- name: controller.extension_factory.duplicate_registration
+  brief: The controller.extension_factory.duplicate_registration internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: extension_type
+    requirement_level: required
+  entity_associations:
+  - otap.extension
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.controller.main
+        severity_levels:
+        - warn
+        sources:
+        - crates/controller/src/lib.rs
+        availability: []
+- name: controller.extension_runtime_failed
+  brief: The controller.extension_runtime_failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  - ref: extension_id
+    requirement_level: required
+  entity_associations:
+  - otap.extension
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.controller.main
+        severity_levels:
+        - error
+        sources:
+        - crates/controller/src/lib.rs
+        availability: []
+- name: controller.extension_runtime_shutdown_failed
+  brief: The controller.extension_runtime_shutdown_failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  - ref: extension_id
+    requirement_level: required
+  entity_associations:
+  - otap.extension
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.controller.main
+        severity_levels:
+        - warn
+        sources:
+        - crates/controller/src/lib.rs
+        availability: []
+- name: controller.extension_startup_engine_metrics_shutdown_failed
+  brief: The controller.extension_startup_engine_metrics_shutdown_failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - otap.extension
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.controller.main
+        severity_levels:
+        - warn
+        sources:
+        - crates/controller/src/lib.rs
+        availability: []
+- name: controller.extension_startup_memory_limiter_shutdown_failed
+  brief: The controller.extension_startup_memory_limiter_shutdown_failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - otap.extension
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.controller.main
+        severity_levels:
+        - warn
+        sources:
+        - crates/controller/src/lib.rs
+        availability: []
+- name: controller.extension_startup_pipeline_shutdown_timeout
+  brief: The controller.extension_startup_pipeline_shutdown_timeout internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.extension
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.controller.main
+        severity_levels:
+        - warn
+        sources:
+        - crates/controller/src/lib.rs
+        availability: []
+- name: controller.extension_startup_shutdown_failed
+  brief: The controller.extension_startup_shutdown_failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - otap.extension
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.controller.main
+        severity_levels:
+        - warn
+        sources:
+        - crates/controller/src/lib.rs
+        availability: []
+- name: controller.global_shutdown.async_phase_failed
+  brief: The controller.global_shutdown.async_phase_failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - otap.engine
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.controller.main
+        severity_levels:
+        - warn
+        sources:
+        - crates/controller/src/live_control/runtime.rs
+        availability: []
+- name: controller.listener_group.addr_skipped
+  brief: Emitted by OTAP Dataflow as `controller.listener_group.addr_skipped`.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: config_path
+    requirement_level: required
+  - ref: error
+    requirement_level: required
+  - ref: node_id
+    requirement_level: required
+  - ref: receiver_urn
+    requirement_level: required
+  entity_associations:
+  - otap.engine
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.controller.main
+        severity_levels:
+        - warn
+        sources:
+        - crates/controller/src/listener_group.rs
+        availability: []
+- name: controller.monitor.snapshot
+  brief: The controller.monitor.snapshot internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: extension_id
+    requirement_level: required
+  - ref: live_pipelines
+    requirement_level: required
+  - ref: observed_pipelines
+    requirement_level: required
+  - ref: ready_pipelines
+    requirement_level: required
+  - ref: telemetry_entities
+    requirement_level: required
+  - ref: telemetry_metric_sets
+    requirement_level: required
+  entity_associations:
+  - otap.engine
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.extension.controller_monitor
+        severity_levels:
+        - info
+        sources:
+        - crates/controller/src/controller_monitor.rs
+        availability: []
+- name: controller.monitor.unregister_failed
+  brief: The controller.monitor.unregister_failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: extension_id
+    requirement_level: required
+  entity_associations:
+  - otap.engine
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.extension.controller_monitor
+        severity_levels:
+        - warn
+        sources:
+        - crates/controller/src/controller_monitor.rs
+        availability: []
+- name: controller.numa_topology.detected
+  brief: Emitted by OTAP Dataflow as `controller.numa_topology.detected`.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: completeness
+    requirement_level: required
+  - ref: visible_cpu_count
+    requirement_level: required
+  - ref: visible_node_count
+    requirement_level: required
+  entity_associations:
+  - otap.engine
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.controller.main
+        severity_levels:
+        - info
+        sources:
+        - crates/controller/src/lib.rs
+        availability: []
+- name: controller.pipeline_build_failed
+  brief: The controller.pipeline_build_failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: core_id
+    requirement_level: required
+  - ref: error
+    requirement_level: required
+  - ref: pipeline_group_id
+    requirement_level: required
+  - ref: pipeline_id
+    requirement_level: required
+  entity_associations:
+  - otap.engine
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.controller.main
+        severity_levels:
+        - error
+        sources:
+        - crates/controller/src/lib.rs
+        availability: []
+- name: controller.pipeline_runtime_failed
+  brief: The controller.pipeline_runtime_failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: core_id
+    requirement_level: required
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - otap.engine
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.controller.main
+        severity_levels:
+        - error
+        sources:
+        - crates/controller/src/lib.rs
+        availability: []
+- name: controller.pipeline_shutdown_timeout
+  brief: The controller.pipeline_shutdown_timeout internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.engine
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.controller.main
+        severity_levels:
+        - warn
+        sources:
+        - crates/controller/src/lib.rs
+        availability: []
+- name: controller.rollout_panic_cleanup_failed
+  brief: The controller.rollout_panic_cleanup_failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: core_id
+    requirement_level: required
+  - ref: deployment_generation
+    requirement_level: required
+  - ref: error
+    requirement_level: required
+  - ref: pipeline_group_id
+    requirement_level: required
+  - ref: pipeline_id
+    requirement_level: required
+  - ref: rollout_id
+    requirement_level: required
+  entity_associations:
+  - otap.engine
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.controller.main
+        severity_levels:
+        - error
+        sources:
+        - crates/controller/src/live_control/execution.rs
+        availability: []
+- name: controller.start
+  brief: The controller.start internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: num_pipeline_groups
+    requirement_level: required
+  - ref: num_pipelines
+    requirement_level: required
+  entity_associations:
+  - otap.engine
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.controller.main
+        severity_levels:
+        - info
+        sources:
+        - crates/controller/src/lib.rs
+        availability: []
+- name: controller.topic_mode_inferred
+  brief: The controller.topic_mode_inferred internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: balanced_group_count
+    requirement_level: required
+  - ref: exporter_refs
+    requirement_level: required
+  - ref: has_broadcast_receivers
+    requirement_level: required
+  - ref: has_unknown_receiver_mode
+    requirement_level: required
+  - ref: receiver_refs
+    requirement_level: required
+  - ref: selected_mode
+    requirement_level: required
+  - ref: selection_policy
+    requirement_level: required
+  - ref: topic
+    requirement_level: required
+  - ref: topology_mode
+    requirement_level: required
+  entity_associations:
+  - otap.engine
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.controller.main
+        severity_levels:
+        - info
+        sources:
+        - crates/controller/src/lib.rs
+        availability: []
+- name: controller.worker_panic
+  brief: The controller.worker_panic internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error_kind
+    requirement_level: required
+  - ref: operation_id
+    requirement_level: required
+  - ref: operation_kind
+    requirement_level: required
+  - ref: pipeline_group_id
+    requirement_level: required
+  - ref: pipeline_id
+    requirement_level: required
+  - ref: source
+    requirement_level: required
+  entity_associations:
+  - otap.engine
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.controller.main
+        severity_levels:
+        - error
+        sources:
+        - crates/controller/src/live_control/execution.rs
+        availability: []
+- name: core_affinity.set_failed
+  brief: The core_affinity.set_failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.engine
+    - otap.pipeline
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.controller.main
+        severity_levels:
+        - warn
+        sources:
+        - crates/controller/src/lib.rs
+        availability: []
+- name: engine.metrics.final_reporting.fail
+  brief: The engine.metrics.final_reporting.fail internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - otap.engine
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.controller.main
+        severity_levels:
+        - warn
+        sources:
+        - crates/controller/src/lib.rs
+        availability: []
+- name: engine.metrics.reporting.fail
+  brief: The engine.metrics.reporting.fail internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - otap.engine
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.controller.main
+        severity_levels:
+        - warn
+        sources:
+        - crates/controller/src/lib.rs
+        availability: []
+- name: internal_pipeline.started
+  brief: The internal_pipeline.started internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.engine
+    - otap.pipeline
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.controller.main
+        severity_levels:
+        - info
+        sources:
+        - crates/controller/src/lib.rs
+        availability: []
+- name: opamp.controller.message.ignored_config
+  brief: The opamp.controller.message.ignored_config internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: key
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.engine
+    - otap.pipeline
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.extension.opamp
+        severity_levels:
+        - debug
+        sources:
+        - crates/controller/src/extension/opamp/mod.rs
+        availability: []
+- name: opamp.controller_extension.connection_settings.update
+  brief: The opamp.controller_extension.connection_settings.update internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.extension
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.extension.opamp
+        severity_levels:
+        - warn
+        sources:
+        - crates/controller/src/extension/opamp/mod.rs
+        availability: []
+- name: opamp.controller_extension.decode.error
+  brief: The opamp.controller_extension.decode.error internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: recommended
+  - ref: header
+    requirement_level: recommended
+  entity_associations:
+  - otap.extension
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.extension.opamp
+        severity_levels:
+        - error
+        sources:
+        - crates/controller/src/extension/opamp/mod.rs
+        availability: []
+- name: opamp.controller_extension.effective_config.error
+  brief: The opamp.controller_extension.effective_config.error internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - otap.extension
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.extension.opamp
+        severity_levels:
+        - error
+        sources:
+        - crates/controller/src/extension/opamp/mod.rs
+        availability: []
+- name: opamp.controller_extension.message.command
+  brief: The opamp.controller_extension.message.command internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: command_type
+    requirement_level: required
+  entity_associations:
+  - otap.extension
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.extension.opamp
+        severity_levels:
+        - info
+        sources:
+        - crates/controller/src/extension/opamp/mod.rs
+        availability: []
+- name: opamp.controller_extension.message.command_ignored
+  brief: The opamp.controller_extension.message.command_ignored internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: command
+    requirement_level: required
+  entity_associations:
+  - otap.extension
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.extension.opamp
+        severity_levels:
+        - warn
+        sources:
+        - crates/controller/src/extension/opamp/mod.rs
+        availability: []
+- name: opamp.controller_extension.message.error
+  brief: The opamp.controller_extension.message.error internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  - ref: type
+    requirement_level: required
+  - ref: will_retry
+    requirement_level: required
+  entity_associations:
+  - otap.extension
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.extension.opamp
+        severity_levels:
+        - error
+        sources:
+        - crates/controller/src/extension/opamp/mod.rs
+        availability: []
+- name: opamp.controller_extension.message.ignored
+  brief: The opamp.controller_extension.message.ignored internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: expected
+    requirement_level: required
+  - ref: received
+    requirement_level: required
+  entity_associations:
+  - otap.extension
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.extension.opamp
+        severity_levels:
+        - warn
+        sources:
+        - crates/controller/src/extension/opamp/mod.rs
+        availability: []
+- name: opamp.controller_extension.message.ignored_connection_setting
+  brief: The opamp.controller_extension.message.ignored_connection_setting internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.extension
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.extension.opamp
+        severity_levels:
+        - debug
+        sources:
+        - crates/controller/src/extension/opamp/mod.rs
+        availability: []
+- name: opamp.controller_extension.message.invalid_config
+  brief: Emitted by OTAP Dataflow as `opamp.controller_extension.message.invalid_config`.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - otap.extension
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.extension.opamp
+        severity_levels:
+        - error
+        sources:
+        - crates/controller/src/extension/opamp/mod.rs
+        availability: []
+- name: opamp.controller_extension.message.missing_config_key
+  brief: The opamp.controller_extension.message.missing_config_key internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: expected_key
+    requirement_level: required
+  entity_associations:
+  - otap.extension
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.extension.opamp
+        severity_levels:
+        - warn
+        sources:
+        - crates/controller/src/extension/opamp/mod.rs
+        availability: []
+- name: opamp.controller_extension.message.skip_update_config
+  brief: The opamp.controller_extension.message.skip_update_config internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.extension
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.extension.opamp
+        severity_levels:
+        - debug
+        sources:
+        - crates/controller/src/extension/opamp/mod.rs
+        availability: []
+- name: opamp.controller_extension.new_instance_id.invalid
+  brief: The opamp.controller_extension.new_instance_id.invalid internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: actual_len
+    requirement_level: required
+  - ref: new_instance_id
+    requirement_level: required
+  entity_associations:
+  - otap.extension
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.extension.opamp
+        severity_levels:
+        - error
+        sources:
+        - crates/controller/src/extension/opamp/mod.rs
+        availability: []
+- name: opamp.controller_extension.receive_message.error
+  brief: The opamp.controller_extension.receive_message.error internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - otap.extension
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.extension.opamp
+        severity_levels:
+        - error
+        sources:
+        - crates/controller/src/extension/opamp/mod.rs
+        availability: []
+- name: opamp.controller_extension.receive_message.server_disconnected
+  brief: The opamp.controller_extension.receive_message.server_disconnected internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.extension
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.extension.opamp
+        severity_levels:
+        - info
+        sources:
+        - crates/controller/src/extension/opamp/mod.rs
+        availability: []
+- name: opamp.controller_extension.remote_config.accepted
+  brief: Emitted by OTAP Dataflow as `opamp.controller_extension.remote_config.accepted`.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.extension
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.extension.opamp
+        severity_levels:
+        - debug
+        sources:
+        - crates/controller/src/extension/opamp/mod.rs
+        availability: []
+- name: opamp.controller_extension.remote_config.empty
+  brief: Emitted by OTAP Dataflow as `opamp.controller_extension.remote_config.empty`.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.extension
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.extension.opamp
+        severity_levels:
+        - debug
+        sources:
+        - crates/controller/src/extension/opamp/mod.rs
+        availability: []
+- name: opamp.controller_extension.remote_config.missing
+  brief: Emitted by OTAP Dataflow as `opamp.controller_extension.remote_config.missing`.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.extension
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.extension.opamp
+        severity_levels:
+        - debug
+        sources:
+        - crates/controller/src/extension/opamp/mod.rs
+        availability: []
+- name: opamp.controller_extension.remote_config.reconcile_failed
+  brief: Emitted by OTAP Dataflow as `opamp.controller_extension.remote_config.reconcile_failed`.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: changes
+    requirement_level: recommended
+  - ref: error
+    requirement_level: recommended
+  - ref: state
+    requirement_level: recommended
+  entity_associations:
+  - otap.extension
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.extension.opamp
+        severity_levels:
+        - error
+        sources:
+        - crates/controller/src/extension/opamp/mod.rs
+        availability: []
+- name: opamp.controller_extension.remote_config.reconcile_start
+  brief: Emitted by OTAP Dataflow as `opamp.controller_extension.remote_config.reconcile_start`.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: delete_missing
+    requirement_level: required
+  entity_associations:
+  - otap.extension
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.extension.opamp
+        severity_levels:
+        - info
+        sources:
+        - crates/controller/src/extension/opamp/mod.rs
+        availability: []
+- name: opamp.controller_extension.remote_config.reconcile_succeeded
+  brief: Emitted by OTAP Dataflow as `opamp.controller_extension.remote_config.reconcile_succeeded`.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: changes
+    requirement_level: required
+  entity_associations:
+  - otap.extension
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.extension.opamp
+        severity_levels:
+        - info
+        sources:
+        - crates/controller/src/extension/opamp/mod.rs
+        availability: []
+- name: opamp.controller_extension.retry.invalid_state
+  brief: The opamp.controller_extension.retry.invalid_state internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.extension
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.extension.opamp
+        severity_levels:
+        - warn
+        sources:
+        - crates/controller/src/extension/opamp/mod.rs
+        availability: []
+- name: opamp.controller_extension.send_message.error
+  brief: The opamp.controller_extension.send_message.error internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - otap.extension
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.extension.opamp
+        severity_levels:
+        - error
+        sources:
+        - crates/controller/src/extension/opamp/mod.rs
+        availability: []
+- name: opamp.controller_extension.shutdown_close_ws.error
+  brief: The opamp.controller_extension.shutdown_close_ws.error internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - otap.extension
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.extension.opamp
+        severity_levels:
+        - error
+        sources:
+        - crates/controller/src/extension/opamp/mod.rs
+        availability: []
+- name: opamp.controller_extension.shutdown_close_ws.timeout
+  brief: The opamp.controller_extension.shutdown_close_ws.timeout internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.extension
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.extension.opamp
+        severity_levels:
+        - warn
+        sources:
+        - crates/controller/src/extension/opamp/mod.rs
+        availability: []
+- name: opamp.controller_extension.shutdown_message.error
+  brief: The opamp.controller_extension.shutdown_message.error internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - otap.extension
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.extension.opamp
+        severity_levels:
+        - error
+        sources:
+        - crates/controller/src/extension/opamp/mod.rs
+        availability: []
+- name: opamp.controller_extension.shutdown_message.timeout
+  brief: The opamp.controller_extension.shutdown_message.timeout internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.extension
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.extension.opamp
+        severity_levels:
+        - warn
+        sources:
+        - crates/controller/src/extension/opamp/mod.rs
+        availability: []
+- name: opamp.controller_extension.status.generate_failed
+  brief: The opamp.controller_extension.status.generate_failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - otap.extension
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.extension.opamp
+        severity_levels:
+        - warn
+        sources:
+        - crates/controller/src/extension/opamp/mod.rs
+        availability: []
+- name: opamp.controller_extension.ws_connect.error
+  brief: The opamp.controller_extension.ws_connect.error internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  - ref: retry_in
+    requirement_level: required
+  entity_associations:
+  - otap.extension
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.extension.opamp
+        severity_levels:
+        - warn
+        sources:
+        - crates/controller/src/extension/opamp/mod.rs
+        availability: []
+- name: opamp.controller_extension.ws_connect.success
+  brief: Emitted by OTAP Dataflow as `opamp.controller_extension.ws_connect.success`.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.extension
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.extension.opamp
+        severity_levels:
+        - info
+        sources:
+        - crates/controller/src/extension/opamp/mod.rs
+        availability: []
+- name: otelcol.pipeline.recovery.abort
+  brief: Emitted by OTAP Dataflow as `otelcol.pipeline.recovery.abort`.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: core_id
+    requirement_level: required
+  - ref: error
+    requirement_level: required
+  - ref: failed_generation
+    requirement_level: required
+  - ref: max_restarts
+    requirement_level: required
+  - ref: pipeline_group_id
+    requirement_level: required
+  - ref: pipeline_id
+    requirement_level: required
+  - ref: restart_count
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.engine
+    - otap.pipeline
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.controller.main
+        severity_levels:
+        - error
+        sources:
+        - crates/controller/src/live_control/runtime.rs
+        availability: []
+- name: otelcol.pipeline.recovery.complete
+  brief: Emitted by OTAP Dataflow as `otelcol.pipeline.recovery.complete`.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: attempt
+    requirement_level: required
+  - ref: core_id
+    requirement_level: required
+  - ref: from_generation
+    requirement_level: required
+  - ref: pipeline_group_id
+    requirement_level: required
+  - ref: pipeline_id
+    requirement_level: required
+  - ref: target_generation
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.engine
+    - otap.pipeline
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.controller.main
+        severity_levels:
+        - info
+        sources:
+        - crates/controller/src/live_control/runtime.rs
+        availability: []
+- name: otelcol.pipeline.recovery.retry
+  brief: Emitted by OTAP Dataflow as `otelcol.pipeline.recovery.retry`.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: attempt
+    requirement_level: required
+  - ref: backoff_ms
+    requirement_level: required
+  - ref: core_id
+    requirement_level: required
+  - ref: error
+    requirement_level: required
+  - ref: from_generation
+    requirement_level: required
+  - ref: max_restarts
+    requirement_level: required
+  - ref: pipeline_group_id
+    requirement_level: required
+  - ref: pipeline_id
+    requirement_level: required
+  - ref: target_generation
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.engine
+    - otap.pipeline
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.controller.main
+        severity_levels:
+        - warn
+        sources:
+        - crates/controller/src/live_control/runtime.rs
+        availability: []
+- name: pipeline.core_allocation
+  brief: The pipeline.core_allocation internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: core_allocation
+    requirement_level: required
+  - ref: num_cores
+    requirement_level: required
+  - ref: pipeline_group_id
+    requirement_level: required
+  - ref: pipeline_id
+    requirement_level: required
+  - ref: resolved_cores
+    requirement_level: required
+  - ref: resolved_numa_nodes
+    requirement_level: required
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.controller.main
+        severity_levels:
+        - info
+        sources:
+        - crates/controller/src/lib.rs
+        availability: []
+- name: process_memory_limiter.observe_only_ignored_setting
+  brief: The process_memory_limiter.observe_only_ignored_setting internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: setting
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.engine
+    - otap.pipeline
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.controller.main
+        severity_levels:
+        - warn
+        sources:
+        - crates/controller/src/lib.rs
+        availability: []
+- name: process_memory_limiter.purge
+  brief: The process_memory_limiter.purge internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: current
+    requirement_level: required
+  - ref: post_purge_usage_bytes
+    requirement_level: required
+  - ref: pre_purge_usage_bytes
+    requirement_level: required
+  - ref: purge_duration_ms
+    requirement_level: required
+  - ref: source
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.engine
+    - otap.pipeline
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.controller.main
+        severity_levels:
+        - info
+        sources:
+        - crates/controller/src/lib.rs
+        availability: []
+- name: process_memory_limiter.purge_failed
+  brief: The process_memory_limiter.purge_failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  - ref: pre_purge_usage_bytes
+    requirement_level: required
+  - ref: source
+    requirement_level: required
+  - ref: usage_bytes
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.engine
+    - otap.pipeline
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.controller.main
+        severity_levels:
+        - warn
+        sources:
+        - crates/controller/src/lib.rs
+        availability: []
+- name: process_memory_limiter.purge_unavailable
+  brief: The process_memory_limiter.purge_unavailable internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: source
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.engine
+    - otap.pipeline
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.controller.main
+        severity_levels:
+        - warn
+        sources:
+        - crates/controller/src/lib.rs
+        availability: []
+- name: process_memory_limiter.sample_failed
+  brief: The process_memory_limiter.sample_failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.engine
+    - otap.pipeline
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.controller.main
+        severity_levels:
+        - warn
+        sources:
+        - crates/controller/src/lib.rs
+        availability: []
+- name: process_memory_limiter.transition
+  brief: The process_memory_limiter.transition internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: current
+    requirement_level: required
+  - ref: hard_limit_bytes
+    requirement_level: required
+  - ref: previous
+    requirement_level: required
+  - ref: soft_limit_bytes
+    requirement_level: required
+  - ref: source
+    requirement_level: required
+  - ref: usage_bytes
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.engine
+    - otap.pipeline
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.controller.main
+        severity_levels:
+        - info
+        - warn
+        sources:
+        - crates/controller/src/lib.rs
+        availability: []

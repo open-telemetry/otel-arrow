@@ -1,0 +1,182 @@
+file_format: definition/2
+metrics:
+- name: receiver.host_metrics.batches.sent
+  brief: Number of batches sent downstream.
+  instrument: counter
+  unit: '{batch}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: receiver.host_metrics
+- name: receiver.host_metrics.families.scraped
+  brief: Number of due metric families processed.
+  instrument: counter
+  unit: '{family}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: receiver.host_metrics
+- name: receiver.host_metrics.partial.errors
+  brief: Number of source read errors skipped because other families succeeded.
+  instrument: counter
+  unit: '{error}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: receiver.host_metrics
+- name: receiver.host_metrics.scrape.duration.ns
+  brief: Wall-clock scrape duration.
+  instrument: histogram
+  unit: ns
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: double
+    otap_dataflow:
+      metric_set: receiver.host_metrics
+- name: receiver.host_metrics.scrape.lag.ns
+  brief: Delay between scheduled and actual scrape start.
+  instrument: histogram
+  unit: ns
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: double
+    otap_dataflow:
+      metric_set: receiver.host_metrics
+- name: receiver.host_metrics.scraper.failures
+  brief: Number of scraper worker failures.
+  instrument: counter
+  unit: '{error}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: receiver.host_metrics
+- name: receiver.host_metrics.scrapes.completed
+  brief: Number of scrape ticks that built and sent a metrics batch.
+  instrument: counter
+  unit: '{scrape}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: receiver.host_metrics
+- name: receiver.host_metrics.scrapes.failed
+  brief: Number of fatal scrape failures.
+  instrument: counter
+  unit: '{scrape}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: receiver.host_metrics
+- name: receiver.host_metrics.scrapes.overrun
+  brief: Number of scrape ticks skipped or timed out before completion.
+  instrument: counter
+  unit: '{scrape}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: receiver.host_metrics
+- name: receiver.host_metrics.scrapes.started
+  brief: Number of scrape ticks started.
+  instrument: counter
+  unit: '{scrape}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: receiver.host_metrics
+- name: receiver.host_metrics.send.failures
+  brief: Number of downstream send failures.
+  instrument: counter
+  unit: '{error}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: receiver.host_metrics
+- name: receiver.host_metrics.source.read.errors
+  brief: Number of source read errors seen during scrapes.
+  instrument: counter
+  unit: '{error}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: receiver.host_metrics
