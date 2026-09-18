@@ -5,6 +5,13 @@
 //!
 //! Note: We try as much as possible to follow the following
 //! [RFC Pipeline Component Telemetry](https://github.com/open-telemetry/opentelemetry-collector/blob/main/docs/rfcs/component-universal-telemetry.md).
+//!
+//! Receiver and exporter observations follow external-work cardinality, which
+//! is not necessarily the same as PData message cardinality. See
+//! [Shared receiver and exporter boundary metrics][boundary-metrics] before
+//! instrumenting fan-out, aggregation, many-to-many batching, or retries.
+//!
+//! [boundary-metrics]: https://github.com/open-telemetry/otel-arrow/blob/main/rust/otap-dataflow/docs/telemetry/metrics-guide.md#shared-receiver-and-exporter-boundary-metrics
 
 use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_engine::Interests;
@@ -14,6 +21,7 @@ use otel_arrow_dfe_telemetry::common_attributes::{
 };
 use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
 use otel_arrow_dfe_telemetry::instrument::{Counter, HistogramNormal};
+use otel_arrow_dfe_telemetry::metrics::MetricSetRegistrar;
 use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSetSnapshot};
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use otel_arrow_dfe_telemetry_macros::metric_set;
@@ -67,7 +75,7 @@ impl ReceiverReceivedPayloadMetrics {
 )]
 #[derive(Debug, Default, Clone)]
 struct ReceiverProcessingMetrics {
-    /// Component-defined receiver-local processing time.
+    /// Node-defined receiver-local processing time.
     ///
     /// Each receiver documents its stable start and end boundary. Downstream
     /// processing, batching wait, handoff wait, and Ack/Nack completion are
@@ -84,7 +92,11 @@ impl ReceiverProcessingMetrics {
     }
 }
 
-/// Receiver-local processing state captured for enabled shared metrics.
+/// Receiver-local processing state for one classified external message.
+///
+/// One external message may emit zero, one, or several PData messages. This
+/// state owns the external-message observation; engine-managed `node.output`
+/// metrics own the emitted PData observations.
 #[derive(Debug)]
 pub struct ReceiverProcessing {
     measure_duration: bool,
@@ -142,7 +154,22 @@ impl ReceiverMetrics {
         }
     }
 
+    /// Registers the shared receiver metric sets with an entity-bound registrar.
+    #[must_use]
+    pub fn register_with(registrar: &impl MetricSetRegistrar, interests: Interests) -> Self {
+        Self {
+            received: ReceiverReceivedMetrics::register(registrar),
+            payload: ReceiverReceivedPayloadMetrics::register(registrar),
+            processing: ReceiverProcessingMetrics::register(registrar),
+            interests,
+        }
+    }
+
     /// Creates receiver-local processing instrumentation for one external message.
+    ///
+    /// Do not create one instance per emitted PData message when receiver work
+    /// fans out, and do not merge several external messages into one instance
+    /// when receiver work aggregates.
     #[must_use]
     pub fn processing(&self) -> ReceiverProcessing {
         ReceiverProcessing {
@@ -259,8 +286,8 @@ impl ReceiverProcessing {
 struct ExporterAttemptedMetrics {
     /// Number of node-local delivery attempts.
     ///
-    /// Retries count again. This differs from `node.input.messages`, which
-    /// counts PData messages entering the exporter.
+    /// Retries represented as shared attempts count again. This differs from
+    /// `node.input.messages`, which counts PData messages entering the exporter.
     #[metric(unit = "{message}")]
     messages: Counter<u64>,
 }
@@ -333,7 +360,12 @@ impl ExporterAttemptedItemsMetrics {
     }
 }
 
-/// Prepared instrumentation for one node-local exporter attempt.
+/// Prepared instrumentation for one node-local export attempt.
+///
+/// An attempt usually owns one external submission, but it can terminate
+/// during preparation or as a successful no-op. Fan-out creates one attempt
+/// per external submission; aggregation creates one attempt per external
+/// batch. Retries represented as shared attempts create new attempts.
 #[derive(Debug)]
 pub struct ExporterAttempt {
     signal: SignalType,
@@ -379,7 +411,12 @@ impl ExporterMetrics {
         }
     }
 
-    /// Starts instrumentation for one node-local exporter attempt.
+    /// Starts instrumentation for one node-local export attempt.
+    ///
+    /// Start before preparation owned by this attempt. Shared preparation that
+    /// precedes discovery of fan-out submissions requires separate
+    /// node-specific telemetry. A retry represented as a shared attempt starts
+    /// a new attempt with a fresh timing origin.
     #[must_use]
     pub fn attempt(&self, signal: SignalType) -> ExporterAttempt {
         ExporterAttempt {
