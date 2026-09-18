@@ -5,7 +5,7 @@
 ## Metadata
 
 - URN: `urn:otel:extension:oauth2_client_auth`
-- Feature gate: `oauth2-client-auth-extension` (or the aggregate `contrib-extensions`)
+- Feature gate: `oauth2-client-auth` (or the aggregate `contrib-extensions`)
 - Capability provided: `bearer_token_provider`
 - Execution model: Active + Shared
 - Stability: Draft
@@ -78,7 +78,7 @@ Enable the extension's feature gate together with the nodes that consume it.
 From the `otap-dataflow` directory:
 
 ```bash
-cargo build --release --features oauth2-client-auth-extension
+cargo build --release --features oauth2-client-auth
 ```
 
 The extension reaches the token endpoint over TLS through a `reqwest`/`rustls`
@@ -86,7 +86,7 @@ client, which requires a process-wide `rustls` crypto provider. The deployed
 binary **must** enable exactly one `crypto-*` feature (`crypto-ring`,
 `crypto-aws-lc`, `crypto-openssl`, or `crypto-symcrypt`, forwarded to
 `otel-arrow-dfe-otap`); the workspace binary's default build includes `crypto-ring`. A
-build that enables `oauth2-client-auth-extension` without any `crypto-*` feature
+build that enables `oauth2-client-auth` without any `crypto-*` feature
 installs no provider, and token acquisition panics at runtime with "No provider
 set".
 
