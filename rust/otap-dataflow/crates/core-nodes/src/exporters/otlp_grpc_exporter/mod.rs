@@ -17,7 +17,6 @@ otel_arrow_dfe_telemetry::otel_component_scope!(
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::future::FutureExt;
-use futures::stream::{FuturesUnordered, StreamExt};
 use http::{HeaderName, HeaderValue};
 use linkme::distributed_slice;
 use otel_arrow_dfe_config::SignalType;
@@ -40,6 +39,7 @@ use otel_arrow_dfe_otap::otap_grpc::client_settings::GrpcClientSettings;
 use otel_arrow_dfe_otap::otap_grpc::otlp::client::{
     LogsServiceClient, MetricsServiceClient, TraceServiceClient,
 };
+use otel_arrow_dfe_otap::otlp_exporter::{InFlightExports, default_max_in_flight};
 use otel_arrow_dfe_otap::pdata::{Context, OtapPdata};
 use otel_arrow_dfe_pdata::otlp::logs::LogsProtoBytesEncoder;
 use otel_arrow_dfe_pdata::otlp::metrics::MetricsProtoBytesEncoder;
@@ -97,10 +97,6 @@ pub struct Config {
     /// receiver uses `SO_REUSEPORT` across cores. Defaults to 1.
     #[serde(default = "default_num_connections")]
     pub num_connections: usize,
-}
-
-pub(crate) const fn default_max_in_flight() -> usize {
-    5
 }
 
 pub(crate) const fn default_num_connections() -> usize {
@@ -1258,42 +1254,6 @@ fn make_export_future(
             signal_type,
             auth_generation,
         }
-    }
-}
-
-/// FIFO-ish wrapper around the in-flight export RPCs.
-pub(crate) struct InFlightExports<Fut, Output>
-where
-    Fut: Future<Output = Output>,
-{
-    futures: FuturesUnordered<Fut>,
-}
-
-impl<Fut, Output> InFlightExports<Fut, Output>
-where
-    Fut: Future<Output = Output>,
-{
-    pub(crate) fn new() -> Self {
-        Self {
-            futures: FuturesUnordered::new(),
-        }
-    }
-
-    pub(crate) fn len(&self) -> usize {
-        self.futures.len()
-    }
-
-    pub(crate) fn is_empty(&self) -> bool {
-        self.futures.is_empty()
-    }
-
-    pub(crate) fn push(&mut self, future: Fut) {
-        self.futures.push(future);
-    }
-
-    /// Returns a future that resolves once the next export finishes.
-    pub(crate) fn next_completion(&mut self) -> impl Future<Output = Option<Output>> + '_ {
-        self.futures.next()
     }
 }
 

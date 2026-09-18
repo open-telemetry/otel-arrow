@@ -56,6 +56,9 @@ pub mod otlp_grpc;
 /// OTLP/HTTP receiver support.
 pub mod otlp_http;
 
+/// Shared OTLP exporter utilities.
+pub mod otlp_exporter;
+
 /// HTTP Client authentication provider.
 pub mod http_client_auth_provider;
 

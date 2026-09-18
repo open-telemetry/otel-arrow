@@ -5,7 +5,7 @@
 ## Metadata
 
 - Type: `exporter:otlp_grpc` (`urn:otel:exporter:otlp_grpc`)
-- Feature gate: Default
+- Feature gate: `otlp`
 - Stability: Experimental
 
 ## Overview

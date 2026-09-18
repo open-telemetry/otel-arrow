@@ -74,9 +74,6 @@ tokio-rustls.workspace = true
 notify.workspace = true
 rustls-openssl = { workspace = true, optional = true }
 
-# Quiver persistence engine (durable buffer processor)
-otel-arrow-dfe-quiver = { workspace = true }
-
 [target.'cfg(any(target_os = "linux", target_os = "windows"))'.dependencies]
 rustls-symcrypt = { workspace = true, optional = true }
 

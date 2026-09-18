@@ -60,10 +60,10 @@ use reqwest::{Client, Response};
 use secrecy::ExposeSecret;
 
 use self::config::Config;
-use crate::exporters::otlp_grpc_exporter::InFlightExports;
 use otel_arrow_dfe_otap::OTAP_EXPORTER_FACTORIES;
 use otel_arrow_dfe_otap::http_client_auth_provider::*;
 use otel_arrow_dfe_otap::metrics::CompletedExporterAttempt;
+use otel_arrow_dfe_otap::otlp_exporter::InFlightExports;
 use otel_arrow_dfe_otap::otlp_http::client_settings::{HttpClientError, HttpClientSettings};
 use otel_arrow_dfe_otap::otlp_http::{
     LOGS_PATH, METRICS_PATH, PROTOBUF_CONTENT_TYPE, RpcStatus, TRACES_PATH,

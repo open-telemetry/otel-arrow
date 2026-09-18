@@ -5,7 +5,7 @@
 ## Metadata
 
 - Type: `receiver:otlp` (`urn:otel:receiver:otlp`)
-- Feature gate: Default
+- Feature gate: `otlp`
 - Stability: Experimental
 
 ## Overview
