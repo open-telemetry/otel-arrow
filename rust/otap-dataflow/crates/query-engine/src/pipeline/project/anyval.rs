@@ -629,7 +629,9 @@ fn stitch_same_type(
                 break;
             }
         }
-        mutable.extend(part_idx, start_offset, start_offset + count);
+        mutable
+            .try_extend(part_idx, start_offset, start_offset + count)
+            .expect("valid array extension");
         part_cursors[part_idx] += count;
         i += count;
     }
@@ -752,7 +754,9 @@ fn stitch_as_any_value_struct(
                         break;
                     }
                 }
-                mutable.extend(source_idx, start_offset, start_offset + (i - start));
+                mutable
+                    .try_extend(source_idx, start_offset, start_offset + (i - start))
+                    .expect("valid array extension");
             } else {
                 // This row doesn't match -- count consecutive non-matching rows.
                 let start = i;
@@ -765,7 +769,9 @@ fn stitch_as_any_value_struct(
                         break;
                     }
                 }
-                mutable.extend_nulls(i - start);
+                mutable
+                    .try_extend_nulls(i - start)
+                    .expect("valid null extension");
             }
         }
 

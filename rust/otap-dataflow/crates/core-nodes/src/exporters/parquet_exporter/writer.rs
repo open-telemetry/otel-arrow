@@ -11,10 +11,10 @@ use arrow::datatypes::SchemaRef;
 use futures::stream::FuturesUnordered;
 use futures::{StreamExt, TryStreamExt};
 use object_store::ObjectStore;
+use object_store::buffered::BufWriter;
 use otel_arrow_dfe_pdata::otap::child_payload_types;
 use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use parquet::arrow::AsyncArrowWriter;
-use parquet::arrow::async_writer::ParquetObjectWriter;
 use parquet::errors::ParquetError;
 use parquet::file::properties::WriterProperties;
 use thiserror::Error;
@@ -448,8 +448,8 @@ fn new_parquet_arrow_writer(
     object_store: Arc<dyn ObjectStore>,
     schema: SchemaRef,
     full_path: String,
-) -> AsyncArrowWriter<ParquetObjectWriter> {
-    let object_writer = ParquetObjectWriter::new(object_store, full_path.into());
+) -> AsyncArrowWriter<BufWriter> {
+    let object_writer = BufWriter::new(object_store, full_path.into());
     AsyncArrowWriter::try_new(object_writer, schema, Some(WriterProperties::default()))
         .expect("Failed to create AsyncArrowWriter")
 }
@@ -458,13 +458,13 @@ struct FileWriter {
     created_at: Instant,
     batch_ids: BTreeSet<i64>,
     payload_type: ArrowPayloadType,
-    writer: AsyncArrowWriter<ParquetObjectWriter>,
+    writer: AsyncArrowWriter<BufWriter>,
     rows_written: usize,
     scheduled_batches: Vec<RecordBatch>,
 }
 
 impl FileWriter {
-    fn new(payload_type: ArrowPayloadType, writer: AsyncArrowWriter<ParquetObjectWriter>) -> Self {
+    fn new(payload_type: ArrowPayloadType, writer: AsyncArrowWriter<BufWriter>) -> Self {
         Self {
             created_at: Instant::now(),
             batch_ids: BTreeSet::new(),
