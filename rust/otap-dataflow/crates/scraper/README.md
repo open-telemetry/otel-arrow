@@ -1,5 +1,8 @@
 # Shared Database Scraper
 
+This crate is currently pre-1.0. Its public API may evolve between minor
+releases.
+
 <!-- markdownlint-disable MD013 -->
 
 ## Metadata
