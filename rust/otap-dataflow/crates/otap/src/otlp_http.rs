@@ -803,95 +803,114 @@ impl HttpHandler {
                 self.record_rejection(error.error_type);
                 error.response
             })?;
-            let payload_bytes = body.len() as u64;
+            let payload_bytes = body.len();
             if let Some(rate_limiter) = &self.rate_limiter {
-                match rate_limiter.admit(payload_bytes, AdmissionContext::for_signal(signal)) {
+                match rate_limiter.admit(
+                    u64::try_from(payload_bytes).unwrap_or(u64::MAX),
+                    AdmissionContext::for_signal(signal),
+                ) {
                     AdmissionDecision::Admit => {}
                     AdmissionDecision::WouldThrottle => {}
                     AdmissionDecision::Throttle { retry_after_secs } => {
-                        self.record_rejection(ReceiverRejectionErrorType::RateLimit);
-                        return Err(rate_limit_unavailable(retry_after_secs));
+                        return Err(OtlpReceiverMetrics::record_rate_limit_refusal(
+                            &self.metrics,
+                            signal,
+                            OtlpProtocol::Http,
+                            payload_bytes,
+                            rate_limit_unavailable(retry_after_secs),
+                        ));
                     }
                     AdmissionDecision::Oversized => {
-                        self.record_rejection(ReceiverRejectionErrorType::RateLimit);
-                        return Err(rate_limit_burst_exceeded());
+                        return Err(OtlpReceiverMetrics::record_rate_limit_refusal(
+                            &self.metrics,
+                            signal,
+                            OtlpProtocol::Http,
+                            payload_bytes,
+                            rate_limit_burst_exceeded(),
+                        ));
                     }
                 }
             }
 
-            let context = if self.settings.wait_for_result {
-                Context::with_capacity(1)
-            } else {
-                Context::default()
-            };
+            let processing = self.metrics.lock().boundary.processing();
+            let completed = processing.run(|processing| {
+                processing.set_payload_size_with(|| body.len());
 
-            let payload = match signal {
-                SignalType::Logs => OtlpProtoBytes::ExportLogsRequest(body),
-                SignalType::Metrics => OtlpProtoBytes::ExportMetricsRequest(body),
-                SignalType::Traces => OtlpProtoBytes::ExportTracesRequest(body),
-            };
-
-            let mut pdata = OtapPdata::new(context, payload.into());
-            pdata.set_peer_addr(self.peer_addr);
-
-            // Capture transport headers from HTTP headers when a capture policy is configured.
-            if let Some(policy) = self.effect_handler.capture_policy() {
-                let mut transport_headers = TransportHeaders::new();
-                let pairs = headers
-                    .iter()
-                    .map(|(name, value)| (name.as_str(), value.as_bytes()));
-                let _stats = policy.capture_from_pairs(pairs, &mut transport_headers);
-                if !transport_headers.is_empty() {
-                    pdata.set_transport_headers(transport_headers);
-                }
-            }
-            if let (Some(policy), Some(identity)) = (
-                self.effect_handler.authorized_identity_policy(),
-                authorized_identity.as_ref(),
-            ) {
-                pdata.capture_authorized_identity(policy, identity);
-            }
-
-            let cancel_rx = if self.settings.wait_for_result {
-                let state = match signal {
-                    SignalType::Logs => self.ack_registry.logs.clone(),
-                    SignalType::Metrics => self.ack_registry.metrics.clone(),
-                    SignalType::Traces => self.ack_registry.traces.clone(),
+                let context = if self.settings.wait_for_result {
+                    Context::with_capacity(1)
+                } else {
+                    Context::default()
                 };
 
-                let Some(state) = state else {
-                    self.record_rejection(ReceiverRejectionErrorType::Internal);
-                    return Err(internal_error());
+                let payload = match signal {
+                    SignalType::Logs => OtlpProtoBytes::ExportLogsRequest(body),
+                    SignalType::Metrics => OtlpProtoBytes::ExportMetricsRequest(body),
+                    SignalType::Traces => OtlpProtoBytes::ExportTracesRequest(body),
                 };
 
-                let (key, rx) = match state.allocate_slot() {
-                    None => {
-                        self.record_rejection(ReceiverRejectionErrorType::ConcurrencyLimit);
-                        return Err(service_unavailable());
+                let mut pdata = OtapPdata::new(context, payload.into());
+                pdata.set_peer_addr(self.peer_addr);
+
+                // Capture transport headers from HTTP headers when a capture policy is configured.
+                if let Some(policy) = self.effect_handler.capture_policy() {
+                    let mut transport_headers = TransportHeaders::new();
+                    let pairs = headers
+                        .iter()
+                        .map(|(name, value)| (name.as_str(), value.as_bytes()));
+                    let _stats = policy.capture_from_pairs(pairs, &mut transport_headers);
+                    if !transport_headers.is_empty() {
+                        pdata.set_transport_headers(transport_headers);
                     }
-                    Some(pair) => pair,
+                }
+                if let (Some(policy), Some(identity)) = (
+                    self.effect_handler.authorized_identity_policy(),
+                    authorized_identity.as_ref(),
+                ) {
+                    pdata.capture_authorized_identity(policy, identity);
+                }
+
+                let cancel_rx = if self.settings.wait_for_result {
+                    let state = match signal {
+                        SignalType::Logs => self.ack_registry.logs.clone(),
+                        SignalType::Metrics => self.ack_registry.metrics.clone(),
+                        SignalType::Traces => self.ack_registry.traces.clone(),
+                    };
+
+                    let Some(state) = state else {
+                        self.record_rejection(ReceiverRejectionErrorType::Internal);
+                        return Err(processing.failed(signal, Box::new(internal_error())));
+                    };
+
+                    let (key, rx) = match state.allocate_slot() {
+                        None => {
+                            self.record_rejection(ReceiverRejectionErrorType::ConcurrencyLimit);
+                            return Err(processing.refused(signal, Box::new(service_unavailable())));
+                        }
+                        Some(pair) => pair,
+                    };
+
+                    // Register calldata in the context.
+                    self.effect_handler.subscribe_to(
+                        Interests::ACKS | Interests::NACKS,
+                        key.into(),
+                        &mut pdata,
+                    );
+
+                    Some((SlotGuard { key, state }, rx))
+                } else {
+                    None
                 };
 
-                // Register calldata in the context.
-                self.effect_handler.subscribe_to(
-                    Interests::ACKS | Interests::NACKS,
-                    key.into(),
-                    &mut pdata,
-                );
-
-                Some((SlotGuard { key, state }, rx))
-            } else {
-                None
-            };
-
-            self.metrics.lock().record_request_admitted(
-                signal,
-                OtlpProtocol::Http,
-                Some(payload_bytes),
-            );
-            let _completion_guard = RequestCompletionGuard {
-                metrics: self.metrics.clone(),
-                signal,
+                Ok((signal, (pdata, cancel_rx)))
+            });
+            let (pdata, cancel_rx) = {
+                let mut metrics = self.metrics.lock();
+                let result = metrics
+                    .boundary
+                    .record(completed)
+                    .map_err(|response| *response)?;
+                metrics.record_request_admitted(signal, OtlpProtocol::Http);
+                result
             };
 
             if self
@@ -960,19 +979,6 @@ impl HttpHandler {
 struct SlotGuard {
     key: crate::accessory::slots::Key,
     state: AckSlot,
-}
-
-struct RequestCompletionGuard {
-    metrics: Arc<Mutex<OtlpReceiverMetrics>>,
-    signal: SignalType,
-}
-
-impl Drop for RequestCompletionGuard {
-    fn drop(&mut self) {
-        self.metrics
-            .lock()
-            .record_request_completed(self.signal, OtlpProtocol::Http);
-    }
 }
 
 impl Drop for SlotGuard {
@@ -1590,7 +1596,7 @@ mod tests {
                 1
             );
             let requests = metrics.requests_for(SignalType::Logs, OtlpProtocol::Http);
-            assert_eq!(requests.started.get(), 0);
+            assert_eq!(requests.accepted.get(), 0);
         }
 
         shutdown.cancel();
@@ -1734,9 +1740,9 @@ mod tests {
     }
 
     /// Scenario: A non-empty HTTP request cannot allocate its acknowledgement slot.
-    /// Guarantees: The request is rejected without recording admission, completion, or payload bytes.
+    /// Guarantees: The request is rejected without incrementing the OTLP accepted counter.
     #[tokio::test]
-    async fn rejected_http_request_does_not_record_payload_bytes() {
+    async fn rejected_http_request_is_not_accepted() {
         use hyper::Method;
         use hyper::client::conn::http1;
         use hyper::header::{CONTENT_TYPE, HOST};
@@ -1834,9 +1840,7 @@ mod tests {
         {
             let metrics = metrics.lock();
             let requests = metrics.requests_for(SignalType::Logs, OtlpProtocol::Http);
-            assert_eq!(requests.started.get(), 0);
-            assert_eq!(requests.completed.get(), 0);
-            assert_eq!(requests.payload_size.get(), 0);
+            assert_eq!(requests.accepted.get(), 0);
             assert_eq!(
                 metrics
                     .rejections_for(
@@ -1992,8 +1996,7 @@ mod tests {
         {
             let metrics = metrics.lock();
             let requests = metrics.requests_for(SignalType::Logs, OtlpProtocol::Http);
-            assert_eq!(requests.started.get(), 0);
-            assert_eq!(requests.payload_size.get(), 0);
+            assert_eq!(requests.accepted.get(), 0);
             assert_eq!(
                 metrics
                     .rejections_for(
@@ -2149,8 +2152,7 @@ mod tests {
                 0
             );
             let requests = metrics.requests_for(SignalType::Logs, OtlpProtocol::Http);
-            assert_eq!(requests.started.get(), 1);
-            assert_eq!(requests.completed.get(), 1);
+            assert_eq!(requests.accepted.get(), 1);
         }
 
         let _ = msg_rx.recv().await.expect("request forwarded downstream");
@@ -2307,10 +2309,183 @@ mod tests {
             assert_eq!(
                 metrics
                     .requests_for(SignalType::Logs, OtlpProtocol::Http)
-                    .started
+                    .accepted
                     .get(),
                 0
             );
+        }
+
+        shutdown.cancel();
+        let server_result = tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .expect("server finished");
+        assert!(server_result.unwrap().is_ok());
+    }
+
+    /// Scenario: an OTLP HTTP request exceeds the weighted rate-limit burst after body read.
+    /// Guarantees: the refusal records shared refused message and byte metrics.
+    #[tokio::test]
+    async fn weighted_rate_limit_rejection_records_http_boundary_metrics() {
+        use http_body_util::Full;
+        use hyper::Method;
+        use hyper::client::conn::http1;
+        use hyper::header::{CONTENT_TYPE, HOST, RETRY_AFTER};
+        use hyper_util::rt::TokioIo;
+        use otel_arrow_dfe_config::policy::{
+            RateLimitAggregation, RateLimitEnforcement, RateLimitPressure, RateLimitUnit,
+            RateLimiterPolicy, TokenBucketPolicy,
+        };
+        use otel_arrow_dfe_engine::control::runtime_ctrl_msg_channel;
+        use otel_arrow_dfe_engine::memory_limiter::MemoryPressureChanged;
+        use otel_arrow_dfe_engine::shared::message::SharedSender;
+        use otel_arrow_dfe_engine::testing::test_node;
+        use otel_arrow_dfe_engine::testing::test_pipeline_ctx_with_interests;
+        use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
+        use tokio::net::TcpStream;
+        use tokio::sync::mpsc as tokio_mpsc;
+        use tokio_util::sync::CancellationToken;
+
+        let port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
+        let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+
+        let (msg_tx, _msg_rx) = tokio_mpsc::channel(4);
+        let mut senders = HashMap::new();
+        let _ = senders.insert("default".into(), SharedSender::mpsc(msg_tx));
+        let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let effect_handler = EffectHandler::new(
+            test_node("http_rate_limit"),
+            senders,
+            None,
+            ctrl_tx,
+            metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+        );
+
+        let settings = HttpServerSettings {
+            listening_addr: addr,
+            max_concurrent_requests: 1,
+            wait_for_result: false,
+            ..Default::default()
+        };
+        let shutdown = CancellationToken::new();
+
+        let (pipeline_ctx, _registry) =
+            test_pipeline_ctx_with_interests(Interests::NODE_OUTPUT_METRICS | Interests::NODE_SIZE);
+        let metrics = Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx)));
+        let memory_pressure_state = MemoryPressureState::default();
+        let admission_state =
+            SharedReceiverAdmissionState::from_process_state(&memory_pressure_state);
+        admission_state.apply(MemoryPressureChanged {
+            generation: 1,
+            level: MemoryPressureLevel::Soft,
+            retry_after_secs: 7,
+            usage_bytes: 0,
+        });
+        let rate_limiter = shared_rate_gate(
+            RateLimiterPolicy {
+                enforcement: RateLimitEnforcement::Enforce,
+                aggregation: RateLimitAggregation::ReceiverInstance,
+                unit: RateLimitUnit::RequestBytes,
+                pressure: RateLimitPressure::Soft,
+                token_bucket: TokenBucketPolicy {
+                    allow: 1,
+                    interval: Duration::from_secs(1),
+                    burst: Some(1),
+                },
+            },
+            admission_state.clone(),
+        );
+
+        let server = tokio::spawn(serve(
+            effect_handler,
+            settings,
+            AckRegistry::new(None, None, None),
+            metrics.clone(),
+            admission_state,
+            Some(rate_limiter),
+            None,
+            None,
+            shutdown.clone(),
+        ));
+
+        let mut stream = None;
+        for _ in 0..10 {
+            match TcpStream::connect(addr).await {
+                Ok(s) => {
+                    stream = Some(s);
+                    break;
+                }
+                Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
+            }
+        }
+        let stream = stream.expect("Failed to connect to server");
+        let (mut sender, conn) = http1::handshake(TokioIo::new(stream)).await.unwrap();
+        drop(tokio::spawn(async move {
+            let _ = conn.await;
+        }));
+
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/logs")
+            .header(HOST, "localhost")
+            .header(CONTENT_TYPE, PROTOBUF_CONTENT_TYPE)
+            .body(Full::new(Bytes::from_static(&[0, 0])))
+            .unwrap();
+
+        let resp = sender.send_request(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert!(!resp.headers().contains_key(RETRY_AFTER));
+
+        {
+            let mut metrics = metrics.lock();
+            assert_eq!(
+                metrics
+                    .rejections_for(OtlpProtocol::Http, ReceiverRejectionErrorType::RateLimit,)
+                    .requests
+                    .get(),
+                1
+            );
+            assert_eq!(
+                metrics
+                    .rejections_for(
+                        OtlpProtocol::Http,
+                        ReceiverRejectionErrorType::MemoryPressure,
+                    )
+                    .requests
+                    .get(),
+                0
+            );
+            assert_eq!(
+                metrics
+                    .requests_for(SignalType::Logs, OtlpProtocol::Http)
+                    .accepted
+                    .get(),
+                0
+            );
+            let snapshots = metrics.boundary.terminal_snapshots();
+            assert!(snapshots.iter().any(|snapshot| {
+                snapshot.descriptor().name == "receiver.received"
+                    && snapshot.measurement_attribute_value("signal") == Some("logs")
+                    && snapshot.measurement_attribute_value("outcome") == Some("refused")
+                    && snapshot
+                        .descriptor()
+                        .metrics
+                        .iter()
+                        .position(|metric| metric.name == "messages")
+                        .is_some_and(|index| snapshot.get_metrics()[index].to_u64_lossy() == 1)
+            }));
+            assert!(snapshots.iter().any(|snapshot| {
+                snapshot.descriptor().name == "receiver.received"
+                    && snapshot.measurement_attribute_value("signal") == Some("logs")
+                    && snapshot.measurement_attribute_value("outcome") == Some("refused")
+                    && snapshot
+                        .descriptor()
+                        .metrics
+                        .iter()
+                        .position(|metric| metric.name == "payload.size")
+                        .is_some_and(|index| snapshot.get_metrics()[index].to_u64_lossy() == 2)
+            }));
         }
 
         shutdown.cancel();
@@ -2469,7 +2644,7 @@ mod tests {
             assert_eq!(
                 metrics
                     .requests_for(SignalType::Logs, OtlpProtocol::Http)
-                    .started
+                    .accepted
                     .get(),
                 0
             );

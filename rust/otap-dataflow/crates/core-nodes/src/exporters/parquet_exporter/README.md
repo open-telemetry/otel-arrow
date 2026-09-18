@@ -5,7 +5,7 @@
 ## Metadata
 
 - Type: `exporter:parquet` (`urn:otel:exporter:parquet`)
-- Feature gate: Default; cloud backends require crate features
+- Feature gate: `parquet`; cloud backends require crate features
 - Stability: Experimental
 
 ## Overview

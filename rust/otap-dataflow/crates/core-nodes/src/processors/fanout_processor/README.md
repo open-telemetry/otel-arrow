@@ -5,7 +5,7 @@
 ## Metadata
 
 - Type: `processor:fanout` (`urn:otel:processor:fanout`)
-- Feature gate: Default
+- Feature gate: Always enabled
 - Stability: Experimental
 
 ## Overview

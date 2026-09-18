@@ -5,7 +5,7 @@
 ## Metadata
 
 - Type: `processor:partition` (`urn:otel:processor:partition`)
-- Feature gate: Default
+- Feature gate: `partition`
 - Stability: Experimental
 
 ## Overview
