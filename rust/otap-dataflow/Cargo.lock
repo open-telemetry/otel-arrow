@@ -7504,6 +7504,7 @@ dependencies = [
  "bytes",
  "chrono",
  "criterion",
+ "dhat",
  "flate2",
  "fluke-hpack",
  "flume",
