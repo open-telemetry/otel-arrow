@@ -1169,7 +1169,6 @@ mod tests {
         .await;
         let mut auth = BearerAuth::new(
             Box::new(MockTokenProvider),
-            AZURE_MONITOR_BEARER_AUTH_EVENTS,
         );
         assert!(!auth.is_ready(), "no token has been polled yet");
         let effect_handler = test_effect_handler();
