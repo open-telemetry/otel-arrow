@@ -2,29 +2,84 @@
 
 import json
 import os
+import re
+import shlex
 import sys
 import urllib.error
 import urllib.request
 from pathlib import Path, PurePosixPath
 
 
+def parse_inline_owners(value: str, metadata_path: Path) -> list[str]:
+    closing_bracket = value.rfind("]")
+    suffix = value[closing_bracket + 1 :].strip()
+    if (
+        not value.startswith("[")
+        or closing_bracket == -1
+        or (suffix and not suffix.startswith("#"))
+    ):
+        raise ValueError(
+            f"status.codeowners.active in {metadata_path} must be a YAML list"
+        )
+    lexer = shlex.shlex(value[1:closing_bracket], posix=True)
+    lexer.whitespace = ", \t"
+    lexer.whitespace_split = True
+    lexer.commenters = "#"
+    return list(lexer)
+
+
 def active_owners(metadata_path: Path) -> set[str]:
-    owners = set()
-    in_active = False
-    for line in metadata_path.read_text(encoding="ascii").splitlines():
-        if line == "    active: []":
-            return owners
-        if line == "    active:":
-            in_active = True
+    lines = metadata_path.read_text(encoding="ascii").splitlines()
+    for index, line in enumerate(lines):
+        match = re.match(r"^(?P<indent> +)active:\s*(?P<value>.*)$", line)
+        if match is None:
             continue
-        if in_active and line.startswith("      - "):
-            owner = line.removeprefix("      - ")
-            if "/" not in owner:
-                owners.add(owner)
+
+        indent = len(match.group("indent"))
+        parent = next(
+            (
+                previous.split("#", 1)[0].strip()
+                for previous in reversed(lines[:index])
+                if previous.split("#", 1)[0].strip()
+                and len(previous) - len(previous.lstrip()) < indent
+            ),
+            None,
+        )
+        if parent != "codeowners:":
             continue
-        if in_active and line and not line.startswith("      "):
-            break
-    return owners
+
+        value = match.group("value").strip()
+        if value:
+            owners = parse_inline_owners(value, metadata_path)
+        else:
+            owners = []
+            for owner_line in lines[index + 1 :]:
+                if not owner_line.strip() or owner_line.lstrip().startswith("#"):
+                    continue
+                owner_indent = len(owner_line) - len(owner_line.lstrip())
+                if owner_indent <= indent:
+                    break
+                owner_match = re.match(r"^\s*-\s+(.+?)\s*$", owner_line)
+                if owner_match is None:
+                    raise ValueError(
+                        f"status.codeowners.active in {metadata_path} "
+                        "must contain only string list items"
+                    )
+                parsed = shlex.split(owner_match.group(1), comments=True)
+                if len(parsed) != 1:
+                    raise ValueError(
+                        f"Invalid owner entry in {metadata_path}: {owner_line.strip()}"
+                    )
+                owners.append(parsed[0])
+            if not owners:
+                raise ValueError(
+                    f"status.codeowners.active in {metadata_path} "
+                    "must be a YAML list"
+                )
+
+        return {owner for owner in owners if "/" not in owner}
+
+    raise ValueError(f"Missing status.codeowners.active list in {metadata_path}")
 
 
 def nearest_metadata(file_path: str, root: Path) -> Path | None:
@@ -44,6 +99,15 @@ def owners_for_files(file_paths: list[str], root: Path) -> set[str]:
         if metadata_path is not None:
             owners.update(active_owners(metadata_path))
     return owners
+
+
+def changed_paths(files: list[dict]) -> list[str]:
+    paths = []
+    for item in files:
+        paths.append(item["filename"])
+        if item.get("status") == "renamed" and item.get("previous_filename"):
+            paths.append(item["previous_filename"])
+    return paths
 
 
 class GitHubClient:
@@ -117,10 +181,7 @@ def main() -> int:
     token, repository, pull_number = required_environment()
     client = GitHubClient(repository, token)
     pull = client.request("GET", f"/pulls/{pull_number}")
-    files = [
-        item["filename"]
-        for item in client.paginated(f"/pulls/{pull_number}/files")
-    ]
+    files = changed_paths(client.paginated(f"/pulls/{pull_number}/files"))
     owners = owners_for_files(files, Path("."))
 
     excluded = {pull["user"]["login"].casefold()}
