@@ -42,9 +42,10 @@ entries in a compact byte array including an index for fast lookup.
 The initial implementation accepts declarative grouping entries under
 `policies.context.entries`. A grouping entry is an ordered list of
 `transport_header` and `authorized_identity` value members plus optional
-`transport_header_match` conditions. References use exact `entry` or
-`entry:member` syntax, and repeated-value matches require an explicit `any` or
-`all` quantifier.
+`transport_header_match` conditions. The required `ctx_ref` property uses exact
+`entry` or `entry:member` syntax. Value members can set an optional `name`
+within the grouping entry, and repeated-value matches require an explicit
+`any` or `all` quantifier.
 
 This initial configuration surface does not construct, capture, propagate, or
 consume grouping entries at runtime. Runtime compilation will enforce the
@@ -222,9 +223,9 @@ policies:
       # A product user consists of two context entries.
       product_user:                      # Composite name
         - type: authorized_identity      # Authorization claim
-          name: customer_id              # Claim entry name
+          ctx_ref: customer_id           # Claim entry reference
         - type: transport_header         # Transport header
-          name: workspace_id             # Header entry name
+          ctx_ref: workspace_id          # Header entry reference
 ```
 
 The composite entry defined above might be useful to in a batch
@@ -245,7 +246,7 @@ policies:
       product_user:                      # Composite name
           ...                            # Two entries as above
         - type: transport_header_match   # Condition
-          name: xyz_environment          # Header entry name
+          ctx_ref: xyz_environment       # Header entry reference
           value: production              # Match value
 ```
 
@@ -312,12 +313,12 @@ policies:
       # A product user consists of two context entries.
       product_user:                      # Composite name
         - type: authorized_identity      # Authorization claim
-          name: customer_id              # Claim entry name
+          ctx_ref: customer_id           # Claim entry reference
         - type: transport_header         # Transport header
-          name: workspace_id             # Header entry name
+          ctx_ref: workspace_id          # Header entry reference
       produce_account:                   # Name of entry
         - type: authorized_identity      # Authorization claim
-          name: customer_id              # Claim entry name
+          ctx_ref: customer_id           # Claim entry reference
 groups:
   default:
     pipelines:

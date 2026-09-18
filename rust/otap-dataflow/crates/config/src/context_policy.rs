@@ -113,12 +113,12 @@ impl ContextEntryDefinition {
         }
 
         for (index, part) in self.0.iter().enumerate() {
-            let Some((source, reference, alias)) = part.value_member() else {
+            let Some((source, reference, member_name)) = part.value_member() else {
                 continue;
             };
             value_members += 1;
 
-            let output_name = alias
+            let output_name = member_name
                 .or_else(|| reference.field())
                 .unwrap_or_else(|| reference.entry());
             if !output_names.insert(output_name) {
@@ -148,24 +148,28 @@ impl ContextEntryDefinition {
 pub enum ContextEntryPart {
     /// Includes values from a transport-header entry.
     TransportHeader {
-        /// Exact source entry or qualified member reference.
-        name: ContextEntryRef,
+        /// Exact source context entry or qualified member reference.
+        ctx_ref: ContextEntryRef,
         /// Optional member name within the grouping entry.
-        #[serde(rename = "as", default, skip_serializing_if = "Option::is_none")]
-        alias: Option<ContextEntryName>,
+        ///
+        /// When omitted, the name is derived from the referenced member or entry.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<ContextEntryName>,
     },
     /// Includes values from a verified authorized-identity entry.
     AuthorizedIdentity {
-        /// Exact source entry or qualified member reference.
-        name: ContextEntryRef,
+        /// Exact source context entry or qualified member reference.
+        ctx_ref: ContextEntryRef,
         /// Optional member name within the grouping entry.
-        #[serde(rename = "as", default, skip_serializing_if = "Option::is_none")]
-        alias: Option<ContextEntryName>,
+        ///
+        /// When omitted, the name is derived from the referenced member or entry.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<ContextEntryName>,
     },
     /// Requires a transport-header entry to satisfy an explicit repeated-value match.
     TransportHeaderMatch {
-        /// Exact source entry or qualified member reference.
-        name: ContextEntryRef,
+        /// Exact source context entry or qualified member reference.
+        ctx_ref: ContextEntryRef,
         /// Exact, case-sensitive value to compare.
         value: String,
         /// Required repeated-value quantifier.
@@ -177,11 +181,11 @@ pub enum ContextEntryPart {
 impl ContextEntryPart {
     fn value_member(&self) -> Option<(&'static str, &ContextEntryRef, Option<&ContextEntryName>)> {
         match self {
-            Self::TransportHeader { name, alias } => {
-                Some(("transport_header", name, alias.as_ref()))
+            Self::TransportHeader { ctx_ref, name } => {
+                Some(("transport_header", ctx_ref, name.as_ref()))
             }
-            Self::AuthorizedIdentity { name, alias } => {
-                Some(("authorized_identity", name, alias.as_ref()))
+            Self::AuthorizedIdentity { ctx_ref, name } => {
+                Some(("authorized_identity", ctx_ref, name.as_ref()))
             }
             Self::TransportHeaderMatch { .. } => None,
         }
@@ -205,17 +209,17 @@ impl JsonSchema for ContextEntryPart {
                         "transport_header_match"
                     ]
                 },
-                "name": generator.subschema_for::<ContextEntryRef>(),
-                "as": generator.subschema_for::<ContextEntryName>(),
+                "ctx_ref": generator.subschema_for::<ContextEntryRef>(),
+                "name": generator.subschema_for::<ContextEntryName>(),
                 "value": {"type": "string"},
                 "match": generator.subschema_for::<ContextMatchMultiplicity>()
             },
-            "required": ["type", "name"],
+            "required": ["type", "ctx_ref"],
             "additionalProperties": false,
             "x-kubernetes-validations": [
                 {
-                    "rule": "self.type == 'transport_header_match' ? (has(self.value) && has(self.match) && !has(self.as)) : (!has(self.value) && !has(self.match))",
-                    "message": "transport_header_match requires value and match and does not accept as; value-bearing members accept only optional as"
+                    "rule": "self.type == 'transport_header_match' ? (has(self.value) && has(self.match) && !has(self.name)) : (!has(self.value) && !has(self.match))",
+                    "message": "transport_header_match requires value and match and does not accept name; value-bearing members accept only optional name"
                 }
             ]
         })
@@ -269,16 +273,16 @@ mod tests {
 entries:
   product_user:
     - type: authorized_identity
-      name: customer
-      as: customer_id
+      ctx_ref: customer
+      name: customer_id
     - type: transport_header
-      name: captured:workspace
+      ctx_ref: captured:workspace
     - type: transport_header_match
-      name: environment
+      ctx_ref: environment
       value: production
       match: any
     - type: transport_header_match
-      name: region
+      ctx_ref: region
       value: us-east
       match: all
 "#,
@@ -289,13 +293,14 @@ entries:
         let parts = &policy.entries.get(&name).expect("entry is present").0;
         assert!(matches!(
             &parts[0],
-            ContextEntryPart::AuthorizedIdentity { alias: Some(alias), .. }
-                if alias.as_str() == "customer_id"
+            ContextEntryPart::AuthorizedIdentity {
+                name: Some(name), ..
+            } if name.as_str() == "customer_id"
         ));
         assert!(matches!(
             &parts[1],
-            ContextEntryPart::TransportHeader { name, .. }
-                if name.to_string() == "captured:workspace"
+            ContextEntryPart::TransportHeader { ctx_ref, .. }
+                if ctx_ref.to_string() == "captured:workspace"
         ));
         assert!(matches!(
             &parts[2],
@@ -321,9 +326,9 @@ entries:
             r#"
 entries:
   tenant:
-    - {type: transport_header, name: first}
+    - {type: transport_header, ctx_ref: first}
   tenant:
-    - {type: transport_header, name: second}
+    - {type: transport_header, ctx_ref: second}
 "#,
         )
         .expect_err("duplicate map key must fail");
@@ -337,7 +342,7 @@ entries:
     fn rejects_definitions_without_value_members() {
         for yaml in [
             "entries: {tenant: []}",
-            "entries: {tenant: [{type: transport_header_match, name: env, value: prod, match: any}]}",
+            "entries: {tenant: [{type: transport_header_match, ctx_ref: env, value: prod, match: any}]}",
         ] {
             assert!(
                 serde_yaml::from_str::<ContextPolicy>(yaml).is_err(),
@@ -346,13 +351,13 @@ entries:
         }
     }
 
-    /// Scenario: two value members derive or alias to the same output name.
+    /// Scenario: two value members derive or specify the same output name.
     /// Guarantees: grouping entries cannot expose ambiguous qualified member names.
     #[test]
     fn rejects_duplicate_output_member_names() {
         for yaml in [
-            "entries: {tenant: [{type: transport_header, name: first:id}, {type: authorized_identity, name: second:id}]}",
-            "entries: {tenant: [{type: transport_header, name: first, as: id}, {type: authorized_identity, name: second, as: id}]}",
+            "entries: {tenant: [{type: transport_header, ctx_ref: first:id}, {type: authorized_identity, ctx_ref: second:id}]}",
+            "entries: {tenant: [{type: transport_header, ctx_ref: first, name: id}, {type: authorized_identity, ctx_ref: second, name: id}]}",
         ] {
             assert!(
                 serde_yaml::from_str::<ContextPolicy>(yaml).is_err(),
@@ -361,11 +366,11 @@ entries:
         }
     }
 
-    /// Scenario: a value source reference is repeated with a different alias.
+    /// Scenario: a value source reference is repeated with a different member name.
     /// Guarantees: one source value cannot create redundant grouping dimensions.
     #[test]
     fn rejects_duplicate_value_references() {
-        let yaml = "entries: {tenant: [{type: transport_header, name: id, as: first}, {type: transport_header, name: id, as: second}]}";
+        let yaml = "entries: {tenant: [{type: transport_header, ctx_ref: id, name: first}, {type: transport_header, ctx_ref: id, name: second}]}";
 
         assert!(serde_yaml::from_str::<ContextPolicy>(yaml).is_err());
     }
@@ -375,10 +380,10 @@ entries:
     #[test]
     fn rejects_missing_or_inapplicable_fields() {
         for yaml in [
-            "entries: {tenant: [{type: transport_header_match, name: env, value: prod}]}",
-            "entries: {tenant: [{type: transport_header, name: id, value: prod}]}",
-            "entries: {tenant: [{type: transport_header_match, name: env, value: prod, match: any, as: alias}]}",
-            "entries: {tenant: [{type: unsupported, name: id}]}",
+            "entries: {tenant: [{type: transport_header_match, ctx_ref: env, value: prod}]}",
+            "entries: {tenant: [{type: transport_header, ctx_ref: id, value: prod}]}",
+            "entries: {tenant: [{type: transport_header_match, ctx_ref: env, value: prod, match: any, name: alias}]}",
+            "entries: {tenant: [{type: unsupported, ctx_ref: id}]}",
         ] {
             assert!(
                 serde_yaml::from_str::<ContextPolicy>(yaml).is_err(),
@@ -393,7 +398,7 @@ entries:
     fn rejects_qualified_top_level_names() {
         assert!(
             serde_yaml::from_str::<ContextPolicy>(
-                "entries: {'product_user:customer_id': [{type: transport_header, name: id}]}"
+                "entries: {'product_user:customer_id': [{type: transport_header, ctx_ref: id}]}"
             )
             .is_err()
         );
@@ -414,6 +419,10 @@ entries:
         ] {
             assert!(rendered.contains(variant));
         }
+        assert_eq!(schema["required"], serde_json::json!(["type", "ctx_ref"]));
+        assert!(schema["properties"].get("ctx_ref").is_some());
+        assert!(schema["properties"].get("name").is_some());
+        assert!(schema["properties"].get("as").is_none());
         assert!(rendered.contains("additionalProperties"));
         assert!(rendered.contains("x-kubernetes-validations"));
     }
