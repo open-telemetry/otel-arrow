@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789756418785,
+  "lastUpdate": 1789758204831,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -40511,6 +40511,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 103.73,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "drewrelmas@gmail.com",
+            "name": "Drew Relmas",
+            "username": "drewrelmas"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "500452da8659b4fbd646eb3c3f3d633fba60f410",
+          "message": "chore(repo): Overhaul per-node and capability alias Cargo features (#4091)\n\n# Chore Summary\n\nRelated to the issue identified in #4085 \n\n- Add aggregate and selective Cargo features for core nodes while\npreserving the complete default build.\n- Use one feature for an integration's receiver and exporters, including\n`otlp`, `otap`, `topic`, and `kafka`.\n- Keep lightweight built-in processors and the required observability\npath always enabled.\n- Add concise extension features plus `contrib-nodes` and\n`contrib-extensions` aggregates.\n- Compile and register only selected modules and gate their isolated\ndependency trees.\n\n### Features\n\n| Group | Features |\n| --- | --- |\n| Aggregates | `core-nodes`, `core-receivers`, `core-processors`,\n`core-exporters`, `contrib-nodes`, `contrib-receivers`,\n`contrib-processors`, `contrib-exporters`, `contrib-extensions` |\n| Receiver/Exporter pairs | `otlp`, `otap`, `topic`, `kafka` |\n| Other selectable nodes | `host-metrics`, `journald`, `syslog-cef`,\n`durable-buffer`, `partition`, `transform`, `file`, `parquet`, `etw`,\n`user-events`, `condense-attributes`, `recordset-kql`,\n`resource-validator`, `azure-monitor`, `clickhouse`, `geneva` |\n| Extensions | `azure-identity-auth`, `k8s-service-account-token-auth`,\n`oauth2-client-auth` |\n| Always enabled | Internal telemetry, console and noop exporters, and\nlightweight built-in processors |\n\n### Security posture\n\nConsumers using `default-features = false` can make the compiled node\ninventory match what they ship, reducing reachable code and dependency\nreview scope.\n\n- Excluding `parquet` removes Parquet and vulnerable `thrift 0.17.0`.\n- Excluding `partition` and `transform` removes their query and KQL\ndependencies.\n- Excluding `durable-buffer` removes Quiver.\n- Unused receivers, exporters, and extensions are not compiled or\nregistered.\n\nCargo features reduce build-time attack surface; they are not a runtime\nsecurity boundary.\n\n### Compatibility\n\nDefault builds remain unchanged. Consumers already disabling default\nfeatures must enable `core-nodes` for the previous complete set or\nselect the integrations they need:\n\n```toml\notel-arrow-dfe-core-nodes = { version = \"...\", default-features = false, features = [\n    \"otlp\",\n    \"durable-buffer\",\n] }\n```\n\n## Related\n- #4085\n- #4094",
+          "timestamp": "2026-09-18T18:11:49Z",
+          "tree_id": "1032641a232d21f6c85bc7cef26d790c8eab7af9",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/500452da8659b4fbd646eb3c3f3d633fba60f410"
+        },
+        "date": 1789758189394,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 84.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.97,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.71,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.97,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.68,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 71.54,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.86,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.54,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.16,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 116.51,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 103.79,
             "unit": "MB"
           }
         ]
