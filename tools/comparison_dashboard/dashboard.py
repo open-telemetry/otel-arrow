@@ -1571,8 +1571,8 @@ def generate_index_html(comparisons: list, suites: dict, paths: BuildPaths, mani
         '  <div class="controls-bar" id="controls-bar" aria-label="Display controls"></div>',
         '  <div class="legend-banner" id="legend-banner" aria-label="Glossary"></div>',
         '  <div class="wrap">',
-        '    <h1>Telemetry Engine Benchmark Dashboard</h1>',
-        '    <div class="sub">Compare telemetry engines across a variety of use-cases and protocols.</div>',
+        f'    <h1>{_dashboard_title(manifest)}</h1>',
+        f'    <div class="sub">{_dashboard_subtitle(manifest)}</div>',
         '    <div id="app"></div>',
         '    <div id="comparison-cards"></div>',
         '  </div>',
@@ -1608,6 +1608,19 @@ def generate_index_html(comparisons: list, suites: dict, paths: BuildPaths, mani
 def _strip_internal(comp: dict) -> dict:
     """Drop fields prefixed with '_' (internal bookkeeping)."""
     return {k: v for k, v in comp.items() if not (isinstance(k, str) and k.startswith("_"))}
+
+
+def _dashboard_title(manifest: Manifest) -> str:
+    """Return the page title used by the generated dashboard HTML."""
+    return str(manifest.variables.get("dashboard_title") or "Telemetry Engine Benchmark Dashboard")
+
+
+def _dashboard_subtitle(manifest: Manifest) -> str:
+    """Return the page subtitle used by the generated dashboard HTML."""
+    return str(
+        manifest.variables.get("dashboard_subtitle")
+        or "Compare telemetry engines across a variety of use-cases and protocols."
+    )
 
 
 def generate_compare_stubs(comparisons: list, suites: dict, paths: BuildPaths, manifest: Manifest) -> None:
