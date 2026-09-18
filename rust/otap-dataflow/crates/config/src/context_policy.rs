@@ -113,22 +113,24 @@ impl ContextEntryDefinition {
         }
 
         for (index, part) in self.0.iter().enumerate() {
-            let Some((source, reference, member_name)) = part.value_member() else {
+            let Some(member) = part.as_value_member() else {
                 continue;
             };
             value_members += 1;
 
-            let output_name = member_name
-                .or_else(|| reference.field())
-                .unwrap_or_else(|| reference.entry());
+            let output_name = member
+                .name
+                .or_else(|| member.ctx_ref.field())
+                .unwrap_or_else(|| member.ctx_ref.entry());
             if !output_names.insert(output_name) {
                 errors.push(format!(
                     "{path_prefix}[{index}] produces duplicate member name `{output_name}`"
                 ));
             }
-            if !value_references.insert((source, reference)) {
+            if !value_references.insert((member.source_kind, member.ctx_ref)) {
                 errors.push(format!(
-                    "{path_prefix}[{index}] repeats {source} reference `{reference}`"
+                    "{path_prefix}[{index}] repeats {} reference `{}`",
+                    member.source_kind, member.ctx_ref
                 ));
             }
         }
@@ -178,15 +180,25 @@ pub enum ContextEntryPart {
     },
 }
 
+struct ValueMemberRef<'a> {
+    source_kind: &'static str,
+    ctx_ref: &'a ContextEntryRef,
+    name: Option<&'a ContextEntryName>,
+}
+
 impl ContextEntryPart {
-    fn value_member(&self) -> Option<(&'static str, &ContextEntryRef, Option<&ContextEntryName>)> {
+    fn as_value_member(&self) -> Option<ValueMemberRef<'_>> {
         match self {
-            Self::TransportHeader { ctx_ref, name } => {
-                Some(("transport_header", ctx_ref, name.as_ref()))
-            }
-            Self::AuthorizedIdentity { ctx_ref, name } => {
-                Some(("authorized_identity", ctx_ref, name.as_ref()))
-            }
+            Self::TransportHeader { ctx_ref, name } => Some(ValueMemberRef {
+                source_kind: "transport_header",
+                ctx_ref,
+                name: name.as_ref(),
+            }),
+            Self::AuthorizedIdentity { ctx_ref, name } => Some(ValueMemberRef {
+                source_kind: "authorized_identity",
+                ctx_ref,
+                name: name.as_ref(),
+            }),
             Self::TransportHeaderMatch { .. } => None,
         }
     }
