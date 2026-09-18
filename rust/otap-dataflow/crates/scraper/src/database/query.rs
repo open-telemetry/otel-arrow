@@ -34,7 +34,6 @@ pub struct CompiledQuery {
     fetch_size: usize,
     max_rows: usize,
     max_batch_bytes: u64,
-    max_normalized_bytes: u64,
     watermark: CompositeWatermark,
     output: OutputConfig,
 }
@@ -69,7 +68,6 @@ impl CompiledQuery {
             fetch_size: config.fetch_size,
             max_rows: config.max_rows_per_poll,
             max_batch_bytes: config.max_batch_bytes,
-            max_normalized_bytes: config.max_normalized_bytes,
             watermark: CompositeWatermark {
                 timestamp_column: timestamp.column.clone(),
                 timestamp_bind: timestamp.bind.clone(),
@@ -117,10 +115,13 @@ impl CompiledQuery {
         self.max_batch_bytes
     }
 
-    /// Returns the retained normalized row storage ceiling.
+    /// Returns the normalized-row ceiling using the existing batch byte setting.
+    ///
+    /// Normalized storage and encoded payloads are checked separately against
+    /// this value; it is not a combined process-memory ceiling.
     #[must_use]
     pub const fn max_normalized_bytes(&self) -> u64 {
-        self.max_normalized_bytes
+        self.max_batch_bytes
     }
 
     /// Returns the composite cursor binds and columns.
@@ -146,7 +147,6 @@ impl fmt::Debug for CompiledQuery {
             .field("fetch_size", &self.fetch_size)
             .field("max_rows", &self.max_rows)
             .field("max_batch_bytes", &self.max_batch_bytes)
-            .field("max_normalized_bytes", &self.max_normalized_bytes)
             .field("watermark", &self.watermark)
             .field("output", &self.output)
             .finish()
@@ -154,11 +154,12 @@ impl fmt::Debug for CompiledQuery {
 }
 
 fn is_read_only(sql: &str) -> bool {
-    // Vendor adapters add token-level validation and a runtime read-only
-    // transaction. This shared check only rejects obviously unsafe statements.
-    let first = sql.split_whitespace().next();
-    first.is_some_and(|keyword| keyword.eq_ignore_ascii_case("select"))
-        && !sql.to_ascii_uppercase().contains("FOR UPDATE")
+    // Shared compile only requires a leading SELECT keyword. The RFC and
+    // design leave SQL operator-authored; a least-privileged read-only
+    // account and vendor validation own DML/locking, not a SQL parser.
+    sql.split_whitespace()
+        .next()
+        .is_some_and(|keyword| keyword.eq_ignore_ascii_case("select"))
 }
 
 /// Failure while compiling a query plan.

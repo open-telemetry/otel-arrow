@@ -12,7 +12,6 @@ fn polling() -> PollingConfig {
         fetch_size: 100,
         max_rows_per_poll: 100,
         max_batch_bytes: 10 * 1024 * 1024,
-        max_normalized_bytes: 5 * 1024 * 1024,
     }
 }
 
@@ -41,13 +40,12 @@ fn checkpoint_config() -> CheckpointConfig {
     }
 }
 
-/// Scenario: A query is modifying, locking, or not a directly validated SELECT.
-/// Guarantees: The shared filter rejects these non-SELECT and locking forms without opening a connection.
+/// Scenario: A query does not start with SELECT.
+/// Guarantees: The shared filter rejects non-SELECT leading keywords without opening a connection.
 #[test]
 fn rejects_queries_outside_the_read_only_contract() {
     for sql in [
         "DELETE FROM AUDIT_LOGS",
-        "SELECT * FROM AUDIT_LOGS FOR UPDATE",
         "WITH rows AS (SELECT 1 FROM DUAL) SELECT * FROM rows",
     ] {
         assert!(matches!(
@@ -63,17 +61,30 @@ fn rejects_queries_outside_the_read_only_contract() {
     }
 }
 
+/// Scenario: Operator SQL is SELECT ... FOR UPDATE.
+/// Guarantees: The shared compiler does not parse locking clauses; a leading
+/// SELECT is accepted so a read-only account and vendor checks remain the control.
+#[test]
+fn accepts_select_statements_that_include_for_update() {
+    assert!(
+        CompiledQuery::compile(
+            "SELECT * FROM AUDIT_LOGS FOR UPDATE".to_owned(),
+            polling(),
+            &watermark(),
+            &checkpoint_config(),
+            OutputConfig::default(),
+        )
+        .is_ok()
+    );
+}
+
 /// Scenario: A row, page, byte, or timing limit is outside its supported range.
 /// Guarantees: Invalid configured row, fetch, byte, and timing bounds are rejected before execution.
 #[test]
 fn rejects_invalid_polling_bounds() {
     for invalid in [
         PollingConfig {
-            max_normalized_bytes: 0,
-            ..polling()
-        },
-        PollingConfig {
-            max_normalized_bytes: 257 * 1024 * 1024,
+            max_batch_bytes: 257 * 1024 * 1024,
             ..polling()
         },
         PollingConfig {
@@ -200,14 +211,21 @@ fn rejects_unsupported_checkpoint_policy_and_bounds() {
     }
 }
 
-/// Scenario: a valid composite configuration is compiled into a query plan.
-/// Guarantees: cursor binds, columns, the initial cursor, and both byte ceilings are carried into
-/// the plan the adapter executes, and SQL text is redacted from diagnostics.
+/// Scenario: The original polling configuration supplies only max_batch_bytes as its byte limit.
+/// Guarantees: It deserializes without another setting, bounds both representations, and keeps SQL redacted.
 #[test]
 fn compiles_a_composite_query_plan() {
+    let config: PollingConfig = serde_json::from_value(serde_json::json!({
+        "interval": "1s",
+        "timeout": "1s",
+        "fetch_size": 100,
+        "max_rows_per_poll": 100,
+        "max_batch_bytes": 10 * 1024 * 1024
+    }))
+    .expect("original polling schema without an additional byte-limit field");
     let query = CompiledQuery::compile(
         "SELECT EVENT_TS, EVENT_ID FROM EVENTS ORDER BY EVENT_TS ASC, EVENT_ID ASC".to_owned(),
-        polling(),
+        config,
         &watermark(),
         &checkpoint_config(),
         OutputConfig::default(),
@@ -219,7 +237,7 @@ fn compiles_a_composite_query_plan() {
     assert_eq!(query.watermark().initial.tie_breaker, 0);
     assert_eq!(query.fetch_size(), 100);
     assert_eq!(query.max_batch_bytes(), 10 * 1024 * 1024);
-    assert_eq!(query.max_normalized_bytes(), 5 * 1024 * 1024);
+    assert_eq!(query.max_normalized_bytes(), query.max_batch_bytes());
     assert!(format!("{query:?}").contains("<redacted>"));
     assert!(!format!("{query:?}").contains("EVENT_TS ASC"));
 }

@@ -107,11 +107,10 @@ timeout: 2m
 max_rows_per_poll: 10000
 fetch_size: 1000
 max_batch_bytes: 10485760
-max_normalized_bytes: 5242880
 ```
 
-All six fields are required by the shared deserialization type. Byte limits
-are numeric byte counts in these common types; a vendor schema may provide
+All five fields are required by the shared deserialization type. The byte limit
+is a numeric byte count in these common types; a vendor schema may provide
 different defaults or convenience units.
 
 ## Configuration
@@ -147,8 +146,7 @@ use `CompiledQuery::compile`, which validates all four configuration inputs.
 | `timeout` | duration string | **required** | Must be greater than zero. The contract exposes a native-call timeout, not a guaranteed whole-poll deadline. |
 | `max_rows_per_poll` | integer | **required** | Between `1` and `10000`. Hard row ceiling the adapter must enforce while building its returned page. |
 | `fetch_size` | integer | **required** | Between `1` and `10000`, and no larger than `max_rows_per_poll`. Target native fetch size. |
-| `max_batch_bytes` | integer bytes | **required** | Between `1` and `268435456` (256 MiB). Exact serialized OTLP ceiling. |
-| `max_normalized_bytes` | integer bytes | **required** | Between `1` and `268435456` (256 MiB). Independent retained normalized-row storage ceiling. |
+| `max_batch_bytes` | integer bytes | **required** | Between `1` and `268435456` (256 MiB). Applied separately to accounted normalized-row storage and the exact serialized OTLP payload; not a combined memory ceiling. |
 
 ### Watermark Configuration
 
@@ -229,7 +227,6 @@ infer OTLP fields from matching column names. Richer mapping is future work.
 
 1. The statement is at most 16 KiB, measured in UTF-8 bytes.
 2. Its first whitespace-delimited word is `SELECT`, ignoring ASCII case.
-3. It does not contain `FOR UPDATE`, ignoring ASCII case.
 
 This is an early filter, not a SQL parser or proof of read-only execution.
 It does not verify bind occurrences, the keyset predicate, result ordering,
@@ -301,9 +298,11 @@ point.
 
 `Row::normalized_size` includes structural storage and retained value
 capacities, not the entire process working set. OTLP records, serialized output,
-metadata, and native fetch buffers may coexist. `max_batch_bytes` limits the
-encoded payload; `max_normalized_bytes` is a separate adapter-side budget.
-Neither implies process-wide memory-pressure admission or an RSS ceiling.
+metadata, and native fetch buffers may coexist. The adapter's normalized-row
+budget and the encoder's serialized-payload budget both use `max_batch_bytes`;
+there is no additional receiver setting. Each representation is checked
+separately, so their combined footprint can exceed this value. This does not
+provide process-wide memory-pressure admission or an RSS ceiling.
 
 `CellValue` and `CompositeCursor` debug output redact their values; nested
 cursor rows/pages therefore do not reveal the cursor through their debug
