@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789691215121,
+  "lastUpdate": 1789756418785,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -40322,6 +40322,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
             "value": 3.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.16,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 116.51,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 103.73,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "129437996+c1ly@users.noreply.github.com",
+            "name": "c1ly",
+            "username": "c1ly"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "8322c37801b29566beccbb0b4490390f14a20b78",
+          "message": "chore(Kafka-receiver): kafka receiver refactor followup, added test helpers (#4086)\n\n# Change summary\n\n\n- Added manual_traces_builder(brokers, group, topic) (mod.rs) encoding\nthe shared defaults (brokers/group/test-client, OTLP-proto traces,\nmanual commit, earliest reset, read-uncommitted).\n- Canonical fixtures (create_traces_with_spans,\ncreate_logs/metrics_service_request) and conversion utilities\n(arrow_records_to_bytes, create_traces_with_spans_otap_bytes,\notap_pdata_to_traces, and new take_otlp_proto) all live once in the\n#[cfg(test)] mod.rs\n- Resource-attribute variation is handled via helper options (e.g.\nauto_config's resource_attrs_from_headers) rather than duplicated\nfixtures.\n- Added the suggested narrow helpers: encoded_trace_fixture (60 uses),\nproduce_traces (42), start_manual_traces_receiver (7), shutdown_receiver\n(46), plus recv_and_ack, shutdown_and_terminal,\nshutdown_bounded_terminal, and wait_for_receiver_drained.\n- These collapsed the repeated boilerplate (repeated trace encodes,\nharness starts, shutdown + await_stopped pairs) without introducing a\nscenario DSL — each test still shows its own state transitions.\n- Collapsed the 3-layer pipeline-ctx wrapper chain into a single\nmake_pipeline_ctx(core, cores, generation) (removed two pure-indirection\nwrappers).\n\n## Validation\n\nonly test changes made, tests still pass\n\n## User-facing changes\n\nno changelog needed, only updated tests",
+          "timestamp": "2026-09-18T17:38:22Z",
+          "tree_id": "f5435a337a09f99c9c9ca87781bd79524b6f474f",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/8322c37801b29566beccbb0b4490390f14a20b78"
+        },
+        "date": 1789756400157,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 84.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.97,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.71,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.97,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.68,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 71.61,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.86,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.54,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.44,
             "unit": "MB"
           },
           {
