@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789676694225,
+  "lastUpdate": 1789696172111,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -4000,6 +4000,64 @@ window.BENCHMARK_DATA = {
           {
             "name": "log_rows_written_rate",
             "value": 99939.86951184372,
+            "unit": "rows/sec",
+            "extra": "ClickHouse OTAP Logs/OTLP-IN-BATCHED-100K - ClickHouse rows written"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "MuaazTasawar",
+            "username": "MuaazTasawar",
+            "email": "muaaztasawar6@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "7ff859021a9eef6f4bb3d4cd8e037fbb95fac4ac",
+          "message": "fix(pdata): make exemplar time_unix_nano non-optional in OTAP encoder (#4076)\n\nFixes #4056.\n\n## Problem\nConverting an OTLP metric batch to OTAP fails when none of the exemplars\nin a batch have a non-zero timestamp. The panic:\n\nInvalidSchemaForPayload { payload_type: ExpHistogramDpExemplars, source:\nMissingRequiredFields { names: [time_unix_nano] } }\n\n## Root cause\nThe exemplars OTAP schema declares `time_unix_nano` as `required: true`,\nbut `ExemplarsRecordBatchBuilder` (shared by\nNumber/Histogram/ExpHistogram data point exemplars) configured the\nunderlying Arrow builder with `optional: true`. When every appended\ntimestamp is the proto3 default (`0`), the adaptive builder elides the\ncolumn entirely from the finished RecordBatch to save space -- which\nthen fails schema validation since the required column is missing\naltogether, not just null.\n\n## Fix\nConfigure `time_unix_nano` on `ExemplarsRecordBatchBuilder` as\nnon-optional, matching the schema, and update `finish()` to use the same\nunconditional pattern already used for the `parent_id` field in the same\nbuilder.\n\n## Testing\n- Added `test_exemplar_with_no_timestamp` using the exact repro from the\nissue.\n- Verified it fails with the original error on the pre-fix code\n(reverted just the metrics.rs change and reran).\n- Full crate test suite passes (723 tests, 0 failures).\n- `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings`\nboth clean.\n\n---------\n\nCo-authored-by: albertlockett <a.lockett@f5.com>",
+          "timestamp": "2026-09-17T22:20:01Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/7ff859021a9eef6f4bb3d4cd8e037fbb95fac4ac"
+        },
+        "date": 1789696171207,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "log_rows_written_rate",
+            "value": 99408.60019508324,
+            "unit": "rows/sec",
+            "extra": "OTel Collector ClickHouse Logs/OTELCOL-OTLP-TRANSFORMED-100K - ClickHouse rows written"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 100546.36211503056,
+            "unit": "rows/sec",
+            "extra": "OTel Collector ClickHouse Logs/OTELCOL-OTLP-TRANSFORMED-100K - logs produced"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 100375.93509753287,
+            "unit": "rows/sec",
+            "extra": "ClickHouse OTAP Logs/OTAP-IN-BATCHED-100K - logs_produced"
+          },
+          {
+            "name": "log_rows_written_rate",
+            "value": 100072.32026116575,
+            "unit": "rows/sec",
+            "extra": "ClickHouse OTAP Logs/OTAP-IN-BATCHED-100K - ClickHouse rows written"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 99399.49396223048,
+            "unit": "rows/sec",
+            "extra": "ClickHouse OTAP Logs/OTLP-IN-BATCHED-100K - logs_produced"
+          },
+          {
+            "name": "log_rows_written_rate",
+            "value": 99936.37384198727,
             "unit": "rows/sec",
             "extra": "ClickHouse OTAP Logs/OTLP-IN-BATCHED-100K - ClickHouse rows written"
           }
