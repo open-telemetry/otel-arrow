@@ -5,7 +5,7 @@
 ## Metadata
 
 - Type: `processor:type_router` (`urn:otel:processor:type_router`)
-- Feature gate: Default
+- Feature gate: Always enabled
 - Stability: Experimental
 
 ## Overview
