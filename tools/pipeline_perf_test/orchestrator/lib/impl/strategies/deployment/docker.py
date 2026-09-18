@@ -284,33 +284,46 @@ components:
 # Helpers
 
 
-def _reassemble_drive_letter_parts(parts: List[str]) -> List[str]:
-    """Reassemble parts split on ':' that may contain Windows drive letters.
+def _is_windows_drive_colon(value: str, colon_index: int) -> bool:
+    """Return True when the ':' at colon_index is part of a drive prefix."""
+    if colon_index <= 0 or colon_index + 1 >= len(value):
+        return False
+    drive_letter_index = colon_index - 1
+    return (
+        value[drive_letter_index].isalpha()
+        and value[colon_index + 1] in ("/", "\\")
+        and (drive_letter_index == 0 or value[drive_letter_index - 1] == ":")
+    )
 
-    A Windows drive letter is a single alpha character immediately followed
-    (after the split) by a segment starting with '/' or '\\'.
 
-    Examples (after split on ':'):
-        ['host', 'C', '/container', 'ro']  ->  ['host', 'C:/container', 'ro']
-        ['C', '/host', 'C', '/container']  ->  ['C:/host', 'C:/container']
-        ['host', '/container', 'ro']       ->  ['host', '/container', 'ro']  (unchanged)
-    """
-    result: List[str] = []
-    i = 0
-    while i < len(parts):
-        if (
-            len(parts[i]) == 1
-            and parts[i].isalpha()
-            and i + 1 < len(parts)
-            and parts[i + 1][:1] in ("/", "\\")
-        ):
-            # Drive letter detected - merge with the following path segment.
-            result.append(parts[i] + ":" + parts[i + 1])
-            i += 2
-        else:
-            result.append(parts[i])
-            i += 1
-    return result
+def _split_volume_mount_string(vm: str) -> Tuple[str, str, str]:
+    """Parse SOURCE:TARGET[:ro|rw], preserving Windows drive-letter colons."""
+    mount = vm
+    mode = "rw"
+    mount_parts = mount.rsplit(":", 1)
+    if len(mount_parts) == 2 and mount_parts[1] in ("ro", "rw"):
+        mount, mode = mount_parts
+
+    colon_indexes = [index for index, char in enumerate(mount) if char == ":"]
+    separator_indexes = [
+        index for index in colon_indexes if not _is_windows_drive_colon(mount, index)
+    ]
+
+    if len(separator_indexes) == 1:
+        separator_index = separator_indexes[0]
+    elif len(separator_indexes) == 0 and len(colon_indexes) == 1:
+        # Preserve existing single-character relative host behavior. In
+        # `x:/container`, the only colon separates source `x` from target
+        # `/container`; it is not enough context to infer a Windows drive path.
+        separator_index = colon_indexes[0]
+    else:
+        raise ValueError(f"Invalid volume mount string: '{vm}'")
+
+    source = mount[:separator_index]
+    target = mount[separator_index + 1 :]
+    if not source or not target:
+        raise ValueError(f"Invalid volume mount string: '{vm}'")
+    return source, target, mode
 
 
 def build_volume_bindings(
@@ -330,16 +343,8 @@ def build_volume_bindings(
             # Parse string format: /host:/container[:ro|rw]
             # Also supports Windows drive-letter paths, e.g.
             #   relative/host:C:/container/path:ro
-            parts = _reassemble_drive_letter_parts(vm.split(":"))
-            if len(parts) < 2 or len(parts) > 3:
-                raise ValueError(f"Invalid volume mount string: '{vm}'")
-
-            host_path = os.path.abspath(parts[0])
-            container_path = parts[1]
-            mode = parts[2] if len(parts) == 3 else "rw"
-
-            if mode not in ("ro", "rw"):
-                raise ValueError(f"Invalid mode in volume mount string: '{vm}'")
+            source, container_path, mode = _split_volume_mount_string(vm)
+            host_path = os.path.abspath(source)
         elif isinstance(vm, DockerVolumeMapping):
             host_path = os.path.abspath(vm.source)
             container_path = vm.target

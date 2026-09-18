@@ -8,7 +8,7 @@ from lib.impl.strategies.deployment.docker import (
     DockerDeploymentConfig,
     DockerVolumeMapping,
     DockerPortMapping,
-    _reassemble_drive_letter_parts,
+    _split_volume_mount_string,
     build_port_bindings,
     build_volume_bindings,
 )
@@ -292,35 +292,57 @@ def test_build_volume_bindings_windows_container_target(
 
 
 @pytest.mark.parametrize(
-    "parts,expected",
+    "mount,expected_source,expected_target,expected_mode",
     [
-        # Windows drive letter on the container target only.
-        (["./host", "C", "/container"], ["./host", "C:/container"]),
-        (["./host", "C", "\\container"], ["./host", "C:\\container"]),
-        (["./host", "C", "/container", "ro"], ["./host", "C:/container", "ro"]),
-        # Windows drive letters on both sides.
-        (["C", "/host", "D", "/container"], ["C:/host", "D:/container"]),
+        ("./host:C:/container", "./host", "C:/container", "rw"),
+        ("./host:C:\\container", "./host", "C:\\container", "rw"),
+        ("./host:C:/container:ro", "./host", "C:/container", "ro"),
+        ("C:/host:D:/container", "C:/host", "D:/container", "rw"),
         (
-            ["C", "\\host", "D", "\\container", "ro"],
-            ["C:\\host", "D:\\container", "ro"],
+            "C:\\host:D:\\container:ro",
+            "C:\\host",
+            "D:\\container",
+            "ro",
         ),
-        # Linux-style mounts must pass through untouched.
-        (["/host", "/container"], ["/host", "/container"]),
-        (["/host", "/container", "ro"], ["/host", "/container", "ro"]),
-        (["./host", "/container", "rw"], ["./host", "/container", "rw"]),
-        # A single alpha segment that is not followed by a path is not a drive.
-        (["./host", "/container", "a"], ["./host", "/container", "a"]),
-        (["volume", "/container"], ["volume", "/container"]),
+        ("/host:/container", "/host", "/container", "rw"),
+        ("/host:/container:ro", "/host", "/container", "ro"),
+        ("./host:/container:rw", "./host", "/container", "rw"),
+        ("x:/container", "x", "/container", "rw"),
+        ("x:/container:ro", "x", "/container", "ro"),
     ],
 )
-# Scenario: ':'-split volume mount fragments covering Windows drive letters on
-# either side of the mount, Linux-style paths, and a trailing single-character
-# field that is not a drive letter.
-# Guarantees: only a lone alpha segment followed by a '/' or '\\'-rooted segment
-# is rejoined as a drive-qualified path, so Linux mounts keep their existing
-# field layout.
-def test_reassemble_drive_letter_parts(parts, expected):
-    assert _reassemble_drive_letter_parts(parts) == expected
+# Scenario: volume mount strings cover Windows drive letters, Linux-style
+# paths, explicit modes, and single-character relative host paths.
+# Guarantees: only field-separator colons split SOURCE from TARGET and mode,
+# while drive-letter colons remain inside their respective paths.
+def test_split_volume_mount_string(
+    mount, expected_source, expected_target, expected_mode
+):
+    assert _split_volume_mount_string(mount) == (
+        expected_source,
+        expected_target,
+        expected_mode,
+    )
+
+
+@pytest.mark.parametrize(
+    "mount,expected_mode",
+    [
+        ("x:/container", "rw"),
+        ("x:/container:ro", "ro"),
+    ],
+)
+# Scenario: a valid volume mount uses a single-character relative source path.
+# Guarantees: the parser preserves pre-existing behavior by treating `x` as
+# the host source, not as a Windows drive-qualified source path.
+def test_build_volume_bindings_single_character_relative_host(
+    mount, expected_mode
+):
+    result = build_volume_bindings([mount])
+
+    assert result == {
+        os.path.abspath("x"): {"bind": "/container", "mode": expected_mode}
+    }
 
 
 def test_build_port_bindings_simple_string():
