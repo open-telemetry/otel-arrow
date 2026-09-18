@@ -322,6 +322,9 @@ provide process-wide memory-pressure admission or an RSS ceiling.
 `CellValue` and `CompositeCursor` debug output redact their values; nested
 cursor rows/pages therefore do not reveal the cursor through their debug
 representation. `CompiledQuery` also redacts SQL and its initial cursor.
+Timestamp and tie-breaker configuration debug output redacts `initial`,
+including when nested inside `WatermarkConfig`; the actual configured values
+remain available for query binding.
 This is not blanket redaction of every configuration type or error: callers
 must not log raw watermark configuration, native driver errors, endpoints,
 or other sensitive inputs.
