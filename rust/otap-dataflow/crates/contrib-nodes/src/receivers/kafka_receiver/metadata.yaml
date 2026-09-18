@@ -1,0 +1,6 @@
+type: kafka
+status:
+  class: receiver
+  codeowners:
+    active:
+      - c1ly

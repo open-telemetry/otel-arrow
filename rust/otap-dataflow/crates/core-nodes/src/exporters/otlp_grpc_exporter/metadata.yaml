@@ -1,0 +1,6 @@
+type: otlp_grpc
+status:
+  class: exporter
+  codeowners:
+    active:
+      - albertlockett

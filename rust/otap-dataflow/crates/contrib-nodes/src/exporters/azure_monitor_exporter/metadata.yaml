@@ -1,0 +1,6 @@
+type: azure_monitor
+status:
+  class: exporter
+  codeowners:
+    active:
+      - gouslu

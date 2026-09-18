@@ -1,0 +1,6 @@
+type: contrib-extensions
+status:
+  class: library
+  codeowners:
+    active:
+      - gouslu

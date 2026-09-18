@@ -1,0 +1,6 @@
+type: etw
+status:
+  class: receiver
+  codeowners:
+    active:
+      - swashtek

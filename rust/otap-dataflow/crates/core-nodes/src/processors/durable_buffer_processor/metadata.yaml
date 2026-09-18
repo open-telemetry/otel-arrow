@@ -1,0 +1,6 @@
+type: durable_buffer
+status:
+  class: processor
+  codeowners:
+    active:
+      - AaronRM

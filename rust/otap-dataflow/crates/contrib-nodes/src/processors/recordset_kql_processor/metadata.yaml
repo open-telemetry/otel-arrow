@@ -1,0 +1,6 @@
+type: recordset_kql
+status:
+  class: processor
+  codeowners:
+    active:
+      - drewrelmas

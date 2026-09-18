@@ -1,0 +1,6 @@
+type: otap
+status:
+  class: exporter
+  codeowners:
+    active:
+      - lquerel

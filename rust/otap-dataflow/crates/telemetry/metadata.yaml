@@ -1,0 +1,7 @@
+type: telemetry
+status:
+  class: library
+  codeowners:
+    active:
+      - drewrelmas
+      - cijothomas

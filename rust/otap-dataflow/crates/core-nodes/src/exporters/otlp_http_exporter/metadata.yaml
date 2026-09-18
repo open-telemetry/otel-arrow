@@ -1,0 +1,6 @@
+type: otlp_http
+status:
+  class: exporter
+  codeowners:
+    active:
+      - lquerel

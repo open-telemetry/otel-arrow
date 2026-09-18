@@ -1,0 +1,6 @@
+type: batch
+status:
+  class: processor
+  codeowners:
+    active:
+      - daviddahl

@@ -1,0 +1,6 @@
+type: syslog_cef
+status:
+  class: receiver
+  codeowners:
+    active:
+      - utpilla
