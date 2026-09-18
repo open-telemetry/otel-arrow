@@ -14,3 +14,13 @@ rust-version.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+otel-arrow-dfe-engine.workspace = true
+async-trait.workspace = true
+humantime-serde.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

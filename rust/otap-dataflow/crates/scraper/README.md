@@ -1,9 +1,10 @@
 # Shared scraper infrastructure
 
 This crate is the shared, database-neutral home for OTAP receiver scraping.
-The initial change establishes the crate and dependency boundary only: it does
-not implement polling, open database connections, register a receiver, or enable
-new behavior in `df_engine`.
+This layer adds database-neutral configuration, query, value, cursor, page, and
+driver contracts. It does not implement polling, encode OTLP, persist state,
+open database connections, register a receiver, or enable new behavior in
+`df_engine`.
 
 ## Dependency boundary
 
@@ -18,11 +19,10 @@ new behavior in `df_engine`.
 
 ## Follow-on changes
 
-Introduce database-neutral query, row, cursor, and driver contracts before adding
-business logic. The polling controller first depends on abstract progress and
-ownership contracts; filesystem implementations follow separately.
-Add vendor-specific adapters last, behind
-optional features, without duplicating the shared polling and delivery runtime.
+Add durable filesystem checkpoints and source ownership next, followed by
+polling, delivery and OTLP mapping, then the optional Oracle adapter. The polling
+controller uses the concrete checkpoint store and source lease directly; no
+additional persistence or ownership interface is needed for the review split.
 
 Database authentication through extension capabilities is a separate follow-up,
 not a new credential mechanism introduced by this skeleton.
