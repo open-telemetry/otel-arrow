@@ -30,10 +30,10 @@ jobs:
         with:
           python-version: "3.14"
           cache: pip
-          cache-dependency-path: tools/comparison_dashboard/requirements.txt
+          cache-dependency-path: tools/comparison_dashboard/requirements.lock.txt
 
       - name: Install dashboard dependencies
-        run: pip install -r tools/comparison_dashboard/requirements.txt
+        run: python -m pip install --require-hashes -r tools/comparison_dashboard/requirements.lock.txt
 
       - name: Validate dashboard manifest
         working-directory: tools/comparison_dashboard
