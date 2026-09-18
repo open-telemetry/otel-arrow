@@ -362,6 +362,27 @@ Different pipeline/receiver names or state directories can still cause duplicate
 polling. Deployments must enforce one active poller per unpartitioned source
 range. Automatic distributed partitioning and source discovery are not provided.
 
+#### Checkpoint Ownership Is Not Database-Source Ownership
+
+`CheckpointStore::lease_key()` derives its key from the state directory,
+pipeline group, pipeline, receiver name, and `source_id`. `SourceLease` prevents
+competing owners of that same storage identity using a process-local registry
+and an advisory filesystem lock. Cross-process exclusion requires access to
+the same lock on a filesystem that honors those locking semantics.
+
+For example, two one-core pipelines named `audit-a` and `audit-b` can query
+the same database rows with the same `source_id`. Their different pipeline
+names give them different checkpoint locations and lease keys, so both can
+acquire a lease and emit duplicate data. Separate state directories have the
+same limitation. One-core placement prevents per-core duplication within a
+pipeline; it does not detect equivalent sources across pipelines or replicas.
+
+Operators must enforce a single active poller for each logical source range,
+including during restarts and configuration replacement. Reusing `source_id`
+alone does not enforce this rule across different checkpoint identities.
+The configuration fingerprint checks whether saved progress is compatible;
+it is not a database-source ownership key.
+
 ### Shutdown and Live Configuration Changes
 
 The polling layer offloads encoding and checkpoint I/O while handling control

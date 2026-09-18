@@ -331,7 +331,13 @@ impl CheckpointStore {
         }
     }
 
-    /// Returns the canonical identity used to lease this checkpoint source.
+    /// Returns the storage identity used to lease this checkpoint.
+    ///
+    /// This key includes the state directory, pipeline group, pipeline, receiver
+    /// name, and source ID. It does not identify the underlying database or
+    /// query: different paths or names can lease separate checkpoints while
+    /// collecting the same rows. Callers must enforce one active poller per
+    /// logical source range independently of this storage lock.
     #[must_use]
     pub fn lease_key(&self) -> String {
         self.prefix.to_string_lossy().into_owned()
