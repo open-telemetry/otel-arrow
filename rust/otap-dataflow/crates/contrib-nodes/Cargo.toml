@@ -20,7 +20,7 @@ workspace = true
 otel-arrow-dfe-channel = { workspace = true }
 otel-arrow-dfe-config = { workspace = true }
 otel-arrow-dfe-engine = { workspace = true }
-otel-arrow-dfe-core-nodes = { workspace = true, optional = true }
+otel-arrow-dfe-core-nodes = { workspace = true, optional = true, default-features = false }
 otel-arrow-dfe-otap = { workspace = true }
 otel-arrow-dfe-pdata = { workspace = true }
 otel-arrow-dfe-pdata-views = { workspace = true }
@@ -94,48 +94,80 @@ one_collect = { workspace = true, optional = true }
 tracepoint_decode = { workspace = true, optional = true }
 
 [features]
-etw-receiver = ["dep:one_collect", "dep:humantime-serde"]
-kafka-receiver = [
-    "dep:otel-arrow-dfe-core-nodes",
-    "dep:rdkafka",
-    "dep:smallvec",
-    "dep:regex",
-    "dep:tokio-util",
+# Keep these umbrella lists exhaustive. Features can appear in both directional
+# categories when they intentionally include source and destination nodes.
+contrib-nodes = ["contrib-receivers", "contrib-processors", "contrib-exporters"]
+contrib-receivers = [
+    "etw",
+    "kafka",
+    "user-events",
 ]
-kafka-exporter = [
+contrib-processors = [
+    "condense-attributes",
+    "recordset-kql",
+    "resource-validator",
+]
+contrib-exporters = [
+    "azure-monitor",
+    "clickhouse",
+    "geneva",
+    "kafka",
+]
+
+# Integrations with both sources and destinations.
+kafka = [
+    "dep:otel-arrow-dfe-core-nodes",
+    # Kafka currently reuses the Syslog CEF parser. Upcoming codec extraction
+    # work will remove the need to include the full Syslog CEF receiver.
+    "otel-arrow-dfe-core-nodes/syslog-cef",
     "dep:rdkafka",
     "dep:futures-channel",
     "dep:futures-util",
     "dep:xxhash-rust",
     "dep:hex",
+    "dep:smallvec",
     "dep:regex",
+    "dep:tokio-util",
 ]
-aws = [
-    "dep:aws-config",
-    "dep:aws-msk-iam-sasl-signer",
-]
-contrib-receivers = [
-    "etw-receiver",
-    "kafka-receiver",
-    "user_events-receiver",
-]
-user_events-receiver = [
+
+# Receivers.
+etw = ["dep:one_collect", "dep:humantime-serde"]
+user-events = [
     "dep:base64",
     "dep:chrono",
     "dep:humantime-serde",
     "dep:one_collect",
-]
-user_events-eventheader = [
-    "user_events-receiver",
     "dep:tracepoint_decode",
 ]
-contrib-exporters = [
-    "geneva-exporter",
-    "azure-monitor-exporter",
-    "kafka-exporter",
-    "clickhouse-exporter",
+
+# Processors.
+condense-attributes = []
+condense-attributes-bench = ["condense-attributes"]
+recordset-kql = [
+    "dep:otel-arrow-contrib-data-engine-expressions",
+    "dep:otel-arrow-contrib-data-engine-kql-parser",
+    "dep:otel-arrow-contrib-data-engine-recordset",
+    "dep:regex",
+    "dep:chrono",
 ]
-clickhouse-exporter = [
+resource-validator = []
+
+# Exporters.
+azure-monitor = [
+    "dep:opentelemetry-proto",
+    "dep:reqwest",
+    "dep:ahash",
+    "dep:sysinfo",
+    "dep:chrono",
+    "dep:flate2",
+    "dep:http",
+    "dep:humantime-serde",
+    "dep:itoa",
+    "dep:rand",
+    "dep:ryu",
+    "dep:urlencoding",
+]
+clickhouse = [
     "dep:clickhouse",
     "dep:clickhouse-ext-arrow",
     "dep:secrecy",
@@ -150,46 +182,22 @@ clickhouse-exporter = [
     "dep:itoa",
     "dep:ryu",
 ]
-clickhouse-exporter-bench = ["clickhouse-exporter"]
-geneva-exporter = [
+clickhouse-bench = ["clickhouse"]
+geneva = [
     "dep:geneva-uploader",
     "dep:opentelemetry-proto",
     "dep:url",
 ]
 geneva-certificate-auth = [
-    "geneva-exporter",
+    "geneva",
     "geneva-uploader/certificate-auth",
 ]
-azure-monitor-exporter = [
-    "dep:opentelemetry-proto",
-    "dep:reqwest",
-    "dep:ahash",
-    "dep:sysinfo",
-    "dep:chrono",
-    "dep:flate2",
-    "dep:http",
-    "dep:humantime-serde",
-    "dep:itoa",
-    "dep:rand",
-    "dep:ryu",
-    "dep:urlencoding",
-]
 
-contrib-processors = [
-    "condense-attributes-processor",
-    "recordset-kql-processor",
-    "resource-validator-processor",
+# Cross-cutting integration support.
+aws = [
+    "dep:aws-config",
+    "dep:aws-msk-iam-sasl-signer",
 ]
-condense-attributes-processor = []
-condense-attributes-processor-bench = ["condense-attributes-processor"]
-recordset-kql-processor = [
-    "dep:otel-arrow-contrib-data-engine-expressions",
-    "dep:otel-arrow-contrib-data-engine-kql-parser",
-    "dep:otel-arrow-contrib-data-engine-recordset",
-    "dep:regex",
-    "dep:chrono",
-]
-resource-validator-processor = []
 
 [dev-dependencies]
 axum.workspace = true
@@ -205,7 +213,7 @@ otel-arrow-dfe-channel = { workspace = true }
 opentelemetry-proto.workspace = true
 otel-arrow-dfe-engine = { workspace = true, features = ["test-utils"] }
 otel-arrow-dfe-otap = { workspace = true, features = ["test-utils"] }
-otel-arrow-dfe-core-nodes.workspace = true
+otel-arrow-dfe-core-nodes = { workspace = true, features = ["core-nodes"] }
 otel-arrow-dfe-pdata = { workspace = true, features = ["testing"] }
 otel-arrow-dfe-state.workspace = true
 pretty_assertions.workspace = true
@@ -227,48 +235,48 @@ tracelogging_dynamic.workspace = true
 name = "azure_monitor_transformer"
 path = "benches/exporters/azure_monitor_exporter/transformer.rs"
 harness = false
-required-features = ["azure-monitor-exporter"]
+required-features = ["azure-monitor"]
 
 [[bench]]
 name = "clickhouse_logs_transformer"
 path = "benches/exporters/clickhouse_exporter/logs_transformer.rs"
 harness = false
-required-features = ["clickhouse-exporter-bench"]
+required-features = ["clickhouse-bench"]
 
 [[bench]]
 name = "azure_monitor_gzip_batcher"
 path = "benches/exporters/azure_monitor_exporter/gzip_batcher.rs"
 harness = false
-required-features = ["azure-monitor-exporter"]
+required-features = ["azure-monitor"]
 
 [[bench]]
 name = "otlp_bridge_extend"
 path = "benches/processors/recordset_kql_processor/extend.rs"
 harness = false
-required-features = ["recordset-kql-processor"]
+required-features = ["recordset-kql"]
 
 [[bench]]
 name = "condense_attributes"
 path = "benches/processors/condense_attributes_processor.rs"
 harness = false
-required-features = ["condense-attributes-processor-bench"]
+required-features = ["condense-attributes-bench"]
 
 [[test]]
 name = "otlp_kql_recordset"
 path = "tests/processors/recordset_kql_processor/otlp_kql_recordset.rs"
-required-features = ["recordset-kql-processor"]
+required-features = ["recordset-kql"]
 
 [[example]]
 name = "mock_la_server"
 path = "examples/mock_la_server.rs"
-required-features = ["azure-monitor-exporter"]
+required-features = ["azure-monitor"]
 
 [[example]]
 name = "user_events_tracefs_producer"
 path = "src/receivers/user_events_receiver/examples/tracefs_producer.rs"
-required-features = ["user_events-receiver"]
+required-features = ["user-events"]
 
 [[example]]
 name = "user_events_eventheader_producer"
 path = "src/receivers/user_events_receiver/examples/eventheader_producer.rs"
-required-features = ["user_events-eventheader"]
+required-features = ["user-events"]

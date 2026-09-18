@@ -49,23 +49,27 @@ base64 = { workspace = true, optional = true }
 
 [features]
 # Umbrella feature enabling all contrib extensions.
-contrib-extensions = ["azure-identity-auth-extension", "flat-file-user-pass-auth-extension", "k8s-service-account-token-auth-extension", "oauth2-client-auth-extension"]
+contrib-extensions = [
+    "azure-identity-auth",
+    "k8s-service-account-token-auth",
+    "oauth2-client-auth",
+]
 # Azure Identity authentication extension (BearerTokenProvider capability).
-azure-identity-auth-extension = ["dep:azure_core", "dep:azure_identity", "dep:humantime-serde", "dep:rand"]
+azure-identity-auth = ["dep:azure_core", "dep:azure_identity", "dep:humantime-serde", "dep:rand"]
 # Flat file user pass authentication extension (BasicAuthProvider capability)
 flat-file-user-pass-auth-extension = ["dep:humantime-serde", "dep:secrecy"]
 # Kubernetes service-account-token authorizer extension (BearerTokenAuthorizer
 # capability) validating tokens via the Kubernetes TokenReview API.
-k8s-service-account-token-auth-extension = ["dep:kube", "dep:k8s-openapi", "dep:humantime-serde", "dep:sha2"]
+k8s-service-account-token-auth = ["dep:kube", "dep:k8s-openapi", "dep:humantime-serde", "dep:sha2"]
 # OAuth 2.0 Client Auth extension (BearerTokenProvider capability).
-oauth2-client-auth-extension = ["dep:oauth2", "dep:reqwest", "dep:http", "dep:jsonwebtoken", "dep:humantime-serde", "dep:rand", "dep:secrecy"]
+oauth2-client-auth = ["dep:oauth2", "dep:reqwest", "dep:http", "dep:jsonwebtoken", "dep:humantime-serde", "dep:rand", "dep:secrecy"]
 
 # JWT assertion-signing backend for the OAuth 2.0 client auth extension. These
 # mirror the workspace `crypto-*` features so a build signs assertions with the
 # same library it uses for TLS. See `oauth2_client_auth::jwt_crypto`.
-crypto-ring = ["dep:ring"]
 crypto-aws-lc = ["jsonwebtoken?/aws_lc_rs"]
 crypto-openssl = ["dep:openssl"]
+crypto-ring = ["dep:ring"]
 
 [dev-dependencies]
 otel-arrow-dfe-engine = { workspace = true, features = ["test-utils"] }

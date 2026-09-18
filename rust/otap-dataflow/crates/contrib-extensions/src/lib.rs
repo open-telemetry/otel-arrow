@@ -7,16 +7,16 @@
 //! the OTAP pipeline factory's extension slice via `linkme` when its feature is
 //! enabled.
 
-#[cfg(feature = "azure-identity-auth-extension")]
+#[cfg(feature = "azure-identity-auth")]
 pub mod azure_identity_auth;
 
 #[cfg(feature = "flat-file-user-pass-auth-extension")]
 pub mod flat_file_user_pass_auth;
 
-#[cfg(feature = "k8s-service-account-token-auth-extension")]
+#[cfg(feature = "k8s-service-account-token-auth")]
 pub mod k8s_service_account_token_auth;
 
-#[cfg(feature = "oauth2-client-auth-extension")]
+#[cfg(feature = "oauth2-client-auth")]
 pub mod oauth2_client_auth;
 
 mod common;
