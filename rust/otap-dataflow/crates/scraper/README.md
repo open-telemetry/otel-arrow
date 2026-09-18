@@ -12,21 +12,21 @@ releases.
 - Receiver type: None. This crate does not register a receiver URN.
 - Feature gate: No crate-local vendor feature. Database drivers belong to independently gated vendor receivers, not this crate.
 - Status: In development; not the complete database receiver RFC or a production-readiness claim.
-- Documentation scope: Shared functionality through the polling layer. This skeleton/contracts PR does not itself add the checkpoint store, polling controller, OTLP mapper, or vendor receiver.
+- Documentation scope: Common database contracts, checkpoint storage, source ownership, and their integration with polling, mapping, and delivery.
 
 ## Overview
 
 The shared scraper is the database-neutral foundation for query-polling
 receivers in OTAP Dataflow. It defines common configuration, validated query
 plans, cursor and row types, and the interface that database-specific adapters
-implement. In the later polling layer, `DatabaseReceiver` combines these with
-a concrete checkpoint store, filesystem-backed source lease, bounded OTLP
-mapping, and downstream feedback. A concrete receiver supplies the adapter and
-registers the node.
+implement. `CheckpointStore` and `SourceLease` provide concrete persistence
+and checkpoint-identity ownership. The polling component, `DatabaseReceiver`,
+integrates these primitives with OTLP mapping and downstream feedback.
+A concrete receiver supplies the adapter and registers the node.
 
-| Layer | Delivered functionality |
+| Component | Responsibility |
 | --- | --- |
-| Skeleton and contracts (this PR) | Configuration validation, query plans, adapter interfaces, row/cursor/page types, and size-accounting helpers |
+| Database contracts | Configuration validation, query plans, adapter interfaces, row/cursor/page types, and size-accounting helpers |
 | Checkpointing | Durable file storage and exclusive ownership of a checkpoint identity |
 | Polling | Scheduling, OTLP mapping, backpressure, ACK/NACK handling, checkpoint integration, lifecycle, and telemetry |
 | Vendor receiver | Native driver, connection/authentication settings, SQL validation, type conversion, and node registration |
@@ -84,7 +84,7 @@ pipeline thread.
 
 This is a library, not a receiver that can be started with a `type:` block.
 There is no `receiver:scraper` or generic `receiver:database` registration in
-this change. Selecting a receiver URN cannot load a driver that was not compiled
+this library. Selecting a receiver URN cannot load a driver that was not compiled
 into the host.
 
 From the repository root, the crate can be built and its tests run
@@ -193,13 +193,13 @@ within that timestamp group. The adapter must return a consistent timestamp
 representation and deterministic ordering.
 `CompositeCursor` deliberately has no `Ord` or `PartialOrd` implementation:
 timestamp strings with different offsets or fractional precision cannot be
-ordered safely as text. The polling layer compares validated UTC instants.
+ordered safely as text. The polling controller compares validated UTC instants.
 
 ### Checkpoint Configuration
 
 This block validates a persistence and replay policy. Constructing configuration
-alone does not perform I/O. In the later checkpoint/polling layers, receiver
-construction creates a `CheckpointStore` and acquires a `SourceLease`.
+alone does not perform I/O. Receiver construction creates a `CheckpointStore`
+and acquires a `SourceLease`; the polling controller manages when they are used.
 
 | Field | Type | Default | Validation / meaning |
 | --- | --- | --- | --- |
@@ -219,14 +219,14 @@ max_consecutive_failures: 5
 ### Output Configuration
 
 `OutputConfig` is constructed in Rust; it is not a deserializable native
-`output:` block in this PR.
+`output:` block in the shared configuration schema.
 
 | Field | Default | Meaning |
 | --- | --- | --- |
 | `timestamp_column` | `None` | Optional non-empty result-column name for event-time mapping |
 | `validation_columns` | Empty list | Non-empty column names that must exist during live metadata validation |
 
-The polling-layer mapper uses a structured key-value body for selected columns.
+The OTLP mapper uses a structured key-value body for selected columns.
 It does not automatically promote every column to a LogRecord attribute, or
 infer OTLP fields from matching column names. Richer mapping is future work.
 
@@ -301,7 +301,7 @@ Current `CellValue` variants are:
 | `Timestamp`, `TimestampTz`, `Interval` | Adapter-normalized text that preserves source precision and temporal meaning. |
 
 The RFC's additional `Date`, `Json`, and `Uuid` variants are not implemented.
-The polling-layer mapper consumes owned values, preserving bytes as OTLP
+The OTLP mapper consumes owned values, preserving bytes as OTLP
 `BytesValue` and decimal precision as text rather than coercing it to floating
 point.
 
@@ -322,9 +322,10 @@ or other sensitive inputs.
 
 ## Polling and Delivery Semantics
 
-The following describes the later polling implementation, not code shipped in
-this contracts-only PR. That controller permits one pending page per source and
-is a reusable receiver core, not a vendor-registered node by itself.
+This section describes polling-controller integration. The controller permits
+one pending page per source and is a reusable receiver core, not a
+vendor-registered node by itself. Checkpoint storage and leases alone do not
+schedule queries, send data, or process acknowledgements.
 
 ```text
 Acquire source ownership and load committed position
@@ -385,7 +386,7 @@ it is not a database-source ownership key.
 
 ### Shutdown and Live Configuration Changes
 
-The polling layer offloads encoding and checkpoint I/O while handling control
+The polling controller offloads encoding and checkpoint I/O while handling control
 messages. Checkpoint retries honor an already-active drain deadline. Worker-stop
 waits respect the earlier supplied deadline and the five-second stop cap.
 Unconfirmed cleanup retains ownership until process exit rather than allowing
@@ -401,10 +402,10 @@ the old lease. Coordinated replacement/readiness is separate work tracked in
 
 ### Metric Sets
 
-In the polling layer, `DatabaseReceiverMetrics` defines the `receiver.database`
+`DatabaseReceiverMetrics` defines the polling controller's `receiver.database`
 metric set. Concrete receiver construction registers the set and supplies its
-handle to the controller. This skeleton/contracts PR emits none of these
-runtime metrics.
+handle to the controller. Configuration validation, checkpoint storage, and
+leases do not emit these runtime metrics by themselves.
 
 | Counter fields | Purpose |
 | --- | --- |
@@ -423,8 +424,8 @@ error messages must not become metric dimensions.
 ## Limits
 
 - This is not a runnable generic receiver, SQL Agent binary, installer, or exporter.
-- Only composite cursor configuration and `on_nack: rewind` are accepted; their runtime behavior belongs to later layers.
-- Scheduling, mapping, feedback, checkpoints, and leases are later shared-library behavior; this PR adds their contracts, not a working receiver.
+- Only composite cursor configuration and `on_nack: rewind` are accepted; the polling controller implements the corresponding delivery behavior.
+- File checkpoints and leases are library primitives. Scheduling, mapping, and feedback require polling-controller integration; database I/O and node registration remain vendor responsibilities.
 - Multiple named queries, jitter, snapshot/scalar polling, richer output mapping, collection of database metrics as an output signal, and CDC are not implemented. Internal runtime counters are implemented.
 - Byte-limit validation does not enforce process-wide memory pressure, native allocations, or end-to-end execution deadlines.
 - Authentication capabilities, credential rotation, TLS configuration, distributed ownership, and automatic source partitioning require separate work.
