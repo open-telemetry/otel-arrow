@@ -19,7 +19,7 @@ metrics that realize it are:
 
 | Metric name | Description | Produced in file |
 | --- | --- | --- |
-| `exporter.attempted.messages` | Number of compressed JSON payloads submitted to the Logs Ingestion API, partitioned by `signal` and `outcome`. Internal retries produce additional attempts. | `crates/contrib-nodes/src/exporters/azure_monitor_exporter/client.rs` |
+| `exporter.attempted.messages` | Number of node-local delivery attempts to the Logs Ingestion API, partitioned by `signal` and `outcome`. Internal retries produce additional attempts, and a batch dropped before submission because no usable bearer token is cached records one `failure` attempt. | `crates/contrib-nodes/src/exporters/azure_monitor_exporter/client.rs`, `crates/contrib-nodes/src/exporters/azure_monitor_exporter/exporter.rs` |
 | `exporter.attempted.duration` | Duration in seconds of each Logs Ingestion API attempt when component duration is enabled, partitioned by `signal` and `outcome`. Retry backoff is excluded. | `crates/contrib-nodes/src/exporters/azure_monitor_exporter/client.rs` |
 | `exporter.attempted.payload.size` | Gzip-compressed JSON request-body bytes submitted by each HTTP attempt when payload size is enabled, partitioned by `signal` and `outcome`. HTTP and TLS overhead are excluded. | `crates/contrib-nodes/src/exporters/azure_monitor_exporter/client.rs` |
 | `exporter.attempted.items` | Number of Azure Monitor rows represented by each HTTP attempt when item counts are enabled, partitioned by `signal` and `outcome`. Internal retries produce additional observations. | `crates/contrib-nodes/src/exporters/azure_monitor_exporter/client.rs` |
