@@ -75,10 +75,12 @@ Active owners must:
 - have enough familiarity with the area to review changes; and
 - remain active enough to respond to requests or identify a replacement.
 
-Start with one primary owner for most components. Choose the contributor who
-introduced the component or has performed most of its meaningful maintenance.
-List additional owners only when responsibility is genuinely shared. The
-initial owner lists must be confirmed during review of the ownership change.
+Aim for at least two active owners when multiple qualified contributors agree
+to share responsibility. A component may start with one owner rather than
+listing people without sufficient context or commitment. Choose owners based
+on meaningful implementation or maintenance history, and confirm the initial
+owner lists during review of the ownership change. All active owners are peers
+for review routing; metadata does not create separate approval authority.
 
 Ownership changes require approval from an existing owner of the affected area
 and a maintainer. Maintainers should remove or move an owner to an emeritus

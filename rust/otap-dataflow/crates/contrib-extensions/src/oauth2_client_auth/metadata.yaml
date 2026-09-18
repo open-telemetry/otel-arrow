@@ -1,7 +1,6 @@
-type: syslog_cef
+type: oauth2_client_auth
 status:
-  class: receiver
+  class: extension
   codeowners:
     active:
-      - utpilla
       - pritishnahar95
