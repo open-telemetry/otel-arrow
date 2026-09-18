@@ -247,6 +247,7 @@ impl SubscriberState {
     /// Deactivates the subscriber.
     pub const fn deactivate(&mut self) {
         self.active = false;
+        self.reset_activating = false;
     }
 
     /// Starts reset activation at the supplied completed-through watermark.
@@ -258,10 +259,17 @@ impl SubscriberState {
     }
 
     /// Commits reset activation after the replacement checkpoint is durable.
-    pub const fn complete_reset_activation(&mut self) {
+    ///
+    /// Returns `true` when the reset was still active and the subscriber was
+    /// activated. A concurrent deactivation cancels the pending activation.
+    pub const fn complete_reset_activation(&mut self) -> bool {
+        if !self.reset_activating {
+            return false;
+        }
         self.reset_pending = false;
         self.reset_activating = false;
         self.active = true;
+        true
     }
 
     /// Restores reset-pending state after activation persistence fails.
@@ -423,6 +431,20 @@ impl SubscriberState {
                 self.completed_through
                     .map_or(completed, |current| current.max(completed)),
             );
+        }
+    }
+
+    /// Removes the specified completed segments without advancing the
+    /// completed-through watermark across any sequence gaps.
+    pub fn remove_completed_segments(&mut self, segments: &[SegmentSeq]) {
+        for segment_seq in segments {
+            if self
+                .segments
+                .get(segment_seq)
+                .is_some_and(SegmentProgress::is_complete)
+            {
+                let _ = self.segments.remove(segment_seq);
+            }
         }
     }
 
@@ -631,6 +653,21 @@ mod tests {
 
         state.deactivate();
         assert!(!state.is_active());
+    }
+
+    /// Scenario: A reset activation is deactivated before its durable checkpoint completes.
+    /// Guarantees: Completing the stale activation does not reactivate the subscriber.
+    #[test]
+    fn subscriber_state_deactivate_cancels_reset_activation() {
+        let id = SubscriberId::new("test-sub").unwrap();
+        let mut state = SubscriberState::reset_pending(id, Some(SegmentSeq::new(3)));
+
+        state.begin_reset_activation(Some(SegmentSeq::new(4)));
+        state.deactivate();
+
+        assert!(!state.complete_reset_activation());
+        assert!(!state.is_active());
+        assert!(state.is_reset_pending());
     }
 
     #[test]

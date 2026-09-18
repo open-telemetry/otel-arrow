@@ -362,11 +362,11 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
             ));
         }
 
-        let available_segments = self.segment_provider.available_segments();
         let mut state = state_lock.write();
         if state.is_active() {
             return Ok(());
         }
+        let available_segments = self.segment_provider.available_segments();
         for segment_seq in available_segments {
             let bundle_count = self.segment_provider.bundle_count(segment_seq)?;
             state.add_segment(segment_seq, bundle_count);
@@ -393,18 +393,22 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
                 .ok_or_else(|| SubscriberError::not_found(id.as_str()))?
         };
 
-        if state_lock.read().is_active() {
-            return Ok(());
-        }
-
-        if state_lock.read().is_reset_pending() {
-            let completed_through = {
-                let mut state = state_lock.write();
+        let completed_through = {
+            let mut state = state_lock.write();
+            if state.is_active() {
+                return Ok(());
+            }
+            if !state.is_reset_pending() {
+                None
+            } else {
                 let completed_through =
                     self.segment_provider.available_segments().into_iter().max();
                 state.begin_reset_activation(completed_through);
-                completed_through
-            };
+                Some(completed_through)
+            }
+        };
+
+        if let Some(completed_through) = completed_through {
             let flags = if completed_through.is_some() {
                 FLAG_COMPLETED_THROUGH
             } else {
@@ -419,7 +423,9 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
             )
             .await;
             match result {
-                Ok(()) => state_lock.write().complete_reset_activation(),
+                Ok(()) => {
+                    let _ = state_lock.write().complete_reset_activation();
+                }
                 Err(error) => {
                     state_lock.write().abort_reset_activation();
                     return Err(error);
@@ -475,6 +481,8 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
     /// Returns an error if the subscriber is not registered or if the progress
     /// file cannot be deleted.
     pub async fn unregister(&self, id: &SubscriberId) -> Result<()> {
+        let _progress_write_guard = self.progress_write_lock.lock().await;
+
         // Remove from in-memory state
         {
             let mut subscribers = self.subscribers.write();
@@ -894,6 +902,14 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
         }
     }
 
+    /// Cleans up exact segments that were deleted or force-completed.
+    pub fn cleanup_segments(&self, segments: &[SegmentSeq]) {
+        let subscribers = self.subscribers.read();
+        for state_lock in subscribers.values() {
+            state_lock.write().remove_completed_segments(segments);
+        }
+    }
+
     /// Returns whether a subscriber is registered.
     #[must_use]
     pub fn is_registered(&self, id: &SubscriberId) -> bool {
@@ -961,6 +977,8 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
     /// Check the dirty count after an error to see how many subscribers still
     /// need flushing.
     pub async fn flush_progress(&self) -> Result<usize> {
+        let _progress_write_guard = self.progress_write_lock.lock().await;
+
         // Take the dirty set
         let dirty: Vec<SubscriberId> = {
             let mut dirty_set = self.dirty_subscribers.lock();
@@ -984,8 +1002,6 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
         let mut first_error: Option<SubscriberError> = None;
 
         for (sub_id, state_lock) in to_flush {
-            let _progress_write_guard = self.progress_write_lock.lock().await;
-
             // Get state data with per-subscriber lock
             let progress_snapshot = {
                 let state = state_lock.read();

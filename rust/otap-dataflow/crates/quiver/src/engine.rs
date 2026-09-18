@@ -1726,9 +1726,7 @@ impl QuiverEngine {
             .fetch_add(reclaimed_bytes, Ordering::Relaxed);
 
         // Clean up registry internal state
-        if let Some(&max_dropped) = to_drop.iter().max() {
-            self.registry.cleanup_segments_before(max_dropped.next());
-        }
+        self.registry.cleanup_segments(&to_drop);
 
         deleted
     }
@@ -1871,10 +1869,9 @@ impl QuiverEngine {
             deleted += 1;
         }
 
-        // Clean up registry internal state for deleted segments
-        if let Some(&max_deleted) = expired_segments.iter().max() {
-            self.registry.cleanup_segments_before(max_deleted.next());
-        }
+        // Clean up registry internal state for deleted segments without
+        // advancing progress across sequences that were not expired.
+        self.registry.cleanup_segments(&expired_segments);
 
         // Track expired segments, bundles, and items in the dedicated counters.
         let _ = self
