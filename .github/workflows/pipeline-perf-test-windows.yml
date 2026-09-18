@@ -140,12 +140,8 @@ jobs:
         if: ${{ !cancelled() }}
         shell: pwsh
         run: |
-          # Use plain requirements.txt (not .lock.txt) on Windows because the
-          # lock files contain --hash directives that trigger pip hash-checking
-          # mode, which rejects the Windows-only transitive dep pywin32 (not in
-          # the Linux-generated lock file).
-          python -m pip install --user -r tools/pipeline_perf_test/orchestrator/requirements.txt
-          python -m pip install --user -r tools/pipeline_perf_test/load_generator/requirements.txt
+          python -m pip install --user --require-hashes -r tools/pipeline_perf_test/orchestrator/requirements.lock.txt
+          python -m pip install --user --require-hashes -r tools/pipeline_perf_test/load_generator/requirements.lock.txt
 
       - name: Run idle state test (1 core) - warmup + repeated samples
         if: ${{ !cancelled() }}
@@ -178,7 +174,7 @@ jobs:
 
       - name: Analyze idle state variance (1 core)
         if: ${{ !cancelled() }}
-        continue-on-error: true
+        continue-on-error: false
         shell: pwsh
         env:
           PYTHONUTF8: "1"
@@ -187,6 +183,7 @@ jobs:
             tools/pipeline_perf_test/results/windows_idle_variance `
             tools/pipeline_perf_test/results/windows-idle-variance.json `
             "${{ env.MAX_CV_PERCENT }}" `
+            "${{ env.MEASURED_ITERATIONS }}" `
             | Tee-Object -Variable varianceReport
           echo "### Windows Idle State Variance (1 core, N=${{ env.MEASURED_ITERATIONS }})" >> $env:GITHUB_STEP_SUMMARY
           echo '```' >> $env:GITHUB_STEP_SUMMARY

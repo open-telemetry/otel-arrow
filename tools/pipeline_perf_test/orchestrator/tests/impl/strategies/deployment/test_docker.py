@@ -266,6 +266,52 @@ def test_build_volume_bindings_param_string_modes(mount, expected_mode):
     assert result == {host_path: {"bind": "/container", "mode": expected_mode}}
 
 
+@pytest.mark.parametrize(
+    "mount,expected_source,expected_target,expected_mode",
+    [
+        (
+            "./config:C:/dataflow/config:ro",
+            "./config",
+            "C:/dataflow/config",
+            "ro",
+        ),
+        ("./data:C:/dataflow/data", "./data", "C:/dataflow/data", "rw"),
+        (
+            "C:/host/config:C:/dataflow/config:ro",
+            "C:/host/config",
+            "C:/dataflow/config",
+            "ro",
+        ),
+        ("C:/host/data:C:/dataflow/data", "C:/host/data", "C:/dataflow/data", "rw"),
+        (
+            r"C:\host\config:C:\dataflow\config:ro",
+            r"C:\host\config",
+            r"C:\dataflow\config",
+            "ro",
+        ),
+        (
+            r"C:\host\data:C:\dataflow\data",
+            r"C:\host\data",
+            r"C:\dataflow\data",
+            "rw",
+        ),
+    ],
+)
+# Scenario: Docker volume strings contain Windows drive-letter paths on the host or container side.
+# Guarantees: Drive-letter colons are preserved as path content and do not break mode parsing.
+def test_build_volume_bindings_windows_drive_letter_paths(
+    mount, expected_source, expected_target, expected_mode
+):
+    result = build_volume_bindings([mount])
+
+    assert result == {
+        os.path.abspath(expected_source): {
+            "bind": expected_target,
+            "mode": expected_mode,
+        }
+    }
+
+
 def test_build_port_bindings_simple_string():
     result = build_port_bindings(["8080:80"])
     assert result == {"80/tcp": ("0.0.0.0", 8080)}

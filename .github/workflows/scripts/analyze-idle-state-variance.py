@@ -12,7 +12,7 @@ threshold to give a *non-gating* stability signal: it reports whether the
 measurements were stable enough to be meaningful, without failing the build.
 
 Usage:
-    python analyze-idle-state-variance.py <variance_dir> [output_json] [max_cv_percent]
+    python analyze-idle-state-variance.py <variance_dir> [output_json] [max_cv_percent] [expected_sample_count]
 
 Where:
     <variance_dir>   Directory containing per-iteration subdirectories
@@ -21,10 +21,13 @@ Where:
     [output_json]    Optional path to write the aggregated summary JSON.
     [max_cv_percent] Optional CV threshold (percent) for the stability signal.
                      Defaults to 15.0. This is informational only.
+    [expected_sample_count]
+                     Optional exact number of valid iteration samples required.
 
 Exit code is always 0 (non-gating) unless the inputs are structurally invalid
-(e.g. no measurements found), which returns a non-zero code so the workflow
-surfaces a genuine misconfiguration rather than silently passing.
+(e.g. no measurements found or fewer samples than expected), which returns a
+non-zero code so the workflow surfaces a genuine misconfiguration rather than
+silently passing.
 """
 
 import json
@@ -152,6 +155,7 @@ def main() -> int:
     variance_dir = Path(sys.argv[1])
     output_json = Path(sys.argv[2]) if len(sys.argv) > 2 and sys.argv[2] else None
     max_cv_percent = float(sys.argv[3]) if len(sys.argv) > 3 and sys.argv[3] else DEFAULT_MAX_CV_PERCENT
+    expected_sample_count = int(sys.argv[4]) if len(sys.argv) > 4 and sys.argv[4] else None
 
     if not variance_dir.exists():
         print(f"Error: variance directory not found: {variance_dir}", file=sys.stderr)
@@ -160,6 +164,12 @@ def main() -> int:
     samples = collect_samples(variance_dir)
     if not samples:
         print("Error: no idle-state samples collected", file=sys.stderr)
+        return 1
+    if expected_sample_count is not None and len(samples) != expected_sample_count:
+        print(
+            f"Error: expected {expected_sample_count} idle-state samples, collected {len(samples)}",
+            file=sys.stderr,
+        )
         return 1
 
     stats = summarize(samples)

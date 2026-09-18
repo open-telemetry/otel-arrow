@@ -47,6 +47,7 @@ Note:
 import threading
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from logging import LoggerAdapter
 from typing import ClassVar, Literal, Optional, TYPE_CHECKING
 
@@ -235,6 +236,65 @@ components:
         return {}
 
 
+def _parse_docker_timestamp(timestamp: str) -> datetime:
+    """Parse Docker RFC3339/RFC3339Nano timestamps."""
+    value = timestamp.strip()
+    if value.endswith("Z"):
+        value = value[:-1] + "+00:00"
+
+    if "." in value:
+        prefix, suffix = value.split(".", 1)
+        fraction_end = 0
+        while fraction_end < len(suffix) and suffix[fraction_end].isdigit():
+            fraction_end += 1
+        fraction = suffix[:fraction_end]
+        rest = suffix[fraction_end:]
+        # datetime supports microseconds; Docker may emit nanoseconds.
+        value = f"{prefix}.{fraction[:6].ljust(6, '0')}{rest}"
+
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _docker_stats_interval_seconds(stat_data: dict) -> float:
+    """Return the Docker stats sample interval from preread/read timestamps."""
+    return (
+        _parse_docker_timestamp(stat_data["read"])
+        - _parse_docker_timestamp(stat_data["preread"])
+    ).total_seconds()
+
+
+def _calculate_cpu_usage(stat_data: dict) -> float:
+    """Calculate Docker CPU usage as number of cores consumed."""
+    cpu_stats = stat_data["cpu_stats"]
+    precpu_stats = stat_data["precpu_stats"]
+    cpu_delta = (
+        cpu_stats["cpu_usage"]["total_usage"]
+        - precpu_stats["cpu_usage"]["total_usage"]
+    )
+
+    if "system_cpu_usage" in cpu_stats:
+        system_delta = cpu_stats["system_cpu_usage"] - precpu_stats["system_cpu_usage"]
+        if system_delta > 0.0 and cpu_delta > 0.0:
+            num_cpus = (
+                len(cpu_stats["cpu_usage"].get("percpu_usage", []))
+                or cpu_stats.get("online_cpus", 1)
+            )
+            return (cpu_delta / system_delta) * num_cpus
+        return 0.0
+
+    # Windows containers do not report system_cpu_usage. Docker's CPU delta is
+    # measured between the response preread/read timestamps, not the configured
+    # poll interval. The value is in 100-nanosecond units.
+    stats_interval = _docker_stats_interval_seconds(stat_data)
+    if cpu_delta > 0 and stats_interval > 0:
+        return cpu_delta / (stats_interval * 10_000_000)
+
+    return 0.0
+
+
 def monitor(
     container_id: str,
     component_name: str,
@@ -329,33 +389,7 @@ def monitor(
                 network_tx_gauge.set(tx_bytes, labels)
 
                 # CPU usage calculation
-                cpu_stats = stat_data["cpu_stats"]
-                precpu_stats = stat_data["precpu_stats"]
-                cpu_delta = (
-                    cpu_stats["cpu_usage"]["total_usage"]
-                    - precpu_stats["cpu_usage"]["total_usage"]
-                )
-
-                cpu_usage = 0.0
-                # Windows containers do not report system_cpu_usage.
-                # Use a time-based approximation instead.
-                if "system_cpu_usage" in cpu_stats:
-                    system_delta = (
-                        cpu_stats["system_cpu_usage"]
-                        - precpu_stats["system_cpu_usage"]
-                    )
-                    if system_delta > 0.0 and cpu_delta > 0.0:
-                        num_cpus = (
-                            len(cpu_stats["cpu_usage"].get("percpu_usage", []))
-                            or cpu_stats.get("online_cpus", 1)
-                        )
-                        cpu_usage = (cpu_delta / system_delta) * num_cpus
-                else:
-                    # Windows: cpu_delta is in 100-nanosecond units.
-                    # Convert to number-of-cores over the poll interval.
-                    if cpu_delta > 0 and interval > 0:
-                        # 10_000_000 = 100-ns units per second
-                        cpu_usage = cpu_delta / (interval * 10_000_000)
+                cpu_usage = _calculate_cpu_usage(stat_data)
 
                 # Memory usage in Bytes
                 mem_stats = stat_data.get("memory_stats", {})
