@@ -860,3 +860,131 @@ fn partition_list_fmt_at_cap_is_not_truncated() {
     let commas = rendered.matches(',').count() as u64;
     assert_eq!(commas, MAX_LISTED_PARTITIONS - 1);
 }
+
+// ---- Commit-before-revoke: non-blocking guarantee ----
+
+/// Scenario (commit-before-revoke): `handle_revoke` runs commit-before-revoke
+/// for an owned partition with a committable snapshot while the broker's
+/// offset-commit round-trip is artificially slow (a multi-second injected
+/// per-request delay). The call is issued on a blocking worker and raced
+/// against a short timeout.
+/// Guarantees: `handle_revoke` returns well within the timeout, proving the
+/// pre-rebalance commit does not block the caller (the pipeline thread, which
+/// services rebalance callbacks inline via `recv()`) on the broker commit
+/// round-trip. A synchronous commit would stall here for the full injected
+/// delay.
+#[tokio::test]
+async fn handle_revoke_does_not_block_on_broker_commit() {
+    const TOPIC: &str = "rebalance-revoke-nonblocking-traces";
+    const GROUP: &str = "revoke-nonblocking-group";
+    // Injected broker round-trip far exceeds the non-blocking bound below, so a
+    // synchronous commit-before-revoke would blow past the timeout while an
+    // asynchronous (enqueue-and-return) commit stays well under it.
+    const BROKER_DELAY: Duration = Duration::from_secs(3);
+    const NON_BLOCKING_BOUND: Duration = Duration::from_millis(500);
+    with_cluster(
+        KafkaTestCluster::builder().topic_with(TOPIC, 1, 1),
+        |cluster| async move {
+            let state = Arc::new(RebalanceState::new(false));
+            // The consumer is shared via `Arc` so the blocking worker below can
+            // hold a clone without owning the sole reference: dropping that
+            // clone when the worker finishes only decrements the refcount and
+            // never triggers a librdkafka consumer close (which would itself
+            // block on the delayed broker) inside the timed region. The final
+            // close happens when `consumer` is dropped at end of scope, after
+            // the assertion.
+            let consumer = Arc::new(mock_base_consumer(&cluster, GROUP, Arc::clone(&state)));
+
+            // Own the partition and give it a committable offset so the
+            // commit-before-revoke path actually issues a commit.
+            let mut full = TopicPartitionList::new();
+            let _ = full.add_partition(TOPIC, 0);
+            state.set_assignment(&full);
+            let mut snapshot = HashMap::new();
+            let _ = snapshot.insert((TOPIC.to_string(), 0), 7_i64);
+            state.set_committable_snapshot(snapshot);
+
+            // Make every broker request (including OffsetCommit) slow.
+            cluster.faults().round_trip_time(-1, BROKER_DELAY);
+
+            // Issue the (synchronous) `handle_revoke` on a blocking worker so a
+            // blocking commit cannot wedge the current-thread runtime, and race
+            // it against the non-blocking bound.
+            let mut revoke = TopicPartitionList::new();
+            let _ = revoke.add_partition(TOPIC, 0);
+            let worker_state = Arc::clone(&state);
+            let worker_consumer = Arc::clone(&consumer);
+            let handle = tokio::task::spawn_blocking(move || {
+                worker_state.handle_revoke(worker_consumer.as_ref(), &revoke);
+            });
+
+            let result = tokio::time::timeout(NON_BLOCKING_BOUND, handle).await;
+            assert!(
+                result.is_ok(),
+                "handle_revoke must return within {NON_BLOCKING_BOUND:?}; a synchronous \
+                 commit-before-revoke blocks the caller for the injected broker delay \
+                 ({BROKER_DELAY:?})",
+            );
+            result
+                .expect("handle_revoke did not return within the non-blocking bound")
+                .expect("handle_revoke task panicked");
+
+            // Clear the injected delay so the consumer close on drop does not
+            // stall the test teardown on the (now irrelevant) slow broker.
+            cluster
+                .faults()
+                .round_trip_time(-1, Duration::from_millis(0));
+        },
+    )
+    .await;
+}
+
+/// Scenario (commit-before-revoke): `handle_revoke` runs commit-before-revoke
+/// for an owned partition with a committable snapshot against a healthy broker.
+/// Guarantees: the committable offset is committed to the broker before the
+/// partition leaves the member, so making the pre-rebalance commit
+/// non-blocking (asynchronous) does not silently drop commit-before-revoke.
+#[tokio::test]
+async fn handle_revoke_commits_before_revoke_reaches_broker() {
+    const TOPIC: &str = "rebalance-revoke-commits-traces";
+    const GROUP: &str = "revoke-commits-group";
+    const COMMITTABLE: i64 = 11;
+    with_cluster(
+        KafkaTestCluster::builder().topic_with(TOPIC, 1, 1),
+        |cluster| async move {
+            let state = Arc::new(RebalanceState::new(false));
+            let consumer = mock_base_consumer(&cluster, GROUP, Arc::clone(&state));
+
+            // Own the partition with a known committable offset.
+            let mut full = TopicPartitionList::new();
+            let _ = full.add_partition(TOPIC, 0);
+            state.set_assignment(&full);
+            let mut snapshot = HashMap::new();
+            let _ = snapshot.insert((TOPIC.to_string(), 0), COMMITTABLE);
+            state.set_committable_snapshot(snapshot);
+
+            // Revoke the partition: commit-before-revoke should persist the
+            // committable offset to the broker.
+            let mut revoke = TopicPartitionList::new();
+            let _ = revoke.add_partition(TOPIC, 0);
+            state.handle_revoke(&consumer, &revoke);
+
+            // Keep the consumer's librdkafka worker/queue driven so an
+            // asynchronous commit is forwarded to the broker while we poll.
+            let insp = cluster.inspect_group(GROUP);
+            let committed = poll_until(Duration::from_secs(5), Duration::from_millis(100), || {
+                let _ = consumer.poll(Duration::from_millis(0));
+                insp.committed_offset(TOPIC, 0)
+                    .expect("committed-offset probe failed")
+                    .is_some_and(|o| o >= COMMITTABLE)
+            })
+            .await;
+            assert!(
+                committed,
+                "commit-before-revoke must persist the committable offset \
+                 ({COMMITTABLE}) to the broker before the partition is released",
+            );
+        },
+    )
+    .await;
+}

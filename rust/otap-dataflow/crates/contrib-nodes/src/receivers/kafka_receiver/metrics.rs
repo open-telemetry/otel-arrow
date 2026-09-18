@@ -236,7 +236,7 @@ pub struct KafkaReceiverConsumerMetrics {
     /// Owned partitions revoked from this consumer across rebalances.
     #[metric(name = "group.partition.revocations", unit = "{partition}")]
     pub partition_revocations: Counter<u64>,
-    /// Synchronous commit calls that failed while partitions were being revoked.
+    /// Commit calls that failed while partitions were being revoked.
     #[metric(name = "group.rebalance.commit_failures", unit = "{error}")]
     pub rebalance_commit_failures: Counter<u64>,
     /// Partition resume operations that failed while clearing rebalance pause state.
