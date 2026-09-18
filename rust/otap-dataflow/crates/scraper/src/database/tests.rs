@@ -42,7 +42,7 @@ fn checkpoint_config() -> CheckpointConfig {
 }
 
 /// Scenario: A query is modifying, locking, or not a directly validated SELECT.
-/// Guarantees: Unsafe SQL is rejected before any database connection is opened.
+/// Guarantees: The shared filter rejects these non-SELECT and locking forms without opening a connection.
 #[test]
 fn rejects_queries_outside_the_read_only_contract() {
     for sql in [
@@ -64,8 +64,7 @@ fn rejects_queries_outside_the_read_only_contract() {
 }
 
 /// Scenario: A row, page, byte, or timing limit is outside its supported range.
-/// Guarantees: Every polling resource remains positive and bounded, including aggregate
-/// in-flight memory.
+/// Guarantees: Invalid configured row, fetch, byte, and timing bounds are rejected before execution.
 #[test]
 fn rejects_invalid_polling_bounds() {
     for invalid in [
@@ -234,4 +233,68 @@ fn normalized_size_includes_structural_allocations() {
     };
 
     assert!(row.normalized_size() >= (size_of::<Row>() + 100 * size_of::<CellValue>()) as u64);
+}
+
+/// Scenario: A cursor repeats sensitive database values in a row, page, and compiled query.
+/// Guarantees: Debug output hides both cursor components while serialization preserves their exact values.
+#[test]
+fn cursor_debug_redacts_nested_rows_pages_and_queries() {
+    let timestamp = "2037-01-02 03:04:05.987654321";
+    let tie_breaker = 834_592_176_004_i64;
+    let cursor = CompositeCursor::new(timestamp.to_owned(), tie_breaker);
+    let serialized = serde_json::to_value(&cursor).expect("cursor JSON");
+    assert_eq!(serialized["timestamp"], timestamp);
+    assert_eq!(serialized["tie_breaker"], tie_breaker);
+
+    let row = CursorRow {
+        row: Row {
+            values: vec![
+                CellValue::Timestamp(timestamp.to_owned()),
+                CellValue::Int64(tie_breaker),
+            ],
+        },
+        cursor: cursor.clone(),
+    };
+    let page = QueryPage {
+        columns: vec![
+            ColumnMetadata {
+                name: "EVENT_TS".to_owned(),
+                source_type: "TIMESTAMP".to_owned(),
+                nullable: false,
+            },
+            ColumnMetadata {
+                name: "EVENT_ID".to_owned(),
+                source_type: "NUMBER".to_owned(),
+                nullable: false,
+            },
+        ],
+        rows: vec![row.clone()],
+    };
+    let mut watermark = watermark();
+    let WatermarkConfig::Composite {
+        timestamp: configured_time,
+        tie_breaker: configured_id,
+    } = &mut watermark;
+    configured_time.initial = timestamp.to_owned();
+    configured_id.initial = tie_breaker;
+    let query = CompiledQuery::compile(
+        "SELECT EVENT_TS, EVENT_ID FROM PRIVATE_QUERY_TABLE".to_owned(),
+        polling(),
+        &watermark,
+        &checkpoint_config(),
+        OutputConfig::default(),
+    )
+    .expect("query plan");
+
+    for debug in [
+        format!("{cursor:?}"),
+        format!("{row:?}"),
+        format!("{page:?}"),
+        format!("{query:?}"),
+    ] {
+        assert!(debug.contains("<redacted>"));
+        assert!(!debug.contains(timestamp));
+        assert!(!debug.contains(&tie_breaker.to_string()));
+        assert!(!debug.contains("PRIVATE_QUERY_TABLE"));
+    }
 }

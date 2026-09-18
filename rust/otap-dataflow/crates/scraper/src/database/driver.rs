@@ -40,7 +40,7 @@ pub trait DriverCancellation: Clone {
 /// Database-specific query execution required by the shared receiver.
 #[async_trait(?Send)]
 pub trait DriverAdapter {
-    /// Adapter-specific error with its diagnostic source chain intact.
+    /// Adapter-specific error; implementations must redact sensitive diagnostic data.
     type Error: Error + 'static;
     /// Cloneable handle used to interrupt one active native operation.
     type Cancellation: DriverCancellation<Error = Self::Error>;
