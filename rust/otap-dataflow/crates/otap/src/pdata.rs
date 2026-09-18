@@ -285,13 +285,18 @@ impl PackedAuthorizedIdentity {
         let _ = first_value
             .checked_add(value_count)
             .filter(|end| *end <= self.value_count)?;
+        let many = match *self.bytes.get(at + 16)? {
+            0 => false,
+            1 => true,
+            _ => return None,
+        };
         Some(AuthorizedIdentityEntry {
             name,
             value: AuthorizedClaimValue {
                 storage: self,
                 first_value,
                 value_count,
-                many: *self.bytes.get(at + 16)? != 0,
+                many,
             },
         })
     }
@@ -3038,6 +3043,24 @@ mod test {
         let packed = Arc::get_mut(entries.packed.as_mut().expect("packed storage is present"))
             .expect("packed storage is uniquely owned");
         packed.bytes[0..4].copy_from_slice(&u32::MAX.to_le_bytes());
+
+        let _ = entries.iter().next();
+    }
+
+    /// Scenario: a packed authorized identity descriptor has an invalid cardinality flag.
+    /// Guarantees: decoding rejects values outside the encoded single-or-many domain.
+    #[test]
+    #[should_panic(expected = "in-bounds packed authorized identity entry must decode")]
+    fn authorized_identity_invalid_cardinality_fails_fast() {
+        let policy: AuthorizedIdentityPolicy =
+            serde_json::from_value(serde_json::json!([{"claim": "sub", "store_as": "subject"}]))
+                .expect("valid authorized identity policy");
+        let identity = AuthorizedIdentity::new().with_subject("reader");
+        let mut entries =
+            AuthorizedIdentityEntries::capture(&policy, &identity).expect("captured identity");
+        let packed = Arc::get_mut(entries.packed.as_mut().expect("packed storage is present"))
+            .expect("packed storage is uniquely owned");
+        packed.bytes[16] = 2;
 
         let _ = entries.iter().next();
     }
