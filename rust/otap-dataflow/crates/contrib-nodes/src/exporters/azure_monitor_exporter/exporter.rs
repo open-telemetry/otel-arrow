@@ -277,14 +277,20 @@ impl AzureMonitorExporter {
         }
 
         let Some((auth_header, token_generation)) = auth.header() else {
-            let error = Error::NoBearerToken {
-                reason: auth.not_ready_reason(),
-            };
+            let reason = auth.not_ready_reason();
+            let attempt = self.metrics.borrow().boundary.attempt(SignalType::Logs);
+            let completed = attempt
+                .run(async |attempt| {
+                    attempt.set_item_count_with(|| pending_batch.row_count);
+                    Err::<std::time::Duration, _>(attempt.failed(Error::NoBearerToken { reason }))
+                })
+                .await;
+            let _ = self.metrics.borrow_mut().boundary.record(completed);
             return self
                 .handle_export_failure(
                     effect_handler,
                     pending_batch.batch_id,
-                    error,
+                    Error::NoBearerToken { reason },
                     compressed_size,
                     uncompressed_size,
                 )
@@ -691,9 +697,10 @@ mod tests {
     use otel_arrow_dfe_engine::local::message::LocalReceiver;
     use otel_arrow_dfe_engine::message::Receiver;
     use otel_arrow_dfe_engine::node::NodeId;
-    use otel_arrow_dfe_engine::testing::test_node;
+    use otel_arrow_dfe_engine::testing::{test_node, test_pipeline_ctx_with_interests};
     use otel_arrow_dfe_otap::pdata::Context;
     use otel_arrow_dfe_otap::testing::TestCallData;
+    use otel_arrow_dfe_telemetry::metrics::MetricSetSnapshot;
     use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
     use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
     use rand::{RngExt, SeedableRng, rngs::SmallRng};
@@ -1105,6 +1112,104 @@ mod tests {
                 .get(),
             1,
             "the batch that could not be stamped must be recorded as failed"
+        );
+    }
+
+    /// Build an exporter with the given node interests so tests can observe the
+    /// interest-gated shared exporter attempt metrics.
+    async fn exporter_with_interests(
+        endpoint: String,
+        interests: Interests,
+    ) -> AzureMonitorExporter {
+        let mut config = create_test_config();
+        config.api.dcr_endpoint = endpoint;
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+        let (pipeline_ctx, _registry) = test_pipeline_ctx_with_interests(interests);
+        let mut exporter =
+            AzureMonitorExporter::new(pipeline_ctx, config, Box::new(MockTokenProvider)).unwrap();
+        exporter
+            .client_pool
+            .initialize(&exporter.config.api)
+            .await
+            .unwrap();
+        exporter
+    }
+
+    /// Reads the shared `exporter.attempted.messages` count for a logs outcome
+    /// bucket, returning 0 when that bucket recorded no observation.
+    fn attempted_messages(snapshots: &[MetricSetSnapshot], outcome: Outcome) -> u64 {
+        let outcome = match outcome {
+            Outcome::Success => "success",
+            Outcome::Failure => "failure",
+            Outcome::Refused => "refused",
+        };
+        let Some(snapshot) = snapshots.iter().find(|snapshot| {
+            snapshot.descriptor().name == "exporter.attempted"
+                && snapshot.measurement_attribute_value("signal") == Some("logs")
+                && snapshot.measurement_attribute_value("outcome") == Some(outcome)
+        }) else {
+            return 0;
+        };
+        let index = snapshot
+            .descriptor()
+            .metrics
+            .iter()
+            .position(|m| m.name == "messages")
+            .expect("messages metric");
+        snapshot.get_metrics()[index].to_u64_lossy()
+    }
+
+    /// Scenario: a finalized batch is ready to export but no usable bearer token
+    /// is cached, so the exporter drops it before reaching the HTTP client.
+    /// Guarantees: the pre-submission preparation failure still records exactly
+    /// one shared `exporter.attempted` observation in the `failure` bucket, so
+    /// attempt accounting stays aligned with the terminal batch outcome even
+    /// though no HTTP request is sent.
+    #[tokio::test]
+    async fn no_bearer_token_drop_records_a_failed_shared_attempt() {
+        let mut exporter = exporter_with_interests(
+            "http://localhost".to_string(),
+            Interests::NODE_INPUT_METRICS,
+        )
+        .await;
+        let mut auth = BearerAuth::new(
+            Box::new(MockTokenProvider),
+            AZURE_MONITOR_BEARER_AUTH_EVENTS,
+        );
+        assert!(!auth.is_ready(), "no token has been polled yet");
+        let effect_handler = test_effect_handler();
+
+        prime_pending_batch(&mut exporter);
+        exporter
+            .queue_pending_batch(&effect_handler, &mut auth)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            exporter.in_flight_exports.len(),
+            0,
+            "no export may be dispatched without a usable token"
+        );
+        assert_eq!(
+            exporter
+                .metrics
+                .borrow()
+                .batch_for(Outcome::Failure)
+                .batches
+                .get(),
+            1,
+            "the dropped batch must be recorded as a failed terminal batch"
+        );
+        let snapshots = exporter.metrics.borrow_mut().terminal_snapshots();
+        assert_eq!(
+            attempted_messages(&snapshots, Outcome::Failure),
+            1,
+            "the no-token drop must record one failed shared attempt"
+        );
+        assert_eq!(
+            attempted_messages(&snapshots, Outcome::Success),
+            0,
+            "the no-token drop must not record a successful attempt"
         );
     }
 
