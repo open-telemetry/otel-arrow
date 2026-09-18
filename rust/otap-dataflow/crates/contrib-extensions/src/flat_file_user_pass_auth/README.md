@@ -3,7 +3,7 @@
 ## Metadata
 
 - URN: `urn:otel:extension:flat_file_user_pass_auth`
-- Feature gate: `flat-file-user-pass-auth-extension` (or the aggregate `contrib-extensions`)
+- Feature gate: `flat-file-user-pass-auth` (or the aggregate `contrib-extensions`)
 - Capability provided: `basic_auth_provider`
 - Execution model: Active + Shared
 - Stability: Draft
@@ -61,7 +61,7 @@ Enable the extension's feature gate together with the nodes that consume it.
 From the `otap-dataflow` directory:
 
 ```bash
-cargo build --release --features flat-file-user-pass-auth-extension
+cargo build --release --features flat-file-user-pass-auth
 ```
 
 Verify registration with `./target/release/df_engine --help`;

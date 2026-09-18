@@ -10,7 +10,7 @@
 #[cfg(feature = "azure-identity-auth")]
 pub mod azure_identity_auth;
 
-#[cfg(feature = "flat-file-user-pass-auth-extension")]
+#[cfg(feature = "flat-file-user-pass-auth")]
 pub mod flat_file_user_pass_auth;
 
 #[cfg(feature = "k8s-service-account-token-auth")]
