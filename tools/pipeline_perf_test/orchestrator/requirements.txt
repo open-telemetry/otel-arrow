@@ -3,7 +3,7 @@
 # General dependencies
 requests==2.34.2
 pyyaml==6.0.3
-pydantic==2.13.4
+pydantic==2.13.5
 
 # Docker management
 docker==7.2.0
@@ -19,6 +19,6 @@ opentelemetry-exporter-otlp==1.44.0
 opentelemetry-sdk==1.44.0
 opentelemetry-proto==1.44.0
 prometheus_client==0.26.0
-pandas==3.0.5
+pandas==3.0.6
 pyarrow==24.0.0
 tabulate==0.10.0
