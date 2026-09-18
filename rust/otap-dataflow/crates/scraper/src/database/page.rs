@@ -5,17 +5,30 @@
 //!
 //! The first supported watermark mode is `composite`: an ordered timestamp
 //! paired with a non-null `int64` tie-breaker that is unique within each
-//! timestamp group. Keeping the cursor in its own type lets future scalar and
-//! snapshot modes be added without changing the driver contract's shape.
+//! timestamp group. Scalar and snapshot modes require separate contract work.
 
 use super::row::{ColumnMetadata, Row};
 use serde::{Deserialize, Serialize};
+use std::fmt;
 
 /// Ordered position of one database row under composite watermark mode.
 ///
 /// The timestamp is retained as adapter-normalized text so no precision is
 /// lost between the database, the durable checkpoint, and the next bind.
-#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+/// Equality compares the stored representation, not normalized instants.
+/// Chronological comparison must validate and normalize timestamps explicitly.
+///
+/// Scenario: Equivalent timestamps have different fractional-second spellings.
+/// Guarantees: Cursor ordering cannot accidentally use lexical string comparison.
+///
+/// ```compile_fail
+/// use otel_arrow_dfe_scraper::database::CompositeCursor;
+///
+/// let first = CompositeCursor::new("2026-01-01 10:00:00.0 +00:00".into(), 1);
+/// let next = CompositeCursor::new("2026-01-01 10:00:00 +00:00".into(), 2);
+/// assert!(first < next);
+/// ```
+#[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct CompositeCursor {
     /// Ordered timestamp component using UTC semantics.
@@ -32,6 +45,16 @@ impl CompositeCursor {
             timestamp,
             tie_breaker,
         }
+    }
+}
+
+impl fmt::Debug for CompositeCursor {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CompositeCursor")
+            .field("timestamp", &"<redacted>")
+            .field("tie_breaker", &"<redacted>")
+            .finish()
     }
 }
 

@@ -21,6 +21,7 @@ use otel_arrow_dfe_telemetry::common_attributes::{
 };
 use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
 use otel_arrow_dfe_telemetry::instrument::{Counter, HistogramNormal};
+use otel_arrow_dfe_telemetry::metrics::MetricSetRegistrar;
 use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSetSnapshot};
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use otel_arrow_dfe_telemetry_macros::metric_set;
@@ -150,6 +151,17 @@ impl ReceiverMetrics {
             payload: ReceiverReceivedPayloadMetrics::register(pipeline_ctx),
             processing: ReceiverProcessingMetrics::register(pipeline_ctx),
             interests: pipeline_ctx.node_interests(),
+        }
+    }
+
+    /// Registers the shared receiver metric sets with an entity-bound registrar.
+    #[must_use]
+    pub fn register_with(registrar: &impl MetricSetRegistrar, interests: Interests) -> Self {
+        Self {
+            received: ReceiverReceivedMetrics::register(registrar),
+            payload: ReceiverReceivedPayloadMetrics::register(registrar),
+            processing: ReceiverProcessingMetrics::register(registrar),
+            interests,
         }
     }
 

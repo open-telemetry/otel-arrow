@@ -28,10 +28,8 @@ pub struct PollingConfig {
     pub max_rows_per_poll: usize,
     /// Target number of rows fetched per native driver round trip.
     pub fetch_size: usize,
-    /// Exact serialized OTLP payload ceiling for one emitted page.
+    /// Byte ceiling applied separately to normalized rows and serialized OTLP.
     pub max_batch_bytes: u64,
-    /// Retained normalized row storage ceiling, independent of encoded bytes.
-    pub max_normalized_bytes: u64,
 }
 
 /// Watermark mode selected by the operator.
@@ -158,11 +156,6 @@ impl PollingConfig {
         if self.max_batch_bytes > MAX_BYTE_LIMIT {
             return Err(ConfigError::new(format!(
                 "query.max_batch_bytes must not exceed {MAX_BYTE_LIMIT} bytes"
-            )));
-        }
-        if self.max_normalized_bytes == 0 || self.max_normalized_bytes > MAX_BYTE_LIMIT {
-            return Err(ConfigError::new(format!(
-                "query.max_normalized_bytes must be between 1 and {MAX_BYTE_LIMIT} bytes"
             )));
         }
         if self.fetch_size > MAX_FETCH_SIZE {

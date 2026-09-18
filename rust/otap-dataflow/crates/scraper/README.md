@@ -1,5 +1,8 @@
 # Shared Database Scraper
 
+This crate is currently pre-1.0. Its public API may evolve between minor
+releases.
+
 <!-- markdownlint-disable MD013 -->
 
 ## Metadata
@@ -8,15 +11,25 @@
 - Kind: Shared Rust library for database receiver implementations.
 - Receiver type: None. This crate does not register a receiver URN.
 - Feature gate: No crate-local vendor feature. Database drivers belong to independently gated vendor receivers, not this crate.
-- Status: In development. This change provides the shared crate and database-neutral contracts; the polling runtime and concrete receivers are separate changes.
-- Intended signal: Logs for the initial query-polling use case. Database metrics and CDC are separate design work.
+- Status: In development; not the complete database receiver RFC or a production-readiness claim.
+- Documentation scope: Shared functionality through the polling layer. This skeleton/contracts PR does not itself add the checkpoint store, polling controller, OTLP mapper, or vendor receiver.
 
 ## Overview
 
 The shared scraper is the database-neutral foundation for query-polling
 receivers in OTAP Dataflow. It defines common configuration, validated query
 plans, cursor and row types, and the interface that database-specific adapters
-implement.
+implement. In the later polling layer, `DatabaseReceiver` combines these with
+a concrete checkpoint store, filesystem-backed source lease, bounded OTLP
+mapping, and downstream feedback. A concrete receiver supplies the adapter and
+registers the node.
+
+| Layer | Delivered functionality |
+| --- | --- |
+| Skeleton and contracts (this PR) | Configuration validation, query plans, adapter interfaces, row/cursor/page types, and size-accounting helpers |
+| Checkpointing | Durable file storage and exclusive ownership of a checkpoint identity |
+| Polling | Scheduling, OTLP mapping, backpressure, ACK/NACK handling, checkpoint integration, lifecycle, and telemetry |
+| Vendor receiver | Native driver, connection/authentication settings, SQL validation, type conversion, and node registration |
 
 The goal is to share polling, delivery, checkpointing, and resource-management
 behavior without putting every database driver into one receiver. A vendor
@@ -24,30 +37,13 @@ receiver owns its connection configuration, native driver, SQL dialect checks,
 and component registration. The shared crate must not depend on those vendor
 implementations.
 
-This is scheduled, read-only query polling, not Change Data Capture (CDC).
-Transaction-log ingestion requires database-specific source and recovery
-semantics and is outside this crate's initial scope.
+The design is scheduled, read-only query polling, not Change Data Capture
+(CDC). The [database receiver RFC][database-rfc] remains broader than the initial
+single-query, composite-watermark runtime.
 
-### Current Implementation and Planned Runtime
+## Architecture and Responsibilities
 
-The [database receiver RFC][database-rfc] describes a broader design than this
-initial change. Configuration types are not evidence that their corresponding
-runtime behavior is already implemented.
-
-| Area | Available in this change | Separate or future work |
-| --- | --- | --- |
-| Crate structure | Shared crate, workspace dependency, publication-policy registration | Vendor receiver registration and executable composition |
-| Configuration | Polling limits, composite watermark, checkpoint policy, and output-column validation | Vendor connection, credential, and TLS schemas |
-| Query planning | `CompiledQuery` and basic shared SQL checks | Vendor SQL validation, live preparation, and execution |
-| Adapter boundary | `DriverAdapter` and `DriverCancellation` | Concrete database drivers and their cancellation/cleanup implementations |
-| Rows and pages | `CellValue`, metadata, normalized size accounting, and cursor-bearing pages | Native value conversion and OTLP encoding |
-| Checkpointing | Configuration and source-position types | Durable storage and source ownership |
-| Polling and delivery | Contracts consumed by the future controller | Scheduling, downstream sends, backpressure, ACK/NACK handling, retries, and shutdown |
-| Observability | No scraper metrics or events emitted here | Shared runtime telemetry |
-
-### Architecture and Responsibilities
-
-The intended composition is:
+The composition is:
 
 ```text
 Existing Dataflow host
@@ -57,9 +53,9 @@ Existing Dataflow host
   |     +-- Database driver / native client
   |     +-- DriverAdapter implementation
   |     `-- Shared scraper
-  |           +-- Database-neutral contracts        [this change]
-  |           +-- Checkpoint storage and ownership  [separate change]
-  |           `-- Polling, mapping, and delivery    [separate change]
+  |           +-- Database-neutral contracts
+  |           +-- Checkpoint storage and ownership
+  |           `-- Polling, mapping, and delivery
   |
   `-- Existing processors and exporters
 ```
@@ -69,15 +65,15 @@ Existing Dataflow host
 | Query policy | Common limits and validated plan | Operator-authored SQL and dialect-specific validation |
 | Cursor parameters | Logical bind names and a composite cursor | Binding through the driver's parameter API |
 | Row representation | Database-neutral values, metadata, and page contract | Native type inspection and precision-preserving conversion |
-| Timing and lifecycle | Common policy; controller implementation follows separately | Native timeout, cancellation, and connection cleanup |
-| Progress | Common checkpoint policy; durable implementation follows separately | Stable source identity and vendor-specific compatibility inputs |
+| Timing and lifecycle | Common scheduling, control-message handling, and worker cleanup coordination | Native timeout, cancellation, and connection cleanup |
+| Progress | Common checkpoint policy, concrete durable file store, and source lease | Stable source identity and vendor-specific compatibility inputs |
 | Authentication and TLS | No credential storage or connection implementation | Vendor/capability integration and driver configuration |
 | Deployment | No installer, image, or Helm resources | Host executable and deployment tooling |
 
 Dependencies point from vendor receiver code toward the scraper, never from
-the scraper toward a vendor driver. The shared crate may reuse engine, OTAP,
-pdata, and telemetry APIs as the runtime is introduced; it must not duplicate
-the controller or exporters.
+the scraper toward a vendor driver. The shared runtime reuses engine, OTAP,
+pdata, and telemetry APIs; it does not replace the Dataflow host/controller or
+implement another exporter.
 
 The initial adapter contract uses `#[async_trait(?Send)]` to preserve the
 engine's local, thread-per-core execution model. A blocking driver must arrange
@@ -91,7 +87,7 @@ There is no `receiver:scraper` or generic `receiver:database` registration in
 this change. Selecting a receiver URN cannot load a driver that was not compiled
 into the host.
 
-From the repository root, the crate can be built and its contract tests run
+From the repository root, the crate can be built and its tests run
 without installing a database or native client:
 
 ```powershell
@@ -114,14 +110,19 @@ timeout: 2m
 max_rows_per_poll: 10000
 fetch_size: 1000
 max_batch_bytes: 10485760
-max_normalized_bytes: 5242880
 ```
 
-All six fields are required by the shared deserialization type. A vendor
-configuration may supply its own defaults or convenience syntax, but those
-are not defaults of this library.
+All five fields are required by the shared deserialization type. The byte limit
+is a numeric byte count in these common types; a vendor schema may provide
+different defaults or convenience units.
 
 ## Configuration
+
+The complete native receiver configuration belongs in the vendor README under
+`crates/contrib-nodes/src/receivers`: its registered `type`, connection,
+authentication, driver setup, SQL rules, and complete pipeline examples.
+This shared reference owns the common contracts and semantics, not a runnable
+generic `receiver:database` schema.
 
 ### Shared Contract Blocks
 
@@ -144,23 +145,23 @@ use `CompiledQuery::compile`, which validates all four configuration inputs.
 
 | Field | Type | Default | Validation / meaning |
 | --- | --- | --- | --- |
-| `interval` | duration string | **required** | Between `1ms` and `24h`, inclusive. Describes the polling interval for the future controller. |
+| `interval` | duration string | **required** | Between `1ms` and `24h`, inclusive. Configured interval between eligible polls; unresolved downstream feedback blocks the next page. |
 | `timeout` | duration string | **required** | Must be greater than zero. The contract exposes a native-call timeout, not a guaranteed whole-poll deadline. |
-| `max_rows_per_poll` | integer | **required** | Between `1` and `10000`. Hard row ceiling to be enforced during execution. |
+| `max_rows_per_poll` | integer | **required** | Between `1` and `10000`. Hard row ceiling the adapter must enforce while building its returned page. |
 | `fetch_size` | integer | **required** | Between `1` and `10000`, and no larger than `max_rows_per_poll`. Target native fetch size. |
-| `max_batch_bytes` | integer bytes | **required** | Between `1` and `268435456` (256 MiB). Intended exact serialized OTLP ceiling. |
-| `max_normalized_bytes` | integer bytes | **required** | Between `1` and `268435456` (256 MiB). Independent retained normalized-row storage ceiling. |
+| `max_batch_bytes` | integer bytes | **required** | Between `1` and `268435456` (256 MiB). Applied separately to accounted normalized-row storage and the exact serialized OTLP payload; not a combined memory ceiling. |
 
-The byte fields are `u64` values in the shared schema: use integer byte counts,
+The byte limit is a `u64` value in the shared schema: use an integer byte count,
 not strings such as `10 MiB`. Duration strings are parsed by
-`humantime-serde`. The two byte ceilings may differ; neither is a process-RSS
-limit, and validating them does not itself limit driver allocations.
+`humantime-serde`. Normalized-row storage and serialized OTLP each use this same
+limit, checked separately. Their combined footprint and native-driver buffers
+can exceed it; this is not a process-RSS cap.
 
 ### Watermark Configuration
 
-Only `mode: composite` is represented by the current enum. `scalar`,
-`snapshot`, and the RFC's conceptual `composite_watermark` spelling are not
-accepted values for this schema.
+Only `mode: composite` is represented by the current enum. `scalar` and
+`snapshot` are RFC proposals, not supported modes. The RFC's conceptual
+`composite_watermark` spelling is not an accepted value for this schema.
 
 ```yaml
 # A WatermarkConfig value.
@@ -187,26 +188,25 @@ tie_breaker:
 | `tie_breaker.bind` | string | **required** | Logical bind name without a leading colon. |
 | `tie_breaker.initial` | signed 64-bit integer | **required** | Initial tie-breaker value; zero is valid. |
 
-Bind names start with an ASCII letter or `_`; subsequent characters are ASCII
-letters, digits, or `_`. Column names are only checked for emptiness and
-distinctness here. Each adapter must apply its identifier and SQL rules.
-
 A composite cursor orders rows by timestamp and then by a tie-breaker unique
 within that timestamp group. The adapter must return a consistent timestamp
-representation and deterministic ordering; retaining timestamp text avoids
-forcing a lossy conversion at the shared boundary.
+representation and deterministic ordering.
+`CompositeCursor` deliberately has no `Ord` or `PartialOrd` implementation:
+timestamp strings with different offsets or fractional precision cannot be
+ordered safely as text. The polling layer compares validated UTC instants.
 
 ### Checkpoint Configuration
 
-This block validates a persistence and replay policy. It does not perform
-filesystem I/O or acquire source ownership in the current change.
+This block validates a persistence and replay policy. Constructing configuration
+alone does not perform I/O. In the later checkpoint/polling layers, receiver
+construction creates a `CheckpointStore` and acquires a `SourceLease`.
 
 | Field | Type | Default | Validation / meaning |
 | --- | --- | --- | --- |
 | `directory` | string | **required** | Non-empty path without `..` path components, as interpreted by the host platform. |
 | `on_nack` | string | **required** | Only `rewind`; other policies are rejected by deserialization. |
 | `nack_backoff` | duration string | **required** | Between `1ms` and `5m`, inclusive. Fixed delay before replay. |
-| `max_consecutive_failures` | integer | **required** | Between `1` and `1000`. Intended consecutive checkpoint-write failure limit, not a limit on all query or NACK retries. |
+| `max_consecutive_failures` | integer | **required** | Between `1` and `1000`. Consecutive checkpoint-write failure limit, not a limit on all query or NACK retries. |
 
 ```yaml
 # A CheckpointConfig value.
@@ -216,24 +216,19 @@ nack_backoff: 1s
 max_consecutive_failures: 5
 ```
 
-Durable storage and ownership come before the polling controller in the
-implementation sequence. They are deliberately not abstracted behind an extra
-storage/ownership trait just to support that sequence.
-
 ### Output Configuration
 
-`OutputConfig` is an internal Rust contract, not a currently supported YAML
-`output:` block.
+`OutputConfig` is constructed in Rust; it is not a deserializable native
+`output:` block in this PR.
 
-| Field | Rust type | Default | Meaning |
-| --- | --- | --- | --- |
-| `timestamp_column` | `Option<String>` | `None` | Optional event-time column for the future mapper. A supplied name must be non-empty. |
-| `validation_columns` | `Vec<String>` | Empty | Additional columns that must be present during future live metadata validation. Names must be non-empty. |
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `timestamp_column` | `None` | Optional non-empty result-column name for event-time mapping |
+| `validation_columns` | Empty list | Non-empty column names that must exist during live metadata validation |
 
-The intended initial mapping is one row per log record with all selected
-columns in a structured body. Rich body/attribute selection, renaming, and
-metric mapping require additional implementation. Do not assume that result
-columns named after OTLP fields are automatically promoted to those fields.
+The polling-layer mapper uses a structured key-value body for selected columns.
+It does not automatically promote every column to a LogRecord attribute, or
+infer OTLP fields from matching column names. Richer mapping is future work.
 
 ### SQL Validation
 
@@ -241,9 +236,8 @@ columns named after OTLP fields are automatically promoted to those fields.
 
 1. The statement is at most 16 KiB, measured in UTF-8 bytes.
 2. Its first whitespace-delimited word is `SELECT`, ignoring ASCII case.
-3. It does not contain `FOR UPDATE`, ignoring ASCII case.
 
-This is an early filter, **not a SQL parser or a proof of read-only execution**.
+This is an early filter, not a SQL parser or proof of read-only execution.
 It does not verify bind occurrences, the keyset predicate, result ordering,
 column aliases, or statement count. Vendor validation and a least-privileged
 read-only database account are still required.
@@ -257,11 +251,14 @@ bound as database parameters.
 There are no connection, password, TLS, or secret-provider fields in the shared
 configuration. These belong to the concrete receiver and capability integration.
 The shared crate must not introduce a dependency on a vendor driver or secret
-store to resolve credentials.
+store to resolve credentials. Driver dependencies must be optional in the
+consuming vendor crate and activated by its feature; a workspace dependency
+entry only specifies the reusable version.
 
-Use dedicated read-only credentials and verified transport according to the
-concrete receiver's supported configuration. Credential rotation and shared
-database authentication capabilities are not implemented by this scaffold.
+Oracle's node-local mounted credential files were accepted for the first
+iteration in [the authentication discussion][auth-review]. Shared database
+authentication extensions remain follow-up work; exporter authentication
+support does not by itself implement database login.
 
 ## Adapter and Data Contracts
 
@@ -277,9 +274,9 @@ database authentication capabilities are not implemented by this scaffold.
 | `classify_error` | Translate an adapter error into an engine `ReceiverErrorKind`; the default is `Other`. |
 | `DriverCancellation::cancel` | Request interruption of one active operation. The handle is cloneable and its future is local (`?Send`). |
 
-`execute` returns a page, not an unbounded row stream. A `Vec` is not inherently
-bounded: implementations must account for rows and bytes while fetching and
-converting, before constructing an arbitrarily large page.
+The page's vectors are not intrinsically bounded. The adapter must enforce
+fetch, row, and normalized-byte limits while reading/converting, not after
+materializing an arbitrary result set.
 
 ### Values, Metadata, and Pages
 
@@ -303,29 +300,31 @@ Current `CellValue` variants are:
 | `String`, `Bytes` | Owned UTF-8 text and binary bytes. |
 | `Timestamp`, `TimestampTz`, `Interval` | Adapter-normalized text that preserves source precision and temporal meaning. |
 
-The RFC's additional `Date`, `Json`, and `Uuid` variants are not present here.
-This change also contains no OTLP encoder, so these representations do not yet
-establish an emitted OTLP wire format.
+The RFC's additional `Date`, `Json`, and `Uuid` variants are not implemented.
+The polling-layer mapper consumes owned values, preserving bytes as OTLP
+`BytesValue` and decimal precision as text rather than coercing it to floating
+point.
 
-`Row::normalized_size` includes row/value storage and retained string/vector
-capacities, using saturating arithmetic. This supports conservative accounting;
-it does not include every native-client, metadata, cursor, page-vector,
-serialization, or allocator overhead. The adapter and future controller must
-account for their own additional allocations.
+`Row::normalized_size` includes structural storage and retained value
+capacities, not the entire process working set. OTLP records, serialized output,
+metadata, and native fetch buffers may coexist. The adapter's normalized-row
+budget and the encoder's serialized-payload budget both use `max_batch_bytes`;
+there is no additional receiver setting. Each representation is checked
+separately, so their combined footprint can exceed this value. This does not
+provide process-wide memory-pressure admission or an RSS ceiling.
 
-### Sensitive Data
-
-`CellValue` debug output redacts scalar contents, and `CompiledQuery` debug
-output redacts its SQL field. This is not blanket redaction of all shared types:
-cursor and watermark types still contain sensitive timestamp/position text.
-Do not log whole query/configuration/cursor structures, raw driver errors,
-connection strings, or rows. Concrete adapters and runtime diagnostics must
-enforce their own safe error reporting.
+`CellValue` and `CompositeCursor` debug output redact their values; nested
+cursor rows/pages therefore do not reveal the cursor through their debug
+representation. `CompiledQuery` also redacts SQL and its initial cursor.
+This is not blanket redaction of every configuration type or error: callers
+must not log raw watermark configuration, native driver errors, endpoints,
+or other sensitive inputs.
 
 ## Polling and Delivery Semantics
 
-**The following is the runtime design target, not executable behavior provided
-by this scaffold.**
+The following describes the later polling implementation, not code shipped in
+this contracts-only PR. That controller permits one pending page per source and
+is a reusable receiver core, not a vendor-registered node by itself.
 
 ```text
 Acquire source ownership and load committed position
@@ -346,120 +345,75 @@ Acquire source ownership and load committed position
 | Invalid or incompatible checkpoint | Fail explicitly rather than silently assume a fresh position. |
 | Shutdown/cancellation | Stop admitting work and coordinate native cleanup before permitting a competing source owner. |
 
-The initial runtime is intended to keep one page pending per source. Multiple
+The initial runtime keeps one page pending per source. Multiple
 in-flight batches would additionally require a contiguous acknowledgement
 frontier; a later ACK must never skip an earlier unresolved batch.
 
 ### Source Correctness and Ownership
 
-At-least-once delivery requires more than an increasing ID or timestamp. Rows
-must become visible in an order compatible with the cursor, cursor values must
-remain stable, and source data must survive long enough for outage/retry replay.
-An earlier transaction may commit after a newer cursor is saved, even when IDs
-come from a sequence. The receiver cannot recover that row without an explicit
-late-arrival strategy.
+At-least-once behavior requires commit-visible cursor ordering, stable cursor
+and row values, and source retention longer than the expected outage and replay
+window. An increasing timestamp or sequence ID alone is insufficient: an older
+transaction can become visible after the checkpoint has advanced. NACK replay
+re-executes SQL and cannot reproduce rows that have changed or been deleted.
 
-A NACK-driven query replay also cannot reproduce a row that has since changed
-or been deleted. Sources without suitable ordering, immutability, and retention
-need an explicitly designed overlap/deduplication policy or a CDC receiver.
+The lease protects a checkpoint identity, not the underlying database query.
+Different pipeline/receiver names or state directories can still cause duplicate
+polling. Deployments must enforce one active poller per unpartitioned source
+range. Automatic distributed partitioning and source discovery are not provided.
 
-The initial unpartitioned design requires one active poller per query/source
-range. One process does not necessarily mean one poller under per-core pipeline
-placement. Concrete receivers must enforce appropriate placement/ownership.
-Neither this scaffold nor its `source_id` concept automatically partitions data
-or coordinates replicas. A checkpoint revision check alone does not prevent
-duplicate database work.
+### Shutdown and Live Configuration Changes
 
-## Examples
+The polling layer offloads encoding and checkpoint I/O while handling control
+messages. Checkpoint retries honor an already-active drain deadline. Worker-stop
+waits respect the earlier supplied deadline and the five-second stop cap.
+Unconfirmed cleanup retains ownership until process exit rather than allowing
+overlapping source work; uninterruptible native work can require a supervisor
+to terminate the process.
 
-### Composite Keyset Query
-
-This illustrates the logical cursor relationship; it is not a complete runnable
-receiver configuration. Bind syntax and additional validation are vendor-owned.
-
-```sql
-SELECT EVENT_ID, EVENT_TS, PAYLOAD
-FROM EVENTS
-WHERE EVENT_TS > :last_timestamp
-   OR (EVENT_TS = :last_timestamp AND EVENT_ID > :last_tie_breaker)
-ORDER BY EVENT_TS ASC, EVENT_ID ASC
-```
-
-For a committed cursor `(2026-01-01 12:00:00, 42)`, the next page must contain
-rows strictly after that tuple. Returning an empty page means there is no data
-to emit for that execution; it must not fabricate checkpoint advancement.
-
-### Constructing Output Requirements
-
-Adapter code can select an event-time column and require cursor columns during
-live validation:
-
-```rust
-use otel_arrow_dfe_scraper::database::OutputConfig;
-
-let output = OutputConfig {
-    timestamp_column: Some("EVENT_TS".to_owned()),
-    validation_columns: vec!["EVENT_ID".to_owned(), "EVENT_TS".to_owned()],
-};
-output.validate().expect("static column names are valid");
-```
-
-This validates names only. It does not connect to a database, confirm those
-columns exist, or emit logs.
+Stop the existing pipeline before starting it with changed configuration,
+including interval-only changes. A replacement started first can conflict with
+the old lease. Coordinated replacement/readiness is separate work tracked in
+[the readiness issue][readiness].
 
 ## Telemetry
 
 ### Metric Sets
 
-This change registers **no scraper metric set**. The RFC calls for shared,
-low-cardinality runtime telemetry in a later implementation.
+In the polling layer, `DatabaseReceiverMetrics` defines the `receiver.database`
+metric set. Concrete receiver construction registers the set and supplies its
+handle to the controller. This skeleton/contracts PR emits none of these
+runtime metrics.
 
-| Planned signal group | Purpose |
+| Counter fields | Purpose |
 | --- | --- |
-| Poll outcomes | Identify started, completed, and failed query work. |
-| Row and byte accounting | Observe admitted volume and bounded resource usage. |
-| Delivery feedback | Track pending work, ACKs, NACKs, and replay. |
-| Checkpoint outcomes | Distinguish committed progress from persistence failures. |
-| Timing and health | Observe query duration, backpressure, and time since successful work. |
+| `starts`, `polls`, `query_failures` | Receiver starts, attempted page polls, and failed query executions. |
+| `batches_sent`, `rows_sent`, `encoded_bytes_sent` | Admitted pages, records, and encoded bytes. |
+| `event_time_fallbacks` | Records whose event time cannot fit the OTLP timestamp range. |
+| `acks`, `nacks`, `replays`, `stale_feedback` | Matched downstream outcomes, replay, and rejected stale feedback. |
+| `checkpoint_commits`, `checkpoint_failures`, `checkpoint_cleanup_failures` | Durable progress and persistence/cleanup failures. |
+| `cancellations`, `drains`, `shutdowns` | Receiver lifecycle operations. |
 
-These are design categories, not metric names available for dashboards today.
-SQL, endpoints, table names, row values, cursor values, and raw error messages
-must not become metric dimensions.
-
-### Events
-
-No receiver lifecycle events are emitted by this scaffold. Shared validation
-returns `ConfigError` or `QueryError`; the host/receiver decides how to report
-them. Driver errors must be classified and sanitized before entering engine
-diagnostics. Metrics and events must not be copied from Kafka merely because
-the receiver documentation follows the same layout.
+Measurement attributes are intentionally omitted to keep cardinality bounded.
+The RFC's duration histograms, lag gauges, and broader health signals are not
+implemented. SQL, endpoints, table names, row values, cursor values, and raw
+error messages must not become metric dimensions.
 
 ## Limits
 
 - This is not a runnable generic receiver, SQL Agent binary, installer, or exporter.
-- Only composite cursor configuration and `on_nack: rewind` are accepted; their runtime implementation is outside this change.
-- `DatabaseSystem::Oracle` is the only identity currently represented. PostgreSQL, SQL Server, and MySQL are RFC targets, not working adapters here.
-- No scheduler, database connection, checkpoint store, source lease, OTLP mapper, or ACK/NACK controller is included.
-- Multiple named queries, jitter, snapshot/scalar polling, richer output mapping, metrics collection, and CDC are not implemented.
+- Only composite cursor configuration and `on_nack: rewind` are accepted; their runtime behavior belongs to later layers.
+- Scheduling, mapping, feedback, checkpoints, and leases are later shared-library behavior; this PR adds their contracts, not a working receiver.
+- Multiple named queries, jitter, snapshot/scalar polling, richer output mapping, collection of database metrics as an output signal, and CDC are not implemented. Internal runtime counters are implemented.
 - Byte-limit validation does not enforce process-wide memory pressure, native allocations, or end-to-end execution deadlines.
-- Shared SQL checks do not establish safe dialect semantics or database permissions.
 - Authentication capabilities, credential rotation, TLS configuration, distributed ownership, and automatic source partitioning require separate work.
-- No exactly-once guarantee, live database qualification, or production performance guarantee is provided by the contract tests.
+- Whole-poll and normal-operation ACK deadlines and immediate backlog catch-up are not implemented.
+- No exactly-once guarantee, live database qualification, or production performance guarantee is provided by the unit tests.
 
-## Related Docs
+## Related Issue
 
 - [Database receiver RFC and discussion][database-rfc]
-- [Crate-boundary and single-owner discussion][crate-boundary]
-- [Commit-order and immutable-cursor discussion][cursor-correctness]
-- [Shared configuration types](src/database/config.rs)
-- [Driver adapter contract](src/database/driver.rs)
-- [Compiled query plan](src/database/query.rs)
-- [Row and value model](src/database/row.rs)
-- [Cursor and page model](src/database/page.rs)
-- [Contract tests](src/database/tests.rs)
-- [Pipeline configuration and core allocation](../../docs/configuration.md)
-- [OTAP Dataflow contribution guidelines](../../CONTRIBUTING.md)
 
 [database-rfc]: https://github.com/open-telemetry/otel-arrow/issues/3918
-[crate-boundary]: https://github.com/open-telemetry/otel-arrow/issues/3918#issuecomment-5486569534
-[cursor-correctness]: https://github.com/open-telemetry/otel-arrow/issues/3918#issuecomment-5471215404
+[auth-review]: https://github.com/open-telemetry/otel-arrow/pull/3969#discussion_r4018012217
+[readiness]: https://github.com/open-telemetry/otel-arrow/issues/4049
