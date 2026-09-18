@@ -1,0 +1,7 @@
+type: attribute
+status:
+  class: processor
+  codeowners:
+    active:
+      - daviddahl
+      - albertlockett
