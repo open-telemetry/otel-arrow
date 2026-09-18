@@ -41,7 +41,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use parking_lot::{Mutex, RwLock};
-use tokio::sync::Notify;
+use tokio::sync::{Mutex as TokioMutex, Notify};
 
 use crate::logging::{otel_error, otel_info, otel_warn};
 use crate::segment::{ReconstructedBundle, SegmentSeq};
@@ -49,8 +49,9 @@ use crate::segment::{ReconstructedBundle, SegmentSeq};
 use super::error::{Result, SubscriberError};
 use super::handle::{BundleHandle, ResolutionCallback};
 use super::progress::{
-    delete_progress_file, progress_file_path, read_progress_file, scan_progress_files,
-    write_progress_file,
+    FLAG_COMPLETED_THROUGH, FLAG_RESET_PENDING_ACTIVATION, delete_progress_file,
+    progress_file_path, read_progress_file_state, scan_progress_files,
+    write_progress_file_sync_with_flags, write_progress_file_with_flags,
 };
 use super::state::{SegmentProgress, SubscriberState};
 use super::types::{AckOutcome, BundleIndex, BundleRef, SubscriberId};
@@ -155,10 +156,14 @@ pub struct SubscriberRegistry<P: SegmentProvider> {
     subscribers: RwLock<HashMap<SubscriberId, Arc<RwLock<SubscriberState>>>>,
     /// Subscribers with uncommitted changes that need flushing.
     dirty_subscribers: Mutex<HashSet<SubscriberId>>,
+    /// Serializes progress snapshots and writes with durable reset activation.
+    progress_write_lock: TokioMutex<()>,
     /// Segment data provider.
     segment_provider: Arc<P>,
     /// Async notification for waking waiting subscribers when new segments arrive.
     bundle_available: Arc<Notify>,
+    /// Highest segment sequence observed in valid or reset progress files.
+    restored_sequence_floor: Option<SegmentSeq>,
 }
 
 impl<P: SegmentProvider> SubscriberRegistry<P> {
@@ -173,6 +178,7 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
     pub fn open(config: RegistryConfig, segment_provider: Arc<P>) -> Result<Arc<Self>> {
         // Load existing state from progress files
         let mut subscribers = HashMap::new();
+        let mut restored_sequence_floor = None;
 
         // Scan for existing progress files
         if config.data_dir.exists() {
@@ -190,17 +196,46 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
                     })
                     .collect::<Result<Vec<_>>>()?
             };
+            let highest_available = available_segments
+                .iter()
+                .map(|(segment_seq, _)| *segment_seq)
+                .max();
 
             for sub_id in subscriber_ids {
                 let path = progress_file_path(&config.data_dir, &sub_id);
-                match read_progress_file(&path) {
-                    Ok((oldest_incomplete, entries)) => {
-                        let mut state = SubscriberState::new(sub_id.clone());
-                        let highest_persisted = entries.iter().map(|entry| entry.seg_seq).max();
+                match read_progress_file_state(&path) {
+                    Ok(progress) => {
+                        restored_sequence_floor =
+                            restored_sequence_floor.max(progress.sequence_floor());
+
+                        if progress.reset_pending_activation() {
+                            let state = SubscriberState::reset_pending(
+                                sub_id.clone(),
+                                progress.completed_through(),
+                            );
+                            let _ = subscribers.insert(sub_id, Arc::new(RwLock::new(state)));
+                            continue;
+                        }
+
+                        let highest_persisted =
+                            progress.entries.iter().map(|entry| entry.seg_seq).max();
+                        let completed_through = progress.completed_through().or_else(|| {
+                            if progress.oldest_incomplete_seg.raw() == 0 {
+                                highest_persisted
+                            } else {
+                                progress
+                                    .oldest_incomplete_seg
+                                    .raw()
+                                    .checked_sub(1)
+                                    .map(SegmentSeq::new)
+                            }
+                        });
+                        let mut state =
+                            SubscriberState::restored(sub_id.clone(), completed_through);
 
                         // Restore segment progress from entries
-                        for entry in entries {
-                            state.add_segment(entry.seg_seq, entry.bundle_count);
+                        for entry in progress.entries {
+                            state.restore_segment(entry.seg_seq, entry.bundle_count);
                             // Mark acked bundles
                             for bundle_idx in 0..entry.bundle_count {
                                 if entry.is_acked(bundle_idx) {
@@ -219,30 +254,39 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
                                 continue;
                             }
 
-                            // Zero also represents a real segment. Persisted entries
-                            // define the covered range when the boundary is ambiguous.
-                            let completed_before_snapshot = if oldest_incomplete.raw() == 0 {
-                                highest_persisted.is_some_and(|highest| segment_seq <= highest)
-                            } else {
-                                segment_seq < oldest_incomplete
-                            };
-                            if !completed_before_snapshot {
-                                state.add_segment(segment_seq, bundle_count);
-                            }
+                            state.add_segment(segment_seq, bundle_count);
                         }
 
                         // Wrap in Arc<RwLock<>> for per-subscriber locking
                         let _ = subscribers.insert(sub_id, Arc::new(RwLock::new(state)));
                     }
-                    Err(e) => {
+                    Err(error @ SubscriberError::ProgressCorrupted { .. }) => {
+                        let flags = FLAG_RESET_PENDING_ACTIVATION
+                            | if highest_available.is_some() {
+                                FLAG_COMPLETED_THROUGH
+                            } else {
+                                0
+                            };
+                        write_progress_file_sync_with_flags(
+                            &config.data_dir,
+                            &sub_id,
+                            highest_available.unwrap_or_else(|| SegmentSeq::new(0)),
+                            &[],
+                            flags,
+                        )?;
+                        restored_sequence_floor = restored_sequence_floor.max(highest_available);
+                        let state =
+                            SubscriberState::reset_pending(sub_id.clone(), highest_available);
+                        let _ = subscribers.insert(sub_id.clone(), Arc::new(RwLock::new(state)));
                         otel_error!(
-                            "quiver.subscriber.progress.load",
+                            "quiver.subscriber.progress.reset",
                             subscriber_id = %sub_id,
-                            error = %e,
-                            error_type = "io",
-                            message = "subscriber will start fresh with potential re-delivery or gaps",
+                            error = %error,
+                            error_type = "corruption",
+                            message = "replaced corrupt progress with a durable pending-reset checkpoint",
                         );
                     }
+                    Err(error) => return Err(error),
                 }
             }
         }
@@ -251,8 +295,10 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
             config,
             subscribers: RwLock::new(subscribers),
             dirty_subscribers: Mutex::new(HashSet::new()),
+            progress_write_lock: TokioMutex::new(()),
             segment_provider,
             bundle_available: Arc::new(Notify::new()),
+            restored_sequence_floor,
         });
 
         Ok(registry)
@@ -302,6 +348,42 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
     ///
     /// Returns an error if the subscriber is not registered.
     pub fn activate(&self, id: &SubscriberId) -> Result<()> {
+        let state_lock = {
+            let subscribers = self.subscribers.read();
+            subscribers
+                .get(id)
+                .cloned()
+                .ok_or_else(|| SubscriberError::not_found(id.as_str()))?
+        };
+
+        if state_lock.read().is_reset_pending() {
+            return Err(SubscriberError::bundle_not_available(
+                "subscriber reset requires durable async activation",
+            ));
+        }
+
+        let available_segments = self.segment_provider.available_segments();
+        let mut state = state_lock.write();
+        if state.is_active() {
+            return Ok(());
+        }
+        for segment_seq in available_segments {
+            let bundle_count = self.segment_provider.bundle_count(segment_seq)?;
+            state.add_segment(segment_seq, bundle_count);
+        }
+        state.activate();
+
+        otel_info!(
+            "quiver.subscriber.activate",
+            subscriber_id = %id,
+        );
+        Ok(())
+    }
+
+    /// Activates a subscriber, durably committing a pending reset if required.
+    pub async fn activate_async(&self, id: &SubscriberId) -> Result<()> {
+        let _progress_write_guard = self.progress_write_lock.lock().await;
+
         // Get subscriber lock (read lock on map, then per-subscriber write lock)
         let state_lock = {
             let subscribers = self.subscribers.read();
@@ -311,19 +393,41 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
                 .ok_or_else(|| SubscriberError::not_found(id.as_str()))?
         };
 
-        let mut state = state_lock.write();
-
-        if state.is_active() {
+        if state_lock.read().is_active() {
             return Ok(());
         }
 
-        // Add all available segments
-        for segment_seq in self.segment_provider.available_segments() {
-            let bundle_count = self.segment_provider.bundle_count(segment_seq)?;
-            state.add_segment(segment_seq, bundle_count);
+        if state_lock.read().is_reset_pending() {
+            let completed_through = {
+                let mut state = state_lock.write();
+                let completed_through =
+                    self.segment_provider.available_segments().into_iter().max();
+                state.begin_reset_activation(completed_through);
+                completed_through
+            };
+            let flags = if completed_through.is_some() {
+                FLAG_COMPLETED_THROUGH
+            } else {
+                0
+            };
+            let result = write_progress_file_with_flags(
+                &self.config.data_dir,
+                id,
+                completed_through.unwrap_or_else(|| SegmentSeq::new(0)),
+                &[],
+                flags,
+            )
+            .await;
+            match result {
+                Ok(()) => state_lock.write().complete_reset_activation(),
+                Err(error) => {
+                    state_lock.write().abort_reset_activation();
+                    return Err(error);
+                }
+            }
+        } else {
+            return self.activate(id);
         }
-
-        state.activate();
 
         otel_info!(
             "quiver.subscriber.activate",
@@ -406,7 +510,7 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
 
         for state_lock in subscribers.values() {
             let mut state = state_lock.write();
-            if state.is_active() {
+            if state.accepts_new_segments() {
                 state.add_segment(segment_seq, bundle_count);
             }
         }
@@ -722,6 +826,12 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
         self.subscribers.read().len()
     }
 
+    /// Returns the highest sequence observed in restored progress files.
+    #[must_use]
+    pub const fn restored_sequence_floor(&self) -> Option<SegmentSeq> {
+        self.restored_sequence_floor
+    }
+
     /// Returns the oldest incomplete segment across all subscribers.
     ///
     /// Segments older than this can be safely deleted (all subscribers have
@@ -874,18 +984,46 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
         let mut first_error: Option<SubscriberError> = None;
 
         for (sub_id, state_lock) in to_flush {
+            let _progress_write_guard = self.progress_write_lock.lock().await;
+
             // Get state data with per-subscriber lock
-            let (entries, oldest_incomplete) = {
+            let progress_snapshot = {
                 let state = state_lock.read();
-                let entries = state.to_progress_entries();
-                let oldest = state
-                    .oldest_incomplete_segment()
-                    .unwrap_or_else(|| SegmentSeq::new(0));
-                (entries, oldest)
+                if state.is_reset_pending() {
+                    None
+                } else {
+                    let entries = state.to_progress_entries();
+                    let (progress_boundary, flags) = match state.oldest_incomplete_segment() {
+                        Some(oldest_incomplete) => (oldest_incomplete, 0),
+                        None => {
+                            let completed_through = state
+                                .completed_through()
+                                .max(state.highest_tracked_segment());
+                            (
+                                completed_through.unwrap_or_else(|| SegmentSeq::new(0)),
+                                if completed_through.is_some() {
+                                    FLAG_COMPLETED_THROUGH
+                                } else {
+                                    0
+                                },
+                            )
+                        }
+                    };
+                    Some((entries, progress_boundary, flags))
+                }
+            };
+            let Some((entries, progress_boundary, flags)) = progress_snapshot else {
+                continue;
             };
 
-            match write_progress_file(&self.config.data_dir, &sub_id, oldest_incomplete, &entries)
-                .await
+            match write_progress_file_with_flags(
+                &self.config.data_dir,
+                &sub_id,
+                progress_boundary,
+                &entries,
+                flags,
+            )
+            .await
             {
                 Ok(()) => {
                     flushed += 1;
@@ -1121,7 +1259,7 @@ mod tests {
     use std::sync::Mutex;
     use tempfile::tempdir;
 
-    use crate::subscriber::progress::SegmentProgressEntry;
+    use crate::subscriber::progress::{SegmentProgressEntry, write_progress_file};
     use crate::subscriber::types::BundleIndex;
 
     /// Per-segment metadata stored in the mock.
@@ -1406,6 +1544,176 @@ mod tests {
             assert_eq!(handle.bundle_ref().bundle_index, BundleIndex::new(1));
             handle.ack();
         }
+    }
+
+    /// Scenario: A completed segment is removed from in-memory tracking before its dirty progress is flushed.
+    /// Guarantees: The flushed checkpoint retains the completed sequence floor and does not redeliver the removed segment after restart.
+    #[tokio::test]
+    async fn flush_after_cleanup_persists_completed_sequence_floor() {
+        let dir = tempdir().unwrap();
+        let config = RegistryConfig::new(dir.path());
+        let provider = Arc::new(MockSegmentProvider::new());
+        provider.add_segment(7, 1);
+        let id = SubscriberId::new("cleanup-floor").unwrap();
+
+        {
+            let registry =
+                SubscriberRegistry::open(config.clone(), provider.clone()).expect("open");
+            registry.register(id.clone()).expect("register");
+            registry.activate(&id).expect("activate");
+
+            let handle = registry
+                .poll_next_bundle(&id)
+                .expect("poll")
+                .expect("bundle");
+            handle.ack();
+            registry.cleanup_segments_before(SegmentSeq::new(8));
+            assert_eq!(registry.flush_progress().await.expect("flush"), 1);
+        }
+
+        let progress =
+            read_progress_file_state(&progress_file_path(dir.path(), &id)).expect("progress");
+        assert_eq!(progress.completed_through(), Some(SegmentSeq::new(7)));
+        assert_eq!(progress.sequence_floor(), Some(SegmentSeq::new(7)));
+        assert!(progress.entries.is_empty());
+
+        let registry = SubscriberRegistry::open(config, provider).expect("reopen");
+        registry.register(id.clone()).expect("register");
+        registry.activate(&id).expect("activate");
+        assert!(
+            registry.poll_next_bundle(&id).expect("poll").is_none(),
+            "the completed segment must not be redelivered"
+        );
+    }
+
+    /// Scenario: An ordinary progress flush is attempted while a subscriber still has a durable pending-reset checkpoint.
+    /// Guarantees: The flush leaves the reset marker intact so only durable activation can make the subscriber active.
+    #[tokio::test]
+    async fn flush_does_not_clear_pending_reset_checkpoint() {
+        let dir = tempdir().unwrap();
+        let config = RegistryConfig::new(dir.path());
+        let provider = Arc::new(MockSegmentProvider::new());
+        provider.add_segment(4, 1);
+        let id = SubscriberId::new("pending-reset-flush").unwrap();
+        let path = progress_file_path(dir.path(), &id);
+        std::fs::write(&path, b"corrupt").unwrap();
+
+        let registry = SubscriberRegistry::open(config, provider).expect("open");
+        let _ = registry.dirty_subscribers.lock().insert(id.clone());
+
+        assert_eq!(registry.flush_progress().await.expect("flush"), 0);
+        let progress = read_progress_file_state(&path).expect("pending reset checkpoint");
+        assert!(progress.reset_pending_activation());
+        assert_eq!(progress.completed_through(), Some(SegmentSeq::new(4)));
+    }
+
+    /// Scenario: A normal flush reaches checkpoint persistence while another checkpoint operation holds the serialization lock.
+    /// Guarantees: The flush waits for the shared lock before snapshotting state or writing the subscriber's temporary file.
+    #[tokio::test]
+    async fn flush_waits_for_progress_write_lock() {
+        let (registry, _dir) = setup_registry();
+        let provider = registry.segment_provider.clone();
+        provider.add_segment(1, 1);
+        let id = SubscriberId::new("serialized-flush").unwrap();
+        registry.register(id.clone()).unwrap();
+        registry.activate(&id).unwrap();
+        registry.poll_next_bundle(&id).unwrap().unwrap().ack();
+
+        let guard = registry.progress_write_lock.lock().await;
+        let mut flush = Box::pin(registry.flush_progress());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), &mut flush)
+                .await
+                .is_err(),
+            "flush must wait while another checkpoint operation holds the lock"
+        );
+
+        drop(guard);
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), flush)
+                .await
+                .expect("flush resumed")
+                .expect("flush succeeded"),
+            1
+        );
+    }
+
+    /// Scenario: A corrupt progress file is replaced, Quiver restarts before registration, and segments accumulate before activation.
+    /// Guarantees: The durable reset survives restart, skips every pre-activation segment, and delivers the first post-activation segment.
+    #[tokio::test]
+    async fn corrupt_progress_reset_skips_segments_until_activation() {
+        let dir = tempdir().unwrap();
+        let config = RegistryConfig::new(dir.path());
+        let provider = Arc::new(MockSegmentProvider::new());
+        provider.add_segment(1, 1);
+        let id = SubscriberId::new("corrupt-reset").unwrap();
+        std::fs::write(progress_file_path(dir.path(), &id), b"corrupt").unwrap();
+
+        {
+            let registry =
+                SubscriberRegistry::open(config.clone(), provider.clone()).expect("open");
+            assert!(
+                registry
+                    .subscribers
+                    .read()
+                    .get(&id)
+                    .expect("restored reset subscriber")
+                    .read()
+                    .is_reset_pending()
+            );
+        }
+
+        provider.add_segment(2, 1);
+        let registry = SubscriberRegistry::open(config, provider.clone()).expect("reopen");
+        registry.register(id.clone()).unwrap();
+        registry.activate_async(&id).await.expect("activate reset");
+        assert!(
+            registry.poll_next_bundle(&id).unwrap().is_none(),
+            "segments present before activation must be skipped"
+        );
+
+        provider.add_segment(3, 1);
+        registry.on_segment_finalized(SegmentSeq::new(3), 1);
+        let handle = registry
+            .poll_next_bundle(&id)
+            .unwrap()
+            .expect("post-activation segment");
+        assert_eq!(handle.bundle_ref().segment_seq, SegmentSeq::new(3));
+
+        let progress =
+            read_progress_file_state(&progress_file_path(dir.path(), &id)).expect("checkpoint");
+        assert!(!progress.reset_pending_activation());
+        assert_eq!(progress.completed_through(), Some(SegmentSeq::new(2)));
+    }
+
+    /// Scenario: A progress file carries a future format version with otherwise readable bytes.
+    /// Guarantees: Registry startup fails and preserves the incompatible file byte-for-byte.
+    #[tokio::test]
+    async fn unsupported_progress_version_is_preserved() {
+        let dir = tempdir().unwrap();
+        let config = RegistryConfig::new(dir.path());
+        let provider = Arc::new(MockSegmentProvider::new());
+        let id = SubscriberId::new("future-progress").unwrap();
+        write_progress_file(dir.path(), &id, SegmentSeq::new(7), &[])
+            .await
+            .unwrap();
+        let path = progress_file_path(dir.path(), &id);
+        let mut bytes = std::fs::read(&path).unwrap();
+        bytes[8..10].copy_from_slice(&99u16.to_le_bytes());
+        std::fs::write(&path, &bytes).unwrap();
+
+        let error = match SubscriberRegistry::open(config, provider) {
+            Ok(_) => panic!("future progress must fail startup"),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            error,
+            SubscriberError::ProgressUnsupportedVersion {
+                found_version: 99,
+                ..
+            }
+        ));
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
     }
 
     /// Scenario: A segment finalizes after a subscriber's last progress snapshot.

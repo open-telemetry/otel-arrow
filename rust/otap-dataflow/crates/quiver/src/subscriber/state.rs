@@ -164,6 +164,12 @@ pub struct SubscriberState {
     claimed: HashSet<BundleRef>,
     /// Whether the subscriber is active (receiving new bundles).
     active: bool,
+    /// Highest sequence known to be completed before restored tracking begins.
+    completed_through: Option<SegmentSeq>,
+    /// Whether activation must first establish a new durable baseline.
+    reset_pending: bool,
+    /// Whether reset activation is durably committing its baseline.
+    reset_activating: bool,
 }
 
 impl SubscriberState {
@@ -175,6 +181,28 @@ impl SubscriberState {
             segments: BTreeMap::new(),
             claimed: HashSet::new(),
             active: false,
+            completed_through: None,
+            reset_pending: false,
+            reset_activating: false,
+        }
+    }
+
+    /// Creates restored state with an optional completed-through watermark.
+    #[must_use]
+    pub fn restored(id: SubscriberId, completed_through: Option<SegmentSeq>) -> Self {
+        Self {
+            completed_through,
+            ..Self::new(id)
+        }
+    }
+
+    /// Creates state that must be durably reset before activation.
+    #[must_use]
+    pub fn reset_pending(id: SubscriberId, completed_through: Option<SegmentSeq>) -> Self {
+        Self {
+            completed_through,
+            reset_pending: true,
+            ..Self::new(id)
         }
     }
 
@@ -188,6 +216,18 @@ impl SubscriberState {
     #[must_use]
     pub const fn is_active(&self) -> bool {
         self.active
+    }
+
+    /// Returns whether activation must establish a new durable baseline.
+    #[must_use]
+    pub const fn is_reset_pending(&self) -> bool {
+        self.reset_pending
+    }
+
+    /// Returns whether new segments should be retained during activation.
+    #[must_use]
+    pub const fn accepts_new_segments(&self) -> bool {
+        self.active || self.reset_activating
     }
 
     /// Returns a reference to the per-segment progress map.
@@ -209,11 +249,50 @@ impl SubscriberState {
         self.active = false;
     }
 
+    /// Starts reset activation at the supplied completed-through watermark.
+    pub fn begin_reset_activation(&mut self, completed_through: Option<SegmentSeq>) {
+        self.segments.clear();
+        self.claimed.clear();
+        self.completed_through = completed_through;
+        self.reset_activating = true;
+    }
+
+    /// Commits reset activation after the replacement checkpoint is durable.
+    pub const fn complete_reset_activation(&mut self) {
+        self.reset_pending = false;
+        self.reset_activating = false;
+        self.active = true;
+    }
+
+    /// Restores reset-pending state after activation persistence fails.
+    pub fn abort_reset_activation(&mut self) {
+        self.segments.clear();
+        self.claimed.clear();
+        self.reset_pending = true;
+        self.reset_activating = false;
+        self.active = false;
+    }
+
     /// Initializes tracking for a new segment.
     ///
     /// Called when a segment is finalized and this subscriber should start
     /// tracking it.
     pub fn add_segment(&mut self, segment_seq: SegmentSeq, bundle_count: u32) {
+        if self
+            .completed_through
+            .is_some_and(|completed| segment_seq <= completed)
+            && !self.segments.contains_key(&segment_seq)
+        {
+            return;
+        }
+        let _ = self
+            .segments
+            .entry(segment_seq)
+            .or_insert_with(|| SegmentProgress::new(bundle_count));
+    }
+
+    /// Restores an explicitly persisted segment entry.
+    pub fn restore_segment(&mut self, segment_seq: SegmentSeq, bundle_count: u32) {
         let _ = self
             .segments
             .entry(segment_seq)
@@ -295,6 +374,12 @@ impl SubscriberState {
         self.segments.keys().next_back().copied()
     }
 
+    /// Returns the highest sequence known to be completed before tracked state.
+    #[must_use]
+    pub const fn completed_through(&self) -> Option<SegmentSeq> {
+        self.completed_through
+    }
+
     /// Returns the next pending bundle to deliver.
     ///
     /// Scans segments in order (oldest first) and returns the first bundle
@@ -333,6 +418,12 @@ impl SubscriberState {
     pub fn remove_completed_segments_before(&mut self, before: SegmentSeq) {
         self.segments
             .retain(|seq, progress| *seq >= before || !progress.is_complete());
+        if let Some(completed) = before.raw().checked_sub(1).map(SegmentSeq::new) {
+            self.completed_through = Some(
+                self.completed_through
+                    .map_or(completed, |current| current.max(completed)),
+            );
+        }
     }
 
     /// Returns the number of tracked segments.

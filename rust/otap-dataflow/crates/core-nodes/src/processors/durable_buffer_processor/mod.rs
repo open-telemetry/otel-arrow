@@ -929,6 +929,7 @@ impl DurableBuffer {
 
         engine
             .activate_subscriber(&subscriber_id)
+            .await
             .map_err(|e| Error::InternalError {
                 message: format!("failed to activate subscriber: {}", e),
             })?;

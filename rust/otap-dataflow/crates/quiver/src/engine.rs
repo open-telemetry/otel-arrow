@@ -437,45 +437,37 @@ impl QuiverEngine {
 
         // Scan for existing segments from previous runs. Expired segments are
         // validated and accounted for before deletion, but are not registered.
-        let mut next_segment_seq = 0u64;
         let mut deleted_during_scan = Vec::new();
         let mut startup_expired = RetentionLossCounts::default();
         let startup_expired_items_by_shape = HashMap::new();
-        match segment_store.scan_existing_with_max_age(config.retention.max_age) {
-            Ok(scan_result) => {
-                if let Some(highest) = scan_result.highest_seen {
-                    next_segment_seq = highest.raw() + 1;
-                }
-
-                if !scan_result.found.is_empty() {
-                    otel_info!(
-                        "quiver.segment.scan",
-                        segment_count = scan_result.found.len(),
-                        next_segment_seq,
-                        message = "recovered segments from previous run",
-                    );
-                }
-                if !scan_result.deleted.is_empty() {
-                    otel_info!(
-                        "quiver.segment.scan",
-                        deleted_count = scan_result.deleted.len(),
-                        next_segment_seq,
-                    );
-                }
-                for (seq, bytes) in scan_result.deleted {
-                    startup_expired.segments += 1;
-                    startup_expired.reclaimed_bytes += bytes;
-                    deleted_during_scan.push(seq);
-                }
-            }
-            Err(e) => {
+        let scan_result = segment_store
+            .scan_existing_with_max_age(config.retention.max_age)
+            .map_err(|e| {
                 otel_error!(
                     "quiver.segment.scan",
                     error = %e,
                     error_type = "io",
-                    message = "continuing with empty store, previously finalized data may be inaccessible",
+                    message = "cannot verify segment sequence floor, refusing to open",
                 );
-            }
+                SegmentError::io(segment_dir.clone(), std::io::Error::other(e))
+            })?;
+        if !scan_result.found.is_empty() {
+            otel_info!(
+                "quiver.segment.scan",
+                segment_count = scan_result.found.len(),
+                message = "recovered segments from previous run",
+            );
+        }
+        if !scan_result.deleted.is_empty() {
+            otel_info!(
+                "quiver.segment.scan",
+                deleted_count = scan_result.deleted.len(),
+            );
+        }
+        for (seq, bytes) in scan_result.deleted {
+            startup_expired.segments += 1;
+            startup_expired.reclaimed_bytes += bytes;
+            deleted_during_scan.push(seq);
         }
 
         // Create subscriber registry with segment store as provider
@@ -497,6 +489,21 @@ impl QuiverEngine {
         if !deleted_during_scan.is_empty() {
             registry.force_complete_segments(&deleted_during_scan);
         }
+
+        let highest_sequence = scan_result
+            .highest_seen
+            .max(registry.restored_sequence_floor());
+        let next_segment_seq = match highest_sequence {
+            Some(highest) => {
+                highest
+                    .raw()
+                    .checked_add(1)
+                    .ok_or(QuiverError::SegmentSequenceExhausted {
+                        next_seq: highest.raw(),
+                    })?
+            }
+            None => 0,
+        };
 
         // Start with empty open segment and default cursor
         // WAL replay will populate these through the normal ingest path
@@ -593,6 +600,16 @@ impl QuiverEngine {
     /// Useful for tracking total segments written during a test run.
     pub fn total_segments_written(&self) -> u64 {
         self.next_segment_seq.load(Ordering::Relaxed)
+    }
+
+    /// Reserves the next segment sequence without allowing the counter to wrap.
+    fn reserve_segment_sequence(&self) -> Result<SegmentSeq> {
+        self.next_segment_seq
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |next| {
+                next.checked_add(1)
+            })
+            .map(SegmentSeq::new)
+            .map_err(|next_seq| QuiverError::SegmentSequenceExhausted { next_seq })
     }
 
     /// Returns the total number of segments that have been force-dropped
@@ -1312,22 +1329,20 @@ impl QuiverEngine {
             }
         }
 
-        // Swap out the segment and cursor
-        let (segment, cursor) = {
+        // Reserve the sequence before removing data from the open segment. If
+        // the sequence space is exhausted, the data remains available for
+        // retry or WAL recovery instead of being dropped from memory.
+        let (segment, cursor, seq) = {
             let mut segment_guard = self.open_segment.lock();
+            if segment_guard.is_empty() {
+                return Ok(());
+            }
+            let seq = self.reserve_segment_sequence()?;
             let mut cursor_guard = self.segment_cursor.lock();
             let segment = std::mem::take(&mut *segment_guard);
             let cursor = std::mem::take(&mut *cursor_guard);
-            (segment, cursor)
+            (segment, cursor, seq)
         };
-
-        // Double-check segment isn't empty (race condition guard)
-        if segment.is_empty() {
-            return Ok(());
-        }
-
-        // Assign a segment sequence number
-        let seq = SegmentSeq::new(self.next_segment_seq.fetch_add(1, Ordering::SeqCst));
 
         // Write the segment file (streaming serialization - no intermediate buffer)
         let segment_path = self.segment_path(seq);
@@ -1443,11 +1458,11 @@ impl QuiverEngine {
     /// # Errors
     ///
     /// Returns an error if the subscriber is not registered.
-    pub fn activate_subscriber(
+    pub async fn activate_subscriber(
         &self,
         id: &SubscriberId,
     ) -> std::result::Result<(), SubscriberError> {
-        self.registry.activate(id)
+        self.registry.activate_async(id).await
     }
 
     /// Polls for the next available bundle for the subscriber.
@@ -3841,7 +3856,7 @@ mod tests {
         engine
             .register_subscriber(sub_id.clone())
             .expect("register");
-        engine.activate_subscriber(&sub_id).expect("activate");
+        engine.activate_subscriber(&sub_id).await.expect("activate");
 
         // Ingest bundles to create segments
         for _ in 0..5 {
@@ -3897,7 +3912,7 @@ mod tests {
         engine
             .register_subscriber(sub_id.clone())
             .expect("register");
-        engine.activate_subscriber(&sub_id).expect("activate");
+        engine.activate_subscriber(&sub_id).await.expect("activate");
 
         // Ingest bundles to create multiple segments
         for _ in 0..10 {
@@ -3985,7 +4000,7 @@ mod tests {
         engine
             .register_subscriber(sub_id.clone())
             .expect("register");
-        engine.activate_subscriber(&sub_id).expect("activate");
+        engine.activate_subscriber(&sub_id).await.expect("activate");
 
         // Ingest bundles to create multiple segments
         for _ in 0..10 {
@@ -4116,7 +4131,7 @@ mod tests {
             engine
                 .register_subscriber(sub_id.clone())
                 .expect("register");
-            engine.activate_subscriber(&sub_id).expect("activate");
+            engine.activate_subscriber(&sub_id).await.expect("activate");
 
             // Should be able to consume bundles from recovered segments
             let mut consumed = 0;
@@ -4154,7 +4169,7 @@ mod tests {
         engine
             .register_subscriber(sub_id.clone())
             .expect("register");
-        engine.activate_subscriber(&sub_id).expect("activate");
+        engine.activate_subscriber(&sub_id).await.expect("activate");
 
         // next_bundle should return None (no bundles available)
         let bundle = engine.poll_next_bundle(&sub_id).expect("next_bundle");
@@ -4196,7 +4211,7 @@ mod tests {
             engine
                 .register_subscriber(sub_id.clone())
                 .expect("register");
-            engine.activate_subscriber(&sub_id).expect("activate");
+            engine.activate_subscriber(&sub_id).await.expect("activate");
 
             // Ingest bundles to create multiple segments
             for _ in 0..5 {
@@ -4245,7 +4260,7 @@ mod tests {
             engine
                 .register_subscriber(sub_id.clone())
                 .expect("re-register");
-            engine.activate_subscriber(&sub_id).expect("activate");
+            engine.activate_subscriber(&sub_id).await.expect("activate");
 
             // Count remaining bundles to consume
             let mut remaining = 0;
@@ -4297,7 +4312,7 @@ mod tests {
         engine
             .register_subscriber(sub_id.clone())
             .expect("register");
-        engine.activate_subscriber(&sub_id).expect("activate");
+        engine.activate_subscriber(&sub_id).await.expect("activate");
 
         // Use async next_bundle
         let handle = engine
@@ -4320,7 +4335,7 @@ mod tests {
         engine
             .register_subscriber(sub_id.clone())
             .expect("register");
-        engine.activate_subscriber(&sub_id).expect("activate");
+        engine.activate_subscriber(&sub_id).await.expect("activate");
 
         // Async next_bundle should timeout quickly
         let result = engine
@@ -4343,7 +4358,7 @@ mod tests {
         engine
             .register_subscriber(sub_id.clone())
             .expect("register");
-        engine.activate_subscriber(&sub_id).expect("activate");
+        engine.activate_subscriber(&sub_id).await.expect("activate");
 
         let got_bundle = Arc::new(AtomicBool::new(false));
         let got_bundle_clone = got_bundle.clone();
@@ -4391,7 +4406,7 @@ mod tests {
         engine
             .register_subscriber(sub_id.clone())
             .expect("register");
-        engine.activate_subscriber(&sub_id).expect("activate");
+        engine.activate_subscriber(&sub_id).await.expect("activate");
 
         // Alternate between async and poll methods
         let h1 = engine
@@ -4428,7 +4443,7 @@ mod tests {
         engine
             .register_subscriber(sub_id.clone())
             .expect("register");
-        engine.activate_subscriber(&sub_id).expect("activate");
+        engine.activate_subscriber(&sub_id).await.expect("activate");
 
         // Consume a bundle to make the subscriber dirty
         let handle = engine
@@ -4457,7 +4472,7 @@ mod tests {
         engine
             .register_subscriber(sub_id.clone())
             .expect("register");
-        engine.activate_subscriber(&sub_id).expect("activate");
+        engine.activate_subscriber(&sub_id).await.expect("activate");
 
         // Consume all bundles
         loop {
@@ -4511,7 +4526,7 @@ mod tests {
         engine
             .register_subscriber(sub_id.clone())
             .expect("register");
-        engine.activate_subscriber(&sub_id).expect("activate");
+        engine.activate_subscriber(&sub_id).await.expect("activate");
 
         // Consume all bundles using async next_bundle
         let mut consumed = 0;
@@ -4792,7 +4807,7 @@ mod tests {
         engine
             .register_subscriber(sub_id.clone())
             .expect("register");
-        engine.activate_subscriber(&sub_id).expect("activate");
+        engine.activate_subscriber(&sub_id).await.expect("activate");
 
         // Ingest data to create segments
         for _ in 0..3 {
@@ -4879,7 +4894,7 @@ mod tests {
         engine
             .register_subscriber(sub_id.clone())
             .expect("register");
-        engine.activate_subscriber(&sub_id).expect("activate");
+        engine.activate_subscriber(&sub_id).await.expect("activate");
 
         let unresolved_logical_bytes = 64;
         engine
@@ -4953,7 +4968,7 @@ mod tests {
         engine
             .register_subscriber(sub_id.clone())
             .expect("register");
-        engine.activate_subscriber(&sub_id).expect("activate");
+        engine.activate_subscriber(&sub_id).await.expect("activate");
 
         engine
             .ingest(&DummyBundle::new())
@@ -5531,7 +5546,7 @@ mod tests {
             engine
                 .register_subscriber(sub_id.clone())
                 .expect("register");
-            engine.activate_subscriber(&sub_id).expect("activate");
+            engine.activate_subscriber(&sub_id).await.expect("activate");
 
             // Consume one bundle to advance subscriber progress
             let handle = engine
@@ -5583,7 +5598,7 @@ mod tests {
         engine
             .register_subscriber(sub_id.clone())
             .expect("re-register");
-        engine.activate_subscriber(&sub_id).expect("activate");
+        engine.activate_subscriber(&sub_id).await.expect("activate");
 
         // This is the critical assertion: poll_next_bundle should return None
         // (no bundles available) rather than failing with segment_not_found.
@@ -5620,7 +5635,7 @@ mod tests {
             engine
                 .register_subscriber(sub_id.clone())
                 .expect("register");
-            engine.activate_subscriber(&sub_id).expect("activate");
+            engine.activate_subscriber(&sub_id).await.expect("activate");
 
             engine
                 .ingest(&DummyBundle::with_rows(25).with_byte_count(100))
@@ -5740,6 +5755,136 @@ mod tests {
                 segments_created
             );
         }
+    }
+
+    /// Scenario: Completed segment files are cleaned after subscriber progress is persisted, then Quiver restarts.
+    /// Guarantees: Startup allocates above the persisted subscriber floor and delivers newly written data.
+    #[tokio::test]
+    async fn subscriber_progress_prevents_sequence_reuse_after_cleanup() {
+        let dir = tempdir().expect("tempdir");
+        let sub_id = SubscriberId::new("sequence-floor").expect("subscriber id");
+        let config = QuiverConfig::builder()
+            .data_dir(dir.path())
+            .segment(SegmentConfig {
+                target_size_bytes: NonZeroU64::new(100).unwrap(),
+                ..Default::default()
+            })
+            .build()
+            .expect("config");
+
+        let previous_highest;
+        {
+            let engine = QuiverEngine::open(config.clone(), test_budget())
+                .await
+                .expect("engine");
+            engine
+                .register_subscriber(sub_id.clone())
+                .expect("register");
+            engine.activate_subscriber(&sub_id).await.expect("activate");
+
+            engine
+                .ingest(&DummyBundle::with_rows(50))
+                .await
+                .expect("ingest");
+            engine.flush().await.expect("flush");
+            previous_highest = engine
+                .segment_store()
+                .segment_sequences()
+                .into_iter()
+                .max()
+                .expect("finalized segment");
+
+            while let Some(handle) = engine.poll_next_bundle(&sub_id).expect("poll") {
+                handle.ack();
+            }
+            assert_eq!(engine.flush_progress().await.expect("flush progress"), 1);
+            assert!(
+                engine.cleanup_completed_segments().expect("cleanup") > 0,
+                "completed segment should be removed"
+            );
+            assert_eq!(engine.segment_store().segment_count(), 0);
+        }
+
+        let engine = QuiverEngine::open(config, test_budget())
+            .await
+            .expect("reopen");
+        engine
+            .register_subscriber(sub_id.clone())
+            .expect("register");
+        engine.activate_subscriber(&sub_id).await.expect("activate");
+        engine
+            .ingest(&DummyBundle::with_rows(50))
+            .await
+            .expect("ingest");
+        engine.flush().await.expect("flush");
+
+        let handle = engine
+            .poll_next_bundle(&sub_id)
+            .expect("poll")
+            .expect("new data must be delivered");
+        assert!(
+            handle.bundle_ref().segment_seq > previous_highest,
+            "new segment sequence must be above persisted subscriber progress"
+        );
+        handle.ack();
+    }
+
+    /// Scenario: Subscriber progress contains the maximum representable segment sequence.
+    /// Guarantees: Startup reports sequence exhaustion instead of wrapping allocation to zero.
+    #[tokio::test]
+    async fn subscriber_progress_at_u64_max_fails_startup() {
+        let dir = tempdir().expect("tempdir");
+        let sub_id = SubscriberId::new("sequence-exhausted").expect("subscriber id");
+        crate::subscriber::write_progress_file(dir.path(), &sub_id, SegmentSeq::new(u64::MAX), &[])
+            .await
+            .expect("write progress");
+
+        let config = QuiverConfig::builder()
+            .data_dir(dir.path())
+            .build()
+            .expect("config");
+        let error = QuiverEngine::open(config, test_budget())
+            .await
+            .expect_err("maximum progress sequence must fail startup");
+        assert!(matches!(
+            error,
+            QuiverError::SegmentSequenceExhausted { next_seq: u64::MAX }
+        ));
+    }
+
+    /// Scenario: Finalization starts when the next segment sequence is `u64::MAX`.
+    /// Guarantees: Finalization reports exhaustion without wrapping or removing the open segment.
+    #[tokio::test]
+    async fn finalization_at_u64_max_preserves_open_segment() {
+        let dir = tempdir().expect("tempdir");
+        let config = QuiverConfig::builder()
+            .data_dir(dir.path())
+            .build()
+            .expect("config");
+        let engine = QuiverEngine::open(config, test_budget())
+            .await
+            .expect("engine");
+
+        engine
+            .ingest(&DummyBundle::with_rows(1))
+            .await
+            .expect("ingest");
+        engine.next_segment_seq.store(u64::MAX, Ordering::SeqCst);
+
+        let error = engine
+            .flush()
+            .await
+            .expect_err("maximum next sequence must fail finalization");
+        assert!(matches!(
+            error,
+            QuiverError::SegmentSequenceExhausted { next_seq: u64::MAX }
+        ));
+        assert_eq!(engine.next_segment_seq.load(Ordering::SeqCst), u64::MAX);
+        assert!(
+            !engine.open_segment.lock().is_empty(),
+            "failed sequence reservation must preserve buffered data"
+        );
+        assert_eq!(engine.segment_store().segment_count(), 0);
     }
 
     // -----------------------------------------------------------------------------

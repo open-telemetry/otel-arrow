@@ -55,7 +55,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Register a subscriber
     let sub_id = SubscriberId::new("my-exporter")?;
     engine.register_subscriber(sub_id.clone())?;
-    engine.activate_subscriber(&sub_id)?;
+    engine.activate_subscriber(&sub_id).await?;
 
     // Create a cancellation token for graceful shutdown
     let shutdown = CancellationToken::new();
