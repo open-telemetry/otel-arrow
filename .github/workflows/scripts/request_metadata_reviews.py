@@ -88,11 +88,16 @@ def request_reviews(client: GitHubClient, pull_number: int, reviewers: set[str])
                 {"reviewers": [reviewer]},
             )
             print(f"Requested review from @{reviewer}")
-        except urllib.error.HTTPError as error:
-            message = error.read().decode("utf-8", errors="replace")
+        except (urllib.error.URLError, TimeoutError) as error:
+            if isinstance(error, urllib.error.HTTPError):
+                detail = (
+                    f"GitHub returned {error.code}: "
+                    f"{error.read().decode('utf-8', errors='replace')}"
+                )
+            else:
+                detail = str(error)
             print(
-                f"::warning::Could not request review from @{reviewer}: "
-                f"GitHub returned {error.code}: {message}",
+                f"::warning::Could not request review from @{reviewer}: {detail}",
                 file=sys.stderr,
             )
 
