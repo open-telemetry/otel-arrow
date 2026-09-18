@@ -134,27 +134,21 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 
 #### `receiver.traffic_generator`
 
-| Metric | Unit | Description |
-| --- | --- | --- |
-| `receiver.traffic_generator.logs_produced` | `{log}` | Number of logs generated. |
-| `receiver.traffic_generator.spans_produced` | `{span}` | Number of spans generated. |
-| `receiver.traffic_generator.metrics_produced` | `{metric}` | Number of metrics generated. |
-| `receiver.traffic_generator.completion.pending` | `{batch}` | Number of subscribed batches waiting for Ack/Nack completion. |
-| `receiver.traffic_generator.completion.acks` | `{batch}` | Number of Ack completions received for generated batches. |
-| `receiver.traffic_generator.completion.nacks` | `{batch}` | Number of Nack completions received for generated batches. |
-| `receiver.traffic_generator.completion.drain.deadline_forced` | `{drain}` | Number of drains forced to finish with unresolved batches at the deadline. |
-| `receiver.traffic_generator.smooth.runs.started` | `{run}` | Number of smooth-mode production runs started. |
-| `receiver.traffic_generator.smooth.runs.completed` | `{run}` | Number of smooth-mode production runs that completed before the next run tick. |
-| `receiver.traffic_generator.smooth.runs.behind` | `{run}` | Number of smooth-mode production runs that still had work at the next run tick. |
-| `receiver.traffic_generator.smooth.behind.remaining.batches` | `{batch}` | Number of batches remaining when smooth mode detects that a run is behind. |
-| `receiver.traffic_generator.smooth.behind.remaining.items` | `{item}` | Number of signal items remaining when smooth mode detects that a run is behind. |
-| `receiver.traffic_generator.smooth.run.batches` | `{batch}` | Smooth-mode configured batches per one-second run. |
-| `receiver.traffic_generator.smooth.batch.interval` | `ns` | Smooth-mode configured interval between batches. |
-| `receiver.traffic_generator.smooth.batch.tick.lateness.duration` | `ns` | Lateness of smooth-mode batch ticks relative to their scheduled instant. |
-| `receiver.traffic_generator.smooth.payload.generate.duration` | `ns` | Wall-clock time spent generating or cloning one smooth-mode payload. |
-| `receiver.traffic_generator.smooth.payload.send.duration` | `ns` | Wall-clock time spent sending one smooth-mode payload into the downstream channel. |
-| `receiver.traffic_generator.smooth.payload.send.full` | `{attempt}` | Number of smooth-mode payload send attempts rejected because the downstream channel was full. |
-| `receiver.traffic_generator.smooth.payload.send.retry` | `{payload}` | Number of smooth-mode payloads retried after a previous full-channel send. |
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `receiver.traffic_generator.smooth.runs.terminations` | `{run}` | `outcome` | Number of smooth-mode production runs terminated, dimensionalized by outcome (`on_time`, `late`, `cancelled`). |
+| `receiver.traffic_generator.smooth.payload.sends.attempts` | `{attempt}` | `attempt`, `outcome` | Number of smooth-mode payload send attempts, dimensionalized by kind of attempt (`initial`, `retry`) and outcome (`success`, `refused`, `failure`). |
+| `receiver.traffic_generator.smooth.runs_started` | `{run}` | | Number of smooth-mode production runs started. |
+| `receiver.traffic_generator.smooth.schedule_deadline_misses` | `{miss}` | | Number of times smooth mode detects a missed scheduling boundary. |
+| `receiver.traffic_generator.completion.pending` | `{batch}` | | Number of subscribed batches waiting for Ack/Nack completion. |
+| `receiver.traffic_generator.completion.drain_deadline_forced` | `{drain}` | | Number of drains forced to finish with unresolved batches at the deadline. |
+| `receiver.traffic_generator.smooth.late_remaining_batches` | `{batch}` | | Number of batches remaining when smooth mode detects that a run is late. |
+| `receiver.traffic_generator.smooth.late_remaining_items` | `{item}` | | Number of signal items remaining when smooth mode detects that a run is late. |
+| `receiver.traffic_generator.smooth.run_batches` | `{batch}` | | Smooth-mode configured batches per one-second run. |
+| `receiver.traffic_generator.smooth.batch_interval` | `ns` | | Smooth-mode configured interval between batches. |
+| `receiver.traffic_generator.smooth.batch_tick_lateness_duration` | `ns` | | Lateness of smooth-mode batch ticks relative to their scheduled instant. |
+| `receiver.traffic_generator.smooth.payload_generate_duration` | `ns` | | Wall-clock time spent generating or cloning one smooth-mode payload. |
+| `receiver.traffic_generator.smooth.payload_send_duration` | `ns` | | Wall-clock time spent sending one smooth-mode payload into the downstream channel. |
 
 ### Events
 
