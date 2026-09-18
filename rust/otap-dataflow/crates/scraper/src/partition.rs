@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Exclusive ownership primitives for scraper source ranges.
+//! Exclusive ownership of checkpoint storage identities, not database queries.
 
 use fs2::FileExt;
 use std::collections::HashSet;
@@ -54,6 +54,14 @@ static SOURCE_LEASES: LazyLock<Mutex<HashSet<String>>> =
 /// process-scoped. The held file lock provides cross-process exclusion on
 /// filesystems that honor the operating system's advisory locking semantics.
 /// The durable generation advances on every successful acquisition.
+///
+/// The key identifies checkpoint storage. Separate pipeline/receiver names or
+/// state directories may produce distinct keys for the same logical database
+/// source. This guard does not detect equivalent or overlapping queries.
+///
+/// Dropping the guard releases ownership. The caller must retain it until all
+/// source and checkpoint operations have stopped; the guard cannot cancel or
+/// join outstanding workers. A timeout alone does not make releasing it safe.
 #[derive(Debug)]
 pub struct SourceLease {
     key: String,
@@ -62,7 +70,10 @@ pub struct SourceLease {
 }
 
 impl SourceLease {
-    /// Acquires the lease for one canonical checkpoint source identity.
+    /// Acquires the lease for one checkpoint storage identity.
+    ///
+    /// The path is canonicalized for lock identity; database/query equivalence
+    /// is not evaluated.
     pub fn acquire(key: &str) -> Result<Self, LeaseError> {
         let paths = LeasePaths::new(key)?;
         let key = paths.registry_key.clone();
