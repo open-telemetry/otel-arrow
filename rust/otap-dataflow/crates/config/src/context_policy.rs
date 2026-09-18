@@ -192,6 +192,11 @@ impl ContextEntryPart {
     }
 }
 
+// Most config types derive JsonSchema. This enum is manual only because the
+// config crate's test-only kube CRD generation requires a structural schema:
+// kube rejects the derived internally tagged enum when each variant gives the
+// shared `type` property a different singleton value. Keep this schema aligned
+// with serde and the CRD compatibility tests in engine.rs.
 impl JsonSchema for ContextEntryPart {
     fn schema_name() -> std::borrow::Cow<'static, str> {
         "ContextEntryPart".into()
