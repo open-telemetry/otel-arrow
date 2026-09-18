@@ -240,14 +240,14 @@ impl<const TYPE_MASK: u64, const COUNT: usize> RawBatchStore<TYPE_MASK, COUNT> {
     ///
     /// Panics in debug builds if `payload_type` is not valid for this store.
     /// Callers must ensure the type is valid (see [`Self::is_valid_type`]).
-    pub fn remove(&mut self, payload_type: ArrowPayloadType) {
+    pub fn remove(&mut self, payload_type: ArrowPayloadType) -> Option<RecordBatch> {
         debug_assert!(
             Self::is_valid_type(payload_type),
             "payload type {payload_type:?} is not valid for this store"
         );
         let idx = POSITION_LOOKUP[payload_type as usize];
         debug_assert!(idx != UNUSED_INDEX);
-        self.batches[idx] = None;
+        self.batches[idx].take()
     }
 }
 
@@ -278,7 +278,8 @@ mod tests {
         assert!(store.get(ArrowPayloadType::Logs).is_some());
 
         // Remove it
-        store.remove(ArrowPayloadType::Logs);
+        let removed = store.remove(ArrowPayloadType::Logs);
+        assert!(removed.is_some());
         assert!(store.get(ArrowPayloadType::Logs).is_none());
     }
 
