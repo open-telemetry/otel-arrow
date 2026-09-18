@@ -46,6 +46,7 @@ config:
   protocol:
     tcp:
       listening_addr: "0.0.0.0:514"
+      framing: auto
 
       # Optional: TLS configuration
       tls:
@@ -82,6 +83,16 @@ config:
 
 Exactly one of `protocol.tcp` or `protocol.udp` must be configured.
 `protocol.*.listening_addr` is required for the selected transport.
+`protocol.tcp.framing` accepts `newline`, `octet_counting`, or `auto` and
+defaults to `newline`. Auto framing treats messages starting with an ASCII
+digit from `1` through `9` as RFC 6587 octet-counted and all other messages as
+newline-delimited.
+
+> **Note:** Auto framing follows the RFC 6587 detection heuristic, so a
+> newline-delimited message beginning with `1` through `9` is interpreted as
+> octet-counted. If digit-leading newline messages are possible, configure
+> `framing: newline` explicitly to avoid framing errors and connection closure.
+
 `protocol.tcp.tls` enables secure TCP (RFC 5425). `batch.max_batch_duration_ms`
 defaults to `100`, and `batch.max_size` defaults to `100`.
 
@@ -93,6 +104,8 @@ each emitted fragment is counted separately. Over-limit UDP datagrams are
 dropped; over-limit TCP messages are dropped while the connection remains open.
 If an oversized TCP fragment is over limit, remaining fragments from that same
 oversized line are discarded through the newline.
+Oversized, malformed, or incomplete octet-counted frames close the connection
+so subsequent bytes cannot be interpreted with a desynchronized frame boundary.
 TCP rate-limit drops are silent because plain syslog TCP has no per-message
 acknowledgement or retry hint.
 
@@ -108,7 +121,8 @@ acknowledgement or retry hint.
 ### TCP
 
 - Connection-oriented, reliable delivery
-- Messages are delimited by newline characters (`\n`)
+- Supports newline-delimited and RFC 6587 octet-counted framing
+- Auto framing can accept both framing styles on one listener
 - Supports multiple concurrent connections
 - Each connection is handled independently
 
@@ -463,7 +477,7 @@ append work. It excludes batch buffering and pipeline handoff.
 | Metric | Unit | Description |
 | --- | --- | --- |
 | `receiver.received.messages` | `{message}` | Number of classified external messages, grouped by fixed entity attribute `protocol` set to `tcp` or `udp`, `signal=logs`, and terminal `outcome`. |
-| `receiver.received.payload.size` | `By` | Optional encoded application payload bytes visible before parsing, grouped by fixed entity attribute `protocol` set to `tcp` or `udp`, `signal=logs`, and terminal `outcome`. |
+| `receiver.received.payload.size` | `By` | Optional encoded application payload bytes visible after transport framing is removed, grouped by fixed entity attribute `protocol` set to `tcp` or `udp`, `signal=logs`, and terminal `outcome`. |
 | `receiver.processing.duration` | `s` | Optional active receiver-local processing duration per external message, grouped by fixed entity attribute `protocol` set to `tcp` or `udp` and `signal=logs`. |
 
 `outcome=success` means receiver-local admission, parsing, and record append
