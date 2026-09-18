@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789758204831,
+  "lastUpdate": 1789769032267,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -40610,6 +40610,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
             "value": 3.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.16,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 116.51,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 103.79,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "95833540+c-valdebenito@users.noreply.github.com",
+            "name": "c-valdebenito",
+            "username": "c-valdebenito"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1e8eb6fd8926ebde39f68202f64eb9e9b319008c",
+          "message": "feat(azure_monitor_exporter): adopt shared exporter attempt metrics (#4059)\n\nEmit  ``exporter.attempted.{messages,duration,payload.size,items}``  for\nevery HTTP attempt to the Logs Ingestion API, partitioned by  signal \nand  outcome . Each internal retry produces its own shared attempt\nobservation. Refused outcomes cover any 4xx client-error status,\nincluding 429; 5xx and transport errors remain failures.\n\nReplace  ``exporter.azure_monitor.exports.{items,messages,bytes}``  with\nshared attempt metrics. Rename  exporter.azure_monitor.exports.batches \nto  exporter.azure_monitor.batches , and report compressed and\nuncompressed batch sizes in the same terminal metric set, partitioned by\n signal  and  outcome .\n\n## Change summary\n\n- Adopt the shared `exporter.attempted` metric set in the Azure Monitor\nexporter, recording one observation per HTTP submission to the Logs\nIngestion API, partitioned by `signal` and `outcome`.\n- Replace `exporter.azure_monitor.exports.{items,messages,bytes}` with\nshared per-attempt metrics. Internal HTTP retries produce separate\nobservations.\n- Rename `exporter.azure_monitor.exports.batches` to\n`exporter.azure_monitor.batches`.\n- Record terminal batch count, compressed size, and uncompressed size by\n`signal` and `outcome`.\n- Record terminal batch metrics once at Ack/Nack so internal HTTP\nretries do not produce additional batch observations.\n- Derive the terminal batch `outcome` from the export result: classify\nevery 4xx client-error status, including 429, as `refused` on both the\nper-attempt (`exporter.attempted.*`) and terminal batch\n(`exporter.azure_monitor.batches`, `batch_size`,\n`batch_uncompressed_size`) metrics; keep 5xx and transport errors as\n`failure`.\n- Preserve existing HTTP retry, 401 authentication invalidation and\nre-dispatch, batch pipelining, heartbeat, and gzip-compressed batching\nbehavior.\n\n\n## Related issue\n\n• Implementation of #3822 for the Azure Monitor exporter.\n## Validation\n\n- `cargo test -p otel-arrow-dfe-contrib-nodes --features\nazure-monitor-exporter --lib` — all tests pass, including four tests\nthat lock in the shared-attempt and terminal-batch contract:\n- `classifies_shared_export_attempt_outcomes` — every 4xx status,\nincluding 400, 401, 403, 413, 418, 422, and 429, is `refused`; 5xx and\ntransport errors remain `failure`.\n- `records_shared_metrics_for_each_http_attempt` — each HTTP submission\nrecords one attempt observation in its outcome bucket, and asserts the\noptional `items`, `payload.size`, and `duration` instruments in that\nbucket.\n- `retries_record_each_shared_attempt` — retries produce independent\nattempt observations, with a separate `success` observation for the\nterminal attempt.\n- `refused_export_records_terminal_batch_as_refused` — a 4xx rejection\nrecords `exporter.azure_monitor.batches`, `batch_size`, and\n`batch_uncompressed_size` under `outcome=refused` (not `failure`); the\n401 slot-freeing test is updated to match.\n\n### End-to-end validation (sample config)\n\nRan a local fan-out config that sends generated logs to two\n`azure_monitor` exporters sharing one DCE/DCR (dev auth) and differing\nonly by `stream_name`, then prints only the affected metrics. `ame-good`\ntargets a valid stream; `ame-bad` targets a non-existing stream to force\na 4xx (`InvalidStream`) rejection.\n\n**Workload (per run):** traffic generator at `signals_per_second=10`,\n`max_signal_count=100`, `max_batch_size=10`, logs only → **100 log\nrecords in 10 messages × 10 items**. The fan-out (`mode=parallel`,\n`await_ack=none`) clones every message to both exporters, so **each\nexporter receives all 10 messages / 100 items**; the only difference is\nthe backend response. Each exporter re-batches its 100 items into its\nown gzip export batches (`ame-good` → 3, `ame-bad` → 4;\ntiming-dependent, item totals identical).\n\n#### Valid stream (`ame-good`) — `outcome=success`\n\n|  |  |\n|--|--|\n| exporter.attempted.* |\nattempted.messages{signal=logs,outcome=success}=3\nattempted.duration{signal=logs,outcome=success}: count=3,\nsum=0.910365326s\nattempted.payload.size{signal=logs,outcome=success}=3,946 By\nattempted.items{signal=logs,outcome=success}=100 |\n| exporter.azure_monitor.* | batches{outcome=success}=3\nbatch_size{outcome=success}: count=3, sum=3,946 By\nbatch_uncompressed_size{outcome=success}: count=3, sum=26,113 By\nin_flight_exports=0 log_entries_too_large=0 |\n| exporter.azure_monitor.http.* | responses{response=http_2xx}=3\nlatency: count=3, sum=908 ms |\n| node.* | input.messages{signal=logs,outcome=success}=10\ninput.items{signal=logs,outcome=success}=100\ninput.size{signal=logs,outcome=success}=24,480 By\ncompletion.duration{outcome=success}: count=10 notify_ack.routed=10\nnotify_nack.routed=0 |\n\n#### Non-existing stream (`ame-bad`) — `outcome=refused`\n\n|  |  |\n|--|--|\n| exporter.attempted.* |\nattempted.messages{signal=logs,outcome=refused}=4\nattempted.duration{signal=logs,outcome=refused}: count=4,\nsum=0.636602001s\nattempted.payload.size{signal=logs,outcome=refused}=4,963 By\nattempted.items{signal=logs,outcome=refused}=100 |\n| exporter.azure_monitor.* | batches{outcome=refused}=4\nbatch_size{outcome=refused}: count=4, sum=4,963 By\nbatch_uncompressed_size{outcome=refused}: count=4, sum=26,114 By\nin_flight_log_records=0 log_entries_too_large=0 |\n| exporter.azure_monitor.http.* | responses{response=http_400}=4\nlatency: count=4, sum=633 ms |\n| node.* | input.messages{signal=logs,outcome=failure}=10\ninput.items{signal=logs,outcome=failure}=100\ninput.size{signal=logs,outcome=failure}=24,480 By\ncompletion.duration{outcome=failure}: count=10 notify_ack.routed=0\nnotify_nack.routed=10 |\n\n**Message accounting:** 10 messages / 100 items in per exporter →\nre-batched to 3 (good) / 4 (bad) attempts → 3× HTTP 2xx (`success`) vs\n4× HTTP 400 (`refused`). No items lost on either path\n(`attempted.items=100` both). The refused batches now expose\n`outcome=refused` on `batches`, `batch_size`, and\n`batch.uncompressed_size` (the fix from the review), while the node\nboundary still nacks all 10 messages (`notify_nack.routed=10`),\nreflecting the N:M mapping.\n\n## User-facing changes\n\n- Replace `exporter.azure_monitor.exports.{items,messages,bytes}` with\n`exporter.attempted.{messages,duration,payload.size,items}`, partitioned\nby `signal` and `outcome`. Internal HTTP retries produce separate\nobservations.\n- Rename `exporter.azure_monitor.exports.batches` to\n`exporter.azure_monitor.batches`.\n- Partition\n`exporter.azure_monitor.{batch_size,batch_uncompressed_size}` by\n`signal` and `outcome` and record them once at terminal Ack/Nack.\n- Terminal batch metrics (`batches`, `batch_size`,\n`batch_uncompressed_size`) now carry `outcome=refused` for 4xx\nrejections (401/403/413/429) instead of `failure`; 5xx and transport\nerrors remain `failure`.\n- Optional `duration`, `payload.size`, and `items` metrics follow\nstandard interest gating through `runtime_metrics: detailed` or the\ncorresponding per-node telemetry policy.\n\n---------\n\nCo-authored-by: Copilot Autofix powered by AI <175728472+Copilot@users.noreply.github.com>",
+          "timestamp": "2026-09-18T21:14:15Z",
+          "tree_id": "c9f750a854b98a18c8ae7c410f9238903daa7a7c",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/1e8eb6fd8926ebde39f68202f64eb9e9b319008c"
+        },
+        "date": 1789769018086,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 84.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.97,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.71,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.97,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.68,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 71.54,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.86,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.54,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.44,
             "unit": "MB"
           },
           {
