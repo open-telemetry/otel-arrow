@@ -968,11 +968,14 @@ mod tests {
         };
 
         let _ = exporter
-            .handle_export_failure(&effect_handler, batch_id, error, 0, 0)
+            .handle_export_failure(&effect_handler, batch_id, error, 512, 1024)
             .await;
 
         let m = exporter.metrics.borrow();
-        assert_eq!(m.batch_for(Outcome::Refused).batches.get(), 1);
+        let refused = m.batch_for(Outcome::Refused);
+        assert_eq!(refused.batches.get(), 1);
+        assert_eq!(refused.batch_size.get().sum, 512.0);
+        assert_eq!(refused.batch_uncompressed_size.get().sum, 1024.0);
         assert_eq!(m.batch_for(Outcome::Failure).batches.get(), 0);
     }
     /// Guarantees: completion handling invalidates that generation so the exporter
