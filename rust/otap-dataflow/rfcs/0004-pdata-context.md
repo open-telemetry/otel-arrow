@@ -39,6 +39,19 @@ used in the implementation of context entries. This design includes
 the outline of a technical approach that encodes the set of context
 entries in a compact byte array including an index for fast lookup.
 
+The initial implementation accepts declarative grouping entries under
+`policies.context.entries`. A grouping entry is an ordered list of
+`transport_header` and `authorized_identity` value members plus optional
+`transport_header_match` conditions. References use exact `entry` or
+`entry:member` syntax, and repeated-value matches require an explicit `any` or
+`all` quantifier.
+
+This initial configuration surface does not construct, capture, propagate, or
+consume grouping entries at runtime. Runtime compilation will enforce the
+atomic presence contract: every value member must be present and every
+condition must match, or the grouping entry and all its qualified members are
+undefined.
+
 ## User stories
 
 The term "tenant" is used in these stories to describe use-cases for
@@ -169,9 +182,10 @@ policies:
       store_as: customer_id            # Claim into context entry
 ```
 
-Context entries can be defined at the pipeline group or the engine
-level. Pipeline group context entry names should not conflict with
-engine-level context entry names.
+Context entries can be defined at the engine, pipeline group, or individual
+pipeline level. A context entry name cannot be shadowed by another declaration
+visible to the same pipeline. Sibling groups may reuse a name because their
+declarations are never jointly visible.
 
 Context entries are strongly typed and type-preserving. Entries that
 are defined as authorized identity fields cannot be converted to or

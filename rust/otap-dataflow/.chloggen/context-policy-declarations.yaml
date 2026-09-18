@@ -1,0 +1,6 @@
+change_type: enhancement
+component: engine
+note: "Add declarative policies.context.entries configuration for typed grouping context entries."
+issues: [3925]
+subtext: |
+  Entries may combine transport-header and authorized-identity members with explicit transport match conditions. Runtime construction and consumers will be added separately.

@@ -84,6 +84,78 @@ impl From<ContextEntryName> for String {
     }
 }
 
+/// An exact whole-entry or qualified-member reference.
+#[derive(
+    Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, PartialOrd, Ord, Hash,
+)]
+#[serde(try_from = "String", into = "String")]
+pub struct ContextEntryRef {
+    entry: ContextEntryName,
+    field: Option<ContextEntryName>,
+}
+
+impl ContextEntryRef {
+    /// Returns the selected entry name.
+    #[must_use]
+    pub fn entry(&self) -> &ContextEntryName {
+        &self.entry
+    }
+
+    /// Returns the explicitly selected member, if any.
+    #[must_use]
+    pub fn field(&self) -> Option<&ContextEntryName> {
+        self.field.as_ref()
+    }
+}
+
+impl From<ContextEntryName> for ContextEntryRef {
+    fn from(entry: ContextEntryName) -> Self {
+        Self { entry, field: None }
+    }
+}
+
+impl TryFrom<&str> for ContextEntryRef {
+    type Error = Error;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        let mut parts = value.split(':');
+        let entry = ContextEntryName::try_from(parts.next().unwrap_or_default())?;
+        let field = parts.next().map(ContextEntryName::try_from).transpose()?;
+        if parts.next().is_some() {
+            return Err(Error::InvalidUserConfig {
+                error: format!(
+                    "invalid context entry reference `{value}`; expected `entry` or `entry:field`"
+                ),
+            });
+        }
+        Ok(Self { entry, field })
+    }
+}
+
+impl TryFrom<String> for ContextEntryRef {
+    type Error = Error;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::try_from(value.as_str())
+    }
+}
+
+impl std::fmt::Display for ContextEntryRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.entry.fmt(f)?;
+        if let Some(field) = &self.field {
+            write!(f, ":{field}")?;
+        }
+        Ok(())
+    }
+}
+
+impl From<ContextEntryRef> for String {
+    fn from(value: ContextEntryRef) -> Self {
+        value.to_string()
+    }
+}
+
 impl PartialEq<str> for ContextEntryName {
     fn eq(&self, other: &str) -> bool {
         self.as_str() == other
@@ -148,5 +220,51 @@ mod tests {
             serde_json::to_string(&name).expect("serialize"),
             "\"X-Tenant\""
         );
+    }
+
+    /// Scenario: whole-entry and qualified-member references pass through parsing and serde.
+    /// Guarantees: reference spelling, case, and optional qualification round trip exactly.
+    #[test]
+    fn context_entry_ref_round_trips_exactly() {
+        for configured in ["Product_User", "Product_User:Customer_ID"] {
+            let reference = ContextEntryRef::try_from(configured).expect("valid reference");
+
+            assert_eq!(reference.to_string(), configured);
+            assert_eq!(reference.entry().as_str(), "Product_User");
+            assert_eq!(
+                serde_json::to_string(&reference).expect("serialize"),
+                format!("\"{configured}\"")
+            );
+        }
+    }
+
+    /// Scenario: a context entry name is converted into a reference.
+    /// Guarantees: conversion selects the whole entry without inventing a member qualifier.
+    #[test]
+    fn context_entry_name_converts_to_whole_entry_ref() {
+        let reference =
+            ContextEntryRef::from(ContextEntryName::try_from("tenant").expect("valid name"));
+
+        assert_eq!(reference.entry().as_str(), "tenant");
+        assert_eq!(reference.field(), None);
+    }
+
+    /// Scenario: a reference is empty, has an empty side, has extra separators, or is malformed.
+    /// Guarantees: only exact `entry` and `entry:field` forms are accepted.
+    #[test]
+    fn context_entry_ref_rejects_malformed_forms() {
+        for configured in [
+            "",
+            ":field",
+            "entry:",
+            "entry:field:extra",
+            "entry:two words",
+            "entry:caf\u{e9}",
+        ] {
+            assert!(
+                ContextEntryRef::try_from(configured).is_err(),
+                "{configured:?}"
+            );
+        }
     }
 }
