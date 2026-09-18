@@ -237,16 +237,28 @@ infer OTLP fields from matching column names. Richer mapping is future work.
 1. The statement is at most 16 KiB, measured in UTF-8 bytes.
 2. Its first whitespace-delimited word is `SELECT`, ignoring ASCII case.
 
-This is an early filter, not a SQL parser or proof of read-only execution.
-It does not verify bind occurrences, the keyset predicate, result ordering,
-column aliases, or statement count. Vendor validation and a least-privileged
-read-only database account are still required.
+These checks do not prove SQL is safe. Before executing SQL or starting polling,
+each adapter's `validate_query` must apply its dialect's rules to:
 
-The library does not rewrite arbitrary SQL, invent identifiers, or concatenate
-cursor values into a query. The adapter contract requires cursor values to be
-bound as database parameters.
+- Require one read-only SELECT; reject extra statements and row-locking forms
+  such as `SELECT ... FOR UPDATE`.
+- Verify both cursor binds are real parameters used by a complete keyset
+  predicate that selects only rows strictly after the supplied cursor.
+- Require deterministic ascending timestamp/tie-breaker ordering consistent
+  with the predicate and selected cursor columns.
+- Require non-null cursor columns with supported UTC timestamp and signed
+  `int64` tie-breaker types.
+
+Reject unsupported or ambiguous forms. Bind cursor values as parameters, never
+SQL string concatenation. A least-privileged read-only account is required, but
+does not replace adapter validation.
 
 ### Authentication and TLS
+
+Operators must provision a dedicated, least-privileged account with only the
+permissions needed for collection. The receiver does not audit account grants
+or roles. The Oracle adapter additionally uses read-only transactions and
+validates supported SQL forms.
 
 There are no connection, password, TLS, or secret-provider fields in the shared
 configuration. These belong to the concrete receiver and capability integration.
@@ -268,8 +280,8 @@ support does not by itself implement database login.
 | --- | --- |
 | `DriverAdapter::system` | Return a stable database-system identity. `DatabaseSystem` currently contains only `Oracle`; that enum value does not include an Oracle driver. |
 | `begin_operation` | Reset operation cancellation state and return a cancellation handle before native work begins. |
-| `validate_query` | Inspect live metadata and reject cursor types/nullability that cannot produce a deterministic composite cursor. |
-| `execute` | Execute strictly after the supplied committed cursor and return a bounded `QueryPage`. |
+| `validate_query` | Validate single-statement/read-only SQL, cursor binds, keyset predicate, ordering, and non-null cursor metadata before polling. |
+| `execute` | Execute the validated query with bound cursor parameters and return a bounded `QueryPage` strictly after the committed cursor. |
 | `shutdown` | Stop workers and destroy native resources off the pipeline thread. The default is a no-op; an adapter owning such resources must override it. |
 | `classify_error` | Translate an adapter error into an engine `ReceiverErrorKind`; the default is `Other`. |
 | `DriverCancellation::cancel` | Request interruption of one active operation. The handle is cloneable and its future is local (`?Send`). |

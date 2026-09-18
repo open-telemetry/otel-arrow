@@ -40,6 +40,11 @@ pub struct CompiledQuery {
 
 impl CompiledQuery {
     /// Validates and compiles one operator-authored composite watermark query.
+    ///
+    /// SQL checks here cover length and a leading SELECT keyword only.
+    /// Before execution, [`super::DriverAdapter::validate_query`] must validate
+    /// the complete vendor statement, its read-only behavior, and cursor
+    /// semantics. A compiled plan is not proof that SQL is safe to execute.
     pub fn compile(
         sql: String,
         config: PollingConfig,
@@ -56,7 +61,7 @@ impl CompiledQuery {
                 maximum: MAX_QUERY_BYTES,
             });
         }
-        if !is_read_only(&sql) {
+        if !starts_with_select(&sql) {
             return Err(QueryError::NotReadOnly);
         }
         let timestamp = watermark.timestamp();
@@ -153,10 +158,9 @@ impl fmt::Debug for CompiledQuery {
     }
 }
 
-fn is_read_only(sql: &str) -> bool {
-    // Shared compile only requires a leading SELECT keyword. The RFC and
-    // design leave SQL operator-authored; a least-privileged read-only
-    // account and vendor validation own DML/locking, not a SQL parser.
+fn starts_with_select(sql: &str) -> bool {
+    // This is only a prefix check. DriverAdapter::validate_query must enforce
+    // single-statement, read-only SQL and cursor semantics before execution.
     sql.split_whitespace()
         .next()
         .is_some_and(|keyword| keyword.eq_ignore_ascii_case("select"))
@@ -168,7 +172,7 @@ pub enum QueryError {
     /// Shared receiver configuration is invalid.
     #[error(transparent)]
     Config(#[from] ConfigError),
-    /// Only read-only SQL is accepted.
+    /// The statement does not start with the required SELECT keyword.
     #[error("query.statement must start with SELECT")]
     NotReadOnly,
     /// The statement exceeds the supported length.
