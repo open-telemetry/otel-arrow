@@ -81,7 +81,6 @@ enum FormatConfig {
     /// receiver flattens EventHeader structs into `Struct.field` attributes but
     /// does not attach semantic meaning to field names. Schema-specific
     /// interpretation belongs in processors.
-    #[cfg(feature = "user_events-eventheader")]
     EventHeader,
 }
 
@@ -836,7 +835,6 @@ mod linux_integration_tests {
     use std::io;
     use std::time::Duration;
 
-    #[cfg(feature = "user_events-eventheader")]
     use eventheader_dynamic::{EventBuilder, FieldFormat, Level, Provider};
     use tokio::time;
 
@@ -925,7 +923,6 @@ mod linux_integration_tests {
         true
     }
 
-    #[cfg(feature = "user_events-eventheader")]
     async fn write_eventheader_sample(event_set: &eventheader_dynamic::EventSet) -> bool {
         for _ in 0..20 {
             if event_set.enabled() {
@@ -1038,7 +1035,6 @@ mod linux_integration_tests {
             "tracefs session should decode the emitted ci_answer and ci_message fields"
         );
 
-        #[cfg(feature = "user_events-eventheader")]
         {
             let provider_name = format!("otel_arrow_dfe_ci_{}", std::process::id());
             let tracepoint = format!("user_events:{provider_name}_L4K1");
@@ -1531,27 +1527,6 @@ mod config_tests {
             error
                 .to_string()
                 .contains("unknown field `max_pending_events`"),
-            "unexpected error: {error}"
-        );
-    }
-
-    #[cfg(not(feature = "user_events-eventheader"))]
-    #[test]
-    fn deserialize_config_rejects_event_header_without_feature() {
-        let error = serde_json::from_value::<UserEventsReceiverConfig>(serde_json::json!({
-            "subscriptions": [
-                {
-                    "tracepoint": "user_events:example_L5K1",
-                    "format": {
-                        "type": "event_header"
-                    }
-                }
-            ]
-        }))
-        .expect_err("event_header rejected without feature");
-
-        assert!(
-            error.to_string().contains("unknown variant `event_header`"),
             "unexpected error: {error}"
         );
     }
