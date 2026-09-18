@@ -1167,9 +1167,7 @@ mod tests {
             Interests::NODE_INPUT_METRICS,
         )
         .await;
-        let mut auth = BearerAuth::new(
-            Box::new(MockTokenProvider),
-        );
+        let mut auth = BearerAuth::new(Box::new(MockTokenProvider));
         assert!(!auth.is_ready(), "no token has been polled yet");
         let effect_handler = test_effect_handler();
 
