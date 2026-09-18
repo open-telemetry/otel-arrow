@@ -120,7 +120,7 @@ impl ClickhouseExporter {
         pipeline_ctx: PipelineContext,
         config: &serde_json::Value,
     ) -> Result<Self, otel_arrow_dfe_config::error::Error> {
-        let ch_metrics = pipeline_ctx.register_metrics::<ClickhouseExporterMetrics>();
+        let ch_metrics = ClickhouseExporterMetrics::register(&pipeline_ctx);
         let pdata_metrics = ExporterExportMetrics::register(&pipeline_ctx);
 
         let patch: ConfigPatch = serde_json::from_value(config.clone()).map_err(|e| {
