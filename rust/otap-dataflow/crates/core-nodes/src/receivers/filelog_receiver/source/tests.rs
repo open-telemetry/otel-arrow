@@ -208,8 +208,8 @@ fn directory_handle_survives_path_replacement() {
     assert_eq!(&buf, b"old");
 }
 
-/// Scenario: A writerless FIFO is offered as a source candidate.
-/// Guarantees: The probe rejects it without waiting for a writer; a child-process deadline detects blocking regressions.
+/// Scenario: A writerless FIFO is probed in a child process with a deadline.
+/// Guarantees: The probe rejects the FIFO without waiting for a writer.
 #[test]
 fn fifo_without_writer_is_rejected() {
     const CHILD: &str = "OTAP_FILELOG_FIFO_TEST_DIRECTORY";
@@ -468,8 +468,8 @@ fn cancelled_open_releases_descriptor() {
     assert_eq!(descriptors_for(locator), 0);
 }
 
-/// Scenario: A read or metadata operation is cancelled before it starts; a later read succeeds.
-/// Guarantees: Cancellation preserves the buffer and handle, and a completed read is not hidden by a second cancellation check.
+/// Scenario: Cancellation precedes a read or metadata query; a later read succeeds.
+/// Guarantees: Cancellation preserves the buffer and handle; completed reads remain visible.
 #[test]
 fn cancelled_operations_preserve_source_state() {
     let dir = tempdir().expect("create test directory");
@@ -554,8 +554,8 @@ fn large_source_offsets_are_preserved() {
     assert_eq!(buf, [0; 5]);
 }
 
-/// Scenario: A FIFO is pinned and the callback tries to connect a nonblocking writer while the pin is live.
-/// Guarantees: The probe never registers a reader, unlike a normal O_RDONLY FIFO open even if later rejected.
+/// Scenario: A nonblocking writer attempts to open a FIFO while its O_PATH pin is live.
+/// Guarantees: The writer gets ENXIO because the probe has not registered a reader.
 #[test]
 fn pinned_fifo_never_registers_a_reader() {
     let dir = tempdir().expect("create test directory");
@@ -647,8 +647,8 @@ fn locator_mismatch_precedes_read_reopen() {
     assert_eq!(descriptors_for(actual), 0);
 }
 
-/// Scenario: Reopening the pinned file fails with missing-procfs, permission or descriptor-pressure errors.
-/// Guarantees: The distinct reopen error retains the OS errno, closes the pin, and never falls back to the readable pathname.
+/// Scenario: Pinned reopen returns ENOENT, EACCES or EMFILE.
+/// Guarantees: Failure preserves errno, closes the pin, and never falls back to the pathname.
 #[test]
 fn pinned_reopen_failure_preserves_errno_without_fallback() {
     let dir = tempdir().expect("create test directory");
@@ -732,8 +732,8 @@ fn procfs_reopen_survives_unlink_and_name_reuse() {
     assert_eq!(&buf, b"old");
 }
 
-/// Scenario: File length changes after pin metadata was captured but before the read handle's metadata query.
-/// Guarantees: The opening snapshot comes from the final read handle rather than the earlier pin observation.
+/// Scenario: The source grows after pinning, before the read handle's metadata query.
+/// Guarantees: The returned snapshot reflects the read handle's fresh metadata.
 #[test]
 fn opening_snapshot_uses_fresh_read_handle_metadata() {
     let dir = tempdir().expect("create test directory");
@@ -752,8 +752,8 @@ fn opening_snapshot_uses_fresh_read_handle_metadata() {
     assert_eq!(source.opened_metadata().len(), 14);
 }
 
-/// Scenario: Cancellation occurs before the read reopen or while both pin and read descriptors are held.
-/// Guarantees: Conversion peaks at two descriptors, and cancellation releases both while preserving the borrowed directory.
+/// Scenario: Cancellation interrupts conversion while one or two descriptors are held.
+/// Guarantees: The peak is two descriptors; cancellation closes both and preserves the directory.
 #[test]
 fn cancellation_releases_conversion_descriptors() {
     let dir = tempdir().expect("create test directory");
@@ -785,8 +785,8 @@ fn cancellation_releases_conversion_descriptors() {
     assert_eq!(descriptors_for(locator), 0);
 }
 
-/// Scenario: A followed log name resolves to the process environment in procfs.
-/// Guarantees: Filesystem eligibility rejects the pinned regular file before any read-open; environment contents are never read.
+/// Scenario: A followed log name points to /proc/self/environ.
+/// Guarantees: The pin is rejected before read-open; no environment contents are read.
 #[test]
 fn followed_procfs_file_is_rejected_before_reopen() {
     let dir = tempdir().expect("create fixture directory");
@@ -831,8 +831,8 @@ fn direct_procfs_file_is_rejected_before_reopen() {
     }
 }
 
-/// Scenario: Filesystem observations cover each forbidden family and ordinary log-storage filesystems.
-/// Guarantees: The fixed rejection policy covers both cgroup versions while preserving tmpfs, disk and overlay eligibility.
+/// Scenario: Filesystem types cover the deny-list and ordinary log storage.
+/// Guarantees: Listed types are rejected; tmpfs, disk and overlay types remain eligible.
 #[test]
 fn kernel_control_filesystem_policy_is_explicit() {
     use nix::sys::statfs::{
@@ -862,8 +862,8 @@ fn kernel_control_filesystem_policy_is_explicit() {
     }
 }
 
-/// Scenario: Identical OS failures originate at the pin stage or the procfs read-reopen stage.
-/// Guarantees: Callers classify descriptor pressure, WouldBlock, interruption and permission failures without matching the I/O phase.
+/// Scenario: The same errno occurs during pinning or procfs reopening.
+/// Guarantees: Both stages preserve errno and error kind; policy errors expose no OS error.
 #[test]
 fn os_error_accessor_preserves_io_classification() {
     for errno in [
@@ -905,8 +905,8 @@ fn os_error_accessor_preserves_io_classification() {
     }
 }
 
-/// Scenario: A mode-000 regular file is accessible to O_PATH but unreadable under the runner's credentials.
-/// Guarantees: Read permission is enforced at procfs reopening and EACCES is preserved; runners with DAC override skip this case.
+/// Scenario: An unprivileged read-open targets a mode-000 file.
+/// Guarantees: Reopening returns EACCES and closes the pin; DAC-override runners skip this case.
 #[test]
 fn read_permission_is_checked_at_procfs_reopen() {
     let dir = tempdir().expect("create fixture directory");

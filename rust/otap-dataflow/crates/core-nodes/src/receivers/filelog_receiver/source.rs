@@ -3,38 +3,17 @@
 
 //! Descriptor-relative Linux source-file access.
 //!
-//! The caller selects and validates a directory handle, then supplies one native
-//! filename. Keeping that handle across selection and open prevents an ancestor
-//! path replacement from redirecting the open. Discovery owns root resolution,
-//! descendant traversal, resolved-target exclusions, and directory validation.
-//! Following a final symlink may leave the directory; this API is not a sandbox.
+//! Pins candidates with O_PATH, validates them, then reopens through trusted
+//! `/proc/self/fd` without a pathname fallback. The filesystem deny-list is not
+//! an allowlist; following links can leave the supplied directory.
 //!
-//! An O_PATH probe pins the target without a device open or FIFO reader. Only a
-//! verified regular file is reopened through trusted Linux `/proc/self/fd`;
-//! there is no fallback to the original pathname. The pinned source filesystem
-//! must not be procfs, sysfs, debugfs, tracefs, securityfs, or cgroup v1/v2. These
-//! kernel-control filesystems may report regular files without ordinary log-file
-//! semantics. This is not a filesystem allowlist or path confinement: regular
-//! files on tmpfs remain eligible, and discovery still owns resolved-target policy.
-//! Conversion briefly owns two descriptors. Callers must reserve that peak within
-//! the receiver's shared source-open allowance, including for resident reopens.
-//! Each successful return owns one read-only regular-file descriptor. Metadata and
-//! content are obtained from that descriptor, including after rename or unlink.
-//! A locator is current device/inode evidence, not a durable identity: inode reuse
-//! and copytruncate still require caller-side fingerprint and continuity checks.
-//! Some overlayfs configurations can change device/inode evidence during copy-up;
-//! a mismatch remains a continuity failure, not permission to inherit progress.
-//! Candidate admission requires two observations (closing the first probe before
-//! the second), equal locators, nondecreasing size, and compatible fingerprints.
-//! Opening a file or matching a locator alone does not establish admission.
+//! Discovery owns directory validation, traversal, target policy and admission.
+//! Callers reserve two shared transient descriptor slots; success retains one
+//! read-only handle. A successful open alone does not establish safe admission.
 //!
-//! Run filesystem work on a blocking worker. Cancellation is cooperative between
-//! operations; O_PATH avoids opening non-regular objects for I/O, but neither
-//! O_PATH nor O_NONBLOCK makes filesystem calls interruptible. Fanotify permission
-//! responses can also delay a read-open. NONBLOCK makes conflicting file leases
-//! return WouldBlock rather than wait; callers may retry with bounded backoff.
-//! Interrupted and other OS errors are returned without a retry loop, quarantine,
-//! or progress advancement.
+//! Run I/O on blocking workers. Cancellation is checked between operations and
+//! cannot interrupt blocked filesystem calls. Errors are returned without retry.
+//! See `docs/filelog-receiver-phase1-spec.md` for the full source contract.
 
 use std::ffi::CStr;
 use std::fs::{File, Metadata};
@@ -58,7 +37,10 @@ pub enum SymlinkPolicy {
     Follow,
 }
 
-/// Handle-derived Linux locator; never a permanent identity or checkpoint key.
+/// Device/inode evidence, not a durable identity or checkpoint key.
+///
+/// Inode reuse and some overlayfs copy-ups can change this evidence. Matching
+/// a locator alone does not prove source continuity.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct FileLocator {
     /// Device containing the opened inode.
@@ -68,10 +50,8 @@ pub struct FileLocator {
 }
 
 impl FileLocator {
-    /// Extracts locator evidence from a metadata observation.
-    ///
-    /// Callers must obtain acceptance evidence from an opened handle; path
-    /// metadata may only supply an expectation checked against that handle.
+    /// Extracts a locator. Admission evidence must come from handle metadata;
+    /// path metadata can only supply an expected locator.
     #[must_use]
     pub fn from_metadata(metadata: &Metadata) -> Self {
         Self {
@@ -99,8 +79,7 @@ pub enum FileAccessError {
         /// Locator obtained from the newly opened handle.
         actual: FileLocator,
     },
-    /// The read handle does not match the regular-file pin that was validated.
-    /// This is distinct from an earlier selection mismatch; it grants no progress.
+    /// The reopened handle's type or locator differs from the validated pin.
     #[error("reopened source differs from its pinned object: {actual:?}")]
     ReopenedMismatch {
         /// Locator observed on the unexpected read handle.
@@ -115,11 +94,8 @@ pub enum FileAccessError {
     /// The requested range cannot be represented by Linux signed file offsets.
     #[error("source read range exceeds the signed 64-bit file-offset domain")]
     InvalidRange,
-    /// Reopening the pinned regular file through `/proc/self/fd` failed.
-    ///
-    /// The source preserves the OS error: ENOENT may mean unavailable procfs;
-    /// EACCES may mean denied read access to the pinned file. Neither permits
-    /// a fallback to the original source path.
+    /// Procfs reopening failed, preserving the OS error. ENOENT may mean
+    /// unavailable procfs; EACCES may mean denied source read access.
     #[error("failed to reopen pinned source through /proc/self/fd: {0}")]
     PinnedReopen(#[source] io::Error),
     /// Original OS error, preserved for caller-owned retry and reporting policy.
@@ -128,10 +104,7 @@ pub enum FileAccessError {
 }
 
 impl FileAccessError {
-    /// Returns the underlying OS error, regardless of the failing I/O stage.
-    ///
-    /// Callers should use this to classify interruption, permission failures,
-    /// WouldBlock and descriptor pressure consistently for both open stages.
+    /// Returns the OS error from any I/O stage for common retry classification.
     #[must_use]
     pub fn os_error(&self) -> Option<&io::Error> {
         match self {
@@ -141,11 +114,9 @@ impl FileAccessError {
     }
 }
 
-/// One owned read-only regular-file handle and its opening metadata observation.
+/// One read-only regular-file handle and its opening metadata snapshot.
 ///
-/// The opening snapshot can become stale immediately. Use [`Self::metadata`]
-/// when new evidence is required. This type retains no paths or source bytes.
-/// It allocates no read buffers, and reads do not change the file cursor.
+/// The snapshot may already be stale; use [`Self::metadata`] to refresh it.
 #[derive(Debug)]
 pub struct SourceFile {
     file: File,
@@ -153,21 +124,14 @@ pub struct SourceFile {
 }
 
 impl SourceFile {
-    /// Opens one name relative to a caller-held directory and validates its handle.
+    /// Opens one native filename under the caller-validated `directory`.
     ///
-    /// `name` is borrowed, already NUL-terminated native bytes, avoiding path
-    /// construction on each probe. Slash-containing, empty, dot and parent names
-    /// are rejected. `expected` checks an earlier selection/observation; `None`
-    /// makes an initial observation, not a stable candidate admission.
+    /// Rejects empty, dot, parent and slash-containing names. `expected`, when
+    /// present, must match the pin's locator; `None` makes an initial observation.
     ///
-    /// The O_PATH descriptor is checked before any read-open. Reopening uses
-    /// `/proc/self/fd` while the pin is held, then validates the read handle and
-    /// captures fresh metadata. Rejecting a symlink returns `NotRegular`.
-    ///
-    /// Cancellation is checked before each open, metadata and filesystem query. Every failure
-    /// closes all acquired descriptors. Reserve two transient descriptor slots
-    /// for the conversion; only the read handle survives success. The borrowed
-    /// directory stays caller-owned. There are no retries or path fallbacks.
+    /// Reserve two shared transient descriptor slots. Success returns one read
+    /// handle with fresh metadata; errors and cancellation close acquired handles.
+    /// The directory stays caller-owned. A rejected symlink returns `NotRegular`.
     pub fn open_at(
         directory: &File,
         name: &CStr,
@@ -258,17 +222,11 @@ impl SourceFile {
         Ok(self.file.metadata()?)
     }
 
-    /// Makes one positional read attempt into `buffer`, without changing a cursor.
+    /// Reads once at `offset` into `buffer` without changing the file cursor.
     ///
-    /// Work and requested bytes are bounded by the caller's buffer. Short reads
-    /// are returned directly; zero on a nonempty buffer means EOF at this instant,
-    /// not permanent EOF. An empty buffer returns zero without a read syscall.
-    /// The range's exclusive end must fit a signed 64-bit offset.
-    ///
-    /// Cancellation is checked before the read, never after discarding a completed
-    /// result. The caller always receives the byte count if the read succeeds,
-    /// even if cancellation arrives in the meantime. No heap buffer or retry loop
-    /// is created; interruption, permission and storage errors remain OS errors.
+    /// Returns short reads and temporary EOF directly. Empty buffers perform no
+    /// read; the range's exclusive end must fit a signed 64-bit offset.
+    /// Cancellation is checked before I/O; completed reads are always reported.
     pub fn read_at(
         &self,
         offset: u64,
