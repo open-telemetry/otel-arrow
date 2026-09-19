@@ -42,8 +42,8 @@ entries in a compact byte array including an index for fast lookup.
 The initial implementation accepts declarative grouping entries under
 `policies.context.entries`. A grouping entry is an ordered list of
 `transport_header` and `authorized_identity` value members plus optional
-`transport_header_match` conditions. The required `ctx_ref` property uses exact
-`entry` or `entry:member` syntax. Value members can set an optional `name`
+`transport_header_match` conditions. The required `entry` property uses exact
+`name` or `scope:name` syntax. Value members can set an optional `name`
 within the grouping entry, and repeated-value matches require an explicit
 `any` or `all` quantifier.
 
@@ -223,9 +223,9 @@ policies:
       # A product user consists of two context entries.
       product_user:                      # Composite name
         - type: authorized_identity      # Authorization claim
-          ctx_ref: customer_id           # Claim entry reference
+          entry: customer_id             # Claim entry reference
         - type: transport_header         # Transport header
-          ctx_ref: workspace_id          # Header entry reference
+          entry: workspace_id            # Header entry reference
 ```
 
 The composite entry defined above might be useful to in a batch
@@ -246,7 +246,7 @@ policies:
       product_user:                      # Composite name
           ...                            # Two entries as above
         - type: transport_header_match   # Condition
-          ctx_ref: xyz_environment       # Header entry reference
+          entry: xyz_environment         # Header entry reference
           value: production              # Match value
 ```
 
@@ -313,12 +313,12 @@ policies:
       # A product user consists of two context entries.
       product_user:                      # Composite name
         - type: authorized_identity      # Authorization claim
-          ctx_ref: customer_id           # Claim entry reference
+          entry: customer_id             # Claim entry reference
         - type: transport_header         # Transport header
-          ctx_ref: workspace_id          # Header entry reference
+          entry: workspace_id            # Header entry reference
       produce_account:                   # Name of entry
         - type: authorized_identity      # Authorization claim
-          ctx_ref: customer_id           # Claim entry reference
+          entry: customer_id             # Claim entry reference
 groups:
   default:
     pipelines:
@@ -480,7 +480,10 @@ fn create_otlp_receiver(
 }
 
 impl OtlpReceiver {
-    fn accept(&mut self, request: Request<ExportRequest>) -> Result<OtapPdata, Error> {
+    fn accept(
+        &mut self,
+        request: Request<ExportRequest>,
+    ) -> Result<OtapPdata, Error> {
         let identity = request.auth_extension.authorize(request)?;
         let context = self.context_binding.from_arrival(PdataArrival {
             peer_addr: request.remote_addr(),
@@ -549,12 +552,19 @@ pub trait PdataContextSink {
 /// Adapter implemented by an HTTP or gRPC request builder.
 pub trait ContextOutput {
     /// Sets an individual context entry with its typed value reference.
-    fn set(&mut self, name: &str, value: ContextValueRef<'_>) -> Result<(), ContextError>;
+    fn set(
+        &mut self,
+        name: &str,
+        value: ContextValueRef<'_>,
+    ) -> Result<(), ContextError>;
 }
 
 impl OtlpExporter {
     /// Encodes a request and injects the context into HTTP headers.
-    fn encode(&mut self, pdata: OtapPdata) -> Result<Request<ExportRequest>, Error> {
+    fn encode(
+        &mut self,
+        pdata: OtapPdata,
+    ) -> Result<Request<ExportRequest>, Error> {
         let mut request = Request::new(encode(pdata.payload())?);
         self.context.write_to(
             pdata.context(),

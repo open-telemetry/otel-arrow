@@ -3081,21 +3081,21 @@ version: otel_dataflow/v1
 policies:
   context:
     entries:
-      z_engine: [{type: transport_header, ctx_ref: z}]
-      a_engine: [{type: transport_header, ctx_ref: a}]
+      z_engine: [{type: transport_header, entry: z}]
+      a_engine: [{type: transport_header, entry: a}]
 engine: {}
 groups:
   default:
     policies:
       context:
         entries:
-          group_entry: [{type: authorized_identity, ctx_ref: customer_id}]
+          group_entry: [{type: authorized_identity, entry: customer_id}]
     pipelines:
       main:
         policies:
           context:
             entries:
-              pipeline_entry: [{type: transport_header, ctx_ref: request_id}]
+              pipeline_entry: [{type: transport_header, entry: request_id}]
         nodes:
           receiver:
             type: "urn:test:receiver:example"
@@ -3160,13 +3160,13 @@ groups:
     policies:
       context:
         entries:
-          tenant: [{type: transport_header, ctx_ref: first_tenant}]
+          tenant: [{type: transport_header, entry: first_tenant}]
     pipelines: {}
   second:
     policies:
       context:
         entries:
-          tenant: [{type: transport_header, ctx_ref: second_tenant}]
+          tenant: [{type: transport_header, entry: second_tenant}]
     pipelines: {}
 "#;
 
@@ -3183,14 +3183,14 @@ version: otel_dataflow/v1
 policies:
   context:
     entries:
-      tenant: [{type: transport_header, ctx_ref: engine_tenant}]
+      tenant: [{type: transport_header, entry: engine_tenant}]
 engine: {}
 groups:
   default:
     policies:
       context:
         entries:
-          tenant: [{type: transport_header, ctx_ref: group_tenant}]
+          tenant: [{type: transport_header, entry: group_tenant}]
     pipelines:
       main:
         nodes:
@@ -3229,7 +3229,7 @@ version: otel_dataflow/v1
 policies:
   context:
     entries:
-      tenant: [{type: transport_header, ctx_ref: tenant_id}]
+      tenant: [{type: transport_header, entry: tenant_id}]
 engine: {}
 groups:
   default:
@@ -3241,8 +3241,8 @@ groups:
         connections: [{from: receiver, to: exporter}]
 "#;
         let group_yaml = engine_yaml.replacen(
-            "policies:\n  context:\n    entries:\n      tenant: [{type: transport_header, ctx_ref: tenant_id}]\nengine: {}\ngroups:\n  default:",
-            "engine: {}\ngroups:\n  default:\n    policies:\n      context:\n        entries:\n          tenant: [{type: transport_header, ctx_ref: tenant_id}]",
+            "policies:\n  context:\n    entries:\n      tenant: [{type: transport_header, entry: tenant_id}]\nengine: {}\ngroups:\n  default:",
+            "engine: {}\ngroups:\n  default:\n    policies:\n      context:\n        entries:\n          tenant: [{type: transport_header, entry: tenant_id}]",
             1,
         );
 
@@ -3277,7 +3277,7 @@ engine:
       policies:
         context:
           entries:
-            tenant: [{type: transport_header, ctx_ref: tenant_id}]
+            tenant: [{type: transport_header, entry: tenant_id}]
 groups: {}
 "#;
 

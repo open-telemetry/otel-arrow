@@ -84,33 +84,33 @@ impl From<ContextEntryName> for String {
     }
 }
 
-/// An exact whole-entry or qualified-member reference.
+/// An exact context entry name with an optional containing scope.
 #[derive(
     Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, PartialOrd, Ord, Hash,
 )]
 #[serde(try_from = "String", into = "String")]
 pub struct ContextEntryRef {
-    entry: ContextEntryName,
-    field: Option<ContextEntryName>,
+    scope: Option<ContextEntryName>,
+    name: ContextEntryName,
 }
 
 impl ContextEntryRef {
-    /// Returns the selected entry name.
+    /// Returns the containing scope, if the name is qualified.
     #[must_use]
-    pub fn entry(&self) -> &ContextEntryName {
-        &self.entry
+    pub fn scope(&self) -> Option<&ContextEntryName> {
+        self.scope.as_ref()
     }
 
-    /// Returns the explicitly selected member, if any.
+    /// Returns the referenced context entry name.
     #[must_use]
-    pub fn field(&self) -> Option<&ContextEntryName> {
-        self.field.as_ref()
+    pub fn name(&self) -> &ContextEntryName {
+        &self.name
     }
 }
 
 impl From<ContextEntryName> for ContextEntryRef {
-    fn from(entry: ContextEntryName) -> Self {
-        Self { entry, field: None }
+    fn from(name: ContextEntryName) -> Self {
+        Self { scope: None, name }
     }
 }
 
@@ -119,16 +119,23 @@ impl TryFrom<&str> for ContextEntryRef {
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         let mut parts = value.split(':');
-        let entry = ContextEntryName::try_from(parts.next().unwrap_or_default())?;
-        let field = parts.next().map(ContextEntryName::try_from).transpose()?;
-        if parts.next().is_some() {
-            return Err(Error::InvalidUserConfig {
+        let first = ContextEntryName::try_from(parts.next().unwrap_or_default())?;
+        let second = parts.next().map(ContextEntryName::try_from).transpose()?;
+        match (second, parts.next()) {
+            (None, None) => Ok(Self {
+                scope: None,
+                name: first,
+            }),
+            (Some(name), None) => Ok(Self {
+                scope: Some(first),
+                name,
+            }),
+            _ => Err(Error::InvalidUserConfig {
                 error: format!(
-                    "invalid context entry reference `{value}`; expected `entry` or `entry:field`"
+                    "invalid context entry reference `{value}`; expected `name` or `scope:name`"
                 ),
-            });
+            }),
         }
-        Ok(Self { entry, field })
     }
 }
 
@@ -142,11 +149,10 @@ impl TryFrom<String> for ContextEntryRef {
 
 impl std::fmt::Display for ContextEntryRef {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.entry.fmt(f)?;
-        if let Some(field) = &self.field {
-            write!(f, ":{field}")?;
+        if let Some(scope) = &self.scope {
+            write!(f, "{scope}:")?;
         }
-        Ok(())
+        self.name.fmt(f)
     }
 }
 
@@ -222,35 +228,42 @@ mod tests {
         );
     }
 
-    /// Scenario: whole-entry and qualified-member references pass through parsing and serde.
-    /// Guarantees: reference spelling, case, and optional qualification round trip exactly.
+    /// Scenario: unqualified and scoped context entry references pass through parsing and serde.
+    /// Guarantees: name spelling, case, and optional scope round trip exactly.
     #[test]
     fn context_entry_ref_round_trips_exactly() {
-        for configured in ["Product_User", "Product_User:Customer_ID"] {
-            let reference = ContextEntryRef::try_from(configured).expect("valid reference");
+        let unqualified = ContextEntryRef::try_from("Customer_ID").expect("valid reference");
+        assert_eq!(unqualified.scope(), None);
+        assert_eq!(unqualified.name().as_str(), "Customer_ID");
+        assert_eq!(unqualified.to_string(), "Customer_ID");
 
-            assert_eq!(reference.to_string(), configured);
-            assert_eq!(reference.entry().as_str(), "Product_User");
-            assert_eq!(
-                serde_json::to_string(&reference).expect("serialize"),
-                format!("\"{configured}\"")
-            );
-        }
+        let scoped =
+            ContextEntryRef::try_from("Product_User:Customer_ID").expect("valid reference");
+        assert_eq!(
+            scoped.scope().map(ContextEntryName::as_str),
+            Some("Product_User")
+        );
+        assert_eq!(scoped.name().as_str(), "Customer_ID");
+        assert_eq!(scoped.to_string(), "Product_User:Customer_ID");
+        assert_eq!(
+            serde_json::to_string(&scoped).expect("serialize"),
+            "\"Product_User:Customer_ID\""
+        );
     }
 
     /// Scenario: a context entry name is converted into a reference.
-    /// Guarantees: conversion selects the whole entry without inventing a member qualifier.
+    /// Guarantees: conversion preserves the name without inventing a scope.
     #[test]
-    fn context_entry_name_converts_to_whole_entry_ref() {
+    fn context_entry_name_converts_to_unqualified_ref() {
         let reference =
             ContextEntryRef::from(ContextEntryName::try_from("tenant").expect("valid name"));
 
-        assert_eq!(reference.entry().as_str(), "tenant");
-        assert_eq!(reference.field(), None);
+        assert_eq!(reference.scope(), None);
+        assert_eq!(reference.name().as_str(), "tenant");
     }
 
     /// Scenario: a reference is empty, has an empty side, has extra separators, or is malformed.
-    /// Guarantees: only exact `entry` and `entry:field` forms are accepted.
+    /// Guarantees: only exact `name` and `scope:name` forms are accepted.
     #[test]
     fn context_entry_ref_rejects_malformed_forms() {
         for configured in [

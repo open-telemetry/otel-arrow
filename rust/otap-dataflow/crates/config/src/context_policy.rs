@@ -118,19 +118,16 @@ impl ContextEntryDefinition {
             };
             value_members += 1;
 
-            let output_name = member
-                .name
-                .or_else(|| member.ctx_ref.field())
-                .unwrap_or_else(|| member.ctx_ref.entry());
+            let output_name = member.name.unwrap_or_else(|| member.entry.name());
             if !output_names.insert(output_name) {
                 errors.push(format!(
                     "{path_prefix}[{index}] produces duplicate member name `{output_name}`"
                 ));
             }
-            if !value_references.insert((member.source_kind, member.ctx_ref)) {
+            if !value_references.insert((member.source_kind, member.entry)) {
                 errors.push(format!(
                     "{path_prefix}[{index}] repeats {} reference `{}`",
-                    member.source_kind, member.ctx_ref
+                    member.source_kind, member.entry
                 ));
             }
         }
@@ -150,28 +147,28 @@ impl ContextEntryDefinition {
 pub enum ContextEntryPart {
     /// Includes values from a transport-header entry.
     TransportHeader {
-        /// Exact source context entry or qualified member reference.
-        ctx_ref: ContextEntryRef,
+        /// Exact source context entry reference.
+        entry: ContextEntryRef,
         /// Optional member name within the grouping entry.
         ///
-        /// When omitted, the name is derived from the referenced member or entry.
+        /// When omitted, the referenced entry name is used.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<ContextEntryName>,
     },
     /// Includes values from a verified authorized-identity entry.
     AuthorizedIdentity {
-        /// Exact source context entry or qualified member reference.
-        ctx_ref: ContextEntryRef,
+        /// Exact source context entry reference.
+        entry: ContextEntryRef,
         /// Optional member name within the grouping entry.
         ///
-        /// When omitted, the name is derived from the referenced member or entry.
+        /// When omitted, the referenced entry name is used.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<ContextEntryName>,
     },
     /// Requires a transport-header entry to satisfy an explicit repeated-value match.
     TransportHeaderMatch {
-        /// Exact source context entry or qualified member reference.
-        ctx_ref: ContextEntryRef,
+        /// Exact source context entry reference.
+        entry: ContextEntryRef,
         /// Exact, case-sensitive value to compare.
         value: String,
         /// Required repeated-value quantifier.
@@ -182,21 +179,21 @@ pub enum ContextEntryPart {
 
 struct ValueMemberRef<'a> {
     source_kind: &'static str,
-    ctx_ref: &'a ContextEntryRef,
+    entry: &'a ContextEntryRef,
     name: Option<&'a ContextEntryName>,
 }
 
 impl ContextEntryPart {
     fn as_value_member(&self) -> Option<ValueMemberRef<'_>> {
         match self {
-            Self::TransportHeader { ctx_ref, name } => Some(ValueMemberRef {
+            Self::TransportHeader { entry, name } => Some(ValueMemberRef {
                 source_kind: "transport_header",
-                ctx_ref,
+                entry,
                 name: name.as_ref(),
             }),
-            Self::AuthorizedIdentity { ctx_ref, name } => Some(ValueMemberRef {
+            Self::AuthorizedIdentity { entry, name } => Some(ValueMemberRef {
                 source_kind: "authorized_identity",
-                ctx_ref,
+                entry,
                 name: name.as_ref(),
             }),
             Self::TransportHeaderMatch { .. } => None,
@@ -226,12 +223,12 @@ impl JsonSchema for ContextEntryPart {
                         "transport_header_match"
                     ]
                 },
-                "ctx_ref": generator.subschema_for::<ContextEntryRef>(),
+                "entry": generator.subschema_for::<ContextEntryRef>(),
                 "name": generator.subschema_for::<ContextEntryName>(),
                 "value": {"type": "string"},
                 "match": generator.subschema_for::<ContextMatchMultiplicity>()
             },
-            "required": ["type", "ctx_ref"],
+            "required": ["type", "entry"],
             "additionalProperties": false,
             "x-kubernetes-validations": [
                 {
@@ -290,16 +287,16 @@ mod tests {
 entries:
   product_user:
     - type: authorized_identity
-      ctx_ref: customer
+      entry: customer
       name: customer_id
     - type: transport_header
-      ctx_ref: captured:workspace
+      entry: captured:workspace
     - type: transport_header_match
-      ctx_ref: environment
+      entry: environment
       value: production
       match: any
     - type: transport_header_match
-      ctx_ref: region
+      entry: region
       value: us-east
       match: all
 "#,
@@ -316,8 +313,9 @@ entries:
         ));
         assert!(matches!(
             &parts[1],
-            ContextEntryPart::TransportHeader { ctx_ref, .. }
-                if ctx_ref.to_string() == "captured:workspace"
+            ContextEntryPart::TransportHeader { entry, .. }
+                if entry.scope().map(ContextEntryName::as_str) == Some("captured")
+                    && entry.name().as_str() == "workspace"
         ));
         assert!(matches!(
             &parts[2],
@@ -343,9 +341,9 @@ entries:
             r#"
 entries:
   tenant:
-    - {type: transport_header, ctx_ref: first}
+    - {type: transport_header, entry: first}
   tenant:
-    - {type: transport_header, ctx_ref: second}
+    - {type: transport_header, entry: second}
 "#,
         )
         .expect_err("duplicate map key must fail");
@@ -359,7 +357,7 @@ entries:
     fn rejects_definitions_without_value_members() {
         for yaml in [
             "entries: {tenant: []}",
-            "entries: {tenant: [{type: transport_header_match, ctx_ref: env, value: prod, match: any}]}",
+            "entries: {tenant: [{type: transport_header_match, entry: env, value: prod, match: any}]}",
         ] {
             assert!(
                 serde_yaml::from_str::<ContextPolicy>(yaml).is_err(),
@@ -373,8 +371,8 @@ entries:
     #[test]
     fn rejects_duplicate_output_member_names() {
         for yaml in [
-            "entries: {tenant: [{type: transport_header, ctx_ref: first:id}, {type: authorized_identity, ctx_ref: second:id}]}",
-            "entries: {tenant: [{type: transport_header, ctx_ref: first, name: id}, {type: authorized_identity, ctx_ref: second, name: id}]}",
+            "entries: {tenant: [{type: transport_header, entry: first:id}, {type: authorized_identity, entry: second:id}]}",
+            "entries: {tenant: [{type: transport_header, entry: first, name: id}, {type: authorized_identity, entry: second, name: id}]}",
         ] {
             assert!(
                 serde_yaml::from_str::<ContextPolicy>(yaml).is_err(),
@@ -387,7 +385,7 @@ entries:
     /// Guarantees: one source value cannot create redundant grouping dimensions.
     #[test]
     fn rejects_duplicate_value_references() {
-        let yaml = "entries: {tenant: [{type: transport_header, ctx_ref: id, name: first}, {type: transport_header, ctx_ref: id, name: second}]}";
+        let yaml = "entries: {tenant: [{type: transport_header, entry: id, name: first}, {type: transport_header, entry: id, name: second}]}";
 
         assert!(serde_yaml::from_str::<ContextPolicy>(yaml).is_err());
     }
@@ -397,10 +395,11 @@ entries:
     #[test]
     fn rejects_missing_or_inapplicable_fields() {
         for yaml in [
-            "entries: {tenant: [{type: transport_header_match, ctx_ref: env, value: prod}]}",
-            "entries: {tenant: [{type: transport_header, ctx_ref: id, value: prod}]}",
-            "entries: {tenant: [{type: transport_header_match, ctx_ref: env, value: prod, match: any, name: alias}]}",
-            "entries: {tenant: [{type: unsupported, ctx_ref: id}]}",
+            "entries: {tenant: [{type: transport_header_match, entry: env, value: prod}]}",
+            "entries: {tenant: [{type: transport_header, entry: id, value: prod}]}",
+            "entries: {tenant: [{type: transport_header_match, entry: env, value: prod, match: any, name: alias}]}",
+            "entries: {tenant: [{type: unsupported, entry: id}]}",
+            "entries: {tenant: [{type: transport_header, ctx_ref: id}]}",
         ] {
             assert!(
                 serde_yaml::from_str::<ContextPolicy>(yaml).is_err(),
@@ -415,7 +414,7 @@ entries:
     fn rejects_qualified_top_level_names() {
         assert!(
             serde_yaml::from_str::<ContextPolicy>(
-                "entries: {'product_user:customer_id': [{type: transport_header, ctx_ref: id}]}"
+                "entries: {'product_user:customer_id': [{type: transport_header, entry: id}]}"
             )
             .is_err()
         );
@@ -436,8 +435,9 @@ entries:
         ] {
             assert!(rendered.contains(variant));
         }
-        assert_eq!(schema["required"], serde_json::json!(["type", "ctx_ref"]));
-        assert!(schema["properties"].get("ctx_ref").is_some());
+        assert_eq!(schema["required"], serde_json::json!(["type", "entry"]));
+        assert!(schema["properties"].get("entry").is_some());
+        assert!(schema["properties"].get("ctx_ref").is_none());
         assert!(schema["properties"].get("name").is_some());
         assert!(schema["properties"].get("as").is_none());
         assert!(rendered.contains("additionalProperties"));
