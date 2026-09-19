@@ -7923,6 +7923,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "otel-arrow-dfe-scraper"
+version = "0.56.0"
+dependencies = [
+ "async-trait",
+ "humantime-serde",
+ "otel-arrow-dfe-engine",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "otel-arrow-dfe-state"
 version = "0.56.0"
 dependencies = [
