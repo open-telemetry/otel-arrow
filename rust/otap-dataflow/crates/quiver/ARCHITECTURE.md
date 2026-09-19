@@ -869,6 +869,100 @@ The 16-digit zero-padding ensures lexicographic ordering matches numeric
 ordering, allowing simple directory listings to enumerate segments in order.
 The `SegmentSeq::to_filename_component()` method generates this format.
 
+`segment_seq` must never be reused, even if every segment file is later
+deleted (e.g. by retention cleanup) and the store restarts--reuse could be
+misread by a subscriber's persisted progress as data it already delivered.
+To guarantee this independent of what files or subscriber progress remain on
+disk, the next allocatable sequence number is persisted in a tiny sidecar
+(`segments/quiver.segment.seq`) via an atomic write-fsync-rename. On startup
+this value, not just the highest `.qseg` filename observed, forms the floor
+for `next_segment_seq`.
+
+```text
+SeqSidecar (v1, 24 bytes) {
+    [u8; 8] magic = b"QUIVER\0N";  // distinguishes from other Quiver files
+    u16 version = 1;                // bump if layout changes
+    u16 size = 24;                  // total encoded size (enables variable-width)
+    u64 next_seq;                   // lowest sequence a future segment may use
+    u32 crc32;                      // covers magic..next_seq (everything except CRC)
+}
+```
+
+As with the WAL cursor sidecar, the `size` field lets a future version append
+fields while remaining readable here. Writes are serialized and the stored
+value is monotonic, so a lower value can never overwrite a higher one.
+
+Sequence numbers are **reserved before they are used**. When the allocator
+reaches the persisted floor, finalization claims a block (64 numbers) by
+writing the sidecar *before* allocating a sequence and creating any file. A
+segment file therefore never exists without a durable floor above it, and a
+sidecar failure fails the finalization while nothing has been written: the
+open segment is retained and the next attempt simply retries. Reserving in
+blocks also keeps the sidecar fsync off the common finalization path (one
+write per 64 segments). Numbers reserved but unused at shutdown are skipped;
+gaps are expected and harmless, only reuse is unsafe.
+
+At startup the floor is the maximum of three independent sources: the highest
+`.qseg` filename, this sidecar, and the highest segment tracked by restored
+subscriber progress. The last matters because progress files live outside the
+segments directory, so they still bound sequence reuse when the sidecar is
+absent -- on the first start after an upgrade, or if the segments directory is
+cleared wholesale.
+
+A missing sidecar is treated as "no value": that is indistinguishable from a
+first run, and the remaining sources still bound the floor. A sidecar that is
+present but unverifiable -- unreadable, or readable but failing validation --
+is different. Writes are atomic (temp file, fsync, rename), so damage is
+positive evidence that a floor existed, and that floor can exceed anything the
+filenames or subscriber progress can reconstruct, for example after retention
+deleted every segment file. Both `persist_next_seq` and engine startup
+therefore fail rather than proceed with a floor that cannot be verified.
+Recovery requires operator intervention. Quiver cannot safely reconstruct the
+missing floor because it may be higher than every remaining segment filename
+and subscriber progress entry. After investigating the storage failure, an
+operator may remove the sidecar only if accepting the resulting risk of
+sequence reuse.
+
+Subscriber progress is handled with the same fail-closed rule. If a discovered
+progress file cannot be read or validated, startup refuses to allocate segment
+sequences because the file may contain a higher historical sequence floor than
+the remaining segment files or sidecar.
+
+#### Bounding the Open Segment
+
+Bundles live in memory until a segment is finalized. When finalization fails
+before anything is written -- the reservation case above -- it reports an error
+to the caller but keeps the accumulated bundles, so nothing already accepted is
+dropped and the next attempt can still write them. (A failure while writing the
+segment file is different: that path consumes the accumulator, so the bundles
+are recoverable only from the WAL.)
+
+To keep the retention bounded, ingestion is rejected with
+`OpenSegmentAtCapacity` once the open segment reaches four times the configured
+segment target size -- a limit healthy operation never approaches, since
+finalization triggers at one times the target. The check runs before the WAL
+append, so a rejected bundle is not left behind to be replayed. The error is a
+backpressure signal: callers should pause and retry, and the retained data is
+delivered once finalization recovers. WAL replay is exempt, since it restores
+data the WAL already holds.
+
+Because an error is returned even when the bundle was retained, a caller that
+retries can produce duplicates. That is deliberate: Quiver is at-least-once,
+and reporting success for data that is not yet durable would risk silent loss
+under `SegmentOnly`.
+
+#### Write-Path Synchronization
+
+The write path uses two locks with a fixed order. `segment_finalize_lock`
+serializes the finalization transaction (reserve, write, advance the WAL
+cursor, register), which must run one at a time because all four steps are
+ordered by segment sequence. Inside it, a single `write_state` lock guards the
+open accumulator, its WAL cursor, and the sequence allocator together, so a
+bundle, the cursor covering it, and the sequence assigned to the resulting
+segment can never be observed out of step. The `write_state` lock is never
+held across an `await`, and no-op flushes return before taking the
+transaction lock at all.
+
 #### Read-Only Enforcement
 
 Finalized segment files are immutable by design. After writing completes,

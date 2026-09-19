@@ -9,7 +9,11 @@ use std::borrow::Cow;
 pub type Result<T> = std::result::Result<T, QuiverError>;
 
 /// Errors that can be produced by Quiver APIs.
+///
+/// Marked `#[non_exhaustive]` so callers must include a wildcard arm when
+/// matching and future variants can be added under that API contract.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum QuiverError {
     /// Raised when a caller provides an invalid configuration.
     #[error("invalid configuration: {message}")]
@@ -42,6 +46,50 @@ pub enum QuiverError {
         available: u64,
         /// The configured soft cap (ingest threshold).
         soft_cap: u64,
+    },
+    /// Raised when the open segment cannot be finalized and has grown past
+    /// its in-memory limit (backpressure signal).
+    ///
+    /// Bundles admitted concurrently with a failing pre-write finalization can
+    /// accumulate before its retry latch takes effect. The limit bounds that
+    /// retained data. Callers should pause ingestion and retry once
+    /// finalization recovers.
+    #[error(
+        "open segment at capacity: {accumulated_bytes} bytes accumulated (limit: {limit}); \
+         finalization is not keeping up or is failing"
+    )]
+    OpenSegmentAtCapacity {
+        /// Estimated bytes currently held in the open segment.
+        accumulated_bytes: u64,
+        /// The in-memory limit for the open segment.
+        limit: u64,
+    },
+    /// Raised when the 64-bit segment sequence space has been exhausted.
+    ///
+    /// Sequence numbers are allocated monotonically and never reused, so this
+    /// is unreachable in practice (it requires more than `u64::MAX` segments).
+    /// It is reported rather than wrapped around, because reuse is exactly the
+    /// failure this crate guards against.
+    #[error("segment sequence space exhausted at {next_seq}")]
+    SegmentSequenceExhausted {
+        /// The next sequence number that would have been allocated.
+        next_seq: u64,
+    },
+    /// Raised when segment finalization cannot safely continue in-process.
+    ///
+    /// This occurs after the open segment has been consumed by a segment-write
+    /// attempt whose outcome cannot be retried safely. The engine rejects
+    /// further ingestion so a later WAL cursor cannot advance past the
+    /// affected data. Restart the engine to recover from the WAL or scan the
+    /// durable segment file.
+    #[error(
+        "segment finalization blocked after {operation} for segment {segment_seq}; restart required"
+    )]
+    FinalizationBlocked {
+        /// Sequence assigned to the incomplete finalization.
+        segment_seq: u64,
+        /// Operation whose outcome prevents an in-process retry.
+        operation: &'static str,
     },
     /// Wrapper for WAL-specific failures.
     #[error("wal error: {source}")]
@@ -95,12 +143,13 @@ impl QuiverError {
     /// Callers can use this to distinguish recoverable capacity errors from
     /// fatal errors and implement appropriate backoff strategies.
     ///
-    /// This returns `true` for both disk budget capacity (`StorageAtCapacity`)
-    /// and WAL capacity (`WalAtCapacity`) errors.
+    /// This returns `true` for disk budget capacity (`StorageAtCapacity`),
+    /// retained open segment capacity (`OpenSegmentAtCapacity`), and WAL
+    /// capacity (`WalAtCapacity`) errors.
     #[must_use]
     pub const fn is_at_capacity(&self) -> bool {
         match self {
-            Self::StorageAtCapacity { .. } => true,
+            Self::StorageAtCapacity { .. } | Self::OpenSegmentAtCapacity { .. } => true,
             Self::Wal { source } => source.is_at_capacity(),
             _ => false,
         }

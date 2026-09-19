@@ -13,6 +13,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 use parking_lot::{Mutex, RwLock};
+use tokio::io::AsyncWriteExt;
+use tokio::sync::Mutex as TokioMutex;
 
 use crate::budget::DiskBudget;
 use crate::logging::{otel_debug, otel_error, otel_warn};
@@ -36,6 +38,131 @@ const BASE_RETRY_INTERVAL: Duration = Duration::from_secs(1);
 /// Upper bound on the exponential backoff interval so that retries do
 /// not stall for excessively long periods.
 const MAX_RETRY_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Filename for the durable segment sequence counter sidecar.
+///
+/// Persists the lowest sequence number that may be allocated to a future
+/// segment, independent of which segment files currently exist on disk.
+/// This prevents sequence reuse when all segments have been deleted (e.g.
+/// after cleanup) before a restart: without it, the startup floor would be
+/// derived solely from `.qseg` filenames, which can be empty.
+pub(crate) const SEQ_SIDECAR_FILENAME: &str = "quiver.segment.seq";
+
+/// Magic bytes identifying a segment sequence sidecar file.
+const SEQ_SIDECAR_MAGIC: &[u8; 8] = b"QUIVER\0N";
+
+/// Current sidecar format version.
+const SEQ_SIDECAR_VERSION: u16 = 1;
+
+/// Minimum prefix needed to read the size field: magic (8) + version (2) + size (2).
+const SEQ_SIDECAR_MIN_LEN: usize = 12;
+
+/// Sidecar layout (v1, 24 bytes):
+/// magic (8) + version (2) + size (2) + next_seq (8) + crc32 (4).
+///
+/// The `size` field records the total encoded length so a future version can
+/// append fields while remaining readable here: a v1 reader validates the
+/// v1-compatible prefix and ignores unknown trailing bytes.
+const SEQ_SIDECAR_V1_LEN: usize = 24;
+
+/// Upper bound on bytes read from the sequence sidecar.
+///
+/// Matches the format's `size` field (`u16`), the largest any valid sidecar
+/// can declare (see `decode_seq_sidecar`). A smaller cap would truncate a
+/// legitimately larger future sidecar, causing it to be misread as corrupt
+/// and its floor silently discarded (issue #4024), while this cap still
+/// bounds every read to a small, fixed allocation.
+const SEQ_SIDECAR_MAX_READ_LEN: u64 = u16::MAX as u64;
+
+/// Reads the sidecar file synchronously, capped at
+/// [`SEQ_SIDECAR_MAX_READ_LEN`] bytes.
+fn read_seq_sidecar_bounded(path: &Path) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+    let file = std::fs::File::open(path)?;
+    let mut buf = Vec::new();
+    let _ = file.take(SEQ_SIDECAR_MAX_READ_LEN).read_to_end(&mut buf)?;
+    Ok(buf)
+}
+
+/// Reads the sidecar file asynchronously, capped at
+/// [`SEQ_SIDECAR_MAX_READ_LEN`] bytes.
+async fn read_seq_sidecar_bounded_async(path: &Path) -> std::io::Result<Vec<u8>> {
+    use tokio::io::AsyncReadExt;
+    let file = tokio::fs::File::open(path).await?;
+    let mut buf = Vec::new();
+    let _ = file
+        .take(SEQ_SIDECAR_MAX_READ_LEN)
+        .read_to_end(&mut buf)
+        .await?;
+    Ok(buf)
+}
+
+/// Syncs the parent directory so a prior rename is durable.
+#[cfg(unix)]
+async fn sync_parent_dir(path: &Path) -> std::io::Result<()> {
+    if let Some(dir) = path.parent() {
+        tokio::fs::File::open(dir).await?.sync_all().await?;
+    }
+    Ok(())
+}
+
+/// Directory syncing is not available through this implementation off Unix.
+#[cfg(not(unix))]
+async fn sync_parent_dir(_path: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+
+/// Encodes a `next_seq` value into the sidecar's on-disk representation.
+fn encode_seq_sidecar(next_seq: u64) -> [u8; SEQ_SIDECAR_V1_LEN] {
+    let mut buf = [0u8; SEQ_SIDECAR_V1_LEN];
+    buf[0..8].copy_from_slice(SEQ_SIDECAR_MAGIC);
+    buf[8..10].copy_from_slice(&SEQ_SIDECAR_VERSION.to_le_bytes());
+    buf[10..12].copy_from_slice(&(SEQ_SIDECAR_V1_LEN as u16).to_le_bytes());
+    buf[12..20].copy_from_slice(&next_seq.to_le_bytes());
+    let crc = crc32fast::hash(&buf[..20]);
+    buf[20..24].copy_from_slice(&crc.to_le_bytes());
+    buf
+}
+
+/// Decodes a sidecar buffer, returning `None` if it is truncated, declares an
+/// unusable size, or fails magic/version/CRC validation. Callers treat `None`
+/// as an unverifiable floor and fail closed: writes are atomic (temp file,
+/// fsync, rename), so a sidecar that is present but does not decode is
+/// positive evidence of damage, and the value it held may be higher than any
+/// other source can reconstruct.
+///
+/// Newer versions are accepted as long as they carry the v1 fields, so a
+/// forward-written sidecar still constrains this reader's sequence floor
+/// instead of being silently discarded.
+fn decode_seq_sidecar(buf: &[u8]) -> Option<u64> {
+    if buf.len() < SEQ_SIDECAR_MIN_LEN || buf[0..8] != *SEQ_SIDECAR_MAGIC {
+        return None;
+    }
+
+    let version = u16::from_le_bytes(buf[8..10].try_into().ok()?);
+    let size = u16::from_le_bytes(buf[10..12].try_into().ok()?) as usize;
+
+    // A v1 file must match exactly; a newer one must still contain the v1
+    // fields plus a trailing CRC.
+    if version == SEQ_SIDECAR_VERSION {
+        if size != SEQ_SIDECAR_V1_LEN {
+            return None;
+        }
+    } else if version < SEQ_SIDECAR_VERSION || size < SEQ_SIDECAR_V1_LEN {
+        return None;
+    }
+    if buf.len() < size {
+        return None;
+    }
+
+    let next_seq = u64::from_le_bytes(buf[12..20].try_into().ok()?);
+    let crc_offset = size - 4;
+    let stored_crc = u32::from_le_bytes(buf[crc_offset..size].try_into().ok()?);
+    if crc32fast::hash(&buf[..crc_offset]) != stored_crc {
+        return None;
+    }
+    Some(next_seq)
+}
 
 /// A segment whose file deletion was deferred for later retry.
 #[derive(Debug, Clone, Copy)]
@@ -70,6 +197,19 @@ pub struct ScanResult {
     pub deleted: Vec<(SegmentSeq, u64)>,
     /// Highest valid segment sequence observed, including retained corrupt files.
     pub highest_seen: Option<SegmentSeq>,
+    /// Durably persisted "next segment sequence" counter, if present.
+    ///
+    /// Read from the sequence sidecar rather than derived from filenames, so
+    /// it remains a valid floor even when no segment files exist on disk
+    /// (e.g. all segments were previously cleaned up).
+    pub persisted_next_seq: Option<u64>,
+    /// Set when the sidecar exists but could not be read.
+    ///
+    /// Distinct from `persisted_next_seq: None`, which means no sidecar is
+    /// present. An unreadable sidecar may hold a floor higher than any other
+    /// source, so callers must not treat it as absent and silently allocate a
+    /// sequence number that is already in use.
+    pub seq_sidecar_unreadable: bool,
 }
 
 #[derive(Debug, Default)]
@@ -228,6 +368,14 @@ pub struct SegmentStore {
     /// Entries are retried each maintenance cycle and evicted after
     /// [`MAX_DELETE_ATTEMPTS`] failures (releasing the budget with an error log).
     pending_deletes: Mutex<HashMap<SegmentSeq, PendingDelete>>,
+    /// Serializes sequence sidecar read-modify-write cycles.
+    seq_sidecar_lock: TokioMutex<()>,
+    /// One-shot pause used to coordinate sequence persistence fault tests.
+    #[cfg(test)]
+    seq_sidecar_persist_pause: Mutex<Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>>,
+    /// One-shot failure used to test post-write registration errors.
+    #[cfg(test)]
+    fail_next_new_segment_registration: Mutex<bool>,
 }
 
 impl std::fmt::Debug for SegmentStore {
@@ -258,6 +406,11 @@ impl SegmentStore {
             on_segment_registered: Mutex::new(None),
             budget: None,
             pending_deletes: Mutex::new(HashMap::new()),
+            seq_sidecar_lock: TokioMutex::new(()),
+            #[cfg(test)]
+            seq_sidecar_persist_pause: Mutex::new(None),
+            #[cfg(test)]
+            fail_next_new_segment_registration: Mutex::new(false),
         }
     }
 
@@ -276,7 +429,29 @@ impl SegmentStore {
             on_segment_registered: Mutex::new(None),
             budget: Some(budget),
             pending_deletes: Mutex::new(HashMap::new()),
+            seq_sidecar_lock: TokioMutex::new(()),
+            #[cfg(test)]
+            seq_sidecar_persist_pause: Mutex::new(None),
+            #[cfg(test)]
+            fail_next_new_segment_registration: Mutex::new(false),
         }
+    }
+
+    /// Pauses the next sequence-sidecar persist before it reads the sidecar.
+    #[cfg(test)]
+    pub(crate) fn pause_next_seq_persist(
+        &self,
+    ) -> (Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>) {
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let resume = Arc::new(tokio::sync::Notify::new());
+        *self.seq_sidecar_persist_pause.lock() = Some((Arc::clone(&entered), Arc::clone(&resume)));
+        (entered, resume)
+    }
+
+    /// Makes the next newly written segment registration fail.
+    #[cfg(test)]
+    pub(crate) fn fail_next_new_segment_registration(&self) {
+        *self.fail_next_new_segment_registration.lock() = true;
     }
 
     /// Inserts or replaces a pending-delete entry, preserving the attempt
@@ -360,6 +535,13 @@ impl SegmentStore {
     /// Returns an error if the segment file cannot be opened.
     pub fn register_new_segment(&self, seq: SegmentSeq) -> Result<u32> {
         let path = self.segment_path(seq);
+        #[cfg(test)]
+        if std::mem::take(&mut *self.fail_next_new_segment_registration.lock()) {
+            return Err(SubscriberError::segment_io(
+                path,
+                std::io::Error::other("injected new segment registration failure"),
+            ));
+        }
         let handle = SegmentHandle::open(seq, path, self.read_mode)?;
         let bundle_count = handle.bundle_count;
 
@@ -645,6 +827,164 @@ impl SegmentStore {
             .join(format!("{}.qseg", seq.to_filename_component()))
     }
 
+    /// Returns the path to the segment sequence counter sidecar.
+    pub(crate) fn seq_sidecar_path(&self) -> PathBuf {
+        self.segment_dir.join(SEQ_SIDECAR_FILENAME)
+    }
+
+    /// Reads the persisted sequence floor for tests that created valid data.
+    ///
+    /// Production paths use [`Self::load_seq_sidecar`] so missing and
+    /// unverifiable sidecars remain distinguishable.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn read_persisted_next_seq(&self) -> Option<u64> {
+        self.load_seq_sidecar().ok().flatten()
+    }
+
+    /// Interprets the outcome of reading the sidecar, distinguishing "absent"
+    /// from "unverifiable".
+    ///
+    /// `Ok(None)` means the file is missing, which is indistinguishable from a
+    /// first run and is therefore benign. `Err` means the file is present but
+    /// its floor cannot be established -- either it could not be read, or it
+    /// could be read but failed validation. Both are treated alike: a present
+    /// sidecar must be verifiable, because the floor it holds can exceed
+    /// anything the filenames or subscriber progress can reconstruct (for
+    /// example after retention deleted every segment file), and assuming it
+    /// absent would silently reallocate sequence numbers already in use
+    /// (issue #4024).
+    fn interpret_seq_sidecar(
+        path: &Path,
+        read_result: std::io::Result<Vec<u8>>,
+    ) -> std::io::Result<Option<u64>> {
+        match read_result {
+            Ok(buf) => match decode_seq_sidecar(&buf) {
+                Some(next_seq) => Ok(Some(next_seq)),
+                None => {
+                    otel_error!(
+                        "quiver.segment.seq",
+                        path = %path.display(),
+                        error_type = "invalid_metadata",
+                        message = "corrupt segment sequence sidecar, \
+                                   cannot verify the segment sequence floor",
+                    );
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "corrupt segment sequence sidecar",
+                    ))
+                }
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => {
+                otel_warn!(
+                    "quiver.segment.seq",
+                    path = %path.display(),
+                    error = %e,
+                    error_type = "io",
+                    message = "unreadable segment sequence sidecar, \
+                               protection against sequence reuse is degraded",
+                );
+                Err(e)
+            }
+        }
+    }
+
+    /// Reads and decodes the sidecar synchronously.
+    ///
+    /// Used on the startup path, which is already synchronous and runs before
+    /// the pipeline is processing data.
+    pub(crate) fn load_seq_sidecar(&self) -> std::io::Result<Option<u64>> {
+        let path = self.seq_sidecar_path();
+        let read_result = read_seq_sidecar_bounded(&path);
+        Self::interpret_seq_sidecar(&path, read_result)
+    }
+
+    /// Durably persists `next_seq` as the lowest sequence number that may be
+    /// allocated to a future segment.
+    ///
+    /// This value survives deletion of all segment files, preventing
+    /// sequence reuse across cleanup + restart cycles. Writes use an atomic
+    /// rename plus `fsync` of the file and parent directory so a crash never
+    /// leaves a partially written sidecar.
+    ///
+    /// The engine calls this to *reserve* a block of sequence numbers before
+    /// allocating any of them, so the floor recorded here is always above
+    /// every sequence number in use.
+    ///
+    /// Calls are serialized and the stored value is monotonic: concurrent
+    /// finalizations may persist out of order, and a lower value must never
+    /// overwrite a higher one or the floor would regress across a restart.
+    ///
+    /// All filesystem work is asynchronous: this runs on the pipeline's
+    /// single-threaded runtime, where a blocking `fsync` would stall
+    /// ingestion, backpressure, and shutdown.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the existing sidecar cannot be read (its value is
+    /// then unknown, so monotonicity cannot be guaranteed) or if the new
+    /// value cannot be written.
+    pub async fn persist_next_seq(&self, next_seq: u64) -> Result<()> {
+        let path = self.seq_sidecar_path();
+        // Serializes the read-modify-write below and keeps concurrent writers
+        // from sharing the temporary file.
+        let _guard = self.seq_sidecar_lock.lock().await;
+
+        #[cfg(test)]
+        let persist_pause = { self.seq_sidecar_persist_pause.lock().take() };
+        #[cfg(test)]
+        if let Some((entered, resume)) = persist_pause {
+            entered.notify_one();
+            resume.notified().await;
+        }
+
+        // An unreadable sidecar must not be treated as absent: doing so would
+        // bypass the monotonic check and could overwrite a higher floor.
+        let read_result = read_seq_sidecar_bounded_async(&path).await;
+        if Self::interpret_seq_sidecar(&path, read_result)
+            .map_err(|e| SubscriberError::segment_io(path.clone(), e))?
+            .is_some_and(|persisted| persisted >= next_seq)
+        {
+            // A prior call may have renamed this value into place and then
+            // failed while syncing the parent directory. Re-sync before
+            // accepting the visible value as durable.
+            sync_parent_dir(&path)
+                .await
+                .map_err(|e| SubscriberError::segment_io(path.clone(), e))?;
+            return Ok(());
+        }
+
+        let mut tmp_path = path.clone().into_os_string();
+        tmp_path.push(".tmp");
+        let tmp_path = PathBuf::from(tmp_path);
+
+        let write_result = async {
+            let mut file = tokio::fs::OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(&tmp_path)
+                .await?;
+            file.write_all(&encode_seq_sidecar(next_seq)).await?;
+            file.flush().await?;
+            file.sync_data().await?;
+            drop(file);
+            tokio::fs::rename(&tmp_path, &path).await?;
+            // The rename is only durable once the parent directory is synced,
+            // so a failure here must not be reported as a successful persist.
+            sync_parent_dir(&path).await?;
+            Ok::<(), std::io::Error>(())
+        }
+        .await;
+
+        if write_result.is_err() {
+            let _ = tokio::fs::remove_file(&tmp_path).await;
+        }
+
+        write_result.map_err(|e| SubscriberError::segment_io(path, e))
+    }
+
     /// Scans the segment directory and loads existing segments.
     ///
     /// Called during startup to discover segments from a previous run.
@@ -676,6 +1016,16 @@ impl SegmentStore {
     ///
     /// Returns an error if directory scanning fails.
     pub fn scan_existing_with_max_age(&self, max_age: Option<Duration>) -> Result<ScanResult> {
+        // Validate the sidecar before registering any segments so a startup
+        // failure cannot leave segment bytes charged to the shared budget.
+        let loaded_seq_sidecar = self.load_seq_sidecar();
+        if loaded_seq_sidecar.is_err() {
+            return Ok(ScanResult {
+                seq_sidecar_unreadable: true,
+                ..ScanResult::default()
+            });
+        }
+
         let mut found = Vec::new();
         let mut deleted = Vec::new();
         let mut highest_seen = None;
@@ -750,6 +1100,8 @@ impl SegmentStore {
             found,
             deleted,
             highest_seen,
+            persisted_next_seq: loaded_seq_sidecar.as_ref().ok().copied().flatten(),
+            seq_sidecar_unreadable: loaded_seq_sidecar.is_err(),
         })
     }
 
@@ -784,6 +1136,21 @@ impl SegmentStore {
     #[must_use]
     pub fn segment_sequences(&self) -> Vec<SegmentSeq> {
         self.segments.read().keys().copied().collect()
+    }
+
+    /// Returns the segment bytes currently charged to the shared disk budget.
+    pub(crate) fn tracked_disk_bytes(&self) -> u64 {
+        let segment_bytes = self.segments.read().values().fold(0u64, |total, handle| {
+            total.saturating_add(handle.file_size_bytes)
+        });
+        let pending_delete_bytes = self
+            .pending_deletes
+            .lock()
+            .values()
+            .fold(0u64, |total, pending| {
+                total.saturating_add(pending.file_size)
+            });
+        segment_bytes.saturating_add(pending_delete_bytes)
     }
 
     /// Returns the finalized segment file size in bytes.
@@ -954,6 +1321,373 @@ mod tests {
             result,
             Err(SubscriberError::SegmentNotFound { .. })
         ));
+    }
+
+    /// Scenario: no sequence sidecar has ever been written for a fresh store.
+    /// Guarantees: `read_persisted_next_seq` returns `None` rather than an
+    /// error, so a missing sidecar is not mistaken for an I/O failure. The
+    /// startup floor then falls back to segment filenames and restored
+    /// subscriber progress, which is only safe for a genuinely fresh store.
+    #[test]
+    fn read_persisted_next_seq_missing_returns_none() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("segments")).unwrap();
+        let store = SegmentStore::new(dir.path().join("segments"));
+
+        assert_eq!(store.read_persisted_next_seq(), None);
+    }
+
+    /// Scenario: a value is persisted via `persist_next_seq` and then read
+    /// back, including after the store is recreated (simulating restart).
+    /// Guarantees: the sidecar survives independently of any in-memory
+    /// `SegmentStore` state and round-trips exactly.
+    #[tokio::test]
+    async fn persist_and_read_next_seq_roundtrip() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("segments")).unwrap();
+        let store = SegmentStore::new(dir.path().join("segments"));
+
+        store.persist_next_seq(42).await.expect("persist");
+        assert_eq!(store.read_persisted_next_seq(), Some(42));
+
+        // A fresh store instance (as at restart) must observe the same value.
+        let reopened = SegmentStore::new(dir.path().join("segments"));
+        assert_eq!(reopened.read_persisted_next_seq(), Some(42));
+
+        // Persisting a new value overwrites the old one.
+        store.persist_next_seq(100).await.expect("persist again");
+        assert_eq!(store.read_persisted_next_seq(), Some(100));
+    }
+
+    /// Scenario: the sidecar file exists but is corrupted (bad CRC), so the
+    /// floor it held cannot be recovered.
+    /// Guarantees: a present-but-unverifiable sidecar is reported the same way
+    /// as an unreadable one -- the scan flags it and `persist_next_seq`
+    /// refuses to overwrite it -- rather than being downgraded to "absent".
+    /// Treating it as absent would drop a floor that the filenames and
+    /// subscriber progress cannot always reconstruct (for example after
+    /// retention deleted every segment file), silently reallocating sequence
+    /// numbers already in use (issue #4024).
+    #[tokio::test]
+    async fn corrupt_sidecar_is_reported_like_an_unreadable_one() {
+        let dir = tempdir().unwrap();
+        let segment_dir = dir.path().join("segments");
+        std::fs::create_dir_all(&segment_dir).unwrap();
+        let store = SegmentStore::new(&segment_dir);
+
+        store.persist_next_seq(7).await.expect("persist");
+        let sidecar_path = segment_dir.join(SEQ_SIDECAR_FILENAME);
+        let mut bytes = std::fs::read(&sidecar_path).unwrap();
+        let last = bytes.len() - 1;
+        bytes[last] ^= 0xFF;
+        std::fs::write(&sidecar_path, bytes).unwrap();
+
+        let err = store
+            .load_seq_sidecar()
+            .expect_err("a corrupt sidecar must not be reported as absent");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+
+        let scan_result = store.scan_existing().expect("scan");
+        assert!(
+            scan_result.seq_sidecar_unreadable,
+            "a corrupt sidecar must be flagged so the engine refuses to open"
+        );
+        assert_eq!(scan_result.persisted_next_seq, None);
+
+        assert!(
+            store.persist_next_seq(3).await.is_err(),
+            "a corrupt sidecar must not be overwritten with a lower floor"
+        );
+    }
+
+    /// Scenario: the segment directory is empty (no `.qseg` files) but a
+    /// sequence sidecar was persisted by a previous run.
+    /// Guarantees: `scan_existing_with_max_age` surfaces the persisted value
+    /// via `ScanResult::persisted_next_seq` even though `highest_seen` is
+    /// `None`.
+    #[tokio::test]
+    async fn scan_existing_surfaces_persisted_next_seq_with_no_segment_files() {
+        let dir = tempdir().unwrap();
+        let segment_dir = dir.path().join("segments");
+        std::fs::create_dir_all(&segment_dir).unwrap();
+        let store = SegmentStore::new(&segment_dir);
+        store.persist_next_seq(9).await.expect("persist");
+
+        let scan_result = store.scan_existing().expect("scan");
+        assert_eq!(scan_result.highest_seen, None);
+        assert_eq!(scan_result.persisted_next_seq, Some(9));
+    }
+
+    /// Scenario: a lower `next_seq` is persisted after a higher one, including
+    /// the fast path that accepts an already sufficient sidecar value.
+    /// Guarantees: the stored floor remains monotonic and the fast path
+    /// completes its parent-directory durability sync before reporting success.
+    #[tokio::test]
+    async fn persist_next_seq_never_regresses() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("segments")).unwrap();
+        let store = SegmentStore::new(dir.path().join("segments"));
+
+        store.persist_next_seq(12).await.expect("persist higher");
+        store.persist_next_seq(11).await.expect("persist lower");
+
+        assert_eq!(
+            store.read_persisted_next_seq(),
+            Some(12),
+            "a lower value must not overwrite a higher persisted floor"
+        );
+    }
+
+    /// Scenario: a crash left a stale `.tmp` file from an interrupted
+    /// sidecar write.
+    /// Guarantees: the stale temporary file is overwritten rather than
+    /// causing the next persist to fail, and the committed value is correct.
+    #[tokio::test]
+    async fn persist_next_seq_overwrites_stale_tmp_file() {
+        let dir = tempdir().unwrap();
+        let segment_dir = dir.path().join("segments");
+        std::fs::create_dir_all(&segment_dir).unwrap();
+        let store = SegmentStore::new(&segment_dir);
+
+        let mut tmp_path = segment_dir.join(SEQ_SIDECAR_FILENAME).into_os_string();
+        tmp_path.push(".tmp");
+        std::fs::write(PathBuf::from(&tmp_path), b"garbage").unwrap();
+
+        store.persist_next_seq(5).await.expect("persist");
+        assert_eq!(store.read_persisted_next_seq(), Some(5));
+    }
+
+    /// Scenario: a large amount of unrelated data occupies the sidecar path
+    /// (e.g. another process wrote to it, or the file is corrupt in a way
+    /// that inflates its size), well beyond any valid sidecar encoding.
+    /// Guarantees: reading it is capped at `SEQ_SIDECAR_MAX_READ_LEN`, so a
+    /// finalize's sidecar read cannot be turned into an unbounded allocation
+    /// by an oversized file at this path.
+    #[test]
+    fn read_seq_sidecar_bounded_caps_oversized_file() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join(SEQ_SIDECAR_FILENAME);
+        let oversized = vec![0u8; (SEQ_SIDECAR_MAX_READ_LEN as usize) * 4];
+        std::fs::write(&path, &oversized).unwrap();
+
+        let buf = read_seq_sidecar_bounded(&path).expect("bounded read");
+        assert_eq!(
+            buf.len(),
+            SEQ_SIDECAR_MAX_READ_LEN as usize,
+            "read must be capped rather than consuming the whole file"
+        );
+    }
+
+    /// Scenario: a forward-written sidecar uses the largest size the format
+    /// allows (`u16::MAX`, well above the old 4096-byte read cap), the same
+    /// kind of file `decode_seq_sidecar_reads_future_version` exercises at a
+    /// much smaller size.
+    /// Guarantees: the bounded reader returns the whole file rather than
+    /// truncating it, so `decode_seq_sidecar` still extracts the v1
+    /// `next_seq` field instead of misclassifying a valid larger sidecar as
+    /// corrupt and silently discarding its floor (issue #4024).
+    #[test]
+    fn read_seq_sidecar_bounded_does_not_truncate_max_protocol_size() {
+        let next_seq: u64 = 0x0BAD_C0FF_EE00_1234;
+        let future_size: u16 = u16::MAX;
+
+        let mut buf = vec![0u8; future_size as usize];
+        buf[0..8].copy_from_slice(SEQ_SIDECAR_MAGIC);
+        buf[8..10].copy_from_slice(&2u16.to_le_bytes());
+        buf[10..12].copy_from_slice(&future_size.to_le_bytes());
+        buf[12..20].copy_from_slice(&next_seq.to_le_bytes());
+        let crc_offset = future_size as usize - 4;
+        let crc = crc32fast::hash(&buf[..crc_offset]);
+        buf[crc_offset..].copy_from_slice(&crc.to_le_bytes());
+
+        let dir = tempdir().unwrap();
+        let path = dir.path().join(SEQ_SIDECAR_FILENAME);
+        std::fs::write(&path, &buf).unwrap();
+
+        let read_back = read_seq_sidecar_bounded(&path).expect("bounded read");
+        assert_eq!(
+            read_back.len(),
+            future_size as usize,
+            "a maximum-size protocol-valid sidecar must not be truncated by the read cap"
+        );
+        assert_eq!(
+            decode_seq_sidecar(&read_back),
+            Some(next_seq),
+            "the floor must still decode after a full, untruncated read"
+        );
+    }
+
+    /// Scenario: the same oversized-file condition as
+    /// `read_seq_sidecar_bounded_caps_oversized_file`, exercised through the
+    /// async path used by `persist_next_seq` on the finalize hot path.
+    /// Guarantees: the async reader is capped identically, so repeated
+    /// finalizations cannot be turned into unbounded per-call reads.
+    #[tokio::test]
+    async fn read_seq_sidecar_bounded_async_caps_oversized_file() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join(SEQ_SIDECAR_FILENAME);
+        let oversized = vec![0u8; (SEQ_SIDECAR_MAX_READ_LEN as usize) * 4];
+        std::fs::write(&path, &oversized).unwrap();
+
+        let buf = read_seq_sidecar_bounded_async(&path)
+            .await
+            .expect("bounded read");
+        assert_eq!(
+            buf.len(),
+            SEQ_SIDECAR_MAX_READ_LEN as usize,
+            "read must be capped rather than consuming the whole file"
+        );
+    }
+
+    /// Scenario: a sidecar written by a hypothetical future version carries
+    /// extra trailing fields after `next_seq` and a larger declared size.
+    /// Guarantees: this reader still extracts the v1 `next_seq`, so a
+    /// forward-written counter continues to constrain the sequence floor
+    /// instead of being discarded and silently allowing reuse.
+    #[test]
+    fn decode_seq_sidecar_reads_future_version() {
+        let next_seq: u64 = 0x1234_5678_9ABC_DEF0;
+        let future_size: u16 = 32; // 24 bytes of v1 + an 8-byte future field
+
+        let mut buf = vec![0u8; future_size as usize];
+        buf[0..8].copy_from_slice(SEQ_SIDECAR_MAGIC);
+        buf[8..10].copy_from_slice(&2u16.to_le_bytes());
+        buf[10..12].copy_from_slice(&future_size.to_le_bytes());
+        buf[12..20].copy_from_slice(&next_seq.to_le_bytes());
+        buf[20..28].copy_from_slice(&0xDEAD_BEEF_u64.to_le_bytes());
+        let crc_offset = future_size as usize - 4;
+        let crc = crc32fast::hash(&buf[..crc_offset]);
+        buf[crc_offset..].copy_from_slice(&crc.to_le_bytes());
+
+        assert_eq!(decode_seq_sidecar(&buf), Some(next_seq));
+    }
+
+    /// Scenario: malformed sidecars -- a v1 file with the wrong declared
+    /// size, a future version too small to hold the v1 fields, and a
+    /// truncated buffer.
+    /// Guarantees: each is rejected as `None` rather than yielding a bogus
+    /// sequence floor that could permit reuse or skip valid data.
+    #[test]
+    fn decode_seq_sidecar_rejects_malformed_sizes() {
+        // v1 declaring a non-v1 size.
+        let mut wrong_v1 = vec![0u8; 32];
+        wrong_v1[0..8].copy_from_slice(SEQ_SIDECAR_MAGIC);
+        wrong_v1[8..10].copy_from_slice(&1u16.to_le_bytes());
+        wrong_v1[10..12].copy_from_slice(&32u16.to_le_bytes());
+        assert_eq!(decode_seq_sidecar(&wrong_v1), None);
+
+        // Future version too small to contain the v1 fields.
+        let mut small_future = vec![0u8; 20];
+        small_future[0..8].copy_from_slice(SEQ_SIDECAR_MAGIC);
+        small_future[8..10].copy_from_slice(&2u16.to_le_bytes());
+        small_future[10..12].copy_from_slice(&16u16.to_le_bytes());
+        assert_eq!(decode_seq_sidecar(&small_future), None);
+
+        // Declared size exceeds the bytes actually present.
+        let mut truncated = encode_seq_sidecar(7).to_vec();
+        truncated.truncate(20);
+        assert_eq!(decode_seq_sidecar(&truncated), None);
+
+        // Shorter than the minimum readable prefix.
+        assert_eq!(decode_seq_sidecar(&[0u8; 4]), None);
+    }
+
+    /// Scenario: a sidecar exists but cannot be read. A directory at the
+    /// sidecar path yields a non-`NotFound` I/O error from `read` for every
+    /// user, including root, so the failure is deterministic in CI.
+    /// Guarantees: `persist_next_seq` fails closed rather than treating the
+    /// unknown value as absent; otherwise it would bypass the monotonic check
+    /// and could overwrite a higher floor with a lower one, reintroducing
+    /// issue #4024.
+    #[tokio::test]
+    async fn persist_next_seq_fails_when_existing_sidecar_is_unreadable() {
+        let dir = tempdir().unwrap();
+        let segment_dir = dir.path().join("segments");
+        std::fs::create_dir_all(&segment_dir).unwrap();
+        let store = SegmentStore::new(&segment_dir);
+
+        std::fs::create_dir(segment_dir.join(SEQ_SIDECAR_FILENAME)).unwrap();
+
+        let err = store
+            .persist_next_seq(5)
+            .await
+            .expect_err("an unreadable sidecar must not be treated as absent");
+        assert!(
+            matches!(err, SubscriberError::SegmentIo { .. }),
+            "expected a segment I/O error, got {err:?}"
+        );
+    }
+
+    /// Scenario: startup scans a segment directory whose sidecar exists but
+    /// cannot be read, so the floor it would contribute is unknown.
+    /// Guarantees: the scan reports `seq_sidecar_unreadable` instead of
+    /// silently yielding `persisted_next_seq: None`, which callers would
+    /// otherwise treat as "no sidecar" and proceed with a lower floor.
+    #[test]
+    fn scan_existing_flags_unreadable_sidecar() {
+        let dir = tempdir().unwrap();
+        let segment_dir = dir.path().join("segments");
+        std::fs::create_dir_all(&segment_dir).unwrap();
+        let store = SegmentStore::new(&segment_dir);
+
+        std::fs::create_dir(segment_dir.join(SEQ_SIDECAR_FILENAME)).unwrap();
+
+        let scan_result = store.scan_existing().expect("scan");
+        assert!(
+            scan_result.seq_sidecar_unreadable,
+            "an unreadable sidecar must be reported, not silently ignored"
+        );
+        assert_eq!(scan_result.persisted_next_seq, None);
+    }
+
+    /// Scenario: startup scans a valid segment while its sequence sidecar is
+    /// present but corrupt.
+    /// Guarantees: sidecar validation fails before the segment is registered,
+    /// so the store and shared disk budget remain unchanged.
+    #[test]
+    fn scan_existing_does_not_register_segments_when_sidecar_is_unreadable() {
+        let (store, budget, _seq, _file_size) = store_with_budget_and_segment();
+        std::fs::write(store.seq_sidecar_path(), [0u8; 1]).unwrap();
+
+        let scan_result = store.scan_existing().expect("scan");
+
+        assert!(scan_result.seq_sidecar_unreadable);
+        assert!(scan_result.found.is_empty());
+        assert_eq!(store.segment_count(), 0);
+        assert_eq!(budget.used(), 0);
+    }
+
+    /// Scenario: many tasks persist sequence floors concurrently and out of
+    /// order, as concurrent segment finalizations would.
+    /// Guarantees: serialization and the monotonic guard hold under real
+    /// contention -- the committed value is the maximum requested, and
+    /// interleaved temp-file writes never leave the sidecar corrupt.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn persist_next_seq_is_monotonic_under_concurrency() {
+        let dir = tempdir().unwrap();
+        let segment_dir = dir.path().join("segments");
+        std::fs::create_dir_all(&segment_dir).unwrap();
+        let store = Arc::new(SegmentStore::new(&segment_dir));
+
+        let highest = 64u64;
+        // Descending order maximizes the chance a lower value is written
+        // after a higher one.
+        let mut handles = Vec::new();
+        for value in (1..=highest).rev() {
+            let store = Arc::clone(&store);
+            handles.push(tokio::spawn(async move {
+                store.persist_next_seq(value).await.expect("persist");
+            }));
+        }
+        for handle in handles {
+            handle.await.expect("task");
+        }
+
+        assert_eq!(
+            store.read_persisted_next_seq(),
+            Some(highest),
+            "the committed floor must be the maximum value requested"
+        );
     }
 
     #[test]
@@ -1355,6 +2089,49 @@ mod tests {
             "budget should be released even if file was already gone"
         );
         assert_eq!(store.pending_delete_count(), 0);
+    }
+
+    /// Scenario: A tracked segment deletion is deferred by a filesystem
+    /// failure. The test replaces the file with a directory only to make
+    /// `remove_file` fail deterministically across platforms; production
+    /// equivalents include sharing violations, permissions errors, and
+    /// transient filesystem failures.
+    /// Guarantees: `tracked_disk_bytes` continues to include the deferred
+    /// charge for failed-startup rollback until physical cleanup releases it.
+    #[test]
+    fn tracked_disk_bytes_includes_pending_delete_charges() {
+        let (store, budget, seq, file_size) = store_with_budget_and_segment();
+        let _ = store
+            .register_existing_segment(seq)
+            .expect("register segment");
+        assert_eq!(store.tracked_disk_bytes(), file_size);
+
+        let path = store.segment_path(seq);
+        std::fs::remove_file(&path).expect("remove segment file");
+        // This directory is deterministic cross-platform fault injection for
+        // `remove_file`, not a production scenario. It stands in for real
+        // deletion failures such as Windows sharing violations or permission
+        // and transient filesystem errors, including in privileged CI runs.
+        std::fs::create_dir(&path).expect("replace segment file with directory");
+
+        assert_eq!(
+            store.delete_segment(seq).expect("defer segment delete"),
+            None
+        );
+        assert_eq!(store.segment_count(), 0);
+        assert_eq!(store.pending_delete_count(), 1);
+        assert_eq!(
+            store.tracked_disk_bytes(),
+            file_size,
+            "deferred bytes must remain visible to rollback accounting"
+        );
+        assert_eq!(
+            budget.used(),
+            file_size,
+            "the shared budget must remain charged while deletion is deferred"
+        );
+
+        std::fs::remove_dir(&path).expect("remove replacement directory");
     }
 
     #[test]

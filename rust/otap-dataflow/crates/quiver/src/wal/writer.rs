@@ -665,6 +665,11 @@ impl WalWriter {
             .await
     }
 
+    #[cfg(test)]
+    pub(crate) fn test_inject_cursor_persist_failure() {
+        test_support::inject_crash(test_support::CrashInjection::BeforeSidecarRename);
+    }
+
     /// Returns the number of WAL file rotations performed during this writer's lifetime.
     pub(crate) const fn rotation_count(&self) -> u64 {
         self.coordinator.rotation_count
@@ -673,6 +678,11 @@ impl WalWriter {
     /// Returns the number of rotated files purged during this writer's lifetime.
     pub(crate) const fn purge_count(&self) -> u64 {
         self.coordinator.purge_count
+    }
+
+    /// Returns the WAL bytes currently charged to the shared disk budget.
+    pub(crate) const fn tracked_disk_bytes(&self) -> u64 {
+        self.coordinator.aggregate_bytes
     }
 
     /// Returns the cumulative bytes written to WAL since this writer opened.
