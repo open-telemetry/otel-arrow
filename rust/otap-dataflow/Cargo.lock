@@ -7938,6 +7938,7 @@ dependencies = [
  "blake3",
  "fs2",
  "humantime-serde",
+ "libc",
  "otel-arrow-dfe-engine",
  "serde",
  "serde_json",

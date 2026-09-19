@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Durable, revisioned filesystem checkpoints for database receivers.
+//! Revisioned filesystem checkpoints for database receivers.
 //!
 //! A checkpoint records the last cursor whose page was acknowledged
 //! downstream. Reads and writes fail closed: corruption, an unsupported
@@ -11,9 +11,14 @@
 //!
 //! Every filesystem call in this module blocks. Callers must run it off the
 //! local async engine core.
+//!
+//! Unix installations fsync the file and its parent directory after rename.
+//! Newly created ancestor directories are not fsynced. Windows has no portable
+//! directory-fsync operation. A machine crash can therefore lose a brand-new
+//! state tree or a rename; source retention must allow replay.
 
 use crate::database::CompositeCursor;
-use crate::partition::create_dir_all_durable;
+use crate::partition::{create_dir_all_durable, normalized_identity};
 use serde::{Deserialize, Serialize};
 use std::ffi::OsStr;
 use std::io::{self, Read, Write};
@@ -49,7 +54,7 @@ struct CheckpointEnvelope {
     checksum: String,
 }
 
-/// Last acknowledged cursor and its durable checkpoint revision.
+/// Last acknowledged cursor and its persisted checkpoint revision.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CheckpointState {
     /// Monotonic revision of the committed checkpoint.
@@ -75,14 +80,19 @@ pub(crate) struct WriteControl {
 }
 
 /// Stable checkpoint location plus the identity a checkpoint must match.
+///
+/// Writes provide atomic visibility. After install, Unix fsyncs the file and
+/// its parent directory. Newly created ancestor directories are not fsynced,
+/// so a power loss can drop a brand-new state tree and look like a first start.
+/// Windows success does not guarantee power-loss durability of a rename.
 #[derive(Clone, Debug)]
 pub struct CheckpointStore {
     prefix: PathBuf,
     legacy_prefix: Option<PathBuf>,
     source_id: String,
     config_fingerprint: String,
-    // Clones move into successive blocking writers. Share the successful
-    // directory-sync result so only initialization traverses the ancestors.
+    // Clones move into successive blocking writers. Remember that mkdir
+    // already succeeded; this is not a directory-fsync cache.
     directory_ready: Arc<AtomicBool>,
     // Test-only injection point for a post-install failure. `Arc` is required
     // because the store is cloned into a blocking worker for each write.
@@ -463,6 +473,14 @@ impl CheckpointStore {
     }
 
     /// Atomically installs the next revision for an acknowledged cursor.
+    ///
+    /// The caller must hold the matching source lease, serialize writes, and
+    /// supply the last loaded or committed revision. This is not a standalone
+    /// transactional compare-and-set or stale-owner fencing service.
+    ///
+    /// Success includes file synchronization and atomic installation, with
+    /// directory synchronization on Unix. On Windows, machine failure or power
+    /// loss can roll back the installation even after this method succeeds.
     pub fn write(
         &self,
         current_revision: u64,
@@ -586,7 +604,10 @@ impl CheckpointStore {
     }
 
     fn temporary_prefix(&self) -> String {
-        let identity = self.prefix.to_string_lossy();
+        // Match the storage namespace across mount aliases. The constructor
+        // always appends a non-empty checkpoint filename.
+        let name = self.prefix.file_name().expect("checkpoint filename");
+        let identity = normalized_identity(Path::new(name));
         let digest = blake3::hash(identity.as_bytes()).to_hex();
         format!(".otel-arrow-checkpoint-{digest}.")
     }
@@ -778,8 +799,8 @@ fn sync_parent_directory(parent: &Path) -> Result<(), CheckpointError> {
 #[cfg(not(unix))]
 fn sync_parent_directory(_parent: &Path) -> Result<(), CheckpointError> {
     // Windows has no portable directory-fsync equivalent. The same-directory
-    // temporary file plus atomic rename still guarantees a reader never sees a
-    // partially written revision.
+    // temporary file plus atomic rename provides atomic visibility, not durable
+    // namespace persistence across machine failure or power loss.
     Ok(())
 }
 

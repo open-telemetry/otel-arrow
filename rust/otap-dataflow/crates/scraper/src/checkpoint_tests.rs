@@ -3,6 +3,76 @@
 
 use super::*;
 use crate::{LeaseError, SourceLease};
+use std::process::{Child, Command, Stdio};
+use std::time::{Duration, Instant};
+
+const PROCESS_ROOT: &str = "OTAP_SCRAPER_CHECKPOINT_TEST_ROOT";
+const PROCESS_MODE: &str = "OTAP_SCRAPER_CHECKPOINT_TEST_MODE";
+const PROCESS_TIMEOUT: Duration = Duration::from_secs(30);
+const SHARED_STATE_ROOT: &str = "OTAP_SCRAPER_TEST_STATE_ROOT";
+const SHARED_STATE_ALIAS: &str = "OTAP_SCRAPER_TEST_STATE_ALIAS";
+
+struct CheckpointProcess(Child);
+
+impl CheckpointProcess {
+    fn start(root: &Path, mode: &str) -> Self {
+        Self(
+            Command::new(std::env::current_exe().expect("test executable"))
+                .args([
+                    "--exact",
+                    "checkpoint::tests::checkpoint_process_worker",
+                    "--quiet",
+                ])
+                .env(PROCESS_ROOT, root)
+                .env(PROCESS_MODE, mode)
+                .stdin(Stdio::null())
+                .spawn()
+                .expect("start checkpoint process"),
+        )
+    }
+
+    fn wait_for_ready(&mut self, root: &Path) {
+        let deadline = Instant::now() + PROCESS_TIMEOUT;
+        while !root.join("ready").exists() {
+            assert!(
+                self.0.try_wait().expect("child status").is_none(),
+                "child exited before opening its unfinished checkpoint"
+            );
+            assert!(
+                Instant::now() < deadline,
+                "checkpoint child did not become ready"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn wait_success(&mut self) {
+        let deadline = Instant::now() + PROCESS_TIMEOUT;
+        loop {
+            if let Some(status) = self.0.try_wait().expect("child status") {
+                assert!(status.success(), "checkpoint child failed: {status}");
+                return;
+            }
+            assert!(Instant::now() < deadline, "checkpoint child did not exit");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn terminate(&mut self) {
+        self.0.kill().expect("terminate checkpoint child");
+        assert!(!self.0.wait().expect("reap checkpoint child").success());
+    }
+}
+
+impl Drop for CheckpointProcess {
+    fn drop(&mut self) {
+        // Reap only this test's child, including when a parent assertion fails.
+        if !matches!(self.0.try_wait(), Ok(Some(_))) {
+            _ = self.0.kill();
+            _ = self.0.wait();
+        }
+    }
+}
 
 fn cursor(timestamp: &str, tie_breaker: i64) -> CompositeCursor {
     CompositeCursor::new(timestamp.to_owned(), tie_breaker)
@@ -536,6 +606,31 @@ fn source_lease_is_keyed_by_checkpoint_identity() {
     let _second = SourceLease::acquire(&second.lease_key()).expect("second lease");
 }
 
+/// Scenario: A production-like nested state path is leased, a cursor is committed, then the
+/// owner restarts and reads it back.
+/// Guarantees: Nested mkdir plus file and parent-directory fsync can start, persist, and
+/// resume without fsyncing the filesystem root.
+#[test]
+fn nested_state_path_lease_checkpoint_and_restart() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let root = directory
+        .path()
+        .join("var")
+        .join("lib")
+        .join("otap")
+        .join("prod");
+    let store = store(&root, "fingerprint");
+    let lease = SourceLease::acquire(&store.lease_key()).expect("startup lease");
+    let (committed, _) = store
+        .write(0, &cursor("2026-01-01 00:00:00", 42))
+        .expect("first checkpoint");
+    drop(lease);
+
+    let restarted = SourceLease::acquire(&store.lease_key()).expect("restart lease");
+    assert_eq!(restarted.generation(), 2);
+    assert_eq!(store.read().expect("resume from disk"), Some(committed));
+}
+
 /// Scenario: identity segments contain path separators or traversal components.
 /// Guarantees: encoded segments keep every checkpoint inside its configured root, so a crafted
 /// source identifier cannot write outside the state directory.
@@ -558,4 +653,199 @@ fn identity_segments_cannot_escape_the_checkpoint_root() {
             .components()
             .any(|component| matches!(component, std::path::Component::ParentDir))
     );
+}
+
+/// Scenario: Independent processes commit, reopen, and advance one source checkpoint.
+/// Guarantees: Persisted cursors and ownership generations survive process boundaries without shared memory.
+#[test]
+fn checkpoint_survives_independent_process_restarts() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    CheckpointProcess::start(directory.path(), "commit").wait_success();
+    CheckpointProcess::start(directory.path(), "resume").wait_success();
+
+    let reopened = store(directory.path(), "fingerprint");
+    let lease = SourceLease::acquire(&reopened.lease_key()).expect("third owner");
+    assert_eq!(lease.generation(), 3);
+    let committed = reopened.read().expect("read").expect("committed state");
+    assert_eq!(committed.revision, 2);
+    assert_eq!(committed.cursor, cursor("2026-01-01 00:00:01", 42));
+}
+
+/// Scenario: A process is killed while holding a lease and a partially written temporary checkpoint.
+/// Guarantees: The OS releases ownership, restart keeps only committed progress, and the next write removes the orphan.
+#[test]
+fn forced_process_exit_preserves_progress_and_releases_lease() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let mut child = CheckpointProcess::start(directory.path(), "hold-unfinished");
+    child.wait_for_ready(directory.path());
+    let reopened = store(directory.path(), "fingerprint");
+    assert!(matches!(
+        SourceLease::acquire(&reopened.lease_key()),
+        Err(LeaseError::AlreadyOwned)
+    ));
+
+    child.terminate();
+    let lease = SourceLease::acquire(&reopened.lease_key()).expect("owner after forced exit");
+    assert_eq!(lease.generation(), 2);
+    let committed = reopened
+        .read()
+        .expect("restart read")
+        .expect("committed state");
+    assert_eq!(committed.revision, 1);
+    assert_eq!(committed.cursor, cursor("2026-01-01 00:00:00", 41));
+    let parent = reopened.prefix.parent().expect("checkpoint directory");
+    let orphan_count = || {
+        std::fs::read_dir(parent)
+            .expect("checkpoint directory")
+            .map(|entry| entry.expect("directory entry").file_name())
+            .filter(|name| {
+                name.to_string_lossy()
+                    .starts_with(&reopened.temporary_prefix())
+            })
+            .count()
+    };
+    assert_eq!(orphan_count(), 1);
+    let (next, _) = reopened
+        .write(committed.revision, &cursor("2026-01-01 00:00:01", 42))
+        .expect("commit after restart");
+    assert_eq!(orphan_count(), 0);
+    assert_eq!(reopened.read().expect("read new commit"), Some(next));
+}
+
+/// Scenario: Restart uses incompatible configuration or encounters a corrupt newest revision.
+/// Guarantees: Fresh processes fail closed rather than using an older checkpoint or treating state as absent.
+#[test]
+fn process_restart_rejects_incompatible_and_corrupt_state() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    CheckpointProcess::start(directory.path(), "commit").wait_success();
+    CheckpointProcess::start(directory.path(), "incompatible").wait_success();
+    CheckpointProcess::start(directory.path(), "resume").wait_success();
+    let saved = store(directory.path(), "fingerprint");
+    std::fs::write(
+        revision_path(&saved.prefix, 2),
+        b"corrupt newest checkpoint",
+    )
+    .expect("corrupt newest revision");
+    CheckpointProcess::start(directory.path(), "corrupt").wait_success();
+}
+
+/// Scenario: Two processes access one backing state directory through distinct container bind mounts.
+/// Guarantees: Their checkpoint lock, ownership generation, and orphan-cleanup namespace agree across mounts.
+#[test]
+fn same_storage_mounted_at_different_paths_has_one_owner() {
+    let Some(root) = std::env::var_os(SHARED_STATE_ROOT) else {
+        return;
+    };
+    let alias = PathBuf::from(std::env::var_os(SHARED_STATE_ALIAS).expect("second state mount"));
+    let directory = tempfile::tempdir_in(root).expect("shared state directory");
+    let alias = alias.join(directory.path().file_name().expect("state directory name"));
+    std::fs::write(
+        directory.path().join("mount-probe"),
+        b"shared backing directory",
+    )
+    .expect("mount probe");
+    assert_eq!(
+        std::fs::read(alias.join("mount-probe")).expect("read through second mount"),
+        b"shared backing directory"
+    );
+
+    let primary_store = store(directory.path(), "fingerprint");
+    let alias_store = store(&alias, "fingerprint");
+    assert_ne!(primary_store.lease_key(), alias_store.lease_key());
+    assert_eq!(
+        primary_store.temporary_prefix(),
+        alias_store.temporary_prefix()
+    );
+    let owner = SourceLease::acquire(&primary_store.lease_key()).expect("primary owner");
+    _ = primary_store
+        .write(0, &cursor("2026-01-01 00:00:00", 41))
+        .expect("primary checkpoint");
+    let (orphan, file) = primary_store
+        .create_temporary(primary_store.prefix.parent().expect("parent"))
+        .expect("orphan temporary file");
+    drop(file);
+    CheckpointProcess::start(&alias, "contend").wait_success();
+
+    drop(owner);
+    CheckpointProcess::start(&alias, "resume").wait_success();
+    assert!(
+        !orphan.exists(),
+        "alias owner must remove the old mount's orphan"
+    );
+    let next_owner = SourceLease::acquire(&primary_store.lease_key()).expect("next primary owner");
+    assert_eq!(next_owner.generation(), 3);
+    assert_eq!(
+        primary_store.read().expect("read").expect("state").revision,
+        2
+    );
+}
+
+/// Scenario: A parent test starts a fresh executable for a checkpoint lifecycle operation.
+/// Guarantees: Each operation exercises production file I/O and OS locking in an independent process.
+#[test]
+fn checkpoint_process_worker() {
+    let Some(root) = std::env::var_os(PROCESS_ROOT) else {
+        return;
+    };
+    let root = PathBuf::from(root);
+    let mode = std::env::var(PROCESS_MODE).expect("checkpoint process mode");
+    let fingerprint = if mode == "incompatible" {
+        "different-fingerprint"
+    } else {
+        "fingerprint"
+    };
+    let store = store(&root, fingerprint);
+    if mode == "contend" {
+        assert!(matches!(
+            SourceLease::acquire(&store.lease_key()),
+            Err(LeaseError::AlreadyOwned)
+        ));
+        return;
+    }
+    let lease = SourceLease::acquire(&store.lease_key()).expect("child lease");
+    match mode.as_str() {
+        "commit" | "hold-unfinished" => {
+            assert_eq!(lease.generation(), 1);
+            assert_eq!(store.read().expect("new source"), None);
+            _ = store
+                .write(0, &cursor("2026-01-01 00:00:00", 41))
+                .expect("child commit");
+            if mode == "hold-unfinished" {
+                let (_, mut unfinished) = store
+                    .create_temporary(store.prefix.parent().expect("checkpoint directory"))
+                    .expect("next revision temporary file");
+                unfinished
+                    .write_all(b"{\"unfinished\":")
+                    .expect("partial write");
+                unfinished.sync_all().expect("sync partial file");
+                std::fs::write(root.join("ready"), b"ready").expect("signal parent");
+                loop {
+                    std::thread::sleep(Duration::from_secs(1));
+                }
+            }
+        }
+        "resume" => {
+            let previous = store
+                .read()
+                .expect("child restart")
+                .expect("saved checkpoint");
+            assert_eq!(previous.revision, 1);
+            assert_eq!(previous.cursor, cursor("2026-01-01 00:00:00", 41));
+            let (next, _) = store
+                .write(previous.revision, &cursor("2026-01-01 00:00:01", 42))
+                .expect("child resumed commit");
+            assert_eq!(next.revision, 2);
+            assert_eq!(store.read().expect("child readback"), Some(next));
+        }
+        "incompatible" => {
+            assert!(matches!(
+                store.read(),
+                Err(CheckpointError::FingerprintMismatch { .. })
+            ));
+        }
+        "corrupt" => {
+            assert!(matches!(store.read(), Err(CheckpointError::Parse { .. })));
+        }
+        _ => panic!("unknown checkpoint process mode"),
+    }
 }
