@@ -603,8 +603,8 @@ mod tests {
         assert_eq!(val.as_string(), Some(b"my-service".as_slice()));
     }
 
-    // An int, double or bool row whose backing value column was omitted (OTAP
-    // drops all-default columns) should decode to the type default, not Empty.
+    /// Scenario: An OTAP attribute row has an int, double, or bool type while its optional value column is omitted.
+    /// Guarantees: get_attribute_value returns the corresponding type default instead of Empty.
     #[test]
     fn test_omitted_scalar_column_uses_type_default() {
         fn type_only(attr_type: &UInt8Array) -> AnyValueArrays<'_> {
