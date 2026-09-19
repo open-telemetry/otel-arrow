@@ -1,0 +1,5 @@
+change_type: bug_fix
+component: otap
+note: Decode omitted scalar attribute columns as the type default so int, double and bool read back as 0, 0.0 and false instead of empty
+issues: [4111]
+subtext:
