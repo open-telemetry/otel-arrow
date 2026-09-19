@@ -4,6 +4,7 @@
 //! Database-neutral polling, watermark, and checkpoint configuration.
 
 use serde::Deserialize;
+use std::fmt;
 use std::time::Duration;
 
 const MAX_ROWS_PER_POLL: usize = 10_000;
@@ -50,29 +51,52 @@ pub enum WatermarkConfig {
 }
 
 /// Timestamp component of a composite watermark.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TimestampCursorConfig {
     /// Result column holding the ordered timestamp.
     pub column: String,
     /// Named bind carrying the committed timestamp, without a leading colon.
     pub bind: String,
-    /// Timestamp used before any checkpoint exists.
+    /// Timestamp used before any checkpoint exists; redacted in debug output.
     pub initial: String,
     /// Cursor timezone. Only `UTC` is supported.
     pub timezone: String,
 }
 
+impl fmt::Debug for TimestampCursorConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TimestampCursorConfig")
+            .field("column", &self.column)
+            .field("bind", &self.bind)
+            .field("initial", &"<redacted>")
+            .field("timezone", &self.timezone)
+            .finish()
+    }
+}
+
 /// Tie-breaker component of a composite watermark.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TieBreakerCursorConfig {
     /// Result column holding the non-null `int64` tie-breaker.
     pub column: String,
     /// Named bind carrying the committed tie-breaker, without a leading colon.
     pub bind: String,
-    /// Tie-breaker used before any checkpoint exists.
+    /// Tie-breaker used before any checkpoint exists; redacted in debug output.
     pub initial: i64,
+}
+
+impl fmt::Debug for TieBreakerCursorConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TieBreakerCursorConfig")
+            .field("column", &self.column)
+            .field("bind", &self.bind)
+            .field("initial", &"<redacted>")
+            .finish()
+    }
 }
 
 /// Behavior applied when a downstream node negatively acknowledges a page.
