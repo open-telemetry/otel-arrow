@@ -53,7 +53,7 @@ steps:
                 # The engine does not re-batch, so this also sizes ClickHouse
                 # inserts (except for the final partial batch each second).
                 max_batch_size: {{max_batch_size | default(512)}}
-                signals_per_second: {{signals_per_second | default(100000)}}
+                signals_per_second: {% if signals_per_second is none %}null{% else %}{{signals_per_second | default(100000)}}{% endif %}
                 generation_strategy: pre_generated
                 metric_weight: 0
                 trace_weight: 0
