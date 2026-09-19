@@ -1,0 +1,5 @@
+change_type: bug_fix
+component: engine
+note: Prevent Quiver from skipping new telemetry after completed segments are cleaned up and the process restarts.
+issues: [4024]
+subtext: Quiver now derives segment sequence allocation from subscriber progress and durably resets corrupt progress before accepting new data.

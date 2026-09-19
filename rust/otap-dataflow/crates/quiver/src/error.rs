@@ -57,6 +57,12 @@ pub enum QuiverError {
         #[from]
         source: crate::segment::SegmentError,
     },
+    /// Raised when the 64-bit segment sequence space is exhausted.
+    #[error("segment sequence space exhausted at {next_seq}")]
+    SegmentSequenceExhausted {
+        /// Sequence value that cannot be advanced.
+        next_seq: u64,
+    },
 }
 
 impl QuiverError {

@@ -29,22 +29,47 @@
 //! +----------+
 //! ```
 //!
+//! # Header Flags
+//!
+//! Flag bits refine how a reader interprets `oldest_incomplete_seg`:
+//!
+//! - [`FLAG_RESET_PENDING_ACTIVATION`] (bit 0): the subscriber must establish a
+//!   new durable baseline before it can be activated. The body carries no
+//!   entries and `oldest_incomplete_seg` holds the completed-through watermark.
+//! - [`FLAG_COMPLETED_THROUGH`] (bit 1): `oldest_incomplete_seg` is an
+//!   *inclusive* completed-through watermark rather than the exclusive
+//!   oldest-incomplete boundary. This lets a subscriber record durable progress
+//!   after its completed segment entries have been dropped from the body.
+//!
+//! Unknown flag bits are ignored, so a later writer can add flags without
+//! breaking this reader.
+//!
 //! # Compatibility
 //!
 //! - **Forward compatibility**: `header_size` allows old readers to skip unknown
 //!   header extensions. Unknown trailing bytes are ignored.
 //! - **Backward compatibility**: Version field identifies format; unknown versions
 //!   are rejected.
+//! - **Downgrade**: The flags above were added within version 1, so the version
+//!   field does not distinguish a file that uses them. A binary predating the
+//!   flags reads `oldest_incomplete_seg` as an exclusive boundary and treats a
+//!   pending reset as an ordinary checkpoint. The effect is bounded to
+//!   re-delivering already-resolved bundles, which is consistent with the
+//!   at-least-once delivery contract.
 //! - **Integrity**: CRC32C covers entire file (header + body); mismatches indicate
 //!   corruption.
 //!
 //! # Atomic Updates
 //!
-//! Progress is written via temp file -> fsync -> rename to ensure crash-safe
-//! updates. This avoids partial writes and provides atomic visibility.
+//! Progress is written via temp file -> fsync -> rename -> parent directory
+//! fsync to ensure crash-safe updates. This avoids partial writes and provides
+//! atomic visibility. The parent directory fsync is required rather than
+//! best-effort: segment cleanup deletes files that a checkpoint has declared
+//! completed, so a rename that is not durable could resurrect a sequence the
+//! engine has already reused.
 
 use std::fs::{self, OpenOptions};
-use std::io::{self, BufReader, Read};
+use std::io::{self, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 
 use crc32fast::Hasher as Crc32Hasher;
@@ -82,6 +107,15 @@ const MAX_ENTRY_COUNT: u32 = 1_000_000;
 /// Maximum bitmap words per entry (supports up to 64K bundles per segment).
 const MAX_BITMAP_WORDS: u16 = 1024;
 
+/// The subscriber must establish a new durable baseline before activation.
+pub(crate) const FLAG_RESET_PENDING_ACTIVATION: u16 = 1 << 0;
+
+/// `oldest_incomplete_seg` is an inclusive completed-through watermark.
+pub(crate) const FLAG_COMPLETED_THROUGH: u16 = 1 << 1;
+
+/// Flags understood by this implementation.
+const KNOWN_FLAGS: u16 = FLAG_RESET_PENDING_ACTIVATION | FLAG_COMPLETED_THROUGH;
+
 // -----------------------------------------------------------------------------
 // ProgressHeader
 // -----------------------------------------------------------------------------
@@ -93,9 +127,10 @@ struct ProgressHeader {
     version: u16,
     /// Total header size in bytes (32 for v1).
     header_size: u16,
-    /// Reserved flags (must be 0 for v1).
+    /// Header flags; see [`KNOWN_FLAGS`]. Unknown bits are ignored on read.
     flags: u16,
-    /// Oldest segment with incomplete bundles.
+    /// Oldest segment with incomplete bundles, or an inclusive completed-through
+    /// watermark when [`FLAG_COMPLETED_THROUGH`] is set.
     oldest_incomplete_seg: SegmentSeq,
     /// Number of segment entries in the body.
     entry_count: u32,
@@ -169,9 +204,10 @@ impl ProgressHeader {
         // Read version
         let version = u16::from_le_bytes([data[8], data[9]]);
         if version != PROGRESS_VERSION {
-            return Err(SubscriberError::progress_corrupted(
+            return Err(SubscriberError::progress_unsupported_version(
                 path,
-                format!("unsupported version: {version}, expected {PROGRESS_VERSION}"),
+                version,
+                PROGRESS_VERSION,
             ));
         }
 
@@ -188,11 +224,8 @@ impl ProgressHeader {
         // deserialize() is called with just the header bytes. File-level bounds
         // checking happens in read_progress_file().
 
-        // Read flags (warn on unknown flags but don't fail)
+        // Read flags. Unknown flags remain forward-compatible and are ignored.
         let flags = u16::from_le_bytes([data[12], data[13]]);
-        if flags != 0 {
-            // Future: log warning about unknown flags
-        }
 
         // Read oldest incomplete segment
         let oldest_incomplete_seg = SegmentSeq::new(u64::from_le_bytes(
@@ -217,6 +250,42 @@ impl ProgressHeader {
             oldest_incomplete_seg,
             entry_count,
         })
+    }
+}
+
+/// Parsed subscriber progress and its v1 header semantics.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct LoadedProgress {
+    pub(crate) flags: u16,
+    pub(crate) oldest_incomplete_seg: SegmentSeq,
+    pub(crate) entries: Vec<SegmentProgressEntry>,
+}
+
+impl LoadedProgress {
+    #[must_use]
+    pub(crate) const fn reset_pending_activation(&self) -> bool {
+        self.flags & FLAG_RESET_PENDING_ACTIVATION != 0
+    }
+
+    #[must_use]
+    pub(crate) const fn completed_through(&self) -> Option<SegmentSeq> {
+        if self.flags & FLAG_COMPLETED_THROUGH != 0 {
+            Some(self.oldest_incomplete_seg)
+        } else {
+            None
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn sequence_floor(&self) -> Option<SegmentSeq> {
+        let entry_floor = self.entries.iter().map(|entry| entry.seg_seq).max();
+        let header_floor =
+            if self.flags & FLAG_COMPLETED_THROUGH != 0 || self.oldest_incomplete_seg.raw() != 0 {
+                Some(self.oldest_incomplete_seg)
+            } else {
+                None
+            };
+        entry_floor.max(header_floor)
     }
 }
 
@@ -461,7 +530,7 @@ fn temp_progress_file_path(dir: &Path, subscriber_id: &SubscriberId) -> PathBuf 
 /// - The file cannot be opened
 /// - The file is corrupted (invalid magic, version, or CRC)
 /// - The file is truncated
-pub fn read_progress_file(path: &Path) -> Result<(SegmentSeq, Vec<SegmentProgressEntry>)> {
+pub(crate) fn read_progress_file_state(path: &Path) -> Result<LoadedProgress> {
     let file = OpenOptions::new()
         .read(true)
         .open(path)
@@ -474,6 +543,17 @@ pub fn read_progress_file(path: &Path) -> Result<(SegmentSeq, Vec<SegmentProgres
     let _ = reader
         .read_to_end(&mut data)
         .map_err(|e| SubscriberError::progress_io(path, e))?;
+
+    if data.len() >= 10 && &data[0..8] == PROGRESS_MAGIC {
+        let version = u16::from_le_bytes([data[8], data[9]]);
+        if version != PROGRESS_VERSION {
+            return Err(SubscriberError::progress_unsupported_version(
+                path,
+                version,
+                PROGRESS_VERSION,
+            ));
+        }
+    }
 
     // Minimum file size: header + footer
     if data.len() < HEADER_V1_SIZE + FOOTER_SIZE {
@@ -527,7 +607,20 @@ pub fn read_progress_file(path: &Path) -> Result<(SegmentSeq, Vec<SegmentProgres
         entries.push(entry);
     }
 
-    Ok((header.oldest_incomplete_seg, entries))
+    Ok(LoadedProgress {
+        flags: header.flags & KNOWN_FLAGS,
+        oldest_incomplete_seg: header.oldest_incomplete_seg,
+        entries,
+    })
+}
+
+/// Reads and validates a subscriber progress file.
+///
+/// This compatibility wrapper preserves the existing public return type while
+/// internal startup recovery also consumes header flags.
+pub fn read_progress_file(path: &Path) -> Result<(SegmentSeq, Vec<SegmentProgressEntry>)> {
+    let progress = read_progress_file_state(path)?;
+    Ok((progress.oldest_incomplete_seg, progress.entries))
 }
 
 // -----------------------------------------------------------------------------
@@ -551,28 +644,32 @@ pub async fn write_progress_file(
     oldest_incomplete_seg: SegmentSeq,
     entries: &[SegmentProgressEntry],
 ) -> Result<()> {
+    write_progress_file_impl(dir, subscriber_id, oldest_incomplete_seg, entries, 0).await
+}
+
+pub(crate) async fn write_progress_file_with_flags(
+    dir: &Path,
+    subscriber_id: &SubscriberId,
+    oldest_incomplete_seg: SegmentSeq,
+    entries: &[SegmentProgressEntry],
+    flags: u16,
+) -> Result<()> {
+    write_progress_file_impl(dir, subscriber_id, oldest_incomplete_seg, entries, flags).await
+}
+
+async fn write_progress_file_impl(
+    dir: &Path,
+    subscriber_id: &SubscriberId,
+    oldest_incomplete_seg: SegmentSeq,
+    entries: &[SegmentProgressEntry],
+    flags: u16,
+) -> Result<()> {
     use tokio::io::AsyncWriteExt;
 
     let final_path = progress_file_path(dir, subscriber_id);
     let temp_path = temp_progress_file_path(dir, subscriber_id);
 
-    // Build the complete file content (in memory - typically small)
-    let mut content = Vec::new();
-
-    // Header
-    let header = ProgressHeader::new(oldest_incomplete_seg, entries.len() as u32);
-    content.extend_from_slice(&header.serialize());
-
-    // Entries
-    for entry in entries {
-        content.extend_from_slice(&entry.serialize());
-    }
-
-    // CRC (of header + entries)
-    let mut hasher = Crc32Hasher::new();
-    hasher.update(&content);
-    let crc = hasher.finalize();
-    content.extend_from_slice(&crc.to_le_bytes());
+    let content = encode_progress_file(oldest_incomplete_seg, entries, flags);
 
     // Write to temp file using tokio
     {
@@ -603,14 +700,91 @@ pub async fn write_progress_file(
         .await
         .map_err(|e| SubscriberError::progress_io(&final_path, e))?;
 
-    // Sync parent directory to ensure rename is durable
-    #[cfg(unix)]
-    if let Some(parent) = final_path.parent()
-        && let Ok(dir_file) = tokio::fs::File::open(parent).await
+    // Sync parent directory to ensure rename is durable.
+    sync_parent_directory_async(&final_path).await?;
+
+    Ok(())
+}
+
+pub(crate) fn write_progress_file_sync_with_flags(
+    dir: &Path,
+    subscriber_id: &SubscriberId,
+    oldest_incomplete_seg: SegmentSeq,
+    entries: &[SegmentProgressEntry],
+    flags: u16,
+) -> Result<()> {
+    let final_path = progress_file_path(dir, subscriber_id);
+    let temp_path = temp_progress_file_path(dir, subscriber_id);
+    let content = encode_progress_file(oldest_incomplete_seg, entries, flags);
+
     {
-        let _ = dir_file.sync_all().await;
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&temp_path)
+            .map_err(|e| SubscriberError::progress_io(&temp_path, e))?;
+        file.write_all(&content)
+            .map_err(|e| SubscriberError::progress_io(&temp_path, e))?;
+        file.flush()
+            .map_err(|e| SubscriberError::progress_io(&temp_path, e))?;
+        file.sync_all()
+            .map_err(|e| SubscriberError::progress_io(&temp_path, e))?;
     }
 
+    fs::rename(&temp_path, &final_path)
+        .map_err(|e| SubscriberError::progress_io(&final_path, e))?;
+    sync_parent_directory(&final_path)
+}
+
+fn encode_progress_file(
+    oldest_incomplete_seg: SegmentSeq,
+    entries: &[SegmentProgressEntry],
+    flags: u16,
+) -> Vec<u8> {
+    let mut header = ProgressHeader::new(oldest_incomplete_seg, entries.len() as u32);
+    header.flags = flags & KNOWN_FLAGS;
+
+    let mut content = Vec::new();
+    content.extend_from_slice(&header.serialize());
+    for entry in entries {
+        content.extend_from_slice(&entry.serialize());
+    }
+
+    let mut hasher = Crc32Hasher::new();
+    hasher.update(&content);
+    content.extend_from_slice(&hasher.finalize().to_le_bytes());
+    content
+}
+
+#[cfg(unix)]
+fn sync_parent_directory(path: &Path) -> Result<()> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let directory = fs::File::open(parent).map_err(|e| SubscriberError::progress_io(parent, e))?;
+    directory
+        .sync_all()
+        .map_err(|e| SubscriberError::progress_io(parent, e))
+}
+
+#[cfg(not(unix))]
+fn sync_parent_directory(_path: &Path) -> Result<()> {
+    Ok(())
+}
+
+#[cfg(unix)]
+async fn sync_parent_directory_async(path: &Path) -> Result<()> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let directory = tokio::fs::File::open(parent)
+        .await
+        .map_err(|e| SubscriberError::progress_io(parent, e))?;
+    directory
+        .sync_all()
+        .await
+        .map_err(|e| SubscriberError::progress_io(parent, e))
+}
+
+#[cfg(not(unix))]
+async fn sync_parent_directory_async(_path: &Path) -> Result<()> {
     Ok(())
 }
 
@@ -641,7 +815,8 @@ pub fn scan_progress_files(dir: &Path) -> Result<Vec<SubscriberId>> {
 
     let mut subscriber_ids = Vec::new();
 
-    for entry in entries.flatten() {
+    for entry in entries {
+        let entry = entry.map_err(|e| SubscriberError::progress_io(dir, e))?;
         let file_name = entry.file_name();
         let name = file_name.to_string_lossy();
 
@@ -720,7 +895,7 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(SubscriberError::ProgressCorrupted { .. })
+            Err(SubscriberError::ProgressUnsupportedVersion { .. })
         ));
     }
 

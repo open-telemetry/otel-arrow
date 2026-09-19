@@ -854,6 +854,18 @@ impl SegmentStore {
                 .unwrap_or(SystemTime::UNIX_EPOCH);
         }
     }
+
+    /// Backdates one segment to test expiration with non-monotonic timestamps.
+    #[cfg(test)]
+    pub(crate) fn backdate_segment(&self, seq: SegmentSeq, offset: Duration) {
+        let mut segments = self.segments.write();
+        let handle = segments.get_mut(&seq).expect("segment exists");
+        let handle = Arc::get_mut(handle).expect("segment handle has multiple owners");
+        handle.finalized_at = handle
+            .finalized_at
+            .checked_sub(offset)
+            .expect("valid offset");
+    }
 }
 
 impl SegmentProvider for SegmentStore {
@@ -928,6 +940,13 @@ impl SegmentProvider for SegmentStore {
     fn available_segments(&self) -> Vec<SegmentSeq> {
         self.segment_sequences()
     }
+
+    fn with_latest_segment<T>(&self, operation: impl FnOnce(Option<SegmentSeq>) -> T) -> T {
+        // Registration releases this lock before invoking the registry callback,
+        // so reset activation can hold subscriber state while taking this read lock.
+        let segments = self.segments.read();
+        operation(segments.keys().next_back().copied())
+    }
 }
 
 #[cfg(test)]
@@ -942,6 +961,19 @@ mod tests {
         let store = SegmentStore::new(dir.path().join("segments"));
         assert_eq!(store.segment_count(), 0);
         assert!(store.segment_sequences().is_empty());
+    }
+
+    /// Scenario: A reset baseline is installed from the latest-segment snapshot.
+    /// Guarantees: Registration cannot modify the segment map until baseline installation finishes.
+    #[test]
+    fn latest_segment_snapshot_excludes_registration() {
+        let dir = tempdir().unwrap();
+        let store = SegmentStore::new(dir.path().join("segments"));
+        store.with_latest_segment(|latest| {
+            assert_eq!(latest, None);
+            assert!(store.segments.try_write().is_none());
+        });
+        assert!(store.segments.try_write().is_some());
     }
 
     #[test]

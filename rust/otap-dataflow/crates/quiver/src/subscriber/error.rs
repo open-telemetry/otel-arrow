@@ -91,6 +91,19 @@ pub enum SubscriberError {
         /// Description of the corruption.
         message: Cow<'static, str>,
     },
+
+    /// Progress file was written by an unsupported format version.
+    #[error(
+        "unsupported progress file version at {path}: found {found_version}, supported {supported_version}"
+    )]
+    ProgressUnsupportedVersion {
+        /// Path to the progress file.
+        path: PathBuf,
+        /// Version found in the file.
+        found_version: u16,
+        /// Version supported by this binary.
+        supported_version: u16,
+    },
 }
 
 impl SubscriberError {
@@ -147,6 +160,20 @@ impl SubscriberError {
         Self::ProgressCorrupted {
             path: path.into(),
             message: message.into(),
+        }
+    }
+
+    /// Creates a new [`SubscriberError::ProgressUnsupportedVersion`] error.
+    #[must_use]
+    pub fn progress_unsupported_version(
+        path: impl Into<PathBuf>,
+        found_version: u16,
+        supported_version: u16,
+    ) -> Self {
+        Self::ProgressUnsupportedVersion {
+            path: path.into(),
+            found_version,
+            supported_version,
         }
     }
 

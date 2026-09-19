@@ -327,17 +327,32 @@ Field descriptions:
   batched via the `maintain()` API. The embedding layer calls `maintain()`
   periodically (e.g., every 25-100ms) to flush dirty progress files and
   clean up completed segments.
-- **Compact representation**: Only partially-complete segments are tracked.
-  Once all bundles in a segment are acked, `oldest_incomplete_segment` advances
-  and the segment entry is removed.
+- **Compact representation**: Completed entries can be removed after their
+  durable watermark has been flushed and the corresponding segment cleanup has
+  completed. Out-of-order retention keeps explicit completed entries while
+  physical deletion is deferred; successful retries release that tracking.
+  Abandoning a deletion does not prove that the file is gone.
 
 ##### Recovery Semantics
 
 - **Startup**: Read each `quiver.sub.<id>` file to restore that subscriber's
   state. No log replay required--file contains current state.
-- **CRC validation**: If CRC fails, the file is considered corrupted. Recovery
-  options: (1) start fresh from latest segment, (2) fail startup, or (3) use
-  backup if available. Policy is configurable.
+- **Sequence floor**: Before WAL replay, Quiver initializes the next segment
+  sequence above both the highest sequence observed in any segment filename and
+  the highest sequence referenced by valid subscriber progress. Progress from
+  inactive and orphaned subscribers contributes to this floor.
+- **Corrupt progress**: If magic, structure, or checksum validation fails,
+  Quiver atomically replaces the file with a version 1 pending-reset
+  checkpoint. The reset remains durable across restarts. When that subscriber
+  next activates, Quiver installs its baseline under the segment-store read
+  lock, atomically with respect to registration. This snapshot is the activation
+  boundary: earlier registrations are skipped, including delayed callbacks.
+  Later registrations are retained while the baseline is written durably, but
+  delivery is enabled only after that write succeeds.
+- **Unsupported progress versions**: Startup fails and leaves the file
+  untouched so a compatible binary can read it.
+- **Progress I/O failures**: Startup fails because Quiver cannot determine the
+  sequence floor or safely commit a reset.
 - **Cleanup coordination**: Before deleting a segment, all subscriber progress
   files must be flushed and show `oldest_incomplete_segment > deleted_segment`.
 
@@ -354,6 +369,12 @@ Retention and queries can use event time (semantic) or ingestion timestamp
 (system). The ingestion sequence remains authoritative for stable replay
 ordering and tie-breaking. Indexing directly on event time is lower priority
 and will follow query feature implementation.
+
+Startup must establish the sequence floor before WAL replay because replay can
+finalize a segment before `QuiverEngine::open` returns. Segment directory scan
+failures therefore fail startup instead of falling back to sequence zero.
+Sequence reuse is permitted only after no surviving segment filename or
+subscriber progress file references the prior value.
 
 **Notification Model**: Quiver uses push notification with pull-based data
 retrieval.

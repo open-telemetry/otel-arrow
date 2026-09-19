@@ -625,7 +625,7 @@ pub async fn run(
 // === Helper functions ===
 
 /// Register subscribers on an engine.
-fn register_subscribers(
+async fn register_subscribers(
     engine: &Arc<QuiverEngine>,
     count: usize,
 ) -> Result<Vec<SubscriberId>, String> {
@@ -639,6 +639,7 @@ fn register_subscribers(
             .map_err(|e| format!("Failed to register subscriber: {}", e))?;
         engine
             .activate_subscriber(&id)
+            .await
             .map_err(|e| format!("Failed to activate subscriber: {}", e))?;
         sub_ids.push(id);
     }
@@ -804,7 +805,7 @@ async fn create_engines(
             .map_err(|e| format!("Failed to create engine: {}", e))?;
 
         // Register subscribers using engine's unified API
-        let sub_ids = register_subscribers(&engine, subscribers_per_engine)?;
+        let sub_ids = register_subscribers(&engine, subscribers_per_engine).await?;
         for sub_id in sub_ids {
             all_sub_ids.push((engine_idx, sub_id));
         }
