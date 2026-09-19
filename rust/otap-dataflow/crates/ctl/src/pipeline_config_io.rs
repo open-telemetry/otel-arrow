@@ -43,13 +43,13 @@ pub(crate) fn parse_pipeline_config_content(
     pipeline_id: &str,
 ) -> Result<PipelineConfig, CliError> {
     let parse_result = if looks_like_json(content) {
-        PipelineConfig::from_json(
+        PipelineConfig::from_json_allowing_inherited_extensions(
             pipeline_group_id.to_string().into(),
             pipeline_id.to_string().into(),
             content,
         )
     } else {
-        PipelineConfig::from_yaml(
+        PipelineConfig::from_yaml_allowing_inherited_extensions(
             pipeline_group_id.to_string().into(),
             pipeline_id.to_string().into(),
             content,
@@ -117,5 +117,28 @@ mod tests {
         let parsed = parse_pipeline_config_content(&rendered, "tenant-a", "ingest")
             .expect("json pipeline config should parse");
         assert!(parsed.eq_ignoring_policies(&pipeline_config()));
+    }
+
+    /// Scenario: a CLI or TUI pipeline document binds a capability declared at
+    /// engine or pipeline-group scope and therefore omits the declaration.
+    /// Guarantees: local parsing preserves the inherited binding so the server
+    /// can validate it against the full live configuration.
+    #[test]
+    fn parse_pipeline_config_content_accepts_inherited_extension_binding() {
+        let content = r#"
+nodes:
+  ingress:
+    type: "receiver:otlp"
+  egress:
+    type: "exporter:debug"
+    capabilities:
+      bearer_token_provider: ancestor_auth
+connections:
+  - from: ingress
+    to: egress
+"#;
+
+        _ = parse_pipeline_config_content(content, "tenant-a", "ingest")
+            .expect("inherited extension binding should be deferred to server validation");
     }
 }

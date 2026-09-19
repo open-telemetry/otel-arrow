@@ -42,7 +42,9 @@
 //! - TODO: Better resource control
 
 use crate::error::Error;
-use crate::thread_task::{ThreadLocalTaskHandle, spawn_thread_local_task};
+use crate::thread_task::{
+    ThreadLocalTaskHandle, spawn_thread_local_task, spawn_thread_local_task_with_cleanup,
+};
 use core_affinity::CoreId;
 use otel_arrow_dfe_admin::ControlPlane;
 use otel_arrow_dfe_config::engine::{
@@ -82,6 +84,9 @@ use otel_arrow_dfe_engine::entity_context::{
     node_entity_key, pipeline_entity_key, set_pipeline_entity_key,
 };
 use otel_arrow_dfe_engine::error::Error as EngineError;
+use otel_arrow_dfe_engine::extension::scope::{
+    ExtensionScopeRegistry, InheritedExtensionRegistrations, RunningExtensionScopeSupervisor,
+};
 use otel_arrow_dfe_engine::listener_group::ListenerGroupSnapshot;
 use otel_arrow_dfe_engine::memory_limiter::{
     EffectiveMemoryLimiter, MemoryLimiterTick, MemoryPressureBehaviorConfig, MemoryPressureChanged,
@@ -110,7 +115,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::mpsc as std_mpsc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
 pub use linkme::distributed_slice;
@@ -144,10 +149,7 @@ pub use controller_monitor::{
     register_builtin_controller_extensions,
 };
 
-use live_control::{
-    ControllerRuntime, LaunchedPipelineThread, PanicReport, RuntimeInstanceError,
-    RuntimeInstanceExit,
-};
+use live_control::{ControllerRuntime, PanicReport, RuntimeInstanceError, RuntimeInstanceExit};
 use placement::{CorePlacement, PipelinePlacement, PlacementPlanner, PlacementSnapshot};
 
 use otel_arrow_dfe_engine::component_inventory;
@@ -172,6 +174,205 @@ pub struct Controller<PData: 'static + Clone + Send + Sync + std::fmt::Debug> {
 enum RunMode {
     ParkMainThread,
     ShutdownWhenDone,
+}
+
+fn shutdown_telemetry_task<T, E>(
+    name: &str,
+    handle: Arc<ThreadLocalTaskHandle<T, E>>,
+) -> Result<T, Error>
+where
+    E: Into<Error>,
+{
+    let handle = Arc::try_unwrap(handle).map_err(|_| Error::PipelineRuntimeError {
+        source: Box::new(std::io::Error::other(format!(
+            "{name} shutdown deferred: scope or pipeline teardown still owns telemetry support"
+        ))),
+    })?;
+    handle.shutdown_and_join()
+}
+
+/// Keeps engine and pipeline-group extension scope hosts alive until pipelines stop.
+struct ExtensionScopeSupervisorGuard<
+    PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + Unwindable + FlowMetricHook,
+> {
+    handle: Option<ThreadLocalTaskHandle<(), Error>>,
+    runtime: Arc<ControllerRuntime<PData>>,
+    descendant_drain_timeout: Duration,
+    supervisor_shutdown_timeout: Duration,
+}
+
+impl<
+    PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + Unwindable + FlowMetricHook,
+> ExtensionScopeSupervisorGuard<PData>
+{
+    const DESCENDANT_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
+    const SUPERVISOR_SHUTDOWN_TIMEOUT: Duration = RunningExtensionScopeSupervisor::SHUTDOWN_TIMEOUT
+        .saturating_add(ControllerRuntime::<PData>::OBSERVABILITY_SHUTDOWN_COMPLETION_TIMEOUT)
+        .saturating_add(Duration::from_secs(1));
+
+    fn new(
+        handle: ThreadLocalTaskHandle<(), Error>,
+        runtime: Arc<ControllerRuntime<PData>>,
+    ) -> Self {
+        Self {
+            handle: Some(handle),
+            runtime,
+            descendant_drain_timeout: Self::DESCENDANT_DRAIN_TIMEOUT,
+            supervisor_shutdown_timeout: Self::SUPERVISOR_SHUTDOWN_TIMEOUT,
+        }
+    }
+
+    #[cfg(test)]
+    fn new_with_timeouts(
+        handle: ThreadLocalTaskHandle<(), Error>,
+        runtime: Arc<ControllerRuntime<PData>>,
+        descendant_drain_timeout: Duration,
+        supervisor_shutdown_timeout: Duration,
+    ) -> Self {
+        Self {
+            handle: Some(handle),
+            runtime,
+            descendant_drain_timeout,
+            supervisor_shutdown_timeout,
+        }
+    }
+
+    fn timeout_error(&self, phase: &str) -> Error {
+        Error::PipelineRuntimeError {
+            source: Box::new(std::io::Error::other(format!(
+                "global shutdown deadline elapsed while waiting for {phase}"
+            ))),
+        }
+    }
+
+    fn drain_descendants_until(&self, deadline: Instant) -> Option<Error> {
+        let mut shutdown_error = None;
+
+        loop {
+            if let Err(error) = self.runtime.request_shutdown_all_until(deadline)
+                && shutdown_error.is_none()
+            {
+                shutdown_error = Some(Error::PipelineRuntimeError {
+                    source: Box::new(std::io::Error::other(format!(
+                        "failed to stop descendant pipelines before extension scope hosts: {error:?}"
+                    ))),
+                });
+            }
+            if self.runtime.all_producer_instances_exited() {
+                break;
+            }
+
+            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                return Some(self.timeout_error("descendant pipelines to stop"));
+            };
+            if !self
+                .runtime
+                .wait_for_global_shutdown_completion_for(remaining)
+            {
+                continue;
+            }
+            let remaining = deadline
+                .checked_duration_since(Instant::now())
+                .unwrap_or(Duration::ZERO);
+            _ = self.runtime.wait_until_all_producer_instances_exit_for(
+                remaining.min(Duration::from_millis(100)),
+            );
+        }
+
+        let remaining = deadline
+            .checked_duration_since(Instant::now())
+            .unwrap_or(Duration::ZERO);
+        if !self
+            .runtime
+            .wait_for_global_shutdown_completion_for(remaining)
+        {
+            return Some(self.timeout_error("descendant shutdown coordination"));
+        }
+        let remaining = deadline
+            .checked_duration_since(Instant::now())
+            .unwrap_or(Duration::ZERO);
+        if !self.runtime.wait_for_runtime_recoveries_for(remaining) {
+            return Some(self.timeout_error("runtime recovery workers to stop"));
+        }
+
+        shutdown_error
+    }
+
+    fn drain_observability_until(&self, deadline: Instant) -> Option<Error> {
+        let shutdown_error = self
+            .runtime
+            .request_shutdown_all_until(deadline)
+            .err()
+            .map(|error| Error::PipelineRuntimeError {
+                source: Box::new(std::io::Error::other(format!(
+                    "failed to stop system observability after extension scope hosts: {error:?}"
+                ))),
+            });
+
+        let remaining = deadline
+            .checked_duration_since(Instant::now())
+            .unwrap_or(Duration::ZERO);
+        if !self
+            .runtime
+            .wait_for_global_shutdown_completion_for(remaining)
+        {
+            return Some(self.timeout_error("system observability shutdown coordination"));
+        }
+        let remaining = deadline
+            .checked_duration_since(Instant::now())
+            .unwrap_or(Duration::ZERO);
+        if !self.runtime.wait_until_all_instances_exit_for(remaining) {
+            return Some(self.timeout_error("system observability to stop"));
+        }
+
+        shutdown_error
+    }
+
+    fn shutdown_after_descendants(&mut self) -> Option<Error> {
+        let deadline = self
+            .runtime
+            .global_shutdown_deadline_or_insert(self.descendant_drain_timeout);
+        let descendant_error = self.drain_descendants_until(deadline);
+        // Provider and observability grace starts after descendant draining.
+        // The supervisor's completion callback owns final telemetry teardown.
+        let supervisor_deadline = Instant::now() + self.supervisor_shutdown_timeout;
+        let extension_scope_error = self
+            .handle
+            .take()
+            .and_then(|handle| handle.shutdown_and_join_until(supervisor_deadline).err());
+        let extension_scope_timed_out = extension_scope_error
+            .as_ref()
+            .is_some_and(|error| matches!(error, Error::ThreadJoinTimeout { .. }));
+        let observability_error = if extension_scope_timed_out
+            || !self.runtime.all_producer_instances_exited()
+            || !self.runtime.wait_for_runtime_recoveries_for(Duration::ZERO)
+        {
+            None
+        } else {
+            self.runtime.mark_extension_scope_hosts_stopped();
+            self.drain_observability_until(self.runtime.observability_shutdown_deadline_or_insert())
+        };
+        descendant_error
+            .or(extension_scope_error)
+            .or(observability_error)
+    }
+}
+
+impl<
+    PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + Unwindable + FlowMetricHook,
+> Drop for ExtensionScopeSupervisorGuard<PData>
+{
+    fn drop(&mut self) {
+        if self.handle.is_none() {
+            return;
+        }
+        if let Some(error) = self.shutdown_after_descendants() {
+            otel_warn!(
+                "controller.extension_scope_cleanup_failed",
+                error = error.to_string()
+            );
+        }
+    }
 }
 
 /// Error type returned by controller extension startup and runtime tasks.
@@ -1529,6 +1730,7 @@ impl<
         let placement_snapshot =
             Self::preflight_pipeline_placement(&pipelines, &all_cores, &topology)?;
 
+        let extension_scope_registry = ExtensionScopeRegistry::default();
         let runtime = Arc::new(ControllerRuntime::new(
             self.pipeline_factory,
             controller_ctx.clone(),
@@ -1536,6 +1738,7 @@ impl<
             obs_state_handle.clone(),
             engine_evt_reporter.clone(),
             metrics_reporter.clone(),
+            extension_scope_registry.clone(),
             declared_topics,
             context.runtime_requirements,
             Arc::clone(&context.bindings),
@@ -1567,7 +1770,9 @@ impl<
         // available when that pipeline begins processing control messages or ticks.
         let internal_collector = telemetry_system.collector();
         let (collector_ready_tx, collector_ready_rx) = std::sync::mpsc::sync_channel(1);
-        let metrics_agg_handle = spawn_thread_local_task(
+        // These leases protect telemetry support across OS-thread teardown.
+        // A detached scope supervisor retains them until the final producers exit.
+        let metrics_agg_handle = Arc::new(spawn_thread_local_task(
             "metrics-aggregator",
             admin_tracing_setup.clone(),
             move |cancellation_token| {
@@ -1575,16 +1780,154 @@ impl<
                 let _ = collector_ready_tx.send(());
                 task
             },
-        )?;
+        )?);
         collector_ready_rx.recv().map_err(|_| {
             Error::from(otel_arrow_dfe_telemetry::error::Error::MetricsCollectorNotRunning)
         })?;
 
-        // Pipeline threads receive only a Weak handle back to the controller runtime. That lets
-        // them report their terminal exit without becoming owners that keep the runtime alive
-        // during shutdown.
-        let observability_pipeline_handle = Self::spawn_observability_pipeline(
-            Arc::downgrade(&runtime),
+        let obs_state_store_runtime = obs_state_store.clone();
+        let obs_state_join_handle = Arc::new(spawn_thread_local_task(
+            "observed-state-store",
+            admin_tracing_setup.clone(),
+            move |cancellation_token| obs_state_store_runtime.run(cancellation_token),
+        )?);
+
+        // Engine and group extensions run once on a controller-owned LocalSet.
+        // Their immutable shared capability catalog is published only after
+        // every scope passes its startup and readiness barriers.
+        let extension_scope_config = engine_config.clone();
+        let extension_scope_controller_ctx = controller_ctx.clone();
+        let extension_scope_metrics_reporter = metrics_reporter.clone();
+        let extension_scope_registry_for_host = extension_scope_registry.clone();
+        let extension_scope_pipeline_factory = self.pipeline_factory;
+        // Keep controller shutdown state alive until the scope-host thread can
+        // open the observability phase after its final scope actually exits.
+        let extension_scope_runtime = Arc::clone(&runtime);
+        let extension_scope_completion_runtime = Arc::clone(&runtime);
+        let extension_scope_metrics_lease = Arc::clone(&metrics_agg_handle);
+        let extension_scope_state_lease = Arc::clone(&obs_state_join_handle);
+        let (extension_scope_ready_tx, extension_scope_ready_rx) =
+            std_mpsc::sync_channel::<Result<(), String>>(1);
+        let extension_scope_supervisor_handle = spawn_thread_local_task_with_cleanup(
+            "extension-scope-supervisor",
+            telemetry_system.engine_tracing_setup(),
+            move |cancellation_token| async move {
+                let prepared = match extension_scope_pipeline_factory.prepare_extension_scope_hosts(
+                    &extension_scope_config,
+                    &extension_scope_controller_ctx,
+                    extension_scope_metrics_reporter,
+                    extension_scope_registry_for_host,
+                ) {
+                    Ok(prepared) => prepared,
+                    Err(error) => {
+                        let message = error.to_string();
+                        let _ = extension_scope_ready_tx.send(Err(message));
+                        return Err(Error::PipelineRuntimeError {
+                            source: Box::new(error),
+                        });
+                    }
+                };
+                let running = match prepared
+                    .start_with_shutdown(cancellation_token.clone().cancelled_owned())
+                    .await
+                {
+                    Ok(Some(running)) => running,
+                    Ok(None) => {
+                        let _ = extension_scope_ready_tx
+                            .send(Err("extension scope startup was cancelled".to_owned()));
+                        return Ok(());
+                    }
+                    Err(error) => {
+                        let message = error.to_string();
+                        let _ = extension_scope_ready_tx.send(Err(message));
+                        return Err(Error::PipelineRuntimeError {
+                            source: Box::new(error),
+                        });
+                    }
+                };
+                if extension_scope_ready_tx.send(Ok(())).is_err() {
+                    return running
+                        .shutdown()
+                        .await
+                        .map_err(|error| Error::PipelineRuntimeError {
+                            source: Box::new(error),
+                        });
+                }
+
+                let failure_runtime = Arc::clone(&extension_scope_runtime);
+                running
+                    .run(cancellation_token.cancelled_owned(), move |message| {
+                        otel_error!(
+                            "controller.extension_scope_runtime_failed",
+                            error = message.as_str(),
+                            message = "An engine or pipeline-group extension failed; requesting engine shutdown"
+                        );
+                        failure_runtime.record_fatal_runtime_error(message);
+                        if let Err(shutdown_error) =
+                            failure_runtime.control_plane().shutdown_all(10)
+                        {
+                            otel_warn!(
+                                "controller.extension_scope_shutdown_failed",
+                                error = format!("{shutdown_error:?}")
+                            );
+                        }
+                    })
+                    .await
+                    .map_err(|error| Error::PipelineRuntimeError {
+                        source: Box::new(error),
+                    })
+            },
+            move |cancellation_token| {
+                extension_scope_completion_runtime
+                    .finish_shutdown_after_extension_scopes(&cancellation_token);
+                drop(extension_scope_metrics_lease);
+                drop(extension_scope_state_lease);
+            },
+        )?;
+        match extension_scope_ready_rx.recv() {
+            Ok(Ok(())) => {}
+            Ok(Err(message)) => {
+                let host_error = extension_scope_supervisor_handle
+                    .shutdown_and_join()
+                    .err()
+                    .unwrap_or_else(|| Error::PipelineRuntimeError {
+                        source: Box::new(std::io::Error::other(message)),
+                    });
+                if let Err(error) =
+                    shutdown_telemetry_task("metrics-aggregator", metrics_agg_handle)
+                {
+                    otel_warn!(
+                        "controller.extension_scope_startup_metrics_shutdown_failed",
+                        error = error.to_string()
+                    );
+                }
+                return Err(host_error);
+            }
+            Err(error) => {
+                let host_error = extension_scope_supervisor_handle
+                    .shutdown_and_join()
+                    .err()
+                    .unwrap_or_else(|| Error::PipelineRuntimeError {
+                        source: Box::new(error),
+                    });
+                if let Err(error) =
+                    shutdown_telemetry_task("metrics-aggregator", metrics_agg_handle)
+                {
+                    otel_warn!(
+                        "controller.extension_scope_startup_metrics_shutdown_failed",
+                        error = error.to_string()
+                    );
+                }
+                return Err(host_error);
+            }
+        }
+        let mut extension_scope_supervisor = ExtensionScopeSupervisorGuard::new(
+            extension_scope_supervisor_handle,
+            Arc::clone(&runtime),
+        );
+
+        Self::spawn_observability_pipeline(
+            &runtime,
             observability_key.clone(),
             observability_core,
             observability_pipeline,
@@ -1606,14 +1949,6 @@ impl<
         // before we start sending logs.
         telemetry_system.init_global_subscriber();
         Self::emit_topic_mode_reports(&runtime.declared_topics().inferred_mode_reports);
-
-        // Start the observed state store background task
-        let obs_state_store_runtime = obs_state_store.clone();
-        let obs_state_join_handle = spawn_thread_local_task(
-            "observed-state-store",
-            admin_tracing_setup.clone(),
-            move |cancellation_token| obs_state_store_runtime.run(cancellation_token),
-        )?;
 
         // Start the engine-wide metrics collection task.
         // This samples engine-level metrics (e.g. RSS) on a fixed interval and
@@ -1669,13 +2004,16 @@ impl<
             },
         )?;
 
-        runtime.register_launched_instance(observability_pipeline_handle);
-
         for (pipeline_entry, pipeline_placement) in
             pipelines.iter().zip(placement_snapshot.pipelines.iter())
         {
-            runtime.register_committed_pipeline(
+            let inherited_extensions = runtime.inherited_extensions_for_pipeline(
+                &pipeline_entry.pipeline_group_id,
+                &pipeline_entry.pipeline,
+            );
+            runtime.register_committed_pipeline_with_inherited(
                 pipeline_entry.clone(),
+                inherited_extensions.clone(),
                 pipeline_placement.clone(),
                 0,
             );
@@ -1717,10 +2055,7 @@ impl<
             );
 
             for placement in &pipeline_placement.cores {
-                // Pass a Weak runtime handle into each pipeline thread. The thread upgrades it
-                // only when it needs to report Success/Error/Panic on exit, and silently skips
-                // that late report if shutdown has already dropped the runtime.
-                let launched = Self::launch_pipeline_thread(
+                Self::launch_pipeline_thread(
                     self.pipeline_factory,
                     DeployedPipelineKey {
                         pipeline_group_id: pipeline_entry.pipeline_group_id.clone(),
@@ -1738,6 +2073,7 @@ impl<
                     pipeline_entry.policies.telemetry.clone(),
                     pipeline_entry.policies.rate_limiters.clone(),
                     pipeline_entry.policies.rate_limiter_scope.clone(),
+                    inherited_extensions.clone(),
                     controller_ctx.clone(),
                     metrics_reporter.clone(),
                     engine_evt_reporter.clone(),
@@ -1746,12 +2082,23 @@ impl<
                     memory_pressure_tx.clone(),
                     &engine_config,
                     runtime.declared_topics(),
-                    Arc::downgrade(&runtime),
+                    &runtime,
                     runtime.next_thread_id(),
                     None,
                 )?;
-                runtime.register_launched_instance(launched);
             }
+        }
+
+        // An extension scope failure can race with a pipeline launch that was already
+        // admitted. Repeat the idempotent shutdown request after bootstrap has
+        // finished its launch attempts.
+        if runtime.has_fatal_runtime_error()
+            && let Err(error) = control_plane.shutdown_all(10)
+        {
+            otel_warn!(
+                "controller.extension_scope_late_shutdown_failed",
+                error = format!("{error:?}")
+            );
         }
 
         drop(metrics_reporter);
@@ -1794,10 +2141,10 @@ impl<
                     );
                 }
                 let _ = runtime.wait_for_global_shutdown_completion();
-                if !runtime.all_instances_exited() {
+                if !runtime.all_producer_instances_exited() {
                     otel_warn!(
                         "controller.extension_startup_pipeline_shutdown_timeout",
-                        message = "Timed out waiting for pipelines and system observability to stop after controller extension startup failed"
+                        message = "Timed out waiting for producer pipelines to stop after controller extension startup failed"
                     );
                 }
                 return Err(err);
@@ -1864,34 +2211,39 @@ impl<
             if let Err(error) = control_plane.shutdown_all(10) {
                 return Err(Error::PipelineRuntimeError {
                     source: Box::new(std::io::Error::other(format!(
-                        "failed to stop system observability after producers exited: {error:?}"
+                        "failed to initiate global shutdown after producers exited: {error:?}"
                     ))),
                 });
             }
             let _ = runtime.wait_for_global_shutdown_completion();
-            runtime.wait_until_all_instances_exit();
+            runtime.wait_until_all_producer_instances_exit();
         }
 
         if run_mode == RunMode::ParkMainThread {
             let global_shutdown_requested = runtime.wait_for_global_shutdown_completion();
-            let all_instances_exited = if global_shutdown_requested {
-                runtime.all_instances_exited()
+            let all_producers_exited = if global_shutdown_requested {
+                runtime.all_producer_instances_exited()
             } else {
-                runtime.wait_until_all_instances_exit_for(Duration::from_secs(12))
+                runtime.wait_until_all_producer_instances_exit_for(Duration::from_secs(12))
             };
-            if !all_instances_exited {
+            if !all_producers_exited {
                 otel_warn!(
                     "controller.pipeline_shutdown_timeout",
-                    message = "Timed out waiting for pipelines and system observability to stop before telemetry collector shutdown"
+                    message = "Timed out waiting for producer pipelines to stop before extension scope shutdown"
                 );
             }
         }
 
-        // All telemetry producers and pipelines have finished; shut down the
-        // remaining support tasks and the metric aggregator gracefully.
+        // Pipeline instances stop before engine and pipeline-group scope hosts.
+        let extension_scope_error = extension_scope_supervisor.shutdown_after_descendants();
+
+        // A timed-out scope thread keeps its telemetry leases until all actual
+        // producers exit. Never cancel the collector underneath that deferred cleanup.
         admin_server_handle.shutdown_and_join()?;
-        metrics_agg_handle.shutdown_and_join()?;
-        obs_state_join_handle.shutdown_and_join()?;
+        let metrics_shutdown_error =
+            shutdown_telemetry_task("metrics-aggregator", metrics_agg_handle).err();
+        let state_shutdown_error =
+            shutdown_telemetry_task("observed-state-store", obs_state_join_handle).err();
         drop(telemetry_system);
         if let Some(listener) = shutdown_signal_listener {
             listener.shutdown_and_join()?;
@@ -1902,6 +2254,14 @@ impl<
         }
 
         if let Some(err) = runtime.take_runtime_error() {
+            return Err(err);
+        }
+
+        if let Some(err) = extension_scope_error {
+            return Err(err);
+        }
+
+        if let Some(err) = metrics_shutdown_error.or(state_shutdown_error) {
             return Err(err);
         }
 
@@ -2550,10 +2910,8 @@ impl<
 
     /// Launches one pipeline OS thread and wires its terminal exit back into the controller.
     ///
-    /// The spawned thread owns the actual pipeline execution and maps success, runtime error, or
-    /// panic into RuntimeInstanceExit. `runtime` is a Weak handle on purpose: the pipeline thread
-    /// should be able to report its exit, but it must not become an owner that prolongs the
-    /// controller runtime during shutdown.
+    /// Launch reservation closes the gap between admission and runtime-thread
+    /// registration so scope-host teardown cannot miss an in-flight launch.
     #[allow(clippy::too_many_arguments)]
     fn launch_pipeline_thread(
         pipeline_factory: &'static PipelineFactory<PData>,
@@ -2568,6 +2926,7 @@ impl<
         telemetry_policy: TelemetryPolicy,
         rate_limiter_policies: BTreeMap<String, RateLimiterPolicy>,
         rate_limiter_scope: Option<otel_arrow_dfe_config::policy::RateLimiterDeclarationScope>,
+        inherited_extensions: InheritedExtensionRegistrations,
         controller_ctx: ControllerContext,
         metrics_reporter: MetricsReporter,
         engine_evt_reporter: ObservedEventReporter,
@@ -2576,13 +2935,13 @@ impl<
         memory_pressure_tx: tokio::sync::watch::Sender<MemoryPressureChanged>,
         config: &OtelDataflowSpec,
         declared_topics: &DeclaredTopics<PData>,
-        runtime: std::sync::Weak<ControllerRuntime<PData>>,
+        runtime: &Arc<ControllerRuntime<PData>>,
         thread_id: usize,
         internal_telemetry: Option<(
             InternalTelemetrySettings,
             std_mpsc::SyncSender<Result<(), EngineError>>,
         )>,
-    ) -> Result<LaunchedPipelineThread<PData>, Error> {
+    ) -> Result<(), Error> {
         let mut pipeline_ctx = controller_ctx.pipeline_context_with_placement(
             pipeline_key.pipeline_group_id.clone(),
             pipeline_key.pipeline_id.clone(),
@@ -2618,7 +2977,9 @@ impl<
         let run_key = pipeline_key.clone();
         let runtime_key = pipeline_key.clone();
         let runtime_thread_name = thread_name.clone();
-        let _handle = thread::Builder::new()
+        runtime.reserve_instance_launch(&pipeline_key, context_bindings)?;
+        let runtime_weak = Arc::downgrade(runtime);
+        let spawn_result = thread::Builder::new()
             .name(thread_name.clone())
             .spawn(move || {
                 let exit = match catch_unwind(AssertUnwindSafe(|| {
@@ -2630,6 +2991,7 @@ impl<
                         telemetry_policy,
                         rate_limiter_policies,
                         rate_limiter_scope,
+                        inherited_extensions,
                         telemetry_reporting_interval,
                         pipeline_factory,
                         pipeline_ctx,
@@ -2658,29 +3020,28 @@ impl<
                         ),
                     )),
                 };
-                if let Some(runtime) = runtime.upgrade() {
+                if let Some(runtime) = runtime_weak.upgrade() {
                     runtime.note_instance_exit(runtime_key, exit);
                 }
                 // The controller runtime may already be gone during teardown. In that case there
                 // is nothing left to update, so late exit reporting is intentionally best-effort.
-            })
-            .map_err(|e| Error::ThreadSpawnError {
+            });
+        if let Err(source) = spawn_result {
+            runtime.abort_instance_launch(&pipeline_key);
+            return Err(Error::ThreadSpawnError {
                 thread_name: thread_name.clone(),
-                source: e,
-            })?;
+                source,
+            });
+        }
+        runtime.complete_instance_launch(pipeline_key, control_sender);
 
-        Ok(LaunchedPipelineThread {
-            pipeline_key,
-            control_sender,
-            context_bindings,
-            _marker: std::marker::PhantomData,
-        })
+        Ok(())
     }
 
     /// Spawns the engine's mandatory observability pipeline and waits for startup.
     #[allow(clippy::too_many_arguments)]
     fn spawn_observability_pipeline(
-        runtime: std::sync::Weak<ControllerRuntime<PData>>,
+        runtime: &Arc<ControllerRuntime<PData>>,
         observability_key: DeployedPipelineKey,
         observability_core: CoreId,
         observability_pipeline: ResolvedPipelineConfig,
@@ -2695,7 +3056,7 @@ impl<
         memory_pressure_tx: &tokio::sync::watch::Sender<MemoryPressureChanged>,
         tracing_setup: TracingSetup,
         observability_numa_node_id: usize,
-    ) -> Result<LaunchedPipelineThread<PData>, Error> {
+    ) -> Result<(), Error> {
         debug_assert_eq!(
             observability_pipeline.role,
             ResolvedPipelineRole::ObservabilityInternal
@@ -2708,7 +3069,7 @@ impl<
 
         // Create a channel to signal startup success/failure
         let (startup_tx, startup_rx) = std_mpsc::sync_channel::<Result<(), EngineError>>(1);
-        let launched = Self::launch_pipeline_thread(
+        Self::launch_pipeline_thread(
             pipeline_factory,
             observability_key,
             observability_core,
@@ -2721,6 +3082,7 @@ impl<
             telemetry_policy,
             BTreeMap::new(),
             None,
+            InheritedExtensionRegistrations::default(),
             controller_ctx.clone(),
             metrics_reporter.clone(),
             engine_evt_reporter.clone(),
@@ -2728,10 +3090,7 @@ impl<
             telemetry_reporting_interval,
             memory_pressure_tx.clone(),
             config,
-            runtime
-                .upgrade()
-                .expect("controller runtime should exist while spawning observability pipeline")
-                .declared_topics(),
+            runtime.declared_topics(),
             runtime,
             0,
             Some((internal_telemetry_settings, startup_tx)),
@@ -2759,7 +3118,7 @@ impl<
             }
         }
 
-        Ok(launched)
+        Ok(())
     }
 
     /// Runs a single pipeline in the current thread.
@@ -2771,6 +3130,7 @@ impl<
         telemetry_policy: TelemetryPolicy,
         rate_limiter_policies: BTreeMap<String, RateLimiterPolicy>,
         rate_limiter_scope: Option<otel_arrow_dfe_config::policy::RateLimiterDeclarationScope>,
+        inherited_extensions: InheritedExtensionRegistrations,
         telemetry_reporting_interval: Duration,
         pipeline_factory: &'static PipelineFactory<PData>,
         pipeline_context: PipelineContext,
@@ -2823,7 +3183,7 @@ impl<
                 .map(|(settings, _)| settings)
                 .cloned();
             let runtime_pipeline = pipeline_factory
-                .build(
+                .build_with_inherited_extensions(
                     pipeline_context.clone(),
                     pipeline_config.clone(),
                     channel_capacity_policy,
@@ -2831,6 +3191,7 @@ impl<
                     rate_limiter_policies,
                     rate_limiter_scope,
                     internal_telemetry_settings,
+                    inherited_extensions,
                 )
                 .map_err(|e| {
                     if let Some((_, startup_tx)) = internal_telemetry.as_ref() {

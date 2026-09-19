@@ -81,11 +81,13 @@ Every runtime file is a single root document that describes the engine process:
 version: otel_dataflow/v1
 policies: {}
 topics: {}
+extensions: {}
 engine: {}
 groups:
     default:
         topics: {}
         policies: {}
+        extensions: {}
         pipelines:
             main:
                 type: otap
@@ -105,6 +107,7 @@ Optional root fields:
 
 - `policies`: top-level policy defaults.
 - `topics`: global topic declarations.
+- `extensions`: engine-scoped capability providers shared by regular pipelines.
 - `engine`: engine-wide settings.
 
 Most simple configurations only need `version` and `groups`.
@@ -182,7 +185,7 @@ Common node fields:
   processors.
 - `default_output`: optional default output port used by nodes that emit without
   selecting a port.
-- `capabilities`: optional bindings from capability name to pipeline extension.
+- `capabilities`: optional bindings from capability name to a visible extension.
 - `entity`: optional node entity enrichment metadata.
 - `header_capture`: receiver-only transport header capture override.
 - `header_propagation`: exporter-only transport header propagation override.
@@ -208,6 +211,7 @@ groups:
     ingest:
         policies: {}
         topics: {}
+        extensions: {}
         pipelines:
             traces:
                 nodes: {}
@@ -218,9 +222,53 @@ A pipeline is an executable graph:
 
 - `type`: pipeline data type. Defaults to `otap`.
 - `nodes`: receivers, processors, and exporters in the data path.
-- `extensions`: long-lived components available to nodes through capabilities.
+- `extensions`: pipeline-scoped components available through capabilities.
 - `connections`: explicit graph wiring.
 - `policies`: optional pipeline-level policy overrides.
+
+Extensions can also be declared at root or group scope. Declaration scope
+determines sharing:
+
+- root `extensions`: one engine-scoped host shared by all regular pipelines;
+- `groups.<group>.extensions`: one host shared by regular pipelines in that
+  group;
+- pipeline `extensions`: one independent instance per runtime pipeline core.
+
+A node resolves extension ids lexically: pipeline, then group, then engine.
+Declaring the same extension id at a nearer scope shadows the entire broader
+scope declaration. Sibling groups are isolated. Engine- and group-scoped providers
+must support the shared execution model; local-only providers remain
+pipeline-scoped. The internal observability pipeline does not inherit
+user-declared engine or group extensions.
+
+```yaml
+version: otel_dataflow/v1
+
+extensions:
+    shared_auth:
+        type: extension:oauth2_client_auth
+        config: {}
+
+groups:
+    ingest:
+        extensions:
+            tenant_auth:
+                type: extension:oauth2_client_auth
+                config: {}
+        pipelines:
+            traces:
+                nodes:
+                    receiver:
+                        type: receiver:otlp
+                        capabilities:
+                            bearer_token_provider: tenant_auth
+                        config: {}
+                    exporter:
+                        type: exporter:noop
+                connections:
+                    - from: receiver
+                      to: exporter
+```
 
 An `otap` pipeline is multi-signal by default. Logs, metrics, and traces can
 move through the same pipeline graph, unlike the Collector model where

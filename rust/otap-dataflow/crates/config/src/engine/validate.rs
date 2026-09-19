@@ -156,7 +156,9 @@ impl OtelDataflowSpec {
                 });
                 continue;
             }
-            if let Err(e) = pipeline_group.validate(pipeline_group_id) {
+            if let Err(e) =
+                pipeline_group.validate_with_engine_extensions(pipeline_group_id, &self.extensions)
+            {
                 errors.push(e);
             }
             if pipeline_group

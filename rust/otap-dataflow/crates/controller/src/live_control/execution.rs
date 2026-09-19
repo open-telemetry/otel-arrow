@@ -326,6 +326,7 @@ impl<
             );
             let deployed_key = match self.launch_regular_pipeline_instance(
                 &plan.resolved_pipeline,
+                &plan.target_inherited_extensions,
                 Arc::clone(&plan.context_bindings),
                 &plan.target_placement,
                 *core_id,
@@ -395,6 +396,7 @@ impl<
 
             let new_key = match self.launch_regular_pipeline_instance(
                 &plan.resolved_pipeline,
+                &plan.target_inherited_extensions,
                 Arc::clone(&plan.context_bindings),
                 &plan.target_placement,
                 *core_id,
@@ -514,6 +516,7 @@ impl<
 
             let new_key = match self.launch_regular_pipeline_instance(
                 &plan.resolved_pipeline,
+                &plan.target_inherited_extensions,
                 Arc::clone(&plan.context_bindings),
                 &plan.target_placement,
                 *core_id,
@@ -576,6 +579,7 @@ impl<
 
             let new_key = match self.launch_regular_pipeline_instance(
                 &plan.resolved_pipeline,
+                &plan.target_inherited_extensions,
                 Arc::clone(&plan.context_bindings),
                 &plan.target_placement,
                 *core_id,
@@ -761,6 +765,7 @@ impl<
             let old_key = self
                 .launch_regular_pipeline_instance(
                     &previous.resolved,
+                    &previous.inherited_extensions,
                     Arc::clone(&previous.context_bindings),
                     current_placement,
                     *core_id,
@@ -897,6 +902,7 @@ impl<
             let old_key = self
                 .launch_regular_pipeline_instance(
                     &previous.resolved,
+                    &previous.inherited_extensions,
                     Arc::clone(&previous.context_bindings),
                     current_placement,
                     *core_id,
@@ -946,6 +952,7 @@ impl<
             let old_key = self
                 .launch_regular_pipeline_instance(
                     &previous.resolved,
+                    &previous.inherited_extensions,
                     Arc::clone(&previous.context_bindings),
                     current_placement,
                     *core_id,

@@ -22,8 +22,9 @@
 
 use crate::{CONTROLLER_EXTENSION_FACTORIES, ControllerExtensionRegistry};
 use otel_arrow_dfe_config::engine::{HttpAdminSettings, OtelDataflowSpec};
+use otel_arrow_dfe_config::extension::ExtensionDeclarationScope;
 use otel_arrow_dfe_config::node::NodeKind;
-use otel_arrow_dfe_config::pipeline::PipelineConfig;
+use otel_arrow_dfe_config::pipeline::{PipelineConfig, PipelineExtensions};
 use otel_arrow_dfe_config::policy::{CoreAllocation, ResolvedPolicies, ResourcesPolicy};
 use otel_arrow_dfe_config::{PipelineGroupId, PipelineId};
 use otel_arrow_dfe_engine::PipelineFactory;
@@ -228,6 +229,41 @@ fn validate_rate_limiter_bindings(
     Ok(())
 }
 
+fn validate_extension_scope_declarations<PData: 'static + Clone + Debug>(
+    declaration_scope: &ExtensionDeclarationScope,
+    extensions: &PipelineExtensions,
+    factory: &PipelineFactory<PData>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    for (extension_id, extension) in extensions.iter() {
+        let urn = extension.r#type.as_str();
+        let Some(extension_factory) = factory.get_extension_factory_map().get(urn) else {
+            return Err(std::io::Error::other(format!(
+                "Unknown extension component `{urn}` at {declaration_scope} extension={}",
+                extension_id.as_ref()
+            ))
+            .into());
+        };
+        if extension_factory
+            .capabilities
+            .as_ref()
+            .is_some_and(|capabilities| capabilities.shared.is_empty())
+        {
+            return Err(std::io::Error::other(format!(
+                "Extension `{}` cannot be declared at {declaration_scope} because it does not provide a shared variant",
+                extension_id.as_ref()
+            ))
+            .into());
+        }
+        (extension_factory.validate_config)(&extension.config).map_err(|error| {
+            std::io::Error::other(format!(
+                "Invalid config for extension `{urn}` at {declaration_scope} extension={}: {error}",
+                extension_id.as_ref()
+            ))
+        })?;
+    }
+    Ok(())
+}
+
 /// Validates that every node in every pipeline (including the engine
 /// observability pipeline) references a component URN registered in the
 /// given [`PipelineFactory`].
@@ -239,6 +275,19 @@ pub fn validate_engine_components<PData: 'static + Clone + Debug>(
     engine_cfg: &OtelDataflowSpec,
     factory: &PipelineFactory<PData>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    validate_extension_scope_declarations(
+        &ExtensionDeclarationScope::Engine,
+        &engine_cfg.extensions,
+        factory,
+    )?;
+    for (pipeline_group_id, group) in &engine_cfg.groups {
+        validate_extension_scope_declarations(
+            &ExtensionDeclarationScope::PipelineGroup(pipeline_group_id.clone()),
+            &group.extensions,
+            factory,
+        )?;
+    }
+
     for resolved in engine_cfg.resolve().pipelines {
         validate_pipeline_components(
             &resolved.pipeline_group_id,

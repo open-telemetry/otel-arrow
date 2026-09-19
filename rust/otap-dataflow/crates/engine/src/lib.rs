@@ -798,6 +798,34 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
     /// from the Internal Telemetry System.
     pub fn build(
         self: &PipelineFactory<PData>,
+        pipeline_ctx: PipelineContext,
+        config: PipelineConfig,
+        channel_capacity_policy: ChannelCapacityPolicy,
+        telemetry_policy: TelemetryPolicy,
+        rate_limiter_policies: BTreeMap<String, RateLimiterPolicy>,
+        rate_limiter_scope: Option<RateLimiterDeclarationScope>,
+        internal_telemetry: Option<InternalTelemetrySettings>,
+    ) -> Result<RuntimePipeline<PData>, Error>
+    where
+        PData: Unwindable,
+    {
+        self.build_with_inherited_extensions(
+            pipeline_ctx,
+            config,
+            channel_capacity_policy,
+            telemetry_policy,
+            rate_limiter_policies,
+            rate_limiter_scope,
+            internal_telemetry,
+            extension::scope::InheritedExtensionRegistrations::default(),
+        )
+    }
+
+    /// Builds a runtime pipeline with shared capability providers inherited
+    /// from engine and pipeline-group extension scopes.
+    #[allow(clippy::too_many_arguments)]
+    pub fn build_with_inherited_extensions(
+        self: &PipelineFactory<PData>,
         mut pipeline_ctx: PipelineContext,
         mut config: PipelineConfig,
         channel_capacity_policy: ChannelCapacityPolicy,
@@ -805,6 +833,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         rate_limiter_policies: BTreeMap<String, RateLimiterPolicy>,
         rate_limiter_scope: Option<RateLimiterDeclarationScope>,
         internal_telemetry: Option<InternalTelemetrySettings>,
+        mut inherited_extensions: extension::scope::InheritedExtensionRegistrations,
     ) -> Result<RuntimePipeline<PData>, Error>
     where
         PData: Unwindable,
@@ -908,9 +937,12 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         // bodies run inside this same `build` call, so extension `start()`
         // side effects (which happen later, in `run_forever`) cannot be
         // observed by capability construction.
-        let known_extensions: HashSet<otel_arrow_dfe_config::ExtensionId> =
+        inherited_extensions.remove_shadowed_by(config.extensions());
+        let mut known_extensions: HashSet<otel_arrow_dfe_config::ExtensionId> =
             config.extensions().keys().cloned().collect();
+        inherited_extensions.extend_known_extensions(&mut known_extensions);
         let mut capability_registry = capability::registry::CapabilityRegistry::new();
+        inherited_extensions.register_into(&mut capability_registry)?;
         // Each entry tracks (extension id, bundle, is_background). The
         // `is_background` flag is captured here while we still have the
         // factory in hand -- Background extensions register zero
