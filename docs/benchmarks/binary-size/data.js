@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789773181316,
+  "lastUpdate": 1789777623868,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -40823,6 +40823,148 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/open-telemetry/otel-arrow/commit/5588c3e0d590d4df0303697a6862c8324235a310"
         },
         "date": 1789773167236,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 84.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.97,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.71,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.97,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.68,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 71.54,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.86,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.54,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.44,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.16,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 116.51,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 103.79,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Tina Tan",
+            "username": "athomas9195",
+            "email": "43687093+athomas9195@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "5588c3e0d590d4df0303697a6862c8324235a310",
+          "message": "chore(scraper): add shared database receiver contracts and validation [1/4] (#4093)\n\n## Summary\n\nAdds the shared `otel-arrow-dfe-scraper` crate and database-neutral\ncontracts for query-polling receivers.\n\nThe crate defines common polling limits, composite-watermark and\ncheckpoint policies, validated query plans, bounded page contracts,\nnormalized database values, and the `DriverAdapter`/`DriverCancellation`\ninterfaces. Vendor-specific receivers own connection settings, driver\ndependencies, SQL dialect validation, native execution, and node\nregistration.\n\nThis is **part 1 of 4** of the split from\nopen-telemetry/otel-arrow#3969, following the shared-crate boundary\nproposed in open-telemetry/otel-arrow#3918. It is not the complete\ndatabase-receiver RFC.\nThis PR does **not** add a polling controller, checkpoint-store\nimplementation, OTLP encoder, Oracle driver, or runnable database\nreceiver.\n\n## Stack / delivery sequence\n\nThe intended dependency and upstream landing order is:\n\n| Part | Scope | PR Link |\n| --- | --- | --- |\n| 1/4 | Shared crate skeleton and database-neutral contracts | This PR |\n| 2/4 | Checkpointing and source ownership | pending |\n| 3/4 | Shared polling, mapping, and delivery | pending |\n| 4/4 | Oracle adapter and receiver registration | pending |\n\n## Included\n\n- Shared scraper crate, workspace dependency/lockfile wiring, and\npublication allowlist registration.\n- Validated polling interval, native-call timeout, row/fetch limits, and\nindependent normalized/encoded byte-limit configuration.\n- Composite timestamp plus signed `int64` tie-breaker cursor\nconfiguration, distinct named binds, and UTC configuration semantics.\n- Checkpoint/replay policy types accepting `on_nack: rewind`; no\nfilesystem checkpoint store or source lease is introduced in this PR.\n- `CompiledQuery` validation and immutable query-plan accessors. The\nshared SQL filter is deliberately conservative, not a complete read-only\nSQL validator.\n- Local `?Send` adapter/cancellation interfaces, metadata inspection,\nbounded page execution, cleanup, and error-classification contracts.\n- `CellValue`, `Row`, `ColumnMetadata`, `CompositeCursor`, `CursorRow`,\nand `QueryPage`, with structural/retained-capacity accounting helpers.\n- Contract regression coverage without requiring a database or native\nclient.\n- Shared README covering common configuration and the broader\npolling-layer behavior\n\nThe shared crate contains no vendor driver. \n\n## Follow-up work\n\n- Concrete durable checkpoint storage and source ownership in part 2.\n- Poll scheduling, OTLP encoding, backpressure, ACK/NACK handling,\nlifecycle, checkpoint integration, and runtime telemetry in part 3.\n- Oracle configuration, native-driver integration, factory registration,\nexamples, and user-facing changelog in part 4.\n- Additional PostgreSQL, MySQL, and SQL Server receivers.\n- Multiple named queries, scalar/snapshot modes, richer output mapping,\nprocess memory-pressure admission, shared database authentication, and\nexplicit vendor TLS configuration.\n- Whole-poll and normal-operation ACK deadlines, immediate backlog\ncatch-up, broader adapter conformance, and live end-to-end\nqualification.\n\nItems from the full RFC are not claimed complete merely because their\npolicy types exist here.\n\n## Delivery behavior\n\nThis PR defines contracts; it does not collect, deliver, or persist\nrecords.\n\nThe later runtime is intended to provide conditional at-least-once\ndelivery: progress advances only after matching downstream\nacknowledgement and a successful durable checkpoint write. Replays can\noccur; exactly-once delivery is not claimed.\n\nThat behavior requires commit-visible cursor ordering, stable cursor/roq\nvalues, adequate source retention, and an appropriate downstream\nacknowledgement boundary. Increasing IDs or append-only rows alone do\nnot establish those conditions.\n\nThe common configuration accepts only `watermark.mode: composite` and\n`checkpoint.on_nack: rewind`. Unsupported modes and unknown\nconfiguration fields are rejected.\n\n## Configuration\n\nSee `rust/otap-dataflow/crates/scraper/README.md` for common contract\nfields, validation rules, and the ownership boundary between shared and\nvendor code.\n\nFor example, a shared `PollingConfig` value is:\n\n```yaml\ninterval: 5m\ntimeout: 2m\nmax_rows_per_poll: 10000\nfetch_size: 1000\nmax_batch_bytes: 10485760\n```\n\nAll fields above are required by the shared type. Byte limits are\ninteger bytes; a vendor configuration may provide its own defaults or\nconvenience units.\nThis is **not** a complete native receiver configuration.\n\nThe concrete Oracle/PostgreSQL receiver README should own the actual\nreceiver URN, connection/authentication settings, native dependencies,\naccepted SQL, and complete runnable pipeline examples. No Oracle\nconfiguration example or\n`urn:otel:receiver:oracle` registration is included in this PR.\n\n## Validation\n\n- 9 scraper unit tests and 1 compile-fail documentation test pass. Both\nnew\n  regressions demonstrated the original defects before the fixes.\n- Locked crate compilation, all-targets Clippy, and formatting pass.\n- First-party Markdown lint, repository sanity, and all 16 sanity-check\nunit tests pass. The separately initialized, unchanged\n`proto/opentelemetry-proto` submodule was excluded from the local\nMarkdown sweep to match the CI checkout scope.\n- Workspace structure checking and `cargo xtask crates-publish plan`\npass; the plan includes `otel-arrow-dfe-scraper`. No package\nverification or publication is claimed.\n- Full local `cargo xtask check` stops in the existing Windows\n`rdkafka-sys` build because external `cp` is unavailable; full workspace\ntests were not reached.\n\n## Related issue\n\n- [RFC: Shared runtime and vendor-specific database polling\nreceivers](https://github.com/open-telemetry/otel-arrow/issues/3918)\n- [Original foundation and Oracle receiver\nimplementation](https://github.com/open-telemetry/otel-arrow/pull/3969)\n\n---------\n\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>\nCo-authored-by: Drew Relmas <drewrelmas@gmail.com>",
+          "timestamp": "2026-09-18T22:26:30Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/5588c3e0d590d4df0303697a6862c8324235a310"
+        },
+        "date": 1789777608227,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
