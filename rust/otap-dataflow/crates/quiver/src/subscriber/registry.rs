@@ -114,6 +114,13 @@ pub trait SegmentProvider: Send + Sync {
 
     /// Lists all available segment sequences.
     fn available_segments(&self) -> Vec<SegmentSeq>;
+
+    /// Runs a synchronous operation with the latest available sequence while
+    /// excluding segment registration and removal.
+    ///
+    /// The operation must not call back into the provider. This allows reset
+    /// activation to install its baseline atomically with segment registration.
+    fn with_latest_segment<T>(&self, operation: impl FnOnce(Option<SegmentSeq>) -> T) -> T;
 }
 
 // -----------------------------------------------------------------------------
@@ -402,8 +409,11 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
                 None
             } else {
                 let completed_through =
-                    self.segment_provider.available_segments().into_iter().max();
-                state.begin_reset_activation(completed_through);
+                    self.segment_provider
+                        .with_latest_segment(|completed_through| {
+                            state.begin_reset_activation(completed_through);
+                            completed_through
+                        });
                 Some(completed_through)
             }
         };
@@ -1375,6 +1385,11 @@ mod tests {
         fn available_segments(&self) -> Vec<SegmentSeq> {
             self.segments.lock().unwrap().keys().copied().collect()
         }
+
+        fn with_latest_segment<T>(&self, operation: impl FnOnce(Option<SegmentSeq>) -> T) -> T {
+            let segments = self.segments.lock().unwrap();
+            operation(segments.keys().next_back().copied())
+        }
     }
 
     fn setup_registry() -> (
@@ -1700,6 +1715,64 @@ mod tests {
             read_progress_file_state(&progress_file_path(dir.path(), &id)).expect("checkpoint");
         assert!(!progress.reset_pending_activation());
         assert_eq!(progress.completed_through(), Some(SegmentSeq::new(2)));
+    }
+
+    /// Scenario: Segment callbacks straddle reset activation and its pending checkpoint write.
+    /// Guarantees: The atomic baseline skips earlier registrations and retains later ones across restart.
+    #[test]
+    fn reset_activation_classifies_segments_around_baseline() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .max_blocking_threads(1)
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let dir = tempdir().unwrap();
+            let config = RegistryConfig::new(dir.path());
+            let provider = Arc::new(MockSegmentProvider::new());
+            let id = SubscriberId::new("reset-boundary").unwrap();
+            let path = progress_file_path(dir.path(), &id);
+            std::fs::write(&path, b"corrupt").unwrap();
+            let registry = SubscriberRegistry::open(config.clone(), provider.clone()).unwrap();
+
+            provider.add_segment(1, 1);
+            // Occupy the only filesystem worker to deterministically pause the
+            // checkpoint write after baseline installation.
+            let (release, wait) = std::sync::mpsc::channel();
+            let worker = tokio::task::spawn_blocking(move || wait.recv());
+            let mut activation = Box::pin(registry.activate_async(&id));
+            {
+                let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+                assert!(activation.as_mut().poll(&mut context).is_pending());
+            }
+            assert!(!registry.is_active(&id));
+
+            // The earlier registration's callback was delayed until after the snapshot.
+            registry.on_segment_finalized(SegmentSeq::new(1), 1);
+            provider.add_segment(2, 1);
+            registry.on_segment_finalized(SegmentSeq::new(2), 1);
+            let tracked = registry.pending_segment_progress(&id).unwrap();
+            assert!(!tracked.contains_key(&SegmentSeq::new(1)));
+            assert!(tracked.contains_key(&SegmentSeq::new(2)));
+
+            release.send(()).unwrap();
+            worker.await.unwrap().unwrap();
+            activation.await.unwrap();
+            let progress = read_progress_file_state(&path).unwrap();
+            assert_eq!(progress.completed_through(), Some(SegmentSeq::new(1)));
+            let handle = registry.poll_next_bundle(&id).unwrap().unwrap();
+            assert_eq!(handle.bundle_ref().segment_seq, SegmentSeq::new(2));
+            let _ = handle.defer();
+            drop(registry);
+
+            // No ordinary progress flush: recovery must discover the post-baseline segment.
+            let registry = SubscriberRegistry::open(config, provider).unwrap();
+            registry.activate_async(&id).await.unwrap();
+            let handle = registry.poll_next_bundle(&id).unwrap().unwrap();
+            assert_eq!(handle.bundle_ref().segment_seq, SegmentSeq::new(2));
+            handle.ack();
+            assert!(registry.poll_next_bundle(&id).unwrap().is_none());
+        });
     }
 
     /// Scenario: A progress file carries a future format version with otherwise readable bytes.

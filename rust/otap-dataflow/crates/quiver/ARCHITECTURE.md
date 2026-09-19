@@ -329,7 +329,9 @@ Field descriptions:
   clean up completed segments.
 - **Compact representation**: Completed entries can be removed after their
   durable watermark has been flushed and the corresponding segment cleanup has
-  completed.
+  completed. Out-of-order retention keeps explicit completed entries while
+  physical deletion is deferred; successful retries release that tracking.
+  Abandoning a deletion does not prove that the file is gone.
 
 ##### Recovery Semantics
 
@@ -342,9 +344,11 @@ Field descriptions:
 - **Corrupt progress**: If magic, structure, or checksum validation fails,
   Quiver atomically replaces the file with a version 1 pending-reset
   checkpoint. The reset remains durable across restarts. When that subscriber
-  next activates, Quiver durably advances its baseline past every segment
-  currently present before enabling delivery, so it receives only segments
-  finalized after activation.
+  next activates, Quiver installs its baseline under the segment-store read
+  lock, atomically with respect to registration. This snapshot is the activation
+  boundary: earlier registrations are skipped, including delayed callbacks.
+  Later registrations are retained while the baseline is written durably, but
+  delivery is enabled only after that write succeeds.
 - **Unsupported progress versions**: Startup fails and leaves the file
   untouched so a compatible binary can read it.
 - **Progress I/O failures**: Startup fails because Quiver cannot determine the

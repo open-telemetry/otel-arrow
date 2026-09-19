@@ -1626,6 +1626,7 @@ impl QuiverEngine {
         let mut bytes_dropped = Some(0u64);
         let mut reclaimed_segments = 0u64;
         let mut reclaimed_bytes = 0u64;
+        let mut removed = Vec::new();
         for seq in &to_drop {
             let unresolved = unresolved_by_segment
                 .get(seq)
@@ -1692,6 +1693,7 @@ impl QuiverEngine {
             if let Some(file_size) = deletion {
                 reclaimed_segments += 1;
                 reclaimed_bytes = reclaimed_bytes.saturating_add(file_size);
+                removed.push(*seq);
             } else {
                 let _ = self
                     .pending_reclaimed
@@ -1705,6 +1707,9 @@ impl QuiverEngine {
             );
             deleted += 1;
         }
+
+        // Deferred files can reappear after restart, so keep their completed entries.
+        self.registry.cleanup_segments(&removed);
 
         // Update the force-dropped counters
         let _ = self
@@ -1724,9 +1729,6 @@ impl QuiverEngine {
         let _ = self
             .force_reclaimed_bytes
             .fetch_add(reclaimed_bytes, Ordering::Relaxed);
-
-        // Clean up registry internal state
-        self.registry.cleanup_segments(&to_drop);
 
         deleted
     }
@@ -1768,6 +1770,7 @@ impl QuiverEngine {
         let mut bytes_expired = Some(0u64);
         let mut reclaimed_segments = 0u64;
         let mut reclaimed_bytes: u64 = 0;
+        let mut removed = Vec::new();
         for seq in &expired_segments {
             let unresolved = unresolved_by_segment
                 .as_ref()
@@ -1854,6 +1857,7 @@ impl QuiverEngine {
             if let Some(file_size) = deletion {
                 reclaimed_segments += 1;
                 reclaimed_bytes = reclaimed_bytes.saturating_add(file_size);
+                removed.push(*seq);
             } else {
                 let _ = self
                     .pending_reclaimed
@@ -1869,9 +1873,7 @@ impl QuiverEngine {
             deleted += 1;
         }
 
-        // Clean up registry internal state for deleted segments without
-        // advancing progress across sequences that were not expired.
-        self.registry.cleanup_segments(&expired_segments);
+        self.registry.cleanup_segments(&removed);
 
         // Track expired segments, bundles, and items in the dedicated counters.
         let _ = self
@@ -1930,6 +1932,12 @@ impl QuiverEngine {
         let pending_results = self.segment_store.retry_pending_deletes_with_results();
         let pending_deletes_cleared = pending_results.cleared();
         if pending_deletes_cleared > 0 {
+            let removed: Vec<_> = pending_results
+                .removed
+                .iter()
+                .map(|(seq, _)| *seq)
+                .collect();
+            self.registry.cleanup_segments(&removed);
             let mut pending_reclaimed = self.pending_reclaimed.lock();
             for (seq, bytes) in pending_results.removed {
                 match pending_reclaimed.remove(&seq) {
@@ -4033,6 +4041,106 @@ mod tests {
 
         // Clean up
         handle.ack();
+    }
+
+    async fn check_deferred_retention_progress(expire: bool, restart: bool) {
+        use crate::segment_store::SegmentReadMode;
+
+        let dir = tempdir().unwrap();
+        let config = QuiverConfig::builder()
+            .data_dir(dir.path())
+            .durability(DurabilityMode::SegmentOnly)
+            .read_mode(SegmentReadMode::Standard)
+            .retention(RetentionConfig {
+                max_age: Some(Duration::from_secs(3600)),
+            })
+            .build()
+            .unwrap();
+        let engine = QuiverEngine::open(config.clone(), test_budget())
+            .await
+            .unwrap();
+        let id = SubscriberId::new("deferred-retention").unwrap();
+        engine.register_subscriber(id.clone()).unwrap();
+        engine.activate_subscriber(&id).await.unwrap();
+        for _ in 0..2 {
+            engine.ingest(&DummyBundle::with_rows(1)).await.unwrap();
+            engine.flush().await.unwrap();
+        }
+        let sequences = engine.segment_store().segment_sequences();
+        assert_eq!(sequences.len(), 2);
+        let retained = sequences[0];
+        let dropped = sequences[1];
+        let reader = engine.poll_next_bundle(&id).unwrap().unwrap();
+        assert_eq!(reader.bundle_ref().segment_seq, retained);
+
+        // A directory at the file path makes deletion fail even when tests run as root.
+        let path = engine.segment_path(dropped);
+        let backup = path.with_extension("held");
+        fs::rename(&path, &backup).unwrap();
+        fs::create_dir(&path).unwrap();
+        if expire {
+            engine
+                .segment_store()
+                .backdate_segment(dropped, Duration::from_secs(7200));
+            assert_eq!(engine.cleanup_expired_segments().unwrap(), 1);
+        } else {
+            assert_eq!(engine.force_drop_oldest_pending_segments(), 1);
+        }
+        let _ = reader.defer();
+        assert_eq!(engine.segment_store().pending_delete_count(), 1);
+        let tracked = engine.registry().pending_segment_progress(&id).unwrap();
+        assert!(!tracked[&retained].is_complete());
+        assert!(tracked[&dropped].is_complete());
+        assert_eq!(engine.flush_progress().await.unwrap(), 1);
+
+        fs::remove_dir(&path).unwrap();
+        fs::rename(&backup, &path).unwrap();
+        if restart {
+            drop(engine);
+            let engine = QuiverEngine::open(config, test_budget()).await.unwrap();
+            engine.activate_subscriber(&id).await.unwrap();
+            let reader = engine.poll_next_bundle(&id).unwrap().unwrap();
+            assert_eq!(reader.bundle_ref().segment_seq, retained);
+            reader.ack();
+            assert!(
+                engine.poll_next_bundle(&id).unwrap().is_none(),
+                "a force-completed file that survived deletion must not be redelivered"
+            );
+        } else {
+            let stats = engine.maintain().await.unwrap();
+            assert_eq!(stats.pending_deletes_cleared, 1);
+            assert!(!path.exists());
+            let tracked = engine.registry().pending_segment_progress(&id).unwrap();
+            assert!(tracked.contains_key(&retained));
+            assert!(!tracked.contains_key(&dropped));
+            assert!(engine.pending_reclaimed.lock().is_empty());
+            let loss = engine.retention_loss_snapshot();
+            let loss = if expire {
+                loss.expired
+            } else {
+                loss.drop_oldest
+            };
+            assert_eq!(loss.segments, 1);
+            assert!(loss.reclaimed_bytes > 0);
+        }
+    }
+
+    /// Scenario: Out-of-order DropOldest and expiration deletions fail before a progress flush and restart.
+    /// Guarantees: Persisted completion prevents surviving files from replaying while lower pending data remains deliverable.
+    #[tokio::test]
+    async fn deferred_retention_progress_survives_restart() {
+        for expire in [false, true] {
+            check_deferred_retention_progress(expire, true).await;
+        }
+    }
+
+    /// Scenario: Deferred DropOldest and expiration deletions succeed during a later maintenance pass.
+    /// Guarantees: Completed tracking is released only after deletion succeeds, without losing lower pending progress or reclamation accounting.
+    #[tokio::test]
+    async fn deferred_retention_progress_is_cleaned_after_retry() {
+        for expire in [false, true] {
+            check_deferred_retention_progress(expire, false).await;
+        }
     }
 
     /// Test that existing segments from a previous engine run are loaded on startup.
