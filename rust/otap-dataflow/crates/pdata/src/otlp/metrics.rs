@@ -538,6 +538,7 @@ impl MetricsProtoBytesEncoder {
         let resource_id = metrics_data_arrays
             .resource_arrays
             .id
+            .as_ref()
             .and_then(|arr| arr.value_at(index));
         loop {
             result_buf.encode_len_delimited(RESOURCE_METRICS_SCOPE_METRICS, |result_buf| {
@@ -556,6 +557,7 @@ impl MetricsProtoBytesEncoder {
             let next_resource_id = metrics_data_arrays
                 .resource_arrays
                 .id
+                .as_ref()
                 .and_then(|arr| arr.value_at(next_index));
             if resource_id != next_resource_id {
                 break;
@@ -597,6 +599,7 @@ impl MetricsProtoBytesEncoder {
         let scope_id = metrics_data_arrays
             .scope_arrays
             .id
+            .as_ref()
             .and_then(|arr| arr.value_at(index));
 
         loop {
@@ -616,6 +619,7 @@ impl MetricsProtoBytesEncoder {
             let next_scope_id = metrics_data_arrays
                 .scope_arrays
                 .id
+                .as_ref()
                 .and_then(|arr| arr.value_at(next_index));
             if scope_id != next_scope_id {
                 break;

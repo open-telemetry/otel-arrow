@@ -845,6 +845,16 @@ impl<'a> StructColumnAccessor<'a> {
             .transpose()
     }
 
+    pub(crate) fn maybe_dict_primitive_column_op<T: ArrowPrimitiveType + 'static>(
+        &self,
+        column_name: &str,
+    ) -> Result<Option<MaybeDictArrayAccessor<'a, PrimitiveArray<T>>>> {
+        self.inner
+            .column_by_name(column_name)
+            .map(MaybeDictArrayAccessor::<PrimitiveArray<T>>::try_new)
+            .transpose()
+    }
+
     pub(crate) fn bool_column_op(&self, column_name: &str) -> Result<Option<&'a BooleanArray>> {
         self.inner
             .column_by_name(column_name)

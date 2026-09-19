@@ -300,6 +300,7 @@ impl LogsProtoBytesEncoder {
         let resource_id = logs_data_arrays
             .resource_arrays
             .id
+            .as_ref()
             .and_then(|arr| arr.value_at(index));
 
         loop {
@@ -317,6 +318,7 @@ impl LogsProtoBytesEncoder {
             let next_resource_id = logs_data_arrays
                 .resource_arrays
                 .id
+                .as_ref()
                 .and_then(|arr| arr.value_at(next_index));
             if resource_id != next_resource_id {
                 break;
@@ -357,6 +359,7 @@ impl LogsProtoBytesEncoder {
         let scope_id = logs_data_arrays
             .scope_arrays
             .id
+            .as_ref()
             .and_then(|arr| arr.value_at(index));
 
         loop {
@@ -375,6 +378,7 @@ impl LogsProtoBytesEncoder {
             let next_scope_id = logs_data_arrays
                 .scope_arrays
                 .id
+                .as_ref()
                 .and_then(|arr| arr.value_at(next_index));
             if scope_id != next_scope_id {
                 break;
