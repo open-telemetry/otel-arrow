@@ -84,7 +84,12 @@ impl From<ContextEntryName> for String {
     }
 }
 
-/// An exact context entry name with an optional containing scope.
+/// The name of a context entry, one of two forms:
+///
+///  1. Single unqualified name like `X-Tenant-Id` which must resolve
+///     to a regular non-composite context entry.
+///  2. Qualified pair of names like `Customer:Workspace` which must
+///     resolve to a composite entry named field.
 #[derive(
     Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, PartialOrd, Ord, Hash,
 )]
