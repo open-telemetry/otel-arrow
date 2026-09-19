@@ -27,7 +27,7 @@ A concrete receiver supplies the adapter and registers the node.
 | Component | Responsibility |
 | --- | --- |
 | Database contracts | Configuration validation, query plans, adapter interfaces, row/cursor/page types, and size-accounting helpers |
-| Checkpointing | Durable file storage and exclusive ownership of a checkpoint identity |
+| Checkpointing | Atomic file storage with platform-dependent durability and exclusive ownership of a checkpoint identity |
 | Polling | Scheduling, OTLP mapping, backpressure, ACK/NACK handling, checkpoint integration, lifecycle, and telemetry |
 | Vendor receiver | Native driver, connection/authentication settings, SQL validation, type conversion, and node registration |
 
@@ -66,7 +66,7 @@ Existing Dataflow host
 | Cursor parameters | Logical bind names and a composite cursor | Binding through the driver's parameter API |
 | Row representation | Database-neutral values, metadata, and page contract | Native type inspection and precision-preserving conversion |
 | Timing and lifecycle | Common scheduling, control-message handling, and worker cleanup coordination | Native timeout, cancellation, and connection cleanup |
-| Progress | Common checkpoint policy, concrete durable file store, and source lease | Stable source identity and vendor-specific compatibility inputs |
+| Progress | Common checkpoint policy, concrete file store, and source lease | Stable source identity and vendor-specific compatibility inputs |
 | Authentication and TLS | No credential storage or connection implementation | Vendor/capability integration and driver configuration |
 | Deployment | No installer, image, or Helm resources | Host executable and deployment tooling |
 
@@ -355,7 +355,7 @@ Acquire source ownership and load committed position
 | Condition | Required runtime behavior |
 | --- | --- |
 | Downstream backpressure | Stop admitting more work rather than accumulating unbounded pages. |
-| Matching ACK | Advance progress only after the corresponding checkpoint is durably installed. |
+| Matching ACK | Advance progress only after checkpoint installation succeeds, subject to the filesystem guarantees below. |
 | NACK, failed delivery, or uncertain outcome | Do not skip unacknowledged source positions. Apply an explicit replay or failure policy. |
 | Crash after destination acceptance but before checkpoint commit | Allow replay; do not claim exactly-once delivery. |
 | Invalid or incompatible checkpoint | Fail explicitly rather than silently assume a fresh position. |
@@ -364,6 +364,18 @@ Acquire source ownership and load committed position
 The initial runtime keeps one page pending per source. Multiple
 in-flight batches would additionally require a contiguous acknowledgement
 frontier; a later ACK must never skip an earlier unresolved batch.
+
+### Filesystem Guarantees
+
+Checkpoint writes fsync the temporary file, atomically rename it into place,
+then fsync that file's parent directory on Unix (the same pattern as the
+journald receiver). mkdir of a new state tree is not fsynced. A power loss
+before those ancestor directory entries are durable can look like a first
+start and replay from the initial cursor. On Windows there is no portable
+directory-fsync step: atomic visibility after a process crash does not
+guarantee that a rename survives a machine crash or power loss. Source
+retention must cover that recovery window; power-loss behavior has not been
+experimentally qualified.
 
 ### Source Correctness and Ownership
 
@@ -385,6 +397,16 @@ pipeline group, pipeline, receiver name, and `source_id`. `SourceLease` prevents
 competing owners of that same storage identity using a process-local registry
 and an advisory filesystem lock. Cross-process exclusion requires access to
 the same lock on a filesystem that honors those locking semantics.
+
+On-disk lock, generation, and temporary-file names use the checkpoint filename,
+not its absolute mount path. Processes mounting the same backing directory at
+different paths therefore share the same storage lock and recovery namespace.
+The in-process registry still uses the canonical full path.
+
+This pre-release lock namespace differs from older path-derived builds. Stop all
+old writers before upgrading; mixed old/new writers do not coordinate, and
+generation continuity across those layouts is not guaranteed. Checkpoint
+revision filenames and their payload format are unchanged.
 
 For example, two one-core pipelines named `audit-a` and `audit-b` can query
 the same database rows with the same `source_id`. Their different pipeline

@@ -13,33 +13,10 @@ use std::sync::{LazyLock, Mutex};
 const RETAINED_LEASE_GENERATIONS: usize = 2;
 
 pub(crate) fn create_dir_all_durable(path: &Path) -> io::Result<()> {
-    create_dir_all_with_sync(path, |directory| {
-        #[cfg(unix)]
-        {
-            File::open(directory)?.sync_all()
-        }
-        #[cfg(not(unix))]
-        {
-            // No portable directory-fsync equivalent on Windows.
-            let _ = directory;
-            Ok(())
-        }
-    })
-}
-
-fn create_dir_all_with_sync(
-    path: &Path,
-    mut sync: impl FnMut(&Path) -> io::Result<()>,
-) -> io::Result<()> {
-    std::fs::create_dir_all(path)?;
-    // A previous failed attempt may have created some of the hierarchy.
-    // Sync existing ancestors too, so retry cannot mistake them for durable
-    // directory entries. Canonicalization handles relative paths and ".".
-    let directory = std::fs::canonicalize(path)?;
-    for ancestor in directory.ancestors() {
-        sync(ancestor)?;
-    }
-    Ok(())
+    // mkdir only, matching journald. This does not fsync directory entries.
+    // Durability of an installed file comes from file fsync plus fsync of
+    // that file's parent after rename, not from this helper.
+    std::fs::create_dir_all(path)
 }
 
 // Factory construction happens before pipeline cores are assigned, so this
@@ -53,15 +30,18 @@ static SOURCE_LEASES: LazyLock<Mutex<HashSet<String>>> =
 /// The process-local registry covers platforms where advisory file locks are
 /// process-scoped. The held file lock provides cross-process exclusion on
 /// filesystems that honor the operating system's advisory locking semantics.
-/// The durable generation advances on every successful acquisition.
+/// The generation advances on every successful acquisition in this lock
+/// namespace. Persistence has
+/// the platform-specific limits described by [`crate::CheckpointStore`].
 ///
 /// The key identifies checkpoint storage. Separate pipeline/receiver names or
 /// state directories may produce distinct keys for the same logical database
 /// source. This guard does not detect equivalent or overlapping queries.
 ///
-/// Dropping the guard releases ownership. The caller must retain it until all
-/// source and checkpoint operations have stopped; the guard cannot cancel or
-/// join outstanding workers. A timeout alone does not make releasing it safe.
+/// Dropping the guard unlocks and closes the lock file. The lock fd is opened
+/// close-on-exec so a later `Command::spawn` cannot keep the lease alive.
+/// The caller must retain the guard until source and checkpoint operations
+/// have stopped; the guard cannot cancel or join outstanding workers.
 #[derive(Debug)]
 pub struct SourceLease {
     key: String,
@@ -108,7 +88,9 @@ impl SourceLease {
 
 impl Drop for SourceLease {
     fn drop(&mut self) {
-        drop(self.file.take());
+        if let Some(file) = self.file.take() {
+            _ = FileExt::unlock(&file);
+        }
         if let Ok(mut leases) = SOURCE_LEASES.lock() {
             _ = leases.remove(&self.key);
         }
@@ -128,9 +110,8 @@ impl LeasePaths {
         let parent = source.parent().ok_or_else(|| LeaseError::InvalidPath {
             path: source.clone(),
         })?;
-        create_dir_all_durable(parent).map_err(|source| {
-            LeaseError::io("durably create parent directory for", parent, source)
-        })?;
+        create_dir_all_durable(parent)
+            .map_err(|source| LeaseError::io("create parent directory for", parent, source))?;
         let parent = std::fs::canonicalize(parent).map_err(|source| {
             LeaseError::io("canonicalize parent directory for", parent, source)
         })?;
@@ -138,7 +119,10 @@ impl LeasePaths {
             path: source.clone(),
         })?;
         let identity = normalized_identity(&parent.join(file_name));
-        let digest = blake3::hash(identity.as_bytes()).to_hex();
+        // The directory already namespaces the on-disk lock. Hash only the
+        // filename so different mounts of the same directory lock the same file.
+        let file_identity = normalized_identity(Path::new(file_name));
+        let digest = blake3::hash(file_identity.as_bytes()).to_hex();
         Ok(Self {
             registry_key: identity,
             lock: parent.join(format!(".otel-arrow-source-{digest}.lock")),
@@ -149,21 +133,35 @@ impl LeasePaths {
 }
 
 #[cfg(windows)]
-fn normalized_identity(path: &Path) -> String {
+pub(crate) fn normalized_identity(path: &Path) -> String {
     path.to_string_lossy().to_lowercase()
 }
 
 #[cfg(not(windows))]
-fn normalized_identity(path: &Path) -> String {
+pub(crate) fn normalized_identity(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
 
 fn acquire_file_lease(paths: &LeasePaths) -> Result<(File, u64), LeaseError> {
-    let file = OpenOptions::new()
-        .create(true)
-        .read(true)
-        .truncate(false)
-        .write(true)
+    let mut options = OpenOptions::new();
+    // Child processes must not inherit the flock. Parallel tests spawn
+    // subprocesses from this binary; an inherited lock fd stays held after
+    // Drop in the parent and makes reacquisition fail with AlreadyOwned.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        _ = options
+            .create(true)
+            .read(true)
+            .truncate(false)
+            .write(true)
+            .custom_flags(libc::O_CLOEXEC);
+    }
+    #[cfg(not(unix))]
+    {
+        _ = options.create(true).read(true).truncate(false).write(true);
+    }
+    let file = options
         .open(&paths.lock)
         .map_err(|source| LeaseError::io("open", &paths.lock, source))?;
     match FileExt::try_lock_exclusive(&file) {
@@ -321,67 +319,50 @@ mod tests {
 
     const LEASE_CHILD_KEY: &str = "OTEL_ARROW_SCRAPER_LEASE_CHILD_KEY";
 
-    /// Scenario: A nested state directory is created before installing durable source state.
-    /// Guarantees: Synchronization covers the leaf and every ancestor, not just the leaf.
+    /// Scenario: The same checkpoint basename is accessed under different mount-path spellings.
+    /// Guarantees: On-disk lock and generation names are independent of the absolute parent path.
     #[test]
-    fn directory_creation_syncs_complete_hierarchy() {
+    fn lock_namespace_is_independent_of_mount_path() {
         let directory = tempfile::tempdir().expect("temporary directory");
-        let target = directory.path().join("new").join("nested").join("state");
-        let mut synced = Vec::new();
-        create_dir_all_with_sync(&target, |path| {
-            synced.push(path.to_path_buf());
-            Ok(())
-        })
-        .expect("durable directory creation");
-        let canonical = std::fs::canonicalize(&target).expect("canonical directory");
-        let expected: Vec<_> = canonical.ancestors().map(Path::to_path_buf).collect();
-        assert_eq!(synced, expected);
+        let first = LeasePaths::new(
+            &directory
+                .path()
+                .join("first")
+                .join("orders.checkpoint")
+                .to_string_lossy(),
+        )
+        .expect("first paths");
+        let second = LeasePaths::new(
+            &directory
+                .path()
+                .join("second")
+                .join("orders.checkpoint")
+                .to_string_lossy(),
+        )
+        .expect("second paths");
+        assert_ne!(first.registry_key, second.registry_key);
+        assert_eq!(first.lock.file_name(), second.lock.file_name());
+        assert_eq!(first.generation_prefix, second.generation_prefix);
     }
 
-    /// Scenario: Directory creation succeeds but an ancestor sync fails before a retry.
-    /// Guarantees: The error is surfaced, and retry resynchronizes already-created ancestors.
+    /// Scenario: Nested checkpoint directories are created under an existing state root.
+    /// Guarantees: mkdir succeeds without fsyncing ancestors up to the filesystem root.
     #[test]
-    fn directory_sync_failure_is_retried_for_existing_hierarchy() {
+    fn directory_creation_does_not_fsync_ancestors() {
         let directory = tempfile::tempdir().expect("temporary directory");
-        let target = directory.path().join("new").join("state");
-        let result = create_dir_all_with_sync(&target, |_| {
-            Err(io::Error::other("injected directory sync failure"))
-        });
-        assert!(result.is_err());
+        let target = directory.path().join("new").join("nested").join("state");
+        create_dir_all_durable(&target).expect("create nested state directory");
         assert!(target.is_dir());
-
-        let mut synced = Vec::new();
-        create_dir_all_with_sync(&target, |path| {
-            synced.push(path.to_path_buf());
-            Ok(())
-        })
-        .expect("retry");
-        let canonical = std::fs::canonicalize(&target).expect("canonical directory");
-        assert_eq!(
-            synced,
-            canonical
-                .ancestors()
-                .map(Path::to_path_buf)
-                .collect::<Vec<_>>()
-        );
     }
 
     /// Scenario: A filesystem entry blocks the requested directory hierarchy.
-    /// Guarantees: Creation fails before any synchronization or lease installation can succeed.
+    /// Guarantees: Creation fails before lease installation can succeed.
     #[test]
     fn directory_creation_failure_is_not_hidden() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let file = directory.path().join("file");
         std::fs::write(&file, b"not a directory").expect("blocking file");
-        let mut synced = false;
-        assert!(
-            create_dir_all_with_sync(&file.join("state"), |_| {
-                synced = true;
-                Ok(())
-            })
-            .is_err()
-        );
-        assert!(!synced);
+        assert!(create_dir_all_durable(&file.join("state")).is_err());
     }
 
     /// Scenario: receiver processes contend for one source lease.
