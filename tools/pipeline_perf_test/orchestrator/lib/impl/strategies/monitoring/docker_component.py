@@ -44,9 +44,11 @@ Note:
     shutdown. However, proper cleanup via the `stop()` method is expected to avoid leaks.
 """
 
+import re
 import threading
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 from logging import LoggerAdapter
 from typing import ClassVar, Literal, Optional, TYPE_CHECKING
 
@@ -235,6 +237,31 @@ components:
         return {}
 
 
+# Upper bound on a plausible stats sampling window. Docker reports a zero-value
+# `preread` when no previous sample exists, which would otherwise yield a
+# multi-century window and silently flatten the CPU gauge to zero.
+_MAX_CPU_SAMPLE_WINDOW_SECONDS = 60.0
+
+
+def _parse_docker_timestamp(value: Optional[str]) -> Optional[float]:
+    """Parse a Docker stats RFC3339 timestamp into seconds since the epoch.
+
+    Docker reports nanosecond precision, which `datetime.fromisoformat` rejects,
+    so the fractional part is truncated to microseconds. Returns None when the
+    value is missing or cannot be parsed.
+    """
+    if not value:
+        return None
+    text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    text = re.sub(r"(\.\d{6})\d+", r"\1", text)
+    try:
+        return datetime.fromisoformat(text).timestamp()
+    except ValueError:
+        return None
+
+
 def monitor(
     container_id: str,
     component_name: str,
@@ -335,20 +362,45 @@ def monitor(
                     cpu_stats["cpu_usage"]["total_usage"]
                     - precpu_stats["cpu_usage"]["total_usage"]
                 )
-                system_delta = (
-                    cpu_stats["system_cpu_usage"] - precpu_stats["system_cpu_usage"]
-                )
 
                 cpu_usage = 0.0
-                if system_delta > 0.0 and cpu_delta > 0.0:
-                    num_cpus = (
-                        len(cpu_stats["cpu_usage"].get("percpu_usage", []))
-                        or cpu_stats["online_cpus"]
+                # Windows containers do not report system_cpu_usage.
+                # Use a time-based approximation instead.
+                if "system_cpu_usage" in cpu_stats:
+                    system_delta = (
+                        cpu_stats["system_cpu_usage"]
+                        - precpu_stats["system_cpu_usage"]
                     )
-                    cpu_usage = (cpu_delta / system_delta) * num_cpus
+                    if system_delta > 0.0 and cpu_delta > 0.0:
+                        num_cpus = (
+                            len(cpu_stats["cpu_usage"].get("percpu_usage", []))
+                            or cpu_stats.get("online_cpus", 1)
+                        )
+                        cpu_usage = (cpu_delta / system_delta) * num_cpus
+                else:
+                    # Windows: cpu_delta is in 100-nanosecond units. Normalize it
+                    # with the window the daemon actually measured (`preread` to
+                    # `read`) rather than the configured poll interval, which is
+                    # only the loop cadence and does not track how far apart the
+                    # two CPU samples were taken.
+                    read_ts = _parse_docker_timestamp(stat_data.get("read"))
+                    preread_ts = _parse_docker_timestamp(stat_data.get("preread"))
+                    sample_seconds = (
+                        read_ts - preread_ts
+                        if read_ts is not None and preread_ts is not None
+                        else None
+                    )
+                    if (
+                        cpu_delta > 0
+                        and sample_seconds is not None
+                        and 0 < sample_seconds <= _MAX_CPU_SAMPLE_WINDOW_SECONDS
+                    ):
+                        # 10_000_000 = 100-ns units per second
+                        cpu_usage = cpu_delta / (sample_seconds * 10_000_000)
 
                 # Memory usage in Bytes
-                mem_usage = stat_data["memory_stats"]["usage"]
+                mem_stats = stat_data.get("memory_stats", {})
+                mem_usage = mem_stats.get("usage", mem_stats.get("privateworkingset", 0))
                 cpu_usage_gauge.set(cpu_usage, labels)
                 memory_usage_gauge.set(mem_usage, labels)
 

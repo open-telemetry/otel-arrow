@@ -8,6 +8,7 @@ from lib.impl.strategies.deployment.docker import (
     DockerDeploymentConfig,
     DockerVolumeMapping,
     DockerPortMapping,
+    _split_volume_mount_string,
     build_port_bindings,
     build_volume_bindings,
 )
@@ -264,6 +265,84 @@ def test_build_volume_bindings_param_string_modes(mount, expected_mode):
     result = build_volume_bindings([mount])
     host_path = os.path.abspath(mount.split(":")[0])
     assert result == {host_path: {"bind": "/container", "mode": expected_mode}}
+
+
+@pytest.mark.parametrize(
+    "mount,expected_bind,expected_mode",
+    [
+        ("./data:C:/app/data", "C:/app/data", "rw"),
+        ("./data:C:\\app\\data", "C:\\app\\data", "rw"),
+        ("./config:C:/app/config:ro", "C:/app/config", "ro"),
+        ("./config:C:\\app\\config:ro", "C:\\app\\config", "ro"),
+    ],
+)
+# Scenario: a volume mount string whose container target is a Windows
+# drive-letter path, with and without an explicit ':ro' mode suffix.
+# Guarantees: the drive letter stays attached to its path instead of being
+# parsed as a separate ':'-delimited field, so the container bind target and
+# the mode are both recovered correctly.
+def test_build_volume_bindings_windows_container_target(
+    mount, expected_bind, expected_mode
+):
+    host_path = os.path.abspath(mount.split(":")[0])
+
+    result = build_volume_bindings([mount])
+
+    assert result == {host_path: {"bind": expected_bind, "mode": expected_mode}}
+
+
+@pytest.mark.parametrize(
+    "mount,expected_source,expected_target,expected_mode",
+    [
+        ("./host:C:/container", "./host", "C:/container", "rw"),
+        ("./host:C:\\container", "./host", "C:\\container", "rw"),
+        ("./host:C:/container:ro", "./host", "C:/container", "ro"),
+        ("C:/host:D:/container", "C:/host", "D:/container", "rw"),
+        (
+            "C:\\host:D:\\container:ro",
+            "C:\\host",
+            "D:\\container",
+            "ro",
+        ),
+        ("/host:/container", "/host", "/container", "rw"),
+        ("/host:/container:ro", "/host", "/container", "ro"),
+        ("./host:/container:rw", "./host", "/container", "rw"),
+        ("x:/container", "x", "/container", "rw"),
+        ("x:/container:ro", "x", "/container", "ro"),
+    ],
+)
+# Scenario: volume mount strings cover Windows drive letters, Linux-style
+# paths, explicit modes, and single-character relative host paths.
+# Guarantees: only field-separator colons split SOURCE from TARGET and mode,
+# while drive-letter colons remain inside their respective paths.
+def test_split_volume_mount_string(
+    mount, expected_source, expected_target, expected_mode
+):
+    assert _split_volume_mount_string(mount) == (
+        expected_source,
+        expected_target,
+        expected_mode,
+    )
+
+
+@pytest.mark.parametrize(
+    "mount,expected_mode",
+    [
+        ("x:/container", "rw"),
+        ("x:/container:ro", "ro"),
+    ],
+)
+# Scenario: a valid volume mount uses a single-character relative source path.
+# Guarantees: the parser preserves pre-existing behavior by treating `x` as
+# the host source, not as a Windows drive-qualified source path.
+def test_build_volume_bindings_single_character_relative_host(
+    mount, expected_mode
+):
+    result = build_volume_bindings([mount])
+
+    assert result == {
+        os.path.abspath("x"): {"bind": "/container", "mode": expected_mode}
+    }
 
 
 def test_build_port_bindings_simple_string():
