@@ -43,9 +43,9 @@ pub use exporter::AzureMonitorExporter;
 pub use gzip_batcher::{FinalizeResult, GzipBatcher, GzipResult, PushResult};
 pub use heartbeat::Heartbeat;
 pub use metrics::{
-    AzureMonitorExporterExportMetrics, AzureMonitorExporterHeartbeatMetrics,
+    AzureMonitorExporterBatchMetrics, AzureMonitorExporterHeartbeatMetrics,
     AzureMonitorExporterHttpMetrics, AzureMonitorExporterMetricsRc,
-    AzureMonitorExporterOperationalMetrics, ExportSignalAttributes,
+    AzureMonitorExporterOperationalMetrics, BatchSignalAttributes,
 };
 pub use transformer::Transformer;
 

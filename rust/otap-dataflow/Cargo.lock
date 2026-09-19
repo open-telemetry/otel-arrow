@@ -7705,7 +7705,6 @@ dependencies = [
  "otel-arrow-dfe-engine",
  "otel-arrow-dfe-engine-macros",
  "otel-arrow-dfe-pdata",
- "otel-arrow-dfe-quiver",
  "otel-arrow-dfe-telemetry",
  "otel-arrow-dfe-telemetry-macros",
  "otel-arrow-dfe-test-net",
@@ -7919,6 +7918,18 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "otel-arrow-dfe-scraper"
+version = "0.56.0"
+dependencies = [
+ "async-trait",
+ "humantime-serde",
+ "otel-arrow-dfe-engine",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
