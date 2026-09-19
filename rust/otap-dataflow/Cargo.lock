@@ -7623,6 +7623,7 @@ version = "0.56.0"
 dependencies = [
  "async-channel",
  "async-trait",
+ "base64 0.23.1",
  "bitflags 2.13.2",
  "bytemuck",
  "cpu-time",
@@ -7686,6 +7687,7 @@ dependencies = [
  "azure_core 1.2.0-beta.1",
  "azure_identity 1.1.0-beta.1",
  "base64 0.23.1",
+ "bitflags 2.13.2",
  "bytes",
  "cfg-if",
  "flate2",

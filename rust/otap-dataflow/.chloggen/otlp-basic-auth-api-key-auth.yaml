@@ -1,0 +1,8 @@
+change_type: enhancement
+component: pipeline
+note: Support `BasicAuthProvider` and `ApiKeyProvider` capabilities in OTLP exporters. Support `AgentFedCredentialProvider` capability in gRPC OTLP exporter.
+issues: [3901]
+subtext: |
+  Adds support for the `BasicAuthProvider` and `ApiKeyProvider` capabilities in
+  OTLP exporters (HTTP & gRPC). Adds support for `AgentFedCredentialProvider`
+  capability in gRPC OTLP exporter (already supported by HTTP).

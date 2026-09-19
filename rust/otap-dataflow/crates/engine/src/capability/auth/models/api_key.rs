@@ -3,6 +3,7 @@
 
 //! The shared [`ApiKey`] credential.
 
+use base64::{Engine as _, engine::general_purpose};
 use secrecy::{ExposeSecret, SecretString};
 use serde_json::{Map, Value};
 use std::sync::Arc;
@@ -47,6 +48,16 @@ impl ApiKey {
         }
     }
 
+    /// Creates an API Key from its binary value.
+    ///
+    /// Note: Binary value is base64 encoded.
+    #[must_use]
+    pub fn from_binary(value: &[u8]) -> Self {
+        let secret = general_purpose::STANDARD.encode(value);
+
+        Self::new(secret)
+    }
+
     /// Adds attributes to an API Key.
     #[must_use]
     pub fn with_attributes(mut self, attributes: Map<String, Value>) -> Self {
@@ -68,7 +79,10 @@ impl ApiKey {
             .attributes
             .map(Arc::unwrap_or_clone)
             .unwrap_or_default();
-        attributes[HTTP_HEADER_NAME_ATTRIBUTE] = Value::String(header_name.into());
+        _ = attributes.insert(
+            HTTP_HEADER_NAME_ATTRIBUTE.into(),
+            Value::String(header_name.into()),
+        );
         self.attributes = Some(Arc::new(attributes));
         self
     }
@@ -80,7 +94,10 @@ impl ApiKey {
             .attributes
             .map(Arc::unwrap_or_clone)
             .unwrap_or_default();
-        attributes[HTTP_HEADER_SCHEME_ATTRIBUTE] = Value::String(header_scheme.into());
+        _ = attributes.insert(
+            HTTP_HEADER_SCHEME_ATTRIBUTE.into(),
+            Value::String(header_scheme.into()),
+        );
         self.attributes = Some(Arc::new(attributes));
         self
     }

@@ -187,6 +187,14 @@ channel and is not duplicated by the exporter.
 or `other`. Successful exports and Ack/Nack notification failures do not emit
 this metric.
 
+#### `exporter.otlp_grpc.authentication`
+
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `exporter.otlp_grpc.authentication.failures` | `{attempt}` | `source` | Auth credential polls that did not produce a usable credential, including failures before a signal batch is admitted. |
+
+Authentication `source` is the registered provider name.
+
 ### Events
 
 | Event | Severity | Description |
@@ -197,8 +205,8 @@ this metric.
 | `otlp.exporter.grpc.shutdown` | `info` | Exporter shutdown. |
 | `otlp.exporter.grpc.export_error` | `warn` | A gRPC export request did not complete successfully. |
 | `otlp.exporter.grpc.header_skip` | `debug` | A propagated transport header was skipped while building gRPC metadata. |
-| `otlp.exporter.grpc.invalid_bearer_token` | `warn` | A bearer token from the provider could not be turned into a valid `authorization` header. |
-| `otlp.exporter.grpc.token_stream_closed` | `warn` | The bearer token provider closed its refresh stream; the last token (if any) is reused and no longer refreshes. |
+| `otlp.exporter.grpc.auth.invalid` | `warn` | A credential from the auth provider could not be turned into a valid header. |
+| `otlp.exporter.grpc.auth.stream_closed` | `warn` | The auth provider closed its refresh stream; the last credential (if any) is reused and no longer refreshes. |
 
 ## Limits
 
