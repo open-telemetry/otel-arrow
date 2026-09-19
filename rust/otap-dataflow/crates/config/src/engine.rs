@@ -3108,7 +3108,8 @@ groups:
             to: exporter
 "#;
 
-        let config = OtelDataflowSpec::from_yaml(yaml).expect("context declarations are valid");
+        let config: OtelDataflowSpec =
+            serde_yaml::from_str(yaml).expect("context declarations deserialize");
         let resolved = config.resolve();
         let main = resolved
             .pipelines
@@ -3246,15 +3247,15 @@ groups:
             1,
         );
 
-        let engine = OtelDataflowSpec::from_yaml(engine_yaml)
-            .expect("engine declaration is valid")
+        let engine = serde_yaml::from_str::<OtelDataflowSpec>(engine_yaml)
+            .expect("engine declaration deserializes")
             .resolve()
             .pipelines
             .into_iter()
             .find(|pipeline| pipeline.role == ResolvedPipelineRole::Regular)
             .expect("engine-scoped pipeline");
-        let group = OtelDataflowSpec::from_yaml(&group_yaml)
-            .expect("group declaration is valid")
+        let group = serde_yaml::from_str::<OtelDataflowSpec>(&group_yaml)
+            .expect("group declaration deserializes")
             .resolve()
             .pipelines
             .into_iter()
@@ -3263,6 +3264,38 @@ groups:
 
         assert!(!engine.runtime_matches(&group));
         assert!(!engine.runtime_shape_matches_ignoring_resources(&group));
+    }
+
+    /// Scenario: a regular pipeline resolves a declared context entry.
+    /// Guarantees: validation rejects declaration-only context policy until runtime support exists.
+    #[test]
+    fn rejects_context_entries_in_runtime_pipelines() {
+        let yaml = r#"
+version: otel_dataflow/v1
+policies:
+  context:
+    entries:
+      tenant: [{type: transport_header, entry: tenant_id}]
+engine: {}
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          receiver: {type: "urn:test:receiver:example", config: null}
+          exporter: {type: "urn:test:exporter:example", config: null}
+        connections: [{from: receiver, to: exporter}]
+"#;
+
+        let error =
+            OtelDataflowSpec::from_yaml(yaml).expect_err("runtime context must be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("context entries are declaration-only")
+        );
+        assert!(error.to_string().contains("groups.default.pipelines.main"));
     }
 
     /// Scenario: context declarations are configured on the internal observability pipeline.

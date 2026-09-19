@@ -202,6 +202,13 @@ impl OtelDataflowSpec {
                         }
                     }
                 }
+                if !visible_context_entries.is_empty() {
+                    errors.push(Error::InvalidUserConfig {
+                        error: format!(
+                            "groups.{pipeline_group_id}.pipelines.{pipeline_id} resolves policies.context.entries, but context entries are declaration-only and cannot be used by runtime pipelines yet"
+                        ),
+                    });
+                }
                 if pipeline
                     .policies()
                     .and_then(|policies| policies.resources.as_ref())
