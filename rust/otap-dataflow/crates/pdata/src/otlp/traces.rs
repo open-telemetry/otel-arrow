@@ -247,6 +247,7 @@ impl TracesProtoBytesEncoder {
         let resource_id = traces_data_arrays
             .resource_arrays
             .id
+            .as_ref()
             .and_then(|arr| arr.value_at(index));
 
         loop {
@@ -266,6 +267,7 @@ impl TracesProtoBytesEncoder {
             let next_resource_id = traces_data_arrays
                 .resource_arrays
                 .id
+                .as_ref()
                 .and_then(|arr| arr.value_at(next_index));
             if resource_id != next_resource_id {
                 break;
@@ -307,6 +309,7 @@ impl TracesProtoBytesEncoder {
         let scope_id = traces_data_arrays
             .scope_arrays
             .id
+            .as_ref()
             .and_then(|arr| arr.value_at(index));
         loop {
             result_buf.encode_len_delimited(SCOPE_SPANS_SPANS, |result_buf| {
@@ -325,6 +328,7 @@ impl TracesProtoBytesEncoder {
             let next_scope_id = traces_data_arrays
                 .scope_arrays
                 .id
+                .as_ref()
                 .and_then(|arr| arr.value_at(next_index));
             if scope_id != next_scope_id {
                 break;

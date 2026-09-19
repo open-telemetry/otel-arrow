@@ -31,7 +31,7 @@ use std::fmt::Write;
 use std::sync::LazyLock;
 
 pub(crate) struct ResourceArrays<'a> {
-    pub id: Option<&'a UInt16Array>,
+    pub id: Option<MaybeDictArrayAccessor<'a, UInt16Array>>,
     pub dropped_attributes_count: Option<&'a UInt32Array>,
     pub schema_url: Option<StringArrayAccessor<'a>>,
 }
@@ -113,7 +113,7 @@ impl<'a> TryFrom<&'a RecordBatch> for ResourceArrays<'a> {
         let struct_col_accessor = StructColumnAccessor::new(struct_array);
 
         Ok(Self {
-            id: struct_col_accessor.primitive_column_op(consts::ID)?,
+            id: struct_col_accessor.maybe_dict_primitive_column_op(consts::ID)?,
             dropped_attributes_count: struct_col_accessor
                 .primitive_column_op(consts::DROPPED_ATTRIBUTES_COUNT)?,
             schema_url: struct_col_accessor.string_column_op(consts::SCHEMA_URL)?,
@@ -125,7 +125,7 @@ pub(crate) struct ScopeArrays<'a> {
     pub name: Option<StringArrayAccessor<'a>>,
     pub version: Option<StringArrayAccessor<'a>>,
     pub dropped_attributes_count: Option<&'a UInt32Array>,
-    pub id: Option<&'a UInt16Array>,
+    pub id: Option<MaybeDictArrayAccessor<'a, UInt16Array>>,
 }
 
 static SCOPE_ARRAY_DATA_TYPE: LazyLock<DataType> = LazyLock::new(|| {
@@ -180,7 +180,7 @@ impl<'a> TryFrom<&'a RecordBatch> for ScopeArrays<'a> {
             version: struct_col_accessor.string_column_op(consts::VERSION)?,
             dropped_attributes_count: struct_col_accessor
                 .primitive_column_op(consts::DROPPED_ATTRIBUTES_COUNT)?,
-            id: struct_col_accessor.primitive_column_op(consts::ID)?,
+            id: struct_col_accessor.maybe_dict_primitive_column_op(consts::ID)?,
         })
     }
 }
@@ -1367,11 +1367,11 @@ where
 #[cfg(test)]
 mod test {
     use crate::{
-        arrays::MaybeDictArrayAccessor,
+        arrays::{MaybeDictArrayAccessor, NullableArrayAccessor},
         otlp::common::{
             BatchSorter, BoundedBuf, ChildIndexIter, EncodeFailure, EncodeResult, ProtoBuffer,
-            Result, SortedBatchCursor, StackProtoBuffer, TRUNCATION_SUFFIX, encode_len_placeholder,
-            patch_len_placeholder,
+            ResourceArrays, Result, ScopeArrays, SortedBatchCursor, StackProtoBuffer,
+            TRUNCATION_SUFFIX, encode_len_placeholder, patch_len_placeholder,
         },
         proto::OtlpProtoMessage,
         proto::consts::wire_types,
@@ -1379,8 +1379,8 @@ mod test {
         testing::{fixtures::*, round_trip::*},
     };
     use arrow::{
-        array::{RecordBatch, StructArray, UInt16Array},
-        datatypes::{DataType, Field, Fields, Schema, UInt16Type},
+        array::{ArrayRef, DictionaryArray, RecordBatch, StructArray, UInt8Array, UInt16Array},
+        datatypes::{DataType, Field, Fields, Schema, UInt8Type, UInt16Type},
     };
     use prost::Message;
     use std::sync::Arc;
@@ -1557,6 +1557,51 @@ mod test {
             .init_cursor_for_root_batch(&record_batch, &mut cursor)
             .unwrap();
         assert_eq!(ids_ptr_before, batch_sorter.u32_ids.as_ptr());
+    }
+
+    /// Scenario: resource and scope id columns are dictionary-encoded.
+    /// Guarantees: both views decode the dictionary and return the real id.
+    #[test]
+    fn test_resource_and_scope_ids_decode_dict_encoded() {
+        let dict_type = DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::UInt16));
+        let struct_fields = Fields::from(vec![Field::new(consts::ID, dict_type, true)]);
+
+        let resource_id = Arc::new(DictionaryArray::<UInt8Type>::new(
+            UInt8Array::from(vec![0, 0]),
+            Arc::new(UInt16Array::from_iter_values([7])),
+        )) as ArrayRef;
+        let scope_id = Arc::new(DictionaryArray::<UInt8Type>::new(
+            UInt8Array::from(vec![0, 0]),
+            Arc::new(UInt16Array::from_iter_values([7])),
+        )) as ArrayRef;
+
+        let record_batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(
+                    consts::RESOURCE,
+                    DataType::Struct(struct_fields.clone()),
+                    true,
+                ),
+                Field::new(consts::SCOPE, DataType::Struct(struct_fields.clone()), true),
+            ])),
+            vec![
+                Arc::new(StructArray::new(
+                    struct_fields.clone(),
+                    vec![resource_id],
+                    None,
+                )),
+                Arc::new(StructArray::new(struct_fields, vec![scope_id], None)),
+            ],
+        )
+        .unwrap();
+
+        let resource = ResourceArrays::try_from(&record_batch).unwrap();
+        assert_eq!(resource.id.value_at(0), Some(7));
+        assert_eq!(resource.id.value_at(1), Some(7));
+
+        let scope = ScopeArrays::try_from(&record_batch).unwrap();
+        assert_eq!(scope.id.value_at(0), Some(7));
+        assert_eq!(scope.id.value_at(1), Some(7));
     }
 
     //
