@@ -35,7 +35,6 @@ mod test_allocation {
     #[global_allocator]
     static ALLOC: dhat::Alloc = dhat::Alloc;
 
-    #[allow(unused)]
     fn helper_get_test_metrics_and_num_items() -> (OtlpProtoBytes, usize) {
         let metrics = ExportMetricsServiceRequest {
             resource_metrics: vec![
@@ -199,7 +198,6 @@ mod test_allocation {
         (otlp_bytes, 11)
     }
 
-    #[allow(unused)]
     fn helper_get_test_logs_and_num_items() -> (OtlpProtoBytes, usize) {
         let logs = ExportLogsServiceRequest {
             resource_logs: vec![
@@ -238,7 +236,6 @@ mod test_allocation {
         (otlp_bytes, 5)
     }
 
-    #[allow(unused)]
     fn helper_get_test_traces_and_num_items() -> (OtlpProtoBytes, usize) {
         let traces = ExportTraceServiceRequest {
             resource_spans: vec![ResourceSpans {
@@ -295,13 +292,15 @@ mod test_allocation {
         (otlp_bytes, 2)
     }
 
-    /// Validates that OtlpProtoBytes num_items() method doesn't allocate.
+    /// Scenario: Calling OtlpProtoBytes::num_items() on representative OTLP Logs/Traces/Metrics payloads.
+    /// Guarantees: num_items() returns the correct count and performs zero heap allocations.
     #[test]
+    #[ignore = "Enabled in #4114 once num_items() is allocation-free"]
     fn test_signal_num_items_should_not_allocate() {
         let cases: [(&str, (OtlpProtoBytes, usize)); _] = [
-            // ("Logs", helper_get_test_logs_and_num_items()),
-            // ("Traces", helper_get_test_traces_and_num_items()),
-            // ("Metrics", helper_get_test_metrics_and_num_items()),
+            ("Logs", helper_get_test_logs_and_num_items()),
+            ("Traces", helper_get_test_traces_and_num_items()),
+            ("Metrics", helper_get_test_metrics_and_num_items()),
         ];
 
         for (signal_type, (otlp_bytes, expected_number_of_items)) in cases {
