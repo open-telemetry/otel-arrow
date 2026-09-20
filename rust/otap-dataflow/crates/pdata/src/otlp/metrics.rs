@@ -5,7 +5,7 @@ use std::str::FromStr;
 
 use crate::arrays::{
     Int32ArrayAccessor, MaybeDictArrayAccessor, NullableArrayAccessor, StringArrayAccessor,
-    get_bool_array_opt, get_u8_array, get_u16_array,
+    get_bool_array_opt, get_u8_array, get_u16_array_opt,
 };
 use crate::error::{Error, Result};
 use crate::otap::OtapArrowRecords;
@@ -79,7 +79,7 @@ impl FromStr for MetricType {
 }
 
 pub(crate) struct MetricsArrays<'a> {
-    pub(crate) id: &'a UInt16Array,
+    pub(crate) id: Option<&'a UInt16Array>,
     pub(crate) metric_type: &'a UInt8Array,
     pub(crate) schema_url: Option<StringArrayAccessor<'a>>,
     pub(crate) name: StringArrayAccessor<'a>,
@@ -93,7 +93,7 @@ impl<'a> TryFrom<&'a RecordBatch> for MetricsArrays<'a> {
     type Error = Error;
 
     fn try_from(rb: &'a RecordBatch) -> Result<Self> {
-        let id = get_u16_array(rb, consts::ID)?;
+        let id = get_u16_array_opt(rb, consts::ID)?;
         let metric_type = get_u8_array(rb, consts::METRIC_TYPE)?;
         let name =
             StringArrayAccessor::try_new(rb.column_by_name(consts::NAME).ok_or_else(|| {
@@ -882,6 +882,26 @@ mod test {
     };
     use crate::proto::opentelemetry::resource::v1::Resource;
     use crate::schema::FieldExt;
+
+    /// Scenario: a metrics batch omits the id column that no data points reference.
+    /// Guarantees: MetricsArrays still builds, with a None id.
+    #[test]
+    fn test_metrics_arrays_without_id_column_builds() {
+        let rb = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::METRIC_TYPE, DataType::UInt8, true),
+                Field::new(consts::NAME, DataType::Utf8, true),
+            ])),
+            vec![
+                Arc::new(UInt8Array::from(vec![1u8])) as ArrayRef,
+                Arc::new(StringArray::from(vec!["metric-1"])) as ArrayRef,
+            ],
+        )
+        .unwrap();
+
+        let arrays = MetricsArrays::try_from(&rb).expect("builds without an id column");
+        assert!(arrays.id.is_none(), "id is None when the column is omitted");
+    }
 
     #[test]
     fn test_metrics_proto_encode() {
