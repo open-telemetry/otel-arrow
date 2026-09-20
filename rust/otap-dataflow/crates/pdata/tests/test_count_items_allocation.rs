@@ -295,7 +295,6 @@ mod test_allocation {
     /// Scenario: Calling OtlpProtoBytes::num_items() on representative OTLP Logs/Traces/Metrics payloads.
     /// Guarantees: num_items() returns the correct count and performs zero heap allocations.
     #[test]
-    #[ignore = "Enabled in #4114 once num_items() is allocation-free"]
     fn test_signal_num_items_should_not_allocate() {
         let cases: [(&str, (OtlpProtoBytes, usize)); _] = [
             ("Logs", helper_get_test_logs_and_num_items()),
