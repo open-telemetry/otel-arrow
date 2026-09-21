@@ -22,7 +22,7 @@
 //! [normal operation: next_bundle, claim_bundle, ack, reject, defer]
 //!     |
 //!     v
-//! deactivate(id) --> Inactive (orphan detection starts)
+//! deactivate(id).await --> Inactive (orphan detection starts)
 //!     |
 //!     v
 //! unregister(id) --> Removed (only for permanent removal)
@@ -163,7 +163,7 @@ pub struct SubscriberRegistry<P: SegmentProvider> {
     subscribers: RwLock<HashMap<SubscriberId, Arc<RwLock<SubscriberState>>>>,
     /// Subscribers with uncommitted changes that need flushing.
     dirty_subscribers: Mutex<HashSet<SubscriberId>>,
-    /// Serializes progress snapshots and writes with durable reset activation.
+    /// Serializes progress writes, reset activation, deactivation, and removal.
     progress_write_lock: TokioMutex<()>,
     /// Segment data provider.
     segment_provider: Arc<P>,
@@ -434,7 +434,7 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
             .await;
             match result {
                 Ok(()) => {
-                    let _ = state_lock.write().complete_reset_activation();
+                    state_lock.write().complete_reset_activation();
                 }
                 Err(error) => {
                     state_lock.write().abort_reset_activation();
@@ -456,12 +456,15 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
     /// Deactivates a subscriber.
     ///
     /// The subscriber stops receiving new bundles but retains its state for
-    /// later reactivation.
+    /// later reactivation. Waits for any in-flight reset checkpoint to finish;
+    /// deactivation does not cancel a reset whose durable write has started.
     ///
     /// # Errors
     ///
     /// Returns an error if the subscriber is not registered.
-    pub fn deactivate(&self, id: &SubscriberId) -> Result<()> {
+    pub async fn deactivate(&self, id: &SubscriberId) -> Result<()> {
+        let _progress_write_guard = self.progress_write_lock.lock().await;
+
         let state_lock = {
             let subscribers = self.subscribers.read();
             subscribers
@@ -1454,14 +1457,16 @@ mod tests {
         assert!(matches!(result, Err(SubscriberError::NotFound { .. })));
     }
 
-    #[test]
-    fn deactivate_subscriber() {
+    /// Scenario: An active subscriber is deactivated without being unregistered.
+    /// Guarantees: Awaiting deactivation stops delivery while preserving the registration.
+    #[tokio::test]
+    async fn deactivate_subscriber() {
         let (registry, _dir) = setup_registry();
 
         let id = SubscriberId::new("test-sub").unwrap();
         registry.register(id.clone()).unwrap();
         registry.activate(&id).unwrap();
-        registry.deactivate(&id).unwrap();
+        registry.deactivate(&id).await.unwrap();
 
         assert!(!registry.is_active(&id));
         assert!(registry.is_registered(&id));
@@ -1772,6 +1777,96 @@ mod tests {
             assert_eq!(handle.bundle_ref().segment_seq, SegmentSeq::new(2));
             handle.ack();
             assert!(registry.poll_next_bundle(&id).unwrap().is_none());
+        });
+    }
+
+    /// Scenario: Deactivation overlaps a reset checkpoint that commits or fails to open its temporary file.
+    /// Guarantees: Deactivation waits for persistence, and restart honors the same committed or pending reset state.
+    #[test]
+    fn deactivation_waits_for_reset_checkpoint() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .max_blocking_threads(1)
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            for fail_write in [false, true] {
+                let dir = tempdir().unwrap();
+                let config = RegistryConfig::new(dir.path());
+                let provider = Arc::new(MockSegmentProvider::new());
+                let id = SubscriberId::new("reset-deactivate").unwrap();
+                let path = progress_file_path(dir.path(), &id);
+                std::fs::write(&path, b"corrupt").unwrap();
+                let registry = SubscriberRegistry::open(config.clone(), provider.clone()).unwrap();
+                let temp_path = dir.path().join("quiver.sub.reset-deactivate.tmp");
+                if fail_write {
+                    std::fs::create_dir(&temp_path).unwrap();
+                }
+                provider.add_segment(1, 1);
+
+                // Pause filesystem work so deactivation deterministically overlaps
+                // the checkpoint write, without blocking the async runtime.
+                let (release, wait) = std::sync::mpsc::channel();
+                let worker = tokio::task::spawn_blocking(move || wait.recv());
+                let mut activation = Box::pin(registry.activate_async(&id));
+                let mut deactivation = Box::pin(registry.deactivate(&id));
+                {
+                    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+                    assert!(activation.as_mut().poll(&mut context).is_pending());
+                    assert!(deactivation.as_mut().poll(&mut context).is_pending());
+                }
+                assert!(
+                    read_progress_file_state(&path)
+                        .unwrap()
+                        .reset_pending_activation()
+                );
+                provider.add_segment(2, 1);
+                registry.on_segment_finalized(SegmentSeq::new(2), 1);
+
+                release.send(()).unwrap();
+                worker.await.unwrap().unwrap();
+                let result = activation.await;
+                if fail_write {
+                    assert!(matches!(result, Err(SubscriberError::ProgressIo { .. })));
+                    std::fs::remove_dir(&temp_path).unwrap();
+                } else {
+                    result.unwrap();
+                    assert!(registry.is_active(&id));
+                }
+                deactivation.await.unwrap();
+                assert!(!registry.is_active(&id));
+                assert_eq!(
+                    registry
+                        .subscribers
+                        .read()
+                        .get(&id)
+                        .unwrap()
+                        .read()
+                        .is_reset_pending(),
+                    fail_write
+                );
+                assert_eq!(
+                    read_progress_file_state(&path)
+                        .unwrap()
+                        .reset_pending_activation(),
+                    fail_write
+                );
+                drop(registry);
+
+                let registry = SubscriberRegistry::open(config, provider.clone()).unwrap();
+                registry.activate_async(&id).await.unwrap();
+                if !fail_write {
+                    let handle = registry.poll_next_bundle(&id).unwrap().unwrap();
+                    assert_eq!(handle.bundle_ref().segment_seq, SegmentSeq::new(2));
+                    handle.ack();
+                }
+                assert!(registry.poll_next_bundle(&id).unwrap().is_none());
+                provider.add_segment(3, 1);
+                registry.on_segment_finalized(SegmentSeq::new(3), 1);
+                let handle = registry.poll_next_bundle(&id).unwrap().unwrap();
+                assert_eq!(handle.bundle_ref().segment_seq, SegmentSeq::new(3));
+                handle.ack();
+            }
         });
     }
 

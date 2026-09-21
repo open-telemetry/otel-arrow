@@ -260,16 +260,12 @@ impl SubscriberState {
 
     /// Commits reset activation after the replacement checkpoint is durable.
     ///
-    /// Returns `true` when the reset was still active and the subscriber was
-    /// activated. A concurrent deactivation cancels the pending activation.
-    pub const fn complete_reset_activation(&mut self) -> bool {
-        if !self.reset_activating {
-            return false;
-        }
+    /// The registry serializes deactivation with checkpoint persistence, so
+    /// the durable reset cannot be canceled by an in-memory lifecycle change.
+    pub const fn complete_reset_activation(&mut self) {
         self.reset_pending = false;
         self.reset_activating = false;
         self.active = true;
-        true
     }
 
     /// Restores reset-pending state after activation persistence fails.
@@ -655,19 +651,21 @@ mod tests {
         assert!(!state.is_active());
     }
 
-    /// Scenario: A reset activation is deactivated before its durable checkpoint completes.
-    /// Guarantees: Completing the stale activation does not reactivate the subscriber.
+    /// Scenario: A reset activation completes before a serialized deactivation.
+    /// Guarantees: Deactivation leaves the committed baseline intact without restoring a pending reset.
     #[test]
-    fn subscriber_state_deactivate_cancels_reset_activation() {
+    fn subscriber_state_deactivate_preserves_committed_reset() {
         let id = SubscriberId::new("test-sub").unwrap();
         let mut state = SubscriberState::reset_pending(id, Some(SegmentSeq::new(3)));
 
         state.begin_reset_activation(Some(SegmentSeq::new(4)));
+        state.complete_reset_activation();
         state.deactivate();
 
-        assert!(!state.complete_reset_activation());
         assert!(!state.is_active());
-        assert!(state.is_reset_pending());
+        assert!(!state.is_reset_pending());
+        assert!(!state.accepts_new_segments());
+        assert_eq!(state.completed_through(), Some(SegmentSeq::new(4)));
     }
 
     #[test]

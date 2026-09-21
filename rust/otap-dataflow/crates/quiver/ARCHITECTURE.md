@@ -348,7 +348,9 @@ Field descriptions:
   lock, atomically with respect to registration. This snapshot is the activation
   boundary: earlier registrations are skipped, including delayed callbacks.
   Later registrations are retained while the baseline is written durably, but
-  delivery is enabled only after that write succeeds.
+  delivery is enabled only after that write succeeds. Deactivation waits for
+  the checkpoint operation instead of canceling it, so it cannot invalidate
+  an activation whose baseline was committed.
 - **Unsupported progress versions**: Startup fails and leaves the file
   untouched so a compatible binary can read it.
 - **Progress I/O failures**: Startup fails because Quiver cannot determine the
@@ -571,6 +573,9 @@ Quiver handles the rest.
 
 #### Deregistration
 
+- `deactivate(id).await`: Stop delivery while retaining subscriber state.
+  This waits for any in-flight reset checkpoint before making the subscriber
+  inactive, keeping the in-memory lifecycle consistent with durable progress.
 - `unregister(id)`: Remove subscriber, mark all pending bundles as `Dropped`
 
 Unregistration is final and intended for permanent removal from configuration.
