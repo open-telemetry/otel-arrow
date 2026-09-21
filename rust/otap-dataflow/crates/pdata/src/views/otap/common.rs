@@ -385,11 +385,11 @@ fn cbor_item_len(buf: &[u8]) -> Option<usize> {
                 let mut pos = 1;
                 loop {
                     if *buf.get(pos)? == CBOR_BREAK {
-                        return Some(pos + 1);
+                        return pos.checked_add(1);
                     }
-                    pos += cbor_item_len(buf.get(pos..)?)?;
+                    pos = pos.checked_add(cbor_item_len(buf.get(pos..)?)?)?;
                     if major == CBOR_MAJOR_MAP {
-                        pos += cbor_item_len(buf.get(pos..)?)?;
+                        pos = pos.checked_add(cbor_item_len(buf.get(pos..)?)?)?;
                     }
                 }
             }
@@ -400,19 +400,19 @@ fn cbor_item_len(buf: &[u8]) -> Option<usize> {
     let (arg, head) = cbor_arg(buf)?;
     match major {
         CBOR_MAJOR_UINT | CBOR_MAJOR_NINT | CBOR_MAJOR_SIMPLE => Some(head),
-        CBOR_MAJOR_BYTES | CBOR_MAJOR_TEXT => Some(head + arg as usize),
+        CBOR_MAJOR_BYTES | CBOR_MAJOR_TEXT => head.checked_add(usize::try_from(arg).ok()?),
         CBOR_MAJOR_ARRAY => {
             let mut pos = head;
             for _ in 0..arg {
-                pos += cbor_item_len(buf.get(pos..)?)?;
+                pos = pos.checked_add(cbor_item_len(buf.get(pos..)?)?)?;
             }
             Some(pos)
         }
         CBOR_MAJOR_MAP => {
             let mut pos = head;
             for _ in 0..arg {
-                pos += cbor_item_len(buf.get(pos..)?)?;
-                pos += cbor_item_len(buf.get(pos..)?)?;
+                pos = pos.checked_add(cbor_item_len(buf.get(pos..)?)?)?;
+                pos = pos.checked_add(cbor_item_len(buf.get(pos..)?)?)?;
             }
             Some(pos)
         }
@@ -443,7 +443,8 @@ fn cbor_value_type(buf: &[u8]) -> ValueType {
 /// Borrow the length-prefixed byte/text payload of the CBOR item at `buf[0]`.
 fn cbor_slice(buf: &[u8]) -> Option<&[u8]> {
     let (len, head) = cbor_arg(buf)?;
-    buf.get(head..head + len as usize)
+    let len = usize::try_from(len).ok()?;
+    buf.get(head..head.checked_add(len)?)
 }
 
 /// Decode the single CBOR item at `buf[0]` into an `OtapAnyValueView`. Nested maps and arrays are
@@ -454,10 +455,13 @@ fn cbor_to_any_value(buf: &[u8]) -> OtapAnyValueView<'_> {
     };
     match first >> 5 {
         CBOR_MAJOR_UINT => cbor_arg(buf)
-            .map(|(v, _)| OtapAnyValueView::Int(v as i64))
+            .and_then(|(v, _)| i64::try_from(v).ok())
+            .map(OtapAnyValueView::Int)
             .unwrap_or(OtapAnyValueView::Empty),
         CBOR_MAJOR_NINT => cbor_arg(buf)
-            .map(|(v, _)| OtapAnyValueView::Int(-1 - v as i64))
+            .and_then(|(v, _)| i64::try_from(v).ok())
+            .and_then(|n| (-1i64).checked_sub(n))
+            .map(OtapAnyValueView::Int)
             .unwrap_or(OtapAnyValueView::Empty),
         CBOR_MAJOR_BYTES => cbor_slice(buf)
             .map(OtapAnyValueView::Bytes)
@@ -958,5 +962,26 @@ mod tests {
         assert_eq!(items.len(), 2);
         assert_eq!(items[0].as_int64(), Some(1));
         assert_eq!(items[1].as_string(), Some(b"a".as_slice()));
+    }
+
+    /// Scenario: CBOR integers at and beyond the i64 range are decoded.
+    /// Guarantees: i64::MIN/MAX decode exactly and the first value past each end is rejected as Empty rather than wrapping.
+    #[test]
+    fn test_cbor_integer_bounds_reject_out_of_range() {
+        // Unsigned i64::MAX.
+        let max = [0x1b, 0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff];
+        assert_eq!(cbor_to_any_value(&max).as_int64(), Some(i64::MAX));
+
+        // Unsigned i64::MAX + 1 does not fit an i64.
+        let over = [0x1b, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+        assert_eq!(cbor_to_any_value(&over).value_type(), ValueType::Empty);
+
+        // Negative i64::MIN.
+        let min = [0x3b, 0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff];
+        assert_eq!(cbor_to_any_value(&min).as_int64(), Some(i64::MIN));
+
+        // One below i64::MIN does not fit an i64.
+        let under = [0x3b, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+        assert_eq!(cbor_to_any_value(&under).value_type(), ValueType::Empty);
     }
 }
