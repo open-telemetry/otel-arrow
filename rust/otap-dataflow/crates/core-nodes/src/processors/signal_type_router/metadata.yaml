@@ -1,0 +1,6 @@
+type: type_router
+status:
+  class: processor
+  codeowners:
+    active:
+      - daviddahl

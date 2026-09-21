@@ -1,0 +1,6 @@
+type: topic
+status:
+  class: exporter
+  codeowners:
+    active:
+      - lquerel
