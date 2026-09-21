@@ -5,7 +5,7 @@
 ## Metadata
 
 - Type: `receiver:syslog_cef` (`urn:otel:receiver:syslog_cef`)
-- Feature gate: Default
+- Feature gate: `syslog-cef`
 - Stability: Experimental
 
 ## Overview
@@ -453,12 +453,30 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 
 ### Metric Sets
 
-#### `receiver.syslog_cef`
+#### Shared Receiver Metrics
+
+Each UDP datagram or emitted TCP frame records one shared receiver observation
+when receiver-local handling terminates. TCP payload size excludes the newline
+delimiter. Processing duration covers active admission, parsing, and record
+append work. It excludes batch buffering and pipeline handoff.
 
 | Metric | Unit | Description |
 | --- | --- | --- |
-| `receiver.syslog_cef.received.items` | `{item}` | Number of log records observed at the socket before parsing. |
-| `receiver.syslog_cef.forwards.items` | `{item}` | Number of log records delivered to the pipeline send path, grouped by `outcome`. |
+| `receiver.received.messages` | `{message}` | Number of classified external messages, grouped by fixed entity attribute `protocol` set to `tcp` or `udp`, `signal=logs`, and terminal `outcome`. |
+| `receiver.received.payload.size` | `By` | Optional encoded application payload bytes visible before parsing, grouped by fixed entity attribute `protocol` set to `tcp` or `udp`, `signal=logs`, and terminal `outcome`. |
+| `receiver.processing.duration` | `s` | Optional active receiver-local processing duration per external message, grouped by fixed entity attribute `protocol` set to `tcp` or `udp` and `signal=logs`. |
+
+`outcome=success` means receiver-local admission, parsing, and record append
+ completed. `outcome=refused` means memory-pressure or rate-limit admission
+rejected the message, or the framed input was rejected as invalid. The current
+implementation does not emit `outcome=failure`; that outcome is reserved for
+other receiver-local processing errors. Batch buffering, batch construction,
+downstream handoff, and Ack/Nack do not change this outcome.
+
+#### Node Diagnostics
+
+| Metric | Unit | Description |
+| --- | --- | --- |
 | `receiver.syslog_cef.rejections.items` | `{item}` | Number of log records rejected before pipeline admission, grouped by bounded `error.type` and `protocol`. |
 | `receiver.syslog_cef.truncations.items` | `{item}` | Number of log records whose raw message exceeded `MAX_MESSAGE_SIZE` and were truncated before parsing. For TCP, truncation is detected precisely when a newline-delimited message exceeds the size limit. For UDP, it is a heuristic - a datagram that fills the entire receive buffer is assumed truncated. |
 | `receiver.syslog_cef.transport.errors` | `{error}` | Number of transport-level errors, grouped by `protocol` (e.g. TLS handshake failures). |

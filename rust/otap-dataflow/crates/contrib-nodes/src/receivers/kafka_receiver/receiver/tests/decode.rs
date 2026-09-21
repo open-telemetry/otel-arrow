@@ -12,17 +12,12 @@ use super::*;
 /// route to the traces decoder.
 #[test]
 fn decode_traces_payload_otlp_proto() {
-    let req = create_traces_with_spans();
-    let mut bytes = vec![];
-    req.encode(&mut bytes).expect("encode");
+    let bytes = encoded_trace_fixture();
 
     let mut pdata =
         SignalDecoder::decode_signal_payload(SignalType::Traces, &bytes, MessageFormat::OtlpProto)
             .expect("should decode");
-    let proto: OtlpProtoBytes = pdata
-        .take_payload()
-        .try_into_with_default()
-        .expect("to OtlpProtoBytes");
+    let proto = take_otlp_proto(&mut pdata);
     assert!(matches!(proto, OtlpProtoBytes::ExportTracesRequest(_)));
 }
 
@@ -38,10 +33,7 @@ fn decode_metrics_payload_otlp_proto() {
     let mut pdata =
         SignalDecoder::decode_signal_payload(SignalType::Metrics, &bytes, MessageFormat::OtlpProto)
             .expect("should decode");
-    let proto: OtlpProtoBytes = pdata
-        .take_payload()
-        .try_into_with_default()
-        .expect("to OtlpProtoBytes");
+    let proto = take_otlp_proto(&mut pdata);
     assert!(matches!(proto, OtlpProtoBytes::ExportMetricsRequest(_)));
 }
 
@@ -57,10 +49,7 @@ fn decode_logs_payload_otlp_proto() {
     let mut pdata =
         SignalDecoder::decode_signal_payload(SignalType::Logs, &bytes, MessageFormat::OtlpProto)
             .expect("should decode");
-    let proto: OtlpProtoBytes = pdata
-        .take_payload()
-        .try_into_with_default()
-        .expect("to OtlpProtoBytes");
+    let proto = take_otlp_proto(&mut pdata);
     assert!(matches!(proto, OtlpProtoBytes::ExportLogsRequest(_)));
 }
 
@@ -133,10 +122,7 @@ fn decode_logs_payload_syslog_rfc5424() {
     let mut pdata =
         SignalDecoder::decode_signal_payload(SignalType::Logs, input, MessageFormat::Syslog)
             .expect("decode Syslog");
-    let proto: OtlpProtoBytes = pdata
-        .take_payload()
-        .try_into_with_default()
-        .expect("convert Syslog Arrow logs to OTLP");
+    let proto = take_otlp_proto(&mut pdata);
     let request = ExportLogsServiceRequest::decode(proto.as_bytes()).expect("decode OTLP logs");
 
     assert_eq!(request.resource_logs.len(), 1);
@@ -153,10 +139,7 @@ fn decode_logs_payload_syslog_with_embedded_cef() {
     let mut pdata =
         SignalDecoder::decode_signal_payload(SignalType::Logs, input, MessageFormat::Syslog)
             .expect("decode Syslog CEF");
-    let proto: OtlpProtoBytes = pdata
-        .take_payload()
-        .try_into_with_default()
-        .expect("convert Syslog Arrow logs to OTLP");
+    let proto = take_otlp_proto(&mut pdata);
     let request = ExportLogsServiceRequest::decode(proto.as_bytes()).expect("decode OTLP logs");
     let attributes = &request.resource_logs[0].scope_logs[0].log_records[0].attributes;
 
@@ -221,16 +204,11 @@ fn decode_traces_payload_invalid_otap_bytes_returns_error() {
 /// mutate the payload.
 #[test]
 fn decode_traces_payload_otlp_preserves_bytes() {
-    let req = create_traces_with_spans();
-    let mut bytes = vec![];
-    req.encode(&mut bytes).expect("encode");
+    let bytes = encoded_trace_fixture();
 
     let mut pdata =
         SignalDecoder::decode_signal_payload(SignalType::Traces, &bytes, MessageFormat::OtlpProto)
             .expect("decode");
-    let proto: OtlpProtoBytes = pdata
-        .take_payload()
-        .try_into_with_default()
-        .expect("convert");
+    let proto = take_otlp_proto(&mut pdata);
     assert_eq!(proto.as_bytes(), &bytes);
 }

@@ -40,7 +40,7 @@ otel-arrow-dfe-config.workspace = true
 otel-arrow-dfe-contrib-extensions.workspace = true
 otel-arrow-dfe-contrib-nodes.workspace = true
 otel-arrow-dfe-controller.workspace = true
-otel-arrow-dfe-core-nodes.workspace = true
+otel-arrow-dfe-core-nodes = { workspace = true, default-features = false }
 otel-arrow-dfe-dev-nodes = { workspace = true, optional = true }
 otel-arrow-dfe-engine.workspace = true
 otel-arrow-dfe-otap.workspace = true
@@ -63,11 +63,12 @@ otel-arrow-dfe-contrib-extensions = { version = "0.56.0", path = "crates/contrib
 otel-arrow-dfe-contrib-nodes = { version = "0.56.0", path = "crates/contrib-nodes" }
 otel-arrow-dfe-control-channel = { path = "crates/control-channel" }
 otel-arrow-dfe-controller = { version = "0.56.0", path = "crates/controller" }
-otel-arrow-dfe-core-nodes = { version = "0.56.0", path = "crates/core-nodes" }
+otel-arrow-dfe-core-nodes = { version = "0.56.0", path = "crates/core-nodes", default-features = false }
 otel-arrow-dfe-dev-nodes = { path = "crates/dev-nodes" }
 otel-arrow-dfe-engine = { version = "0.56.0", path = "crates/engine" }
 otel-arrow-dfe-expohisto = { version = "0.56.0", path = "crates/expohisto" }
 otel-arrow-dfe-otap = { version = "0.56.0", path = "crates/otap" }
+otel-arrow-dfe-scraper = { version = "0.56.0", path = "crates/scraper" }
 otel-arrow-dfe-wasm-host = { path = "crates/wasm-host" }
 otel-arrow-dfe-test-tls-certs = { path = "crates/otap-test-tls-certs" }
 otel-arrow-dfe-test-net = { path = "crates/otap-test-net" }
@@ -299,73 +300,111 @@ opentelemetry-resource-detectors = "0.12.0"
 otel-arrow-dfe-pdata-views = { path = "crates/pdata-views" }
 
 [features]
-default = ["jemalloc", "crypto-ring", "dev-tools", "admin-live-logs-ws"]
+default = ["core-nodes", "dev-tools", "admin-live-logs-ws", "jemalloc", "crypto-ring"]
+
+# Core-node feature forwarding. Keep these lists aligned with
+# `crates/core-nodes/Cargo.toml`.
+core-nodes = ["otel-arrow-dfe-core-nodes/core-nodes"]
+core-receivers = ["otel-arrow-dfe-core-nodes/core-receivers"]
+core-processors = ["otel-arrow-dfe-core-nodes/core-processors"]
+core-exporters = ["otel-arrow-dfe-core-nodes/core-exporters"]
+
+# Core integrations with both sources and destinations.
+otap = ["otel-arrow-dfe-core-nodes/otap"]
+otlp = ["otel-arrow-dfe-core-nodes/otlp"]
+topic = ["otel-arrow-dfe-core-nodes/topic"]
+
+# Core receivers.
+host-metrics = ["otel-arrow-dfe-core-nodes/host-metrics"]
+journald = ["otel-arrow-dfe-core-nodes/journald"]
+syslog-cef = ["otel-arrow-dfe-core-nodes/syslog-cef"]
+
+# Core processors.
+durable-buffer = ["otel-arrow-dfe-core-nodes/durable-buffer"]
+partition = ["otel-arrow-dfe-core-nodes/partition"]
+transform = ["otel-arrow-dfe-core-nodes/transform"]
+
+# Core exporters.
+file = ["otel-arrow-dfe-core-nodes/file"]
+parquet = ["otel-arrow-dfe-core-nodes/parquet"]
+
+# Contrib-node feature forwarding. Keep these lists aligned with
+# `crates/contrib-nodes/Cargo.toml`.
+contrib-nodes = ["otel-arrow-dfe-contrib-nodes/contrib-nodes"]
+contrib-receivers = ["otel-arrow-dfe-contrib-nodes/contrib-receivers"]
+contrib-processors = ["otel-arrow-dfe-contrib-nodes/contrib-processors"]
+contrib-exporters = ["otel-arrow-dfe-contrib-nodes/contrib-exporters"]
+
+# Contrib integrations with both sources and destinations.
+kafka = ["otel-arrow-dfe-contrib-nodes/kafka"]
+
+# Contrib receivers.
+etw = ["otel-arrow-dfe-contrib-nodes/etw"]
+user-events = ["otel-arrow-dfe-contrib-nodes/user-events"]
+
+# Contrib processors.
+condense-attributes = ["otel-arrow-dfe-contrib-nodes/condense-attributes"]
+recordset-kql = ["otel-arrow-dfe-contrib-nodes/recordset-kql"]
+resource-validator = ["otel-arrow-dfe-contrib-nodes/resource-validator"]
+
+# Contrib exporters.
+# The Azure Monitor exporter requires the Azure Identity auth extension to
+# authenticate outbound requests, so enabling it pulls in that extension.
+azure-monitor = [
+    "otel-arrow-dfe-contrib-nodes/azure-monitor",
+    "azure-identity-auth",
+]
+clickhouse = ["otel-arrow-dfe-contrib-nodes/clickhouse"]
+geneva = ["otel-arrow-dfe-contrib-nodes/geneva"]
+geneva-certificate-auth = ["geneva", "otel-arrow-dfe-contrib-nodes/geneva-certificate-auth"]
+
+# Contrib extensions.
+contrib-extensions = ["otel-arrow-dfe-contrib-extensions/contrib-extensions"]
+azure-identity-auth = ["otel-arrow-dfe-contrib-extensions/azure-identity-auth"]
+k8s-service-account-token-auth = ["otel-arrow-dfe-contrib-extensions/k8s-service-account-token-auth"]
+oauth2-client-auth = ["otel-arrow-dfe-contrib-extensions/oauth2-client-auth"]
+
+# Cloud integration support layered onto the features above.
+# Azure Blob Storage for the Parquet exporter authenticates through a bound
+# bearer token provider, so enabling it pulls in that extension.
+aws = ["otel-arrow-dfe-otap/aws", "otel-arrow-dfe-contrib-nodes/aws"]
+azure = [
+    "otel-arrow-dfe-otap/azure",
+    "otel-arrow-dfe-core-nodes/azure",
+    "azure-identity-auth",
+]
+
+# Cryptographic provider selection (mutually exclusive).
+# Exactly one must be enabled when using TLS or any rustls-backed dependency.
+crypto-aws-lc = ["otel-arrow-dfe-otap/crypto-aws-lc", "otel-arrow-dfe-contrib-extensions/crypto-aws-lc"]
+crypto-openssl = ["otel-arrow-dfe-otap/crypto-openssl", "otel-arrow-dfe-contrib-extensions/crypto-openssl"]
+crypto-ring = ["otel-arrow-dfe-otap/crypto-ring", "otel-arrow-dfe-contrib-extensions/crypto-ring"]
+crypto-symcrypt = ["otel-arrow-dfe-otap/crypto-symcrypt"]
+
+# Memory allocators and profiling.
+dhat-heap = [
+    "dep:dhat",
+]
 jemalloc = [
     "dep:tikv-jemallocator",
     "otel-arrow-dfe-engine/jemalloc",
     "otel-arrow-dfe-controller/jemalloc-pprof",
 ]
 mimalloc = ["dep:mimalloc"]
-# Azure Blob Storage for the Parquet exporter. Azure storage authenticates through
-# a bound bearer token provider, so enabling it pulls in that extension.
-azure = [
-    "otel-arrow-dfe-otap/azure",
-    "otel-arrow-dfe-core-nodes/azure",
-    "azure-identity-auth-extension",
-]
-aws = ["otel-arrow-dfe-otap/aws", "otel-arrow-dfe-contrib-nodes/aws"]
-unsafe-optimizations = ["unchecked-index", "unchecked-arithmetic"]
-unchecked-index = []
+
+# Unsafe performance optimizations.
+unsafe-optimizations = ["unchecked-arithmetic", "unchecked-index"]
 unchecked-arithmetic = []
-dhat-heap = [
-    "dep:dhat",
-]
+unchecked-index = []
+
+# Admin UI live log streaming over WebSocket.
+admin-live-logs-ws = ["otel-arrow-dfe-controller/admin-live-logs-ws"]
 
 # Development-only test, fault-injection, and benchmark nodes.
 dev-tools = [
     "dep:otel-arrow-dfe-dev-nodes",
     "otel-arrow-dfe-core-nodes/dev-tools",
 ]
-
-# Admin UI live log streaming over WebSocket.
-admin-live-logs-ws = ["otel-arrow-dfe-controller/admin-live-logs-ws"]
-
-# Cryptographic provider selection (mutually exclusive).
-# Exactly one must be enabled when using TLS or any rustls-backed dependency (e.g. reqwest).
-crypto-ring = ["otel-arrow-dfe-otap/crypto-ring", "otel-arrow-dfe-contrib-extensions/crypto-ring"]
-crypto-aws-lc = ["otel-arrow-dfe-otap/crypto-aws-lc", "otel-arrow-dfe-contrib-extensions/crypto-aws-lc"]
-crypto-symcrypt = ["otel-arrow-dfe-otap/crypto-symcrypt"]
-crypto-openssl = ["otel-arrow-dfe-otap/crypto-openssl", "otel-arrow-dfe-contrib-extensions/crypto-openssl"]
-
-# Contrib exporters (opt-in) - now in contrib-nodes
-contrib-exporters = ["otel-arrow-dfe-contrib-nodes/contrib-exporters"]
-geneva-exporter = ["otel-arrow-dfe-contrib-nodes/geneva-exporter"]
-geneva-certificate-auth = ["geneva-exporter", "otel-arrow-dfe-contrib-nodes/geneva-certificate-auth"]
-kafka-exporter = ["otel-arrow-dfe-contrib-nodes/kafka-exporter"]
-# The Azure Monitor exporter requires the Azure Identity auth extension to
-# authenticate outbound requests, so enabling it pulls in that extension.
-azure-monitor-exporter = [
-    "otel-arrow-dfe-contrib-nodes/azure-monitor-exporter",
-    "azure-identity-auth-extension",
-]
-# Contrib extensions (opt-in) - in contrib-extensions
-contrib-extensions = ["otel-arrow-dfe-contrib-extensions/contrib-extensions"]
-azure-identity-auth-extension = ["otel-arrow-dfe-contrib-extensions/azure-identity-auth-extension"]
-k8s-service-account-token-auth-extension = ["otel-arrow-dfe-contrib-extensions/k8s-service-account-token-auth-extension"]
-oauth2-client-auth-extension = ["otel-arrow-dfe-contrib-extensions/oauth2-client-auth-extension"]
-# Contrib receivers (opt-in) - now in contrib-nodes
-contrib-receivers = ["otel-arrow-dfe-contrib-nodes/contrib-receivers"]
-kafka-receiver = ["otel-arrow-dfe-contrib-nodes/kafka-receiver"]
-user_events-receiver = ["otel-arrow-dfe-contrib-nodes/user_events-receiver"]
-user_events-eventheader = ["otel-arrow-dfe-contrib-nodes/user_events-eventheader"]
-clickhouse-exporter = ["otel-arrow-dfe-contrib-nodes/clickhouse-exporter"]
-# Contrib processors (opt-in) - now in contrib-nodes
-contrib-processors = ["otel-arrow-dfe-contrib-nodes/contrib-processors"]
-condense-attributes-processor = ["otel-arrow-dfe-contrib-nodes/condense-attributes-processor"]
-recordset-kql-processor = ["otel-arrow-dfe-contrib-nodes/recordset-kql-processor"]
-resource-validator-processor = ["otel-arrow-dfe-contrib-nodes/resource-validator-processor"]
-# Contrib receivers (opt-in) - Windows-only
-etw-receiver = ["otel-arrow-dfe-contrib-nodes/etw-receiver"]
 
 # Experimental WASM host-kernel processor plugin runtime (opt-in). Off by
 # default; enabling this pulls in wasmtime and registers the

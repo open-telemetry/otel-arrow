@@ -52,10 +52,10 @@ jobs:
         with:
           python-version: "3.14"
           cache: pip
-          cache-dependency-path: source/tools/comparison_dashboard/requirements.txt
+          cache-dependency-path: source/tools/comparison_dashboard/requirements.lock.txt
 
       - name: Install dashboard dependencies
-        run: pip install -r source/tools/comparison_dashboard/requirements.txt
+        run: python -m pip install --require-hashes -r source/tools/comparison_dashboard/requirements.lock.txt
 
       # Build directly into the target tree: read data from
       # target/docs/comparison_data, write site to target/docs/compare.

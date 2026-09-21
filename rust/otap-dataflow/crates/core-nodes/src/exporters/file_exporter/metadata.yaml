@@ -1,0 +1,6 @@
+type: file
+status:
+  class: exporter
+  codeowners:
+    active:
+      - lquerel
