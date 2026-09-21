@@ -12,6 +12,60 @@ changes. See [`RELEASING.md`](../../RELEASING.md) for the versioning policy.
 
 <!-- next version -->
 
+## v0.57.0
+
+### :stop_sign: Breaking changes :stop_sign:
+
+- `observability`: Replace OTLP receiver and exporter telemetry with shared node-boundary metrics. ([#3822](https://github.com/open-telemetry/otel-arrow/issues/3822))
+  Migration: Update dashboards and alerts from `receiver.otlp.requests.started/completed/payload_size`, `receiver.otlp.rejections.requests`, and `exporter.exports.*` to `receiver.otlp.requests.accepted/rejected`, `receiver.received.*`, `receiver.processing.duration`, and `exporter.attempted.*`.
+
+- `observability`: Align Azure Monitor exporter metrics with shared per-attempt telemetry and outcome-partitioned terminal batch metrics. ([#3822](https://github.com/open-telemetry/otel-arrow/issues/3822))
+  Migration: `exports.{items,messages,bytes}` become per-attempt `exporter.attempted.{items,messages,payload.size,duration}`. `exports.batches` becomes `exporter.azure_monitor.batches`; exporter batch sizes are partitioned by `signal`/`outcome`; 4xx are `refused`.
+
+- `observability`: Align filter processor metrics with universal node telemetry ([#3053](https://github.com/open-telemetry/otel-arrow/issues/3053), [#3649](https://github.com/open-telemetry/otel-arrow/issues/3649))
+  Migration: Rename `processor.filter.pdata.dropped.items` to
+  `processor.filter.dropped.items`. Use `node.input.messages` for received
+  batches and `node.output.items` for kept items.
+
+- `pipeline`: Modernize Geneva exporter metrics with shared attempt telemetry and bounded signal, outcome, error, and skip attributes. ([#3530](https://github.com/open-telemetry/otel-arrow/issues/3530), [#3822](https://github.com/open-telemetry/otel-arrow/issues/3822))
+  Migration: Replace `otap.exporter.geneva` queries with `exporter.attempted` and `exporter.geneva.*`. Use `runtime_metrics: normal` or `detailed`, or opt in per node with `policies.telemetry`. Durations now use seconds.
+
+- `pipeline`: Migrated journald receiver telemetry from flat counters to dimensioned metric populations with enum attributes. ([#3530](https://github.com/open-telemetry/otel-arrow/issues/3530))
+  Migration: Update dashboards to use dimensioned metrics: lifecycle.transitions, acknowledgements.responses, checkpoints.commits, source.events, and output.*.
+- `pipeline`: Add Cargo features that group related core and contrib nodes while preserving the complete default build. ([#4085](https://github.com/open-telemetry/otel-arrow/issues/4085))
+  Migration: Consumers using `otel-arrow-dfe-core-nodes` with `default-features = false` must enable `core-nodes` for the previous complete set or select features such as `otlp`, `durable-buffer`, and `parquet`.
+- `pipeline`: Replace Syslog CEF component counters with shared receiver lifecycle metrics. ([#3822](https://github.com/open-telemetry/otel-arrow/issues/3822))
+  Migration: Replace `receiver.syslog_cef.received.items` with `receiver.received.messages`. `forwards.items` has no exact replacement. Use `node.output.items` for Ack/Nack outcomes (enable detailed runtime metrics or `item_counts`), or `channel.sender.messages` for immediate batch send results.
+
+- `pipeline`: Migrated topic receiver telemetry from flat counters to dimensioned metric populations with enum attributes. ([#3530](https://github.com/open-telemetry/otel-arrow/issues/3530))
+  Migration: Update queries for dimensioned metrics: forward -> `forward.messages{outcome}`, lag -> `lag.events{event.type}`, bridge -> `bridge.controls{control, result}`. Units for forward metrics and lagged_messages changed from `{item}` to `{message}`.
+
+### :bulb: Enhancements :bulb:
+
+- `dependencies`: Upgrade various Rust dependencies. ([#4062](https://github.com/open-telemetry/otel-arrow/issues/4062), [#4118](https://github.com/open-telemetry/otel-arrow/issues/4118))
+- `engine`: Improve transport-header capture and propagation while preserving configured name casing. ([#3919](https://github.com/open-telemetry/otel-arrow/issues/3919), [#4008](https://github.com/open-telemetry/otel-arrow/issues/4008))
+  New original-name requirements need an engine restart. Compatible pipelines can update live while preserving the initial representation and stored-name spelling.
+- `otap`: Implement resource and scope name, version, schema_url, and dropped_attributes_count in the OTAP logs view, reading each from its group's representative row in O(1) ([#3993](https://github.com/open-telemetry/otel-arrow/issues/3993))
+- `otap`: Allow OTLP receivers to store selected verified authorization claims in typed pdata context entries. ([#3920](https://github.com/open-telemetry/otel-arrow/issues/3920))
+  Configure policies.authorized_identity with claim and store_as fields. Missing claims are omitted, and multi-valued claims preserve their values.
+
+- `otap`: Re-export the `arrow` crate from pdata as `otel_arrow_dfe_pdata::arrow` so downstream code can build against the exact Arrow version pdata uses ([#4078](https://github.com/open-telemetry/otel-arrow/issues/4078))
+- `pipeline`: Kafka receiver now suffixes a configured group.instance.id with the pipeline deployment generation so a new pipeline instance is a distinct static member during a live-reconfiguration cutover. ([#3959](https://github.com/open-telemetry/otel-arrow/issues/3959))
+  The resolved group.instance.id is now base-g<generation> (and -<core> on multi-core pipelines), so a new-generation instance's join is not fenced as a duplicate static member of the draining old instance.
+
+### :toolbox: Bug fixes :toolbox:
+
+- `dependencies`: Reject TLS 1.3 handshake messages received at the wrong encryption level by updating rustls to 0.23.45 (RUSTSEC-2026-0285). ([#4069](https://github.com/open-telemetry/otel-arrow/issues/4069))
+- `pdata`: Fix OTLP to OTAP conversion panic for exemplars with no timestamp ([#4056](https://github.com/open-telemetry/otel-arrow/issues/4056))
+  OTLP metrics data containing exemplars with no timestamp set now
+  converts to OTAP successfully instead of failing.
+- `pdata`: Prevent pipeline panic when exporting attributes whose dictionary-encoded value columns have null rows with stale physical keys. ([#4073](https://github.com/open-telemetry/otel-arrow/issues/4073))
+  Transport-optimized encoding used raw physical dictionary keys for null slots as indices, causing an intermittent index-out-of-bounds panic during export serialization. Null rows now use a safe sentinel rank.
+- `pipeline`: Kafka exporter shutdown no longer stalls past the deadline when ack/nack completions are not consumed ([#3959](https://github.com/open-telemetry/otel-arrow/issues/3959))
+  On shutdown the exporter now bounds each in-flight ack/nack report by the deadline and purges the producer, so a full completion channel cannot block termination. Abandoned reports are logged; every in-flight send is still accounted.
+
+<!-- previous-version -->
+
 ## v0.56.0
 
 ### :stop_sign: Breaking changes :stop_sign:
