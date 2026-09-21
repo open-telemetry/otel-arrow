@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789950489708,
+  "lastUpdate": 1790003655620,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -41249,6 +41249,150 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/open-telemetry/otel-arrow/commit/5588c3e0d590d4df0303697a6862c8324235a310"
         },
         "date": 1789950471013,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 84.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.97,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.71,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.97,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.68,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 71.54,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.86,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.54,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.44,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.16,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 116.51,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 103.79,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "lalit_fin@yahoo.com",
+            "name": "Lalit Kumar Bhasin",
+            "username": "lalitb"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "1611c1c78f5dd9d6da0c4eb2cc2de3544294d39f",
+          "message": "chore: fix flaky Kafka queue-full test (#4122)\n\n## Description\n\nMake queue pressure deterministic by holding the mock broker down until\nthe second batch gets a `QueueFull` NACK. After recovery, wait for ACKs\nand consume the expected records, removing the fixed sleep and short\nidle timeout.\n\nThe flaky CI failure -\nhttps://github.com/open-telemetry/otel-arrow/actions/runs/35548578602/job/106181614072?pr=4119\n\n```\n  stderr ───\n\n    thread 'exporters::kafka_exporter::exporter::test_support::tests::enqueue_failure_reports_nack_without_tracking' (23196) panicked at crates/contrib-nodes/src/exporters/kafka_exporter/exporter.rs:5125:21:\n    the loop keeps running after enqueue pressure; trailing send delivers\n    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n  TRY 2 FAIL [   4.463s] (─────────) otel-arrow-dfe-contrib-nodes exporters::kafka_exporter::exporter::test_support::tests::enqueue_failure_reports_nack_without_tracking\n```",
+          "timestamp": "2026-09-21T14:24:24Z",
+          "tree_id": "da398112dbf9a3caa7946b7152457b27104a6a5c",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/1611c1c78f5dd9d6da0c4eb2cc2de3544294d39f"
+        },
+        "date": 1790003638658,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
