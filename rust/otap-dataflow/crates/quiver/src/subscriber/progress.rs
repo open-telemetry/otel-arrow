@@ -222,7 +222,7 @@ impl ProgressHeader {
 
         // Note: We don't validate header_size against file size here because
         // deserialize() is called with just the header bytes. File-level bounds
-        // checking happens in read_progress_file().
+        // checking happens in read_progress_file_state().
 
         // Read flags. Unknown flags remain forward-compatible and are ignored.
         let flags = u16::from_le_bytes([data[12], data[13]]);
@@ -614,15 +614,6 @@ pub(crate) fn read_progress_file_state(path: &Path) -> Result<LoadedProgress> {
     })
 }
 
-/// Reads and validates a subscriber progress file.
-///
-/// This compatibility wrapper preserves the existing public return type while
-/// internal startup recovery also consumes header flags.
-pub fn read_progress_file(path: &Path) -> Result<(SegmentSeq, Vec<SegmentProgressEntry>)> {
-    let progress = read_progress_file_state(path)?;
-    Ok((progress.oldest_incomplete_seg, progress.entries))
-}
-
 // -----------------------------------------------------------------------------
 // Writing Progress Files
 // -----------------------------------------------------------------------------
@@ -991,6 +982,8 @@ mod tests {
     // File I/O tests
     // -------------------------------------------------------------------------
 
+    /// Scenario: An empty unflagged checkpoint is written and read.
+    /// Guarantees: The reader preserves the zero boundary and empty entries.
     #[tokio::test]
     async fn write_and_read_empty_progress() {
         let dir = tempdir().unwrap();
@@ -1001,12 +994,14 @@ mod tests {
             .unwrap();
 
         let path = progress_file_path(dir.path(), &sub_id);
-        let (oldest, entries) = read_progress_file(&path).unwrap();
+        let progress = read_progress_file_state(&path).unwrap();
 
-        assert_eq!(oldest, SegmentSeq::new(0));
-        assert!(entries.is_empty());
+        assert_eq!(progress.oldest_incomplete_seg, SegmentSeq::new(0));
+        assert!(progress.entries.is_empty());
     }
 
+    /// Scenario: A checkpoint contains partially acknowledged entries for two segments.
+    /// Guarantees: Reading preserves the boundary, entry ordering, and acknowledgement bitmaps.
     #[tokio::test]
     async fn write_and_read_progress_with_entries() {
         let dir = tempdir().unwrap();
@@ -1028,14 +1023,16 @@ mod tests {
             .unwrap();
 
         let path = progress_file_path(dir.path(), &sub_id);
-        let (oldest, read_entries) = read_progress_file(&path).unwrap();
+        let progress = read_progress_file_state(&path).unwrap();
 
-        assert_eq!(oldest, SegmentSeq::new(10));
-        assert_eq!(read_entries.len(), 2);
-        assert_eq!(read_entries[0], entry1);
-        assert_eq!(read_entries[1], entry2);
+        assert_eq!(progress.oldest_incomplete_seg, SegmentSeq::new(10));
+        assert_eq!(progress.entries.len(), 2);
+        assert_eq!(progress.entries[0], entry1);
+        assert_eq!(progress.entries[1], entry2);
     }
 
+    /// Scenario: A checkpoint header byte changes without updating its checksum.
+    /// Guarantees: The reader rejects the corrupted checkpoint.
     #[tokio::test]
     async fn read_detects_crc_corruption() {
         let dir = tempdir().unwrap();
@@ -1051,13 +1048,15 @@ mod tests {
         data[20] ^= 0xFF;
         fs::write(&path, &data).unwrap();
 
-        let result = read_progress_file(&path);
+        let result = read_progress_file_state(&path);
         assert!(matches!(
             result,
             Err(SubscriberError::ProgressCorrupted { .. })
         ));
     }
 
+    /// Scenario: A checkpoint is truncated to its first ten bytes.
+    /// Guarantees: The reader rejects the incomplete file as corrupted.
     #[tokio::test]
     async fn read_detects_truncation() {
         let dir = tempdir().unwrap();
@@ -1072,13 +1071,15 @@ mod tests {
         let data = fs::read(&path).unwrap();
         fs::write(&path, &data[..10]).unwrap();
 
-        let result = read_progress_file(&path);
+        let result = read_progress_file_state(&path);
         assert!(matches!(
             result,
             Err(SubscriberError::ProgressCorrupted { .. })
         ));
     }
 
+    /// Scenario: A checksum-valid checkpoint claims a header larger than the file.
+    /// Guarantees: The reader rejects the out-of-bounds header as corrupted.
     #[tokio::test]
     async fn read_detects_oversized_header() {
         let dir = tempdir().unwrap();
@@ -1105,13 +1106,15 @@ mod tests {
 
         fs::write(&path, &data).unwrap();
 
-        let result = read_progress_file(&path);
+        let result = read_progress_file_state(&path);
         assert!(
             matches!(result, Err(SubscriberError::ProgressCorrupted { .. })),
             "expected ProgressCorrupted error for oversized header, got: {result:?}"
         );
     }
 
+    /// Scenario: A checksum-valid checkpoint declares entries missing from its body.
+    /// Guarantees: The reader reports an error rather than accepting incomplete progress.
     #[tokio::test]
     async fn read_detects_entry_count_overflow() {
         let dir = tempdir().unwrap();
@@ -1137,7 +1140,7 @@ mod tests {
 
         fs::write(&path, &data).unwrap();
 
-        let result = read_progress_file(&path);
+        let result = read_progress_file_state(&path);
         // Should fail when trying to read entries that don't exist
         assert!(
             result.is_err(),
@@ -1145,6 +1148,8 @@ mod tests {
         );
     }
 
+    /// Scenario: A subscriber progress file is empty.
+    /// Guarantees: The reader reports corruption instead of returning empty progress.
     #[test]
     fn read_handles_zero_byte_file() {
         let dir = tempdir().unwrap();
@@ -1153,13 +1158,15 @@ mod tests {
         // Create empty file
         fs::write(&path, b"").unwrap();
 
-        let result = read_progress_file(&path);
+        let result = read_progress_file_state(&path);
         assert!(matches!(
             result,
             Err(SubscriberError::ProgressCorrupted { .. })
         ));
     }
 
+    /// Scenario: A subscriber progress file contains unrelated text.
+    /// Guarantees: The reader rejects the invalid checkpoint.
     #[test]
     fn read_handles_garbage_file() {
         let dir = tempdir().unwrap();
@@ -1168,7 +1175,7 @@ mod tests {
         // Write random garbage
         fs::write(&path, b"this is not a valid progress file at all!!!").unwrap();
 
-        let result = read_progress_file(&path);
+        let result = read_progress_file_state(&path);
         assert!(
             result.is_err(),
             "expected error for garbage file, got: {result:?}"
@@ -1236,6 +1243,8 @@ mod tests {
     // Atomic update tests
     // -------------------------------------------------------------------------
 
+    /// Scenario: An existing checkpoint is replaced with a different segment entry.
+    /// Guarantees: Reading after replacement returns the new boundary and entry.
     #[tokio::test]
     async fn atomic_update_preserves_old_on_temp_failure() {
         let dir = tempdir().unwrap();
@@ -1254,9 +1263,9 @@ mod tests {
 
         // Read back and verify
         let path = progress_file_path(dir.path(), &sub_id);
-        let (oldest, entries) = read_progress_file(&path).unwrap();
-        assert_eq!(oldest, SegmentSeq::new(1));
-        assert_eq!(entries.len(), 1);
+        let progress = read_progress_file_state(&path).unwrap();
+        assert_eq!(progress.oldest_incomplete_seg, SegmentSeq::new(1));
+        assert_eq!(progress.entries.len(), 1);
 
         // Write updated state
         let updated_entry = SegmentProgressEntry::new(SegmentSeq::new(2), 20);
@@ -1270,16 +1279,18 @@ mod tests {
         .unwrap();
 
         // Verify update
-        let (oldest, entries) = read_progress_file(&path).unwrap();
-        assert_eq!(oldest, SegmentSeq::new(2));
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0], updated_entry);
+        let progress = read_progress_file_state(&path).unwrap();
+        assert_eq!(progress.oldest_incomplete_seg, SegmentSeq::new(2));
+        assert_eq!(progress.entries.len(), 1);
+        assert_eq!(progress.entries[0], updated_entry);
     }
 
     // -------------------------------------------------------------------------
     // Async method tests
     // -------------------------------------------------------------------------
 
+    /// Scenario: The async writer persists a single segment checkpoint.
+    /// Guarantees: The reader recovers its boundary and complete entry data.
     #[tokio::test]
     async fn write_and_read_progress_file_async() {
         let dir = tempdir().unwrap();
@@ -1297,10 +1308,10 @@ mod tests {
 
         // Verify file was written
         let path = progress_file_path(dir.path(), &sub_id);
-        let (oldest, entries) = read_progress_file(&path).unwrap();
-        assert_eq!(oldest, SegmentSeq::new(1));
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0], entry);
+        let progress = read_progress_file_state(&path).unwrap();
+        assert_eq!(progress.oldest_incomplete_seg, SegmentSeq::new(1));
+        assert_eq!(progress.entries.len(), 1);
+        assert_eq!(progress.entries[0], entry);
     }
 
     #[tokio::test]

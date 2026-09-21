@@ -66,7 +66,7 @@ pub use error::{Result, SubscriberError};
 pub use handle::{BundleHandle, ResolutionCallback};
 pub use progress::{
     SegmentProgressEntry, SubscriberProgress, delete_progress_file, progress_file_path,
-    read_progress_file, scan_progress_files, write_progress_file,
+    scan_progress_files, write_progress_file,
 };
 pub use registry::{
     BundleMetadata, RegistryCallback, RegistryConfig, SegmentProvider, SubscriberRegistry,
