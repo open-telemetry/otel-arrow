@@ -159,14 +159,14 @@ openssl = "0.10"
 # this dependency, as it means moving the derive macros used in our
 # tests upstream. This is currently used by experimental logs
 # exporters, hence the "logs" feature.
-opentelemetry-proto = { version = "0.32", default-features = false, features = ["gen-tonic-messages", "logs", "trace"]}
+opentelemetry-proto = { version = "0.33", default-features = false, features = ["gen-tonic-messages", "logs", "trace"]}
 
 # Detector-only use: opentelemetry_sdk provides the `Resource` type and `ResourceDetector` trait;
 # opentelemetry provides the `Key`/`Value` types those resources hold. These dependencies use
 # `default-features = false` to drop trace/metrics/logs. opentelemetry_sdk 0.32.1 predates the
 # slimming in opentelemetry-rust #3593 (unreleased).
-opentelemetry = { version = "0.32.0", default-features = false }
-opentelemetry_sdk = { version = "0.32.1", default-features = false }
+opentelemetry = { version = "0.33.0", default-features = false }
+opentelemetry_sdk = { version = "0.33.0", default-features = false }
 
 parking_lot = "0.12.5"
 paste = "1"
