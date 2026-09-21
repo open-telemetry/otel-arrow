@@ -53,7 +53,7 @@ tests:
               - ready_check_http:
                   url: http://localhost:{{port}}/api/v1/telemetry/metrics?reset=false
                   method: GET
-                  expected_status_code: 200
+                  expected_status: 200
                   max_retries: 30
                   retry_interval: 2
 

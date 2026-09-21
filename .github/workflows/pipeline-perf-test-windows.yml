@@ -117,11 +117,13 @@ jobs:
       # that also drops the other defaults, the ones this job needs are
       # re-enabled explicitly:
       #   crypto-ring - crypto provider for rustls-backed dependencies
-      #   dev-tools   - pulls in dev-nodes, which provides the
+      #   dev-tools   - pulls in dev-nodes, which provides synthetic data
+      #                 generators and monitoring helpers
+      #   core-nodes  - includes all core receivers, processors, and exporters
       - name: Build df_engine.exe
         shell: pwsh
         working-directory: ./rust/otap-dataflow
-        run: cargo build --release --no-default-features --features mimalloc,crypto-ring,dev-tools
+        run: cargo build --release --no-default-features --features mimalloc,crypto-ring,dev-tools,core-nodes
         env:
           RUSTFLAGS: "-C target-feature=+crt-static"
 
@@ -145,7 +147,6 @@ jobs:
 
       - name: Run idle state test (1 core) - warmup + repeated samples
         if: ${{ !cancelled() }}
-        continue-on-error: true
         shell: pwsh
         working-directory: ./tools/pipeline_perf_test
         run: |
@@ -161,12 +162,14 @@ jobs:
           for ($w = 1; $w -le $warmup; $w++) {
             Write-Host "=== Warmup iteration $w/$warmup (discarded) ==="
             python orchestrator/run_orchestrator.py --config $config
+            if ($LASTEXITCODE -ne 0) { throw "Warmup iteration $w failed with exit code $LASTEXITCODE" }
           }
 
           for ($i = 1; $i -le $iterations; $i++) {
             Write-Host "=== Measured iteration $i/$iterations ==="
             if (Test-Path $src) { Remove-Item -Recurse -Force $src }
             python orchestrator/run_orchestrator.py --config $config
+            if ($LASTEXITCODE -ne 0) { throw "Measured iteration $i failed with exit code $LASTEXITCODE" }
             $iterDir = Join-Path $varianceDir ("iter_{0:D2}" -f $i)
             New-Item -ItemType Directory -Force -Path $iterDir | Out-Null
             Copy-Item "$src/*.json" $iterDir -Force

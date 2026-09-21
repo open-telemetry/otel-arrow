@@ -5,7 +5,7 @@
 # The binary must be built on the host before building this image.
 #
 # Build steps from the rust/otap-dataflow directory:
-#   cargo build --release --no-default-features --features mimalloc,crypto-ring,dev-tools
+#   cargo build --release --no-default-features --features mimalloc,crypto-ring,dev-tools,core-nodes
 #   docker build -f Dockerfile.windows -t df_engine_win .
 #
 # The binary is expected at target/release/df_engine.exe relative to the build

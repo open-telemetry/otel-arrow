@@ -31,6 +31,7 @@ silently passing.
 """
 
 import json
+import math
 import statistics
 import sys
 from pathlib import Path
@@ -56,7 +57,10 @@ def extract_metric(json_file: Path, metric: str = METRIC_NAME) -> Optional[float
 
 
 def collect_samples(variance_dir: Path) -> list[float]:
-    """Collect one idle memory sample per iteration subdirectory."""
+    """Collect one idle memory sample per iteration subdirectory.
+    
+    Rejects non-finite or non-positive values as invalid measurements.
+    """
     samples: list[float] = []
     iter_dirs = sorted(variance_dir.glob("iter_*"))
     for iter_dir in iter_dirs:
@@ -69,8 +73,16 @@ def collect_samples(variance_dir: Path) -> list[float]:
         if value is None:
             print(f"Warning: no {METRIC_NAME} in {json_files[-1]}", file=sys.stderr)
             continue
-        samples.append(float(value))
-        print(f"Found: {iter_dir.name} -> {value:.2f} MiB", file=sys.stderr)
+        float_value = float(value)
+        # Reject non-finite (NaN, inf) or non-positive values.
+        if not math.isfinite(float_value):
+            print(f"Warning: non-finite {METRIC_NAME} in {iter_dir.name}: {float_value}", file=sys.stderr)
+            continue
+        if float_value <= 0.0:
+            print(f"Warning: non-positive {METRIC_NAME} in {iter_dir.name}: {float_value} MiB", file=sys.stderr)
+            continue
+        samples.append(float_value)
+        print(f"Found: {iter_dir.name} -> {float_value:.2f} MiB", file=sys.stderr)
     return samples
 
 
