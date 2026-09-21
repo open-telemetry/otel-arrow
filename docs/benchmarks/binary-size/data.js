@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790007675316,
+  "lastUpdate": 1790015794194,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -41801,6 +41801,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 103.85,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "289780372+otelbot-arrow[bot]@users.noreply.github.com",
+            "name": "otelbot-arrow[bot]",
+            "username": "otelbot-arrow[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "95c3f3ea354a3000a732ad72b87ee047ec94ab5e",
+          "message": "chore(release) Prepare Release v0.57.0 (#4125)\n\n## Release v0.57.0\n\nThis PR prepares the repository for release v0.57.0.\n\n### Changes included:\n- Rendered pending chloggen entries into `go/CHANGELOG.md` and\n`rust/otap-dataflow/CHANGELOG.md`\n- Bumped Rust workspace crates to 0.57.0\n- Include `otel-arrow-dfe-pdata-views` in this release: false\n\n## What's Changed (Go :hamster:)\n\n### :bulb: Enhancements :bulb:\n\n- `dependencies`: Upgrade various Go dependencies.\n([#4119](https://github.com/open-telemetry/otel-arrow/issues/4119))\n\n## What's Changed (Rust :crab:)\n\n### :stop_sign: Breaking changes :stop_sign:\n\n- `observability`: Replace OTLP receiver and exporter telemetry with\nshared node-boundary metrics.\n([#3822](https://github.com/open-telemetry/otel-arrow/issues/3822))\n\n- `observability`: Align Azure Monitor exporter metrics with shared\nper-attempt telemetry and outcome-partitioned terminal batch metrics.\n([#3822](https://github.com/open-telemetry/otel-arrow/issues/3822))\n\n- `observability`: Align filter processor metrics with universal node\ntelemetry\n([#3053](https://github.com/open-telemetry/otel-arrow/issues/3053),\n[#3649](https://github.com/open-telemetry/otel-arrow/issues/3649))\n\n- `pipeline`: Modernize Geneva exporter metrics with shared attempt\ntelemetry and bounded signal, outcome, error, and skip attributes.\n([#3530](https://github.com/open-telemetry/otel-arrow/issues/3530),\n[#3822](https://github.com/open-telemetry/otel-arrow/issues/3822))\n\n- `pipeline`: Migrated journald receiver telemetry from flat counters to\ndimensioned metric populations with enum attributes.\n([#3530](https://github.com/open-telemetry/otel-arrow/issues/3530))\n- `pipeline`: Add Cargo features that group related core and contrib\nnodes while preserving the complete default build.\n([#4085](https://github.com/open-telemetry/otel-arrow/issues/4085))\n- `pipeline`: Replace Syslog CEF component counters with shared receiver\nlifecycle metrics.\n([#3822](https://github.com/open-telemetry/otel-arrow/issues/3822))\n\n- `pipeline`: Migrated topic receiver telemetry from flat counters to\ndimensioned metric populations with enum attributes.\n([#3530](https://github.com/open-telemetry/otel-arrow/issues/3530))\n\n### :bulb: Enhancements :bulb:\n\n- `dependencies`: Upgrade various Rust dependencies.\n([#4062](https://github.com/open-telemetry/otel-arrow/issues/4062),\n[#4118](https://github.com/open-telemetry/otel-arrow/issues/4118))\n- `engine`: Improve transport-header capture and propagation while\npreserving configured name casing.\n([#3919](https://github.com/open-telemetry/otel-arrow/issues/3919),\n[#4008](https://github.com/open-telemetry/otel-arrow/issues/4008))\n- `otap`: Implement resource and scope name, version, schema_url, and\ndropped_attributes_count in the OTAP logs view, reading each from its\ngroup's representative row in O(1)\n([#3993](https://github.com/open-telemetry/otel-arrow/issues/3993))\n- `otap`: Allow OTLP receivers to store selected verified authorization\nclaims in typed pdata context entries.\n([#3920](https://github.com/open-telemetry/otel-arrow/issues/3920))\n\n- `otap`: Re-export the `arrow` crate from pdata as\n`otel_arrow_dfe_pdata::arrow` so downstream code can build against the\nexact Arrow version pdata uses\n([#4078](https://github.com/open-telemetry/otel-arrow/issues/4078))\n- `pipeline`: Kafka receiver now suffixes a configured group.instance.id\nwith the pipeline deployment generation so a new pipeline instance is a\ndistinct static member during a live-reconfiguration cutover.\n([#3959](https://github.com/open-telemetry/otel-arrow/issues/3959))\n\n### :toolbox: Bug fixes :toolbox:\n\n- `dependencies`: Reject TLS 1.3 handshake messages received at the\nwrong encryption level by updating rustls to 0.23.45\n(RUSTSEC-2026-0285).\n([#4069](https://github.com/open-telemetry/otel-arrow/issues/4069))\n- `pdata`: Fix OTLP to OTAP conversion panic for exemplars with no\ntimestamp\n([#4056](https://github.com/open-telemetry/otel-arrow/issues/4056))\n- `pdata`: Prevent pipeline panic when exporting attributes whose\ndictionary-encoded value columns have null rows with stale physical\nkeys.\n([#4073](https://github.com/open-telemetry/otel-arrow/issues/4073))\n- `pipeline`: Kafka exporter shutdown no longer stalls past the deadline\nwhen ack/nack completions are not consumed\n([#3959](https://github.com/open-telemetry/otel-arrow/issues/3959))\n\n### Checklist:\n- [ ] Verify both CHANGELOG.md files render the expected entries\n- [ ] Verify Rust crate versions updated\n- [ ] Confirm all tests pass\n- [ ] Ready to merge and tag release\n\nAfter merging this PR, run the **Push Release** workflow to create git\ntags and publish the GitHub release.\n\nCo-authored-by: otelbot-arrow[bot] <289780372+otelbot-arrow[bot]@users.noreply.github.com>",
+          "timestamp": "2026-09-21T17:39:52Z",
+          "tree_id": "32f2b2ba6cb17d504e4b6867c2995e9b83eb49a2",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/95c3f3ea354a3000a732ad72b87ee047ec94ab5e"
+        },
+        "date": 1790015775299,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 84.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.11,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.71,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.97,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.68,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 71.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.86,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.54,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.16,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 116.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 103.79,
             "unit": "MB"
           }
         ]
