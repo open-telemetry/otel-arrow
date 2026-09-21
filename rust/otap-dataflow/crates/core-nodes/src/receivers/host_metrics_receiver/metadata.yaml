@@ -1,0 +1,6 @@
+type: host_metrics
+status:
+  class: receiver
+  codeowners:
+    active:
+      - lalitb
