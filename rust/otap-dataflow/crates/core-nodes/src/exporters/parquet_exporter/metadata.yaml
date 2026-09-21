@@ -1,0 +1,7 @@
+type: parquet
+status:
+  class: exporter
+  codeowners:
+    active:
+      - lquerel
+      - albertlockett

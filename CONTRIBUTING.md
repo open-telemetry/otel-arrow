@@ -243,6 +243,18 @@ work on an open issue - is described in
 
 ## Our Development Process
 
+### Code review is shared work
+
+Reviewing is part of contributing, not work reserved for approvers and
+maintainers. Regular contributors should budget time to review peer changes,
+and reviews from non-approvers are encouraged and treated as meaningful
+technical input.
+
+Component ownership metadata identifies contributors who can provide domain
+review for OTAP Dataflow crates and nodes. An approver or maintainer approval
+is still required to merge. See the [code review policy](./CODE_REVIEW.md) for
+review expectations, role boundaries, and ownership maintenance.
+
 ### How to Receive Comments
 
 - If the PR is not ready for review, please put `[WIP]` in the title or mark it

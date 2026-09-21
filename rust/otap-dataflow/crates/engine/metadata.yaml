@@ -1,0 +1,6 @@
+type: engine
+status:
+  class: library
+  codeowners:
+    active:
+      - open-telemetry/arrow-maintainers
