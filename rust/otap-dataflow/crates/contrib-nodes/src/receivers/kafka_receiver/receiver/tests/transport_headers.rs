@@ -19,9 +19,7 @@ async fn test_kafka_receiver_traces_header_extraction() {
             let producer = cluster.producer().build();
 
             // Build a trace request with real spans.
-            let req = create_traces_with_spans();
-            let mut payload_bytes = vec![];
-            req.encode(&mut payload_bytes).expect("encode");
+            let payload_bytes = encoded_trace_fixture();
 
             // Configure extraction: map Kafka header "x-tenant-id" to a resource
             // attribute "tenant.id".
@@ -61,10 +59,7 @@ async fn test_kafka_receiver_traces_header_extraction() {
 
             for i in 0..3 {
                 let mut pdata = receiver.recv_pdata().await;
-                let proto: OtlpProtoBytes = pdata
-                    .take_payload()
-                    .try_into_with_default()
-                    .expect("to OtlpProtoBytes");
+                let proto = take_otlp_proto(&mut pdata);
                 let result =
                     ExportTraceServiceRequest::decode(proto.as_bytes()).expect("decode result");
 
@@ -106,8 +101,7 @@ async fn test_kafka_receiver_traces_header_extraction() {
                 }
             }
 
-            receiver.shutdown(Duration::from_secs(5));
-            receiver.await_stopped().await;
+            shutdown_receiver(receiver).await;
         },
     )
     .await;
@@ -212,8 +206,7 @@ async fn test_kafka_receiver_traces_header_extraction_otap() {
                 }
             }
 
-            receiver.shutdown(Duration::from_secs(5));
-            receiver.await_stopped().await;
+            shutdown_receiver(receiver).await;
         },
     )
     .await;
@@ -272,10 +265,7 @@ async fn test_kafka_receiver_logs_header_extraction_syslog() {
             let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
 
             let mut pdata = receiver.recv_pdata().await;
-            let otlp: OtlpProtoBytes = pdata
-                .take_payload()
-                .try_into_with_default()
-                .expect("convert Syslog Arrow logs to OTLP");
+            let otlp = take_otlp_proto(&mut pdata);
             let result =
                 ExportLogsServiceRequest::decode(otlp.as_bytes()).expect("decode OTLP logs");
             let resource = result.resource_logs[0]
@@ -296,8 +286,7 @@ async fn test_kafka_receiver_logs_header_extraction_syslog() {
                 Some(any_value::Value::StringValue(value)) if value == tenant_value
             ));
 
-            receiver.shutdown(Duration::from_secs(5));
-            receiver.await_stopped().await;
+            shutdown_receiver(receiver).await;
         },
     )
     .await;
@@ -316,9 +305,7 @@ async fn test_kafka_receiver_capture_policy_captures_headers() {
         |cluster| async move {
             let producer = cluster.producer().build();
 
-            let req = create_traces_with_spans();
-            let mut payload_bytes = vec![];
-            req.encode(&mut payload_bytes).expect("encode");
+            let payload_bytes = encoded_trace_fixture();
 
             // Send a message with Kafka headers.
             producer
@@ -338,13 +325,25 @@ async fn test_kafka_receiver_capture_policy_captures_headers() {
                 CaptureDefaults::default(),
                 vec![
                     CaptureRule {
-                        match_names: vec!["X-Tenant-Id".to_string()],
-                        store_as: Some("tenant_id".to_string()),
+                        match_names: vec![
+                            "X-Tenant-Id"
+                                .try_into()
+                                .expect("valid test context entry name"),
+                        ],
+                        store_as: Some(
+                            "tenant_id"
+                                .try_into()
+                                .expect("valid test context entry name"),
+                        ),
                         sensitive: false,
                         value_kind: None,
                     },
                     CaptureRule {
-                        match_names: vec!["X-Request-Id".to_string()],
+                        match_names: vec![
+                            "X-Request-Id"
+                                .try_into()
+                                .expect("valid test context entry name"),
+                        ],
                         store_as: None, // defaults to lowercased wire name
                         sensitive: false,
                         value_kind: None,
@@ -387,7 +386,8 @@ async fn test_kafka_receiver_capture_policy_captures_headers() {
                 "tenant_id value mismatch"
             );
             assert_eq!(
-                tenant_headers[0].wire_name, "X-Tenant-Id",
+                tenant_headers[0].wire_name(),
+                "X-Tenant-Id",
                 "wire_name should be preserved"
             );
 
@@ -404,8 +404,7 @@ async fn test_kafka_receiver_capture_policy_captures_headers() {
             let unrelated: Vec<_> = transport_headers.find_by_name("x-unrelated").collect();
             assert!(unrelated.is_empty(), "X-Unrelated should not be captured");
 
-            receiver.shutdown(Duration::from_secs(5));
-            receiver.await_stopped().await;
+            shutdown_receiver(receiver).await;
         },
     )
     .await;
@@ -423,9 +422,7 @@ async fn test_kafka_receiver_no_capture_policy_no_transport_headers() {
         |cluster| async move {
             let producer = cluster.producer().build();
 
-            let req = create_traces_with_spans();
-            let mut payload_bytes = vec![];
-            req.encode(&mut payload_bytes).expect("encode");
+            let payload_bytes = encoded_trace_fixture();
 
             // Send a message with headers, but without a capture policy.
             producer
@@ -456,8 +453,7 @@ async fn test_kafka_receiver_no_capture_policy_no_transport_headers() {
                 "transport_headers should be None when no capture policy is configured"
             );
 
-            receiver.shutdown(Duration::from_secs(5));
-            receiver.await_stopped().await;
+            shutdown_receiver(receiver).await;
         },
     )
     .await;
@@ -476,9 +472,7 @@ async fn test_kafka_receiver_capture_policy_coexists_with_resource_attrs_from_he
         |cluster| async move {
             let producer = cluster.producer().build();
 
-            let req = create_traces_with_spans();
-            let mut payload_bytes = vec![];
-            req.encode(&mut payload_bytes).expect("encode");
+            let payload_bytes = encoded_trace_fixture();
 
             // Send a message with headers for both mechanisms.
             producer
@@ -505,8 +499,16 @@ async fn test_kafka_receiver_capture_policy_coexists_with_resource_attrs_from_he
             let capture_policy = HeaderCapturePolicy::new(
                 CaptureDefaults::default(),
                 vec![CaptureRule {
-                    match_names: vec!["X-Tenant-Id".to_string()],
-                    store_as: Some("tenant_id".to_string()),
+                    match_names: vec![
+                        "X-Tenant-Id"
+                            .try_into()
+                            .expect("valid test context entry name"),
+                    ],
+                    store_as: Some(
+                        "tenant_id"
+                            .try_into()
+                            .expect("valid test context entry name"),
+                    ),
                     sensitive: false,
                     value_kind: None,
                 }],
@@ -534,10 +536,7 @@ async fn test_kafka_receiver_capture_policy_coexists_with_resource_attrs_from_he
             assert_eq!(tenant_headers[0].value_as_str(), Some("acme-corp"));
 
             // 2. Verify resource attributes were injected (resource_attrs_from_headers).
-            let proto: OtlpProtoBytes = pdata
-                .take_payload()
-                .try_into_with_default()
-                .expect("to OtlpProtoBytes");
+            let proto = take_otlp_proto(&mut pdata);
             let result =
                 ExportTraceServiceRequest::decode(proto.as_bytes()).expect("decode result");
             for rs in &result.resource_spans {
@@ -563,8 +562,7 @@ async fn test_kafka_receiver_capture_policy_coexists_with_resource_attrs_from_he
                 );
             }
 
-            receiver.shutdown(Duration::from_secs(5));
-            receiver.await_stopped().await;
+            shutdown_receiver(receiver).await;
         },
     )
     .await;
@@ -598,8 +596,16 @@ async fn test_kafka_receiver_capture_policy_otap_format() {
             let capture_policy = HeaderCapturePolicy::new(
                 CaptureDefaults::default(),
                 vec![CaptureRule {
-                    match_names: vec!["X-Tenant-Id".to_string()],
-                    store_as: Some("tenant_id".to_string()),
+                    match_names: vec![
+                        "X-Tenant-Id"
+                            .try_into()
+                            .expect("valid test context entry name"),
+                    ],
+                    store_as: Some(
+                        "tenant_id"
+                            .try_into()
+                            .expect("valid test context entry name"),
+                    ),
                     sensitive: false,
                     value_kind: None,
                 }],
@@ -633,8 +639,7 @@ async fn test_kafka_receiver_capture_policy_otap_format() {
                 "MessageFormat header should not be captured"
             );
 
-            receiver.shutdown(Duration::from_secs(5));
-            receiver.await_stopped().await;
+            shutdown_receiver(receiver).await;
         },
     )
     .await;

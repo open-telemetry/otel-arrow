@@ -23,9 +23,9 @@ If an agent only has time for one focused pass, it should:
 
 - inspect the full diff and relevant nearby code before forming conclusions
 - run targeted searches for runtime-risk patterns when Rust async or runtime
-  code changes, such as `tokio::spawn`, `spawn_blocking`, `Arc<Mutex`,
-  `RwLock`, `unbounded_channel`, `block_on`, `std::fs`,
-  `std::thread::sleep`, `unwrap(`, `expect(`, and `unreachable!`
+  code changes, such as `tokio::spawn`, `spawn_blocking`, `Arc<Mutex`, `RwLock`,
+  `unbounded_channel`, `block_on`, `std::fs`, `std::thread::sleep`, `unwrap(`,
+  `expect(`, and `unreachable!`
 - use `rust/otap-dataflow/scripts/check-async-blocking.sh` from the repository
   root as a review aid when async/runtime paths are touched
 - report only risks supported by the diff, nearby code, or project guidance
@@ -61,8 +61,8 @@ Check that changes preserve the thread-per-core, share-nothing design:
 
 Check that single-threaded async runtime responsiveness is preserved. Each
 pipeline instance runs on a single-threaded async runtime, so blocking or
-monopolizing that thread can stall data processing, backpressure, shutdown,
-live reconfiguration, telemetry, and ack/nack progress.
+monopolizing that thread can stall data processing, backpressure, shutdown, live
+reconfiguration, telemetry, and ack/nack progress.
 
 Flag runtime-path work that can block or monopolize the core:
 
@@ -78,8 +78,8 @@ record important assumptions that are not visible at the call site. Reviewers
 should look for whether the library can block, start threads, use shared or
 global state, allocate or buffer substantially, retry internally, or hide
 backpressure. Evidence can be a library source or documentation link, a code
-comment, a component development note, or a focused test or benchmark. Dependency
-upgrades that affect such calls should re-check these assumptions.
+comment, a component development note, or a focused test or benchmark.
+Dependency upgrades that affect such calls should re-check these assumptions.
 
 `spawn_blocking` is not automatically acceptable. Blocking offload must be
 bounded, cancel-aware, backpressure-integrated, observable, and justified
@@ -137,13 +137,13 @@ Check for:
 - useful telemetry, diagnostics, and controllable debug features
 - live reconfiguration and restart-free operation, when relevant
 - compatibility with OTLP, OTAP, and Collector integration expectations
-- clear operator-facing behavior for configuration, defaults, validation
-  errors, unsupported platforms, and documentation examples
+- clear operator-facing behavior for configuration, defaults, validation errors,
+  unsupported platforms, and documentation examples
 - stable telemetry contracts, including metric names, label cardinality,
   deterministic label order, and explicit collision handling
 - precise telemetry semantics, including instrument kind, aggregation cadence,
-  numerator/denominator consistency, monotonicity, units, dimensions, and
-  scrape or reporting timing
+  numerator/denominator consistency, monotonicity, units, dimensions, and scrape
+  or reporting timing
 - intentional shutdown, drain, flush, cancellation, and pending-message behavior
   for async tasks, streams, channels, and metric updates
 - reuse of existing engine, Query Engine, pdata view, decoder, validation, or
@@ -151,6 +151,12 @@ Check for:
 
 Complex abstractions are acceptable only when they make behavior more reliable,
 composable, or maintainable.
+
+## Metric Instrumentation
+
+When reviewing additions or changes to metrics, follow the
+[system metrics guide][metrics-guide] and
+[item attributes guide][item-attributes-guide].
 
 ## Correctness, Security, and Portability
 
@@ -231,3 +237,6 @@ An agent reviewer should:
 
 Do not approve a design solely because tests pass. Tests are evidence, not a
 substitute for preserving OTAP architectural invariants.
+
+[item-attributes-guide]: ../telemetry/item-attributes.md
+[metrics-guide]: ../telemetry/metrics-guide.md

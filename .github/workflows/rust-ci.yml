@@ -161,7 +161,7 @@ jobs:
           cargo nextest archive \
             --locked \
             --no-default-features \
-            --features=crypto-ring,jemalloc,azure,aws,azure-monitor-exporter,contrib-processors,unsafe-optimizations \
+            --features=crypto-ring,jemalloc,azure,aws,azure-monitor,contrib-processors,unsafe-optimizations \
             --workspace --exclude otel-arrow-dfe-validation --exclude benchmarks \
             --archive-file nextest-archive.tar.zst
         working-directory: ./rust/${{ matrix.folder }}
@@ -241,7 +241,7 @@ jobs:
       - name: Run user_events Linux smoke test when supported
         env:
           OTAP_DF_RUN_USEREVENTS_E2E: "1"
-        run: cargo test --locked -p otel-arrow-dfe-contrib-nodes user_events_linux_e2e_smoke_when_available --features user_events-receiver,otel-arrow-dfe-otap/crypto-ring
+        run: cargo test --locked -p otel-arrow-dfe-contrib-nodes user_events_linux_e2e_smoke_when_available --features user-events,otel-arrow-dfe-otap/crypto-ring
         working-directory: ./rust/otap-dataflow
 
   etw_windows_smoke:
@@ -261,7 +261,7 @@ jobs:
           cache-bin: false
           save-if: false
       - name: Run ETW Windows smoke test
-        run: cargo test --locked -p otel-arrow-dfe-contrib-nodes etw_receiver_decodes_tracelogging_events_end_to_end --features etw-receiver -- --ignored
+        run: cargo test --locked -p otel-arrow-dfe-contrib-nodes etw_receiver_decodes_tracelogging_events_end_to_end --features etw -- --ignored
         working-directory: ./rust/otap-dataflow
 
   fmt:
@@ -312,7 +312,7 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" == "pull_request" ]; then
             # For PRs, check if the file was changed
-            git diff --name-only origin/${{ github.base_ref }}...HEAD | grep -q "rust/otap-dataflow/crates/query-engine-languages/src/opl/opl.pest" && echo "changed=true" >> $GITHUB_OUTPUT || echo "changed=false" >> $GITHUB_OUTPUT
+            git diff --name-only origin/${GITHUB_BASE_REF}...HEAD | grep -q "rust/otap-dataflow/crates/query-engine-languages/src/opl/opl.pest" && echo "changed=true" >> $GITHUB_OUTPUT || echo "changed=false" >> $GITHUB_OUTPUT
           else
             # For pushes to main, always check
             echo "changed=true" >> $GITHUB_OUTPUT
@@ -601,7 +601,10 @@ jobs:
       - name: Build and archive tests
         # Keep this feature set synchronized with the Windows post-merge cache
         # warmer so PR and merge-queue builds can reuse its target artifacts.
-        run: cargo nextest archive --locked --no-default-features --features=crypto-symcrypt,mimalloc,azure,aws,azure-monitor-exporter,geneva-exporter,contrib-processors,unsafe-optimizations --workspace --archive-file nextest-archive.tar.zst
+        # The complete component inventory is validated by the Linux all-feature
+        # build; including its dev-dependencies here would pull Kafka and OpenSSL
+        # into this reduced-feature SymCrypt build.
+        run: cargo nextest archive --locked --no-default-features --features=crypto-symcrypt,mimalloc,azure,aws,azure-monitor,geneva,contrib-processors,unsafe-optimizations --workspace --exclude otel-arrow-dfe-component-inventory --archive-file nextest-archive.tar.zst
         working-directory: ./rust/otap-dataflow
       - name: Upload nextest archive
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

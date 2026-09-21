@@ -3,13 +3,13 @@
 
 //! Transport header capture.
 //!
-//! Applies the configured [`HeaderCapturePolicy`] to copy Kafka message headers
-//! into [`TransportHeaders`] on the [`OtapPdata`] context. This is independent
+//! Applies the configured [`CompiledHeaderCapturePolicy`] to copy Kafka message
+//! headers into [`TransportHeaders`] on the [`OtapPdata`] context. This is independent
 //! of the `resource_attrs_from_headers` mechanism that injects headers into
 //! resource attributes.
 
 use otel_arrow_dfe_config::transport_headers::TransportHeaders;
-use otel_arrow_dfe_config::transport_headers_policy::HeaderCapturePolicy;
+use otel_arrow_dfe_config::transport_headers_policy::CompiledHeaderCapturePolicy;
 use otel_arrow_dfe_otap::pdata::OtapPdata;
 use rdkafka::Message as _;
 use rdkafka::message::{BorrowedMessage, Headers};
@@ -21,7 +21,7 @@ use rdkafka::message::{BorrowedMessage, Headers};
 /// headers into resource attributes.
 pub(super) fn capture_transport_headers(
     kafka_message: &BorrowedMessage<'_>,
-    capture_policy: Option<&HeaderCapturePolicy>,
+    capture_policy: Option<&CompiledHeaderCapturePolicy>,
     pdata: &mut OtapPdata,
 ) {
     if let Some(policy) = capture_policy

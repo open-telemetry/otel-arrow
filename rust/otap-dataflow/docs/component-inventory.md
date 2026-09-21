@@ -50,6 +50,13 @@ Every pipeline node factory static must be annotated with
 derived automatically from the factory's name field (its URN), so you do not
 need to provide an explicit id.
 
+For a new receiver, processor, or exporter, the inventory annotation is only
+one part of making the component selectable. Follow the maintenance checklist
+in the relevant [core-node](../crates/core-nodes/README.md#maintenance-notes)
+or [contrib-node](../crates/contrib-nodes/README.md#maintenance-notes) catalog.
+The compiled inventory oracle explicitly enables the aggregate node features so
+it continues to validate the complete component set.
+
 ```rust
 use otel_arrow_dfe_engine::component_inventory;
 

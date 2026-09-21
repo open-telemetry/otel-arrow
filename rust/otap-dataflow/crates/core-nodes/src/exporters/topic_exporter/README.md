@@ -5,7 +5,7 @@
 ## Metadata
 
 - Type: `exporter:topic` (`urn:otel:exporter:topic`)
-- Feature gate: Default
+- Feature gate: `topic`
 - Stability: Experimental
 
 ## Overview
