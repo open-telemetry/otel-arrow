@@ -1180,6 +1180,7 @@ impl HttpClientPool {
 #[cfg(test)]
 mod test {
     use std::collections::HashMap;
+    use std::sync::atomic::AtomicBool;
     use std::time::{Duration, Instant};
 
     use arrow::array::Int32Array;
@@ -2116,13 +2117,15 @@ mod test {
 
         let config = default_test_config(endpoint);
         let test_runtime = TestRuntime::<OtapPdata>::new();
+        let closed = Arc::new(AtomicBool::new(false));
         // One auth, then the stream ends.
         let exporter = exporter_with_provider(
             &test_runtime,
             config,
-            MockHttpClientAuthProvider::new(
+            MockHttpClientAuthProvider::closing(
                 header::AUTHORIZATION,
                 vec![("Bearer provider-token".to_string(), None)],
+                closed.clone(),
             ),
         );
 
@@ -2171,6 +2174,7 @@ mod test {
             "Bearer provider-token",
             "the cached token must keep being used after the provider closes its stream"
         );
+        assert!(closed.load(std::sync::atomic::Ordering::Acquire));
     }
 
     #[test]

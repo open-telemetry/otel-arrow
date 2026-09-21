@@ -1396,6 +1396,7 @@ mod tests {
     use otel_arrow_dfe_otap::http_client_auth_provider::test_support::MockHttpClientAuthProvider;
     use std::collections::HashMap;
     use std::str::FromStr;
+    use std::sync::atomic::AtomicBool;
 
     use otel_arrow_dfe_config::transport_headers::{
         TransportHeader, TransportHeaders, ValueKind,
@@ -2014,10 +2015,13 @@ mod tests {
     /// degrades to a static credential rather than stalling the pipeline.
     #[test]
     fn the_last_auth_is_reused_after_the_provider_closes_its_stream() {
+        let closed = Arc::new(AtomicBool::new(false));
+
         let captured = run_auth_wire_test(
-            MockHttpClientAuthProvider::new(
+            MockHttpClientAuthProvider::closing(
                 header::AUTHORIZATION,
                 vec![("Bearer final-token".to_string(), None)],
+                closed.clone(),
             ),
             &[],
         );
@@ -2027,6 +2031,7 @@ mod tests {
             vec!["Bearer final-token".to_string(); 3],
             "the last token must keep being used after the stream closes"
         );
+        assert!(closed.load(std::sync::atomic::Ordering::Acquire));
     }
 
     /// Scenario: a provider is bound but never publishes an auth,

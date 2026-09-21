@@ -244,7 +244,11 @@ pub mod test_support {
 
     use futures::{Stream, StreamExt};
     use http::header;
-    use std::{pin::Pin, time::Duration};
+    use std::{
+        pin::Pin,
+        sync::{Arc, atomic::AtomicBool},
+        time::Duration,
+    };
 
     use super::*;
 
@@ -262,6 +266,7 @@ pub mod test_support {
         cached_expiry: Option<Instant>,
         generation: u64,
         stream_active: bool,
+        closed_flag: Option<Arc<AtomicBool>>,
     }
 
     impl MockHttpClientAuthProvider {
@@ -280,6 +285,27 @@ pub mod test_support {
                 cached_expiry: None,
                 generation: 0,
                 stream_active: true,
+                closed_flag: None,
+            }
+        }
+
+        /// Create a provider which closes when it has issued all its values.
+        #[must_use]
+        pub fn closing(
+            header_name: HeaderName,
+            header_values: Vec<(String, Option<Duration>)>,
+            closed: Arc<AtomicBool>,
+        ) -> MockHttpClientAuthProvider {
+            let published = futures::stream::iter(header_values);
+
+            Self {
+                stream: published.boxed(),
+                header_name,
+                cached_header: None,
+                cached_expiry: None,
+                generation: 0,
+                stream_active: true,
+                closed_flag: Some(closed),
             }
         }
 
@@ -295,6 +321,7 @@ pub mod test_support {
                 cached_expiry: None,
                 generation: 0,
                 stream_active: true,
+                closed_flag: None,
             }
         }
     }
@@ -377,6 +404,10 @@ pub mod test_support {
                     // watch-backed provider while we hold its handle, so warn.
                     self.stream_active = false;
                     events.emit_stream_closed(self);
+                    _ = self
+                        .closed_flag
+                        .as_ref()
+                        .inspect(|v| v.store(true, std::sync::atomic::Ordering::Release));
                     Poll::Ready(false)
                 }
             }
