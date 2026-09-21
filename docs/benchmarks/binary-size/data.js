@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790018679205,
+  "lastUpdate": 1790019866640,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -41984,6 +41984,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
             "value": 4.11,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.71,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.97,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.7,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 71.56,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.86,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.54,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 116.51,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 103.85,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "a.lockett@f5.com",
+            "name": "albertlockett",
+            "username": "albertlockett"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "e29fee50a27362ee8b93a09cde58a063cd6c4334",
+          "message": "feat(query-engine): basic support for filtering metric data points (#4068)\n\n# Change summary\n\nAdds basic support for filtering metric data points in OPL programs\nexecuted by the OTAP query-engine.\n\nThe `apply` operator call can now accept `data_points` as an argument,\nand the nested pipeline contained within will treat data points as the\ntop-level element of the stream. For example:\n```\nmetrics | apply data_points {\n  where flags > 0\n}\n```\n\n**Limitations:**\n\nCurrently the only operator that can be used on the nested pipeline\nstream is `where` to filter attributes (or `drop`, which effectively\nexpands to `where false`). All other operators (`set`, `if/else`,\n`rename attributes`, `remove`, and nested `apply` will be added in\nfuture PRs).\n\nAlso, the predicate expression for the `where` operator call is limited\nin that it can only involve fields that are directly on all data point\ntypes (such as `flags`) or static scalars. At this stage, it is not\npossible to reference datapoint attributes, or to filter based on the\ntype of datapoint (e.g. expressions like `is NumberDataPoint` are not\nyet supported).\n\n**Explanation of changes:**\n\nBefore this change, the query-engine was always dealing with data scopes\nthat referred to the \"Root\" (meaning \"root\" of the OTAP data model, e.g.\nthe Log/Metric/Span) or attributes. One of the key changes in this PR is\nthat, inside the `apply data_point { .. }` pipeline the \"Root\" is\nactually the metric datapoint. Given that \"Root\" is used variously\nthroughout the project to refer to the \"signal\", we needed a new term.\nSo now in place of \"Root\", we have \"Record\" in many places.\n\ne.g. `DataScope::Root` becomes -> `DataScope::Record(RecordType)`, where\n`RecordType` is an enum with variants `Signal` /\n`Child(ChildRecordKind)`, where `ChildRecordKind` is also an enum which\ncurrently has a single variant (`DataPoint`).\n\nThe pipeline planner was also operating in a mode where it assumed it\nwas either planning a pipeline for either the \"Root\", or attributes (and\nthe expression planner was making the same assumption). Now however,\nboth of these must plan expression for various types of \"Record\", so\nwhereas before each planner implementation had a flag for whether it was\nplannig for attributes, now it also has a property `RecordType` for what\nto treat as the record (which is why `RecordType` also has an\n`Attributes` variant).\n\nIn the `PipelineStage` trait has previously there was a method that\ncould be used to identify in the planner whether the pipeline stage impl\nsupported operating on attributes. This has been modified to accept the\n`RecordType`. The trait also has a new method\n`execute_on_metric_data_points` which stages whose impl will be used\nwithin the `apply data_point { .. }` nested pipeline should implement.\nHowever the default behaviour of the trait basically remains the same.\n\nThe implementation of the attribute stage that was responsible for\n`apply` operator call has been changed from being something that was\nspecific to attributes, to something more generic (e.g the module/type\nwas changed from`apply_attrs::ApplyToAttributesPipelineStage` to simply\n`apply::ApplyPipelineStage`), and this implementation is now responsible\nfor calling the new `execute_on_metric_data_points` on all stages in the\nnested pipeline.\n\nThe `FilterPipelineStage` has implemented the new\n`execute_on_metric_data_points`. In this implementation it evaluates its\npredicate expression on all the metric data point types that may be\npresent in the OTAP batch and filters each one according to the returned\nselection vector. New utilities have been added to help with procedure,\nincluding the `MetricDataPointType` enum in the `types` module, and the\n`filter::data_point` module which has some utilities for filtering.\n\nThere have been some changes to the `pdata` crate to support the\nimplementation of these filtering utilities - notably that now when we\n\"remove\" a record batch for some payload type, the `Option<RecordBatch>`\nis returned.\n\nExpression evaluation also now takes an `EvalContext` which wraps the\ndatafusion `SessionContext`. The motivation for this change was so that\nwe can have an additional field, indicating for which data point type\nthe expression is evaluating.\n\nA test suite is implemented for operations applied to metric data\npoints, including asserting the evaluation results of a handful of\nsupported expressions, and asserting that we don't try to evaluate\nunsupported expressions.\n\n## Related issue\n\n<!--We highly recommend correlation of every PR to an issue-->\n\n* Closes #3722 \n\n## Validation\n\n<!--How did you confirm your change has the intended effect?-->\n\nUnit tests\n\n## User-facing changes\n\n<!--\nDescribe the impact, or write `None`.\nUser-facing changes require a `.chloggen/*.yaml` entry. If no entry is\nneeded,\ninclude `chore` in the PR title. Documentation-only changes are exempt.\n-->\n\nYes these newly supported statements can be used in OPL programs passed\nto transform processor configuration.",
+          "timestamp": "2026-09-21T18:33:20Z",
+          "tree_id": "7fe31f8db4dbdfb2f793810168021f378b415022",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/e29fee50a27362ee8b93a09cde58a063cd6c4334"
+        },
+        "date": 1790019852600,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 84.27,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.15,
             "unit": "MB"
           },
           {
