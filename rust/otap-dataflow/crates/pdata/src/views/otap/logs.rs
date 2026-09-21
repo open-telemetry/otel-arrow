@@ -719,10 +719,15 @@ fn get_body_from_struct<'a>(
                 .map(OtapAnyValueView::Bytes)
                 .unwrap_or(OtapAnyValueView::Empty),
         ),
-        _ => {
-            // For other types (Map, Slice), return empty for now
-            Some(OtapAnyValueView::Empty)
-        }
+        AttributeValueType::Map | AttributeValueType::Slice => Some(
+            anyval
+                .attr_ser
+                .as_ref()
+                .and_then(|accessor| accessor.slice_at(row_idx))
+                .map(OtapAnyValueView::Serialized)
+                .unwrap_or(OtapAnyValueView::Empty),
+        ),
+        _ => Some(OtapAnyValueView::Empty),
     }
 }
 
@@ -739,12 +744,15 @@ fn get_log_id(id_array: Option<&UInt16Array>, row_idx: usize) -> Option<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::proto::opentelemetry::common::v1::{AnyValue, KeyValue, KeyValueList, any_value};
+    use crate::proto::opentelemetry::logs::v1::LogRecord;
+    use crate::testing::round_trip::to_otap_logs;
     use arrow::array::{
         ArrayRef, DictionaryArray, Int32Array, Int64Array, StringArray, StructArray, UInt8Array,
         UInt16Array,
     };
     use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
-    use otel_arrow_dfe_pdata_views::views::common::{AnyValueView, AttributeView};
+    use otel_arrow_dfe_pdata_views::views::common::{AnyValueView, AttributeView, ValueType};
     use std::sync::Arc;
 
     /// Helper to create a logs batch with optional ID column
@@ -1090,6 +1098,44 @@ mod tests {
         }
 
         assert_eq!(log_count, 3, "Expected 3 logs through view");
+    }
+
+    /// Scenario: A log record whose body is a KeyValueList, encoded through the real OTAP path.
+    /// Guarantees: the body decodes as a KeyValueList the view can iterate, not Empty.
+    #[test]
+    fn test_map_body_decodes_from_serialized_column() {
+        let log = LogRecord {
+            body: Some(AnyValue {
+                value: Some(any_value::Value::KvlistValue(KeyValueList {
+                    values: vec![KeyValue {
+                        key: "k".to_string(),
+                        value: Some(AnyValue {
+                            value: Some(any_value::Value::StringValue("v".to_string())),
+                        }),
+                    }],
+                })),
+            }),
+            ..Default::default()
+        };
+        let otap = to_otap_logs(vec![log]);
+        let view = OtapLogsView::try_from(&otap).expect("logs view");
+
+        let mut checked = 0;
+        for resource_logs in view.resources() {
+            for scope_logs in resource_logs.scopes() {
+                for log_record in scope_logs.log_records() {
+                    let body = log_record.body().expect("body");
+                    assert_eq!(body.value_type(), ValueType::KeyValueList);
+                    let entries: Vec<_> = body.as_kvlist().expect("kvlist").collect();
+                    assert_eq!(entries.len(), 1);
+                    assert_eq!(entries[0].key(), b"k".as_slice());
+                    let entry_value = entries[0].value().expect("entry value");
+                    assert_eq!(entry_value.as_string(), Some(b"v".as_slice()));
+                    checked += 1;
+                }
+            }
+        }
+        assert_eq!(checked, 1);
     }
 
     #[test]

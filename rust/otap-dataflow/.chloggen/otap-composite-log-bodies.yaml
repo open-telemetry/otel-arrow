@@ -1,0 +1,5 @@
+change_type: bug_fix
+component: otap
+note: Decode Map and Slice log record bodies from the CBOR ser column instead of returning Empty, so structured log bodies are no longer silently dropped in the OTAP views.
+issues: [4106]
+subtext:
