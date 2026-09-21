@@ -6,13 +6,16 @@
 use super::{Candidate, DataError, Parser};
 use arrow::{
     array::{
-        Array, ArrayRef, DictionaryArray, Int32Array, RecordBatch, StringArray, StringBuilder,
-        StructArray, TimestampNanosecondArray, UInt8Array, UInt16Array,
+        Array, ArrayRef, DictionaryArray, Int32Array, Int32Builder, RecordBatch, StringArray,
+        StringBuilder, StructArray, TimestampNanosecondArray, TimestampNanosecondBuilder,
+        UInt8Array, UInt8Builder, UInt16Builder,
     },
     compute::cast,
     datatypes::{ArrowDictionaryKeyType, DataType, Field, Schema, TimeUnit, UInt8Type, UInt16Type},
 };
-use otel_arrow_dfe_pdata::arrays::{MaybeDictArrayAccessor, NullableArrayAccessor};
+use otel_arrow_dfe_pdata::arrays::{
+    MaybeDictArrayAccessor, NullableArrayAccessor, sanitize::CooperativeBudget,
+};
 use otel_arrow_dfe_pdata::{OtapArrowRecords, error::Result, schema::consts};
 use std::{
     collections::{HashMap, HashSet},
@@ -28,6 +31,13 @@ struct StagedCandidate {
     body: Option<Rc<String>>,
     timestamp: Option<u64>,
     severity: Option<(Rc<String>, u8)>,
+}
+
+#[derive(Default)]
+struct UpdatedFields {
+    body: bool,
+    timestamp: bool,
+    severity: bool,
 }
 
 impl Counts {
@@ -51,7 +61,7 @@ impl Counts {
 }
 
 impl Parser {
-    pub(in super::super) fn apply(
+    pub(in super::super) async fn apply(
         &self,
         batch: OtapArrowRecords,
     ) -> Result<(OtapArrowRecords, Counts)> {
@@ -59,10 +69,10 @@ impl Parser {
         let fail_after = self.fail_after;
         #[cfg(not(test))]
         let fail_after = None;
-        self.apply_inner(batch, fail_after)
+        self.apply_inner(batch, fail_after).await
     }
 
-    fn apply_inner(
+    async fn apply_inner(
         &self,
         mut batch: OtapArrowRecords,
         fail_after: Option<usize>,
@@ -92,15 +102,20 @@ impl Parser {
             .as_any()
             .downcast_ref::<TimestampNanosecondArray>()
             .expect("timestamp cast");
-        let (candidates, counts) = self.stage_candidates(body, event, observed, fail_after)?;
+        let mut budget = CooperativeBudget::default();
+        let (candidates, counts, updated) = self
+            .stage_candidates(body, event, observed, fail_after, &mut budget)
+            .await?;
         let mut output = root.clone();
-        if candidates.iter().any(|candidate| candidate.body.is_some()) {
+        if updated.body {
             let replacement = update_strings(
                 body.column_by_name(consts::ATTRIBUTE_STR),
                 candidates
                     .iter()
                     .map(|candidate| candidate.body.as_deref().map(String::as_str)),
-            )?;
+                &mut budget,
+            )
+            .await?;
             let mut fields = body.fields().to_vec();
             let mut columns = body.columns().to_vec();
             upsert(
@@ -113,57 +128,70 @@ impl Parser {
                 .map_err(arrow_error)?;
             output = replace(&output, consts::BODY, Arc::new(replacement))?;
         }
-        if candidates
-            .iter()
-            .any(|candidate| candidate.timestamp.is_some())
-        {
-            let replacement = TimestampNanosecondArray::from_iter(
-                candidates.iter().enumerate().map(|(row, candidate)| {
+        if updated.timestamp {
+            let mut replacement = TimestampNanosecondBuilder::with_capacity(candidates.len());
+            for (row, candidate) in candidates.iter().enumerate() {
+                budget.consume(1, size_of::<i64>()).await;
+                replacement.append_option(
                     candidate
                         .timestamp
                         .map(|value| value as i64)
-                        .or_else(|| event.is_valid(row).then(|| event.value(row)))
-                }),
-            );
-            output = replace(&output, consts::TIME_UNIX_NANO, Arc::new(replacement))?;
+                        .or_else(|| event.is_valid(row).then(|| event.value(row))),
+                );
+            }
+            output = replace(
+                &output,
+                consts::TIME_UNIX_NANO,
+                Arc::new(replacement.finish()),
+            )?;
         }
-        if candidates
-            .iter()
-            .any(|candidate| candidate.severity.is_some())
-        {
-            let numbers = column(root, consts::SEVERITY_NUMBER, &DataType::Int32)?;
-            let numbers = numbers
-                .as_any()
-                .downcast_ref::<Int32Array>()
-                .expect("severity cast");
+        if updated.severity {
+            let numbers = root
+                .column_by_name(consts::SEVERITY_NUMBER)
+                .map(MaybeDictArrayAccessor::<Int32Array>::try_new)
+                .transpose()?;
             let texts = update_strings(
                 root.column_by_name(consts::SEVERITY_TEXT),
                 candidates
                     .iter()
                     .map(|candidate| candidate.severity.as_ref().map(|(text, _)| text.as_str())),
-            )?;
-            let replacement =
-                Int32Array::from_iter(candidates.iter().enumerate().map(|(row, candidate)| {
+                &mut budget,
+            )
+            .await?;
+            let mut replacement = Int32Builder::with_capacity(candidates.len());
+            for (row, candidate) in candidates.iter().enumerate() {
+                budget.consume(1, size_of::<i32>()).await;
+                replacement.append_option(
                     candidate
                         .severity
                         .as_ref()
                         .map(|(_, number)| i32::from(*number))
-                        .or_else(|| numbers.is_valid(row).then(|| numbers.value(row)))
-                }));
-            output = replace(&output, consts::SEVERITY_NUMBER, Arc::new(replacement))?;
+                        .or_else(|| numbers.as_ref().and_then(|numbers| numbers.value_at(row))),
+                );
+            }
+            output = replace(
+                &output,
+                consts::SEVERITY_NUMBER,
+                Arc::new(replacement.finish()),
+            )?;
             output = replace(&output, consts::SEVERITY_TEXT, texts)?;
+        }
+        for candidate in candidates {
+            budget.consume(1, 0).await;
+            drop(candidate);
         }
         batch.set(batch.root_payload_type(), output)?;
         Ok((batch, counts))
     }
 
-    fn stage_candidates(
+    async fn stage_candidates(
         &self,
         body: &StructArray,
         event: &TimestampNanosecondArray,
         observed: &TimestampNanosecondArray,
         fail_after: Option<usize>,
-    ) -> Result<(Vec<StagedCandidate>, Counts)> {
+        budget: &mut CooperativeBudget,
+    ) -> Result<(Vec<StagedCandidate>, Counts, UpdatedFields)> {
         let types = body
             .column_by_name(consts::ATTRIBUTE_TYPE)
             .map(MaybeDictArrayAccessor::<UInt8Array>::try_new)
@@ -173,6 +201,7 @@ impl Parser {
             .map(MaybeDictArrayAccessor::<StringArray>::try_new)
             .transpose()?;
         let mut counts = Counts::default();
+        let mut updated = UpdatedFields::default();
         let mut staged_strings = HashSet::<Rc<String>>::new();
         let mut intern = |value: String| {
             if let Some(shared) = staged_strings.get(&value) {
@@ -194,6 +223,7 @@ impl Parser {
                 .zip(strings.as_ref())
                 .filter(|(types, _)| body.is_valid(row) && types.value_at(row) == Some(1))
                 .and_then(|(_, strings)| strings.str_at(row));
+            budget.consume(1, string.map_or(0, str::len)).await;
             let candidate = match string {
                 None => Err(DataError::UnsupportedBody),
                 Some(input) => self.parse(
@@ -220,6 +250,9 @@ impl Parser {
                     if fallback {
                         counts.record(DataError::ObservedFallback);
                     }
+                    updated.body |= body.is_some();
+                    updated.timestamp |= timestamp.is_some();
+                    updated.severity |= severity.is_some();
                     candidates.push(StagedCandidate {
                         body: body.map(&mut intern),
                         timestamp,
@@ -232,13 +265,18 @@ impl Parser {
                 }
             }
         }
-        Ok((candidates, counts))
+        for shared in staged_strings {
+            budget.consume(1, 0).await;
+            drop(shared);
+        }
+        Ok((candidates, counts, updated))
     }
 }
 
-fn update_strings<'a>(
+async fn update_strings<'a>(
     original: Option<&'a ArrayRef>,
     updates: impl ExactSizeIterator<Item = Option<&'a str>> + Clone,
+    budget: &mut CooperativeBudget,
 ) -> Result<ArrayRef> {
     let strings = original
         .map(MaybeDictArrayAccessor::<StringArray>::try_new)
@@ -248,30 +286,35 @@ fn update_strings<'a>(
             .as_any()
             .downcast_ref::<DictionaryArray<UInt8Type>>()
         {
-            return update_dictionary_strings(dictionary, updates);
+            return update_dictionary_strings(dictionary, updates, budget).await;
         }
         if let Some(dictionary) = original
             .as_any()
             .downcast_ref::<DictionaryArray<UInt16Type>>()
         {
-            return update_dictionary_strings(dictionary, updates);
+            return update_dictionary_strings(dictionary, updates, budget).await;
         }
     }
     let values = updates.enumerate().map(|(row, update)| {
         update.or_else(|| strings.as_ref().and_then(|strings| strings.str_at(row)))
     });
-    let bytes = values
-        .clone()
-        .flatten()
-        .try_fold(0, |bytes, value| checked_string_bytes(bytes, value.len()))?;
+    let mut bytes = 0;
+    for value in values.clone() {
+        budget.consume(1, value.map_or(0, str::len)).await;
+        bytes = checked_string_bytes(bytes, value.map_or(0, str::len))?;
+    }
     let mut builder = StringBuilder::with_capacity(values.len(), bytes);
-    builder.extend(values);
+    for value in values {
+        budget.consume(1, value.map_or(0, str::len)).await;
+        builder.append_option(value);
+    }
     Ok(Arc::new(builder.finish()))
 }
 
-fn update_dictionary_strings<'a, Key: ArrowDictionaryKeyType>(
+async fn update_dictionary_strings<'a, Key: ArrowDictionaryKeyType>(
     original: &'a DictionaryArray<Key>,
     updates: impl ExactSizeIterator<Item = Option<&'a str>>,
+    budget: &mut CooperativeBudget,
 ) -> Result<ArrayRef> {
     let original_values = original
         .values()
@@ -293,39 +336,56 @@ fn update_dictionary_strings<'a, Key: ArrowDictionaryKeyType>(
         let _ = indices.insert(value, key);
         Ok(key)
     };
-    let keys = updates
-        .enumerate()
-        .map(|(row, update)| {
-            if let Some(value) = update {
-                return intern(value).map(Some);
-            }
-            let Some(original_key) = original.key(row) else {
-                return Ok(None);
-            };
-            if original_values.is_null(original_key) {
-                return Ok(None);
-            }
-            if let Some(key) = remapped[original_key] {
-                return Ok(Some(key));
-            }
-            let key = intern(original_values.value(original_key))?;
+    let mut keys = Vec::with_capacity(updates.len());
+    for (row, update) in updates.enumerate() {
+        budget.consume(1, update.map_or(0, str::len)).await;
+        if let Some(value) = update {
+            keys.push(Some(intern(value)?));
+            continue;
+        }
+        let Some(original_key) = original.key(row) else {
+            keys.push(None);
+            continue;
+        };
+        if original_values.is_null(original_key) {
+            keys.push(None);
+        } else if let Some(key) = remapped[original_key] {
+            keys.push(Some(key));
+        } else {
+            let value = original_values.value(original_key);
+            budget.consume(0, value.len()).await;
+            let key = intern(value)?;
             remapped[original_key] = Some(key);
-            Ok(Some(key))
-        })
-        .collect::<Result<Vec<_>>>()?;
+            keys.push(Some(key));
+        }
+    }
+    for entry in indices {
+        budget.consume(1, 0).await;
+        let _ = entry;
+    }
     let mut builder = StringBuilder::with_capacity(values.len(), bytes);
     for value in values {
+        budget.consume(1, value.len()).await;
         builder.append_value(value);
     }
     let values = Arc::new(builder.finish());
     if Key::DATA_TYPE == DataType::UInt8 && values.len() <= usize::from(u8::MAX) + 1 {
-        let keys = UInt8Array::from_iter(keys.into_iter().map(|key| key.map(|key| key as u8)));
+        let mut builder = UInt8Builder::with_capacity(keys.len());
+        for key in keys {
+            budget.consume(1, 1).await;
+            builder.append_option(key.map(|key| key as u8));
+        }
         Ok(Arc::new(
-            DictionaryArray::<UInt8Type>::try_new(keys, values).map_err(arrow_error)?,
+            DictionaryArray::<UInt8Type>::try_new(builder.finish(), values).map_err(arrow_error)?,
         ))
     } else {
+        let mut builder = UInt16Builder::with_capacity(keys.len());
+        for key in keys {
+            budget.consume(1, 2).await;
+            builder.append_option(key);
+        }
         Ok(Arc::new(
-            DictionaryArray::<UInt16Type>::try_new(UInt16Array::from(keys), values)
+            DictionaryArray::<UInt16Type>::try_new(builder.finish(), values)
                 .map_err(arrow_error)?,
         ))
     }
@@ -388,6 +448,7 @@ fn arrow_error(source: arrow::error::ArrowError) -> otel_arrow_dfe_pdata::error:
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arrow::array::UInt16Array;
     use otel_arrow_dfe_pdata::{
         otap::transform::sanitize::sanitize_otap_batch,
         proto::opentelemetry::{common::v1::AnyValue, logs::v1::LogRecord},
@@ -396,8 +457,8 @@ mod tests {
 
     /// Scenario: Many rows reference one valid dictionary body with large mapped strings.
     /// Guarantees: Staging retains one allocation per distinct mapped string, not per row.
-    #[test]
-    fn candidate_staging_shares_repeated_strings() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn candidate_staging_shares_repeated_strings() {
         let text = "x".repeat(16 * 1024);
         let input = serde_json::json!({"body": text, "sev": text}).to_string();
         let rows = 128;
@@ -426,8 +487,15 @@ mod tests {
                 "max_compiled_regex_bytes":1024,"max_json_depth":4,"max_entries":10}});
         let parser = Parser::new(serde_json::from_value(config).unwrap()).unwrap();
         let times = TimestampNanosecondArray::from(vec![0; rows]);
-        let (candidates, counts) = parser
-            .stage_candidates(&body, &times, &times, None)
+        let (candidates, counts, _) = parser
+            .stage_candidates(
+                &body,
+                &times,
+                &times,
+                None,
+                &mut CooperativeBudget::default(),
+            )
+            .await
             .unwrap();
         assert_eq!(counts.0, [0; 7]);
         let mut allocations = HashSet::new();
@@ -449,8 +517,8 @@ mod tests {
 
     /// Scenario: Shared bodies have distinct timestamps, a missing fallback, and unsupported rows.
     /// Guarantees: Text sharing preserves per-row fallbacks, counters and all-or-nothing mappings.
-    #[test]
-    fn candidate_staging_preserves_row_specific_outcomes() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn candidate_staging_preserves_row_specific_outcomes() {
         let strings = DictionaryArray::<UInt16Type>::try_new(
             UInt16Array::from(vec![Some(0), Some(0), Some(0), Some(0), Some(0), None]),
             Arc::new(StringArray::from(vec![
@@ -480,8 +548,15 @@ mod tests {
         let parser = Parser::new(serde_json::from_value(config).unwrap()).unwrap();
         let event = TimestampNanosecondArray::from(vec![11, 0, 0, 0, 0, 0]);
         let observed = TimestampNanosecondArray::from(vec![101, 202, 0, 404, 505, 606]);
-        let (candidates, counts) = parser
-            .stage_candidates(&body, &event, &observed, None)
+        let (candidates, counts, _) = parser
+            .stage_candidates(
+                &body,
+                &event,
+                &observed,
+                None,
+                &mut CooperativeBudget::default(),
+            )
+            .await
             .unwrap();
         assert_eq!(counts.0, [0, 0, 0, 1, 0, 2, 2]);
         assert_eq!(candidates[0].timestamp, None);
@@ -510,8 +585,8 @@ mod tests {
 
     /// Scenario: One valid body changes beside repeated dictionary-backed malformed bodies.
     /// Guarantees: Body values stay shared and logically intact, including after sanitization.
-    #[test]
-    fn body_update_preserves_shared_unchanged_values() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn body_update_preserves_shared_unchanged_values() {
         let large_body = "x".repeat(16 * 1024);
         let repeated_rows = 128;
         let mut keys = vec![0; repeated_rows];
@@ -552,7 +627,7 @@ mod tests {
             "limits":{"max_input_bytes":16384,"max_scratch_bytes":262144,"max_pattern_bytes":100,
                 "max_compiled_regex_bytes":1024,"max_json_depth":4,"max_entries":10}});
         let parser = Parser::new(serde_json::from_value(config).unwrap()).unwrap();
-        let (mut output, counts) = parser.apply(batch).unwrap();
+        let (mut output, counts) = parser.apply(batch).await.unwrap();
         assert_eq!(
             counts.0[DataError::Extraction as usize],
             repeated_rows as u64
@@ -594,8 +669,8 @@ mod tests {
 
     /// Scenario: One severity mapping changes beside a repeated large severity and a null text.
     /// Guarantees: Text sharing, nulls and unchanged numbers survive parsing and sanitization.
-    #[test]
-    fn severity_update_preserves_shared_unchanged_values() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn severity_update_preserves_shared_unchanged_values() {
         let large_text = "x".repeat(16 * 1024);
         let repeated_rows = 128;
         let mut logs = vec![
@@ -636,7 +711,7 @@ mod tests {
             "on_error":"preserve", "limits":{"max_input_bytes":1024,"max_scratch_bytes":8192,
                 "max_pattern_bytes":100,"max_compiled_regex_bytes":1024,"max_json_depth":4,"max_entries":10}});
         let parser = Parser::new(serde_json::from_value(config).unwrap()).unwrap();
-        let (mut output, counts) = parser.apply(batch).unwrap();
+        let (mut output, counts) = parser.apply(batch).await.unwrap();
         assert_eq!(
             counts.0[DataError::Extraction as usize],
             (repeated_rows + 1) as u64
@@ -674,8 +749,8 @@ mod tests {
 
     /// Scenario: Sliced native and dictionary strings contain null keys, null values and empty text.
     /// Guarantees: Updates preserve logical nulls and row order without narrowing dictionary keys.
-    #[test]
-    fn string_updates_preserve_nulls_slices_and_key_width() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn string_updates_preserve_nulls_slices_and_key_width() {
         let values = Arc::new(StringArray::from(vec![
             Some("old"),
             None,
@@ -730,13 +805,25 @@ mod tests {
         ];
         for original in arrays {
             let original = original.slice(1, updates.len());
-            let output = update_strings(Some(&original), updates.into_iter()).unwrap();
+            let output = update_strings(
+                Some(&original),
+                updates.into_iter(),
+                &mut CooperativeBudget::default(),
+            )
+            .await
+            .unwrap();
             assert_eq!(output.data_type(), original.data_type());
             let strings = MaybeDictArrayAccessor::<StringArray>::try_new(&output).unwrap();
             let actual: Vec<_> = (0..output.len()).map(|row| strings.str_at(row)).collect();
             assert_eq!(actual, expected);
         }
-        let output = update_strings(None, [None, Some("new"), None].into_iter()).unwrap();
+        let output = update_strings(
+            None,
+            [None, Some("new"), None].into_iter(),
+            &mut CooperativeBudget::default(),
+        )
+        .await
+        .unwrap();
         assert_eq!(
             output.as_any().downcast_ref::<StringArray>().unwrap(),
             &StringArray::from(vec![None, Some("new"), None])
@@ -745,8 +832,8 @@ mod tests {
 
     /// Scenario: Updated dictionary cardinality crosses the supported unsigned key boundaries.
     /// Guarantees: Eight-bit keys promote to sixteen bits; overflow fails without a native fallback.
-    #[test]
-    fn string_dictionary_key_boundaries_are_checked() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn string_dictionary_key_boundaries_are_checked() {
         for cardinality in [256, 257, 65536, 65537] {
             let original: ArrayRef = Arc::new(
                 DictionaryArray::<UInt8Type>::try_new(
@@ -759,7 +846,9 @@ mod tests {
             let result = update_strings(
                 Some(&original),
                 updates.iter().map(|value| Some(value.as_str())),
-            );
+                &mut CooperativeBudget::default(),
+            )
+            .await;
             if cardinality == 65537 {
                 assert!(matches!(
                     result,
@@ -800,8 +889,8 @@ mod tests {
 
     /// Scenario: An internal failure occurs after one record has a valid staged candidate.
     /// Guarantees: No updated batch is returned and the original Arrow buffers remain unchanged.
-    #[test]
-    fn internal_failure_does_not_return_partial_batch() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn internal_failure_does_not_return_partial_batch() {
         let config = serde_json::json!({"format":"json", "body":{"source":"/body"}, "on_error":"preserve",
             "limits":{"max_input_bytes":1024,"max_scratch_bytes":8192,"max_pattern_bytes":100,
                 "max_compiled_regex_bytes":1024,"max_json_depth":4,"max_entries":10}});
@@ -813,14 +902,14 @@ mod tests {
             2
         ]);
         let original = batch.clone();
-        assert!(parser.apply_inner(batch.clone(), Some(1)).is_err());
+        assert!(parser.apply_inner(batch.clone(), Some(1)).await.is_err());
         assert_eq!(batch, original);
     }
 
     /// Scenario: Log bodies are bytes or maps and a non-log Arrow payload enters parsing mode.
     /// Guarantees: Unsupported bodies and signals pass through exactly, with counters only for log bodies.
-    #[test]
-    fn unsupported_bodies_and_signals_are_unchanged() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn unsupported_bodies_and_signals_are_unchanged() {
         use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{KeyValueList, any_value};
         let config = serde_json::json!({"format":"json", "body":{"source":"/body"}, "on_error":"preserve",
             "limits":{"max_input_bytes":1024,"max_scratch_bytes":8192,"max_pattern_bytes":100,
@@ -840,11 +929,11 @@ mod tests {
                 })
                 .finish(),
         ]);
-        let (output, counts) = parser.apply(batch.clone()).unwrap();
+        let (output, counts) = parser.apply(batch.clone()).await.unwrap();
         assert_eq!(output, batch);
         assert_eq!(counts.0[DataError::UnsupportedBody as usize], 2);
         let batch = OtapArrowRecords::Metrics(Default::default());
-        let (output, counts) = parser.apply(batch.clone()).unwrap();
+        let (output, counts) = parser.apply(batch.clone()).await.unwrap();
         assert_eq!(output, batch);
         assert_eq!(counts.0, [0; 7]);
     }

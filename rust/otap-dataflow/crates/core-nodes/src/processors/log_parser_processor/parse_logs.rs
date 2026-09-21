@@ -4,8 +4,12 @@
 //! Record-local extraction and normalization for already-framed logs.
 
 use chrono::{DateTime, Timelike};
+use regex_automata::{
+    nfa::thompson::pikevm::{Cache, PikeVM},
+    util::captures::Captures,
+};
 use serde::Deserialize;
-use std::{collections::BTreeMap, num::NonZeroUsize};
+use std::{cell::RefCell, collections::BTreeMap, num::NonZeroUsize};
 
 mod json;
 mod update;
@@ -32,10 +36,18 @@ pub(super) struct Candidate {
 
 pub(super) struct Parser {
     config: ParseConfig,
-    regex: Option<regex_automata::nfa::thompson::pikevm::PikeVM>,
+    regex: Option<PikeVM>,
+    regex_workspace: RefCell<Option<(Cache, Captures)>>,
+    csv_workspace: RefCell<Option<Box<CsvWorkspace>>>,
     sources: Vec<Vec<String>>,
     #[cfg(test)]
     pub(super) fail_after: Option<usize>,
+}
+
+struct CsvWorkspace {
+    reader: csv_core::Reader,
+    output: Vec<u8>,
+    ends: Vec<usize>,
 }
 
 impl Parser {
@@ -43,7 +55,7 @@ impl Parser {
         config.validate()?;
         let regex = if let Some(pattern) = &config.pattern {
             Some(
-                regex_automata::nfa::thompson::pikevm::PikeVM::builder()
+                PikeVM::builder()
                     .thompson(
                         regex_automata::nfa::thompson::Config::new()
                             .nfa_size_limit(Some(config.limits.max_compiled_regex_bytes.get())),
@@ -83,6 +95,8 @@ impl Parser {
         Ok(Self {
             config,
             regex,
+            regex_workspace: RefCell::new(None),
+            csv_workspace: RefCell::new(None),
             sources,
             #[cfg(test)]
             fail_after: None,
@@ -99,15 +113,31 @@ impl Parser {
             Format::Json => {
                 json::Document::scratch_bound(input.len(), self.config.limits.max_entries.get())
             }
-            Format::Csv => input.len().checked_add(
-                self.config
+            Format::Csv => {
+                let slots = self
+                    .config
                     .columns
                     .as_ref()
                     .map_or(0, Vec::len)
                     .checked_add(1)
-                    .and_then(|count| count.checked_mul(size_of::<usize>()))
-                    .ok_or(DataError::Limit)?,
-            ),
+                    .ok_or(DataError::Limit)?;
+                let workspace = self.csv_workspace.borrow();
+                let (bytes, slots) = workspace
+                    .as_ref()
+                    .map_or((input.len(), slots), |workspace| {
+                        (
+                            input.len().max(workspace.output.capacity()),
+                            slots.max(workspace.ends.capacity()),
+                        )
+                    });
+                bytes
+                    .checked_add(
+                        slots
+                            .checked_mul(size_of::<usize>())
+                            .ok_or(DataError::Limit)?,
+                    )
+                    .and_then(|amount| amount.checked_add(size_of::<CsvWorkspace>()))
+            }
             Format::Regex => self.regex.as_ref().and_then(|regex| {
                 let states = regex.get_nfa().states().len();
                 let slots = regex.get_nfa().group_info().slot_len();
@@ -161,9 +191,10 @@ impl Parser {
             }
             Format::Regex => {
                 let regex = self.regex.as_ref().ok_or(DataError::Extraction)?;
-                let mut cache = regex.create_cache();
-                let mut captures = regex.create_captures();
-                regex.captures(&mut cache, input, &mut captures);
+                let mut workspace = self.regex_workspace.borrow_mut();
+                let (cache, captures) = workspace
+                    .get_or_insert_with(|| (regex.create_cache(), regex.create_captures()));
+                regex.captures(cache, input, captures);
                 if !captures.is_match() {
                     return Err(DataError::Extraction);
                 }
@@ -192,21 +223,41 @@ impl Parser {
                 if fields > self.config.limits.max_entries.get() {
                     return Err(DataError::Limit);
                 }
-                let mut reader = csv_core::ReaderBuilder::new().delimiter(delimiter).build();
-                let mut output = vec![0; input.len()];
-                let mut ends = vec![0; columns.len() + 1];
-                let (mut result, consumed, written, mut fields) =
-                    reader.read_record(input.as_bytes(), &mut output, &mut ends);
+                let mut workspace = self.csv_workspace.borrow_mut();
+                let workspace = workspace.get_or_insert_with(|| {
+                    Box::new(CsvWorkspace {
+                        reader: csv_core::ReaderBuilder::new().delimiter(delimiter).build(),
+                        output: Vec::new(),
+                        ends: vec![0; columns.len() + 1],
+                    })
+                });
+                let CsvWorkspace {
+                    reader,
+                    output,
+                    ends,
+                } = workspace.as_mut();
+                reader.reset();
+                ends.fill(0);
+                if input.len() > output.len() {
+                    output
+                        .try_reserve_exact(input.len() - output.len())
+                        .map_err(|_| DataError::Limit)?;
+                }
+                output.resize(input.len(), 0);
+                let (mut result, consumed, mut written, mut fields) =
+                    reader.read_record(input.as_bytes(), output, ends);
                 if result == csv_core::ReadRecordResult::InputEmpty && consumed == input.len() {
-                    let (next, _, _, added) =
+                    let (next, _, added_bytes, added) =
                         reader.read_record(&[], &mut output[written..], &mut ends[fields..]);
                     result = next;
+                    written += added_bytes;
                     fields += added;
                 }
                 if result != csv_core::ReadRecordResult::Record || fields != columns.len() {
                     return Err(DataError::Extraction);
                 }
-                let text = std::str::from_utf8(&output).map_err(|_| DataError::Extraction)?;
+                let text =
+                    std::str::from_utf8(&output[..written]).map_err(|_| DataError::Extraction)?;
                 self.map(
                     |index| {
                         let column = columns
@@ -676,6 +727,139 @@ mod tests {
         config["body"] = serde_json::json!({"source":"body"});
         let parser = Parser::new(serde_json::from_value(config).unwrap()).unwrap();
         assert_eq!(parser.parse("", 0, 0).unwrap().body.as_deref(), Some(""));
+    }
+
+    /// Scenario: CSV records alternate large UTF-8, short, empty and malformed fields.
+    /// Guarantees: Reused buffers and EOF state never leak prior text and retained capacity is bounded.
+    #[test]
+    fn csv_workspace_reuse_preserves_independent_records() {
+        let mut value = config("csv");
+        value["columns"] = serde_json::json!(["tag", "message"]);
+        value["delimiter"] = ",".into();
+        value["header"] = "none".into();
+        value["body"] = serde_json::json!({"source":"message"});
+        let parser = Parser::new(serde_json::from_value(value.clone()).unwrap()).unwrap();
+        assert!(parser.csv_workspace.borrow().is_none());
+        let large_text = "\u{00e9}".repeat(1024);
+        let large = format!("INFO,\"{large_text}\"");
+        assert_eq!(
+            parser.parse(&large, 0, 0).unwrap().body.as_deref(),
+            Some(large_text.as_str())
+        );
+        let (output_pointer, offsets_pointer, capacity) = {
+            let workspace = parser.csv_workspace.borrow();
+            let workspace = workspace.as_ref().unwrap();
+            (
+                workspace.output.as_ptr(),
+                workspace.ends.as_ptr(),
+                workspace.output.capacity(),
+            )
+        };
+        for (input, expected) in [
+            ("INFO,x", Some("x")),
+            ("INFO,", Some("")),
+            ("INFO,\"unterminated", None),
+            ("INFO", None),
+            ("INFO,\"\"", Some("")),
+            ("INFO,\u{00e9}", Some("\u{00e9}")),
+            ("INFO,last", Some("last")),
+        ] {
+            match expected {
+                Some(expected) => assert_eq!(
+                    parser.parse(input, 0, 0).unwrap().body.as_deref(),
+                    Some(expected)
+                ),
+                None => assert_eq!(parser.parse(input, 0, 0), Err(DataError::Extraction)),
+            }
+            let workspace = parser.csv_workspace.borrow();
+            let workspace = workspace.as_ref().unwrap();
+            assert_eq!(workspace.output.as_ptr(), output_pointer);
+            assert_eq!(workspace.ends.as_ptr(), offsets_pointer);
+            assert_eq!(workspace.output.capacity(), capacity);
+        }
+        let retained = {
+            let workspace = parser.csv_workspace.borrow();
+            let workspace = workspace.as_ref().unwrap();
+            size_of::<CsvWorkspace>()
+                + workspace.output.capacity()
+                + workspace.ends.capacity() * size_of::<usize>()
+        };
+        assert!(retained <= parser.scratch_bound("INFO,x").unwrap());
+        assert!(
+            parser.scratch_bound("INFO,x").unwrap() <= parser.config.limits.max_scratch_bytes.get()
+        );
+        let other = Parser::new(serde_json::from_value(value).unwrap()).unwrap();
+        assert!(other.csv_workspace.borrow().is_none());
+        assert_eq!(
+            other.parse("INFO,other", 0, 0).unwrap().body.as_deref(),
+            Some("other")
+        );
+        assert_ne!(
+            other
+                .csv_workspace
+                .borrow()
+                .as_ref()
+                .unwrap()
+                .output
+                .as_ptr(),
+            output_pointer
+        );
+        let oversized = "x".repeat(parser.config.limits.max_input_bytes.get() + 1);
+        assert_eq!(parser.parse(&oversized, 0, 0), Err(DataError::Limit));
+        assert_eq!(
+            parser
+                .csv_workspace
+                .borrow()
+                .as_ref()
+                .unwrap()
+                .output
+                .capacity(),
+            capacity
+        );
+    }
+
+    /// Scenario: Reused regex workspace alternates matches, missing captures and a nonmatch.
+    /// Guarantees: Captures reset per search and timestamp fallback remains record-local.
+    #[test]
+    fn regex_workspace_reuse_clears_previous_captures() {
+        let mut value = parser_config("regex");
+        value["pattern"] = r"(?:(?P<ts>\S+) )?(?P<sev>INFO|ERROR) (?P<message>.*)".into();
+        let parser = Parser::new(serde_json::from_value(value).unwrap()).unwrap();
+        assert!(parser.regex_workspace.borrow().is_none());
+        assert_eq!(
+            parser
+                .parse("1970-01-01T00:00:02Z ERROR first", 0, 0)
+                .unwrap()
+                .timestamp,
+            Some(2_000_000_000)
+        );
+        assert!(parser.regex_workspace.borrow().is_some());
+        assert_eq!(
+            parser.parse("not-a-match", 0, 0),
+            Err(DataError::Extraction)
+        );
+        let candidate = parser.parse("INFO next", 0, 3_000_000_000).unwrap();
+        assert_eq!(candidate.body.as_deref(), Some("next"));
+        assert_eq!(candidate.timestamp, Some(3_000_000_000));
+        assert!(candidate.fallback);
+        assert_eq!(
+            parser.parse("INFO missing", 0, 0),
+            Err(DataError::Timestamp)
+        );
+        let candidate = parser.parse("ERROR last", 1_000_000_000, 0).unwrap();
+        assert_eq!(candidate.body.as_deref(), Some("last"));
+        assert_eq!(candidate.timestamp, None);
+        assert!(!candidate.fallback);
+        assert!(
+            parser
+                .regex_workspace
+                .borrow()
+                .as_ref()
+                .unwrap()
+                .0
+                .memory_usage()
+                < parser.scratch_bound("ERROR last").unwrap()
+        );
     }
 
     /// Scenario: JSON timestamp values are missing, null, empty or malformed under preserve fallback.

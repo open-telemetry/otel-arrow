@@ -180,10 +180,10 @@ required-features = ["bench"]
 name = "journald_decode"
 harness = false
 path = "benches/journald_decode/main.rs"
-required-features = ["bench"]
+required-features = ["bench", "journald"]
 
 [[bench]]
 name = "parse_logs"
 harness = false
 path = "benches/parse_logs.rs"
-required-features = ["bench", "journald"]
+required-features = ["bench"]

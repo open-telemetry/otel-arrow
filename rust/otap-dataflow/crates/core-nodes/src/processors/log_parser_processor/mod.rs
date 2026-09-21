@@ -27,7 +27,7 @@ use otel_arrow_dfe_engine::{
 use otel_arrow_dfe_otap::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata};
 use otel_arrow_dfe_pdata::{
     OtapArrowRecords, OtapPayloadHelpers, TryIntoWithOptions,
-    otap::transform::sanitize::sanitize_otap_batch,
+    otap::transform::sanitize::sanitize_otap_batch_cooperative,
 };
 use serde_json::Value;
 
@@ -101,12 +101,13 @@ impl LogParserProcessor {
         let (mut batch, counts) = self
             .log_parser
             .apply(batch)
+            .await
             .map_err(|error| (ParserErrorType::Internal, error.into()))?;
+        if self.sanitize_results {
+            sanitize_otap_batch_cooperative(&mut batch).await;
+        }
         self.metrics
             .record_parsing(self.log_parser.format(), counts);
-        if self.sanitize_results {
-            sanitize_otap_batch(&mut batch);
-        }
         let has_data = !batch.is_empty();
         let mut pdata = OtapPdata::new(context, batch.into());
         if has_data {

@@ -145,6 +145,12 @@ library temporary storage but exclude staged batch output and allocator overhead
 they are not an RSS guarantee. Compilation/storage and normal batch output remain
 subject to processor resource limits.
 
+CSV readers and output/offset buffers, and regex cache/capture storage, are
+reused within one processor. CSV state resets for each framed record; retained
+CSV capacity is included in the scratch reservation before further growth.
+Regex workspace stays tied to its compiled pattern and its conservative bound.
+Workspace is initialized lazily after the per-record limit checks.
+
 Staged successful updates share equal body and severity strings within the batch,
 retaining one owned copy per distinct mapped string plus per-row references.
 Parsing still runs per record; timestamp fallback, errors and counters remain
@@ -155,6 +161,15 @@ retain the input key width, promoting 8-bit keys to 16-bit keys when needed;
 more than 65,536 distinct output values are rejected rather than expanded into
 plain strings. These representation failures abort the batch as internal update
 errors, without partial output. They are not a configurable batch memory quota.
+
+Staging, column rebuilding and default dictionary sanitization cooperate with
+other local tasks after 128 items or 256 KiB of accounted work. No partial output
+is sent, and record counters are published only after these phases finish.
+Cancellation while those phases are pending emits no partial result or early Ack.
+This is a work quantum, not a wall-clock deadline: one record or dictionary value,
+payload conversion, transport-ID decoding, Arrow constructors and allocator calls
+remain indivisible. The processor's own control messages still wait for its
+current operation; yielding lets other ready tasks on the core make progress.
 
 ### Qualification
 
@@ -172,7 +187,15 @@ mapping. A separate native-batch measurement includes transport-ID decoding,
 record parsing, candidate staging, native OTAP updates and sanitization. Neither
 measurement includes engine scheduling, output-channel delivery or receiver work.
 
-Initial Windows debug-profile measurements (not production capacity estimates):
+A separate current-thread scheduling probe processes 32 and 128 records, each
+at its configured input limit (about 64 KiB). It asserts another ready task makes
+progress and reports the longest processing poll and total batch time for each
+format. It includes transport-ID decoding, parser updates and sanitization, but
+not receiver or output-channel work. These measurements do not establish a
+hard latency bound. Processor tests separately cover atomic output and cancellation.
+
+Historical Windows debug-profile measurements before workspace reuse and
+cooperative updates (not current performance or production capacity estimates):
 
 | Format | Input Bytes | Malformed | Peak Requested Bytes | Reserved Bytes | Records/s |
 | --- | ---: | ---: | ---: | ---: | ---: |
@@ -190,7 +213,7 @@ before timing. Fixture creation and OTLP conversion are excluded; input batch
 cloning and output destruction are included. Each workload runs 100 timed batches
 with profiling disabled, after a separate `dhat` peak-allocation measurement.
 
-Windows debug-profile native-batch results from the qualification run:
+Historical Windows debug-profile native-batch results from that qualification run:
 
 | Format | Records/Batch | Malformed | Batch Peak Requested Bytes | Records/s |
 | --- | ---: | ---: | ---: | ---: |
@@ -209,10 +232,15 @@ Windows debug-profile native-batch results from the qualification run:
 
 Batch peaks include candidate staging, rebuilt columns and sanitization, but not
 the prebuilt input. They are not per-record scratch measurements and are not
-compared to `max_scratch_bytes`. Record-local requested peaks remain 3000 bytes
+compared to `max_scratch_bytes`. That run's record-local requested peaks were 3000 bytes
 for JSON, 8044 for regex and 78 for CSV in these workloads, below their respective
 reservations of 3740, 14596 and 134 bytes. These results are not production capacity
 estimates or a bound on process RSS.
+
+With retained workspace, the first measurement includes lazy initialization and
+later measurements reuse it. Requested peaks from a fresh `dhat` measurement do
+not include workspace allocated before that measurement. Compare cold and warm
+results separately, and do not treat lower warm peaks as total retained memory.
 
 Receiver START boundaries, idle flush, limits, restart/replay and recovery require
 separate filelog integration qualification. These processor tests do not establish

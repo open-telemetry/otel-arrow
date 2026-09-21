@@ -17,7 +17,14 @@ use otel_arrow_dfe_pdata::{
     testing::round_trip::{otap_to_otlp, otlp_to_otap},
 };
 use serde_json::json;
-use std::{hint::black_box, io::Write, time::Instant};
+use std::{
+    cell::Cell,
+    future::{Future, poll_fn},
+    hint::black_box,
+    io::Write,
+    rc::Rc,
+    time::{Duration, Instant},
+};
 
 #[global_allocator]
 static ALLOCATOR: dhat::Alloc = dhat::Alloc;
@@ -153,6 +160,85 @@ fn main() {
             "allocation_case=regex_captures captures={captures} requested_peak_bytes={peak} reserved_bytes={}",
             parser.scratch_bound(&input)
         ).expect("write allocation result");
+    }
+    scheduling_probe(&mut output, &limits);
+}
+
+fn scheduling_probe(output: &mut impl Write, limits: &serde_json::Value) {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("build scheduling probe runtime");
+    for format in ["json", "regex", "csv"] {
+        let large_text = "x".repeat(64 * 1024);
+        let input = match format {
+            "json" => json!({"body":large_text}).to_string(),
+            _ => large_text.clone(),
+        };
+        let mut config = json!({"format":format,"on_error":"preserve","limits":limits,
+            "body":{"source":if format == "json" { "/body" } else { "body" }}});
+        config["limits"]["max_input_bytes"] = input.len().into();
+        config["limits"]["max_entries"] = 8.into();
+        if format == "regex" {
+            config["pattern"] = "(?P<body>.*)".into();
+        } else if format == "csv" {
+            config["columns"] = json!(["body"]);
+            config["delimiter"] = ",".into();
+            config["header"] = "none".into();
+        }
+        let parser = BenchLogParser::new(config);
+        for batch_rows in [32, 128] {
+            let batch = otel_arrow_dfe_pdata::testing::round_trip::to_otap_logs(vec![
+                LogRecord::build().body(AnyValue::new_string(input.as_str())).finish(); batch_rows
+            ]);
+            let started = Instant::now();
+            let mut longest_poll = Duration::ZERO;
+            let progress = Rc::new(Cell::new(0u64));
+            let done = Rc::new(Cell::new(false));
+            let result = runtime.block_on(tokio::task::LocalSet::new().run_until(async {
+                let observer = tokio::task::spawn_local({
+                    let done = Rc::clone(&done);
+                    let progress = Rc::clone(&progress);
+                    async move {
+                        while !done.get() {
+                            progress.set(progress.get() + 1);
+                            tokio::task::yield_now().await;
+                        }
+                    }
+                });
+                let mut operation = Box::pin(parser.apply_batch_cooperative(batch));
+                let measured = poll_fn(|context| {
+                    let before = Instant::now();
+                    let result = operation.as_mut().poll(context);
+                    longest_poll = longest_poll.max(before.elapsed());
+                    result
+                });
+                let result = measured.await;
+                done.set(true);
+                observer.await.expect("join scheduling observer");
+                result.expect("process scheduling probe batch")
+            }));
+            let elapsed = started.elapsed();
+            assert_eq!(result.1, 0);
+            assert!(
+                progress.get() > 1,
+                "batch must cooperate with another ready task"
+            );
+            let OtlpProtoMessage::Logs(logs) = otap_to_otlp(&result.0) else {
+                panic!("expected logs")
+            };
+            let records = &logs.resource_logs[0].scope_logs[0].log_records;
+            assert_eq!(records.len(), batch_rows);
+            assert!(
+                records
+                    .iter()
+                    .all(|record| record.body == Some(AnyValue::new_string(large_text.as_str())))
+            );
+            writeln!(output,
+                "mode=scheduling format={format} batch_records={batch_rows} input_bytes={} ready_task_polls={} longest_processing_poll_us={} total_batch_us={}",
+                input.len(), progress.get(), longest_poll.as_micros(), elapsed.as_micros(),
+            ).expect("write scheduling result");
+        }
     }
 }
 

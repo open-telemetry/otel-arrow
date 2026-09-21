@@ -7,184 +7,195 @@
 //! - removing any dictionary values that have no keys pointing to them
 
 use std::borrow::Cow;
+use std::future::Future;
+use std::pin::pin;
 use std::sync::Arc;
+use std::task::{Context, Poll, Waker};
 
 use arrow::{
-    array::{Array, BooleanArray, DictionaryArray, PrimitiveArray, RecordBatch, StructArray},
-    buffer::ScalarBuffer,
-    compute::kernels::filter::filter,
+    array::{
+        Array, Capacities, DictionaryArray, MutableArrayData, PrimitiveArray, RecordBatch,
+        StructArray, make_array,
+    },
     datatypes::{ArrowDictionaryKeyType, ArrowNativeType, UInt8Type, UInt16Type},
-    util::{bit_iterator::BitSliceIterator, bit_util},
 };
 use arrow_schema::DataType;
+
+/// A local work quantum shared across cooperating Arrow processing phases.
+#[derive(Default)]
+pub struct CooperativeBudget {
+    items: usize,
+    bytes: usize,
+    yield_disabled: bool,
+}
+
+impl CooperativeBudget {
+    fn synchronous() -> Self {
+        Self {
+            yield_disabled: true,
+            ..Self::default()
+        }
+    }
+
+    /// Yield after a bounded item or byte quantum; one indivisible item may exceed it.
+    pub async fn consume(&mut self, items: usize, bytes: usize) {
+        if self.yield_disabled {
+            return;
+        }
+        self.items = self.items.saturating_add(items);
+        self.bytes = self.bytes.saturating_add(bytes);
+        if self.items >= 128 || self.bytes >= 256 * 1024 {
+            self.items = 0;
+            self.bytes = 0;
+            tokio::task::yield_now().await;
+        }
+    }
+}
+
+/// Sanitize a batch while yielding between bounded dictionary-processing units.
+pub async fn sanitize_record_batch_cooperative(
+    record_batch: &RecordBatch,
+    budget: &mut CooperativeBudget,
+) -> Option<RecordBatch> {
+    let mut columns = Cow::from(record_batch.columns());
+    for (index, column) in record_batch.columns().iter().enumerate() {
+        if let Some(sanitized) = sanitize_column_cooperative(column.as_ref(), budget).await {
+            columns.to_mut()[index] = sanitized;
+        }
+    }
+    match columns {
+        Cow::Borrowed(_) => None,
+        Cow::Owned(columns) => Some(
+            RecordBatch::try_new(record_batch.schema(), columns).expect("sanitized column shape"),
+        ),
+    }
+}
+
+async fn sanitize_column_cooperative(
+    column: &dyn Array,
+    budget: &mut CooperativeBudget,
+) -> Option<Arc<dyn Array>> {
+    budget.consume(1, 0).await;
+    if let Some(dictionary) = column.as_any().downcast_ref::<DictionaryArray<UInt8Type>>() {
+        return sanitized_dict_cooperative(dictionary, budget)
+            .await
+            .map(|array| Arc::new(array) as Arc<dyn Array>);
+    }
+    if let Some(dictionary) = column
+        .as_any()
+        .downcast_ref::<DictionaryArray<UInt16Type>>()
+    {
+        return sanitized_dict_cooperative(dictionary, budget)
+            .await
+            .map(|array| Arc::new(array) as Arc<dyn Array>);
+    }
+    let structure = column.as_any().downcast_ref::<StructArray>()?;
+    let mut columns: Cow<'_, [Arc<dyn Array>]> = Cow::Borrowed(structure.columns());
+    for (index, field) in structure.columns().iter().enumerate() {
+        if let Some(sanitized) = Box::pin(sanitize_column_cooperative(field.as_ref(), budget)).await
+        {
+            columns.to_mut()[index] = sanitized;
+        }
+    }
+    match columns {
+        Cow::Borrowed(_) => None,
+        Cow::Owned(columns) => Some(Arc::new(StructArray::new(
+            structure.fields().clone(),
+            columns,
+            structure.nulls().cloned(),
+        ))),
+    }
+}
+
+async fn sanitized_dict_cooperative<Key: ArrowDictionaryKeyType>(
+    dictionary: &DictionaryArray<Key>,
+    budget: &mut CooperativeBudget,
+) -> Option<DictionaryArray<Key>>
+where
+    Key::Native: SanitizeDictHelper,
+{
+    let values = dictionary.values();
+    let mut live = vec![false; values.len().min(usize::from(u16::MAX) + 1)];
+    let mut live_count = 0;
+    for key in dictionary.keys().iter() {
+        budget.consume(1, 0).await;
+        if let Some(key) = key {
+            let index = key.as_usize();
+            if !live[index] {
+                live[index] = true;
+                live_count += 1;
+                if live_count == values.len() {
+                    return None;
+                }
+            }
+        }
+    }
+    let data = values.to_data();
+    let capacities = if matches!(values.data_type(), DataType::Utf8 | DataType::Binary) {
+        let offsets = data.buffer::<i32>(0);
+        let mut bytes = 0;
+        for (index, is_live) in live.iter().copied().enumerate() {
+            budget.consume(1, 0).await;
+            if is_live {
+                bytes += (offsets[index + 1] - offsets[index]) as usize;
+            }
+        }
+        Capacities::Binary(live_count, Some(bytes))
+    } else {
+        Capacities::Array(live_count)
+    };
+    let mut selected = MutableArrayData::with_capacities(vec![&data], false, capacities);
+    let mut remapped = vec![0; live.len()];
+    let mut next_key = 0;
+    for (index, is_live) in live.into_iter().enumerate() {
+        if is_live {
+            let bytes = data
+                .slice(index, 1)
+                .get_slice_memory_size()
+                .unwrap_or(usize::MAX);
+            budget.consume(1, bytes).await;
+            selected.extend(0, index, index + 1);
+            remapped[index] = next_key;
+            next_key += 1;
+        } else {
+            budget.consume(1, 0).await;
+        }
+    }
+    let mut keys = Vec::with_capacity(dictionary.len());
+    for key in dictionary.keys().iter() {
+        budget.consume(1, size_of::<Key::Native>()).await;
+        keys.push(key.map_or_else(Key::Native::default, |key| {
+            <Key::Native as SanitizeDictHelper>::from_usize(remapped[key.as_usize()])
+        }));
+    }
+    let keys = PrimitiveArray::<Key>::new(keys.into(), dictionary.keys().nulls().cloned());
+    Some(DictionaryArray::new(keys, make_array(selected.freeze())))
+}
 
 /// Sanitizes a single array column, returning `Some` with the sanitized array if any changes
 /// were made, or `None` if the array was already clean.
 #[must_use]
 pub fn sanitize_column(column: &dyn Array) -> Option<Arc<dyn Array>> {
-    match column.data_type() {
-        DataType::Dictionary(k, _) => match k.as_ref() {
-            DataType::UInt8 => {
-                let dict_arr = column
-                    .as_any()
-                    .downcast_ref::<DictionaryArray<UInt8Type>>()
-                    // safety: we've checked the type
-                    .expect("can downcast to dict");
-                sanitized_dict(dict_arr).map(|s| Arc::new(s) as Arc<dyn Array>)
-            }
-            DataType::UInt16 => {
-                let dict_arr = column
-                    .as_any()
-                    .downcast_ref::<DictionaryArray<UInt16Type>>()
-                    // safety: we've checked the type
-                    .expect("can downcast to dict");
-                sanitized_dict(dict_arr).map(|s| Arc::new(s) as Arc<dyn Array>)
-            }
-            _ => None,
-        },
-        DataType::Struct(_) => {
-            let struct_arr = column
-                .as_any()
-                .downcast_ref::<StructArray>()
-                .expect("can downcast to struct");
-            sanitize_struct(struct_arr).map(|s| Arc::new(s) as Arc<dyn Array>)
-        }
-        _ => None,
-    }
+    complete_synchronously(sanitize_column_cooperative(
+        column,
+        &mut CooperativeBudget::synchronous(),
+    ))
 }
 
-/// sanitize all columns in the
+/// Sanitizes every column in a record batch without requiring an async runtime.
 #[must_use]
 pub fn sanitize_record_batch(record_batch: &RecordBatch) -> Option<RecordBatch> {
-    let mut columns = Cow::from(record_batch.columns());
-
-    for i in 0..record_batch.num_columns() {
-        if let Some(sanitized) = sanitize_column(record_batch.column(i)) {
-            columns.to_mut()[i] = sanitized;
-        }
-    }
-
-    match columns {
-        // no modifications were made:
-        Cow::Borrowed(_) => None,
-
-        // create new batch with sanitized columns
-        Cow::Owned(new_columns) => {
-            // safety: we haven't changed the length/type of any column, nor the column order
-            // so it is safe to expect that try_new will not error here
-            let sanitized_batch = RecordBatch::try_new(record_batch.schema(), new_columns)
-                .expect("can create sanitized batch");
-            Some(sanitized_batch)
-        }
-    }
+    complete_synchronously(sanitize_record_batch_cooperative(
+        record_batch,
+        &mut CooperativeBudget::synchronous(),
+    ))
 }
 
-/// Sanitizes a struct array by removing orphaned dictionary values from any dictionary fields.
-fn sanitize_struct(struct_arr: &StructArray) -> Option<StructArray> {
-    let mut columns: Cow<'_, [Arc<dyn Array>]> = Cow::Borrowed(struct_arr.columns());
-
-    for i in 0..struct_arr.num_columns() {
-        if let Some(sanitized) = sanitize_column(struct_arr.column(i)) {
-            columns.to_mut()[i] = sanitized;
-        }
+fn complete_synchronously<Output>(future: impl Future<Output = Output>) -> Output {
+    match pin!(future).poll(&mut Context::from_waker(Waker::noop())) {
+        Poll::Ready(output) => output,
+        Poll::Pending => unreachable!("non-yielding sanitization must finish in one poll"),
     }
-
-    match columns {
-        Cow::Borrowed(_) => None,
-        Cow::Owned(new_columns) => {
-            let fields = struct_arr.fields().clone();
-            let nulls = struct_arr.nulls().cloned();
-            Some(StructArray::new(fields, new_columns, nulls))
-        }
-    }
-}
-
-/// Ensures that the values inside a dictionary with no keys pointing to them are removed.
-fn sanitized_dict<K: ArrowDictionaryKeyType>(
-    dict_arr: &DictionaryArray<K>,
-) -> Option<DictionaryArray<K>>
-where
-    K::Native: SanitizeDictHelper,
-{
-    let dict_values = dict_arr.values();
-    let dict_values_len = dict_values.len();
-    let dict_keys = dict_arr.keys();
-
-    // first determine which dictionary values are live (e.g. those with keys that reference them)
-    let mut live_values_set = vec![0u8; bit_util::ceil(dict_values_len, 8)];
-    let mut live_values_count = 0;
-
-    // helper closure to set a value in the live values set. It also returns `true` if this
-    // function can return early because it has determined that all dict values are live
-    let mut set_value_live = |i: usize| {
-        if !bit_util::get_bit(&live_values_set, i) {
-            bit_util::set_bit(&mut live_values_set, i);
-            live_values_count += 1;
-            if live_values_count >= dict_values_len {
-                return true;
-            }
-        }
-        false
-    };
-
-    // go through the valid (non-null) ranges from the dictionary keys, marking which values are
-    // live while trying to return early if all are live ...
-    let dict_key_values_buffer = dict_keys.values();
-    if let Some(nulls) = dict_keys.nulls() {
-        for (start, end) in nulls.valid_slices() {
-            for i in start..end {
-                let all_values_live = set_value_live(dict_key_values_buffer[i].as_usize());
-                if all_values_live {
-                    return None;
-                }
-            }
-        }
-    } else {
-        for i in 0..dict_keys.len() {
-            let all_values_live = set_value_live(dict_key_values_buffer[i].as_usize());
-            if all_values_live {
-                return None;
-            }
-        }
-    }
-
-    // build dictionary key remapping
-    let mut remapped_keys = vec![0; dict_values.len()];
-    let mut rows_removed = 0;
-    let mut last_valid_range_end = 0;
-    for (start, end) in BitSliceIterator::new(&live_values_set, 0, dict_values_len) {
-        if last_valid_range_end < start {
-            rows_removed += start - last_valid_range_end;
-        }
-
-        for (i, remapped_key) in remapped_keys.iter_mut().enumerate().take(end).skip(start) {
-            *remapped_key = i - rows_removed
-        }
-        last_valid_range_end = end;
-    }
-
-    // build remapped dictionary keys
-    let mut new_keys: Vec<K::Native> = vec![K::Native::default(); dict_keys.len()];
-    for (i, dict_key) in dict_keys.iter().enumerate() {
-        if let Some(key) = dict_key {
-            let new_key = remapped_keys[key.as_usize()];
-            new_keys[i] = <K::Native as SanitizeDictHelper>::from_usize(new_key);
-        }
-    }
-    let new_keys_values = ScalarBuffer::from(new_keys);
-    let new_keys = PrimitiveArray::<K>::new(new_keys_values, dict_keys.nulls().cloned());
-
-    // take only the live values
-    let new_values = filter(
-        dict_values,
-        &BooleanArray::new_from_packed(live_values_set, 0, dict_values_len),
-    )
-    // safety: this will only return error here if our selection vec is the wrong length, but since
-    // we're explicitly passing a boolean array with the same length as the array being filtered,
-    // this can be considered safe
-    .expect("can filter");
-
-    Some(DictionaryArray::new(new_keys, new_values))
 }
 
 // helper trait for making sanitize_dict generic over supported key types
@@ -210,6 +221,8 @@ mod test {
     use arrow::array::{DictionaryArray, Int32Array, StringArray, UInt16Array};
     use arrow_schema::Field;
 
+    /// Scenario: A dictionary contains unused values before and between referenced values.
+    /// Guarantees: The synchronous column API removes unused values and remaps every key.
     #[test]
     fn test_sanitize_dict() {
         let input = DictionaryArray::new(
@@ -219,16 +232,18 @@ mod test {
             ])),
         );
 
-        let result = sanitized_dict(&input);
+        let result = sanitize_column(&input);
 
         let expected = DictionaryArray::new(
             UInt16Array::from_iter_values([0, 1, 2, 2, 3]),
             Arc::new(StringArray::from_iter_values(["1", "2", "5", "6"])),
         );
 
-        assert_eq!(result.unwrap(), expected)
+        assert_eq!(result.unwrap().to_data(), expected.to_data())
     }
 
+    /// Scenario: Every dictionary value is referenced by at least one key.
+    /// Guarantees: The synchronous column API reports no change for an already clean dictionary.
     #[test]
     fn test_sanitize_dict_all_keys_active() {
         let input = DictionaryArray::new(
@@ -236,7 +251,7 @@ mod test {
             Arc::new(StringArray::from_iter_values(["0", "1", "2"])),
         );
 
-        assert!(sanitized_dict(&input).is_none());
+        assert!(sanitize_column(&input).is_none());
     }
 
     #[test]
@@ -333,6 +348,8 @@ mod test {
         );
     }
 
+    /// Scenario: Null keys coexist with referenced and orphaned dictionary values.
+    /// Guarantees: Sanitization preserves null keys while remapping only their valid neighbors.
     #[test]
     fn test_sanitize_dict_with_null_keys() {
         // Null keys should be skipped -- only non-null keys determine which values are live.
@@ -342,16 +359,18 @@ mod test {
             Arc::new(StringArray::from_iter_values(["a", "b", "c", "d"])),
         );
 
-        let result = sanitized_dict(&input);
+        let result = sanitize_column(&input);
 
         let expected = DictionaryArray::new(
             UInt16Array::from(vec![Some(0), None, Some(1), None, Some(1)]),
             Arc::new(StringArray::from_iter_values(["b", "d"])),
         );
 
-        assert_eq!(result.unwrap(), expected);
+        assert_eq!(result.unwrap().to_data(), expected.to_data());
     }
 
+    /// Scenario: Null keys coexist with non-null keys referencing every dictionary value.
+    /// Guarantees: Null keys do not cause an already clean dictionary to be rebuilt.
     #[test]
     fn test_sanitize_dict_with_null_keys_all_active() {
         // All values are referenced by non-null keys, so no sanitization is needed
@@ -361,6 +380,169 @@ mod test {
             Arc::new(StringArray::from_iter_values(["a", "b", "c"])),
         );
 
-        assert!(sanitized_dict(&input).is_none());
+        assert!(sanitize_column(&input).is_none());
+    }
+
+    /// Scenario: Runtime-free synchronous calls exceed both cooperative thresholds in a nested dictionary.
+    /// Guarantees: Column and batch sanitization finish in one poll, preserving nulls and remapping keys.
+    #[test]
+    fn synchronous_sanitization_needs_no_runtime() {
+        let first = "x".repeat(256 * 1024);
+        let second = "y".repeat(256 * 1024);
+        let input = DictionaryArray::new(
+            UInt16Array::from_iter((0..512).map(|row| match row % 3 {
+                0 => None,
+                1 => Some(1),
+                _ => Some(2),
+            })),
+            Arc::new(StringArray::from(vec!["unused", &first, &second])),
+        );
+        let expected = DictionaryArray::new(
+            UInt16Array::from_iter((0..512).map(|row| match row % 3 {
+                0 => None,
+                1 => Some(0),
+                _ => Some(1),
+            })),
+            Arc::new(StringArray::from(vec![first, second])),
+        );
+        let field = Arc::new(Field::new("value", input.data_type().clone(), true));
+        let input = StructArray::from(vec![(field.clone(), Arc::new(input) as Arc<dyn Array>)]);
+        let expected = StructArray::from(vec![(field, Arc::new(expected) as Arc<dyn Array>)]);
+        assert_eq!(
+            sanitize_column(&input).unwrap().to_data(),
+            expected.to_data()
+        );
+        let input =
+            RecordBatch::try_from_iter([("body", Arc::new(input) as Arc<dyn Array>)]).unwrap();
+        let expected =
+            RecordBatch::try_from_iter([("body", Arc::new(expected) as Arc<dyn Array>)]).unwrap();
+        assert_eq!(sanitize_record_batch(&input), Some(expected));
+    }
+
+    /// Scenario: Nested dictionaries contain null keys and many referenced large values.
+    /// Guarantees: Cooperative sanitization matches synchronous output while another local task progresses.
+    #[tokio::test(flavor = "current_thread")]
+    async fn cooperative_sanitization_preserves_values_and_progress() {
+        use std::{cell::Cell, rc::Rc};
+        let values: Vec<_> = (0..512)
+            .map(|index| format!("{index}:{}", "x".repeat(4096)))
+            .collect();
+        let dictionary = DictionaryArray::<UInt16Type>::new(
+            UInt16Array::from_iter(
+                (0..4096).map(|row| (row % 5 != 0).then_some((row % 511) as u16)),
+            ),
+            Arc::new(StringArray::from(values)),
+        );
+        let structure = StructArray::from(vec![(
+            Arc::new(Field::new("value", dictionary.data_type().clone(), true)),
+            Arc::new(dictionary) as Arc<dyn Array>,
+        )]);
+        let batch =
+            RecordBatch::try_from_iter([("body", Arc::new(structure) as Arc<dyn Array>)]).unwrap();
+        let expected = sanitize_record_batch(&batch).unwrap();
+        let done = Rc::new(Cell::new(false));
+        let progress = Rc::new(Cell::new(0));
+        let mut budget = CooperativeBudget::default();
+        let actual = tokio::task::LocalSet::new()
+            .run_until(async {
+                let observer = tokio::task::spawn_local({
+                    let done = Rc::clone(&done);
+                    let progress = Rc::clone(&progress);
+                    async move {
+                        while !done.get() {
+                            progress.set(progress.get() + 1);
+                            tokio::task::yield_now().await;
+                        }
+                    }
+                });
+                let output = sanitize_record_batch_cooperative(&batch, &mut budget)
+                    .await
+                    .unwrap();
+                done.set(true);
+                observer.await.unwrap();
+                output
+            })
+            .await;
+        assert_eq!(actual, expected);
+        assert!(
+            progress.get() > 1,
+            "sanitization must not monopolize the runtime"
+        );
+    }
+
+    /// Scenario: Dictionary inputs include both key widths, slices, nulls and primitive or byte values.
+    /// Guarantees: Both entry points preserve independently specified live values, remapped keys and nulls.
+    #[tokio::test(flavor = "current_thread")]
+    async fn cooperative_sanitization_matches_dictionary_edge_cases() {
+        use arrow::array::{BinaryArray, BooleanArray, UInt8Array};
+        use arrow::compute::filter;
+        let values: Vec<Arc<dyn Array>> = vec![
+            Arc::new(
+                StringArray::from(vec![Some("prefix"), Some("kept"), None, Some("unused")])
+                    .slice(1, 3),
+            ),
+            Arc::new(Int32Array::from(vec![Some(1), None, Some(3)])),
+            Arc::new(BinaryArray::from(vec![
+                Some(b"one".as_slice()),
+                None,
+                Some(b"three".as_slice()),
+            ])),
+        ];
+        for values in values {
+            for (keys, expected_keys, live_values) in [
+                (vec![], vec![], [false, false, false]),
+                (vec![None, None], vec![None, None], [false, false, false]),
+                (
+                    vec![Some(0), Some(1), Some(2)],
+                    vec![Some(0), Some(1), Some(2)],
+                    [true, true, true],
+                ),
+                (
+                    vec![Some(0), None, Some(0), Some(1)],
+                    vec![Some(0), None, Some(0), Some(1)],
+                    [true, true, false],
+                ),
+                (
+                    vec![Some(2), None, Some(2), Some(1)],
+                    vec![Some(1), None, Some(1), Some(0)],
+                    [false, true, true],
+                ),
+            ] {
+                let expected_values =
+                    filter(values.as_ref(), &BooleanArray::from(live_values.to_vec())).unwrap();
+                let small: Arc<dyn Array> = Arc::new(DictionaryArray::<UInt8Type>::new(
+                    UInt8Array::from(keys.clone()),
+                    values.clone(),
+                ));
+                let large: Arc<dyn Array> = Arc::new(DictionaryArray::<UInt16Type>::new(
+                    UInt16Array::from_iter(keys.into_iter().map(|key| key.map(u16::from))),
+                    values.clone(),
+                ));
+                let expected_small: Arc<dyn Array> = Arc::new(DictionaryArray::<UInt8Type>::new(
+                    UInt8Array::from(expected_keys.clone()),
+                    expected_values.clone(),
+                ));
+                let expected_large: Arc<dyn Array> = Arc::new(DictionaryArray::<UInt16Type>::new(
+                    UInt16Array::from_iter(expected_keys.into_iter().map(|key| key.map(u16::from))),
+                    expected_values,
+                ));
+                for (column, expected_column) in [(small, expected_small), (large, expected_large)]
+                {
+                    let batch = RecordBatch::try_from_iter([("value", column)]).unwrap();
+                    let expected =
+                        RecordBatch::try_from_iter([("value", expected_column)]).unwrap();
+                    let synchronous =
+                        sanitize_record_batch(&batch).unwrap_or_else(|| batch.clone());
+                    let actual = sanitize_record_batch_cooperative(
+                        &batch,
+                        &mut CooperativeBudget::default(),
+                    )
+                    .await
+                    .unwrap_or_else(|| batch.clone());
+                    assert_eq!(synchronous, expected);
+                    assert_eq!(actual, expected);
+                }
+            }
+        }
     }
 }

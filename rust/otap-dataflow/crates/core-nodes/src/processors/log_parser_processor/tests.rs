@@ -187,6 +187,7 @@ fn test_empty_batch_completes_locally() {
 
 /// Scenario: Real parser and OPL factories process valid and malformed records in sequence.
 /// Guarantees: OPL filters the mapped body, malformed input survives, and delivery subscribers remain downstream-owned.
+#[cfg(feature = "transform")]
 #[test]
 fn test_parser_to_opl_pipeline() {
     use crate::processors::transform_processor::TRANSFORM_PROCESSOR_FACTORY;
@@ -406,6 +407,133 @@ fn parsing_config(format: &str) -> Value {
     parsing
 }
 
+/// Scenario: A large batch contains accepted near-limit records and malformed neighbors.
+/// Guarantees: Another same-core task progresses while one atomic output preserves order and delivery context.
+#[test]
+fn test_parse_logs_cooperative_progress_and_atomic_output() {
+    use std::{cell::Cell, rc::Rc};
+    let runtime = TestRuntime::<OtapPdata>::new();
+    let text = "x".repeat(64 * 1024);
+    let input = json!({"raw-data":text,"sev":"INFO"}).to_string();
+    let mut config = parsing_config("json");
+    config["limits"]["max_input_bytes"] = input.len().into();
+    config["limits"]["max_entries"] = 8.into();
+    let processor = try_create_with_config(config, &runtime).unwrap();
+    runtime
+        .set_processor(processor)
+        .run_test(move |mut ctx| async move {
+            let (completion_tx, mut completion_rx) = pipeline_completion_msg_channel(1);
+            ctx.set_pipeline_completion_sender(completion_tx);
+            let records: Vec<_> = (0..128)
+                .map(|row| {
+                    let mut record = LogRecord::build()
+                        .body(AnyValue::new_string(if row % 17 == 0 {
+                            "malformed"
+                        } else {
+                            input.as_str()
+                        }))
+                        .finish();
+                    record.observed_time_unix_nano = row + 1;
+                    record
+                })
+                .collect();
+            let mut expected = records.clone();
+            for (row, record) in expected.iter_mut().enumerate() {
+                if row % 17 != 0 {
+                    record.body = Some(AnyValue::new_string(text.as_str()));
+                    record.time_unix_nano = record.observed_time_unix_nano;
+                    record.severity_text = "INFO".into();
+                    record.severity_number = 9;
+                }
+            }
+            let pdata = create_pdata_with_subscriber(
+                to_otap_logs(records),
+                Interests::ACKS | Interests::NACKS,
+                7,
+                999,
+            );
+            let done = Rc::new(Cell::new(false));
+            let progress = Rc::new(Cell::new(0));
+            let result = tokio::task::LocalSet::new()
+                .run_until(async {
+                    let observer = tokio::task::spawn_local({
+                        let done = Rc::clone(&done);
+                        let progress = Rc::clone(&progress);
+                        async move {
+                            while !done.get() {
+                                progress.set(progress.get() + 1);
+                                tokio::task::yield_now().await;
+                            }
+                        }
+                    });
+                    let result = ctx.process(Message::PData(pdata)).await;
+                    done.set(true);
+                    observer.await.unwrap();
+                    result
+                })
+                .await;
+            result.unwrap();
+            assert!(
+                progress.get() > 4,
+                "near-limit records must leave scheduling opportunities"
+            );
+            assert!(completion_rx.try_recv().is_err());
+            let mut outputs = ctx.drain_pdata().await;
+            assert_eq!(outputs.len(), 1);
+            let output = outputs.pop().unwrap();
+            assert_eq!(next_ack(AckMsg::new(output.clone())).unwrap().0, 999);
+            let batch = OtapArrowRecords::try_from_with_default(output.payload()).unwrap();
+            let OtlpProtoMessage::Logs(actual) = otap_to_otlp(&batch) else {
+                panic!("expected logs")
+            };
+            assert_eq!(actual.resource_logs[0].scope_logs[0].log_records, expected);
+        })
+        .validate(|_ctx| async {});
+}
+
+/// Scenario: The caller cancels a large parser operation after several cooperative yields.
+/// Guarantees: No partial output, early ACK or record counter escapes, and retained input remains unchanged.
+#[test]
+fn test_parse_logs_cooperative_cancellation_is_atomic() {
+    let runtime = TestRuntime::<OtapPdata>::new();
+    let registry = runtime.metrics_registry();
+    let reporter = runtime.metrics_reporter();
+    let processor = try_create_with_config(parsing_config("json"), &runtime).unwrap();
+    runtime
+        .set_processor(processor)
+        .run_test(move |mut ctx| async move {
+            let (completion_tx, mut completion_rx) = pipeline_completion_msg_channel(1);
+            ctx.set_pipeline_completion_sender(completion_tx);
+            let mut record = LogRecord::build()
+                .body(AnyValue::new_string(r#"{"raw-data":"body","sev":"INFO"}"#))
+                .finish();
+            record.observed_time_unix_nano = 123;
+            let batch = to_otap_logs(vec![record; 4096]);
+            let retained = batch.clone();
+            let original = retained.clone();
+            let pdata =
+                create_pdata_with_subscriber(batch, Interests::ACKS | Interests::NACKS, 1, 999);
+            {
+                let mut operation = Box::pin(ctx.process(Message::PData(pdata)));
+                for _ in 0..4 {
+                    assert!(futures::poll!(operation.as_mut()).is_pending());
+                }
+            }
+            assert_eq!(retained, original);
+            assert!(ctx.drain_pdata().await.is_empty());
+            assert!(completion_rx.try_recv().is_err());
+            ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
+                metrics_reporter: reporter,
+            }))
+            .await
+            .unwrap();
+        })
+        .validate(move |_ctx| async move {
+            registry.flush_pending_metrics().await.unwrap();
+            assert!(parsing_metric_points(&registry).is_empty());
+        });
+}
+
 /// Scenario: Each parsing format receives a good/bad/good batch with provenance and an ACK subscriber.
 /// Guarantees: Only valid records change, full logical metadata and order survive, and no early ACK is sent.
 #[test]
@@ -561,9 +689,12 @@ fn test_documented_parsing_yaml() {
         let yaml = block.split("```").next().unwrap();
         let node: Value = serde_yaml::from_str(yaml).unwrap();
         if let Some(nodes) = node.get("nodes") {
-            use crate::processors::transform_processor::TRANSFORM_PROCESSOR_FACTORY;
             (LOG_PARSER_PROCESSOR_FACTORY.validate_config)(&nodes["parse"]["config"]).unwrap();
-            (TRANSFORM_PROCESSOR_FACTORY.validate_config)(&nodes["filter"]["config"]).unwrap();
+            #[cfg(feature = "transform")]
+            {
+                use crate::processors::transform_processor::TRANSFORM_PROCESSOR_FACTORY;
+                (TRANSFORM_PROCESSOR_FACTORY.validate_config)(&nodes["filter"]["config"]).unwrap();
+            }
             assert!(try_create_with_config(nodes["parse"]["config"].clone(), &runtime).is_ok());
             composition_examples += 1;
         }

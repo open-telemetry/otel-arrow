@@ -25,11 +25,19 @@ impl BenchLogParser {
     /// Decode, stage and sanitize a native OTAP batch, returning preserved-error counts.
     pub fn apply_batch(
         &self,
+        batch: OtapArrowRecords,
+    ) -> Result<(OtapArrowRecords, u64), otel_arrow_dfe_pdata::error::Error> {
+        futures::executor::block_on(self.apply_batch_cooperative(batch))
+    }
+
+    /// Execute the native batch path in the caller's local runtime for scheduling measurements.
+    pub async fn apply_batch_cooperative(
+        &self,
         mut batch: OtapArrowRecords,
     ) -> Result<(OtapArrowRecords, u64), otel_arrow_dfe_pdata::error::Error> {
         batch.decode_transport_optimized_ids()?;
-        let (mut batch, counts) = self.0.apply(batch)?;
-        sanitize_otap_batch(&mut batch);
+        let (mut batch, counts) = self.0.apply(batch).await?;
+        sanitize_otap_batch_cooperative(&mut batch).await;
         let errors = counts
             .values()
             .filter(|(reason, _)| *reason != parse_logs::DataError::ObservedFallback)
