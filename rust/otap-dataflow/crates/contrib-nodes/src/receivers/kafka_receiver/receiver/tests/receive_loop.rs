@@ -17,17 +17,9 @@ async fn test_kafka_receiver_traces() {
         |cluster| async move {
             let producer = cluster.producer().build();
 
-            let req = create_traces_with_spans();
-            let mut bytes = vec![];
-            req.encode(&mut bytes).expect("encode");
+            let bytes = encoded_trace_fixture();
 
-            for i in 0..3 {
-                let key = format!("test-key-{i}");
-                producer
-                    .send_full(SendRecord::new(TOPIC, &bytes).key(key.as_bytes()))
-                    .await
-                    .expect("Failed to send message");
-            }
+            produce_records(&producer, TOPIC, 3, "test-key", &bytes).await;
 
             let cfg = auto_config(
                 cluster.bootstrap_servers(),
@@ -41,16 +33,12 @@ async fn test_kafka_receiver_traces() {
 
             for _ in 0..3 {
                 let mut pdata = receiver.recv_pdata().await;
-                let proto: OtlpProtoBytes = pdata
-                    .take_payload()
-                    .try_into_with_default()
-                    .expect("to OtlpProtoBytes");
+                let proto = take_otlp_proto(&mut pdata);
                 assert!(matches!(proto, OtlpProtoBytes::ExportTracesRequest(_)));
                 assert_eq!(proto.as_bytes(), &bytes);
             }
 
-            receiver.shutdown(Duration::from_secs(5));
-            receiver.await_stopped().await;
+            shutdown_receiver(receiver).await;
         },
     )
     .await;
@@ -72,13 +60,7 @@ async fn test_kafka_receiver_logs() {
             let mut bytes = vec![];
             req.encode(&mut bytes).expect("encode");
 
-            for i in 0..3 {
-                let key = format!("test-key-{i}");
-                producer
-                    .send_full(SendRecord::new(TOPIC, &bytes).key(key.as_bytes()))
-                    .await
-                    .expect("Failed to send message");
-            }
+            produce_records(&producer, TOPIC, 3, "test-key", &bytes).await;
 
             let cfg = auto_config(
                 cluster.bootstrap_servers(),
@@ -92,16 +74,12 @@ async fn test_kafka_receiver_logs() {
 
             for _ in 0..3 {
                 let mut pdata = receiver.recv_pdata().await;
-                let proto: OtlpProtoBytes = pdata
-                    .take_payload()
-                    .try_into_with_default()
-                    .expect("to OtlpProtoBytes");
+                let proto = take_otlp_proto(&mut pdata);
                 assert!(matches!(proto, OtlpProtoBytes::ExportLogsRequest(_)));
                 assert_eq!(proto.as_bytes(), &bytes);
             }
 
-            receiver.shutdown(Duration::from_secs(5));
-            receiver.await_stopped().await;
+            shutdown_receiver(receiver).await;
         },
     )
     .await;
@@ -123,13 +101,7 @@ async fn test_kafka_receiver_metrics() {
             let mut bytes = vec![];
             req.encode(&mut bytes).expect("encode");
 
-            for i in 0..3 {
-                let key = format!("test-key-{i}");
-                producer
-                    .send_full(SendRecord::new(TOPIC, &bytes).key(key.as_bytes()))
-                    .await
-                    .expect("Failed to send message");
-            }
+            produce_records(&producer, TOPIC, 3, "test-key", &bytes).await;
 
             let cfg = auto_config(
                 cluster.bootstrap_servers(),
@@ -143,16 +115,12 @@ async fn test_kafka_receiver_metrics() {
 
             for _ in 0..3 {
                 let mut pdata = receiver.recv_pdata().await;
-                let proto: OtlpProtoBytes = pdata
-                    .take_payload()
-                    .try_into_with_default()
-                    .expect("to OtlpProtoBytes");
+                let proto = take_otlp_proto(&mut pdata);
                 assert!(matches!(proto, OtlpProtoBytes::ExportMetricsRequest(_)));
                 assert_eq!(proto.as_bytes(), &bytes);
             }
 
-            receiver.shutdown(Duration::from_secs(5));
-            receiver.await_stopped().await;
+            shutdown_receiver(receiver).await;
         },
     )
     .await;
@@ -171,13 +139,7 @@ async fn test_kafka_receiver_traces_otap() {
 
             let bytes = create_traces_with_spans_otap_bytes();
 
-            for i in 0..3 {
-                let key = format!("test-key-{i}");
-                producer
-                    .send_full(SendRecord::new(TOPIC, &bytes).key(key.as_bytes()))
-                    .await
-                    .expect("Failed to send message");
-            }
+            produce_records(&producer, TOPIC, 3, "test-key", &bytes).await;
 
             let cfg = auto_config(
                 cluster.bootstrap_servers(),
@@ -201,8 +163,7 @@ async fn test_kafka_receiver_traces_otap() {
                 );
             }
 
-            receiver.shutdown(Duration::from_secs(5));
-            receiver.await_stopped().await;
+            shutdown_receiver(receiver).await;
         },
     )
     .await;
@@ -222,13 +183,7 @@ async fn test_kafka_receiver_metrics_otap() {
 
             let bytes = create_metrics_otap_arrow_records_bytes();
 
-            for i in 0..3 {
-                let key = format!("test-key-{i}");
-                producer
-                    .send_full(SendRecord::new(TOPIC, &bytes).key(key.as_bytes()))
-                    .await
-                    .expect("Failed to send message");
-            }
+            produce_records(&producer, TOPIC, 3, "test-key", &bytes).await;
 
             let cfg = auto_config(
                 cluster.bootstrap_servers(),
@@ -251,8 +206,7 @@ async fn test_kafka_receiver_metrics_otap() {
                 }
             }
 
-            receiver.shutdown(Duration::from_secs(5));
-            receiver.await_stopped().await;
+            shutdown_receiver(receiver).await;
         },
     )
     .await;
@@ -272,13 +226,7 @@ async fn test_kafka_receiver_logs_otap() {
 
             let bytes = create_logs_otap_arrow_records_bytes();
 
-            for i in 0..3 {
-                let key = format!("test-key-{i}");
-                producer
-                    .send_full(SendRecord::new(TOPIC, &bytes).key(key.as_bytes()))
-                    .await
-                    .expect("Failed to send message");
-            }
+            produce_records(&producer, TOPIC, 3, "test-key", &bytes).await;
 
             let cfg = auto_config(
                 cluster.bootstrap_servers(),
@@ -301,8 +249,7 @@ async fn test_kafka_receiver_logs_otap() {
                 }
             }
 
-            receiver.shutdown(Duration::from_secs(5));
-            receiver.await_stopped().await;
+            shutdown_receiver(receiver).await;
         },
     )
     .await;
@@ -368,8 +315,7 @@ async fn test_kafka_receiver_message_format_header_overrides_signal_default() {
                 );
             }
 
-            receiver.shutdown(Duration::from_secs(5));
-            receiver.await_stopped().await;
+            shutdown_receiver(receiver).await;
         },
     )
     .await;
@@ -396,9 +342,7 @@ async fn multi_signal_topics_route_to_correct_decoders() {
         |cluster| async move {
             let producer = cluster.producer().build();
 
-            let traces_req = create_traces_with_spans();
-            let mut traces_bytes = vec![];
-            traces_req.encode(&mut traces_bytes).expect("encode traces");
+            let traces_bytes = encoded_trace_fixture();
             let metrics_req = create_metrics_service_request();
             let mut metrics_bytes = vec![];
             metrics_req
@@ -438,10 +382,7 @@ async fn multi_signal_topics_route_to_correct_decoders() {
             let mut saw_logs = false;
             for _ in 0..3 {
                 let mut pdata = receiver.recv_pdata().await;
-                let proto: OtlpProtoBytes = pdata
-                    .take_payload()
-                    .try_into_with_default()
-                    .expect("to OtlpProtoBytes");
+                let proto = take_otlp_proto(&mut pdata);
                 match proto {
                     OtlpProtoBytes::ExportTracesRequest(ref b) => {
                         assert_eq!(b.as_ref(), &traces_bytes, "traces payload preserved");
@@ -463,8 +404,7 @@ async fn multi_signal_topics_route_to_correct_decoders() {
                      (traces={saw_traces}, metrics={saw_metrics}, logs={saw_logs})",
             );
 
-            receiver.shutdown(Duration::from_secs(5));
-            receiver.await_stopped().await;
+            shutdown_receiver(receiver).await;
         },
     )
     .await;
@@ -489,9 +429,7 @@ async fn regex_topic_subscription_consumes_all_matching_topics() {
             .topic(TOPIC_C),
         |cluster| async move {
             let producer = cluster.producer().build();
-            let req = create_traces_with_spans();
-            let mut bytes = vec![];
-            req.encode(&mut bytes).expect("encode");
+            let bytes = encoded_trace_fixture();
             for topic in [TOPIC_A, TOPIC_B, TOPIC_C] {
                 producer
                     .send_full(SendRecord::new(topic, &bytes).key(topic.as_bytes()))
@@ -517,10 +455,7 @@ async fn regex_topic_subscription_consumes_all_matching_topics() {
             let mut delivered = 0;
             for _ in 0..3 {
                 let mut pdata = receiver.recv_pdata().await;
-                let proto: OtlpProtoBytes = pdata
-                    .take_payload()
-                    .try_into_with_default()
-                    .expect("to OtlpProtoBytes");
+                let proto = take_otlp_proto(&mut pdata);
                 assert!(matches!(proto, OtlpProtoBytes::ExportTracesRequest(_)));
                 assert_eq!(proto.as_bytes(), &bytes, "payload preserved");
                 delivered += 1;
@@ -539,8 +474,7 @@ async fn regex_topic_subscription_consumes_all_matching_topics() {
                 "no extra records beyond the three matching topics",
             );
 
-            receiver.shutdown(Duration::from_secs(5));
-            receiver.await_stopped().await;
+            shutdown_receiver(receiver).await;
         },
     )
     .await;
@@ -561,54 +495,34 @@ async fn read_committed_isolation_delivers_and_commits() {
         KafkaTestCluster::builder().topic(TOPIC),
         |cluster| async move {
             let producer = cluster.producer().build();
-            let req = create_traces_with_spans();
-            let mut bytes = vec![];
-            req.encode(&mut bytes).expect("encode");
-            for i in 0..RECORDS {
-                let key = format!("rec-{i}");
-                producer
-                    .send_full(SendRecord::new(TOPIC, &bytes).key(key.as_bytes()))
-                    .await
-                    .expect("send record");
-            }
+            let bytes = encoded_trace_fixture();
+            produce_records(&producer, TOPIC, RECORDS, "rec", &bytes).await;
 
-            let builder =
-                KafkaReceiverConfigBuilder::new(cluster.bootstrap_servers(), group, "test-client")
-                    .with_traces(
-                        SignalConfig::new(vec![TOPIC.to_string()])
-                            .with_encoding(MessageFormat::OtlpProto),
-                    )
-                    .with_commit(CommitConfig {
-                        mode: ConfigCommitMode::Manual,
-                        interval_ms: None,
-                    })
-                    .with_auto_offset_reset(AutoOffsetReset::Earliest)
-                    .with_isolation_level(IsolationLevel::ReadCommitted);
+            let builder = manual_traces_builder(cluster.bootstrap_servers(), group, TOPIC)
+                .with_isolation_level(IsolationLevel::ReadCommitted);
             let cfg = KafkaReceiverConfig::try_from(builder).expect("test config valid");
             let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
 
-            for _ in 0..RECORDS {
-                let pdata = receiver.recv_pdata().await;
-                receiver.ack(pdata);
-            }
+            recv_and_ack(&mut receiver, RECORDS).await;
 
             let brokers = cluster.bootstrap_servers().to_string();
-            let committed = poll_until(Duration::from_secs(5), Duration::from_millis(150), || {
-                committed_offset(&brokers, group, TOPIC, 0)
-                    .expect("kafka-test: committed-offset probe failed")
-                    .is_some_and(|o| o >= RECORDS)
-            })
+            let committed = poll_committed_offset(
+                &brokers,
+                group,
+                TOPIC,
+                RECORDS,
+                Duration::from_secs(5),
+                Duration::from_millis(150),
+            )
             .await;
             assert!(
                 committed,
                 "read_committed receiver must deliver and commit all {RECORDS} \
                      non-transactional records, got {:?}",
-                committed_offset(&brokers, group, TOPIC, 0)
-                    .expect("kafka-test: committed-offset probe failed"),
+                probe_committed_offset(&brokers, group, TOPIC),
             );
 
-            receiver.shutdown(Duration::from_secs(5));
-            receiver.await_stopped().await;
+            shutdown_receiver(receiver).await;
         },
     )
     .await;

@@ -1940,7 +1940,7 @@ async fn decide_lists_every_matched_audience_when_all_admit() {
 //   K8S_SAT_TOKEN="$(kubectl create token sat-tester -n sat-authz-test \
 //     --audience=https://sat-authz-test.example)" \
 //   cargo test -p otel-arrow-dfe-contrib-extensions \
-//     --features k8s-service-account-token-auth-extension \
+//     --features k8s-service-account-token-auth \
 //     k8s_service_account_token_auth -- --ignored --nocapture
 //
 // The cluster is expected to have the fixtures from the extension's test setup:

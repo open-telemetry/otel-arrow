@@ -5,7 +5,7 @@
 ## Metadata
 
 - Type: `exporter:otap` (`urn:otel:exporter:otap`)
-- Feature gate: Default
+- Feature gate: `otap`
 - Stability: Experimental
 
 ## Overview
