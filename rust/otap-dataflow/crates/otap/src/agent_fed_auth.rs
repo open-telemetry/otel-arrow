@@ -3,10 +3,11 @@
 
 //! Consumer-side adapter over a bound `agent_fed_auth_provider` capability.
 
-use std::time::Instant;
+use std::{
+    task::{Context, Poll},
+    time::Instant,
+};
 
-use async_trait::async_trait;
-use futures::StreamExt;
 use http::{HeaderName, HeaderValue};
 use otel_arrow_dfe_engine::{
     capability::auth::{
@@ -55,7 +56,6 @@ impl AgentFedAuth {
     }
 }
 
-#[async_trait(?Send)]
 impl HttpClientAuthProvider for AgentFedAuth {
     fn name(&self) -> HttpClientAuthProviderName {
         NAME.into()
@@ -102,9 +102,14 @@ impl HttpClientAuthProvider for AgentFedAuth {
         }
     }
 
-    async fn poll_refresh(&mut self, events: &HttpClientAuthProviderEvents) -> bool {
-        match self.stream.next().await {
-            Some(credential) => {
+    fn poll_refresh(
+        &mut self,
+        cx: &mut Context<'_>,
+        events: &HttpClientAuthProviderEvents,
+    ) -> Poll<bool> {
+        match self.stream.as_mut().poll_next(cx) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(Some(credential)) => {
                 let token = credential.token();
                 match HeaderValue::from_str(&format!("Bearer {}", token.expose_token())) {
                     Ok(mut value) => {
@@ -115,22 +120,22 @@ impl HttpClientAuthProvider for AgentFedAuth {
                         // A new cached token starts a new generation, so a 401 for
                         // an earlier token no longer matches and is ignored.
                         self.generation = self.generation.wrapping_add(1);
-                        return true;
+                        Poll::Ready(true)
                     }
                     Err(e) => {
                         // Malformed token: keep the previous cached token (if any).
                         events.emit_invalid(self, &format!("Malformed token: {e}"));
-                        return false;
+                        Poll::Ready(false)
                     }
                 }
             }
-            None => {
+            Poll::Ready(None) => {
                 // Provider closed its stream; no further refreshes will arrive.
                 // Keep using the last cached token. Not expected with a
                 // watch-backed provider while we hold its handle, so warn.
                 self.stream_active = false;
                 events.emit_stream_closed(self);
-                return false;
+                Poll::Ready(false)
             }
         }
     }
@@ -139,9 +144,9 @@ impl HttpClientAuthProvider for AgentFedAuth {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use futures::stream;
+    use futures::{StreamExt, stream};
     use otel_arrow_dfe_engine::capability::auth::BearerToken;
-    use std::cell::Cell;
+    use std::{cell::Cell, future::poll_fn};
 
     thread_local! {
         /// Number of `invalid` notifications raised on this test thread.
@@ -236,7 +241,7 @@ mod tests {
             "first",
         ))]);
 
-        assert!(auth.poll_refresh(&TEST_EVENTS).await);
+        assert!(poll_fn(|cx| auth.poll_refresh(cx, &TEST_EVENTS)).await);
 
         assert!(
             auth.is_ready(),
@@ -267,8 +272,8 @@ mod tests {
             create_credential(BearerToken::without_expiry("bad\nvalue")),
         ]);
 
-        assert!(auth.poll_refresh(&TEST_EVENTS).await);
-        assert!(!auth.poll_refresh(&TEST_EVENTS).await);
+        assert!(poll_fn(|cx| auth.poll_refresh(cx, &TEST_EVENTS)).await);
+        assert!(!poll_fn(|cx| auth.poll_refresh(cx, &TEST_EVENTS)).await);
 
         assert_eq!(
             INVALID.get(),
@@ -291,8 +296,8 @@ mod tests {
     async fn a_closed_stream_is_reported_and_the_last_token_stays_usable() {
         let mut auth = auth_over(vec![create_credential(BearerToken::without_expiry("last"))]);
 
-        assert!(auth.poll_refresh(&TEST_EVENTS).await);
-        assert!(!auth.poll_refresh(&TEST_EVENTS).await);
+        assert!(poll_fn(|cx| auth.poll_refresh(cx, &TEST_EVENTS)).await);
+        assert!(!poll_fn(|cx| auth.poll_refresh(cx, &TEST_EVENTS)).await);
 
         assert_eq!(
             STREAM_CLOSURES.get(),
@@ -338,7 +343,7 @@ mod tests {
             Some(Instant::now() + TOKEN_USABLE_MARGIN / 2),
         ))]);
 
-        assert!(auth.poll_refresh(&TEST_EVENTS).await);
+        assert!(poll_fn(|cx| auth.poll_refresh(cx, &TEST_EVENTS)).await);
 
         assert!(
             !auth.is_ready(),
@@ -367,7 +372,7 @@ mod tests {
             Some(expires_on),
         ))]);
 
-        assert!(auth.poll_refresh(&TEST_EVENTS).await);
+        assert!(poll_fn(|cx| auth.poll_refresh(cx, &TEST_EVENTS)).await);
 
         assert!(auth.is_ready());
         assert_eq!(
@@ -386,7 +391,7 @@ mod tests {
             "forever",
         ))]);
 
-        assert!(auth.poll_refresh(&TEST_EVENTS).await);
+        assert!(poll_fn(|cx| auth.poll_refresh(cx, &TEST_EVENTS)).await);
 
         assert!(auth.is_ready());
         assert!(auth.refresh_deadline().is_none());

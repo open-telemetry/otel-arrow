@@ -51,6 +51,7 @@ use otel_arrow_dfe_pdata::{
 use serde::Deserialize;
 use std::collections::VecDeque;
 use std::future::Future;
+use std::future::poll_fn;
 use std::sync::Arc;
 use std::time::Instant;
 use tonic::Code;
@@ -363,7 +364,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                     () = async {
                         match auth.as_mut() {
                             Some(a) => {
-                                if !a.poll_refresh(&GRPC_AUTH_EVENTS).await {
+                                if !poll_fn(|cx| a.poll_refresh(cx, &GRPC_AUTH_EVENTS)).await {
                                     self.metrics.record_auth_failure();
                                 }
                             },

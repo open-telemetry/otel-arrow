@@ -37,6 +37,7 @@ use otel_arrow_dfe_telemetry::common_attributes::{HttpResponse, Outcome};
 
 use bytes::Bytes;
 use std::cell::RefCell;
+use std::future::poll_fn;
 use std::rc::Rc;
 
 /// Max concurrent HTTP requests in flight to the Logs Ingestion API.
@@ -592,7 +593,7 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                     continue;
                 }
 
-                () = async {_ = auth.poll_refresh(&AZURE_MONITOR_AUTH_EVENTS).await;}, if auth.is_active() => {
+                () = async {_ = poll_fn(|cx| auth.poll_refresh(cx, &AZURE_MONITOR_AUTH_EVENTS)).await;}, if auth.is_active() => {
                     continue;
                 }
 
@@ -828,7 +829,7 @@ mod tests {
 
     async fn auth_with_cached_token() -> BearerAuth {
         let mut auth = BearerAuth::new(Box::new(MockTokenProvider));
-        assert!(auth.poll_refresh(&AZURE_MONITOR_AUTH_EVENTS).await);
+        assert!(poll_fn(|cx| auth.poll_refresh(cx, &AZURE_MONITOR_AUTH_EVENTS)).await);
         assert!(auth.is_ready());
         auth
     }
@@ -992,7 +993,7 @@ mod tests {
         let mut exporter =
             AzureMonitorExporter::new(pipeline_ctx, config, Box::new(MockTokenProvider)).unwrap();
         let mut auth = BearerAuth::new(Box::new(MockTokenProvider));
-        assert!(auth.poll_refresh(&AZURE_MONITOR_AUTH_EVENTS).await);
+        assert!(poll_fn(|cx| auth.poll_refresh(cx, &AZURE_MONITOR_AUTH_EVENTS)).await);
         let (_, _, token_generation) = auth.header().expect("mock provider publishes a token");
 
         let (_, reporter) = MetricsReporter::create_new_and_receiver(10);

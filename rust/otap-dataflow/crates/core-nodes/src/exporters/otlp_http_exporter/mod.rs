@@ -15,6 +15,7 @@ otel_arrow_dfe_telemetry::otel_component_scope!(
     target = "otel.exporter.otlp_http",
 );
 
+use std::future::poll_fn;
 use std::num::NonZeroUsize;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -383,7 +384,7 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                 () = async {
                     match auth.as_mut() {
                         Some(a) => {
-                            if !a.poll_refresh(&HTTP_AUTH_EVENTS).await {
+                            if !poll_fn(|cx| a.poll_refresh(cx, &HTTP_AUTH_EVENTS)).await {
                                 self.metrics.record_auth_failure();
                             }
                         },

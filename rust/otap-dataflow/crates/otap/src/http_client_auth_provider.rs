@@ -1,7 +1,11 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use std::{borrow::Cow, time::Instant};
+use std::{
+    borrow::Cow,
+    task::{Context, Poll},
+    time::Instant,
+};
 
 use bitflags::bitflags;
 use http::{HeaderName, HeaderValue};
@@ -9,7 +13,6 @@ use otel_arrow_dfe_engine::{
     capability::{ExtensionCapability, registry::Capabilities},
     local::capability::auth::bearer_token_provider::BearerTokenProvider,
 };
-use tonic::async_trait;
 
 use crate::{
     agent_fed_auth::AgentFedAuth, api_key_auth::ApiKeyAuth, basic_auth::BasicAuth,
@@ -47,7 +50,6 @@ impl HttpClientAuthProviderEvents {
 pub type HttpClientAuthProviderName = Cow<'static, str>;
 
 /// Manages credentials and injects HTTP Authorization headers.
-#[async_trait(?Send)]
 pub trait HttpClientAuthProvider {
     /// Human-readable name used in error messages and config validation.
     fn name(&self) -> HttpClientAuthProviderName;
@@ -91,7 +93,11 @@ pub trait HttpClientAuthProvider {
     fn invalidate(&mut self, generation: u64);
 
     /// Awaits the next published credential and refreshes the cache.
-    async fn poll_refresh(&mut self, events: &HttpClientAuthProviderEvents) -> bool;
+    fn poll_refresh(
+        &mut self,
+        cx: &mut Context<'_>,
+        events: &HttpClientAuthProviderEvents,
+    ) -> Poll<bool>;
 }
 
 bitflags! {
@@ -293,7 +299,6 @@ pub mod test_support {
         }
     }
 
-    #[async_trait(?Send)]
     impl HttpClientAuthProvider for MockHttpClientAuthProvider {
         fn name(&self) -> HttpClientAuthProviderName {
             NAME.into()
@@ -340,9 +345,14 @@ pub mod test_support {
             }
         }
 
-        async fn poll_refresh(&mut self, events: &HttpClientAuthProviderEvents) -> bool {
-            match self.stream.next().await {
-                Some((value, duration)) => {
+        fn poll_refresh(
+            &mut self,
+            cx: &mut Context<'_>,
+            events: &HttpClientAuthProviderEvents,
+        ) -> Poll<bool> {
+            match self.stream.as_mut().poll_next(cx) {
+                Poll::Pending => Poll::Pending,
+                Poll::Ready(Some((value, duration))) => {
                     match HeaderValue::from_str(&value) {
                         Ok(mut value) => {
                             // Redact in `Debug`, exclude from HPACK indexing.
@@ -352,22 +362,22 @@ pub mod test_support {
                             // A new cached token starts a new generation, so a 401 for
                             // an earlier token no longer matches and is ignored.
                             self.generation = self.generation.wrapping_add(1);
-                            return true;
+                            Poll::Ready(true)
                         }
                         Err(e) => {
                             // Malformed token: keep the previous cached token (if any).
                             events.emit_invalid(self, &format!("Malformed token: {e}"));
-                            return false;
+                            Poll::Ready(false)
                         }
                     }
                 }
-                None => {
+                Poll::Ready(None) => {
                     // Provider closed its stream; no further refreshes will arrive.
                     // Keep using the last cached token. Not expected with a
                     // watch-backed provider while we hold its handle, so warn.
                     self.stream_active = false;
                     events.emit_stream_closed(self);
-                    return false;
+                    Poll::Ready(false)
                 }
             }
         }
@@ -401,6 +411,7 @@ mod tests {
             api_key_provider::ApiKeyProvider, basic_auth_provider::BasicAuthProvider,
         },
     };
+    use tonic::async_trait;
 
     use super::*;
     use futures::StreamExt;

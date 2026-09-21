@@ -4,10 +4,9 @@
 //! Consumer-side adapter over a bound `api_key_provider` capability.
 
 use std::str::FromStr;
+use std::task::{Context, Poll};
 use std::time::Instant;
 
-use async_trait::async_trait;
-use futures::StreamExt;
 use http::{HeaderName, HeaderValue};
 use otel_arrow_dfe_engine::capability::auth::api_key_provider::{
     API_KEY_USABLE_MARGIN, ApiKeyStream,
@@ -58,7 +57,6 @@ impl ApiKeyAuth {
     }
 }
 
-#[async_trait(?Send)]
 impl HttpClientAuthProvider for ApiKeyAuth {
     fn name(&self) -> HttpClientAuthProviderName {
         NAME.into()
@@ -105,9 +103,14 @@ impl HttpClientAuthProvider for ApiKeyAuth {
         }
     }
 
-    async fn poll_refresh(&mut self, events: &HttpClientAuthProviderEvents) -> bool {
-        match self.stream.next().await {
-            Some(api_key) => {
+    fn poll_refresh(
+        &mut self,
+        cx: &mut Context<'_>,
+        events: &HttpClientAuthProviderEvents,
+    ) -> Poll<bool> {
+        match self.stream.as_mut().poll_next(cx) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(Some(api_key)) => {
                 let header_name = match api_key.get_http_header_name_attribute() {
                     Some(header) => match HeaderName::from_str(header) {
                         Ok(header) => header,
@@ -118,12 +121,12 @@ impl HttpClientAuthProvider for ApiKeyAuth {
                                     "API Key configured HTTP header attribute is malformed: {e}"
                                 ),
                             );
-                            return false;
+                            return Poll::Ready(false);
                         }
                     },
                     None => {
                         events.emit_invalid(self, "API Key HTTP header attribute not configured");
-                        return false;
+                        return Poll::Ready(false);
                     }
                 };
 
@@ -143,22 +146,22 @@ impl HttpClientAuthProvider for ApiKeyAuth {
                         // A new cached API Key starts a new generation, so a 401 for
                         // an earlier API Key no longer matches and is ignored.
                         self.generation = self.generation.wrapping_add(1);
-                        return true;
+                        Poll::Ready(true)
                     }
                     Err(e) => {
                         // Malformed API Key: keep the previous cached API Key (if any).
                         events.emit_invalid(self, &format!("Malformed API Key: {e}"));
-                        return false;
+                        Poll::Ready(false)
                     }
                 }
             }
-            None => {
+            Poll::Ready(None) => {
                 // Provider closed its stream; no further refreshes will arrive.
                 // Keep using the last cached API Key. Not expected with a
                 // watch-backed provider while we hold its handle, so warn.
                 self.stream_active = false;
                 events.emit_stream_closed(self);
-                return false;
+                Poll::Ready(false)
             }
         }
     }
@@ -167,9 +170,9 @@ impl HttpClientAuthProvider for ApiKeyAuth {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use futures::stream;
+    use futures::{StreamExt, stream};
     use otel_arrow_dfe_engine::capability::auth::ApiKey;
-    use std::cell::Cell;
+    use std::{cell::Cell, future::poll_fn};
 
     thread_local! {
         /// Number of `invalid` notifications raised on this test thread.
@@ -263,7 +266,7 @@ mod tests {
             ApiKey::new("first").with_http_header_name_attribute("x-api-key"),
         ]);
 
-        assert!(auth.poll_refresh(&TEST_EVENTS).await);
+        assert!(poll_fn(|cx| auth.poll_refresh(cx, &TEST_EVENTS)).await);
 
         assert!(
             auth.is_ready(),
@@ -296,7 +299,7 @@ mod tests {
                 .with_http_header_scheme_attribute("MY_SCHEME"),
         ]);
 
-        assert!(auth.poll_refresh(&TEST_EVENTS).await);
+        assert!(poll_fn(|cx| auth.poll_refresh(cx, &TEST_EVENTS)).await);
 
         assert!(
             auth.is_ready(),
@@ -317,7 +320,7 @@ mod tests {
     async fn malformed_refresh_is_reported_when_http_header_name_is_missing() {
         let mut auth = auth_over(vec![ApiKey::new("good")]);
 
-        assert!(!auth.poll_refresh(&TEST_EVENTS).await);
+        assert!(!poll_fn(|cx| auth.poll_refresh(cx, &TEST_EVENTS)).await);
 
         assert_eq!(
             INVALID.get(),
@@ -338,8 +341,8 @@ mod tests {
             ApiKey::new("bad\nvalue").with_http_header_name_attribute("x-api-key"),
         ]);
 
-        assert!(auth.poll_refresh(&TEST_EVENTS).await);
-        assert!(!auth.poll_refresh(&TEST_EVENTS).await);
+        assert!(poll_fn(|cx| auth.poll_refresh(cx, &TEST_EVENTS)).await);
+        assert!(!poll_fn(|cx| auth.poll_refresh(cx, &TEST_EVENTS)).await);
 
         assert_eq!(
             INVALID.get(),
@@ -365,8 +368,8 @@ mod tests {
             ApiKey::new("last").with_http_header_name_attribute("x-api-key"),
         ]);
 
-        assert!(auth.poll_refresh(&TEST_EVENTS).await);
-        assert!(!auth.poll_refresh(&TEST_EVENTS).await);
+        assert!(poll_fn(|cx| auth.poll_refresh(cx, &TEST_EVENTS)).await);
+        assert!(!poll_fn(|cx| auth.poll_refresh(cx, &TEST_EVENTS)).await);
 
         assert_eq!(
             STREAM_CLOSURES.get(),
@@ -410,7 +413,7 @@ mod tests {
                 .with_http_header_name_attribute("x-api-key"),
         ]);
 
-        assert!(auth.poll_refresh(&TEST_EVENTS).await);
+        assert!(poll_fn(|cx| auth.poll_refresh(cx, &TEST_EVENTS)).await);
 
         assert!(
             !auth.is_ready(),
@@ -440,7 +443,7 @@ mod tests {
                 .with_http_header_name_attribute("x-api-key"),
         ]);
 
-        assert!(auth.poll_refresh(&TEST_EVENTS).await);
+        assert!(poll_fn(|cx| auth.poll_refresh(cx, &TEST_EVENTS)).await);
 
         assert!(auth.is_ready());
         assert_eq!(
@@ -459,7 +462,7 @@ mod tests {
             ApiKey::new("forever").with_http_header_name_attribute("x-api-key"),
         ]);
 
-        assert!(auth.poll_refresh(&TEST_EVENTS).await);
+        assert!(poll_fn(|cx| auth.poll_refresh(cx, &TEST_EVENTS)).await);
 
         assert!(auth.is_ready());
         assert!(auth.refresh_deadline().is_none());

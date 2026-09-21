@@ -3,11 +3,10 @@
 
 //! Consumer-side adapter over a bound `basic_auth_provider` capability.
 
+use std::task::{Context, Poll};
 use std::time::Instant;
 
-use async_trait::async_trait;
 use base64::{Engine as _, engine::general_purpose};
-use futures::StreamExt;
 use http::{HeaderName, HeaderValue};
 use otel_arrow_dfe_engine::capability::auth::basic_auth_provider::{
     BASIC_AUTH_CREDENTIAL_USABLE_MARGIN, BasicAuthCredentialStream,
@@ -57,7 +56,6 @@ impl BasicAuth {
     }
 }
 
-#[async_trait(?Send)]
 impl HttpClientAuthProvider for BasicAuth {
     fn name(&self) -> HttpClientAuthProviderName {
         NAME.into()
@@ -106,9 +104,14 @@ impl HttpClientAuthProvider for BasicAuth {
         }
     }
 
-    async fn poll_refresh(&mut self, events: &HttpClientAuthProviderEvents) -> bool {
-        match self.stream.next().await {
-            Some(credential) => {
+    fn poll_refresh(
+        &mut self,
+        cx: &mut Context<'_>,
+        events: &HttpClientAuthProviderEvents,
+    ) -> Poll<bool> {
+        match self.stream.as_mut().poll_next(cx) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(Some(credential)) => {
                 let credentials = format!(
                     "{}:{}",
                     credential.expose_username(),
@@ -125,22 +128,22 @@ impl HttpClientAuthProvider for BasicAuth {
                         // A new cached credential starts a new generation, so a 401 for
                         // an earlier credential no longer matches and is ignored.
                         self.generation = self.generation.wrapping_add(1);
-                        return true;
+                        Poll::Ready(true)
                     }
                     Err(e) => {
                         // Malformed credential: keep the previous cached credential (if any).
                         events.emit_invalid(self, &format!("Malformed credential: {e}"));
-                        return false;
+                        Poll::Ready(false)
                     }
                 }
             }
-            None => {
+            Poll::Ready(None) => {
                 // Provider closed its stream; no further refreshes will arrive.
                 // Keep using the last cached credential. Not expected with a
                 // watch-backed provider while we hold its handle, so warn.
                 self.stream_active = false;
                 events.emit_stream_closed(self);
-                return false;
+                Poll::Ready(false)
             }
         }
     }
@@ -149,9 +152,9 @@ impl HttpClientAuthProvider for BasicAuth {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use futures::stream;
+    use futures::{StreamExt, stream};
     use otel_arrow_dfe_engine::capability::auth::BasicAuthCredential;
-    use std::cell::Cell;
+    use std::{cell::Cell, future::poll_fn};
 
     thread_local! {
         /// Number of `invalid` notifications raised on this test thread.
@@ -242,7 +245,7 @@ mod tests {
             BasicAuthCredential::new("user", "pass").expect("valid credential"),
         ]);
 
-        assert!(auth.poll_refresh(&TEST_EVENTS).await);
+        assert!(poll_fn(|cx| auth.poll_refresh(cx, &TEST_EVENTS)).await);
 
         assert!(
             auth.is_ready(),
@@ -274,8 +277,8 @@ mod tests {
             BasicAuthCredential::new("user", "pass").expect("valid credential"),
         ]);
 
-        assert!(auth.poll_refresh(&TEST_EVENTS).await);
-        assert!(!auth.poll_refresh(&TEST_EVENTS).await);
+        assert!(poll_fn(|cx| auth.poll_refresh(cx, &TEST_EVENTS)).await);
+        assert!(!poll_fn(|cx| auth.poll_refresh(cx, &TEST_EVENTS)).await);
 
         assert_eq!(
             STREAM_CLOSURES.get(),
@@ -319,7 +322,7 @@ mod tests {
                 .with_expiry(Instant::now() + BASIC_AUTH_CREDENTIAL_USABLE_MARGIN / 2),
         ]);
 
-        assert!(auth.poll_refresh(&TEST_EVENTS).await);
+        assert!(poll_fn(|cx| auth.poll_refresh(cx, &TEST_EVENTS)).await);
 
         assert!(
             !auth.is_ready(),
@@ -349,7 +352,7 @@ mod tests {
                 .with_expiry(expires_on),
         ]);
 
-        assert!(auth.poll_refresh(&TEST_EVENTS).await);
+        assert!(poll_fn(|cx| auth.poll_refresh(cx, &TEST_EVENTS)).await);
 
         assert!(auth.is_ready());
         assert_eq!(
@@ -368,7 +371,7 @@ mod tests {
             BasicAuthCredential::new("user", "pass").expect("valid credential"),
         ]);
 
-        assert!(auth.poll_refresh(&TEST_EVENTS).await);
+        assert!(poll_fn(|cx| auth.poll_refresh(cx, &TEST_EVENTS)).await);
 
         assert!(auth.is_ready());
         assert!(auth.refresh_deadline().is_none());
