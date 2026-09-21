@@ -1147,41 +1147,15 @@ pub(crate) fn align_value_to_root(
         None => return Ok(value),
     };
     align_value_to_record(value, RecordScope::Signal, root_batch, otap_batch)
-
-    // let left_input = JoinInput::new(
-    //     ColumnarValue::Array(Arc::new(NullArray::new(root_batch.num_rows()))),
-    //     Rc::new(DataScope::Record(RecordScope::Signal)),
-    //     root_batch,
-    // );
-
-    // let right_input = scoped_value_to_join_input(value, otap_batch)?;
-
-    // let (result_rb, result_scope) = join(&left_input, &right_input, otap_batch)?;
-    // let result_col_name = arg_column_name(1);
-    // let col = result_rb
-    //     .column_by_name(&result_col_name)
-    //     .ok_or_else(|| Error::ExecutionError {
-    //         // shouldn't happen - we expect the join to always produce the column with the
-    //         // correct name, but returning the error here is just being defensive
-    //         cause: format!("unexpected join result - expected column {result_col_name}"),
-    //     })?
-    //     .clone();
-
-    // debug_assert!(matches!(
-    //     result_scope.as_ref(),
-    //     DataScope::Record(RecordScope::Signal)
-    // ));
-
-    // Ok(ScopedValue::new(
-    //     ColumnarValue::Array(col),
-    //     result_scope.as_ref().clone(),
-    //     root_batch,
-    // ))
 }
 
-// TODO comment on what this is doing
-// TODO - reuse this in assign.rs
-// TODO - reuse this in filter.rs for filtering root batch
+/// Converts the row order of the passed value to match the row order of the "record" (e.g, the
+/// what the current stream evaluating this expression considers an element of the stream, be it
+/// a signal, metric data point, etc.).
+///
+/// The value may have been computed from attributes, or a scalar, or some other expression
+/// will have the row order based on the computation input. This method realigns the rows so
+/// that they match the record row order by invoking join.
 pub(crate) fn align_value_to_record(
     value: ScopedValue,
     record_scope: RecordScope,
@@ -1189,9 +1163,7 @@ pub(crate) fn align_value_to_record(
     otap_batch: &OtapArrowRecords,
 ) -> Result<ScopedValue> {
     let left_input = JoinInput::new(
-        // TODO - fix all the tests, change this to ScalarNull, and if it passes
-        // keep this as a scalar to avoid the heap allocation for the Arc
-        ColumnarValue::Array(Arc::new(NullArray::new(record_rb.num_rows()))),
+        ColumnarValue::Scalar(ScalarValue::Null),
         Rc::new(DataScope::Record(record_scope)),
         record_rb,
     );

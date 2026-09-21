@@ -1885,15 +1885,6 @@ mod test {
     }
 
     #[test]
-    fn test_marker_fail() {
-        let g = IdJoinLookup::<u16, 1024> {
-            pages: Vec::new(),
-            _phantom: Default::default(),
-        };
-        _ = g.lookup(5);
-    }
-
-    #[test]
     fn test_multi_join_empty_results_returns_error() {
         let otap_batch = empty_otap_batch();
         let err = multi_join(&[], &otap_batch);

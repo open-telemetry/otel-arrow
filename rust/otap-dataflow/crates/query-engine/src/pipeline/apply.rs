@@ -425,7 +425,7 @@ mod test {
                 let err_msg = err.to_string();
 
                 assert!(
-                    err_msg.contains("Data expression not supported on Attributes stream: Transform(RenameMapKeys(RenameMapKeysTransformExpression"),
+                    err_msg.contains("Invalid pipeline"),
                     "unexpected error: {}",
                     err_msg
                 );

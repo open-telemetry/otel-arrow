@@ -602,6 +602,7 @@ impl AssignPipelineStage {
     where
         u32: From<<T as ArrowPrimitiveType>::Native>,
     {
+        println!("id_col = {id_col:?}");
         let mut parent_id_set = self.id_bitmap_pool.acquire();
         if let Some(id_col) = id_col {
             let id_col = id_col
@@ -616,6 +617,10 @@ impl AssignPipelineStage {
                 })?;
             parent_id_set.populate(id_col.iter().flatten().map(|i| i.into()));
         }
+
+        let ids = parent_id_set.iter().collect::<Vec<_>>();
+        println!("ids = {:?}, len = {:?}", ids, parent_id_set.len());
+
 
         let key_column = attrs_record_batch
             .column_by_name(consts::ATTRIBUTE_KEY)
@@ -1858,8 +1863,8 @@ where
                 .populate(typed_dict.clone().into_iter().flatten().map(|i| i.into()));
             create_upsert_attrs_values_buffer_from_iter::<T, _>(
                 typed_dict.into_iter(),
-                &update_parent_id_set,
                 all_parent_id_set,
+                &update_parent_id_set,
             )
         } else {
             return Err(otel_arrow_dfe_pdata::error::Error::InvalidIdColumnType {
@@ -1873,8 +1878,8 @@ where
                 .populate(typed_dict.clone().into_iter().flatten().map(|i| i.into()));
             create_upsert_attrs_values_buffer_from_iter::<T, _>(
                 typed_dict.into_iter(),
-                &update_parent_id_set,
                 all_parent_id_set,
+                &update_parent_id_set,
             )
         } else {
             return Err(otel_arrow_dfe_pdata::error::Error::InvalidIdColumnType {
@@ -1902,12 +1907,16 @@ fn create_upsert_attrs_values_buffer_from_iter<
     I: ExactSizeIterator<Item = Option<T::Native>>,
 >(
     update_parent_id_col: I,
-    update_parent_id_set: &IdBitmap,
     all_parent_id_set: &IdBitmap,
+    update_parent_id_set: &IdBitmap,
 ) -> ScalarBuffer<T::Native>
 where
     u32: From<T::Native>,
 {
+    
+    println!("all_parent_id_set.len() = {:?}", all_parent_id_set.len());
+    println!("update_parent_id_set.len() = {:?}", update_parent_id_set.len());
+
     let mut upsert_attr_parent_ids = vec![
         T::Native::default();
         update_parent_id_col.len()

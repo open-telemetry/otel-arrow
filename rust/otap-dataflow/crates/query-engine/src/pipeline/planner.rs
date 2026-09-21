@@ -1200,7 +1200,10 @@ impl ColumnAccessor {
                             RecordType::Signal => RecordScope::Signal,
                             RecordType::Child(child) => RecordScope::Child(*child),
                             RecordType::Attributes => {
-                                todo!("invalid pipeline?")
+                                return Err(Error::InvalidPipelineError { 
+                                    cause: format!("{column_name} is not a field on attributes"), 
+                                    query_location: Some(selectors[0].get_query_location().clone()),
+                                })
                             }
                         };
 
