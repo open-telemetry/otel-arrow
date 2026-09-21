@@ -22,18 +22,48 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Non-required test matrix.
-  # - contrib folders run unpartitioned on all OSes (they are small).
-  # - otap-dataflow runs on ARM and macOS, split into 3 partitions.
+  # Contrib coverage runs unpartitioned on Linux x86_64.
+  contrib_coverage:
+    if: github.event_name != 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: true
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/lib/jvm /usr/share/dotnet /usr/share/swift /usr/local/.ghcup
+          sudo rm -rf /usr/local/julia* /usr/local/lib/android /usr/local/share/chromium
+          sudo rm -rf /opt/microsoft /opt/google /opt/az /usr/local/share/powershell
+      - name: Install cargo-llvm-cov and nextest
+        uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b # v2.87.4
+        with:
+          tool: cargo-llvm-cov,cargo-nextest
+      - name: Build the test collector
+        run: make otelarrowcol
+      - name: Run tests with coverage
+        run: cargo llvm-cov nextest --locked --all-features --workspace --lcov --output-path lcov.info
+        working-directory: ./rust/contrib/data_engine
+      # NOTE: when adding or removing a codecov upload step anywhere in
+      # the repo, update `codecov.notify.after_n_builds` in
+      # .github/codecov.yaml so codecov waits for the new total.
+      - name: Upload to codecov.io
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+        with:
+          fail_ci_if_error: true
+
+  # Contrib cross-platform tests are non-required and run on pull requests.
   contrib_tests:
     if: github.event_name == 'pull_request'
     strategy:
       fail-fast: false
       matrix:
-        folder:
-          - contrib/data_engine
         os:
-          - ubuntu-latest
           - ubuntu-24.04-arm
           - windows-latest
           - macos-latest
@@ -58,39 +88,16 @@ jobs:
           if (Test-Path "C:\Android") { Remove-Item -Recurse -Force "C:\Android" }
           if (Test-Path "C:\SeleniumWebDrivers") { Remove-Item -Recurse -Force "C:\SeleniumWebDrivers" }
           if (Test-Path "C:\imagemagick") { Remove-Item -Recurse -Force "C:\imagemagick" }
-      - name: Install cargo-llvm-cov and nextest
+      - name: Install nextest
         uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b # v2.87.4
         with:
-          tool: cargo-llvm-cov,cargo-nextest
+          tool: cargo-nextest
       - name: Build the test collector
         if: runner.os == 'Linux'
         run: make otelarrowcol
-      - name: Run tests with coverage (Linux x86_64)
-        if: matrix.os == 'ubuntu-latest'
-        run: cargo llvm-cov nextest --locked --all-features --workspace --lcov --output-path lcov.info
-        working-directory: ./rust/${{ matrix.folder }}
-      - name: Run tests (Linux ARM64)
-        if: matrix.os == 'ubuntu-24.04-arm'
+      - name: Run tests
         run: cargo nextest run --locked --all-features --workspace
-        working-directory: ./rust/${{ matrix.folder }}
-      - name: Run tests (Windows)
-        if: runner.os == 'Windows'
-        run: cargo nextest run --locked --all-features --workspace
-        working-directory: ./rust/${{ matrix.folder }}
-      - name: Run tests (macOS)
-        if: runner.os == 'macOS'
-        run: cargo nextest run --locked --all-features --workspace
-        working-directory: ./rust/${{ matrix.folder }}
-      # NOTE: when adding or removing a codecov upload step anywhere in
-      # the repo, update `codecov.notify.after_n_builds` in
-      # .github/codecov.yaml so codecov waits for the new total.
-      - name: Upload to codecov.io
-        if: matrix.os == 'ubuntu-latest'
-        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
-        env:
-          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
-        with:
-          fail_ci_if_error: true
+        working-directory: ./rust/contrib/data_engine
 
   # otap-dataflow on ARM and macOS (non-required): build once per OS,
   # fan out tests.  macOS uses the workspace default features. Linux
@@ -716,7 +723,7 @@ jobs:
   # Coverage runs unpartitioned on Linux x86_64 (does not block merge).
   # This compiles from scratch with coverage instrumentation and runs all tests.
   coverage:
-    if: github.event_name == 'pull_request'
+    if: github.event_name != 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
