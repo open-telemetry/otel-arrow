@@ -94,7 +94,7 @@ use otel_arrow_dfe_otap::pdata::OtapPdata;
 use otel_arrow_dfe_pdata::PayloadData;
 use otel_arrow_dfe_pdata::TryFromWithOptions;
 use otel_arrow_dfe_pdata::otlp::OtlpProtoBytes;
-use otel_arrow_dfe_pdata::views::otap::OtapLogsView;
+use otel_arrow_dfe_pdata::views::otap::DecodedOtapArrowRecords;
 use otel_arrow_dfe_pdata::views::otlp::bytes::logs::RawLogsData;
 use otel_arrow_dfe_pdata::views::otlp::bytes::metrics::RawMetricsData;
 use otel_arrow_dfe_pdata::views::otlp::bytes::traces::RawTraceData;
@@ -512,7 +512,11 @@ impl ContentRouter {
         &self,
         arrow_records: &otel_arrow_dfe_pdata::OtapArrowRecords,
     ) -> RouteResolution {
-        let logs_view = match OtapLogsView::try_from(arrow_records) {
+        let decoded = match DecodedOtapArrowRecords::clone_and_decode(arrow_records) {
+            Ok(decoded) => decoded,
+            Err(_) => return RouteResolution::ConversionError,
+        };
+        let logs_view = match decoded.logs_view() {
             Ok(view) => view,
             Err(_) => return RouteResolution::ConversionError,
         };

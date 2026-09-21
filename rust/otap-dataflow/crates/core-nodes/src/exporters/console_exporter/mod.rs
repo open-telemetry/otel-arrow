@@ -30,7 +30,7 @@ use otel_arrow_dfe_engine::terminal_state::TerminalState;
 use otel_arrow_dfe_engine::{ConsumerEffectHandlerExtension, ExporterFactory};
 use otel_arrow_dfe_otap::OTAP_EXPORTER_FACTORIES;
 use otel_arrow_dfe_otap::pdata::OtapPdata;
-use otel_arrow_dfe_pdata::views::otap::{OtapLogsView, OtapMetricsView};
+use otel_arrow_dfe_pdata::views::otap::DecodedOtapArrowRecords;
 use otel_arrow_dfe_pdata::views::otlp::bytes::logs::RawLogsData;
 use otel_arrow_dfe_pdata::views::otlp::bytes::metrics::RawMetricsData;
 use otel_arrow_dfe_pdata::{OtapPayload, PayloadData};
@@ -318,13 +318,17 @@ impl ConsoleExporter {
                     Err(ConsoleExportErrorType::OtlpViewCreation)
                 }
             },
-            PayloadData::OtapArrowRecords(records) => match OtapLogsView::try_from(records) {
-                Ok(logs_view) => self.formatter.print_logs_data(&logs_view).await,
-                Err(e) => {
+            PayloadData::OtapArrowRecords(records) => {
+                let decoded = DecodedOtapArrowRecords::clone_and_decode(records).map_err(|e| {
                     otel_error!("console.logs_view.otap_create_failed", error = ?e, message = "Failed to create OTAP logs view");
-                    Err(ConsoleExportErrorType::OtapViewCreation)
-                }
-            },
+                    ConsoleExportErrorType::OtapViewCreation
+                })?;
+                let logs_view = decoded.logs_view().map_err(|e| {
+                    otel_error!("console.logs_view.otap_create_failed", error = ?e, message = "Failed to create OTAP logs view");
+                    ConsoleExportErrorType::OtapViewCreation
+                })?;
+                self.formatter.print_logs_data(&logs_view).await
+            }
         }
     }
 
@@ -347,13 +351,17 @@ impl ConsoleExporter {
                     }
                 }
             }
-            PayloadData::OtapArrowRecords(records) => match OtapMetricsView::try_from(records) {
-                Ok(metrics_view) => self.formatter.print_metrics_data(&metrics_view).await,
-                Err(e) => {
+            PayloadData::OtapArrowRecords(records) => {
+                let decoded = DecodedOtapArrowRecords::clone_and_decode(records).map_err(|e| {
                     otel_warn!("console.metrics_view.otap_create_failed", error = ?e);
-                    Err(ConsoleExportErrorType::OtapViewCreation)
-                }
-            },
+                    ConsoleExportErrorType::OtapViewCreation
+                })?;
+                let metrics_view = decoded.metrics_view().map_err(|e| {
+                    otel_warn!("console.metrics_view.otap_create_failed", error = ?e);
+                    ConsoleExportErrorType::OtapViewCreation
+                })?;
+                self.formatter.print_metrics_data(&metrics_view).await
+            }
         }
     }
 
@@ -707,7 +715,7 @@ mod tests {
         resource::v1::Resource,
     };
     use otel_arrow_dfe_pdata::testing::fixtures::logs_with_full_resource_and_scope;
-    use otel_arrow_dfe_pdata::views::otap::OtapLogsView;
+    use otel_arrow_dfe_pdata::views::otap::{OtapLogsView, OtapMetricsView};
     use prost::Message;
     use serde_json::{Value, json};
 

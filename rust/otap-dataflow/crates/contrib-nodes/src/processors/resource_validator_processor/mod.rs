@@ -70,7 +70,7 @@ use otel_arrow_dfe_pdata::TryFromWithOptions;
 #[cfg(test)]
 use otel_arrow_dfe_pdata::TryIntoWithOptions;
 use otel_arrow_dfe_pdata::otlp::OtlpProtoBytes;
-use otel_arrow_dfe_pdata::views::otap::OtapLogsView;
+use otel_arrow_dfe_pdata::views::otap::DecodedOtapArrowRecords;
 use otel_arrow_dfe_pdata::views::otlp::bytes::logs::RawLogsData;
 use otel_arrow_dfe_pdata::views::otlp::bytes::metrics::RawMetricsData;
 use otel_arrow_dfe_pdata::views::otlp::bytes::traces::RawTraceData;
@@ -390,7 +390,11 @@ impl ResourceValidatorProcessor {
         arrow_records: &OtapArrowRecords,
         allowed_values: &HashSet<String>,
     ) -> Result<(), (ValidationFailure, String)> {
-        let logs_view = OtapLogsView::try_from(arrow_records).map_err(|_| {
+        let decoded = DecodedOtapArrowRecords::clone_and_decode(arrow_records).map_err(|_| {
+            let failure = ValidationFailure::ConversionError;
+            (failure, self.format_error_message(failure))
+        })?;
+        let logs_view = decoded.logs_view().map_err(|_| {
             let failure = ValidationFailure::ConversionError;
             (failure, self.format_error_message(failure))
         })?;
@@ -657,7 +661,12 @@ mod tests {
             &self,
             arrow_records: &OtapArrowRecords,
         ) -> Result<(), (ValidationFailure, String)> {
-            let logs_view = OtapLogsView::try_from(arrow_records).map_err(|_| {
+            let decoded =
+                DecodedOtapArrowRecords::clone_and_decode(arrow_records).map_err(|_| {
+                    let failure = ValidationFailure::ConversionError;
+                    (failure, self.format_error_message(failure))
+                })?;
+            let logs_view = decoded.logs_view().map_err(|_| {
                 let failure = ValidationFailure::ConversionError;
                 (failure, self.format_error_message(failure))
             })?;

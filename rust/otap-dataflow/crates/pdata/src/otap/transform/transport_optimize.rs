@@ -129,6 +129,37 @@ fn is_column_encoded(path: &str, schema: &Schema) -> Option<bool> {
     Some(is_encoded)
 }
 
+/// Return the first present ID column that is still transport encoded.
+pub(crate) fn first_transport_encoded_id_column(
+    payload_type: ArrowPayloadType,
+    schema: &Schema,
+) -> Option<&'static str> {
+    get_column_encodings(&payload_type)
+        .iter()
+        .find_map(|column| {
+            is_column_encoded(column.path, schema)
+                .is_some_and(|encoded| encoded)
+                .then_some(column.path)
+        })
+}
+
+#[cfg(test)]
+pub(crate) fn mark_transport_id_columns_plain(
+    payload_type: ArrowPayloadType,
+    record_batch: &RecordBatch,
+) -> RecordBatch {
+    let mut fields = record_batch.schema_ref().fields().to_vec();
+    for column in get_column_encodings(&payload_type) {
+        update_field_encoding_metadata(column.path, None, &mut fields);
+    }
+
+    let schema = Schema::new(fields).with_metadata(record_batch.schema_ref().metadata().clone());
+    record_batch
+        .clone()
+        .with_schema(Arc::new(schema))
+        .expect("encoding metadata does not change column data types")
+}
+
 /// returns the list of transport-optimized encoding that should be applied to OTAP batches of a
 /// given payload type
 const fn get_column_encodings(

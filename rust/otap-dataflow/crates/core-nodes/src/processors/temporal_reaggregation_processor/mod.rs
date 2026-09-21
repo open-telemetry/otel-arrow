@@ -39,7 +39,7 @@ use otel_arrow_dfe_otap::OTAP_PROCESSOR_FACTORIES;
 use otel_arrow_dfe_otap::accessory::slots::{Key as SlotKey, State as SlotState};
 use otel_arrow_dfe_otap::pdata::{Context, OtapPdata, PeerAddrMerger};
 use otel_arrow_dfe_pdata::otap::OtapArrowRecords;
-use otel_arrow_dfe_pdata::views::otap::OtapMetricsView;
+use otel_arrow_dfe_pdata::views::otap::DecodedOtapArrowRecords;
 use otel_arrow_dfe_pdata::views::otlp::bytes::metrics::RawMetricsData;
 use otel_arrow_dfe_pdata::{OtapPayload, OtapPayloadHelpers, PayloadData};
 use otel_arrow_dfe_pdata_views::views::common::InstrumentationScopeView;
@@ -627,20 +627,34 @@ impl TemporalReaggregationProcessor {
         pdata: OtapPdata,
     ) -> Result<(), Error> {
         let result = match pdata.payload_ref().data() {
-            PayloadData::OtapArrowRecords(records) => match OtapMetricsView::try_from(records) {
-                Ok(view) => self.process_view(effect_handler, &view).await,
-                Err(e) => {
-                    otel_warn!(telemetry::VIEW_CREATION_FAILED_EVENT, error = %e);
-                    // local failure, not a downstream refusal
-                    self.metrics.record_failure(ErrorType::ViewCreation);
-                    let msg = format!("Failed to create view: {:#}", e);
-                    effect_handler
-                        .notify_nack(NackMsg::new_permanent(msg, pdata))
-                        .await?;
+            PayloadData::OtapArrowRecords(records) => {
+                let decoded = match DecodedOtapArrowRecords::clone_and_decode(records) {
+                    Ok(decoded) => decoded,
+                    Err(e) => {
+                        otel_warn!(telemetry::VIEW_CREATION_FAILED_EVENT, error = %e);
+                        self.metrics.record_failure(ErrorType::ViewCreation);
+                        let msg = format!("Failed to create view: {:#}", e);
+                        effect_handler
+                            .notify_nack(NackMsg::new_permanent(msg, pdata))
+                            .await?;
 
-                    return Ok(());
+                        return Ok(());
+                    }
+                };
+                match decoded.metrics_view() {
+                    Ok(view) => self.process_view(effect_handler, &view).await,
+                    Err(e) => {
+                        otel_warn!(telemetry::VIEW_CREATION_FAILED_EVENT, error = %e);
+                        self.metrics.record_failure(ErrorType::ViewCreation);
+                        let msg = format!("Failed to create view: {:#}", e);
+                        effect_handler
+                            .notify_nack(NackMsg::new_permanent(msg, pdata))
+                            .await?;
+
+                        return Ok(());
+                    }
                 }
-            },
+            }
             PayloadData::OtlpBytes(otlp) => {
                 let view = RawMetricsData::new(otlp.as_bytes());
                 self.process_view(effect_handler, &view).await

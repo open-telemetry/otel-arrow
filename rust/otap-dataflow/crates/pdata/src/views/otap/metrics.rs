@@ -25,7 +25,7 @@ use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use crate::schema::{SpanId, TraceId};
 use crate::views::otap::common::{
     Otap32AttributeIter, OtapAttributeIter, OtapAttributeView, RowGroup, RowGroupIter,
-    build_attribute_index, group_by_resource_id, group_by_scope_id,
+    build_attribute_index, ensure_transport_ids_decoded, group_by_resource_id, group_by_scope_id,
 };
 use otel_arrow_dfe_pdata_views::views::common::{InstrumentationScopeView, Str};
 use otel_arrow_dfe_pdata_views::views::metrics::{
@@ -132,6 +132,10 @@ impl<'a> TryFrom<&'a OtapArrowRecords> for OtapMetricsView<'a> {
     type Error = Error;
 
     fn try_from(records: &'a OtapArrowRecords) -> Result<Self, Self::Error> {
+        for payload_type in records.allowed_payload_types() {
+            ensure_transport_ids_decoded(*payload_type, records.get(*payload_type))?;
+        }
+
         // A missing root metrics payload is semantically equivalent to 0 rows.
         let metrics_batch = records
             .get(ArrowPayloadType::UnivariateMetrics)
