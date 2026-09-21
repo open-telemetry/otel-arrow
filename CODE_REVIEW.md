@@ -1,15 +1,15 @@
 # Code review policy
 
 Code review is shared project work. Authors, reviewers, component owners,
-approvers, and maintainers all contribute to review quality, but they do not
-all have the same authority.
+approvers, and maintainers all contribute to review quality, but they do not all
+have the same authority.
 
 ## Review responsibilities
 
 Regular contributors are expected to spend time reviewing changes as well as
-authoring them. A useful default is to review at least one pull request for
-each substantive pull request you open. This is a community expectation, not
-a merge gate or a requirement placed on first-time contributors.
+authoring them. A useful default is to review at least one pull request for each
+substantive pull request you open. This is a community expectation, not a merge
+gate or a requirement placed on first-time contributors.
 
 Reviews from contributors who are not approvers or maintainers are valuable.
 They can validate behavior, identify missing tests, improve documentation, and
@@ -28,12 +28,12 @@ Reviewers should:
 
 **Component owners** are active contributors who have agreed to help review a
 repository area. Ownership recognizes subject-matter context and review
-responsibility; it does not grant merge authority or imply sole control over
-the component.
+responsibility; it does not grant merge authority or imply sole control over the
+component.
 
 **Approvers and maintainers** have the project role required to approve a pull
-request for merge. They remain responsible for the repository-wide quality
-bar, architectural consistency, and resolving conflicting review feedback.
+request for merge. They remain responsible for the repository-wide quality bar,
+architectural consistency, and resolving conflicting review feedback.
 
 **Any contributor** may review any pull request. Component ownership is a
 routing mechanism, not a boundary around participation.
@@ -75,17 +75,17 @@ Active owners must:
 - have enough familiarity with the area to review changes; and
 - remain active enough to respond to requests or identify a replacement.
 
-Aim for at least two active owners when multiple qualified contributors agree
-to share responsibility. A component may start with one owner rather than
-listing people without sufficient context or commitment. Choose owners based
-on meaningful implementation or maintenance history, and confirm the initial
-owner lists during review of the ownership change. All active owners are peers
-for review routing; metadata does not create separate approval authority.
+Aim for at least two active owners when multiple qualified contributors agree to
+share responsibility. A component may start with one owner rather than listing
+people without sufficient context or commitment. Choose owners based on
+meaningful implementation or maintenance history, and confirm the initial owner
+lists during review of the ownership change. All active owners are peers for
+review routing; metadata does not create separate approval authority.
 
 Ownership changes require approval from an existing owner of the affected area
-and a maintainer. Maintainers should remove or move an owner to an emeritus
-list when the owner steps back or repeatedly cannot respond. Emeritus owners
-are recorded in metadata for continuity but are not requested for review.
+and a maintainer. Maintainers should remove an owner when the owner steps back
+or repeatedly cannot respond. Legacy owners are recorded in metadata for
+continuity but are not requested for review.
 
 When a pull request is opened, updated, or marked ready for review, automation
 finds the nearest `metadata.yaml` for each changed file and requests every
