@@ -5087,7 +5087,6 @@ pub mod test_support {
                     // Keep the first delivery pending until the second enqueue
                     // has failed. Queue pressure cannot race with broker delivery.
                     cluster.faults().all_brokers_down();
-                    let consumer = cluster.consumer().assign_partition(topic, 0);
                     let cfg = KafkaExporterConfigBuilder::new(cluster.bootstrap_servers(), "it")
                         .with_logs(SignalConfig::new(topic.into(), MessageFormat::OtlpProto))
                         // Admit the second batch while the first is still pending.
@@ -5148,8 +5147,10 @@ pub mod test_support {
                         "the trailing batch must be ACKed after queue pressure: {completion:?}"
                     );
 
-                    // Wait for the two known deliveries, not a short idle window
-                    // that can expire before the consumer starts fetching.
+                    // Start the consumer after recovery so the deliberate outage
+                    // cannot leave transport errors queued ahead of the records.
+                    // Its default earliest offset includes both completed deliveries.
+                    let consumer = cluster.consumer().assign_partition(topic, 0);
                     for expected in [&queued, &marker] {
                         let msg = consumer.recv().await;
                         let _ = msg.assert_topic(topic).assert_payload(expected);
