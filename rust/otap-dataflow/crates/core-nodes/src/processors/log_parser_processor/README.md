@@ -145,6 +145,17 @@ library temporary storage but exclude staged batch output and allocator overhead
 they are not an RSS guarantee. Compilation/storage and normal batch output remain
 subject to processor resource limits.
 
+Staged successful updates share equal body and severity strings within the batch,
+retaining one owned copy per distinct mapped string plus per-row references.
+Parsing still runs per record; timestamp fallback, errors and counters remain
+row-specific. Rebuilt body and severity-text columns preserve dictionary sharing
+instead of expanding unchanged strings per row. Output string bytes are checked against Arrow's signed
+32-bit offset limit before the value buffer is allocated. Dictionary updates
+retain the input key width, promoting 8-bit keys to 16-bit keys when needed;
+more than 65,536 distinct output values are rejected rather than expanded into
+plain strings. These representation failures abort the batch as internal update
+errors, without partial output. They are not a configurable batch memory quota.
+
 ### Qualification
 
 Run the isolated allocation and throughput harness from the Rust workspace:
