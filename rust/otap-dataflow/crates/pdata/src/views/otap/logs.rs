@@ -660,13 +660,13 @@ fn get_body_from_struct<'a>(
     cols: &'a LogBodyArrays<'a>,
     row_idx: usize,
 ) -> Option<OtapAnyValueView<'a>> {
-    let anyval = &cols.anyval_arrays;
-    let type_array = &anyval.attr_type;
-
-    if !type_array.is_valid(row_idx) {
-        return Some(OtapAnyValueView::Empty);
+    // A null body cell means the record has no body, so return None to match the OTLP path.
+    if !cols.is_valid(row_idx) {
+        return None;
     }
 
+    let anyval = &cols.anyval_arrays;
+    let type_array = &anyval.attr_type;
     let value_type = AttributeValueType::try_from(type_array.value(row_idx)).ok()?;
 
     // Extract the appropriate value field based on type

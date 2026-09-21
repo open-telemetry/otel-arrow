@@ -122,7 +122,7 @@ pub(crate) struct LogBodyArrays<'a> {
 }
 
 impl<'a> LogBodyArrays<'a> {
-    fn is_valid(&self, idx: usize) -> bool {
+    pub(crate) fn is_valid(&self, idx: usize) -> bool {
         self.body.is_valid(idx)
     }
 }

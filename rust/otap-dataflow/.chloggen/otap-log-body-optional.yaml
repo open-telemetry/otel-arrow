@@ -1,0 +1,6 @@
+change_type: bug_fix
+component: otap
+note: "Return None for an absent OTAP log record body instead of Some(Empty), so a missing body no longer decodes to an empty string."
+issues: [4124]
+subtext: |
+  OtapLogRecordView::body() now returns None when the body struct cell is null, matching the OTLP conversion path. A present body is unchanged.
