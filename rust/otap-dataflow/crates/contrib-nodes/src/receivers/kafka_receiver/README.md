@@ -190,8 +190,8 @@ leaves the policy inactive. Explicit `mode: replay` requires
 `commit.mode: manual`; startup validation rejects it with auto commit because
 broker-managed commits cannot honor downstream feedback. Retries are unlimited
 and use exponential backoff capped by `max_backoff_ms`. There is no
-retry-exhaustion action. Built-in DLQ support is planned for a future release;
-until then, the receiver does not publish failed records to a DLQ.
+retry-exhaustion action. To durably capture records the pipeline cannot handle,
+enable the [Dead Letter Queue](#dead-letter-queue).
 
 ```yaml
 config:
@@ -454,9 +454,11 @@ equivalent configuration here.
 Even with a retry processor in the pipeline, the following behaviors differ from
 the Go Kafka receiver:
 
-- **Permanent-error policy.** This receiver always commits a permanent NACK;
-  it has no equivalent to leaving a permanent error unmarked or publishing it
-  to a built-in DLQ. Built-in DLQ support is planned for a future release.
+- **Permanent-error policy.** This receiver commits a permanent NACK after
+  optionally dead-lettering it. Enable the
+  [Dead Letter Queue](#dead-letter-queue) with `permanent_nack` capture to
+  forward the original bytes to a DLQ topic before the offset advances; there is
+  no equivalent to leaving a permanent error unmarked.
 - **Transient-NACK opt-out.** Manual mode replays non-permanent NACKs by
   default. Set `transient_nack.mode: commit_and_skip` only when advancing past
   a transient processing failure is intentional.
@@ -1193,8 +1195,9 @@ an empty assignment resets it to zero.
   rewind point and blocks the affected partition until progress resumes.
 - Receiver replay retries indefinitely with a capped exponential backoff. It
   has no jitter, retry limit, operator-resume command, or built-in retry topic.
-  Built-in DLQ support is planned for a future release. Permanent NACKs
-  currently commit the record.
+  The optional [Dead Letter Queue](#dead-letter-queue) forwards undecodable,
+  unknown-topic, and permanently-nacked records to a DLQ topic; a permanent NACK
+  commits the record after any configured dead-letter delivery.
 - See
   [Comparison with the Go Kafka receiver](#comparison-with-the-go-kafka-receiver)
   for details.

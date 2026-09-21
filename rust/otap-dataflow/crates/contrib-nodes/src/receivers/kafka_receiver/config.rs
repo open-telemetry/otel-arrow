@@ -6,7 +6,7 @@ use super::receiver::topics::{
     compile_exclude_regexes, compile_topic_regexes, matches_any_exclude, matches_any_topic,
 };
 use crate::common::kafka::auth::Auth;
-use crate::common::kafka::security::{apply_sasl_config, resolve_security_protocol};
+use crate::common::kafka::security::apply_security;
 use crate::common::kafka::{
     DebugContext, LogLevel, MessageFormat, TlsConfig, debug_list_to_string,
     default_message_format_header, validate_kafka_topic,
@@ -1445,14 +1445,7 @@ impl KafkaReceiverConfigBuilder {
         _ = config.set("isolation.level", self.isolation_level.to_kafka_value());
 
         // Security protocol, TLS, and SASL settings (shared with exporter)
-        let protocol = resolve_security_protocol(self.tls.as_ref(), self.auth.as_ref());
-        _ = config.set("security.protocol", protocol);
-
-        if let Some(tls) = &self.tls {
-            tls.apply_to_client_config(&mut config);
-        }
-
-        apply_sasl_config(self.auth.as_ref(), &mut config);
+        apply_security(&mut config, self.tls.as_ref(), self.auth.as_ref());
 
         // Partition assignment strategy (when omitted, librdkafka defaults to range,roundrobin)
         if let Some(strategy) = self.rebalance_strategy {
@@ -1691,12 +1684,11 @@ impl KafkaReceiverConfig {
 
         // Security uses the SOURCE connection (the re-read consumer reads
         // source topics), regardless of DLQ producer connection overrides.
-        let protocol = resolve_security_protocol(self.inner.tls.as_ref(), self.inner.auth.as_ref());
-        _ = config.set("security.protocol", protocol);
-        if let Some(tls) = &self.inner.tls {
-            tls.apply_to_client_config(&mut config);
-        }
-        apply_sasl_config(self.inner.auth.as_ref(), &mut config);
+        apply_security(
+            &mut config,
+            self.inner.tls.as_ref(),
+            self.inner.auth.as_ref(),
+        );
         Some(config)
     }
 
@@ -1705,12 +1697,7 @@ impl KafkaReceiverConfig {
     fn apply_dlq_security(&self, config: &mut ClientConfig, dlq: &ResolvedDlqConfig) {
         let tls = dlq.connection.tls.as_ref().or(self.inner.tls.as_ref());
         let auth = dlq.connection.auth.as_ref().or(self.inner.auth.as_ref());
-        let protocol = resolve_security_protocol(tls, auth);
-        _ = config.set("security.protocol", protocol);
-        if let Some(tls) = tls {
-            tls.apply_to_client_config(config);
-        }
-        apply_sasl_config(auth, config);
+        apply_security(config, tls, auth);
     }
 
     /// Get the configured consumer-lag refresh interval in milliseconds.

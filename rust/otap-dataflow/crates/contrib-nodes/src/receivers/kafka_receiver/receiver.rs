@@ -899,27 +899,40 @@ impl KafkaReceiver {
                                     send_result?;
                                 }
                                 Err(decode_err) => {
-                                    let (rejection_signal, rejection_error_type, rejection_reason) =
-                                        match &decode_err {
+                                    // Classify the decode error once into the
+                                    // rejection telemetry tuple *and* the DLQ
+                                    // reason (None for internal/config errors
+                                    // that never dead-letter), so the two code
+                                    // paths cannot drift apart.
+                                    let (
+                                        rejection_signal,
+                                        rejection_error_type,
+                                        rejection_reason,
+                                        dlq_reason,
+                                    ) = match &decode_err {
                                         KafkaReceiverError::EmptyPayloadDecode(_) => (
                                             self.signal_type_for_topic(&topic),
                                             ReceiverRejectionErrorType::InvalidRequest,
                                             KafkaReceiverRejectionReason::EmptyPayload,
+                                            Some(DlqReason::Decode),
                                         ),
                                         KafkaReceiverError::UnknownTopicDecode(_) => (
                                             None,
                                             ReceiverRejectionErrorType::InvalidRequest,
                                             KafkaReceiverRejectionReason::UnknownTopic,
+                                            Some(DlqReason::UnknownTopic),
                                         ),
                                         KafkaReceiverError::SignalDecode { signal, .. } => (
                                             Some(*signal),
                                             ReceiverRejectionErrorType::InvalidRequest,
                                             KafkaReceiverRejectionReason::Decode,
+                                            Some(DlqReason::Decode),
                                         ),
                                         _ => (
                                             None,
                                             ReceiverRejectionErrorType::Internal,
                                             KafkaReceiverRejectionReason::Internal,
+                                            None,
                                         ),
                                     };
                                     self.metrics.record_rejection(
@@ -996,7 +1009,8 @@ impl KafkaReceiver {
                                         // branch); otherwise advance now.
                                         let deferred = self.try_dlq_inline(
                                             &mut dlq,
-                                            &decode_err,
+                                            dlq_reason,
+                                            decode_err.to_string(),
                                             rejection_signal,
                                             &topic,
                                             partition,
@@ -1181,29 +1195,32 @@ impl KafkaReceiver {
 
     /// Attempt to dead-letter an inline (decode / unknown-topic) failure.
     ///
+    /// `reason` is the pre-classified DLQ category (`None` for internal/config
+    /// errors that never dead-letter), and `error` is the already-rendered error
+    /// string for the `dlq.error` header. Both are computed once by the caller so
+    /// the DLQ classification cannot drift from the rejection telemetry.
+    ///
     /// Returns `true` when the DLQ accepted the message and the caller must
     /// defer the offset advance until the delivery completes; returns `false`
     /// when there is no DLQ handling for this failure (the caller advances now).
     ///
     /// An immediate loss (no topic resolved or the in-flight bound is reached)
     /// is recorded here and returns `false` so the caller advances immediately.
+    #[allow(clippy::too_many_arguments)]
     fn try_dlq_inline(
         &mut self,
         dlq: &mut Option<DlqManager>,
-        decode_err: &KafkaReceiverError,
+        reason: Option<DlqReason>,
+        error: String,
         signal: Option<SignalType>,
         topic: &str,
         partition: i32,
         offset: i64,
         capture: Option<(Vec<u8>, Option<rdkafka::message::OwnedHeaders>)>,
     ) -> bool {
-        let reason = match decode_err {
-            KafkaReceiverError::UnknownTopicDecode(_) => DlqReason::UnknownTopic,
-            KafkaReceiverError::SignalDecode { .. } | KafkaReceiverError::EmptyPayloadDecode(_) => {
-                DlqReason::Decode
-            }
-            // Config variants never occur on the per-message decode path.
-            _ => return false,
+        // Internal/config errors never dead-letter.
+        let Some(reason) = reason else {
+            return false;
         };
 
         let Some(manager) = dlq.as_mut() else {
@@ -1219,14 +1236,8 @@ impl KafkaReceiver {
             partition,
             offset,
         };
-        let immediate = manager.submit_inline(
-            reason,
-            source,
-            signal,
-            decode_err.to_string(),
-            payload,
-            original_headers,
-        );
+        let immediate =
+            manager.submit_inline(reason, source, signal, error, payload, original_headers);
         self.handle_submit_outcome(immediate)
     }
 
@@ -1264,8 +1275,14 @@ impl KafkaReceiver {
             feedback.offset,
         );
 
+        // Resolve the source signal from the original topic so the DLQ record
+        // and telemetry carry the correct `dlq.signal` (rather than `unknown`).
+        // A signal-less topic (e.g. an unknown-topic ingest) stays `None`.
+        let signal = self.signal_type_for_topic(&feedback.topic);
+
         let manager = dlq.as_mut().expect("dlq presence checked above");
-        let immediate = manager.submit_reread(source, None, "permanent nack".to_string());
+        let immediate =
+            manager.submit_reread(source, signal, "permanent nack downstream".to_string());
         self.handle_submit_outcome(immediate)
     }
 

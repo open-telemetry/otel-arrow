@@ -446,6 +446,13 @@ Highlights:
   On any failure -- produce error, timeout, or unrecoverable bytes -- the message
   is counted as `receiver.kafka.dlq.loss` and the offset advances so the pipeline
   is never wedged.
+- **At-least-once to the DLQ.** Because the source offset advances only after a
+  DLQ delivery is confirmed, a crash (or a shutdown-drain deadline that elapses)
+  between a successful DLQ produce and the source-offset commit re-delivers the
+  message on restart, and it is dead-lettered again. The DLQ is therefore
+  at-least-once: duplicates are possible, silent loss is not. DLQ consumers must
+  tolerate duplicate records (e.g. keyed on `dlq.source.topic` /
+  `dlq.source.partition` / `dlq.source.offset`).
 - **Swap seam.** The manager is the single boundary a future output-port
   implementation would replace: its completion carries exactly the offset
   identity needed to advance the source offset, the same contract an engine

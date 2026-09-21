@@ -57,6 +57,17 @@ pub fn resolve_security_protocol(tls: Option<&TlsConfig>, auth: Option<&Auth>) -
     }
 }
 
+/// Applies the full security configuration -- resolved `security.protocol`, TLS
+/// certificate paths, and SASL settings -- to an rdkafka [`ClientConfig`] in one
+/// step.
+pub fn apply_security(config: &mut ClientConfig, tls: Option<&TlsConfig>, auth: Option<&Auth>) {
+    _ = config.set("security.protocol", resolve_security_protocol(tls, auth));
+    if let Some(tls) = tls {
+        tls.apply_to_client_config(config);
+    }
+    apply_sasl_config(auth, config);
+}
+
 /// Applies SASL-specific settings to an rdkafka [`ClientConfig`].
 ///
 /// Supports:

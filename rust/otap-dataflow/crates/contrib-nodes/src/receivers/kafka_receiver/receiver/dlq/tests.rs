@@ -195,6 +195,72 @@ fn admit_returns_loss_when_in_flight_full() {
     assert_eq!(mgr.in_flight.len(), DLQ_MAX_IN_FLIGHT);
 }
 
+/// Scenario: an inline job is submitted with an empty payload (the receiver's
+/// `unwrap_or_default` for a missing/empty source payload).
+/// Guarantees: the empty-payload job is admitted like any other (returns `None`,
+/// occupies one slot) rather than panicking or being dropped, so an empty source
+/// record still dead-letters as an empty DLQ record.
+#[test]
+fn submit_inline_admits_empty_payload() {
+    let mut mgr = manager(DlqConfig {
+        topic: Some("otel_dlq".to_string()),
+        per_signal: None,
+        capture: vec![DlqCapture::Decode],
+        connection: None,
+    });
+    let outcome = mgr.submit_inline(
+        DlqReason::Decode,
+        source(),
+        Some(SignalType::Traces),
+        "empty".to_string(),
+        Vec::new(),
+        None,
+    );
+    assert!(outcome.is_none(), "an empty-payload job is still admitted");
+    assert_eq!(mgr.in_flight.len(), 1);
+}
+
+/// Scenario: no DLQ topic resolves for the message (the resolved config has no
+/// topics at all), so `submit` cannot route it.
+/// Guarantees: `submit_inline` returns an immediate loss (not-produced,
+/// permanent) without consuming an in-flight slot, so the caller records
+/// `dlq.loss` and advances the source offset. This locks the "no topic resolved"
+/// branch that config validation normally makes unreachable.
+#[test]
+fn submit_returns_immediate_loss_when_no_topic_resolves() {
+    let mut mgr = manager(DlqConfig {
+        topic: Some("otel_dlq".to_string()),
+        per_signal: None,
+        capture: vec![DlqCapture::Decode],
+        connection: None,
+    });
+    // Force the degenerate state validation normally prevents: no topic for any
+    // signal, so both the signal-specific lookup and the `all_topics` fallback
+    // yield `None`.
+    mgr.config.traces_topic = None;
+    mgr.config.metrics_topic = None;
+    mgr.config.logs_topic = None;
+    assert!(
+        mgr.topic_for(Some(SignalType::Traces)).is_none(),
+        "precondition: no topic resolves"
+    );
+
+    let outcome = mgr.submit_inline(
+        DlqReason::Decode,
+        source(),
+        Some(SignalType::Traces),
+        "boom".to_string(),
+        b"payload".to_vec(),
+        None,
+    );
+    let completion = outcome.expect("no topic yields an immediate loss");
+    assert!(!completion.produced);
+    assert!(completion.permanent_failure);
+    assert_eq!(completion.reason, DlqReason::Decode);
+    // No slot was consumed by the unroutable job.
+    assert_eq!(mgr.in_flight.len(), 0);
+}
+
 /// Scenario: a job is submitted while a slot is free.
 /// Guarantees: `admit` accepts it (returns `None`) and occupies one slot,
 /// deferring the outcome to the completion future.

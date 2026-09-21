@@ -61,34 +61,23 @@ pub(crate) fn build_dlq_headers(
     let offset = ctx.source_offset.to_string();
     let timestamp = ctx.timestamp_millis.to_string();
 
-    headers = headers.insert(Header {
-        key: DLQ_ERROR,
-        value: Some(error.as_bytes()),
-    });
-    headers = headers.insert(Header {
-        key: DLQ_REASON,
-        value: Some(ctx.reason.as_bytes()),
-    });
-    headers = headers.insert(Header {
-        key: DLQ_SOURCE_TOPIC,
-        value: Some(source_topic.as_bytes()),
-    });
-    headers = headers.insert(Header {
-        key: DLQ_SOURCE_PARTITION,
-        value: Some(partition.as_bytes()),
-    });
-    headers = headers.insert(Header {
-        key: DLQ_SOURCE_OFFSET,
-        value: Some(offset.as_bytes()),
-    });
-    headers = headers.insert(Header {
-        key: DLQ_SIGNAL,
-        value: Some(ctx.signal.as_bytes()),
-    });
-    headers = headers.insert(Header {
-        key: DLQ_TIMESTAMP,
-        value: Some(timestamp.as_bytes()),
-    });
+    // Insert the fixed dlq.* context headers from a single (key, value) table so
+    // the set stays consistent and easy to extend.
+    let context: [(&str, &str); 7] = [
+        (DLQ_ERROR, &error),
+        (DLQ_REASON, ctx.reason),
+        (DLQ_SOURCE_TOPIC, &source_topic),
+        (DLQ_SOURCE_PARTITION, &partition),
+        (DLQ_SOURCE_OFFSET, &offset),
+        (DLQ_SIGNAL, ctx.signal),
+        (DLQ_TIMESTAMP, &timestamp),
+    ];
+    for (key, value) in context {
+        headers = headers.insert(Header {
+            key,
+            value: Some(value.as_bytes()),
+        });
+    }
 
     // Copy through the original source headers so the DLQ record is a faithful
     // superset. Skip any header that collides with a `dlq.*` key so the
