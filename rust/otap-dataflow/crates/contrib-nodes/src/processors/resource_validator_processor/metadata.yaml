@@ -1,0 +1,6 @@
+type: resource_validator
+status:
+  class: processor
+  codeowners:
+    active:
+      - lalitb
