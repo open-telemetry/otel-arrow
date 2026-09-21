@@ -58,9 +58,11 @@ impl OtapArrowRecords {
         }
     }
 
-    /// Remove the record batch for the given payload type. If the payload type is not valid
-    /// for this type of telemetry signal, this method does nothing.
-    pub fn remove(&mut self, payload_type: ArrowPayloadType) {
+    /// Remove the record batch for the given payload type and returns the removed record batch if
+    /// it was populated on this OTAP batch.
+    ///
+    /// If the payload type is not valid for this type of telemetry signal, this returns None
+    pub fn remove(&mut self, payload_type: ArrowPayloadType) -> Option<RecordBatch> {
         match self {
             Self::Logs(logs) => logs.remove(payload_type),
             Self::Metrics(metrics) => metrics.remove(payload_type),
@@ -354,7 +356,7 @@ pub trait OtapBatchStore:
     fn set(&mut self, payload_type: ArrowPayloadType, record_batch: RecordBatch) -> Result<()>;
 
     /// Remove the record batch for the given payload type
-    fn remove(&mut self, payload_type: ArrowPayloadType);
+    fn remove(&mut self, payload_type: ArrowPayloadType) -> Option<RecordBatch>;
 
     /// Get the record batch for the given payload type
     fn get(&self, payload_type: ArrowPayloadType) -> Option<&RecordBatch>;
@@ -491,8 +493,8 @@ impl OtapBatchStore for Logs {
         )
     }
 
-    fn remove(&mut self, payload_type: ArrowPayloadType) {
-        validated_remove(&mut self.inner, payload_type);
+    fn remove(&mut self, payload_type: ArrowPayloadType) -> Option<RecordBatch> {
+        validated_remove(&mut self.inner, payload_type)
     }
 
     fn get(&self, payload_type: ArrowPayloadType) -> Option<&RecordBatch> {
@@ -552,9 +554,11 @@ fn validated_set<const TYPE_MASK: u64, const COUNT: usize>(
 fn validated_remove<const TYPE_MASK: u64, const COUNT: usize>(
     inner: &mut raw_batch_store::RawBatchStore<TYPE_MASK, COUNT>,
     payload_type: ArrowPayloadType,
-) {
+) -> Option<RecordBatch> {
     if raw_batch_store::RawBatchStore::<TYPE_MASK, COUNT>::is_valid_type(payload_type) {
-        inner.remove(payload_type);
+        inner.remove(payload_type)
+    } else {
+        None
     }
 }
 
@@ -839,8 +843,8 @@ impl OtapBatchStore for Metrics {
         )
     }
 
-    fn remove(&mut self, payload_type: ArrowPayloadType) {
-        validated_remove(&mut self.inner, payload_type);
+    fn remove(&mut self, payload_type: ArrowPayloadType) -> Option<RecordBatch> {
+        validated_remove(&mut self.inner, payload_type)
     }
 
     fn get(&self, payload_type: ArrowPayloadType) -> Option<&RecordBatch> {
@@ -1011,8 +1015,8 @@ impl OtapBatchStore for Traces {
         )
     }
 
-    fn remove(&mut self, payload_type: ArrowPayloadType) {
-        validated_remove(&mut self.inner, payload_type);
+    fn remove(&mut self, payload_type: ArrowPayloadType) -> Option<RecordBatch> {
+        validated_remove(&mut self.inner, payload_type)
     }
 
     fn get(&self, payload_type: ArrowPayloadType) -> Option<&RecordBatch> {

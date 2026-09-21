@@ -1208,7 +1208,7 @@ pub fn apply_attribute_transform(
             otap_batch.set(attrs_payload_type, new_attrs_record_batch)?;
         } else {
             // remove batch because all the attributes were deleted
-            otap_batch.remove(attrs_payload_type);
+            _ = otap_batch.remove(attrs_payload_type);
         }
         compute_stats.then_some(stats)
     } else {
