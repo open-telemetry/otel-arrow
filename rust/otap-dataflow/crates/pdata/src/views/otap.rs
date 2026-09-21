@@ -8,68 +8,101 @@
 //! a hierarchical OTLP-like interface (Resource -> Scope -> LogRecord) without exposing
 //! the complexity of the raw Arrow batches or requiring conversion to intermediate formats.
 
+use std::borrow::Cow;
+
 use crate::error::Result;
 use crate::otap::OtapArrowRecords;
+use crate::otap::transform::transport_optimize::first_transport_encoded_id_column;
 
 pub mod common;
 pub(crate) mod logs;
 pub(crate) mod metrics;
 pub(crate) mod traces;
 
-pub use logs::OtapLogsView;
-pub use metrics::OtapMetricsView;
+pub use logs::{DecodedOtapLogsResources, OtapLogsResourcesView, OtapLogsView};
+pub use metrics::{OtapMetricsView, otap_metrics_have_aggregatable_metrics};
 pub use traces::OtapTracesView;
 
-/// Owns a cloned OTAP batch whose transport-optimized IDs have been decoded.
+/// Keeps an OTAP batch available after transport-optimized IDs have been decoded.
 ///
 /// Views borrow from their input records. This wrapper lets callers preserve an
-/// original payload for forwarding or NACK handling while keeping a decoded
-/// clone alive for the full view lifetime.
-pub struct DecodedOtapArrowRecords {
-    records: OtapArrowRecords,
+/// original payload for forwarding or NACK handling. Plain records are borrowed
+/// directly; transport-optimized records are cloned and decoded.
+pub struct DecodedOtapArrowRecords<'a> {
+    records: Cow<'a, OtapArrowRecords>,
 }
 
-impl DecodedOtapArrowRecords {
-    /// Clone records and decode every transport-optimized ID column.
-    pub fn clone_and_decode(records: &OtapArrowRecords) -> Result<Self> {
+impl<'a> DecodedOtapArrowRecords<'a> {
+    /// Borrow plain records, or clone and decode every transport-optimized ID column.
+    pub fn clone_and_decode(records: &'a OtapArrowRecords) -> Result<Self> {
+        if transport_ids_are_plain(records) {
+            return Ok(Self {
+                records: Cow::Borrowed(records),
+            });
+        }
+
         let mut records = records.clone();
         records.decode_transport_optimized_ids()?;
-        Ok(Self { records })
+        Ok(Self {
+            records: Cow::Owned(records),
+        })
     }
 
     /// Decode owned records without an additional clone.
     pub fn decode(mut records: OtapArrowRecords) -> Result<Self> {
         records.decode_transport_optimized_ids()?;
-        Ok(Self { records })
+        Ok(Self {
+            records: Cow::Owned(records),
+        })
     }
 
     /// Borrow the decoded records.
     #[must_use]
-    pub const fn records(&self) -> &OtapArrowRecords {
-        &self.records
+    pub fn records(&self) -> &OtapArrowRecords {
+        self.records.as_ref()
     }
 
     /// Build a logs view over the decoded records.
     pub fn logs_view(&self) -> Result<OtapLogsView<'_>> {
-        OtapLogsView::try_from(&self.records)
+        OtapLogsView::try_from(self.records.as_ref())
     }
 
     /// Build a metrics view over the decoded records.
     pub fn metrics_view(&self) -> Result<OtapMetricsView<'_>> {
-        OtapMetricsView::try_from(&self.records)
+        OtapMetricsView::try_from(self.records.as_ref())
     }
 
     /// Build a traces view over the decoded records.
     pub fn traces_view(&self) -> Result<OtapTracesView<'_>> {
-        OtapTracesView::try_from(&self.records)
+        OtapTracesView::try_from(self.records.as_ref())
     }
+
+    #[cfg(test)]
+    fn is_borrowed(&self) -> bool {
+        matches!(&self.records, Cow::Borrowed(_))
+    }
+
+    #[cfg(test)]
+    fn is_owned(&self) -> bool {
+        matches!(&self.records, Cow::Owned(_))
+    }
+}
+
+fn transport_ids_are_plain(records: &OtapArrowRecords) -> bool {
+    records.allowed_payload_types().iter().all(|payload_type| {
+        records.get(*payload_type).is_none_or(|record_batch| {
+            first_transport_encoded_id_column(*payload_type, record_batch.schema_ref()).is_none()
+        })
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::otap::{Logs, Metrics, Traces, from_record_messages};
+    use crate::otap::{Logs, Metrics, OtapBatchStore, Traces, from_record_messages};
+    use crate::otlp::metrics::MetricType;
     use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+    use crate::record_batch;
     use crate::schema::{consts, update_field_metadata};
     use crate::testing::{fixtures, round_trip};
     use crate::{Consumer, Producer};
@@ -101,6 +134,18 @@ mod tests {
         }
     }
 
+    /// Scenario: Clone-and-decode receives records whose canonical transport IDs are plain.
+    /// Guarantees: The wrapper borrows the input instead of cloning its batch store.
+    #[test]
+    fn decoded_owner_borrows_plain_records() {
+        let records = round_trip::encode_logs(&fixtures::logs_with_full_resource_and_scope());
+
+        let decoded = DecodedOtapArrowRecords::clone_and_decode(&records).expect("plain records");
+
+        assert!(decoded.is_borrowed());
+        assert!(std::ptr::eq(decoded.records(), &records));
+    }
+
     /// Scenario: Wire-decoded logs retain transport-optimized IDs and include record attributes.
     /// Guarantees: Direct view construction fails, while the decoded owner restores attribute links.
     #[test]
@@ -115,6 +160,7 @@ mod tests {
         ));
 
         let decoded = DecodedOtapArrowRecords::clone_and_decode(&records).expect("decode IDs");
+        assert!(decoded.is_owned());
         let view = decoded.logs_view().expect("decoded logs view");
         let mut attribute_count = 0;
         for resource in view.resources() {
@@ -196,5 +242,88 @@ mod tests {
         let decoded = DecodedOtapArrowRecords::clone_and_decode(&records).expect("decode IDs");
         let view = decoded.traces_view().expect("decoded traces view");
         assert!(view.resources().count() > 0);
+    }
+
+    /// Scenario: Transport-optimized traces contain empty event and link child batches.
+    /// Guarantees: Decoding marks their parent IDs plain and permits traces view construction.
+    #[test]
+    fn decoded_owner_accepts_empty_transport_trace_children() {
+        let mut encoded: OtapArrowRecords = crate::traces!(
+            (
+                Spans,
+                ("id", UInt16, vec![1u16]),
+                ("scope.id", UInt16, vec![1u16]),
+                ("resource.id", UInt16, vec![1u16])
+            ),
+            (
+                SpanEvents,
+                ("id", UInt32, vec![1u32]),
+                ("parent_id", UInt16, vec![1u16])
+            ),
+            (
+                SpanLinks,
+                ("id", UInt32, vec![1u32]),
+                ("parent_id", UInt16, vec![1u16])
+            ),
+        )
+        .into();
+        encoded
+            .encode_transport_optimized()
+            .expect("transport optimize traces");
+
+        for payload_type in [ArrowPayloadType::SpanEvents, ArrowPayloadType::SpanLinks] {
+            let mut records = encoded.clone();
+            let empty_batch = records
+                .get(payload_type)
+                .expect("child payload")
+                .slice(0, 0);
+            records
+                .set(payload_type, empty_batch)
+                .expect("replace child payload");
+
+            let decoded =
+                DecodedOtapArrowRecords::clone_and_decode(&records).expect("decode empty child");
+            let _view = decoded.traces_view().expect("traces view");
+        }
+    }
+
+    /// Scenario: Transport-optimized metrics contain an empty exemplar child batch.
+    /// Guarantees: Decoding marks its parent ID plain and permits metrics view construction.
+    #[test]
+    fn decoded_owner_accepts_empty_transport_exemplars() {
+        let mut records: OtapArrowRecords = crate::metrics!(
+            (
+                UnivariateMetrics,
+                ("id", UInt16, vec![1u16]),
+                ("resource.id", UInt16, vec![1u16]),
+                ("scope.id", UInt16, vec![1u16]),
+                ("metric_type", UInt8, vec![MetricType::Gauge as u8])
+            ),
+            (
+                NumberDataPoints,
+                ("id", UInt32, vec![1u32]),
+                ("parent_id", UInt16, vec![1u16])
+            ),
+            (
+                NumberDpExemplars,
+                ("id", UInt32, vec![1u32]),
+                ("parent_id", UInt32, vec![1u32])
+            ),
+        )
+        .into();
+        records
+            .encode_transport_optimized()
+            .expect("transport optimize metrics");
+        let empty_batch = records
+            .get(ArrowPayloadType::NumberDpExemplars)
+            .expect("exemplar payload")
+            .slice(0, 0);
+        records
+            .set(ArrowPayloadType::NumberDpExemplars, empty_batch)
+            .expect("replace exemplar payload");
+
+        let decoded =
+            DecodedOtapArrowRecords::clone_and_decode(&records).expect("decode empty exemplar");
+        let _view = decoded.metrics_view().expect("metrics view");
     }
 }

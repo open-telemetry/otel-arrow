@@ -13,7 +13,9 @@ use arrow::array::{Array, RecordBatch, StructArray, UInt16Array};
 
 use crate::arrays::{MaybeDictArrayAccessor, NullableArrayAccessor, StringArrayAccessor};
 use crate::error::{Error, Result};
-use crate::otap::transform::transport_optimize::first_transport_encoded_id_column;
+use crate::otap::transform::transport_optimize::{
+    first_transport_encoded_id_column, transport_id_column_is_encoded,
+};
 use crate::otlp::attributes::{Attribute16Arrays, Attribute32Arrays, AttributeValueType};
 use crate::otlp::common::AnyValueArrays;
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
@@ -463,6 +465,26 @@ pub(crate) fn ensure_transport_ids_decoded(
     if let Some(column) =
         first_transport_encoded_id_column(payload_type, batch.schema_ref().as_ref())
     {
+        return Err(Error::TransportOptimizedIdsNotDecoded {
+            payload_type,
+            column: column.to_string(),
+        });
+    }
+
+    Ok(())
+}
+
+/// Reject a specific canonical ID column when it is still transport encoded.
+pub(crate) fn ensure_transport_id_decoded(
+    payload_type: ArrowPayloadType,
+    batch: Option<&RecordBatch>,
+    column: &'static str,
+) -> Result<()> {
+    let Some(batch) = batch else {
+        return Ok(());
+    };
+
+    if transport_id_column_is_encoded(payload_type, batch.schema_ref(), column) {
         return Err(Error::TransportOptimizedIdsNotDecoded {
             payload_type,
             column: column.to_string(),

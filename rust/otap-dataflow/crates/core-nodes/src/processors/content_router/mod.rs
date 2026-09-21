@@ -94,7 +94,7 @@ use otel_arrow_dfe_otap::pdata::OtapPdata;
 use otel_arrow_dfe_pdata::PayloadData;
 use otel_arrow_dfe_pdata::TryFromWithOptions;
 use otel_arrow_dfe_pdata::otlp::OtlpProtoBytes;
-use otel_arrow_dfe_pdata::views::otap::DecodedOtapArrowRecords;
+use otel_arrow_dfe_pdata::views::otap::DecodedOtapLogsResources;
 use otel_arrow_dfe_pdata::views::otlp::bytes::logs::RawLogsData;
 use otel_arrow_dfe_pdata::views::otlp::bytes::metrics::RawMetricsData;
 use otel_arrow_dfe_pdata::views::otlp::bytes::traces::RawTraceData;
@@ -412,12 +412,16 @@ impl ContentRouter {
         router
     }
 
+    fn resource_attr_key(&self) -> &[u8] {
+        match &self.routing_key {
+            RoutingKeyExpr::ResourceAttribute(key) => key.as_bytes(),
+        }
+    }
+
     /// Extracts the routing key value from a resource's attributes using zero-copy views.
     /// Returns the resolved port name or None if the key is missing/not a route match.
     fn extract_route_from_resource<R: ResourceView>(&self, resource: &R) -> RouteResolution {
-        let key_bytes = match &self.routing_key {
-            RoutingKeyExpr::ResourceAttribute(key) => key.as_bytes(),
-        };
+        let key_bytes = self.resource_attr_key();
 
         for attr in resource.attributes() {
             if attr.key() == key_bytes {
@@ -512,20 +516,21 @@ impl ContentRouter {
         &self,
         arrow_records: &otel_arrow_dfe_pdata::OtapArrowRecords,
     ) -> RouteResolution {
-        let decoded = match DecodedOtapArrowRecords::clone_and_decode(arrow_records) {
+        let decoded = match DecodedOtapLogsResources::clone_and_decode_keyed(
+            arrow_records,
+            self.resource_attr_key(),
+        ) {
             Ok(decoded) => decoded,
             Err(_) => return RouteResolution::ConversionError,
         };
-        let logs_view = match decoded.logs_view() {
+        let logs_view = match decoded.resources_view() {
             Ok(view) => view,
             Err(_) => return RouteResolution::ConversionError,
         };
         let mut acc: Option<RouteResolution> = None;
         for resource_logs in logs_view.resources() {
-            let res = match resource_logs.resource() {
-                Some(resource) => self.extract_route_from_resource(&resource),
-                None => RouteResolution::MissingKey,
-            };
+            let resource = resource_logs.resource();
+            let res = self.extract_route_from_resource(&resource);
             acc = Some(Self::fold_resolution(acc, res));
             if matches!(acc, Some(RouteResolution::MixedBatch)) {
                 return RouteResolution::MixedBatch;

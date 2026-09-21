@@ -5,10 +5,12 @@
 
 use std::collections::BTreeMap;
 
-#[allow(unused_imports)]
-use arrow::array::Array;
+use arrow::array::{Array, BooleanArray};
 
-use crate::arrays::{MaybeDictArrayAccessor, NullableArrayAccessor};
+use crate::arrays::{
+    Int32ArrayAccessor, MaybeDictArrayAccessor, NullableArrayAccessor, get_bool_array_opt,
+    get_u8_array,
+};
 use crate::error::Error;
 use crate::otap::OtapArrowRecords;
 use crate::otlp::attributes::{Attribute16Arrays, Attribute32Arrays};
@@ -22,7 +24,7 @@ use crate::otlp::metrics::data_points::summary::{QuantileArrays, SummaryDpArrays
 use crate::otlp::metrics::exemplar::ExemplarArrays;
 use crate::otlp::metrics::{MetricType, MetricsArrays};
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-use crate::schema::{SpanId, TraceId};
+use crate::schema::{SpanId, TraceId, consts};
 use crate::views::otap::common::{
     Otap32AttributeIter, OtapAttributeIter, OtapAttributeView, RowGroup, RowGroupIter,
     build_attribute_index, ensure_transport_ids_decoded, group_by_resource_id, group_by_scope_id,
@@ -62,6 +64,82 @@ fn build_u32_parent_index(
 
 fn build_attr32_index(attrs: &Attribute32Arrays<'_>) -> BTreeMap<u32, Vec<usize>> {
     build_u32_parent_index(&attrs.parent_id)
+}
+
+fn metrics_root_batch(
+    records: &OtapArrowRecords,
+) -> Option<(ArrowPayloadType, &arrow::array::RecordBatch)> {
+    records
+        .get(ArrowPayloadType::UnivariateMetrics)
+        .map(|batch| (ArrowPayloadType::UnivariateMetrics, batch))
+        .or_else(|| {
+            records
+                .get(ArrowPayloadType::MultivariateMetrics)
+                .map(|batch| (ArrowPayloadType::MultivariateMetrics, batch))
+        })
+}
+
+/// Return whether OTAP metrics records contain at least one aggregatable metric.
+///
+/// This reads only root metrics columns and avoids decoding child IDs or
+/// constructing hierarchy indexes.
+pub fn otap_metrics_have_aggregatable_metrics(records: &OtapArrowRecords) -> Result<bool, Error> {
+    let Some((_, metrics_batch)) = metrics_root_batch(records) else {
+        return Ok(false);
+    };
+    let metric_type = get_u8_array(metrics_batch, consts::METRIC_TYPE)?;
+    let aggregation_temporality = metrics_batch
+        .column_by_name(consts::AGGREGATION_TEMPORALITY)
+        .map(Int32ArrayAccessor::try_new)
+        .transpose()?;
+    let is_monotonic = get_bool_array_opt(metrics_batch, consts::IS_MONOTONIC)?;
+
+    for row_idx in 0..metric_type.len() {
+        let Some(metric_type_val) = metric_type.value_at(row_idx) else {
+            continue;
+        };
+        let Ok(metric_type) = MetricType::try_from(metric_type_val) else {
+            continue;
+        };
+
+        match metric_type {
+            MetricType::Gauge | MetricType::Summary => return Ok(true),
+            MetricType::Sum => {
+                if aggregation_temporality_from_column(aggregation_temporality.as_ref(), row_idx)
+                    == AggregationTemporality::Cumulative
+                    && is_monotonic_from_column(is_monotonic, row_idx)
+                {
+                    return Ok(true);
+                }
+            }
+            MetricType::Histogram | MetricType::ExponentialHistogram => {
+                if aggregation_temporality_from_column(aggregation_temporality.as_ref(), row_idx)
+                    == AggregationTemporality::Cumulative
+                {
+                    return Ok(true);
+                }
+            }
+            MetricType::Empty => {}
+        }
+    }
+
+    Ok(false)
+}
+
+fn aggregation_temporality_from_column(
+    aggregation_temporality: Option<&Int32ArrayAccessor<'_>>,
+    row_idx: usize,
+) -> AggregationTemporality {
+    aggregation_temporality
+        .and_then(|column| column.value_at(row_idx))
+        .map(|value| AggregationTemporality::from(value as u32))
+        .unwrap_or(AggregationTemporality::Unspecified)
+}
+
+fn is_monotonic_from_column(is_monotonic: Option<&BooleanArray>, row_idx: usize) -> bool {
+    is_monotonic
+        .and_then(|column| column.value_at(row_idx))
+        .unwrap_or(false)
 }
 
 // ===== Main View =====
@@ -1961,6 +2039,84 @@ impl<'a> ExemplarView for OtapExemplarView<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::otap::OtapBatchStore;
+    use crate::record_batch;
+
+    fn metrics_records_with_root_types(
+        metric_types: Vec<u8>,
+        aggregation_temporality: Vec<i32>,
+        is_monotonic: Vec<bool>,
+    ) -> OtapArrowRecords {
+        let len = metric_types.len();
+        let ids: Vec<u16> = (0..len).map(|idx| idx as u16 + 1).collect();
+        let resource_ids = vec![1u16; len];
+        let scope_ids = vec![1u16; len];
+
+        crate::metrics!(
+            (
+                UnivariateMetrics,
+                ("id", UInt16, ids),
+                ("resource.id", UInt16, resource_ids),
+                ("scope.id", UInt16, scope_ids),
+                ("metric_type", UInt8, metric_types),
+                ("aggregation_temporality", Int32, aggregation_temporality),
+                ("is_monotonic", Boolean, is_monotonic)
+            ),
+            (
+                NumberDataPoints,
+                ("id", UInt32, vec![1u32]),
+                ("parent_id", UInt16, vec![1u16])
+            ),
+        )
+        .into()
+    }
+
+    /// Scenario: Preflight inspects a Gauge while child transport IDs remain encoded.
+    /// Guarantees: It reports aggregatable data without constructing a metrics view.
+    #[test]
+    fn aggregatable_preflight_detects_gauge_without_child_decode() {
+        let mut records = metrics_records_with_root_types(
+            vec![MetricType::Gauge as u8],
+            vec![AggregationTemporality::Unspecified as i32],
+            vec![false],
+        );
+        records
+            .encode_transport_optimized()
+            .expect("transport optimize metrics");
+
+        assert!(otap_metrics_have_aggregatable_metrics(&records).unwrap());
+        assert!(OtapMetricsView::try_from(&records).is_err());
+    }
+
+    /// Scenario: Preflight inspects a delta Sum while child transport IDs remain encoded.
+    /// Guarantees: It reports no aggregatable data without decoding the original payload.
+    #[test]
+    fn aggregatable_preflight_skips_delta_sum_without_child_decode() {
+        let mut records = metrics_records_with_root_types(
+            vec![MetricType::Sum as u8],
+            vec![AggregationTemporality::Delta as i32],
+            vec![true],
+        );
+        records
+            .encode_transport_optimized()
+            .expect("transport optimize metrics");
+
+        assert!(!otap_metrics_have_aggregatable_metrics(&records).unwrap());
+        assert!(OtapMetricsView::try_from(&records).is_err());
+    }
+
+    /// Scenario: Preflight inspects a cumulative monotonic Sum.
+    /// Guarantees: It classifies the Sum as aggregatable.
+    #[test]
+    fn aggregatable_preflight_detects_cumulative_monotonic_sum() {
+        let records = metrics_records_with_root_types(
+            vec![MetricType::Sum as u8],
+            vec![AggregationTemporality::Cumulative as i32],
+            vec![true],
+        );
+
+        assert!(otap_metrics_have_aggregatable_metrics(&records).unwrap());
+    }
 
     #[test]
     fn test_missing_root_metrics_batch_yields_empty_view() {

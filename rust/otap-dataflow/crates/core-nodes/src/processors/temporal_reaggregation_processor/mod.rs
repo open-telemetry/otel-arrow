@@ -39,7 +39,9 @@ use otel_arrow_dfe_otap::OTAP_PROCESSOR_FACTORIES;
 use otel_arrow_dfe_otap::accessory::slots::{Key as SlotKey, State as SlotState};
 use otel_arrow_dfe_otap::pdata::{Context, OtapPdata, PeerAddrMerger};
 use otel_arrow_dfe_pdata::otap::OtapArrowRecords;
-use otel_arrow_dfe_pdata::views::otap::DecodedOtapArrowRecords;
+use otel_arrow_dfe_pdata::views::otap::{
+    DecodedOtapArrowRecords, otap_metrics_have_aggregatable_metrics,
+};
 use otel_arrow_dfe_pdata::views::otlp::bytes::metrics::RawMetricsData;
 use otel_arrow_dfe_pdata::{OtapPayload, OtapPayloadHelpers, PayloadData};
 use otel_arrow_dfe_pdata_views::views::common::InstrumentationScopeView;
@@ -628,6 +630,27 @@ impl TemporalReaggregationProcessor {
     ) -> Result<(), Error> {
         let result = match pdata.payload_ref().data() {
             PayloadData::OtapArrowRecords(records) => {
+                let has_aggregatable_metrics = match otap_metrics_have_aggregatable_metrics(records)
+                {
+                    Ok(has_aggregatable_metrics) => has_aggregatable_metrics,
+                    Err(e) => {
+                        otel_warn!(telemetry::VIEW_CREATION_FAILED_EVENT, error = %e);
+                        self.metrics.record_failure(ErrorType::ViewCreation);
+                        let msg = format!("Failed to create view: {:#}", e);
+                        effect_handler
+                            .notify_nack(NackMsg::new_permanent(msg, pdata))
+                            .await?;
+
+                        return Ok(());
+                    }
+                };
+
+                if !has_aggregatable_metrics {
+                    return self
+                        .try_send_message_with_metrics(effect_handler, pdata)
+                        .await;
+                }
+
                 let decoded = match DecodedOtapArrowRecords::clone_and_decode(records) {
                     Ok(decoded) => decoded,
                     Err(e) => {
