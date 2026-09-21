@@ -5069,78 +5069,99 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (backpressure): a burst of batches is sent against a tiny librdkafka producer
-        /// queue (`queue.buffering.max.messages = 1`) so an enqueue is rejected
-        /// as queue-full.
-        /// Guarantees: an enqueue failure is reported (the failure counter
-        /// advances) without being tracked in the in-flight set, and the loop
-        /// keeps running so a later, well-spaced send still delivers.
-        ///
-        /// NOTE: forcing a deterministic `QueueFull` on the in-process mock is
-        /// timing-dependent -- librdkafka drains its queue on the 1s poll cycle,
-        /// so a rejection is not guaranteed on every run. If no enqueue is
-        /// rejected here the test still asserts the loop stays healthy (the
-        /// trailing send delivers); it does not assert a failure occurred. A
-        /// deterministic queue-full requires a real broker with a controllable
-        /// send rate.
+        /// Scenario: a down broker holds one batch in a one-message producer queue,
+        /// forcing the next batch to fail enqueue before the broker recovers.
+        /// Guarantees: queue-full returns the refused payload in a transient NACK;
+        /// the queued batch and a later send are ACKed and consumed after recovery,
+        /// with exactly two successes, one failure, and no duplicate completions.
         #[tokio::test]
         async fn enqueue_failure_reports_nack_without_tracking() {
+            use otel_arrow_dfe_engine::control::PipelineCompletionMsg;
+            use rdkafka::error::KafkaError;
+            use rdkafka::types::RDKafkaErrorCode;
+
             let topic = "it-mif-enqueue-full";
-            const BURST: usize = 200;
             with_cluster(
                 KafkaTestCluster::builder().topic(topic),
                 |cluster| async move {
-                    let consumer = cluster.consumer().subscribe(&[topic]);
+                    // Keep the first delivery pending until the second enqueue
+                    // has failed. Queue pressure cannot race with broker delivery.
+                    cluster.faults().all_brokers_down();
+                    let consumer = cluster.consumer().assign_partition(topic, 0);
                     let cfg = KafkaExporterConfigBuilder::new(cluster.bootstrap_servers(), "it")
                         .with_logs(SignalConfig::new(topic.into(), MessageFormat::OtlpProto))
-                        .with_max_in_flight(64)
-                        // Force the smallest possible producer queue so a rapid
-                        // burst can overflow it before the poll thread drains.
+                        // Admit the second batch while the first is still pending.
+                        .with_max_in_flight(2)
+                        // Outlast the bounded NACK wait while the broker is down.
+                        .with_timeout_ms(30_000)
                         .with_producer_config(std::collections::HashMap::from([(
                             "queue.buffering.max.messages".to_string(),
                             "1".to_string(),
                         )]))
                         .try_into()
                         .expect("config should be valid");
-                    let exporter = KafkaExporterHarness::start(&cluster, cfg);
+                    let mut exporter = KafkaExporterHarness::start(&cluster, cfg);
+                    let queued = logs_request_bytes_seq(1);
+                    let rejected = logs_request_bytes_seq(2);
 
-                    // Fire a rapid burst to try to overflow the 1-deep queue.
-                    for _ in 0..BURST {
+                    for payload in [&queued, &rejected] {
                         exporter
-                            .send_pdata(logs_pdata(logs_request_bytes(), None))
+                            .send_pdata(logs_pdata_subscribed(payload.clone(), None))
                             .await
                             .expect("send pdata");
                     }
 
-                    // Regardless of whether any enqueue was rejected, the loop
-                    // must stay healthy: a trailing, well-spaced send delivers.
-                    tokio::time::sleep(Duration::from_millis(1200)).await;
+                    let nack = exporter
+                        .recv_nack(Duration::from_secs(10))
+                        .await
+                        .expect("the second enqueue must return a NACK while the broker is down");
+                    assert!(!nack.permanent, "queue-full must be retryable");
+                    assert_eq!(
+                        nack.reason,
+                        KafkaError::MessageProduction(RDKafkaErrorCode::QueueFull).to_string(),
+                        "the failure must be queue-full, not a delivery timeout"
+                    );
+                    assert_eq!(
+                        encoder::encode_to_otlp_bytes(nack.refused.payload())
+                            .expect("encode refused payload"),
+                        rejected,
+                        "the NACK must return the rejected batch intact"
+                    );
+
+                    cluster.faults().all_brokers_up();
+                    let completion = exporter.try_recv_completion(Duration::from_secs(30)).await;
+                    assert!(
+                        matches!(completion, Some(PipelineCompletionMsg::DeliverAck { .. })),
+                        "the queued batch must be ACKed after broker recovery: {completion:?}"
+                    );
+
+                    // An ACK proves the producer has released its queue slot;
+                    // sending into the harness channel alone does not prove delivery.
                     let marker = logs_request_bytes_seq(424_242);
                     exporter
-                        .send_pdata(logs_pdata(marker.clone(), None))
+                        .send_pdata(logs_pdata_subscribed(marker.clone(), None))
                         .await
                         .expect("send trailing pdata");
-
-                    let msgs = consumer.collect_until_idle(Duration::from_secs(2)).await;
+                    let completion = exporter.try_recv_completion(Duration::from_secs(30)).await;
                     assert!(
-                        msgs.iter()
-                            .any(|m| m.payload.as_deref() == Some(marker.as_slice())),
-                        "the loop keeps running after enqueue pressure; trailing send delivers"
+                        matches!(completion, Some(PipelineCompletionMsg::DeliverAck { .. })),
+                        "the trailing batch must be ACKed after queue pressure: {completion:?}"
                     );
+
+                    // Wait for the two known deliveries, not a short idle window
+                    // that can expire before the consumer starts fetching.
+                    for expected in [&queued, &marker] {
+                        let msg = consumer.recv().await;
+                        let _ = msg.assert_topic(topic).assert_payload(expected);
+                    }
 
                     exporter.shutdown(Duration::from_secs(10)).await;
-                    let ts = exporter.await_terminal_state().await;
+                    let (ts, extra_completions) =
+                        exporter.await_terminal_state_draining_completions().await;
+                    assert_eq!(extra_completions, 0, "each batch completes exactly once");
                     let snaps = ts.metrics();
-                    // Every batch is accounted as either a success or a failure;
-                    // none vanish. (Failures may be 0 if the queue never
-                    // overflowed on this run -- see the NOTE above.)
-                    let success = kafka_exports(snaps, "logs", "success");
-                    let failure = kafka_exports(snaps, "logs", "failure");
-                    assert_eq!(
-                        success + failure,
-                        (BURST + 1) as u64,
-                        "every batch is accounted as success or failure, none lost"
-                    );
+                    assert_eq!(kafka_exports(snaps, "logs", "success"), 2);
+                    assert_eq!(kafka_exports(snaps, "logs", "failure"), 1);
                 },
             )
             .await;
