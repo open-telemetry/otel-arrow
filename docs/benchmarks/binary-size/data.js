@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790003655620,
+  "lastUpdate": 1790004871497,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -41513,6 +41513,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 103.79,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "29139614+renovate[bot]@users.noreply.github.com",
+            "name": "renovate[bot]",
+            "username": "renovate[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "a039072d6b0db66285f4b8ec2ff788f2766a550c",
+          "message": "chore(deps): update rust patch versions (#4118)\n\nThis PR contains the following updates:\n\n| Package | Type | Update | Change |\n|---|---|---|---|\n| [cfg-if](https://redirect.github.com/rust-lang/cfg-if) |\nworkspace.dependencies | patch | `1.0.4` → `1.0.5` |\n| [clap_complete](https://redirect.github.com/clap-rs/clap) |\nworkspace.dependencies | patch | `4.6.10` → `4.6.11` |\n| [pest](https://pest.rs/)\n([source](https://redirect.github.com/pest-parser/pest)) |\nworkspace.dependencies | patch | `2.9.1` → `2.9.2` |\n| [pest_derive](https://pest.rs/)\n([source](https://redirect.github.com/pest-parser/pest)) |\nworkspace.dependencies | patch | `2.9.1` → `2.9.2` |\n| [rand](https://rust-random.github.io/book)\n([source](https://redirect.github.com/rust-random/rand)) |\nworkspace.dependencies | patch | `0.10.2` → `0.10.3` |\n\n---\n\n### Release Notes\n\n<details>\n<summary>rust-lang/cfg-if (cfg-if)</summary>\n\n###\n[`v1.0.5`](https://redirect.github.com/rust-lang/cfg-if/blob/HEAD/CHANGELOG.md#105---2026-09-16)\n\n[Compare\nSource](https://redirect.github.com/rust-lang/cfg-if/compare/v1.0.4...v1.0.5)\n\n- Add a note that this crate is deprecated, suggesting `cfg_select!`\ninstead\n\n</details>\n\n<details>\n<summary>clap-rs/clap (clap_complete)</summary>\n\n###\n[`v4.6.11`](https://redirect.github.com/clap-rs/clap/compare/clap_complete-v4.6.10...clap_complete-v4.6.11)\n\n[Compare\nSource](https://redirect.github.com/clap-rs/clap/compare/clap_complete-v4.6.10...clap_complete-v4.6.11)\n\n</details>\n\n<details>\n<summary>pest-parser/pest (pest)</summary>\n\n###\n[`v2.9.2`](https://redirect.github.com/pest-parser/pest/releases/tag/v2.9.2)\n\n[Compare\nSource](https://redirect.github.com/pest-parser/pest/compare/v2.9.1...v2.9.2)\n\n#### What's Changed\n\n- update to unicode 18 by\n[@&#8203;tomtau](https://redirect.github.com/tomtau) in\n[#&#8203;1202](https://redirect.github.com/pest-parser/pest/pull/1202)\n- Stop Span::lines from yielding a line past the span by\n[@&#8203;MaxFreedomPollard](https://redirect.github.com/MaxFreedomPollard)\nin\n[#&#8203;1201](https://redirect.github.com/pest-parser/pest/pull/1201)\n\n#### New Contributors\n\n-\n[@&#8203;MaxFreedomPollard](https://redirect.github.com/MaxFreedomPollard)\nmade their first contribution in\n[#&#8203;1201](https://redirect.github.com/pest-parser/pest/pull/1201)\n\n**Full Changelog**:\n<https://github.com/pest-parser/pest/compare/v2.9.1...v2.9.2>\n\n#### Warning: Semantic Versioning\n\nNote that the node tag feature in 2.6.0 was a technically\nsemver-breaking change even though it is a backwards-compatible /\nnon-breaking change in the meta-grammar. There may be similar\nnon-breaking changes to the meta-grammar between minor versions in the\nfuture. These non-breaking changes, however, may translate into\nsemver-breaking changes due to the additional variants propagated from\nthe generated `Rule` enum.\n\nThis new feature caused issues in some Cargo version resolution\nsituations where Cargo mixed different versions of pest dependencies.\nFor this reason, these \"grammar non-breaking but semver-breaking\"\nchanges are now available only under the \"grammar-extras\" feature flag.\nIf you would like to use node tags (or other future grammar features),\nyou can do so by enabling this flag on the pest\\_derive crate in your\nCargo.toml:\n\n```\n...\npest_derive = { version = \"2.9\", features = [\"grammar-extras\"] }\n```\n\n</details>\n\n<details>\n<summary>rust-random/rand (rand)</summary>\n\n###\n[`v0.10.3`](https://redirect.github.com/rust-random/rand/blob/HEAD/CHANGELOG.md#0103--2026-09-20)\n\n[Compare\nSource](https://redirect.github.com/rust-random/rand/compare/0.10.2...0.10.3)\n\n##### Fixes\n\n- Fix `WeightedIndex` panic when the sum of float weights is infinite;\nreturn `Error::Overflow` instead ([#&#8203;1808])\n- Fix spurious `Error::NonFinite` from `Uniform::new_inclusive` on large\nfinite float ranges such as `0.0..=f64::MAX` ([#&#8203;1821])\n- Fix possible panic due to sampling a deserialized `Uniform<char>`\n([#&#8203;1831])\n\n##### Changes\n\n- Report exact remaining lengths from `WeightedIndex::weights()` and\nreduce overhead when reading weights ([#&#8203;1838])\n\n[#&#8203;1808]: https://redirect.github.com/rust-random/rand/pull/1808\n\n[#&#8203;1821]: https://redirect.github.com/rust-random/rand/pull/1821\n\n[#&#8203;1831]: https://redirect.github.com/rust-random/rand/pull/1831\n\n[#&#8203;1838]: https://redirect.github.com/rust-random/rand/pull/1838\n\n</details>\n\n---\n\n### Configuration\n\n📅 **Schedule**: (UTC)\n\n- Branch creation\n  - \"before 8am on Monday\"\n- Automerge\n  - At any time (no schedule defined)\n\n🚦 **Automerge**: Disabled by config. Please merge this manually once you\nare satisfied.\n\n♻ **Rebasing**: Whenever PR becomes conflicted, or you tick the\nrebase/retry checkbox.\n\n👻 **Immortal**: This PR will be recreated if closed unmerged. Get\n[config\nhelp](https://redirect.github.com/renovatebot/renovate/discussions) if\nthat's undesired.\n\n---\n\n- [ ] <!-- rebase-check -->If you want to rebase/retry this PR, check\nthis box\n\n---\n\nThis PR was generated by [Mend Renovate](https://mend.io/renovate/).\nView the [repository job\nlog](https://developer.mend.io/github/open-telemetry/otel-arrow).\n\n<!--renovate-debug:eyJjcmVhdGVkSW5WZXIiOiI0NC4xMDMuMCIsInVwZGF0ZWRJblZlciI6IjQ0LjEwMy4wIiwidGFyZ2V0QnJhbmNoIjoibWFpbiIsImxhYmVscyI6WyJkZXBlbmRlbmNpZXMiXX0=-->\n\nCo-authored-by: renovate[bot] <29139614+renovate[bot]@users.noreply.github.com>",
+          "timestamp": "2026-09-21T14:26:10Z",
+          "tree_id": "004418f5bba39d85ef6f3b6b9babd42ce4a25ff2",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/a039072d6b0db66285f4b8ec2ff788f2766a550c"
+        },
+        "date": 1790004854531,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 84.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.97,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.71,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.97,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.68,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 71.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.85,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.54,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.16,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 116.5,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 103.85,
             "unit": "MB"
           }
         ]
