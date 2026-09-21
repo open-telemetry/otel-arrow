@@ -210,7 +210,9 @@ participate!
 
 - [Contribution guidelines](CONTRIBUTING.md)
 - [Meeting notes](https://docs.google.com/document/d/1z8_Ra-ALDaYNa88mMj1gOZtOpLZLRk0-dZEmDjPmcUs)
-- [CNCF Slack `#otel-arrow`](https://cloud-native.slack.com/archives/C07S4Q67LTF)
+- [CNCF Slack `#otel-arrow`](https://cloud-native.slack.com/archives/C07S4Q67LTF) —
+  if you are not already in the CNCF Slack workspace,
+  [create an account](https://slack.cncf.io/) first
 
 ### Maintainers
 
