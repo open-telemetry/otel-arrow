@@ -1,6 +1,6 @@
 # OpenTelemetry Protocol with Apache Arrow
 
-[![Slack](https://img.shields.io/badge/slack-@cncf/otel/arrow-brightgreen.svg?logo=slack)](https://cloud-native.slack.com/archives/C07S4Q67LTF)
+[![Slack](https://img.shields.io/badge/slack-@cncf/otel/arrow-brightgreen.svg?logo=slack)](#contributing)
 [![Go-CI](https://github.com/open-telemetry/otel-arrow/actions/workflows/go-ci.yml/badge.svg)](https://github.com/open-telemetry/otel-arrow/actions/workflows/go-ci.yml)
 [![Rust-CI](https://github.com/open-telemetry/otel-arrow/actions/workflows/rust-ci.yml/badge.svg)](https://github.com/open-telemetry/otel-arrow/actions/workflows/rust-ci.yml)
 [![OpenSSF Scorecard for otel-arrow](https://api.scorecard.dev/projects/github.com/open-telemetry/otel-arrow/badge)](https://scorecard.dev/viewer/?uri=github.com/open-telemetry/otel-arrow)
@@ -210,9 +210,8 @@ participate!
 
 - [Contribution guidelines](CONTRIBUTING.md)
 - [Meeting notes](https://docs.google.com/document/d/1z8_Ra-ALDaYNa88mMj1gOZtOpLZLRk0-dZEmDjPmcUs)
-- CNCF Slack:
-  [`#otel-arrow`](https://cloud-native.slack.com/archives/C07S4Q67LTF).
-  New users can [create an account](https://slack.cncf.io/).
+- New to CNCF Slack? [Create an account](https://slack.cncf.io/) first,
+  then join [`#otel-arrow`](https://cloud-native.slack.com/archives/C07S4Q67LTF).
 
 ### Maintainers
 
