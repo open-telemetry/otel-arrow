@@ -906,8 +906,9 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
 
     /// Cleans up internal tracking state for segments before the given sequence.
     ///
-    /// Call this after deleting segment files to free memory tracking completed
-    /// segments. This calls `remove_completed_segments_before` on each subscriber.
+    /// Use only a prefix known to be complete across subscribers. Physical
+    /// deletion may still be deferred: the completion watermark prevents
+    /// already-resolved data from being replayed if its file survives restart.
     pub fn cleanup_segments_before(&self, before: SegmentSeq) {
         let subscribers = self.subscribers.read();
         for state_lock in subscribers.values() {

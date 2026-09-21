@@ -327,10 +327,13 @@ Field descriptions:
   batched via the `maintain()` API. The embedding layer calls `maintain()`
   periodically (e.g., every 25-100ms) to flush dirty progress files and
   clean up completed segments.
-- **Compact representation**: Completed entries can be removed after their
-  durable watermark has been flushed and the corresponding segment cleanup has
-  completed. Out-of-order retention keeps explicit completed entries while
-  physical deletion is deferred; successful retries release that tracking.
+- **Compact representation**: A verified completed prefix can be compacted into
+  a completed-through watermark, persisted by the next progress flush. This
+  records logical completion, not successful physical deletion: surviving
+  acknowledged files must still be skipped after restart. In contrast,
+  out-of-order retention cannot advance the watermark across gaps and keeps
+  explicit completed entries while physical deletion is deferred; successful
+  retries release that tracking.
   Abandoning a deletion does not prove that the file is gone.
 
 ##### Recovery Semantics

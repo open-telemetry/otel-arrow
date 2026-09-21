@@ -1591,7 +1591,8 @@ impl QuiverEngine {
             }
         }
 
-        // Clean up registry internal state for deleted segments
+        // Compact the logically completed prefix even if physical deletion was
+        // deferred. Its watermark must still prevent replay of resolved data.
         self.registry.cleanup_segments_before(delete_boundary);
 
         Ok(deleted)
@@ -5932,6 +5933,79 @@ mod tests {
             "new segment sequence must be above persisted subscriber progress"
         );
         handle.ack();
+    }
+
+    /// Scenario: A fully acknowledged segment cannot be deleted, and progress is flushed before restart.
+    /// Guarantees: Cleanup waits for all subscribers; surviving completed files are not replayed, while later pending data is delivered.
+    #[tokio::test]
+    async fn deferred_completed_cleanup_preserves_completion_across_restart() {
+        use crate::segment_store::SegmentReadMode;
+
+        let dir = tempdir().unwrap();
+        let config = QuiverConfig::builder()
+            .data_dir(dir.path())
+            .durability(DurabilityMode::SegmentOnly)
+            .read_mode(SegmentReadMode::Standard)
+            .build()
+            .unwrap();
+        let engine = QuiverEngine::open(config.clone(), test_budget())
+            .await
+            .unwrap();
+        let ids = [
+            SubscriberId::new("completed-first").unwrap(),
+            SubscriberId::new("completed-second").unwrap(),
+        ];
+        for id in &ids {
+            engine.register_subscriber(id.clone()).unwrap();
+            engine.activate_subscriber(id).await.unwrap();
+        }
+        engine.ingest(&DummyBundle::with_rows(1)).await.unwrap();
+        engine.flush().await.unwrap();
+        let completed = engine.segment_store().segment_sequences()[0];
+
+        engine.poll_next_bundle(&ids[0]).unwrap().unwrap().ack();
+        assert_eq!(engine.cleanup_completed_segments().unwrap(), 0);
+        let handle = engine.poll_next_bundle(&ids[1]).unwrap().unwrap();
+        assert_eq!(handle.bundle_ref().segment_seq, completed);
+        handle.ack();
+
+        // Force unlink failure without relying on platform permissions or open-file behavior.
+        let path = engine.segment_path(completed);
+        let backup = path.with_extension("held");
+        fs::rename(&path, &backup).unwrap();
+        fs::create_dir(&path).unwrap();
+        let _ = engine.cleanup_completed_segments().unwrap();
+        assert_eq!(engine.segment_store().pending_delete_count(), 1);
+        for id in &ids {
+            assert!(
+                engine
+                    .registry()
+                    .pending_segment_progress(id)
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+        assert_eq!(engine.flush_progress().await.unwrap(), 2);
+        fs::remove_dir(&path).unwrap();
+        fs::rename(&backup, &path).unwrap();
+        assert!(path.is_file());
+
+        // Leave later data unacknowledged and absent from the persisted snapshot.
+        engine.ingest(&DummyBundle::with_rows(1)).await.unwrap();
+        engine.flush().await.unwrap();
+        let pending = engine.segment_store().segment_sequences()[0];
+        assert!(pending > completed);
+        drop(engine);
+
+        let engine = QuiverEngine::open(config, test_budget()).await.unwrap();
+        assert!(path.is_file(), "the completed file survived restart");
+        for id in &ids {
+            engine.activate_subscriber(id).await.unwrap();
+            let handle = engine.poll_next_bundle(id).unwrap().unwrap();
+            assert_eq!(handle.bundle_ref().segment_seq, pending);
+            handle.ack();
+            assert!(engine.poll_next_bundle(id).unwrap().is_none());
+        }
     }
 
     /// Scenario: Subscriber progress contains the maximum representable segment sequence.

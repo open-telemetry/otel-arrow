@@ -418,7 +418,9 @@ impl SubscriberState {
     /// Removes completed segments older than the given sequence.
     ///
     /// Called during segment cleanup to free memory for segments that all
-    /// subscribers have completed.
+    /// subscribers have completed. `before` must be a verified completion
+    /// boundary, not an arbitrary deletion cutoff. The watermark preserves
+    /// logical completion even when physical deletion is deferred.
     pub fn remove_completed_segments_before(&mut self, before: SegmentSeq) {
         self.segments
             .retain(|seq, progress| *seq >= before || !progress.is_complete());
