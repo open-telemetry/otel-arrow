@@ -173,23 +173,36 @@ impl OtelDataflowSpec {
                     ),
                 });
             }
+            let mut group_context_entries = BTreeMap::new();
+            for (path, policies) in [
+                ("policies".to_owned(), Some(&self.policies)),
+                (
+                    format!("groups.{pipeline_group_id}.policies"),
+                    pipeline_group.policies.as_ref(),
+                ),
+            ] {
+                let Some(context) = policies.and_then(|policies| policies.context.as_ref()) else {
+                    continue;
+                };
+                for name in context.entries.keys() {
+                    if let Some(previous_path) =
+                        group_context_entries.insert(name.clone(), path.clone())
+                    {
+                        errors.push(Error::InvalidUserConfig {
+                            error: format!(
+                                "{path}.context.entries.{name} conflicts with visible declaration {previous_path}.context.entries.{name}; context entries cannot shadow one another"
+                            ),
+                        });
+                    }
+                }
+            }
             for (pipeline_id, pipeline) in &pipeline_group.pipelines {
-                let mut visible_context_entries = BTreeMap::new();
-                for (path, policies) in [
-                    ("policies".to_owned(), Some(&self.policies)),
-                    (
-                        format!("groups.{pipeline_group_id}.policies"),
-                        pipeline_group.policies.as_ref(),
-                    ),
-                    (
-                        format!("groups.{pipeline_group_id}.pipelines.{pipeline_id}.policies"),
-                        pipeline.policies(),
-                    ),
-                ] {
-                    let Some(context) = policies.and_then(|policies| policies.context.as_ref())
-                    else {
-                        continue;
-                    };
+                let mut visible_context_entries = group_context_entries.clone();
+                let path = format!("groups.{pipeline_group_id}.pipelines.{pipeline_id}.policies");
+                if let Some(context) = pipeline
+                    .policies()
+                    .and_then(|policies| policies.context.as_ref())
+                {
                     for name in context.entries.keys() {
                         if let Some(previous_path) =
                             visible_context_entries.insert(name.clone(), path.clone())
@@ -201,13 +214,6 @@ impl OtelDataflowSpec {
                             });
                         }
                     }
-                }
-                if !visible_context_entries.is_empty() {
-                    errors.push(Error::InvalidUserConfig {
-                        error: format!(
-                            "groups.{pipeline_group_id}.pipelines.{pipeline_id} resolves policies.context.entries, but context entries are declaration-only and cannot be used by runtime pipelines yet"
-                        ),
-                    });
                 }
                 if pipeline
                     .policies()

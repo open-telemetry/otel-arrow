@@ -39,20 +39,6 @@ used in the implementation of context entries. This design includes
 the outline of a technical approach that encodes the set of context
 entries in a compact byte array including an index for fast lookup.
 
-The initial implementation accepts declarative grouping entries under
-`policies.context.entries`. A grouping entry is an ordered list of
-`transport_header` and `authorized_identity` value members plus optional
-`transport_header_match` conditions. The required `entry` property uses exact
-`name` or `scope:name` syntax. Value members can set an optional `name`
-within the grouping entry, and repeated-value matches require an explicit
-`any` or `all` quantifier.
-
-This initial configuration surface does not construct, capture, propagate, or
-consume grouping entries at runtime. Runtime compilation will enforce the
-atomic presence contract: every value member must be present and every
-condition must match, or the grouping entry and all its qualified members are
-undefined.
-
 ## User stories
 
 The term "tenant" is used in these stories to describe use-cases for
@@ -183,10 +169,9 @@ policies:
       store_as: customer_id            # Claim into context entry
 ```
 
-Context entries can be defined at the engine, pipeline group, or individual
-pipeline level. A context entry name cannot be shadowed by another declaration
-visible to the same pipeline. Sibling groups may reuse a name because their
-declarations are never jointly visible.
+Context entries can be defined at the pipeline group or the engine
+level. Pipeline group context entry names should not conflict with
+engine-level context entry names.
 
 Context entries are strongly typed and type-preserving. Entries that
 are defined as authorized identity fields cannot be converted to or
@@ -223,9 +208,9 @@ policies:
       # A product user consists of two context entries.
       product_user:                      # Composite name
         - type: authorized_identity      # Authorization claim
-          entry: customer_id             # Claim entry reference
+          name: customer_id              # Claim entry name
         - type: transport_header         # Transport header
-          entry: workspace_id            # Header entry reference
+          name: workspace_id             # Header entry name
 ```
 
 The composite entry defined above might be useful to in a batch
@@ -246,7 +231,7 @@ policies:
       product_user:                      # Composite name
           ...                            # Two entries as above
         - type: transport_header_match   # Condition
-          entry: xyz_environment         # Header entry reference
+          name: xyz_environment          # Header entry name
           value: production              # Match value
 ```
 
@@ -313,12 +298,12 @@ policies:
       # A product user consists of two context entries.
       product_user:                      # Composite name
         - type: authorized_identity      # Authorization claim
-          entry: customer_id             # Claim entry reference
+          name: customer_id              # Claim entry name
         - type: transport_header         # Transport header
-          entry: workspace_id            # Header entry reference
+          name: workspace_id             # Header entry name
       produce_account:                   # Name of entry
         - type: authorized_identity      # Authorization claim
-          entry: customer_id             # Claim entry reference
+          name: customer_id              # Claim entry name
 groups:
   default:
     pipelines:
@@ -480,10 +465,7 @@ fn create_otlp_receiver(
 }
 
 impl OtlpReceiver {
-    fn accept(
-        &mut self,
-        request: Request<ExportRequest>,
-    ) -> Result<OtapPdata, Error> {
+    fn accept(&mut self, request: Request<ExportRequest>) -> Result<OtapPdata, Error> {
         let identity = request.auth_extension.authorize(request)?;
         let context = self.context_binding.from_arrival(PdataArrival {
             peer_addr: request.remote_addr(),
@@ -552,19 +534,12 @@ pub trait PdataContextSink {
 /// Adapter implemented by an HTTP or gRPC request builder.
 pub trait ContextOutput {
     /// Sets an individual context entry with its typed value reference.
-    fn set(
-        &mut self,
-        name: &str,
-        value: ContextValueRef<'_>,
-    ) -> Result<(), ContextError>;
+    fn set(&mut self, name: &str, value: ContextValueRef<'_>) -> Result<(), ContextError>;
 }
 
 impl OtlpExporter {
     /// Encodes a request and injects the context into HTTP headers.
-    fn encode(
-        &mut self,
-        pdata: OtapPdata,
-    ) -> Result<Request<ExportRequest>, Error> {
+    fn encode(&mut self, pdata: OtapPdata) -> Result<Request<ExportRequest>, Error> {
         let mut request = Request::new(encode(pdata.payload())?);
         self.context.write_to(
             pdata.context(),

@@ -11,15 +11,16 @@ use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
-/// User-defined grouping context entries.
+/// User-defined composite context entries.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ContextPolicy {
-    /// Named grouping entries.
+    /// Named entries.
     #[serde(default, deserialize_with = "deserialize_context_entries")]
     pub entries: BTreeMap<ContextEntryName, ContextEntryDefinition>,
 }
 
+/// This ensures the names in the configuration are distinct.
 fn deserialize_context_entries<'de, D>(
     deserializer: D,
 ) -> Result<BTreeMap<ContextEntryName, ContextEntryDefinition>, D::Error>
@@ -69,7 +70,7 @@ impl ContextPolicy {
     }
 }
 
-/// An ordered grouping entry definition.
+/// Composite entry definition.
 #[derive(
     Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
 )]
@@ -109,36 +110,36 @@ impl ContextEntryDefinition {
     }
 }
 
-/// One value-bearing member or conjunctive presence condition.
+/// One value-bearing grouping member.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ContextEntryPart {
     /// Includes values from a transport-header entry.
     TransportHeader {
         /// Exact source context entry reference.
-        entry: ContextEntryRef,
+        name: ContextEntryRef,
         /// Optional member name within the composite entry.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        r#as: Option<ContextEntryName>,
+        store_as: Option<ContextEntryName>,
     },
     /// Includes values from a verified authorized-identity entry.
     AuthorizedIdentity {
         /// Exact source context entry reference.
-        entry: ContextEntryRef,
+        name: ContextEntryRef,
         /// Optional member name within the composite entry.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        r#as: Option<ContextEntryName>,
+        store_as: Option<ContextEntryName>,
     },
 }
 
 impl ContextEntryPart {
     fn entry_ref_and_name(&self) -> (&'_ ContextEntryRef, &'_ ContextEntryName) {
-        let (entry, r#as) = match self {
-            Self::TransportHeader { entry, r#as } => (entry, r#as.as_ref()),
-            Self::AuthorizedIdentity { entry, r#as } => (entry, r#as.as_ref()),
+        let (name, store_as) = match self {
+            Self::TransportHeader { name, store_as } => (name, store_as.as_ref()),
+            Self::AuthorizedIdentity { name, store_as } => (name, store_as.as_ref()),
         };
-        let name = r#as.unwrap_or_else(|| entry.name());
-        (entry, name)
+        let output_name = store_as.unwrap_or_else(|| name.name());
+        (name, output_name)
     }
 }
 
@@ -163,10 +164,10 @@ impl JsonSchema for ContextEntryPart {
                         "authorized_identity"
                     ]
                 },
-                "entry": generator.subschema_for::<ContextEntryRef>(),
-                "as": generator.subschema_for::<ContextEntryName>()
+                "name": generator.subschema_for::<ContextEntryRef>(),
+                "store_as": generator.subschema_for::<ContextEntryName>()
             },
-            "required": ["type", "entry"],
+            "required": ["type", "name"],
             "additionalProperties": false
         })
     }
@@ -207,10 +208,10 @@ mod tests {
 entries:
   product_user:
     - type: authorized_identity
-      entry: customer
-      as: customer_id
+      name: customer
+      store_as: customer_id
     - type: transport_header
-      entry: captured:workspace
+      name: captured:workspace
 "#,
         )
         .expect("valid context policy");
@@ -220,14 +221,15 @@ entries:
         assert!(matches!(
             &parts[0],
             ContextEntryPart::AuthorizedIdentity {
-                r#as: Some(alias), ..
+                store_as: Some(alias),
+                ..
             } if alias.as_str() == "customer_id"
         ));
         assert!(matches!(
             &parts[1],
-            ContextEntryPart::TransportHeader { entry, .. }
-                if entry.scope().map(ContextEntryName::as_str) == Some("captured")
-                    && entry.name().as_str() == "workspace"
+            ContextEntryPart::TransportHeader { name, .. }
+                if name.scope().map(ContextEntryName::as_str) == Some("captured")
+                    && name.name().as_str() == "workspace"
         ));
     }
 
@@ -239,9 +241,9 @@ entries:
             r#"
 entries:
   tenant:
-    - {type: transport_header, entry: first}
+    - {type: transport_header, name: first}
   tenant:
-    - {type: transport_header, entry: second}
+    - {type: transport_header, name: second}
 "#,
         )
         .expect_err("duplicate map key must fail");
@@ -267,8 +269,8 @@ entries:
     #[test]
     fn rejects_duplicate_output_member_names() {
         for yaml in [
-            "entries: {tenant: [{type: transport_header, entry: first:id}, {type: authorized_identity, entry: second:id}]}",
-            "entries: {tenant: [{type: transport_header, entry: first, as: id}, {type: authorized_identity, entry: second, as: id}]}",
+            "entries: {tenant: [{type: transport_header, name: first:id}, {type: authorized_identity, name: second:id}]}",
+            "entries: {tenant: [{type: transport_header, name: first, store_as: id}, {type: authorized_identity, name: second, store_as: id}]}",
         ] {
             let policy = serde_yaml::from_str::<ContextPolicy>(yaml).expect("valid syntax");
             assert!(!policy.validation_errors("context").is_empty(), "{yaml}");
@@ -279,7 +281,7 @@ entries:
     /// Guarantees: one source value cannot create redundant grouping dimensions.
     #[test]
     fn rejects_duplicate_value_references() {
-        let yaml = "entries: {tenant: [{type: transport_header, entry: id, as: first}, {type: transport_header, entry: id, as: second}]}";
+        let yaml = "entries: {tenant: [{type: transport_header, name: id, store_as: first}, {type: transport_header, name: id, store_as: second}]}";
         let policy = serde_yaml::from_str::<ContextPolicy>(yaml).expect("valid syntax");
 
         assert!(!policy.validation_errors("context").is_empty());
@@ -290,9 +292,9 @@ entries:
     #[test]
     fn rejects_unsupported_variants_and_fields() {
         for yaml in [
-            "entries: {tenant: [{type: transport_header, entry: id, value: prod}]}",
-            "entries: {tenant: [{type: transport_header, entry: id, name: alias}]}",
-            "entries: {tenant: [{type: unsupported, entry: id}]}",
+            "entries: {tenant: [{type: transport_header, name: id, value: prod}]}",
+            "entries: {tenant: [{type: transport_header, name: id, alias: other}]}",
+            "entries: {tenant: [{type: unsupported, name: id}]}",
             "entries: {tenant: [{type: transport_header, ctx_ref: id}]}",
         ] {
             assert!(
@@ -308,7 +310,7 @@ entries:
     fn rejects_qualified_top_level_names() {
         assert!(
             serde_yaml::from_str::<ContextPolicy>(
-                "entries: {'product_user:customer_id': [{type: transport_header, entry: id}]}"
+                "entries: {'product_user:customer_id': [{type: transport_header, name: id}]}"
             )
             .is_err()
         );
@@ -325,11 +327,10 @@ entries:
         for variant in ["transport_header", "authorized_identity"] {
             assert!(rendered.contains(variant));
         }
-        assert_eq!(schema["required"], serde_json::json!(["type", "entry"]));
-        assert!(schema["properties"].get("entry").is_some());
+        assert_eq!(schema["required"], serde_json::json!(["type", "name"]));
+        assert!(schema["properties"].get("name").is_some());
         assert!(schema["properties"].get("ctx_ref").is_none());
-        assert!(schema["properties"].get("as").is_some());
-        assert!(schema["properties"].get("name").is_none());
+        assert!(schema["properties"].get("store_as").is_some());
         assert!(rendered.contains("additionalProperties"));
     }
 }

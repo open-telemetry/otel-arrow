@@ -3081,21 +3081,21 @@ version: otel_dataflow/v1
 policies:
   context:
     entries:
-      z_engine: [{type: transport_header, entry: z}]
-      a_engine: [{type: transport_header, entry: a}]
+      z_engine: [{type: transport_header, name: z}]
+      a_engine: [{type: transport_header, name: a}]
 engine: {}
 groups:
   default:
     policies:
       context:
         entries:
-          group_entry: [{type: authorized_identity, entry: customer_id}]
+          group_entry: [{type: authorized_identity, name: customer_id}]
     pipelines:
       main:
         policies:
           context:
             entries:
-              pipeline_entry: [{type: transport_header, entry: request_id}]
+              pipeline_entry: [{type: transport_header, name: request_id}]
         nodes:
           receiver:
             type: "urn:test:receiver:example"
@@ -3161,13 +3161,13 @@ groups:
     policies:
       context:
         entries:
-          tenant: [{type: transport_header, entry: first_tenant}]
+          tenant: [{type: transport_header, name: first_tenant}]
     pipelines: {}
   second:
     policies:
       context:
         entries:
-          tenant: [{type: transport_header, entry: second_tenant}]
+          tenant: [{type: transport_header, name: second_tenant}]
     pipelines: {}
 "#;
 
@@ -3184,14 +3184,14 @@ version: otel_dataflow/v1
 policies:
   context:
     entries:
-      tenant: [{type: transport_header, entry: engine_tenant}]
+      tenant: [{type: transport_header, name: engine_tenant}]
 engine: {}
 groups:
   default:
     policies:
       context:
         entries:
-          tenant: [{type: transport_header, entry: group_tenant}]
+          tenant: [{type: transport_header, name: group_tenant}]
     pipelines:
       main:
         nodes:
@@ -3221,6 +3221,36 @@ groups:
         );
     }
 
+    /// Scenario: a pipeline group without pipelines shadows an engine context entry.
+    /// Guarantees: group-scope validation rejects shadowing independently of pipeline count.
+    #[test]
+    fn rejects_context_entry_shadowing_in_empty_group() {
+        let yaml = r#"
+version: otel_dataflow/v1
+policies:
+  context:
+    entries:
+      tenant: [{type: transport_header, name: engine_tenant}]
+engine: {}
+groups:
+  default:
+    policies:
+      context:
+        entries:
+          tenant: [{type: transport_header, name: group_tenant}]
+    pipelines: {}
+"#;
+
+        let error = OtelDataflowSpec::from_yaml(yaml).expect_err("shadowing must fail");
+
+        assert!(error.to_string().contains("cannot shadow one another"));
+        assert!(
+            error
+                .to_string()
+                .contains("groups.default.policies.context.entries.tenant")
+        );
+    }
+
     /// Scenario: an effective context declaration moves from engine to group scope.
     /// Guarantees: exact and resource-ignoring runtime comparisons observe the scope change.
     #[test]
@@ -3230,7 +3260,7 @@ version: otel_dataflow/v1
 policies:
   context:
     entries:
-      tenant: [{type: transport_header, entry: tenant_id}]
+      tenant: [{type: transport_header, name: tenant_id}]
 engine: {}
 groups:
   default:
@@ -3242,8 +3272,8 @@ groups:
         connections: [{from: receiver, to: exporter}]
 "#;
         let group_yaml = engine_yaml.replacen(
-            "policies:\n  context:\n    entries:\n      tenant: [{type: transport_header, entry: tenant_id}]\nengine: {}\ngroups:\n  default:",
-            "engine: {}\ngroups:\n  default:\n    policies:\n      context:\n        entries:\n          tenant: [{type: transport_header, entry: tenant_id}]",
+            "policies:\n  context:\n    entries:\n      tenant: [{type: transport_header, name: tenant_id}]\nengine: {}\ngroups:\n  default:",
+            "engine: {}\ngroups:\n  default:\n    policies:\n      context:\n        entries:\n          tenant: [{type: transport_header, name: tenant_id}]",
             1,
         );
 
@@ -3266,16 +3296,16 @@ groups:
         assert!(!engine.runtime_shape_matches_ignoring_resources(&group));
     }
 
-    /// Scenario: a regular pipeline resolves a declared context entry.
-    /// Guarantees: validation rejects declaration-only context policy until runtime support exists.
+    /// Scenario: a regular pipeline resolves a declared context entry with no runtime consumer.
+    /// Guarantees: declaration-only context policy is retained without invalidating the pipeline.
     #[test]
-    fn rejects_context_entries_in_runtime_pipelines() {
+    fn accepts_unused_context_entries_in_runtime_pipelines() {
         let yaml = r#"
 version: otel_dataflow/v1
 policies:
   context:
     entries:
-      tenant: [{type: transport_header, entry: tenant_id}]
+      tenant: [{type: transport_header, name: tenant_id}]
 engine: {}
 groups:
   default:
@@ -3287,15 +3317,16 @@ groups:
         connections: [{from: receiver, to: exporter}]
 "#;
 
-        let error =
-            OtelDataflowSpec::from_yaml(yaml).expect_err("runtime context must be rejected");
+        let config = OtelDataflowSpec::from_yaml(yaml).expect("unused declarations remain valid");
+        let regular = config
+            .resolve()
+            .pipelines
+            .into_iter()
+            .find(|pipeline| pipeline.role == ResolvedPipelineRole::Regular)
+            .expect("regular pipeline is resolved");
 
-        assert!(
-            error
-                .to_string()
-                .contains("context entries are declaration-only")
-        );
-        assert!(error.to_string().contains("groups.default.pipelines.main"));
+        assert_eq!(regular.policies.context.len(), 1);
+        assert_eq!(regular.policies.context[0].name.as_str(), "tenant");
     }
 
     /// Scenario: context declarations are configured on the internal observability pipeline.
@@ -3310,7 +3341,7 @@ engine:
       policies:
         context:
           entries:
-            tenant: [{type: transport_header, entry: tenant_id}]
+            tenant: [{type: transport_header, name: tenant_id}]
 groups: {}
 "#;
 

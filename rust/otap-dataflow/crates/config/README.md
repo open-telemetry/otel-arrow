@@ -322,7 +322,7 @@ Topic declaration precedence (for a pipeline in a given group):
   `policies.broadcast.ack_mode`
 - Ack/Nack tracking limits remain topic-scope only via
   `policies.ack_propagation`
-  
+
 ## Context Entries
 
 Context entries are stored with original source-type information to
@@ -336,7 +336,7 @@ context entry (of type `authorized_identity`).
 
 Composite context entries are supported through a dedicated
 `policies.context` area listing multi-field context entries that
-support multiple dimensions with associated conditions. For example:
+support multiple dimensions. For example:
 
 ```yaml
 policies:
@@ -344,18 +344,16 @@ policies:
     entries:
       product_user:                      # Composite name
         - type: authorized_identity      # Authorization claim
-          entry: customer_id             # Claim entry reference
+          name: customer_id              # Stored name
         - type: transport_header         # Transport header
-          entry: workspace_id            # Header entry reference
-          as: prod_work_id               # Change of name
+          name: workspace_id             # Stored name of header
+          store_as: othername_id         # (option) Entry name
 ```
 
 > [!NOTE]
-> Context entries are defined in engine configuration but are not
-> currently implemented; validation will fail if context entries are
-> defined until composite-entry features are available; there are no
-> conditional elements supported in context entry configuration at
-> this time.
+> Context entry declarations are retained in resolved configuration but do not
+> currently construct, capture, propagate, or consume grouping entries at
+> runtime. Conditional elements and runtime support will be added separately.
 
 ## Engine Observability Pipeline
 
