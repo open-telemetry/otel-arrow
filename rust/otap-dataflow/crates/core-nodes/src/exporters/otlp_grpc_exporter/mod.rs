@@ -158,7 +158,7 @@ fn validate_config(config: &serde_json::Value) -> Result<(), otel_arrow_dfe_conf
 
 impl OTLPExporter {
     /// create a new instance of the `[OTLPExporter]` from json config value
-    pub fn from_config(
+    pub(crate) fn from_config(
         pipeline_ctx: PipelineContext,
         config: &serde_json::Value,
         capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities,

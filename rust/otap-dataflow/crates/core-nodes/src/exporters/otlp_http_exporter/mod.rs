@@ -151,7 +151,7 @@ fn factory_create(
 
 impl OtlpHttpExporter {
     /// create a new instance of the `[OtlpHttpExporter]` from json config value
-    pub fn from_config(
+    pub(crate) fn from_config(
         pipeline_ctx: PipelineContext,
         config: &serde_json::Value,
         capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities,
