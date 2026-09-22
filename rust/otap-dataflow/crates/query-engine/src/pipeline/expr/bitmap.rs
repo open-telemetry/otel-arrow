@@ -392,7 +392,7 @@ fn insert_slice_into_id_bitmap(
             }
             DataType::UInt16 => {
                 let dict_arr = parent_id_col
-                    .as_dictionary::<UInt8Type>()
+                    .as_dictionary::<UInt16Type>()
                     .slice(start, end - start);
                 if let Some(typed_dict) = dict_arr.downcast_dict::<UInt32Array>() {
                     typed_dict

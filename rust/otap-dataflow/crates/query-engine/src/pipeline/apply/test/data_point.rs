@@ -1539,6 +1539,93 @@ async fn test_assign_to_data_point_attributes_requiring_bitmap_join_attrs() {
     .await;
 }
 
+/// Scenario: filter metric data points by attribute predicates when the data point attributes
+/// batch has more than 256 distinct parent_ids, forcing the parent_id column to use
+/// Dict<UInt16, UInt32> dictionary encoding instead of the default Dict<UInt8, UInt32>
+/// Guarantees: the bitmap join correctly handles Dict<UInt16, UInt32> parent_id columns
+#[tokio::test]
+async fn test_filter_data_point_by_attribute_with_dict_u16_parent_ids() {
+    let query = "metrics | apply data_points {
+        where attributes[\"x\"] == 999 and attributes[\"z\"] == 999
+    }";
+
+    let pipeline_expr = OplParser::parse_with_options(query, default_parser_options())
+        .unwrap()
+        .pipeline;
+    let mut pipeline = Pipeline::new(pipeline_expr);
+
+    // Create 300 data points, each with unique attribute values. This exceeds the 256
+    // distinct value threshold for Dict<UInt8> keys, forcing the encoder to upgrade the
+    // parent_id column in the dp attributes batch to Dict<UInt16, UInt32>.
+    let num_data_points = 300;
+    let matching_index = 150;
+
+    let data_points: Vec<NumberDataPoint> = (0..num_data_points)
+        .map(|i| {
+            let x_val = if i == matching_index { 999 } else { i };
+            let z_val = if i == matching_index { 999 } else { i + 1000 };
+            NumberDataPoint::build()
+                .flags(i as u32)
+                .attributes(vec![
+                    KeyValue::new("x", AnyValue::new_int(x_val as i64)),
+                    KeyValue::new("z", AnyValue::new_int(z_val as i64)),
+                ])
+                .finish()
+        })
+        .collect();
+
+    let metrics = vec![
+        Metric::build()
+            .name("gauge_metric")
+            .data_gauge(Gauge { data_points })
+            .finish(),
+    ];
+
+    let input_batch = otlp_to_otap(&OtlpProtoMessage::Metrics(to_metrics_data(metrics)));
+
+    // verify that the dp attrs parent_id column is indeed Dict<UInt16, _> encoded
+    let dp_attrs = input_batch
+        .get(ArrowPayloadType::NumberDpAttrs)
+        .expect("dp attrs should be present");
+    let parent_id_col = dp_attrs
+        .column_by_name("parent_id")
+        .expect("parent_id column should be present");
+    assert!(
+        matches!(
+            parent_id_col.data_type(),
+            arrow::datatypes::DataType::Dictionary(k, _) if k.as_ref() == &arrow::datatypes::DataType::UInt16
+        ),
+        "expected Dict<UInt16, _> parent_id but got {:?}",
+        parent_id_col.data_type()
+    );
+
+    let result = pipeline.execute(input_batch).await.unwrap();
+
+    let OtlpProtoMessage::Metrics(metrics_result) = otap_to_otlp(&result) else {
+        panic!("invalid signal type")
+    };
+
+    // only one data point should survive: the one at matching_index
+    let expected = to_metrics_data(vec![
+        Metric::build()
+            .name("gauge_metric")
+            .data_gauge(Gauge {
+                data_points: vec![
+                    NumberDataPoint::build()
+                        .flags(matching_index as u32)
+                        .attributes(vec![
+                            KeyValue::new("x", AnyValue::new_int(999)),
+                            KeyValue::new("z", AnyValue::new_int(999)),
+                        ])
+                        .finish(),
+                ],
+            })
+            .finish(),
+    ]);
+
+    assert_metrics_eq(metrics_result, expected);
+}
+
 /// Scenario: try to execute some queries that have valid syntax, but define operations that are
 /// not supported by this query engine (although most will be supported in future)
 /// Guarantees: that the operation returns an expected error instead of inadvertently evaluating
