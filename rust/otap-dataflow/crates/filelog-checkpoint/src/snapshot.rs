@@ -307,6 +307,17 @@ fn validate_uniqueness(records: &[SnapshotRecord]) -> Result<(), EncodeError> {
 }
 
 /// Encodes a complete version 1 snapshot artifact.
+///
+/// Callers must keep `records.len()` within the `max_records` limit they pass
+/// to [`decode_snapshot`] during recovery; this encoder does not enforce that
+/// configured limit. Lowering it below the stored count must fail startup
+/// closed, without truncating or resetting checkpoint state. Restoring a
+/// sufficient limit allows an otherwise valid snapshot to be decoded unchanged.
+///
+/// Decoding does not guarantee re-encodability: a quarantined record with
+/// reserved reason code `4` decodes but returns [`EncodeError::ReservedReasonCode`]
+/// here. Recovery must reject that state before replay or compaction; this
+/// encoder neither passes it through nor repairs it.
 pub fn encode_snapshot(
     generation: u64,
     checkpoint_id: &str,

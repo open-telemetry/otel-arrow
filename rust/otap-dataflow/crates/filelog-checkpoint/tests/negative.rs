@@ -7,9 +7,9 @@ use otel_arrow_dfe_filelog_checkpoint::{
     AdvisoryPath, CommittedFrontierGuard, CommittedFrontierWindow, DecodeError, EncodeError,
     FRAMING_PROFILE_VERSION, FileId, FramingResume, LifecycleState, Locator, Operation,
     QuarantineEvidence, SNAPSHOT_FOOTER_BYTES, SNAPSHOT_HEADER_BYTES, SnapshotRecord,
-    TX_MIN_BODY_BYTES, Transaction, TransactionScan, WAL_MAX_OPS_PER_TX, crc32c, decode_current,
-    decode_operation, decode_snapshot, decode_wal_header, encode_operation, encode_snapshot,
-    encode_transaction, namespace_digest, scan_next_transaction,
+    TX_HEADER_BYTES, TX_MIN_BODY_BYTES, Transaction, TransactionScan, WAL_MAX_OPS_PER_TX, crc32c,
+    decode_current, decode_operation, decode_snapshot, decode_wal_header, encode_operation,
+    encode_snapshot, encode_transaction, namespace_digest, scan_next_transaction,
 };
 
 const CURRENT: &[u8] = include_bytes!("fixtures/current-generation-42.bin");
@@ -39,7 +39,7 @@ fn scan_all_for_test(bytes: &[u8]) -> Result<TestScanResult, DecodeError> {
                 suffix = &suffix[consumed..];
                 expected_sequence += 1;
             }
-            TransactionScan::Incomplete { bytes } => {
+            TransactionScan::Incomplete { bytes, .. } => {
                 incomplete_bytes = bytes;
                 break;
             }
@@ -314,6 +314,32 @@ fn snapshot_record_count_is_checked_before_record_allocation_and_decode() {
             max: 0,
         })
     );
+}
+
+/// Scenario: Recovery lowers a two-record snapshot's limit to one, then restores it.
+/// Guarantees: The lower limit rejects the snapshot; restoring it recovers all
+/// records from the unchanged encoded bytes.
+#[test]
+fn snapshot_recovers_after_record_limit_is_restored() {
+    let namespace = namespace_digest("app-logs").unwrap();
+    let mut snapshot = decode_snapshot(ACTIVE_SNAPSHOT, &namespace, 7, 2).unwrap();
+    let mut second = snapshot.records[0].clone();
+    second.file_id = FileId::from_bytes(2u128.to_be_bytes());
+    second.locator = Locator::PosixDevIno {
+        dev: 2049,
+        ino: 12346,
+    };
+    snapshot.records.push(second);
+    let bytes = encode_snapshot(7, "app-logs", &snapshot.records).unwrap();
+
+    assert_eq!(
+        decode_snapshot(&bytes, &namespace, 7, 1),
+        Err(DecodeError::SnapshotRecordCountExceedsLimit {
+            declared: 2,
+            max: 1,
+        })
+    );
+    assert_eq!(decode_snapshot(&bytes, &namespace, 7, 2).unwrap(), snapshot);
 }
 
 /// Scenario: A CRC-valid snapshot declares generation eight while CURRENT selected seven.
@@ -628,6 +654,31 @@ fn snapshot_invalid_quarantine_evidence_values_are_rejected() {
     assert!(matches!(
         decode_snapshot(&snapshot_from_frames(&[mismatched_epoch]), &namespace, 7, 1),
         Err(DecodeError::InvalidSnapshotState { .. })
+    ));
+}
+
+/// Scenario: A CRC-valid quarantined snapshot carries reserved nonzero reason 4.
+/// Guarantees: Decoding preserves the reason, but the version 1 encoder refuses
+/// to reproduce it with ReservedReasonCode.
+#[test]
+fn snapshot_reserved_reason_decodes_but_cannot_be_reencoded() {
+    let namespace = namespace_digest("app-logs").unwrap();
+    let mut frame = quarantined_record_frame();
+    put_u16(&mut frame, 149, 4);
+    refresh_record_crc(&mut frame);
+    let bytes = snapshot_from_frames(&[frame]);
+
+    let snapshot = decode_snapshot(&bytes, &namespace, 7, 1).unwrap();
+    assert_eq!(snapshot.records.len(), 1);
+    let record = &snapshot.records[0];
+    assert_eq!(record.lifecycle_state, LifecycleState::Quarantined);
+    assert_eq!(record.quarantine_evidence.as_ref().unwrap().reason_code, 4);
+    assert!(matches!(
+        encode_snapshot(snapshot.generation, "app-logs", &snapshot.records),
+        Err(EncodeError::ReservedReasonCode {
+            field: "snapshot_record.quarantine_reason_code",
+            reason_code: 4,
+        })
     ));
 }
 
@@ -1531,14 +1582,19 @@ fn transaction_header_validation_precedence_matches_the_format() {
 
 /// Scenario: The supplied suffix is shorter than a header or shorter than a
 /// valid header's declared frame.
-/// Guarantees: The codec reports exact incomplete bytes without claiming the
-/// slice reaches physical EOF or authorizing truncation.
+/// Guarantees: Every partial prefix reports its width; only a validated header
+/// yields a total frame length. Neither result establishes EOF.
 #[test]
 fn incomplete_transaction_suffix_is_reported_without_eof_claim() {
-    assert_eq!(
-        scan_next_transaction(&MIN_TX[..35], 1),
-        Ok(Some(TransactionScan::Incomplete { bytes: 35 }))
-    );
+    for len in 1..MIN_TX.len() {
+        assert_eq!(
+            scan_next_transaction(&MIN_TX[..len], 1),
+            Ok(Some(TransactionScan::Incomplete {
+                bytes: len,
+                total_len: (len >= TX_HEADER_BYTES).then_some(MIN_TX.len()),
+            }))
+        );
+    }
     let missing_frame_crc = scan_all_for_test(&MIN_TX[..MIN_TX.len() - 1]).unwrap();
     assert_eq!(missing_frame_crc.incomplete_bytes, MIN_TX.len() - 1);
     assert!(missing_frame_crc.transactions.is_empty());
@@ -1566,12 +1622,14 @@ fn incomplete_suffix_after_valid_transaction_is_reported_incrementally() {
     assert_eq!(transaction.sequence, 1);
     let suffix = &wal[consumed..];
     drop(transaction);
-    let Some(TransactionScan::Incomplete { bytes }) = scan_next_transaction(suffix, 2).unwrap()
+    let Some(TransactionScan::Incomplete { bytes, total_len }) =
+        scan_next_transaction(suffix, 2).unwrap()
     else {
         panic!("second transaction must be incomplete");
     };
     assert_eq!(bytes, suffix.len());
     assert_eq!(bytes, second.len() - 1);
+    assert_eq!(total_len, Some(second.len()));
 
     let mut corrupt_second = second;
     let last = corrupt_second.len() - 1;

@@ -1268,6 +1268,9 @@ pub enum TransactionScan {
     Incomplete {
         /// Incomplete suffix width.
         bytes: usize,
+        /// Total frame width, including header and CRC, after header validation.
+        /// `None` when the header is incomplete. Does not validate the body.
+        total_len: Option<usize>,
     },
 }
 
@@ -1291,7 +1294,10 @@ pub fn scan_next_transaction(
         return Ok(None);
     }
     if bytes.len() < TX_HEADER_BYTES {
-        return Ok(Some(TransactionScan::Incomplete { bytes: bytes.len() }));
+        return Ok(Some(TransactionScan::Incomplete {
+            bytes: bytes.len(),
+            total_len: None,
+        }));
     }
     let header_bytes = &bytes[..TX_HEADER_BYTES];
     let mut header = Reader::new(header_bytes);
@@ -1375,7 +1381,10 @@ pub fn scan_next_transaction(
             context: "transaction frame length",
         })?;
     if bytes.len() < needed {
-        return Ok(Some(TransactionScan::Incomplete { bytes: bytes.len() }));
+        return Ok(Some(TransactionScan::Incomplete {
+            bytes: bytes.len(),
+            total_len: Some(needed),
+        }));
     }
     let frame_crc_offset = needed - TX_FRAME_CRC_BYTES;
     let stored_frame_crc =

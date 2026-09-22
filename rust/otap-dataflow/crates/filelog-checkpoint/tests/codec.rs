@@ -8,12 +8,14 @@ use otel_arrow_dfe_filelog_checkpoint::{
     EncodeError, FRAMING_PROFILE_VERSION, FileId, FramingEncoding, FramingOnDecodeError,
     FramingProfileParams, FramingResume, LifecycleState, Locator, MAX_PROGRESS_TX_BODY_BYTES,
     MAX_PROGRESS_TX_FRAME_BYTES, MaxLogSizeBehavior, MultilineMode, Operation, QuarantineEvidence,
-    RegisterFile, ResetQuarantineAction, SNAPSHOT_FOOTER_BYTES, SNAPSHOT_HEADER_BYTES,
+    QuarantineFile, RegisterFile, RemoveFile, ResetAfterTruncate, ResetQuarantineAction,
+    ResetQuarantinedFile, SNAPSHOT_FOOTER_BYTES, SNAPSHOT_HEADER_BYTES,
     SNAPSHOT_MAX_RECORD_FRAME_BYTES, SnapshotRecord, TX_HEADER_BYTES, TX_MIN_BODY_BYTES,
-    TX_MIN_FRAME_BYTES, Transaction, TransactionScan, UpdateFingerprint, WAL_HEADER_BYTES,
-    WAL_MAX_TX_BODY_BYTES, WAL_MAX_TX_FRAME_BYTES, crc32c, decode_current, decode_operation,
-    decode_snapshot, decode_wal_header, encode_current, encode_operation, encode_snapshot,
-    encode_transaction, encode_wal_header, namespace_digest, scan_next_transaction,
+    TX_MIN_FRAME_BYTES, Transaction, TransactionScan, UpdateFingerprint, UpdateMetadata,
+    UpdateProgress, WAL_HEADER_BYTES, WAL_MAX_TX_BODY_BYTES, WAL_MAX_TX_FRAME_BYTES, crc32c,
+    decode_current, decode_operation, decode_snapshot, decode_wal_header, encode_current,
+    encode_operation, encode_snapshot, encode_transaction, encode_wal_header, namespace_digest,
+    scan_next_transaction,
 };
 
 const CURRENT: &[u8] = include_bytes!("fixtures/current-generation-42.bin");
@@ -44,7 +46,7 @@ fn scan_all_for_test(bytes: &[u8]) -> Result<TestScanResult, DecodeError> {
                 suffix = &suffix[consumed..];
                 expected_sequence += 1;
             }
-            TransactionScan::Incomplete { bytes } => {
+            TransactionScan::Incomplete { bytes, .. } => {
                 incomplete_bytes = bytes;
                 break;
             }
@@ -220,32 +222,136 @@ fn wal_header_fixture_matches_codec() {
 }
 
 /// Scenario: Independent standalone frames exercise every version 1 operation code.
-/// Guarantees: Each operation is recognized, consumes its exact frame, and re-encodes byte-for-byte.
+/// Guarantees: Every decoded field matches its expected value, each frame is
+/// consumed exactly, and re-encoding preserves the fixture bytes.
 #[test]
 fn every_operation_fixture_matches_codec() {
-    let fixtures: &[&[u8]] = &[
-        include_bytes!("fixtures/operation-register-file.bin"),
-        include_bytes!("fixtures/operation-update-progress.bin"),
-        include_bytes!("fixtures/operation-reset-after-truncate.bin"),
-        include_bytes!("fixtures/operation-update-fingerprint.bin"),
-        include_bytes!("fixtures/operation-update-metadata.bin"),
-        include_bytes!("fixtures/operation-quarantine-file.bin"),
-        include_bytes!("fixtures/operation-reset-quarantined-keep-failed.bin"),
-        include_bytes!("fixtures/operation-remove-file.bin"),
+    let empty_guard = CommittedFrontierGuard {
+        window_len: 0,
+        digest: expected("frontier_empty").try_into().unwrap(),
+    };
+    let four_byte_guard = CommittedFrontierGuard {
+        window_len: 4,
+        digest: expected("frontier_nonempty").try_into().unwrap(),
+    };
+    let fixtures: &[(&[u8], Operation)] = &[
+        (
+            include_bytes!("fixtures/operation-register-file.bin"),
+            Operation::RegisterFile(RegisterFile {
+                file_id: FileId::from_bytes(11u128.to_be_bytes()),
+                file_epoch: 1,
+                committed_offset: 0,
+                committed_frontier_guard: empty_guard,
+                fingerprint: b"0123456789abcdef".to_vec(),
+                ignored_header_bytes: 0,
+                locator: Locator::PosixDevIno {
+                    dev: 2049,
+                    ino: 12345,
+                },
+                framing_profile_version: 1,
+                framing_profile_digest: expected("framing_profile_default").try_into().unwrap(),
+                framing_resume: FramingResume::Clean,
+                last_seen_time_unix_nano: 1_700_000_000_000_000_001,
+                advisory_path: AdvisoryPath::from_unix_bytes(b"/var/log/app.log").unwrap(),
+            }),
+        ),
+        (
+            include_bytes!("fixtures/operation-update-progress.bin"),
+            Operation::UpdateProgress(UpdateProgress {
+                file_id: FileId::from_bytes(12u128.to_be_bytes()),
+                expected_committed_offset: 0,
+                expected_file_epoch: 1,
+                new_committed_offset: 4,
+                new_committed_frontier_guard: four_byte_guard,
+                new_framing_resume: FramingResume::Clean,
+                new_last_seen_time_unix_nano: 1_700_000_000_000_000_002,
+                finalize: false,
+            }),
+        ),
+        (
+            include_bytes!("fixtures/operation-reset-after-truncate.bin"),
+            Operation::ResetAfterTruncate(ResetAfterTruncate {
+                file_id: FileId::from_bytes(13u128.to_be_bytes()),
+                expected_active_epoch: 1,
+                observed_truncated_size: 0,
+                resulting_epoch: 2,
+                new_committed_offset: 0,
+                new_framing_resume: FramingResume::Clean,
+                new_fingerprint: b"replacement-stream".to_vec(),
+                reset_time_unix_nano: 1_700_000_000_000_000_003,
+                reason_code: 1,
+            }),
+        ),
+        (
+            include_bytes!("fixtures/operation-update-fingerprint.bin"),
+            Operation::UpdateFingerprint(UpdateFingerprint {
+                file_id: FileId::from_bytes(14u128.to_be_bytes()),
+                expected_file_epoch: 1,
+                expected_fingerprint: b"0123456789abcdef".to_vec(),
+                new_fingerprint: b"0123456789abcdefg".to_vec(),
+            }),
+        ),
+        (
+            include_bytes!("fixtures/operation-update-metadata.bin"),
+            Operation::UpdateMetadata(UpdateMetadata {
+                file_id: FileId::from_bytes(15u128.to_be_bytes()),
+                expected_prior_state: LifecycleState::Active,
+                expected_file_epoch: 1,
+                last_seen_time_unix_nano: 42,
+                advisory_path: Some(AdvisoryPath::from_unix_bytes(b"/var/log/app.log").unwrap()),
+            }),
+        ),
+        (
+            include_bytes!("fixtures/operation-quarantine-file.bin"),
+            Operation::QuarantineFile(QuarantineFile {
+                file_id: FileId::from_bytes(16u128.to_be_bytes()),
+                expected_file_epoch: 1,
+                reason_code: 1,
+                locator: Locator::PosixDevIno {
+                    dev: 2049,
+                    ino: 12345,
+                },
+                observed_size: 88,
+                quarantine_epoch: 1,
+                quarantine_time_unix_nano: 1_700_000_000_000_000_004,
+            }),
+        ),
+        (
+            include_bytes!("fixtures/operation-reset-quarantined-keep-failed.bin"),
+            Operation::ResetQuarantinedFile(ResetQuarantinedFile {
+                file_id: FileId::from_bytes(17u128.to_be_bytes()),
+                expected_quarantine_epoch: 1,
+                action: ResetQuarantineAction::KeepFailed,
+                resulting_epoch: 1,
+                resulting_offset: 4,
+                new_committed_frontier_guard: four_byte_guard,
+                new_framing_resume: FramingResume::Clean,
+                new_fingerprint: b"0123456789abcdef".to_vec(),
+                action_time_unix_nano: 1_700_000_000_000_000_005,
+                namespace_id: "app-logs".to_owned(),
+                audit_reason: "operator confirmed failure".to_owned(),
+            }),
+        ),
+        (
+            include_bytes!("fixtures/operation-remove-file.bin"),
+            Operation::RemoveFile(RemoveFile {
+                file_id: FileId::from_bytes(18u128.to_be_bytes()),
+                expected_file_epoch: 1,
+                expected_prior_state: LifecycleState::Quarantined,
+                removal_reason: 1,
+                removal_time_unix_nano: 1_700_000_000_000_000_006,
+                administrative: true,
+                namespace_id: Some("app-logs".to_owned()),
+                audit_reason: Some("retire quarantined file".to_owned()),
+            }),
+        ),
     ];
-    for bytes in fixtures {
+    for (bytes, expected_operation) in fixtures {
         let (operation, consumed) = decode_operation(bytes).unwrap();
+        assert_eq!(&operation, expected_operation);
         assert_eq!(consumed, bytes.len());
         assert_eq!(encode_operation(&operation).unwrap(), *bytes);
     }
-    assert!(matches!(
-        decode_operation(fixtures[0]).unwrap().0,
-        Operation::RegisterFile(_)
-    ));
-    assert!(matches!(
-        decode_operation(fixtures[7]).unwrap().0,
-        Operation::RemoveFile(_)
-    ));
 }
 
 /// Scenario: An independently mutated keep_failed operation carries a

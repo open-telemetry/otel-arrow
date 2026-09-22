@@ -59,6 +59,16 @@ case where `resulting_epoch` differs from `expected_quarantine_epoch`. Replay
 must still compare the offset, frontier guard, fingerprint, framing state, and
 all other stored quarantined state exactly.
 
+Snapshot decoding preserves reserved nonzero quarantine reason code `4`, but
+the version 1 encoder rejects it with `ReservedReasonCode`. Store recovery
+must reject this state before replay can change or remove the evidence.
+Ordinary per-file administration requires successful recovery; structural
+decoding alone does not authorize a reset or removal. Read-only diagnostic
+tools may report the preserved value. Compaction must not pass it through,
+rewrite it, or silently omit the record. The codec does not automatically
+quarantine or repair state; any recovery procedure belongs to the separately
+defined administrative contract.
+
 Snapshot decoding takes the generation selected by `CURRENT`, the expected
 namespace digest, and the caller's current tracked-file limit. Header CRC and
 namespace checks precede generation matching, which rejects a mismatched

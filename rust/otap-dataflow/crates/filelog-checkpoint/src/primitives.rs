@@ -738,7 +738,12 @@ impl Writer {
                 max,
             });
         }
-        self.u16(bytes.len() as u16);
+        let len = u16::try_from(bytes.len()).map_err(|_| EncodeError::FieldTooLong {
+            field,
+            len: bytes.len(),
+            max: usize::from(u16::MAX),
+        })?;
+        self.u16(len);
         self.bytes(bytes);
         Ok(())
     }
@@ -754,4 +759,43 @@ impl Writer {
 
 pub(crate) const fn quarantine_reason_reserved(value: u16) -> bool {
     value == REASON_CODE_RESERVED || value == QUARANTINE_REASON_RESERVED_V1
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Writer;
+    use crate::EncodeError;
+
+    /// Scenario: A byte field fills the u16 prefix range with a larger caller limit.
+    /// Guarantees: The writer emits the exact maximum length and complete payload.
+    #[test]
+    fn var_bytes_accepts_maximum_prefix_length() {
+        let bytes = vec![0xA5; usize::from(u16::MAX)];
+        let mut writer = Writer::new();
+        writer.var_bytes("test.bytes", &bytes, usize::MAX).unwrap();
+
+        assert_eq!(writer.as_slice().len(), bytes.len() + 2);
+        assert_eq!(&writer.as_slice()[..2], &[0xFF, 0xFF]);
+        assert_eq!(&writer.as_slice()[2..], bytes.as_slice());
+    }
+
+    /// Scenario: A caller limit permits a byte field one byte beyond the u16 range.
+    /// Guarantees: The writer reports the prefix limit and leaves existing bytes intact.
+    #[test]
+    fn var_bytes_rejects_prefix_overflow_without_writing() {
+        let max = usize::from(u16::MAX);
+        let bytes = vec![0xA5; max + 1];
+        let mut writer = Writer::new();
+        writer.bytes(b"existing");
+
+        assert_eq!(
+            writer.var_bytes("test.bytes", &bytes, usize::MAX),
+            Err(EncodeError::FieldTooLong {
+                field: "test.bytes",
+                len: max + 1,
+                max,
+            })
+        );
+        assert_eq!(writer.as_slice(), b"existing");
+    }
 }
