@@ -660,6 +660,10 @@ fn get_body_from_struct<'a>(
     cols: &'a LogBodyArrays<'a>,
     row_idx: usize,
 ) -> Option<OtapAnyValueView<'a>> {
+    if !cols.is_valid(row_idx) {
+        return None;
+    }
+
     let anyval = &cols.anyval_arrays;
     let type_array = &anyval.attr_type;
 
@@ -746,12 +750,14 @@ mod tests {
     use super::*;
     use crate::proto::opentelemetry::common::v1::{AnyValue, KeyValue, KeyValueList, any_value};
     use crate::proto::opentelemetry::logs::v1::LogRecord;
+    use crate::schema::consts;
     use crate::testing::round_trip::to_otap_logs;
     use arrow::array::{
-        ArrayRef, DictionaryArray, Int32Array, Int64Array, StringArray, StructArray, UInt8Array,
-        UInt16Array,
+        ArrayRef, BinaryArray, DictionaryArray, Int32Array, Int64Array, StringArray, StructArray,
+        UInt8Array, UInt16Array,
     };
-    use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
+    use arrow::buffer::NullBuffer;
+    use arrow::datatypes::{DataType, Field, Fields, Schema, TimeUnit};
     use otel_arrow_dfe_pdata_views::views::common::{AnyValueView, AttributeView, ValueType};
     use std::sync::Arc;
 
@@ -1136,6 +1142,28 @@ mod tests {
             }
         }
         assert_eq!(checked, 1);
+    }
+
+    /// Scenario: The body struct cell is null while its Map type and ser children still hold values.
+    /// Guarantees: get_body_from_struct honors the parent validity and returns None, not the child bytes.
+    #[test]
+    fn test_map_body_under_null_parent_is_none() {
+        // {"k":"v"} as indefinite CBOR, the kind of value a Map body would carry.
+        let cbor: &[u8] = &[0xbf, 0x61, b'k', 0x61, b'v', 0xff];
+        let body_struct = StructArray::new(
+            Fields::from(vec![
+                Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+                Field::new(consts::ATTRIBUTE_SER, DataType::Binary, true),
+            ]),
+            vec![
+                Arc::new(UInt8Array::from(vec![AttributeValueType::Map as u8])) as ArrayRef,
+                Arc::new(BinaryArray::from_iter_values([cbor])) as ArrayRef,
+            ],
+            Some(NullBuffer::from_iter(vec![false])),
+        );
+
+        let body = LogBodyArrays::try_from(&body_struct).expect("body arrays");
+        assert!(get_body_from_struct(&body, 0).is_none());
     }
 
     #[test]
