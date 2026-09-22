@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790082891427,
+  "lastUpdate": 1790102535111,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -42514,6 +42514,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-amd64-binary-size",
             "value": 116.51,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 103.85,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "29139614+renovate[bot]@users.noreply.github.com",
+            "name": "renovate[bot]",
+            "username": "renovate[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "bcb2362ee6ede4b31ce29bb7b59c033c5292084a",
+          "message": "chore(deps): update opentelemetry crates to 0.33.0 (#4120)\n\nThis PR contains the following updates:\n\n| Package | Type | Update | Change |\n|---|---|---|---|\n|\n[opentelemetry](https://redirect.github.com/open-telemetry/opentelemetry-rust/tree/main/opentelemetry)\n([source](https://redirect.github.com/open-telemetry/opentelemetry-rust/tree/HEAD/opentelemetry))\n| workspace.dependencies | minor | `0.32.0` → `0.33.0` |\n|\n[opentelemetry-proto](https://redirect.github.com/open-telemetry/opentelemetry-rust/tree/main/opentelemetry-proto)\n([source](https://redirect.github.com/open-telemetry/opentelemetry-rust/tree/HEAD/opentelemetry-proto))\n| workspace.dependencies | minor | `0.32` → `0.33` |\n|\n[opentelemetry-proto](https://redirect.github.com/open-telemetry/opentelemetry-rust/tree/main/opentelemetry-proto)\n([source](https://redirect.github.com/open-telemetry/opentelemetry-rust/tree/HEAD/opentelemetry-proto))\n| workspace.dependencies | minor | `0.32.0` → `0.33.0` |\n|\n[opentelemetry_sdk](https://redirect.github.com/open-telemetry/opentelemetry-rust/tree/main/opentelemetry-sdk)\n([source](https://redirect.github.com/open-telemetry/opentelemetry-rust/tree/HEAD/opentelemetry-sdk))\n| workspace.dependencies | minor | `0.32.1` → `0.33.0` |\n\n---\n\n### Release Notes\n\n<details>\n<summary>open-telemetry/opentelemetry-rust (opentelemetry)</summary>\n\n###\n[`v0.33.0`](https://redirect.github.com/open-telemetry/opentelemetry-rust/blob/HEAD/opentelemetry/CHANGELOG.md#0330)\n\n[Compare\nSource](https://redirect.github.com/open-telemetry/opentelemetry-rust/compare/opentelemetry-0.32.0...opentelemetry-0.33.0)\n\nReleased 2026-Sep-18\n\n- Fix `TraceState` accepting more than the 32 list-members the W3C\ntrace-context\nspecification allows. `from_str`, `from_key_value` and `insert` now keep\nat most\n32, dropping members from the end of the list as the specification\nprescribes, so\nneither a parsed nor a locally built `tracestate` can exceed the limit.\n- **Added** experimental support for a global context event observer. A\n`ContextObserver` can be registered via `GlobalContextObserver::set` to\nbe\n  notified of context transitions through the `on_context_enter` and\n`on_context_exit` callbacks. This feature is primarily intended to\npublish a\ndifferent view of the current context (the `ObserverContextView`)\nthrough\nalternative channels that let external readers (e.g. an eBPF profiler)\ntrack\n  the current context. See the associated\n\n[OTEP](https://redirect.github.com/open-telemetry/opentelemetry-specification/pull/4947).\n  Gated behind the `experimental_context_observer` feature flag.\n- `otel_info!`, `otel_warn!`, `otel_debug!`, and `otel_error!` macros\nnow accept quoted-key fields\n  (e.g. `\"otel.component.type\" = \"value\"`) for dotted attribute names.\n- **Added** `BoundGauge<T>` and `BoundUpDownCounter<T>` types (and the\ncorresponding `Gauge::bind()` / `UpDownCounter::bind()` methods),\ncompleting\n  the experimental bound-instrument API across all sync instruments\n  (`Counter`, `UpDownCounter`, `Histogram`, `Gauge`). Gated behind the\n  `experimental_metrics_bound_instruments` feature flag.\n\n</details>\n\n<details>\n<summary>open-telemetry/opentelemetry-rust\n(opentelemetry-proto)</summary>\n\n###\n[`v0.33.0`](https://redirect.github.com/open-telemetry/opentelemetry-rust/blob/HEAD/opentelemetry-proto/CHANGELOG.md#0330)\n\n[Compare\nSource](https://redirect.github.com/open-telemetry/opentelemetry-rust/compare/opentelemetry-proto-0.32.0...opentelemetry-proto-0.33.0)\n\nReleased 2026-Sep-18\n\n- **Bug fix**: Keep OTLP logs with the same target but different scope\nversions,\nattributes, or schema URLs in separate groups. Target still overrides\nthe scope\nname. Export each scope's schema URL instead of the resource's schema\nURL.\n\n- **Bug fix**: Accept empty `AnyValue` objects in OTLP/JSON payloads\ninstead of rejecting the entire request.\n\n- **Bug fix**: Accept omitted resource fields in empty OTLP/JSON\ncollector requests.\n\n- **Bug fix**: Accept `null` fields in OTLP/JSON `AnyValue` objects as\nunset.\n\n- **Bug fix**: Accept OTLP/JSON partial-success responses when protobuf\ndefault fields are omitted.\n\n- **Performance**: `group_spans_by_resource_and_scope` no longer clones\nevery `SpanData`. The batch is owned by the function, so spans are now\nmoved into the proto conversion instead of being grouped by reference\nand cloned. This cuts the transform time of a 512-span batch roughly in\nhalf.\n([#&#8203;3652](https://redirect.github.com/open-telemetry/opentelemetry-rust/pull/3652))\n\n</details>\n\n<details>\n<summary>open-telemetry/opentelemetry-rust (opentelemetry_sdk)</summary>\n\n###\n[`v0.33.0`](https://redirect.github.com/open-telemetry/opentelemetry-rust/blob/HEAD/opentelemetry-sdk/CHANGELOG.md#0330)\n\nReleased 2026-Sep-18\n\n- Publicly export the `OTEL_*`/`OTEL_*_DEFAULT` environment variable\nname and\ndefault value constants for `BatchSpanProcessor`\n(`opentelemetry_sdk::trace`),\n  `BatchLogProcessor` (`opentelemetry_sdk::logs`), and `PeriodicReader`\n(`opentelemetry_sdk::metrics`), so downstream configuration systems can\nread\nthe SDK's spec-defined defaults programmatically instead of duplicating\n  them. As part of this, `PeriodicReader`'s previously-private\n`DEFAULT_INTERVAL`/`METRIC_EXPORT_INTERVAL_NAME` constants were renamed\nto `OTEL_METRIC_EXPORT_INTERVAL_DEFAULT`/`OTEL_METRIC_EXPORT_INTERVAL`\nto\n  match the naming convention already used elsewhere.\n\n([#&#8203;3623](https://redirect.github.com/open-telemetry/opentelemetry-rust/issues/3623))\n- Added SDK self-observability metrics, feature-gated behind\n`experimental_metrics_bound_instruments`: `otel.sdk.log.created` counts\nlog\n  records submitted to the SDK; `otel.sdk.processor.log.processed` and\n`otel.sdk.processor.span.processed` count records and spans submitted to\nan\nexporter by batch and simple processors, with `error.type` reporting\nitems\n  dropped before submission; and `otel.sdk.processor.log.queue.capacity`\n  reports the configured `BatchLogProcessor` queue capacity.\n\n([#&#8203;3514](https://redirect.github.com/open-telemetry/opentelemetry-rust/pull/3514),\n\n[#&#8203;3608](https://redirect.github.com/open-telemetry/opentelemetry-rust/pull/3608),\n\n[#&#8203;3609](https://redirect.github.com/open-telemetry/opentelemetry-rust/pull/3609),\n\n[#&#8203;3611](https://redirect.github.com/open-telemetry/opentelemetry-rust/pull/3611))\n- Made `futures-channel`, `futures-executor`, `futures-util`, and\n`thiserror`\noptional, enabling a minimal SDK build. With `default-features = false`,\nthe\n  SDK's only dependency is the `opentelemetry` API crate.\n\n([#&#8203;3593](https://redirect.github.com/open-telemetry/opentelemetry-rust/pull/3593))\n- Bound instruments are now available for `Gauge` and `UpDownCounter`\nvia the\n  new `BoundGauge<T>` and `BoundUpDownCounter<T>` types exposed by the\n`opentelemetry` crate. Requires the\n`experimental_metrics_bound_instruments`\n  feature.\n- Fixed a race in `BatchSpanProcessor` and `BatchLogProcessor` where a\n  span/log enqueued just before `force_flush()` or `shutdown()` could be\nmissed by the flush and dropped at shutdown: the pending-item counter is\nnow incremented before enqueueing (and reverted if the queue is full),\nso\nthe worker's counter snapshot can no longer under-count items already in\nthe queue\n([#&#8203;3453](https://redirect.github.com/open-telemetry/opentelemetry-rust/issues/3453)).\n- Default SDK Resource construction now falls back to `unknown_service`\nunder\nMiri instead of calling `std::env::current_exe()`, avoiding an abort in\nMiri\n  isolation mode while preserving the normal\n  `unknown_service:<process.executable.name>` fallback outside Miri.\n- Fixed asynchronous counters (`ObservableCounter`,\n`ObservableUpDownCounter`)\nusing delta temporality reporting incorrect deltas when observed\nattributes\n  were recorded in an unsorted key order.\n\n</details>\n\n---\n\n### Configuration\n\n📅 **Schedule**: (UTC)\n\n- Branch creation\n  - \"before 8am on Monday\"\n- Automerge\n  - At any time (no schedule defined)\n\n🚦 **Automerge**: Disabled by config. Please merge this manually once you\nare satisfied.\n\n♻ **Rebasing**: Whenever PR becomes conflicted, or you tick the\nrebase/retry checkbox.\n\n🔕 **Ignore**: Close this PR and you won't be reminded about these\nupdates again.\n\n---\n\n- [ ] <!-- rebase-check -->If you want to rebase/retry this PR, check\nthis box\n\n---\n\nThis PR was generated by [Mend Renovate](https://mend.io/renovate/).\nView the [repository job\nlog](https://developer.mend.io/github/open-telemetry/otel-arrow).\n\n<!--renovate-debug:eyJjcmVhdGVkSW5WZXIiOiI0NC4xMDMuMCIsInVwZGF0ZWRJblZlciI6IjQ0LjEwMy4wIiwidGFyZ2V0QnJhbmNoIjoibWFpbiIsImxhYmVscyI6WyJkZXBlbmRlbmNpZXMiXX0=-->\n\n---------\n\nCo-authored-by: renovate[bot] <29139614+renovate[bot]@users.noreply.github.com>\nCo-authored-by: albertlockett <a.lockett@f5.com>\nCo-authored-by: Lalit Kumar Bhasin <lalit_fin@yahoo.com>",
+          "timestamp": "2026-09-22T17:53:58Z",
+          "tree_id": "65e55e478f5238d52b05b0ff1321188942908884",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/bcb2362ee6ede4b31ce29bb7b59c033c5292084a"
+        },
+        "date": 1790102513700,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 84.27,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.15,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.71,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.97,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.7,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 71.58,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.86,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.54,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 116.52,
             "unit": "MB"
           },
           {
