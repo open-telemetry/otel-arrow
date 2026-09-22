@@ -6,7 +6,8 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use secrecy::{ExposeSecret, SecretString};
+use otel_arrow_dfe_engine::capability::auth::BasicAuthCredential;
+use secrecy::SecretString;
 use serde::Deserialize;
 
 /// Default password secret file refresh (~1 hr).
@@ -48,23 +49,18 @@ pub struct Config {
 
 impl Config {
     /// Validates the configuration beyond what deserialization checks.
-    ///
-    /// Rejects a secret.
     pub fn validate(&self) -> Result<(), String> {
-        if self.username.expose_secret().is_empty() {
-            return Err("`username` must be specified".to_string());
-        }
+        BasicAuthCredential::validate_username(&self.username).map_err(|e| e.to_string())?;
 
-        let secret_fields_set = self
-            .password_secret
-            .as_ref()
-            .is_some_and(|s| !s.expose_secret().is_empty())
-            || self.password_secret_file.is_some();
-
-        if !secret_fields_set {
-            return Err(
-                "either `password_secret` or `password_secret_file` must be set".to_string(),
-            );
+        if self.password_secret_file.is_none() {
+            if let Some(password_secret) = self.password_secret.as_ref() {
+                BasicAuthCredential::validate_password(password_secret)
+                    .map_err(|e| e.to_string())?;
+            } else {
+                return Err(
+                    "either `password_secret` or `password_secret_file` must be set".to_string(),
+                );
+            }
         }
 
         if self.password_secret_file_refresh.is_zero() {

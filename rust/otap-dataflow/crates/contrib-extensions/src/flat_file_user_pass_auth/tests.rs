@@ -52,10 +52,24 @@ fn config_defaults_apply() {
 }
 
 #[test]
-fn config_username_required_non_empty() {
+fn config_username_required_and_valid() {
     assert!(
         config_from_json(serde_json::json!({
            "username": ""
+        }))
+        .is_err()
+    );
+
+    assert!(
+        config_from_json(serde_json::json!({
+           "username": "invalid:colon"
+        }))
+        .is_err()
+    );
+
+    assert!(
+        config_from_json(serde_json::json!({
+           "username": "invalid\tcontrol"
         }))
         .is_err()
     );
@@ -70,13 +84,29 @@ fn config_username_required_non_empty() {
 }
 
 #[test]
-fn config_secret_required() {
+fn config_secret_required_and_valid() {
     assert!(
         config_from_json(serde_json::json!({
            "username": "<test_username>",
         }))
         .is_err()
-    )
+    );
+
+    assert!(
+        config_from_json(serde_json::json!({
+           "username": "<test_username>",
+           "password_secret": "",
+        }))
+        .is_err()
+    );
+
+    assert!(
+        config_from_json(serde_json::json!({
+           "username": "<test_username>",
+           "password_secret": "password\tcontrol",
+        }))
+        .is_err()
+    );
 }
 
 #[test]
