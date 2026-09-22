@@ -278,13 +278,13 @@ pub(crate) fn get_attribute_value<'a>(
             .as_ref()
             .and_then(|accessor| accessor.str_at(row_idx))
             .map(|s| OtapAnyValueView::Str(s.as_bytes()))
-            .unwrap_or(OtapAnyValueView::Empty),
+            .unwrap_or(OtapAnyValueView::Str(b"")),
         AttributeValueType::Int => anyval
             .attr_int
             .as_ref()
             .and_then(|accessor| accessor.value_at(row_idx))
             .map(OtapAnyValueView::Int)
-            .unwrap_or(OtapAnyValueView::Empty),
+            .unwrap_or(OtapAnyValueView::Int(0)),
         AttributeValueType::Double => anyval
             .attr_double
             .and_then(|arr| {
@@ -294,7 +294,7 @@ pub(crate) fn get_attribute_value<'a>(
                     None
                 }
             })
-            .unwrap_or(OtapAnyValueView::Empty),
+            .unwrap_or(OtapAnyValueView::Double(0.0)),
         AttributeValueType::Bool => anyval
             .attr_bool
             .and_then(|arr| {
@@ -304,13 +304,13 @@ pub(crate) fn get_attribute_value<'a>(
                     None
                 }
             })
-            .unwrap_or(OtapAnyValueView::Empty),
+            .unwrap_or(OtapAnyValueView::Bool(false)),
         AttributeValueType::Bytes => anyval
             .attr_bytes
             .as_ref()
             .and_then(|accessor| accessor.slice_at(row_idx))
             .map(OtapAnyValueView::Bytes)
-            .unwrap_or(OtapAnyValueView::Empty),
+            .unwrap_or(OtapAnyValueView::Bytes(b"")),
         _ => OtapAnyValueView::Empty,
     }
 }
@@ -523,6 +523,7 @@ pub(crate) fn build_attribute_index_u32(batch: &RecordBatch) -> BTreeMap<u32, Ve
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arrow::array::UInt8Array;
 
     #[test]
     fn test_row_group_contiguous() {
@@ -600,5 +601,52 @@ mod tests {
         assert_eq!(attr.key(), b"service.name".as_slice());
         let val = attr.value().unwrap();
         assert_eq!(val.as_string(), Some(b"my-service".as_slice()));
+    }
+
+    /// Scenario: An OTAP attribute row has a scalar type while its optional value column is omitted.
+    /// Guarantees: get_attribute_value returns the corresponding type default instead of Empty.
+    #[test]
+    fn test_omitted_scalar_column_uses_type_default() {
+        fn type_only(attr_type: &UInt8Array) -> AnyValueArrays<'_> {
+            AnyValueArrays {
+                attr_type,
+                attr_str: None,
+                attr_int: None,
+                attr_double: None,
+                attr_bool: None,
+                attr_bytes: None,
+                attr_ser: None,
+            }
+        }
+
+        let int_type = UInt8Array::from(vec![AttributeValueType::Int as u8]);
+        let int_arr = type_only(&int_type);
+        let v = get_attribute_value(&int_arr, 0);
+        assert_eq!(v.value_type(), ValueType::Int64);
+        assert_eq!(v.as_int64(), Some(0));
+
+        let double_type = UInt8Array::from(vec![AttributeValueType::Double as u8]);
+        let double_arr = type_only(&double_type);
+        let v = get_attribute_value(&double_arr, 0);
+        assert_eq!(v.value_type(), ValueType::Double);
+        assert_eq!(v.as_double(), Some(0.0));
+
+        let bool_type = UInt8Array::from(vec![AttributeValueType::Bool as u8]);
+        let bool_arr = type_only(&bool_type);
+        let v = get_attribute_value(&bool_arr, 0);
+        assert_eq!(v.value_type(), ValueType::Bool);
+        assert_eq!(v.as_bool(), Some(false));
+
+        let str_type = UInt8Array::from(vec![AttributeValueType::Str as u8]);
+        let str_arr = type_only(&str_type);
+        let v = get_attribute_value(&str_arr, 0);
+        assert_eq!(v.value_type(), ValueType::String);
+        assert_eq!(v.as_string(), Some(b"".as_slice()));
+
+        let bytes_type = UInt8Array::from(vec![AttributeValueType::Bytes as u8]);
+        let bytes_arr = type_only(&bytes_type);
+        let v = get_attribute_value(&bytes_arr, 0);
+        assert_eq!(v.value_type(), ValueType::Bytes);
+        assert_eq!(v.as_bytes(), Some(b"".as_slice()));
     }
 }
