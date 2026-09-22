@@ -519,6 +519,124 @@ fn matching_acks_reuse_encoder_and_commit_pages_through_the_receiver_loop() {
 
 struct StartupFailureProbe<A: DriverAdapter>(DatabaseReceiver<A>);
 
+struct ClosedControlCleanupProbe {
+    receiver: DatabaseReceiver<FakeAdapter>,
+    write: Arc<WriteControl>,
+}
+
+#[async_trait(?Send)]
+impl local::Receiver<OtapPdata> for ClosedControlCleanupProbe {
+    async fn start(
+        self: Box<Self>,
+        mut controls: local::ControlChannel<OtapPdata>,
+        effects: local::EffectHandler<OtapPdata>,
+    ) -> Result<TerminalState, Error> {
+        let Self { receiver, write } = *self;
+        let (sender, channel) = Channel::new(1);
+        let replacement = local::ControlChannel::new(Receiver::Local(LocalReceiver::mpsc(channel)));
+        let (result, ()) = tokio::time::timeout(Duration::from_secs(3), async {
+            tokio::join!(
+                local::Receiver::start(Box::new(receiver), replacement, effects),
+                async {
+                    let ack = controls.recv().await.expect("matching ACK");
+                    assert!(matches!(&ack, NodeControlMsg::Ack(_)));
+                    sender.send(ack).expect("forward ACK");
+                    while write.attempts.load(Ordering::SeqCst) == 0 {
+                        tokio::task::yield_now().await;
+                    }
+                    assert_eq!(write.completed.load(Ordering::SeqCst), 0);
+                    // Close while the write is unjoined, setting provisional abandonment.
+                    drop(sender);
+                }
+            )
+        })
+        .await
+        .expect("channel closure and worker cleanup complete");
+        assert!(
+            matches!(result, Err(Error::ChannelRecvError(_))),
+            "successful cleanup must preserve the original channel error"
+        );
+        assert_eq!(write.completed.load(Ordering::SeqCst), 1);
+        Ok(TerminalState::default())
+    }
+}
+
+/// Scenario: The control channel closes during a checkpoint write, then both workers finish cleanup successfully.
+/// Guarantees: The original channel error is preserved, failed progress is not committed, and the same lease can be reacquired without restarting.
+#[test]
+fn closed_control_channel_releases_lease_after_confirmed_cleanup() {
+    let directory = tempfile::tempdir_in(".").expect("checkpoint directory");
+    let config = CheckpointConfig {
+        directory: directory.path().to_string_lossy().into_owned(),
+        on_nack: OnNack::Rewind,
+        nack_backoff: Duration::from_millis(10),
+        max_consecutive_failures: 3,
+    };
+    let mut store = CheckpointStore::new(
+        directory.path(),
+        "group",
+        "pipeline",
+        "closed-control",
+        "source",
+        "fingerprint".to_owned(),
+    );
+    let lease = SourceLease::acquire(&store.lease_key()).expect("initial lease");
+    let (previous, _) = store
+        .write(0, &checkpoint(0, 41).cursor)
+        .expect("previous acknowledged progress");
+    // Coordinates the receiver core with a delayed, failing filesystem worker.
+    let write = Arc::new(WriteControl {
+        delay: Duration::from_millis(300),
+        attempts: AtomicUsize::new(0),
+        completed: AtomicUsize::new(0),
+    });
+    store.write_control = Some(Arc::clone(&write));
+    let shutdown_joined = Rc::new(Cell::new(false));
+    let receiver = DatabaseReceiver::new(
+        FakeAdapter {
+            shutdown_joined: Rc::clone(&shutdown_joined),
+            lease_key: store.lease_key(),
+        },
+        fake_query(&config),
+        store.clone(),
+        lease,
+        config.nack_backoff,
+        config.max_consecutive_failures,
+        "source".to_owned(),
+        normal_admission(),
+        None,
+    );
+    let runtime = TestRuntime::<OtapPdata>::new();
+    let wrapper = ReceiverWrapper::local(
+        ClosedControlCleanupProbe { receiver, write },
+        test_node(runtime.config().name.clone()),
+        Arc::new(NodeUserConfig::new_receiver_config(
+            "urn:otel:receiver:closed_control_probe",
+        )),
+        runtime.config(),
+    );
+    runtime
+        .set_receiver(wrapper)
+        .run_test(|_| async {})
+        .run_validation_concurrent(|mut ctx| async move {
+            let pdata = ctx.recv().await.expect("next page");
+            let (_, ack) = next_ack(AckMsg::new(pdata)).expect("ACK subscription");
+            ctx.send_control_msg(NodeControlMsg::Ack(ack))
+                .await
+                .expect("ACK");
+            assert!(
+                tokio::time::timeout(Duration::from_secs(3), ctx.recv())
+                    .await
+                    .expect("receiver exits after cleanup")
+                    .is_err(),
+                "no additional page after channel closure"
+            );
+        });
+    assert!(shutdown_joined.get(), "adapter cleanup was confirmed");
+    assert_eq!(store.read().expect("checkpoint read"), Some(previous));
+    drop(SourceLease::acquire(&store.lease_key()).expect("same source can restart in-process"));
+}
+
 #[async_trait(?Send)]
 impl<A: DriverAdapter + 'static> local::Receiver<OtapPdata> for StartupFailureProbe<A> {
     async fn start(
