@@ -1304,6 +1304,15 @@ impl<
             },
         })?;
 
+        // Synchronous startup, before any pipeline or controller extension starts.
+        // Retain this capability in every context across restarts and live rollouts.
+        let state_directory = engine_config
+            .engine
+            .state_dir
+            .as_deref()
+            .map(otel_arrow_dfe_engine::state_dir::StateDirectory::provision)
+            .transpose()?;
+
         let num_pipeline_groups = engine_config.groups.len();
         let resolved_config = engine_config.resolve();
         let context = self
@@ -1327,6 +1336,10 @@ impl<
         // controller context below.
         let telemetry_registry = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(telemetry_registry.clone());
+        let controller_ctx = match state_directory {
+            Some(root) => controller_ctx.with_state_directory(root),
+            None => controller_ctx,
+        };
 
         // Inject auto-detected resource attributes into the telemetry resource map so
         // they surface on the OTLP Resource / Prometheus target_info. Precedence is
@@ -3338,6 +3351,175 @@ connections:
             TEST_OBSERVABILITY_EXPORTERS,
             &[],
         )))
+    }
+
+    #[cfg(target_os = "linux")]
+    mod state_directory_startup {
+        use super::*;
+        use std::os::fd::AsFd;
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        use std::path::PathBuf;
+
+        fn create_receiver(
+            context: PipelineContext,
+            node: otel_arrow_dfe_engine::node::NodeId,
+            node_config: Arc<NodeUserConfig>,
+            receiver_config: &ReceiverConfig,
+            _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities,
+        ) -> Result<ReceiverWrapper<()>, otel_arrow_dfe_config::error::Error> {
+            let expected: PathBuf = serde_json::from_value(node_config.config.clone()).unwrap();
+            let root = context
+                .state_directory()
+                .expect("controller must inject the state root");
+            assert_eq!(root.path(), expected);
+            let directory = std::fs::File::from(root.as_fd().try_clone_to_owned().unwrap());
+            let opened = directory.metadata().unwrap();
+            let configured = std::fs::metadata(&expected).unwrap();
+            assert_eq!(
+                (opened.dev(), opened.ino()),
+                (configured.dev(), configured.ino())
+            );
+            assert!(opened.is_dir());
+            assert_eq!(opened.permissions().mode() & 0o777, 0o700);
+            Ok(ReceiverWrapper::local(
+                TestObservabilityReceiver,
+                node,
+                node_config,
+                receiver_config,
+            ))
+        }
+
+        static FACTORY: PipelineFactory<()> = PipelineFactory::new(
+            &[
+                ReceiverFactory {
+                    name: "urn:test:receiver:state_directory",
+                    create: create_receiver,
+                    context_declarations: None,
+                    wiring_contract: WiringContract::UNRESTRICTED,
+                    validate_config: accept_any_test_config,
+                },
+                ReceiverFactory {
+                    name: "urn:otel:receiver:internal_telemetry",
+                    create: create_test_observability_receiver,
+                    context_declarations: None,
+                    wiring_contract: WiringContract::UNRESTRICTED,
+                    validate_config: accept_any_test_config,
+                },
+            ],
+            TEST_OBSERVABILITY_PROCESSORS,
+            TEST_OBSERVABILITY_EXPORTERS,
+            &[],
+        );
+
+        /// Scenario: controller startup provisions a missing state root.
+        /// Guarantees: the receiver gets the correct handle and shutdown completes.
+        #[test]
+        fn state_dir_reaches_receiver_through_controller_startup() {
+            // Shared temporary directories are deliberately outside the trust policy.
+            let parent = std::env::var_os("OTAP_STATE_DIR_TEST_PARENT")
+                .or_else(|| std::env::var_os("HOME"))
+                .expect("set OTAP_STATE_DIR_TEST_PARENT to a trusted test directory");
+            let temp = tempfile::Builder::new()
+                .prefix("otap-state-startup-")
+                .tempdir_in(parent)
+                .unwrap();
+            std::fs::set_permissions(temp.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+            let path = temp.path().join("state");
+            assert!(!path.exists());
+            const SHUTDOWN_EXTENSION: &str = "urn:test:extension:state_directory_shutdown";
+            let (control_tx, control_rx) = std_mpsc::sync_channel(1);
+            let mut extensions = ControllerExtensionRegistry::empty();
+            extensions.register(
+                SHUTDOWN_EXTENSION.into(),
+                move |context| {
+                    let control_tx = control_tx.clone();
+                    Ok(Box::new(move |_cancel| {
+                        Box::pin(async move {
+                            // Extension tasks start after pipeline instances are registered.
+                            control_tx.send(context.control_plane).unwrap();
+                            Ok(())
+                        })
+                    }))
+                },
+                accept_any_test_config,
+            );
+            let config_json = serde_json::json!({
+                "version": "otel_dataflow/v1",
+                "engine": {
+                    "state_dir": path,
+                    "http_admin": {
+                        "bind_address": "127.0.0.1:0"
+                    },
+                    "controller": {
+                        "extensions": {
+                            "shutdown": {
+                                "type": SHUTDOWN_EXTENSION
+                            }
+                        }
+                    }
+                },
+                "groups": {
+                    "g": {
+                        "pipelines": {
+                            "p": {
+                                "policies": {
+                                    "resources": {
+                                        "core_allocation": {
+                                            "type": "core_count",
+                                            "count": 1
+                                        }
+                                    }
+                                },
+                                "nodes": {
+                                    "receiver": {
+                                        "type": "urn:test:receiver:state_directory",
+                                        "config": path
+                                    },
+                                    "exporter": {
+                                        "type": "urn:test:exporter:example",
+                                        "config": null
+                                    }
+                                },
+                                "connections": [
+                                    {
+                                        "from": "receiver",
+                                        "to": "exporter"
+                                    }
+                                ]
+                            }
+                        }
+                    }
+                }
+            });
+            let config = OtelDataflowSpec::from_json(&config_json.to_string()).unwrap();
+            let (result_tx, result_rx) = std_mpsc::sync_channel(1);
+            let controller_thread = thread::spawn(move || {
+                let result = Controller::new(&FACTORY).run_till_shutdown_with_options(
+                    config,
+                    ControllerRunOptions {
+                        extensions,
+                        ..Default::default()
+                    },
+                );
+                result_tx
+                    .send(result.map_err(|error| error.to_string()))
+                    .unwrap();
+            });
+            let control_plane = control_rx
+                .recv_timeout(Duration::from_secs(10))
+                .expect("controller must register pipeline instances before shutdown");
+            control_plane
+                .shutdown_all(5)
+                .expect("bounded shutdown must be accepted");
+            result_rx
+                .recv_timeout(Duration::from_secs(15))
+                .expect("controller startup and shutdown must complete within the test deadline")
+                .expect("receiver must validate the provisioned state root");
+            controller_thread
+                .join()
+                .expect("controller thread must not panic");
+            assert!(path.is_dir());
+        }
     }
 
     const TEST_LINKED_CONTROLLER_EXTENSION_URN: &str = "urn:test:extension:controller_linked";

@@ -5,6 +5,7 @@
 
 mod io;
 mod resolve;
+pub mod state_dir;
 mod validate;
 
 use crate::ExtensionId;
@@ -84,6 +85,11 @@ impl OtelDataflowSpec {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct EngineConfig {
+    /// Optional absolute state root. Linux only; immutable until engine restart.
+    /// No default or implicit environment lookup. Legacy checkpoints are not migrated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_dir: Option<std::path::PathBuf>,
+
     /// Optional HTTP admin server configuration.
     pub http_admin: Option<HttpAdminSettings>,
 

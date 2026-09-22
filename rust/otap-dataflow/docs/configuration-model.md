@@ -343,6 +343,7 @@ Important behavior:
 
 `engine` is the home for engine-wide settings:
 
+- `state_dir`
 - `topics`
 - `http_admin`
 - `telemetry`
@@ -350,6 +351,14 @@ Important behavior:
 - `observability`
 - `controller/extensions`
 - `custom`
+
+### Engine State Directory
+
+`engine.state_dir` is an optional explicit absolute path, provisioned before
+pipelines start on Linux. It has no default and cannot be added, removed, or
+changed during live reconfiguration. Existing journald and scraper checkpoints
+are not automatically migrated. See [Engine state directory](state-directory.md)
+for permission, durability, platform, and consumer-adoption requirements.
 
 ### Engine Topic Settings
 

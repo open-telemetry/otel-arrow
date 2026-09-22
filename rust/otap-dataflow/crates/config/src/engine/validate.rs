@@ -15,6 +15,14 @@ impl OtelDataflowSpec {
     pub fn validate(&self) -> Result<(), Error> {
         let mut errors = Vec::new();
 
+        if let Some(path) = &self.engine.state_dir
+            && let Err(reason) = crate::engine::state_dir::validate_state_dir(path)
+        {
+            errors.push(Error::InvalidUserConfig {
+                error: format!("engine.state_dir {path:?}: {reason}"),
+            });
+        }
+
         if self.version != ENGINE_CONFIG_VERSION_V1 {
             errors.push(Error::InvalidUserConfig {
                 error: format!(
