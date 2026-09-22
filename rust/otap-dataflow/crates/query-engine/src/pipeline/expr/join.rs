@@ -1830,12 +1830,14 @@ pub mod bench_support {
 
     impl U16IdLookupBenchWrapper {
         /// inserts all non-null entries into wrapped data structure
+        #[must_use]
         pub fn new(data: &UInt16Array) -> Self {
             Self {
                 inner: U16IdJoinLookup::new_from_primitive(data),
             }
         }
 
+        #[must_use]
         pub fn lookup(&self, id: u16) -> Option<usize> {
             self.inner.lookup(id)
         }
@@ -1848,12 +1850,14 @@ pub mod bench_support {
 
     impl U32IdLookupBenchWrapper {
         /// inserts all non-null entries into wrapped data structure
+        #[must_use]
         pub fn new(data: &UInt32Array) -> Self {
             Self {
                 inner: U32IdJoinLookup::new_from_primitive(data),
             }
         }
 
+        #[must_use]
         pub fn lookup(&self, id: u32) -> Option<usize> {
             self.inner.lookup(id)
         }

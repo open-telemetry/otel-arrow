@@ -17,7 +17,7 @@ fn bench_id_join_lookup(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("u16_insert");
     for batch_size in batch_sizes {
-        let inputs = (0..batch_size).map(|i| i).collect::<Vec<_>>();
+        let inputs = (0..batch_size).collect::<Vec<_>>();
         let input_arr = UInt16Array::from_iter_values(inputs);
 
         let benchmark_id = BenchmarkId::new("idlookup/batch_size", batch_size);
@@ -46,7 +46,7 @@ fn bench_id_join_lookup(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("u16_lookup");
     for batch_size in batch_sizes {
-        let inputs = (0..batch_size).map(|i| i).collect::<Vec<_>>();
+        let inputs = (0..batch_size).collect::<Vec<_>>();
         let input_arr = UInt16Array::from_iter_values(inputs.clone());
 
         let id_lookup = U16IdLookupBenchWrapper::new(&input_arr);
@@ -78,7 +78,7 @@ fn bench_id_join_lookup(c: &mut Criterion) {
             |b, (input, lookup)| {
                 b.iter(|| {
                     for input_id in lookup {
-                        _ = std::hint::black_box(input.get(&input_id));
+                        _ = std::hint::black_box(input.get(input_id));
                     }
                 })
             },
@@ -149,7 +149,7 @@ fn bench_id_join_lookup(c: &mut Criterion) {
             |b, (input, lookup)| {
                 b.iter(|| {
                     for input_id in lookup {
-                        _ = std::hint::black_box(input.get(&input_id));
+                        _ = std::hint::black_box(input.get(input_id));
                     }
                 })
             },

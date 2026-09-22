@@ -1855,8 +1855,7 @@ where
         )
     } else if let Some(parent_id_col_dict) = update_parent_ids.as_dictionary_opt::<UInt8Type>() {
         if let Some(typed_dict) = parent_id_col_dict.downcast_dict::<PrimitiveArray<T>>() {
-            update_parent_id_set
-                .populate(typed_dict.into_iter().flatten().map(|i| i.into()));
+            update_parent_id_set.populate(typed_dict.into_iter().flatten().map(|i| i.into()));
             create_upsert_attrs_values_buffer_from_iter::<T, _>(
                 typed_dict.into_iter(),
                 all_parent_id_set,
@@ -1870,8 +1869,7 @@ where
         }
     } else if let Some(parent_id_col_dict) = update_parent_ids.as_dictionary_opt::<UInt16Type>() {
         if let Some(typed_dict) = parent_id_col_dict.downcast_dict::<PrimitiveArray<T>>() {
-            update_parent_id_set
-                .populate(typed_dict.into_iter().flatten().map(|i| i.into()));
+            update_parent_id_set.populate(typed_dict.into_iter().flatten().map(|i| i.into()));
             create_upsert_attrs_values_buffer_from_iter::<T, _>(
                 typed_dict.into_iter(),
                 all_parent_id_set,
