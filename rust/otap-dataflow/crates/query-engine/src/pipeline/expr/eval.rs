@@ -744,7 +744,7 @@ fn materialize_id_mask_to_value(
 
     let missing_dp_error = || {
         Error::ExecutionError {
-            cause: "missing metric datapoint type in eval ctx when materializing Id bitmask as scoped value".into()
+            cause: "missing metric data point type in eval ctx when materializing Id bitmask as scoped value".into()
         }
     };
 

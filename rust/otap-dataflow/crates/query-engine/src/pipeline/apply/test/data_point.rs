@@ -1132,7 +1132,7 @@ async fn test_filter_data_point_by_attribute_logical_binary_inverted() {
     .await;
 }
 
-/// Scenario: Filter metric data points by a predicate that will check if the metric datapoint
+/// Scenario: Filter metric data points by a predicate that will check if the metric data point
 /// does not have some attribute value
 /// Guarantees: the engine can filter metric data points by this type of predicate
 #[tokio::test]
@@ -1176,7 +1176,7 @@ async fn test_filter_data_point_by_attribute_is_null() {
 
 /// In a handful of tests below, we want to ensure that values are assigned to all data point types
 /// with the correct key / value from sources involving various types of expressions. This helper
-/// simply populates each type of datapoint, evaluates the expression, and ensures the correct
+/// simply populates each type of data point, evaluates the expression, and ensures the correct
 /// attribute was assigned. The motivation for this is to reduce the boilerplate of creating
 /// fixtures and asserting the result of each test case.
 async fn run_assign_to_all_data_point_type_test(
@@ -1437,7 +1437,7 @@ async fn test_assign_to_data_point_attributes_requiring_join_attrs_and_record_le
 }
 
 /// Scenario: assign a new attribute computed from a binary expression that must do a join of
-/// multiple scopes, in this case being scalar -> attributes.parent_id -> datapoint.id
+/// multiple scopes, in this case being scalar -> attributes.parent_id -> data point.id
 /// Guarantees: expression evaluates to produce the correct result and the result is assigned to
 /// the new attribute value
 #[tokio::test]
@@ -1457,7 +1457,7 @@ async fn test_assign_to_data_point_attrs_requiring_multi_join_attrs_and_scalar_a
 }
 
 /// Scenario: assign a new attribute computed from a binary expression that must do a join of
-/// multiple scopes, in this case being scalar -> datapoint.id -> attributes.parent_id
+/// multiple scopes, in this case being scalar -> data point.id -> attributes.parent_id
 /// Guarantees: expression evaluates to produce the correct result and the result is assigned to
 /// the new attribute value
 #[tokio::test]

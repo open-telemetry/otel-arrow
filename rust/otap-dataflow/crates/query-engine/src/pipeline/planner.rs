@@ -492,13 +492,17 @@ impl PipelinePlanner {
 
         let mut pipeline_stages: Vec<Box<dyn PipelineStage>> = vec![];
 
-        let record_scope = match self.record_type {
-            RecordType::Signal => RecordScope::Signal,
-            RecordType::Child(child) => RecordScope::Child(child),
-            RecordType::Attributes => {
-                todo!("can't do rename attrs on attributes soi meme")
-            }
-        };
+        let record_scope =
+            match self.record_type {
+                RecordType::Signal => RecordScope::Signal,
+                RecordType::Child(child) => RecordScope::Child(child),
+                RecordType::Attributes => return Err(Error::InvalidPipelineError {
+                    cause:
+                        "rename operation not supported on nested pipeline applied to attributes"
+                            .into(),
+                    query_location: Some(rename_map_keys_expr.get_query_location().clone()),
+                }),
+            };
 
         // build up a pipeline stage for each type set of attributes in the expression
         for (renames, attrs_id) in [
@@ -537,7 +541,7 @@ impl PipelinePlanner {
         &self,
         reduce_map_expr: &ReduceMapTransformExpression,
     ) -> Result<Vec<Box<dyn PipelineStage>>> {
-        let mut record_attr_renames = vec![];
+        let mut record_attr_deletes = vec![];
         let mut scope_attrs_deletes = vec![];
         let mut resource_attrs_deletes = vec![];
 
@@ -551,7 +555,7 @@ impl PipelinePlanner {
                                 ColumnAccessor::Attributes(attrs_ident, attrs_key) => {
                                     match attrs_ident {
                                         AttributesIdentifier::Record(_) => {
-                                            record_attr_renames.push(attrs_key)
+                                            record_attr_deletes.push(attrs_key)
                                         }
                                         AttributesIdentifier::NonRecord(payload_type) => {
                                             match payload_type {
@@ -607,15 +611,18 @@ impl PipelinePlanner {
         let record_scope = match self.record_type {
             RecordType::Signal => RecordScope::Signal,
             RecordType::Child(child) => RecordScope::Child(child),
-            RecordType::Attributes => {
-                todo!("can't do reduce_map on attributes")
-            }
+            RecordType::Attributes => return Err(Error::InvalidPipelineError {
+                cause:
+                    "remove attributes operation not supported on nested pipeline applied to attributes"
+                        .into(),
+                query_location: Some(reduce_map_expr.get_query_location().clone()),
+            }),
         };
 
         // build up a pipeline stage for each type set of attributes in the expression
         for (deletes, attrs_id) in [
             (
-                record_attr_renames,
+                record_attr_deletes,
                 AttributesIdentifier::Record(record_scope),
             ),
             (
@@ -663,18 +670,7 @@ impl PipelinePlanner {
         let mut assignments = Vec::new();
         let scoped_planner = ExprPlanner::new(
             self.filter_attribute_keys_case_sensitive,
-            // TODO now that it's fixed - actually fix the bug!
             self.record_type.clone(),
-            // // FIXME - when we support assigning fields on metric data points, we may need to pass in
-            // // self.record_type.clone() here instead of just copying RecordType::Signal. When we
-            // // make this change, it will break some behaviour of assigning attribute value in
-            // // nested `apply attribute { ... }` pipelines, especially when there are missing
-            // // attributes. This is because the planner tries to be "smart" and figure out that
-            // // an expression like "value = values + 2" _only_ makes sense for the "int" column,
-            // // and plans an expression referencing "int", but if this field is missing, the
-            // // AssignPipelineStage doesn't handle it correctly. Luckily regressions of this are
-            // // covered by unit tests.
-            // RecordType::Signal,
         );
 
         // TODO - currently the logic for coalescing multiple assignments isn't as intelligent
@@ -923,7 +919,11 @@ impl PipelinePlanner {
                         RecordType::Child(child) => RecordScope::Child(*child),
                         RecordType::Signal => RecordScope::Signal,
                         RecordType::Attributes => {
-                            todo!("shouldn't be allowed to call \"apply\" in this case");
+                            return Err(Error::InvalidPipelineError {
+                                cause: "Cannot apply nested pipelines to field of attributes"
+                                    .into(),
+                                query_location: Some(set_expr.get_query_location().clone()),
+                            });
                         }
                     };
 
@@ -1251,7 +1251,7 @@ impl ColumnAccessor {
 #[allow(variant_size_differences)]
 pub enum AttributesIdentifier {
     /// Attributes for the record type in the expression E.g. LogAttrs for a batch of log records,
-    /// or attributes of metric datapoints
+    /// or attributes of metric data points
     Record(RecordScope),
 
     /// Attributes for something that isn't the root record type, identified by the specific

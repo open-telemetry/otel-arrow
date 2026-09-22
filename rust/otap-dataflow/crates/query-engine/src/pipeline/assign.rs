@@ -1562,15 +1562,15 @@ impl PipelineStage for AssignPipelineStage {
                 continue;
             }
 
-            // TODO support - add support for additional assignment targets for metric datapoints
+            // TODO support - add support for additional assignment targets for metric data points
             return Err(match self.dest_columns[0] {
                 ColumnAccessor::ColumnName(_) | ColumnAccessor::StructCol(_, _) => {
                     Error::NotYetSupportedError {
-                        message: "assigning metric datapoint columns not yet supported".into(),
+                        message: "assigning metric data point columns not yet supported".into(),
                     }
                 }
                 ColumnAccessor::NestedAttribute(_, _, _) => Error::NotYetSupportedError {
-                    message: "assigning to metric datapoint nested attributes not yet supported"
+                    message: "assigning to metric data point nested attributes not yet supported"
                         .into(),
                 },
                 ColumnAccessor::Attributes(_, _) => {
@@ -2028,7 +2028,7 @@ fn decompose_any_value_upsert<'a, T: ArrowPrimitiveType>(
             .as_any()
             .downcast_ref::<PrimitiveArray<T>>()
             .ok_or_else(|| Error::ExecutionError {
-                cause: "filtered parent_ids is not UInt16".into(),
+                cause: format!("filtered parent_ids is not {:?}", T::DATA_TYPE),
             })?
             .clone();
 
