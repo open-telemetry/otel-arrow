@@ -169,13 +169,20 @@ impl DriverAdapter for FakeAdapter {
     async fn shutdown(&mut self) -> Result<(), Self::Error> {
         let key = self.lease_key.clone();
         // Lease acquisition touches disk, even when used as a test assertion.
-        let competing_lease = tokio::task::spawn_blocking(move || SourceLease::acquire(&key))
+        let worker = ScraperWorker::new().expect("lease probe worker");
+        let competing_lease = worker
+            .run(move || SourceLease::acquire(&key))
+            .expect("lease probe accepted")
             .await
             .expect("lease probe worker");
         assert!(
             competing_lease.is_err(),
             "cleanup still owns the storage lease"
         );
+        worker
+            .stop(Instant::now() + Duration::from_secs(1))
+            .await
+            .expect("lease probe stopped");
         self.shutdown_joined.set(true);
         Ok(())
     }
@@ -509,6 +516,88 @@ fn matching_acks_reuse_encoder_and_commit_pages_through_the_receiver_loop() {
     drop(SourceLease::acquire(&store.lease_key()).expect("lease released after receiver shutdown"));
 }
 
+struct StartupFailureProbe(DatabaseReceiver<FakeAdapter>);
+
+#[async_trait(?Send)]
+impl local::Receiver<OtapPdata> for StartupFailureProbe {
+    async fn start(
+        self: Box<Self>,
+        controls: local::ControlChannel<OtapPdata>,
+        effects: local::EffectHandler<OtapPdata>,
+    ) -> Result<TerminalState, Error> {
+        let result = local::Receiver::start(Box::new(self.0), controls, effects).await;
+        assert!(matches!(
+            result,
+            Err(Error::ReceiverError {
+                kind: ReceiverErrorKind::Configuration,
+                ..
+            })
+        ));
+        Ok(TerminalState::default())
+    }
+}
+
+/// Scenario: Startup checkpoint reading rejects a stored configuration fingerprint before any query runs.
+/// Guarantees: The original read error survives cleanup, adapter shutdown still runs, and both cleanup paths permit lease release.
+#[test]
+fn checkpoint_read_failure_still_cleans_up_adapter_and_worker() {
+    let directory = tempfile::tempdir_in(".").expect("startup checkpoint directory");
+    let config = CheckpointConfig {
+        directory: directory.path().to_string_lossy().into_owned(),
+        on_nack: OnNack::Rewind,
+        nack_backoff: Duration::from_millis(10),
+        max_consecutive_failures: 3,
+    };
+    let make_store = |fingerprint: &str| {
+        CheckpointStore::new(
+            directory.path(),
+            "group",
+            "pipeline",
+            "startup",
+            "source",
+            fingerprint.to_owned(),
+        )
+    };
+    _ = make_store("old")
+        .write(0, &checkpoint(0, 1).cursor)
+        .expect("prior configuration checkpoint");
+    let store = make_store("new");
+    let lease = SourceLease::acquire(&store.lease_key()).expect("source lease");
+    let shutdown_joined = Rc::new(Cell::new(false));
+    let receiver = StartupFailureProbe(DatabaseReceiver::new(
+        FakeAdapter {
+            shutdown_joined: Rc::clone(&shutdown_joined),
+            lease_key: store.lease_key(),
+        },
+        fake_query(&config),
+        store.clone(),
+        lease,
+        config.nack_backoff,
+        config.max_consecutive_failures,
+        "source".to_owned(),
+        normal_admission(),
+        None,
+    ));
+    let runtime = TestRuntime::<OtapPdata>::new();
+    let wrapper = ReceiverWrapper::local(
+        receiver,
+        test_node(runtime.config().name.clone()),
+        Arc::new(NodeUserConfig::new_receiver_config(
+            "urn:otel:receiver:startup_probe",
+        )),
+        runtime.config(),
+    );
+    runtime
+        .set_receiver(wrapper)
+        .run_test(|_| async {})
+        .run_validation(|_| async {});
+    assert!(
+        shutdown_joined.get(),
+        "read failure must still attempt adapter cleanup"
+    );
+    drop(SourceLease::acquire(&store.lease_key()).expect("startup cleanup releases lease"));
+}
+
 /// Scenario: A worker ignores cancellation past an already-expired stop deadline.
 /// Guarantees: The controller returns promptly and marks ownership for process-lifetime quarantine.
 #[tokio::test]
@@ -530,6 +619,301 @@ async fn stuck_worker_quarantines_ownership_at_deadline() {
     .expect("bounded shutdown");
     assert!(matches!(outcome, OperationOutcome::Stopped(_)));
     assert!(abandoned.get());
+}
+
+/// Scenario: A real OS job never returns while shutdown and Tokio runtime drop run in a child process.
+/// Guarantees: Both deadlines return without joining the job, and the real storage lease stays quarantined until process exit.
+#[test]
+fn scraper_worker_deadline_does_not_hold_runtime_or_release_lease() {
+    const CHILD: &str = "OTEL_SCRAPER_WORKER_RUNTIME_CHILD";
+    if let Some(directory) = std::env::var_os(CHILD) {
+        let key = std::path::PathBuf::from(directory).join("blocked-source");
+        let key = key.to_string_lossy().into_owned();
+        let ownership = HeldOwnership {
+            lease: Some(SourceLease::acquire(&key).expect("source lease")),
+            abandoned: Cell::new(false),
+            cleanup_joined: Cell::new(false),
+        };
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("current-thread runtime");
+        let worker = ScraperWorker::new().expect("scraper worker");
+        // The subprocess watchdog bounds this deliberately nonreturning OS job.
+        let (started, ready) = oneshot::channel();
+        let operation = worker
+            .run::<()>(move || {
+                let _ = started.send(());
+                loop {
+                    std::thread::park();
+                }
+            })
+            .expect("job accepted");
+        let started_at = Instant::now();
+        runtime.block_on(async {
+            tokio::time::timeout(Duration::from_secs(1), ready)
+                .await
+                .expect("worker started promptly")
+                .expect("worker started");
+            let deadline = Instant::now() + Duration::from_millis(20);
+            let mut control = control_channel(NodeControlMsg::Shutdown {
+                deadline,
+                reason: "nonreturning filesystem operation".to_owned(),
+            });
+            let outcome = await_database_operation_or_stop(
+                operation,
+                NonInterruptible,
+                &mut control,
+                &mut None,
+                &ownership.abandoned,
+                &poll_admission(),
+            )
+            .await
+            .expect("operation stop returns");
+            assert!(matches!(outcome, OperationOutcome::Stopped(_)));
+            assert!(ownership.abandoned.get());
+            assert!(matches!(
+                worker.stop(deadline).await,
+                Err(ScraperWorkerError::Deadline)
+            ));
+        });
+        drop(runtime);
+        assert!(started_at.elapsed() < Duration::from_secs(2));
+        drop(ownership);
+        assert!(
+            SourceLease::acquire(&key).is_err(),
+            "a live job must keep the real lease"
+        );
+        return;
+    }
+
+    let directory = tempfile::tempdir_in(".").expect("subprocess lease directory");
+    let mut child = std::process::Command::new(std::env::current_exe().expect("test executable"))
+        .args([
+            "--exact",
+            "controller::tests::scraper_worker_deadline_does_not_hold_runtime_or_release_lease",
+            "--nocapture",
+        ])
+        .env(
+            CHILD,
+            directory
+                .path()
+                .canonicalize()
+                .expect("absolute lease directory"),
+        )
+        .spawn()
+        .expect("runtime regression subprocess");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(status) = child.try_wait().expect("subprocess status") {
+            assert!(status.success(), "runtime regression subprocess failed");
+            break;
+        }
+        if Instant::now() >= deadline {
+            child
+                .kill()
+                .expect("kill hung runtime regression subprocess");
+            let _ = child.wait();
+            panic!("Tokio runtime drop waited for the scraper OS job");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let key = directory.path().join("blocked-source");
+    drop(SourceLease::acquire(&key.to_string_lossy()).expect("process exit releases quarantine"));
+}
+
+/// Scenario: One dedicated worker job is blocked and a second job fills its only queue slot.
+/// Guarantees: A third submission fails fast with Busy; accepted jobs and explicit worker exit complete after release.
+#[tokio::test]
+async fn scraper_worker_bounds_active_and_queued_jobs() {
+    let worker = ScraperWorker::new().expect("scraper worker");
+    // The gate synchronizes this local test with its one real blocking worker.
+    let (release, gate) = sync_channel(1);
+    let (started, ready) = oneshot::channel();
+    let first = worker
+        .run(move || {
+            let _ = started.send(());
+            gate.recv_timeout(Duration::from_secs(2))
+                .expect("release active job");
+            1
+        })
+        .expect("first job accepted");
+    ready.await.expect("active job started");
+    let second = worker.run(|| 2).expect("one queued job accepted");
+    assert!(matches!(worker.run(|| 3), Err(ScraperWorkerError::Busy)));
+    release.send(()).expect("release worker");
+    assert_eq!(first.await.expect("first job completed"), 1);
+    assert_eq!(second.await.expect("queued job completed"), 2);
+    worker
+        .stop(Instant::now() + Duration::from_secs(1))
+        .await
+        .expect("worker exit confirmed");
+}
+
+/// Scenario: A submitted job panics on the dedicated OS thread.
+/// Guarantees: Both the job result and worker-exit acknowledgement fail instead of reporting successful cleanup.
+#[tokio::test]
+async fn scraper_worker_panic_is_not_successful_cleanup() {
+    let worker = ScraperWorker::new().expect("scraper worker");
+    let result = worker
+        .run::<()>(|| panic!("injected scraper worker panic"))
+        .expect("job accepted");
+    assert!(result.await.is_err());
+    assert!(matches!(
+        worker.stop(Instant::now() + Duration::from_secs(1)).await,
+        Err(ScraperWorkerError::Stopped)
+    ));
+}
+
+/// Scenario: A worker's receiving endpoint has already disconnected before submission.
+/// Guarantees: Submission fails explicitly with Stopped and cannot create hidden queued work.
+#[test]
+fn scraper_worker_disconnected_submission_fails() {
+    let (jobs, requests) = sync_channel::<ScraperJob>(1);
+    let (exit, exited) = oneshot::channel();
+    drop(requests);
+    drop(exit);
+    let worker = ScraperWorker {
+        jobs: Some(jobs),
+        exited,
+    };
+    assert!(matches!(
+        worker.run(|| ()),
+        Err(ScraperWorkerError::Stopped)
+    ));
+}
+
+/// Scenario: A real storage operation completes and the worker confirms that its job loop exited.
+/// Guarantees: Ownership is held during work and released only after confirmed successful cleanup.
+#[test]
+fn scraper_worker_confirmed_cleanup_releases_real_lease() {
+    let directory = tempfile::tempdir_in(".").expect("worker lease directory");
+    let key = directory
+        .path()
+        .join("completed-source")
+        .to_string_lossy()
+        .into_owned();
+    let ownership = HeldOwnership {
+        lease: Some(SourceLease::acquire(&key).expect("source lease")),
+        abandoned: Cell::new(false),
+        cleanup_joined: Cell::new(false),
+    };
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("current-thread runtime");
+    runtime.block_on(async {
+        let worker = ScraperWorker::new().expect("scraper worker");
+        let probe = key.clone();
+        assert!(
+            worker
+                .run(move || SourceLease::acquire(&probe))
+                .expect("lease probe accepted")
+                .await
+                .expect("lease probe completed")
+                .is_err()
+        );
+        worker
+            .stop(Instant::now() + Duration::from_secs(1))
+            .await
+            .expect("worker exited");
+        ownership.cleanup_joined.set(true);
+    });
+    drop(runtime);
+    drop(ownership);
+    drop(SourceLease::acquire(&key).expect("confirmed cleanup releases source"));
+}
+
+/// Scenario: A gated real encoding job runs off-core while hard and stale Normal pressure controls arrive.
+/// Guarantees: Controls update admission before encoding completes, stale recovery stays rejected, and the encoded page is retained.
+#[tokio::test]
+async fn scraper_encoding_job_keeps_pressure_controls_responsive() {
+    let worker = ScraperWorker::new().expect("scraper worker");
+    let mut encoder = OtlpPageEncoder::new(
+        DatabaseSystem::Oracle,
+        "encoding-probe".to_owned(),
+        OutputConfig {
+            timestamp_column: Some("EVENT_TS".to_owned()),
+            validation_columns: vec!["EVENT_ID".to_owned()],
+        },
+        fake_columns(),
+    )
+    .expect("encoder");
+    let page = QueryPage {
+        columns: fake_columns(),
+        rows: vec![CursorRow {
+            row: Row {
+                values: vec![
+                    CellValue::Decimal("1".to_owned()),
+                    CellValue::Timestamp("2026-01-01T00:00:00".to_owned()),
+                ],
+            },
+            cursor: checkpoint(0, 1).cursor,
+        }],
+    };
+    // Keep the real encoding job active until the local core processes controls.
+    let (release, gate) = sync_channel(1);
+    let (started, ready) = oneshot::channel();
+    let encoding = worker
+        .run(move || {
+            let _ = started.send(());
+            gate.recv_timeout(Duration::from_secs(2))
+                .expect("encoding release");
+            let encoded = encoder.encode_page(page, 1, 1024 * 1024);
+            (encoder, encoded)
+        })
+        .expect("encoding accepted");
+    ready.await.expect("encoding worker active");
+    let (sender, receiver) = Channel::new(2);
+    sender
+        .send(pressure(2, MemoryPressureLevel::Hard))
+        .expect("hard pressure");
+    sender
+        .send(pressure(1, MemoryPressureLevel::Normal))
+        .expect("stale recovery");
+    let mut control = local::ControlChannel::new(Receiver::Local(LocalReceiver::mpsc(receiver)));
+    let admission = poll_admission();
+    let abandoned = Cell::new(false);
+    let mut metrics = None;
+    let (outcome, ()) = tokio::join!(
+        await_database_operation_or_stop(
+            encoding,
+            NonInterruptible,
+            &mut control,
+            &mut metrics,
+            &abandoned,
+            &admission,
+        ),
+        async {
+            tokio::time::timeout(Duration::from_secs(1), async {
+                while !admission.state.should_shed_ingress() {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("core processes controls while OS job blocks");
+            assert!(admission.cycle_interrupted.get());
+            release.send(()).expect("release encoding");
+        }
+    );
+    let OperationOutcome::Completed(result) = outcome.expect("encoding wait") else {
+        panic!("pressure must not discard encoding");
+    };
+    let (_, encoded) = result.expect("encoding result");
+    assert_eq!(
+        encoded
+            .expect("valid encoding")
+            .expect("one page")
+            .row_count,
+        1
+    );
+    assert!(admission.state.should_shed_ingress());
+    assert!(!abandoned.get());
+    worker
+        .stop(Instant::now() + Duration::from_secs(1))
+        .await
+        .expect("encoder worker stopped");
+    drop(sender);
 }
 
 struct DropProbe(Rc<Cell<bool>>);
@@ -632,11 +1016,13 @@ impl local::Receiver<OtapPdata> for CheckpointProbe {
         mut controls: local::ControlChannel<OtapPdata>,
         effects: local::EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
+        let worker = ScraperWorker::new().expect("checkpoint worker");
         let abandoned = Cell::new(false);
         let deadline = self
             .already_draining
             .then(|| Instant::now() + Duration::from_millis(30));
         let outcome = commit_checkpoint(
+            &worker,
             &self.store,
             0,
             &CompositeCursor::new("2026-01-01 00:00:00".into(), 1),
@@ -663,14 +1049,16 @@ impl local::Receiver<OtapPdata> for CheckpointProbe {
             assert!(abandoned.get());
             assert_eq!(self.control.completed.load(Ordering::SeqCst), 0);
         }
-        let store = self.store.clone();
         assert!(
-            tokio::task::spawn_blocking(move || store.read())
+            read_checkpoint(&worker, &self.store, &effects)
                 .await
-                .expect("checkpoint reader")
                 .expect("read retained checkpoint")
                 .is_none()
         );
+        worker
+            .stop(Instant::now() + Duration::from_secs(1))
+            .await
+            .expect("checkpoint worker stopped");
         Ok(TerminalState::default())
     }
 }
@@ -727,7 +1115,7 @@ fn run_checkpoint_probe(already_draining: bool) {
             }
         })
         .run_validation(|_| async {});
-    // TestRuntime has joined its blocking pool before releasing the real lease.
+    // The probe explicitly confirmed its dedicated worker exited.
     drop(lease);
 }
 
@@ -1138,9 +1526,14 @@ enum LoopCase {
     HardDuringQuery,
 }
 
-async fn stored_checkpoint(store: &CheckpointStore) -> Option<CheckpointState> {
+async fn stored_checkpoint(
+    worker: &ScraperWorker,
+    store: &CheckpointStore,
+) -> Option<CheckpointState> {
     let store = store.clone();
-    tokio::task::spawn_blocking(move || store.read())
+    worker
+        .run(move || store.read())
+        .expect("checkpoint read accepted")
         .await
         .expect("checkpoint read joins")
         .expect("checkpoint read succeeds")
@@ -1279,6 +1672,7 @@ fn run_catch_up_loop(case: LoopCase) {
         .set_receiver(wrapper)
         .run_test(|_| async {})
         .run_validation_concurrent(move |mut ctx| async move {
+            let reader = ScraperWorker::new().expect("validation reader");
             tokio::time::timeout(Duration::from_secs(2), async {
                 if matches!(case, LoopCase::InitialHard | LoopCase::DefaultInitialHard) {
                     assert!(
@@ -1316,7 +1710,11 @@ fn run_catch_up_loop(case: LoopCase) {
                     let mut pdata = ctx.recv().await.expect("next catch-up page");
                     assert_page_id(&pdata, page);
                     if page == 1 {
-                        assert!(stored_checkpoint(&validation_store).await.is_none());
+                        assert!(
+                            stored_checkpoint(&reader, &validation_store)
+                                .await
+                                .is_none()
+                        );
                         assert!(
                             tokio::time::timeout(Duration::from_millis(20), ctx.recv())
                                 .await
@@ -1334,7 +1732,11 @@ fn run_catch_up_loop(case: LoopCase) {
                                     .await
                                     .is_err()
                             );
-                            assert!(stored_checkpoint(&validation_store).await.is_none());
+                            assert!(
+                                stored_checkpoint(&reader, &validation_store)
+                                    .await
+                                    .is_none()
+                            );
                             pdata = ctx.recv().await.expect("replayed page");
                             assert_page_id(&pdata, page);
                             assert_eq!(&*fetched.borrow(), &[0, 0], "NACK reuses committed cursor");
@@ -1354,7 +1756,7 @@ fn run_catch_up_loop(case: LoopCase) {
                         .expect("ACK");
                 }
                 loop {
-                    if stored_checkpoint(&validation_store)
+                    if stored_checkpoint(&reader, &validation_store)
                         .await
                         .is_some_and(|value| value.revision == expected_pages)
                     {
@@ -1410,6 +1812,10 @@ fn run_catch_up_loop(case: LoopCase) {
             })
             .await
             .expect("catch-up completes without waiting for the 60-second interval");
+            reader
+                .stop(Instant::now() + Duration::from_secs(1))
+                .await
+                .expect("validation reader stopped");
         });
     let committed = store.read().expect("checkpoint read").expect("durable ACK");
     assert_eq!(committed.revision, expected_pages, "{case:?}");
@@ -1554,8 +1960,10 @@ impl local::Receiver<OtapPdata> for PressureCheckpointProbe {
         mut controls: local::ControlChannel<OtapPdata>,
         effects: local::EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
+        let worker = ScraperWorker::new().expect("checkpoint worker");
         let abandoned = Cell::new(false);
         let outcome = commit_checkpoint(
+            &worker,
             &self.store,
             0,
             &checkpoint(0, 1).cursor,
@@ -1579,7 +1987,11 @@ impl local::Receiver<OtapPdata> for PressureCheckpointProbe {
         assert!(self.admission.cycle_interrupted.get());
         assert!(!self.admission.state.should_shed_ingress());
         assert!(!abandoned.get(), "checkpoint worker must join");
-        assert!(stored_checkpoint(&self.store).await.is_none());
+        assert!(stored_checkpoint(&worker, &self.store).await.is_none());
+        worker
+            .stop(Instant::now() + Duration::from_secs(1))
+            .await
+            .expect("checkpoint worker stopped");
         Ok(TerminalState::default())
     }
 }
