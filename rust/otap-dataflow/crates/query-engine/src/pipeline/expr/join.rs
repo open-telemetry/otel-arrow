@@ -180,7 +180,7 @@ pub fn join<'a>(
             }
         }
         (DataScope::Record(_) | DataScope::RootParent(_), DataScope::Attribute(attr_id, _)) => {
-            let join_exec = RootToAttributesJoin::new(*attr_id);
+            let join_exec = RecordToAttributesJoin::new(*attr_id);
             let join_result = join_exec.join(left, right, otap_batch)?;
             Ok((join_result, left.data_scope.clone()))
         }
@@ -298,7 +298,7 @@ fn compute_join_alignment(
             }
         }
         (DataScope::Record(_) | DataScope::RootParent(_), DataScope::Attribute(attr_id, _)) => {
-            let exec = RootToAttributesJoin::new(*attr_id);
+            let exec = RecordToAttributesJoin::new(*attr_id);
             let indices = exec.rows_to_take(left, right, otap_batch)?;
             Ok((
                 JoinAlignment::LeftPreserved(indices),
@@ -939,19 +939,21 @@ impl JoinExec for ScalarJoin {
     }
 }
 
-/// Joins root record batch (logs/metrics/traces) to a child attributes record batch
-/// on root.id == attributes.parent_id
-pub struct RootToAttributesJoin {
+/// Joins record batch (root logs/metrics/traces or child such as metric data points) to a child
+/// attributes record batch on `record.id == attributes.parent_id`. In the case that the record
+/// is the root signal, this can also be used to join the root signal record batch to resource or
+/// scope attributes. The resulting row order will be that of the left side (the record).
+pub struct RecordToAttributesJoin {
     attrs_id: AttributesIdentifier,
 }
 
-impl RootToAttributesJoin {
+impl RecordToAttributesJoin {
     pub fn new(attrs_id: AttributesIdentifier) -> Self {
         Self { attrs_id }
     }
 }
 
-impl JoinExec for RootToAttributesJoin {
+impl JoinExec for RecordToAttributesJoin {
     fn rows_to_take(
         &self,
         left: &JoinInput,

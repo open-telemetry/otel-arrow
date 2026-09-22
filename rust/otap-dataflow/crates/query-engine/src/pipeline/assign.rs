@@ -69,7 +69,7 @@ use crate::pipeline::expr::eval::{EvalContext, scoped_value_to_join_input};
 use crate::pipeline::expr::join::JoinInput;
 use crate::pipeline::expr::join::{
     AttributeToDifferentAttributeJoin, AttributeToSameAttributeJoin, JoinExec,
-    RecordAttrsToRecordJoin, RootToAttributesJoin,
+    RecordAttrsToRecordJoin, RecordToAttributesJoin,
 };
 use crate::pipeline::expr::planner::PlannedOp;
 use crate::pipeline::expr::types::{
@@ -318,7 +318,7 @@ impl AssignPipelineStage {
 
             // create a JoinExec implementation that computes joined indices of values to root on
             // `root.id == attrs.parent_id` and use this to take rows from the result in order.
-            let join_exec = RootToAttributesJoin::new(*attrs_id);
+            let join_exec = RecordToAttributesJoin::new(*attrs_id);
             let eval_result = scoped_value_to_join_input(scoped_value, &otap_batch)?;
             let vals_take_indices = join_exec.rows_to_take(
                 &JoinInput::new(
@@ -366,7 +366,7 @@ impl AssignPipelineStage {
                 unreachable!("unexpected data_scope for non-aligned result")
             };
 
-            let join_exec = RootToAttributesJoin::new(*attrs_id);
+            let join_exec = RecordToAttributesJoin::new(*attrs_id);
 
             let vals_take_indices = join_exec.rows_to_take(
                 &JoinInput::new(
@@ -569,7 +569,7 @@ impl AssignPipelineStage {
                 unreachable!("unexpected data_scope")
             };
 
-            let join_exec = RootToAttributesJoin::new(attrs_id);
+            let join_exec = RecordToAttributesJoin::new(attrs_id);
             let vals_take_indices = join_exec.rows_to_take(
                 &JoinInput::new(
                     ColumnarValue::Scalar(ScalarValue::Null),
