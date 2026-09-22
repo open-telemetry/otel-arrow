@@ -724,6 +724,24 @@ fn try_build_fused_reindex_plan<S, const N: usize>(
 where
     S: OtapBatchStore,
 {
+    // Both metrics roots can point to the same child payload tables. Planning
+    // their offsets independently would append two adjustments for one child
+    // row range, while the legacy path reindexes the roots in sequence. Keep
+    // that shared-relation case on the legacy path until its ownership can be
+    // represented explicitly in the plan.
+    if N == Metrics::COUNT
+        && store
+            .select(ArrowPayloadType::UnivariateMetrics)
+            .next()
+            .is_some()
+        && store
+            .select(ArrowPayloadType::MultivariateMetrics)
+            .next()
+            .is_some()
+    {
+        return Ok(None);
+    }
+
     // Translate each input table into its future output row range once. Plans
     // store these ranges rather than batch indices so they can be applied both
     // to a generic concatenated column and while the custom kernel is copying.
@@ -2385,8 +2403,9 @@ mod tests {
         assert!(batches.iter().all(|batch| batch[0].is_some()));
     }
 
-    /// Scenario: a log child contains parent IDs outside its parent ID range.
-    /// Guarantees: Fused offset planning declines the batch and the fallback
+    /// Scenario: three log batches are merged and one child contains parent
+    /// IDs outside its parent ID range.
+    /// Guarantees: The three-input planner declines and the actual merge
     /// preserves legacy compaction and orphan-row removal exactly.
     #[test]
     fn test_fused_reindex_falls_back_for_orphan_parent_ids() {
@@ -2394,6 +2413,10 @@ mod tests {
             logs!(
                 (Logs, ("id", UInt16, vec![1u16, 2, 4])),
                 (LogAttrs, ("parent_id", UInt16, vec![0u16, 1, 2, 3, 4, 5]))
+            ),
+            logs!(
+                (Logs, ("id", UInt16, vec![1u16, 2, 4])),
+                (LogAttrs, ("parent_id", UInt16, vec![1u16, 2, 4]))
             ),
             logs!(
                 (Logs, ("id", UInt16, vec![1u16, 2, 4])),
@@ -2426,12 +2449,25 @@ mod tests {
         assert_eq!(actual, expected);
     }
 
-    /// Scenario: a UInt32 child relation uses dictionary-encoded parent IDs.
-    /// Guarantees: Fused primitive-buffer planning declines the relation and
-    /// the fallback preserves dictionary reindexing and concatenation exactly.
+    /// Scenario: three metrics batches are merged with dictionary-encoded
+    /// parent IDs in a UInt32 child relation.
+    /// Guarantees: The three-input planner declines and the actual merge
+    /// preserves legacy dictionary reindexing and concatenation exactly.
     #[test]
     fn test_fused_reindex_falls_back_for_dictionary_parent_ids() {
         let stores = vec![
+            metrics!(
+                (UnivariateMetrics, ("id", UInt16, vec![0u16, 1])),
+                (
+                    NumberDataPoints,
+                    ("id", UInt32, vec![0u32, 1]),
+                    ("parent_id", UInt16, vec![0u16, 1])
+                ),
+                (
+                    NumberDpAttrs,
+                    ("parent_id", (UInt8, UInt32), (vec![0u8, 1], vec![0u32, 1]))
+                )
+            ),
             metrics!(
                 (UnivariateMetrics, ("id", UInt16, vec![0u16, 1])),
                 (
@@ -2483,13 +2519,15 @@ mod tests {
         assert_eq!(actual, expected);
     }
 
-    /// Scenario: a plain primary ID column contains a null value.
-    /// Guarantees: Fused in-place offset planning declines nullable ID buffers
-    /// and the fallback preserves the legacy null semantics exactly.
+    /// Scenario: three log batches are merged and a plain primary ID column
+    /// contains a null value.
+    /// Guarantees: The three-input planner declines nullable ID buffers and
+    /// the actual merge preserves legacy null semantics exactly.
     #[test]
     fn test_fused_reindex_falls_back_for_nullable_ids() {
         let stores = vec![
             logs!((Logs, ("id", UInt16, vec![Some(0u16), None]))),
+            logs!((Logs, ("id", UInt16, vec![Some(0u16), Some(1)]))),
             logs!((Logs, ("id", UInt16, vec![Some(0u16), Some(1)]))),
         ];
         let batches = stores
@@ -2501,6 +2539,55 @@ mod tests {
         let plan = {
             let mut store = MultiBatchStore::<Logs, { Logs::COUNT }>::new(&mut planned);
             for payload_type in Logs::allowed_payload_types() {
+                store
+                    .remove_transport_optimized_encodings(*payload_type)
+                    .unwrap();
+            }
+            try_build_fused_reindex_plan(&store).unwrap()
+        };
+        assert!(plan.is_none());
+
+        let mut legacy = batches.clone();
+        reindex(&mut legacy).unwrap();
+        let expected = concatenate(&mut legacy).unwrap();
+
+        let mut fused = batches;
+        let actual = reindex_and_concatenate(&mut fused).unwrap();
+        assert_eq!(actual, expected);
+    }
+
+    /// Scenario: three metrics inputs each contain univariate and multivariate
+    /// roots that both claim the same metric-attribute child table.
+    /// Guarantees: Fused planning declines shared child ownership so the
+    /// batch-processor merge follows the legacy path without duplicate offsets.
+    #[test]
+    fn test_fused_reindex_falls_back_for_shared_metrics_children() {
+        let stores = vec![
+            metrics!(
+                (UnivariateMetrics, ("id", UInt16, vec![0u16])),
+                (MultivariateMetrics, ("id", UInt16, vec![0u16])),
+                (MetricAttrs, ("parent_id", UInt16, vec![0u16]))
+            ),
+            metrics!(
+                (UnivariateMetrics, ("id", UInt16, vec![0u16])),
+                (MultivariateMetrics, ("id", UInt16, vec![0u16])),
+                (MetricAttrs, ("parent_id", UInt16, vec![0u16]))
+            ),
+            metrics!(
+                (UnivariateMetrics, ("id", UInt16, vec![0u16])),
+                (MultivariateMetrics, ("id", UInt16, vec![0u16])),
+                (MetricAttrs, ("parent_id", UInt16, vec![0u16]))
+            ),
+        ];
+        let batches = stores
+            .into_iter()
+            .map(OtapBatchStore::into_batches)
+            .collect::<Vec<_>>();
+
+        let mut planned = batches.clone();
+        let plan = {
+            let mut store = MultiBatchStore::<Metrics, { Metrics::COUNT }>::new(&mut planned);
+            for payload_type in Metrics::allowed_payload_types() {
                 store
                     .remove_transport_optimized_encodings(*payload_type)
                     .unwrap();

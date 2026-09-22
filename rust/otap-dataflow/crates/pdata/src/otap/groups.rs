@@ -243,10 +243,14 @@ fn generic_concatenate<const N: usize>(
     max_items: Option<NonZeroU64>,
 ) -> Result<Vec<[Option<RecordBatch>; N]>> {
     let input_count = batches.len();
-    // With no limit, all inputs produce exactly one output. With a limit, one
-    // output per input is the conservative upper bound. Reserving both vectors
-    // avoids growth while fragments are collected and emitted.
-    let mut result = Vec::with_capacity(if max_items.is_none() { 1 } else { input_count });
+    // Without a limit, all inputs produce exactly one output. With a limit,
+    // many small inputs may still coalesce into one output, so reserving one
+    // output per input would amplify peak memory during a flush.
+    let mut result = if max_items.is_none() {
+        Vec::with_capacity(1)
+    } else {
+        Vec::new()
+    };
 
     let mut current = Vec::with_capacity(input_count);
     let mut current_num_items = 0;
