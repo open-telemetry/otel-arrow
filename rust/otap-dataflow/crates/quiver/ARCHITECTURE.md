@@ -344,12 +344,21 @@ Field descriptions:
   sequence above both the highest sequence observed in any segment filename and
   the highest sequence referenced by valid subscriber progress. Progress from
   inactive and orphaned subscribers contributes to this floor.
+- **Finalization order**: Concurrent flushes are serialized from sequence
+  reservation through segment writing, WAL cursor persistence, and registration.
+  A later segment cannot become deliverable while an earlier finalization is
+  still in flight. This keeps completion watermarks and reset baselines from
+  skipping an earlier reservation that has not registered yet. Waiting flushes
+  yield asynchronously; ingestion may continue filling the next open segment.
 - **Corrupt progress**: If magic, structure, or checksum validation fails,
   Quiver atomically replaces the file with a version 1 pending-reset
   checkpoint. The reset remains durable across restarts. When that subscriber
   next activates, Quiver installs its baseline under the segment-store read
-  lock, atomically with respect to registration. This snapshot is the activation
-  boundary: earlier registrations are skipped, including delayed callbacks.
+  lock, atomically with respect to registration. The baseline preserves the
+  greater of the pending-reset sequence floor and the snapshot's highest
+  sequence, even if retention has removed some or all segments. The persisted
+  floor therefore cannot decrease during activation. Registrations at or below
+  this boundary are skipped, including delayed callbacks.
   Later registrations are retained while the baseline is written durably, but
   delivery is enabled only after that write succeeds. Deactivation waits for
   the checkpoint operation instead of canceling it, so it cannot invalidate
@@ -357,7 +366,9 @@ Field descriptions:
 - **Unsupported progress versions**: Startup fails and leaves the file
   untouched so a compatible binary can read it.
 - **Progress I/O failures**: Startup fails because Quiver cannot determine the
-  sequence floor or safely commit a reset.
+  sequence floor or safely commit a reset. A checkpoint write reports failure
+  if parent-directory synchronization fails after rename, even though the
+  replacement file may already be visible.
 - **Cleanup coordination**: Before deleting a segment, all subscriber progress
   files must be flushed and show `oldest_incomplete_segment > deleted_segment`.
 

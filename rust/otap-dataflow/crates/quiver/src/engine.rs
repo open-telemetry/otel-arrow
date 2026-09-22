@@ -136,6 +136,12 @@ pub struct QuiverEngine {
     metrics: PersistenceMetrics,
     /// Write-ahead log writer (uses tokio mutex for async lock across await points).
     wal_writer: TokioMutex<WalWriter>,
+    /// Serializes reservation, writing, and registration so completion watermarks
+    /// cannot overtake an earlier finalization. Waiters yield to the local runtime.
+    finalization_lock: TokioMutex<()>,
+    /// One-shot pause after sequence reservation for deterministic overlap tests.
+    #[cfg(test)]
+    finalization_pause: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
     /// Current open segment accumulator.
     open_segment: Mutex<OpenSegment>,
     /// Cursor representing all entries in the current open segment.
@@ -511,6 +517,9 @@ impl QuiverEngine {
             config,
             metrics: PersistenceMetrics::new(),
             wal_writer: TokioMutex::new(wal_writer),
+            finalization_lock: TokioMutex::new(()),
+            #[cfg(test)]
+            finalization_pause: Mutex::new(None),
             open_segment: Mutex::new(OpenSegment::new()),
             segment_cursor: Mutex::new(WalConsumerCursor::default()),
             next_segment_seq: AtomicU64::new(next_segment_seq),
@@ -1321,6 +1330,8 @@ impl QuiverEngine {
     /// guarantees that even if `used` was at the soft cap before finalization,
     /// the resulting `used` won't exceed `hard_cap`.
     async fn finalize_segment_impl(&self) -> Result<()> {
+        let _finalization_guard = self.finalization_lock.lock().await;
+
         // Check if there's anything to finalize
         {
             let segment_guard = self.open_segment.lock();
@@ -1343,6 +1354,14 @@ impl QuiverEngine {
             let cursor = std::mem::take(&mut *cursor_guard);
             (segment, cursor, seq)
         };
+
+        #[cfg(test)]
+        {
+            let pause = self.finalization_pause.lock().take();
+            if let Some(pause) = pause {
+                pause.await.expect("resume paused finalization");
+            }
+        }
 
         // Write the segment file (streaming serialization - no intermediate buffer)
         let segment_path = self.segment_path(seq);
@@ -1428,7 +1447,19 @@ impl QuiverEngine {
         // Step 6: Register segment with store (triggers subscriber notification).
         // Budget was already recorded above, so register_segment will skip
         // duplicate accounting (the file size was already added).
-        let _ = self.segment_store.register_new_segment(seq);
+        let _ = self
+            .segment_store
+            .register_new_segment(seq)
+            .map_err(|error| {
+                otel_error!(
+                    "quiver.segment.flush",
+                    segment = seq.raw(),
+                    error = %error,
+                    error_type = "io",
+                    message = "failed to register finalized segment",
+                );
+                SegmentError::io(segment_path, std::io::Error::other(error))
+            })?;
 
         Ok(())
     }
@@ -5935,6 +5966,77 @@ mod tests {
         handle.ack();
     }
 
+    /// Scenario: Segments establishing a pending reset's floor are removed before activation, leaving an empty or lower snapshot.
+    /// Guarantees: Both durability modes preserve the reset boundary in memory and on disk, and allocate above it after reopening.
+    #[tokio::test]
+    async fn pending_reset_floor_survives_segment_removal_and_restart() {
+        for mode in [DurabilityMode::SegmentOnly, DurabilityMode::Wal] {
+            for remove_all in [false, true] {
+                let dir = tempdir().unwrap();
+                let id = SubscriberId::new("pending-reset-floor").unwrap();
+                let config = QuiverConfig::builder()
+                    .data_dir(dir.path())
+                    .durability(mode)
+                    .segment(SegmentConfig {
+                        max_open_duration: Duration::from_secs(3600),
+                        ..Default::default()
+                    })
+                    .build()
+                    .unwrap();
+                let engine = QuiverEngine::open(config.clone(), test_budget())
+                    .await
+                    .unwrap();
+                for _ in 0..2 {
+                    engine.ingest(&DummyBundle::with_rows(1)).await.unwrap();
+                    engine.flush().await.unwrap();
+                }
+                drop(engine);
+
+                let path = crate::subscriber::progress_file_path(dir.path(), &id);
+                fs::write(&path, b"corrupt").unwrap();
+                let engine = QuiverEngine::open(config.clone(), test_budget())
+                    .await
+                    .unwrap();
+                let floor = SegmentSeq::new(1);
+                assert_eq!(engine.registry().restored_sequence_floor(), Some(floor));
+
+                // Remove the floor-setting segment before taking the activation snapshot.
+                assert!(
+                    engine
+                        .segment_store()
+                        .delete_segment(floor)
+                        .unwrap()
+                        .is_some()
+                );
+                if remove_all {
+                    assert!(
+                        engine
+                            .segment_store()
+                            .delete_segment(SegmentSeq::new(0))
+                            .unwrap()
+                            .is_some()
+                    );
+                }
+                engine.activate_subscriber(&id).await.unwrap();
+                engine.registry().on_segment_finalized(floor, 1);
+                assert!(engine.poll_next_bundle(&id).unwrap().is_none());
+                drop(engine);
+
+                let engine = QuiverEngine::open(config, test_budget()).await.unwrap();
+                assert_eq!(engine.registry().restored_sequence_floor(), Some(floor));
+                engine.activate_subscriber(&id).await.unwrap();
+                assert!(engine.poll_next_bundle(&id).unwrap().is_none());
+                engine.ingest(&DummyBundle::with_rows(2)).await.unwrap();
+                engine.flush().await.unwrap();
+                let handle = engine.poll_next_bundle(&id).unwrap().unwrap();
+                assert_eq!(handle.bundle_ref().segment_seq, floor.next());
+                assert_eq!(handle.item_count(), 2);
+                handle.ack();
+                assert!(engine.poll_next_bundle(&id).unwrap().is_none());
+            }
+        }
+    }
+
     /// Scenario: A fully acknowledged segment cannot be deleted, and progress is flushed before restart.
     /// Guarantees: Cleanup waits for all subscribers; surviving completed files are not replayed, while later pending data is delivered.
     #[tokio::test]
@@ -6005,6 +6107,143 @@ mod tests {
             assert_eq!(handle.bundle_ref().segment_seq, pending);
             handle.ack();
             assert!(engine.poll_next_bundle(id).unwrap().is_none());
+        }
+    }
+
+    async fn check_overlapping_flushes(mode: DurabilityMode, reopen: bool, reset: bool) {
+        let dir = tempdir().unwrap();
+        let id = SubscriberId::new("overlapping-flushes").unwrap();
+        if reset {
+            fs::write(
+                crate::subscriber::progress_file_path(dir.path(), &id),
+                b"corrupt",
+            )
+            .unwrap();
+        }
+        let config = QuiverConfig::builder()
+            .data_dir(dir.path())
+            .durability(mode)
+            .segment(SegmentConfig {
+                max_open_duration: Duration::from_secs(3600),
+                ..Default::default()
+            })
+            .build()
+            .unwrap();
+        let engine = QuiverEngine::open(config.clone(), test_budget())
+            .await
+            .unwrap();
+        engine.register_subscriber(id.clone()).unwrap();
+        if !reset {
+            engine.activate_subscriber(&id).await.unwrap();
+        } else {
+            // Establish a nonempty reset baseline before reserving the next segment.
+            engine.ingest(&DummyBundle::with_rows(3)).await.unwrap();
+            engine.flush().await.unwrap();
+        }
+        let first_seq = SegmentSeq::new(if reset { 1 } else { 0 });
+        let second_seq = first_seq.next();
+
+        engine.ingest(&DummyBundle::with_rows(1)).await.unwrap();
+        let (resume, pause) = tokio::sync::oneshot::channel();
+        *engine.finalization_pause.lock() = Some(pause);
+        let mut first = Box::pin(engine.flush());
+        {
+            let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+            assert!(first.as_mut().poll(&mut context).is_pending());
+        }
+        assert_eq!(
+            engine.next_segment_seq.load(Ordering::Relaxed),
+            second_seq.raw()
+        );
+        assert!(engine.open_segment.lock().is_empty());
+        if reset {
+            // Reservation precedes the reset snapshot, but registration follows it.
+            engine.activate_subscriber(&id).await.unwrap();
+        }
+
+        engine.ingest(&DummyBundle::with_rows(2)).await.unwrap();
+        let mut second = Box::pin(engine.flush());
+        {
+            let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+            assert!(second.as_mut().poll(&mut context).is_pending());
+        }
+        assert_eq!(
+            engine.next_segment_seq.load(Ordering::Relaxed),
+            second_seq.raw(),
+            "the second flush must not reserve a sequence before the first registers"
+        );
+        assert!(!engine.open_segment.lock().is_empty());
+        let _ = engine.maintain().await.unwrap();
+        assert!(engine.poll_next_bundle(&id).unwrap().is_none());
+
+        resume.send(()).unwrap();
+        first.await.unwrap();
+        assert_eq!(
+            engine.segment_store().segment_sequences(),
+            if reset {
+                vec![SegmentSeq::new(0), first_seq]
+            } else {
+                vec![first_seq]
+            }
+        );
+        second.await.unwrap();
+        assert_eq!(
+            engine.segment_store().segment_sequences(),
+            if reset {
+                vec![SegmentSeq::new(0), first_seq, second_seq]
+            } else {
+                vec![first_seq, second_seq]
+            }
+        );
+
+        // Resolving the later segment must not let persisted progress skip the first.
+        engine
+            .claim_bundle(
+                &id,
+                BundleRef::new(second_seq, crate::subscriber::BundleIndex::new(0)),
+            )
+            .unwrap()
+            .ack();
+        let _ = engine.maintain().await.unwrap();
+        let engine = if reopen {
+            drop(engine);
+            let engine = QuiverEngine::open(config, test_budget()).await.unwrap();
+            engine.activate_subscriber(&id).await.unwrap();
+            engine
+        } else {
+            engine
+        };
+        let handle = engine
+            .poll_next_bundle(&id)
+            .unwrap()
+            .expect("earlier segment is pending");
+        assert_eq!(handle.bundle_ref().segment_seq, first_seq);
+        assert_eq!(handle.item_count(), 1);
+        handle.ack();
+        assert!(engine.poll_next_bundle(&id).unwrap().is_none());
+        let _ = engine.maintain().await.unwrap();
+        assert_eq!(engine.segment_store().segment_count(), 0);
+    }
+
+    /// Scenario: Two flushes overlap while the lower sequence is paused before writing and maintenance runs.
+    /// Guarantees: WAL and segment-only finalization register in order, and an out-of-order ack never hides the earlier data live or after restart.
+    #[tokio::test]
+    async fn overlapping_flushes_preserve_delivery_and_recovery() {
+        for mode in [DurabilityMode::SegmentOnly, DurabilityMode::Wal] {
+            for reopen in [false, true] {
+                check_overlapping_flushes(mode, reopen, false).await;
+            }
+        }
+    }
+
+    /// Scenario: Reset activation snapshots its baseline while the first of two overlapping finalizations is paused.
+    /// Guarantees: An earlier reservation that registers after the snapshot stays deliverable in both durability modes and after restart.
+    #[tokio::test]
+    async fn reset_activation_retains_finalization_reserved_before_snapshot() {
+        for mode in [DurabilityMode::SegmentOnly, DurabilityMode::Wal] {
+            for reopen in [false, true] {
+                check_overlapping_flushes(mode, reopen, true).await;
+            }
         }
     }
 

@@ -412,7 +412,7 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
                     self.segment_provider
                         .with_latest_segment(|completed_through| {
                             state.begin_reset_activation(completed_through);
-                            completed_through
+                            state.completed_through()
                         });
                 Some(completed_through)
             }

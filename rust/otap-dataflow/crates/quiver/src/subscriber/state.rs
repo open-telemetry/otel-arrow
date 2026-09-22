@@ -250,11 +250,11 @@ impl SubscriberState {
         self.reset_activating = false;
     }
 
-    /// Starts reset activation at the supplied completed-through watermark.
+    /// Starts reset activation without lowering the existing completed-through watermark.
     pub fn begin_reset_activation(&mut self, completed_through: Option<SegmentSeq>) {
         self.segments.clear();
         self.claimed.clear();
-        self.completed_through = completed_through;
+        self.completed_through = self.completed_through.max(completed_through);
         self.reset_activating = true;
     }
 

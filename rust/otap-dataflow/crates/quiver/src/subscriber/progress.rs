@@ -629,13 +629,24 @@ pub(crate) fn read_progress_file_state(path: &Path) -> Result<LoadedProgress> {
 /// - The directory doesn't exist
 /// - The file cannot be written
 /// - fsync fails
+///
+/// A parent-directory sync error after rename can leave the replacement visible;
+/// an error does not imply that the previous checkpoint is still installed.
 pub async fn write_progress_file(
     dir: &Path,
     subscriber_id: &SubscriberId,
     oldest_incomplete_seg: SegmentSeq,
     entries: &[SegmentProgressEntry],
 ) -> Result<()> {
-    write_progress_file_impl(dir, subscriber_id, oldest_incomplete_seg, entries, 0).await
+    write_progress_file_impl(
+        dir,
+        subscriber_id,
+        oldest_incomplete_seg,
+        entries,
+        0,
+        sync_parent_directory_async,
+    )
+    .await
 }
 
 pub(crate) async fn write_progress_file_with_flags(
@@ -645,7 +656,15 @@ pub(crate) async fn write_progress_file_with_flags(
     entries: &[SegmentProgressEntry],
     flags: u16,
 ) -> Result<()> {
-    write_progress_file_impl(dir, subscriber_id, oldest_incomplete_seg, entries, flags).await
+    write_progress_file_impl(
+        dir,
+        subscriber_id,
+        oldest_incomplete_seg,
+        entries,
+        flags,
+        sync_parent_directory_async,
+    )
+    .await
 }
 
 async fn write_progress_file_impl(
@@ -654,6 +673,7 @@ async fn write_progress_file_impl(
     oldest_incomplete_seg: SegmentSeq,
     entries: &[SegmentProgressEntry],
     flags: u16,
+    sync_parent: impl AsyncFnOnce(&Path) -> Result<()>,
 ) -> Result<()> {
     use tokio::io::AsyncWriteExt;
 
@@ -692,7 +712,7 @@ async fn write_progress_file_impl(
         .map_err(|e| SubscriberError::progress_io(&final_path, e))?;
 
     // Sync parent directory to ensure rename is durable.
-    sync_parent_directory_async(&final_path).await?;
+    sync_parent(&final_path).await?;
 
     Ok(())
 }
@@ -1242,6 +1262,59 @@ mod tests {
     // -------------------------------------------------------------------------
     // Atomic update tests
     // -------------------------------------------------------------------------
+
+    /// Scenario: Checkpoint rename succeeds but synchronizing its parent directory fails.
+    /// Guarantees: The writer reports the I/O error despite the visible replacement, and a subsequent durable rewrite succeeds.
+    #[tokio::test]
+    async fn parent_directory_sync_failure_after_rename_is_reported() {
+        let dir = tempdir().unwrap();
+        let id = SubscriberId::new("directory-sync-failure").unwrap();
+        let path = progress_file_path(dir.path(), &id);
+        write_progress_file_with_flags(
+            dir.path(),
+            &id,
+            SegmentSeq::new(1),
+            &[],
+            FLAG_RESET_PENDING_ACTIVATION | FLAG_COMPLETED_THROUGH,
+        )
+        .await
+        .unwrap();
+
+        let result = write_progress_file_impl(
+            dir.path(),
+            &id,
+            SegmentSeq::new(2),
+            &[],
+            FLAG_COMPLETED_THROUGH,
+            async |renamed_path: &Path| {
+                assert_eq!(renamed_path, path);
+                let progress = read_progress_file_state(renamed_path).unwrap();
+                assert_eq!(progress.completed_through(), Some(SegmentSeq::new(2)));
+                assert!(!progress.reset_pending_activation());
+                assert!(!temp_progress_file_path(dir.path(), &id).exists());
+                Err(SubscriberError::progress_io(
+                    dir.path(),
+                    io::Error::other("injected parent directory sync failure"),
+                ))
+            },
+        )
+        .await;
+        assert!(matches!(result, Err(SubscriberError::ProgressIo { .. })));
+
+        write_progress_file_with_flags(
+            dir.path(),
+            &id,
+            SegmentSeq::new(3),
+            &[],
+            FLAG_COMPLETED_THROUGH,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            read_progress_file_state(&path).unwrap().completed_through(),
+            Some(SegmentSeq::new(3)),
+        );
+    }
 
     /// Scenario: An existing checkpoint is replaced with a different segment entry.
     /// Guarantees: Reading after replacement returns the new boundary and entry.
