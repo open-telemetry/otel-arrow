@@ -371,6 +371,22 @@ guarantee that a rename survives a machine crash or power loss. Source
 retention must cover that recovery window; power-loss behavior has not been
 experimentally qualified.
 
+Checkpoint filenames live beneath `directory/@v1/`, with one component for
+each of the pipeline group, pipeline, receiver, and source IDs. IDs up to 64
+UTF-8 bytes use `id-` followed by the lowercase hex encoding of their exact
+bytes; longer IDs use `hash-` followed by their BLAKE3 digest. Source components
+end in `.checkpoint`. This keeps `Orders` and `orders` separate even on
+case-insensitive filesystems. The checkpoint payload still verifies the exact
+source ID and configuration fingerprint.
+
+If no versioned checkpoint exists, startup also reads the earlier unversioned
+names, including both the readable and digest-based names for long source IDs.
+If only a case-different old name or directory exists, recovery rejects the
+ambiguous path rather than treating it as missing or adopting another source.
+The next successful write uses the versioned path; older files are not removed
+by that write. Stop old writers before upgrading: they do not share this
+namespace or its lease and must not write concurrently with the new version.
+
 ### Source Correctness and Ownership
 
 At-least-once behavior requires commit-visible cursor ordering, stable cursor
@@ -386,11 +402,14 @@ range. Automatic distributed partitioning and source discovery are not provided.
 
 #### Checkpoint Ownership Is Not Database-Source Ownership
 
-`CheckpointStore::lease_key()` derives its key from the state directory,
-pipeline group, pipeline, receiver name, and `source_id`. `SourceLease` prevents
-competing owners of that same storage identity using a process-local registry
-and an advisory filesystem lock. Cross-process exclusion requires access to
-the same lock on a filesystem that honors those locking semantics.
+`CheckpointStore::lease_key()` returns the native filesystem path derived from
+the state directory, pipeline group, pipeline, receiver name, and `source_id`.
+Pass it directly to `SourceLease::acquire()` without converting it to a string:
+lossy text conversion can move the lock away from the checkpoint if the state
+directory contains non-UTF-8 components. `SourceLease` prevents competing
+owners of that same storage identity using a process-local registry and an
+advisory filesystem lock. Cross-process exclusion requires access to the same
+lock on a filesystem that honors those locking semantics.
 
 On-disk lock, generation, and temporary-file names use the checkpoint filename,
 not its absolute mount path. Processes mounting the same backing directory at
@@ -400,7 +419,8 @@ The in-process registry still uses the canonical full path.
 This pre-release lock namespace differs from older path-derived builds. Stop all
 old writers before upgrading; mixed old/new writers do not coordinate, and
 generation continuity across those layouts is not guaranteed. Checkpoint
-revision filenames and their payload format are unchanged.
+revision filenames now use the versioned layout; their JSON payload format is
+unchanged.
 
 For example, two one-core pipelines named `audit-a` and `audit-b` can query
 the same database rows with the same `source_id`. Their different pipeline

@@ -18,7 +18,7 @@
 //! state tree or a rename; source retention must allow replay.
 
 use crate::database::CompositeCursor;
-use crate::partition::{create_dir_all_durable, normalized_identity};
+use crate::partition::{checkpoint_name_digest, create_dir_all_durable};
 use serde::{Deserialize, Serialize};
 use std::ffi::OsStr;
 use std::io::{self, Read, Write};
@@ -31,6 +31,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 const ENVELOPE_VERSION: u8 = 1;
 const MAX_CHECKPOINT_BYTES: u64 = 16 * 1024;
 const MAX_READABLE_SOURCE_SEGMENT_BYTES: usize = 128;
+const MAX_HEX_ID_BYTES: usize = 64;
 const RETAINED_REVISIONS: usize = 2;
 const TEMP_FILE_ATTEMPTS: usize = 16;
 // Only allocates unique temporary filenames across blocking workers, not
@@ -88,7 +89,10 @@ pub(crate) struct WriteControl {
 #[derive(Clone, Debug)]
 pub struct CheckpointStore {
     prefix: PathBuf,
-    legacy_prefix: Option<PathBuf>,
+    legacy_root: PathBuf,
+    legacy_segments: [String; 3],
+    legacy_prefix: PathBuf,
+    older_legacy_prefix: Option<PathBuf>,
     source_id: String,
     config_fingerprint: String,
     // Clones move into successive blocking writers. Remember that mkdir
@@ -187,6 +191,12 @@ pub enum CheckpointError {
     #[error("checkpoint source identity mismatch in {path}")]
     SourceMismatch {
         /// Checkpoint revision file.
+        path: PathBuf,
+    },
+    /// An old, case-sensitive filename is ambiguous on case-insensitive filesystems.
+    #[error("legacy checkpoint namespace differs only in case at {path}")]
+    LegacyNamespaceCollision {
+        /// Colliding legacy directory or revision file.
         path: PathBuf,
     },
     /// A checkpoint file belongs to a semantically different configuration.
@@ -311,7 +321,7 @@ impl CheckpointError {
 }
 
 impl CheckpointStore {
-    /// Builds a store whose path encodes the full pipeline and source identity.
+    /// Builds a store whose versioned path encodes the exact pipeline and source IDs.
     #[must_use]
     pub fn new(
         root: &Path,
@@ -321,16 +331,30 @@ impl CheckpointStore {
         source_id: &str,
         config_fingerprint: String,
     ) -> Self {
-        let mut prefix = expand_state_dir(root);
-        prefix.push(encode_path_segment(pipeline_group_id));
-        prefix.push(encode_path_segment(pipeline_id));
-        prefix.push(encode_path_segment(receiver_name));
-        let (source_name, legacy_source_name) = source_checkpoint_names(source_id);
-        let legacy_prefix = legacy_source_name.map(|name| prefix.join(name));
-        prefix.push(source_name);
+        let legacy_root = expand_state_dir(root);
+        let legacy_segments = [
+            encode_path_segment(pipeline_group_id),
+            encode_path_segment(pipeline_id),
+            encode_path_segment(receiver_name),
+        ];
+        let legacy_parent = legacy_segments
+            .iter()
+            .fold(legacy_root.clone(), |path, segment| path.join(segment));
+        let (legacy_name, older_legacy_name) = source_checkpoint_names(source_id);
+        let legacy_prefix = legacy_parent.join(legacy_name);
+        let older_legacy_prefix = older_legacy_name.map(|name| legacy_parent.join(name));
+        let prefix = legacy_root
+            .join("@v1")
+            .join(encode_identity_segment(pipeline_group_id))
+            .join(encode_identity_segment(pipeline_id))
+            .join(encode_identity_segment(receiver_name))
+            .join(format!("{}.checkpoint", encode_identity_segment(source_id)));
         Self {
             prefix,
+            legacy_root,
+            legacy_segments,
             legacy_prefix,
+            older_legacy_prefix,
             source_id: source_id.to_owned(),
             config_fingerprint,
             directory_ready: Arc::new(AtomicBool::new(false)),
@@ -349,22 +373,73 @@ impl CheckpointStore {
     /// collecting the same rows. Callers must enforce one active poller per
     /// logical source range independently of this storage lock.
     #[must_use]
-    pub fn lease_key(&self) -> String {
-        self.prefix.to_string_lossy().into_owned()
+    pub fn lease_key(&self) -> &Path {
+        &self.prefix
     }
 
     /// Reads the newest installed revision, or `None` when no state exists.
     pub fn read(&self) -> Result<Option<CheckpointState>, CheckpointError> {
-        if let Some(checkpoint) = self.read_from_prefix(&self.prefix)? {
+        if let Some(checkpoint) = self.read_from_prefix(&self.prefix, false)? {
             return Ok(Some(checkpoint));
         }
-        if let Some(legacy_prefix) = self.legacy_prefix.as_ref() {
-            return self.read_from_prefix(legacy_prefix);
+        if !self.legacy_directory_exists()? {
+            return Ok(None);
+        }
+        if let Some(checkpoint) = self.read_from_prefix(&self.legacy_prefix, true)? {
+            return Ok(Some(checkpoint));
+        }
+        if let Some(prefix) = self.older_legacy_prefix.as_ref() {
+            return self.read_from_prefix(prefix, true);
         }
         Ok(None)
     }
 
-    fn read_from_prefix(&self, prefix: &Path) -> Result<Option<CheckpointState>, CheckpointError> {
+    fn legacy_directory_exists(&self) -> Result<bool, CheckpointError> {
+        let mut parent = self.legacy_root.clone();
+        for segment in &self.legacy_segments {
+            let entries = match std::fs::read_dir(&parent) {
+                Ok(entries) => entries,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+                Err(source) => {
+                    return Err(CheckpointError::Inspect {
+                        path: parent,
+                        source,
+                    });
+                }
+            };
+            let mut exact = false;
+            let mut case_variant = None;
+            for entry in entries {
+                let entry = entry.map_err(|source| CheckpointError::Inspect {
+                    path: parent.clone(),
+                    source,
+                })?;
+                let name = entry.file_name();
+                if name == OsStr::new(segment) {
+                    exact = true;
+                } else if name
+                    .to_str()
+                    .is_some_and(|name| name.eq_ignore_ascii_case(segment))
+                {
+                    case_variant = Some(entry.path());
+                }
+            }
+            if !exact {
+                if let Some(path) = case_variant {
+                    return Err(CheckpointError::LegacyNamespaceCollision { path });
+                }
+                return Ok(false);
+            }
+            parent.push(segment);
+        }
+        Ok(true)
+    }
+
+    fn read_from_prefix(
+        &self,
+        prefix: &Path,
+        legacy: bool,
+    ) -> Result<Option<CheckpointState>, CheckpointError> {
         let Some(parent) = prefix.parent() else {
             return Err(CheckpointError::NoParent {
                 path: prefix.to_path_buf(),
@@ -386,6 +461,7 @@ impl CheckpointStore {
             });
         };
         let mut newest = None;
+        let mut case_variant = None;
         for entry in entries {
             let entry = entry.map_err(|source| CheckpointError::Inspect {
                 path: parent.to_path_buf(),
@@ -395,6 +471,17 @@ impl CheckpointStore {
             let Some(name) = name.to_str() else {
                 continue;
             };
+            if legacy
+                && revision_suffix(
+                    &prefix_name.to_ascii_lowercase(),
+                    &name.to_ascii_lowercase(),
+                )
+                .is_some()
+                && revision_suffix(prefix_name, name).is_none()
+            {
+                case_variant = Some(entry.path());
+                continue;
+            }
             if let Some(revision) = parse_revision(prefix_name, name) {
                 if newest
                     .as_ref()
@@ -407,6 +494,9 @@ impl CheckpointStore {
             }
         }
         let Some((filename_revision, path)) = newest else {
+            if let Some(path) = case_variant {
+                return Err(CheckpointError::LegacyNamespaceCollision { path });
+            }
             return Ok(None);
         };
         self.read_revision(&path, filename_revision).map(Some)
@@ -607,8 +697,7 @@ impl CheckpointStore {
         // Match the storage namespace across mount aliases. The constructor
         // always appends a non-empty checkpoint filename.
         let name = self.prefix.file_name().expect("checkpoint filename");
-        let identity = normalized_identity(Path::new(name));
-        let digest = blake3::hash(identity.as_bytes()).to_hex();
+        let digest = checkpoint_name_digest(name).to_hex();
         format!(".otel-arrow-checkpoint-{digest}.")
     }
 
@@ -715,6 +804,19 @@ fn revision_path(prefix: &Path, revision: u64) -> PathBuf {
     PathBuf::from(name)
 }
 
+fn encode_identity_segment(value: &str) -> String {
+    if value.len() > MAX_HEX_ID_BYTES {
+        return format!("hash-{}", blake3::hash(value.as_bytes()).to_hex());
+    }
+    let mut encoded = String::with_capacity(3 + value.len() * 2);
+    encoded.push_str("id-");
+    for byte in value.bytes() {
+        encoded.push(char::from(hex_digit_lower(byte >> 4)));
+        encoded.push(char::from(hex_digit_lower(byte & 0x0f)));
+    }
+    encoded
+}
+
 fn source_checkpoint_names(source_id: &str) -> (String, Option<String>) {
     let encoded = encode_path_segment(source_id);
     let legacy = format!("{encoded}.checkpoint");
@@ -723,6 +825,14 @@ fn source_checkpoint_names(source_id: &str) -> (String, Option<String>) {
     }
     let digest = blake3::hash(source_id.as_bytes()).to_hex();
     (format!("source-{digest}.checkpoint"), Some(legacy))
+}
+
+const fn hex_digit_lower(value: u8) -> u8 {
+    match value {
+        0..=9 => b'0' + value,
+        10..=15 => b'a' + (value - 10),
+        _ => unreachable!(),
+    }
 }
 
 fn revision_suffix<'a>(prefix: &str, name: &'a str) -> Option<&'a str> {
@@ -741,12 +851,11 @@ fn parse_revision(prefix: &str, name: &str) -> Option<u64> {
 }
 
 fn expand_state_dir(root: &Path) -> PathBuf {
-    let text = root.to_string_lossy();
-    if let Some(rest) = text.strip_prefix("${engine.state_dir}") {
+    if let Ok(rest) = root.strip_prefix(Path::new("${engine.state_dir}")) {
         let base = std::env::var_os("OTAP_DF_STATE_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(".otap-state"));
-        return base.join(rest.trim_start_matches(['/', '\\']));
+        return base.join(rest);
     }
     root.to_path_buf()
 }

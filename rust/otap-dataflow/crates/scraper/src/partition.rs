@@ -5,6 +5,7 @@
 
 use fs2::FileExt;
 use std::collections::HashSet;
+use std::ffi::OsStr;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -22,7 +23,7 @@ pub(crate) fn create_dir_all_durable(path: &Path) -> io::Result<()> {
 // Factory construction happens before pipeline cores are assigned, so this
 // process-wide registry is touched only while constructing or dropping a
 // receiver, never on the local async data path.
-static SOURCE_LEASES: LazyLock<Mutex<HashSet<String>>> =
+static SOURCE_LEASES: LazyLock<Mutex<HashSet<PathBuf>>> =
     LazyLock::new(|| Mutex::new(HashSet::new()));
 
 /// Exclusive ownership of one checkpoint source identity.
@@ -44,7 +45,7 @@ static SOURCE_LEASES: LazyLock<Mutex<HashSet<String>>> =
 /// have stopped; the guard cannot cancel or join outstanding workers.
 #[derive(Debug)]
 pub struct SourceLease {
-    key: String,
+    key: PathBuf,
     file: Option<File>,
     generation: u64,
 }
@@ -54,7 +55,7 @@ impl SourceLease {
     ///
     /// The path is canonicalized for lock identity; database/query equivalence
     /// is not evaluated.
-    pub fn acquire(key: &str) -> Result<Self, LeaseError> {
+    pub fn acquire(key: &Path) -> Result<Self, LeaseError> {
         let paths = LeasePaths::new(key)?;
         let key = paths.registry_key.clone();
         {
@@ -98,17 +99,16 @@ impl Drop for SourceLease {
 }
 
 struct LeasePaths {
-    registry_key: String,
+    registry_key: PathBuf,
     parent: PathBuf,
     lock: PathBuf,
     generation_prefix: String,
 }
 
 impl LeasePaths {
-    fn new(key: &str) -> Result<Self, LeaseError> {
-        let source = PathBuf::from(key);
+    fn new(source: &Path) -> Result<Self, LeaseError> {
         let parent = source.parent().ok_or_else(|| LeaseError::InvalidPath {
-            path: source.clone(),
+            path: source.to_path_buf(),
         })?;
         create_dir_all_durable(parent)
             .map_err(|source| LeaseError::io("create parent directory for", parent, source))?;
@@ -116,15 +116,13 @@ impl LeasePaths {
             LeaseError::io("canonicalize parent directory for", parent, source)
         })?;
         let file_name = source.file_name().ok_or_else(|| LeaseError::InvalidPath {
-            path: source.clone(),
+            path: source.to_path_buf(),
         })?;
-        let identity = normalized_identity(&parent.join(file_name));
         // The directory already namespaces the on-disk lock. Hash only the
         // filename so different mounts of the same directory lock the same file.
-        let file_identity = normalized_identity(Path::new(file_name));
-        let digest = blake3::hash(file_identity.as_bytes()).to_hex();
+        let digest = checkpoint_name_digest(file_name).to_hex();
         Ok(Self {
-            registry_key: identity,
+            registry_key: parent.join(file_name),
             lock: parent.join(format!(".otel-arrow-source-{digest}.lock")),
             generation_prefix: format!(".otel-arrow-source-{digest}.generation."),
             parent,
@@ -132,14 +130,19 @@ impl LeasePaths {
     }
 }
 
-#[cfg(windows)]
-pub(crate) fn normalized_identity(path: &Path) -> String {
-    path.to_string_lossy().to_lowercase()
-}
-
-#[cfg(not(windows))]
-pub(crate) fn normalized_identity(path: &Path) -> String {
-    path.to_string_lossy().into_owned()
+pub(crate) fn checkpoint_name_digest(name: &OsStr) -> blake3::Hash {
+    #[cfg(windows)]
+    {
+        // Preserve the existing case-folded lock namespace for Unicode names.
+        if let Some(name) = name.to_str() {
+            return blake3::hash(name.to_lowercase().as_bytes());
+        }
+        blake3::hash(&name.as_encoded_bytes().to_ascii_lowercase())
+    }
+    #[cfg(not(windows))]
+    {
+        blake3::hash(name.as_encoded_bytes())
+    }
 }
 
 fn acquire_file_lease(paths: &LeasePaths) -> Result<(File, u64), LeaseError> {
@@ -324,22 +327,10 @@ mod tests {
     #[test]
     fn lock_namespace_is_independent_of_mount_path() {
         let directory = tempfile::tempdir().expect("temporary directory");
-        let first = LeasePaths::new(
-            &directory
-                .path()
-                .join("first")
-                .join("orders.checkpoint")
-                .to_string_lossy(),
-        )
-        .expect("first paths");
-        let second = LeasePaths::new(
-            &directory
-                .path()
-                .join("second")
-                .join("orders.checkpoint")
-                .to_string_lossy(),
-        )
-        .expect("second paths");
+        let first = LeasePaths::new(&directory.path().join("first").join("orders.checkpoint"))
+            .expect("first paths");
+        let second = LeasePaths::new(&directory.path().join("second").join("orders.checkpoint"))
+            .expect("second paths");
         assert_ne!(first.registry_key, second.registry_key);
         assert_eq!(first.lock.file_name(), second.lock.file_name());
         assert_eq!(first.generation_prefix, second.generation_prefix);
@@ -372,7 +363,6 @@ mod tests {
     fn file_lease_excludes_another_process() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let key = directory.path().join("source");
-        let key = key.to_string_lossy();
         let first = SourceLease::acquire(&key).expect("first lease");
 
         assert_eq!(first.generation(), 1);
@@ -383,7 +373,7 @@ mod tests {
                     "partition::tests::file_lease_child_process",
                     "--nocapture",
                 ])
-                .env(LEASE_CHILD_KEY, key.as_ref())
+                .env(LEASE_CHILD_KEY, key.as_os_str())
                 .output()
                 .expect("run lease contender");
         assert!(
@@ -421,7 +411,7 @@ mod tests {
             return;
         };
         assert!(matches!(
-            SourceLease::acquire(&key.to_string_lossy()),
+            SourceLease::acquire(Path::new(&key)),
             Err(LeaseError::AlreadyOwned)
         ));
     }
@@ -432,7 +422,7 @@ mod tests {
     fn incomplete_generation_marker_is_consumed() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let key = directory.path().join("source");
-        let paths = LeasePaths::new(&key.to_string_lossy()).expect("lease paths");
+        let paths = LeasePaths::new(&key).expect("lease paths");
         std::fs::write(generation_path(&paths, 7), b"").expect("write incomplete marker");
 
         let (_lease, generation) = acquire_file_lease(&paths).expect("acquire after crash");
@@ -446,7 +436,7 @@ mod tests {
     fn malformed_generation_fails_closed() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let key = directory.path().join("source");
-        let paths = LeasePaths::new(&key.to_string_lossy()).expect("lease paths");
+        let paths = LeasePaths::new(&key).expect("lease paths");
         let malformed = paths
             .parent
             .join(format!("{}invalid", paths.generation_prefix));
