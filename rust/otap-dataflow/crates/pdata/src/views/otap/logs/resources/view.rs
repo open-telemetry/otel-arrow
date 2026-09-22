@@ -8,6 +8,7 @@ use arrow::array::RecordBatch;
 use crate::error::Error;
 use crate::otap::transform::transport_optimize::RESOURCE_ID_COL_PATH;
 use crate::otlp::attributes::Attribute16Arrays;
+use crate::otlp::common::ResourceArrays;
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use crate::schema::consts;
 use crate::views::otap::common::{
@@ -34,6 +35,7 @@ impl<'a> OtapLogsResourcesView<'a> {
             resource_attrs,
             consts::PARENT_ID,
         )?;
+        let _resource_columns = logs_batch.map(ResourceArrays::try_from).transpose()?;
 
         let resource_ids = logs_batch
             .map(group_by_resource_id)

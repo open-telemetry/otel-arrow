@@ -117,6 +117,8 @@ fn filter_resource_attrs_by_key(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::otap::OtapBatchStore;
+    use crate::record_batch;
     use crate::testing::{fixtures, round_trip};
     use otel_arrow_dfe_pdata_views::views::common::{AnyValueView, AttributeView};
     use otel_arrow_dfe_pdata_views::views::resource::ResourceView;
@@ -146,5 +148,22 @@ mod tests {
                 .and_then(|value| value.as_string().map(|value| value.as_ref().to_vec())),
             Some(b"self".to_vec())
         );
+    }
+
+    /// Scenario: A nonempty logs batch has a non-struct resource column.
+    /// Guarantees: Resource-only view construction reports a conversion error.
+    #[test]
+    fn keyed_decode_rejects_malformed_resource_column() {
+        let records: OtapArrowRecords = crate::logs!((
+            Logs,
+            ("id", UInt16, vec![1u16]),
+            ("resource", UInt16, vec![1u16])
+        ))
+        .into();
+
+        let decoded = DecodedOtapLogsResources::clone_and_decode_keyed(&records, b"res.id")
+            .expect("select resource batches");
+
+        assert!(decoded.resources_view().is_err());
     }
 }

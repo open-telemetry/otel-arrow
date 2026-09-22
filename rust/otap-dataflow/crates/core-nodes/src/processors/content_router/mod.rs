@@ -1060,14 +1060,40 @@ mod tests {
     use super::*;
     use bytes::Bytes;
     use otel_arrow_dfe_engine::testing::{processor::TestRuntime, test_node};
+    use otel_arrow_dfe_pdata::otap::{OtapArrowRecords, OtapBatchStore};
     use otel_arrow_dfe_pdata::proto::opentelemetry::{
         collector::logs::v1::ExportLogsServiceRequest,
         common::v1::{AnyValue, InstrumentationScope, KeyValue},
         logs::v1::{LogRecord, ResourceLogs, ScopeLogs, SeverityNumber},
         resource::v1::Resource,
     };
+    use otel_arrow_dfe_pdata::{logs, record_batch};
     use prost::Message as ProstMessage;
     use serde_json::json;
+
+    /// Scenario: Native OTAP logs contain a non-struct resource column.
+    /// Guarantees: Route resolution reports conversion failure instead of using a default route.
+    #[test]
+    fn malformed_arrow_resource_is_conversion_error() {
+        let records: OtapArrowRecords = logs!((
+            Logs,
+            ("id", UInt16, vec![1u16]),
+            ("resource", UInt16, vec![1u16])
+        ))
+        .into();
+        let router = ContentRouter::new(ContentRouterConfig {
+            routing_key: RoutingKeyExpr::ResourceAttribute("service.namespace".to_string()),
+            routes: HashMap::from([("production".to_string(), "prod".to_string())]),
+            default_output: Some("fallback".to_string()),
+            case_sensitive: true,
+            admission_policy: SelectedRouteAdmissionPolicy::default(),
+        });
+
+        assert!(matches!(
+            router.resolve_arrow_logs_route(&records),
+            RouteResolution::ConversionError
+        ));
+    }
 
     fn create_logs_with_resource_attr(key: &str, value: &str) -> Bytes {
         let request = ExportLogsServiceRequest::new(vec![ResourceLogs::new(

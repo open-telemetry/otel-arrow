@@ -2812,6 +2812,47 @@ mod tests {
         });
     }
 
+    /// Scenario: A delta Sum would pass preflight classification but its root schema is malformed.
+    /// Guarantees: The processor emits no payload and permanently NACKs the original input.
+    #[test]
+    fn test_passthrough_preflight_nacks_malformed_otap_schema() {
+        let records: OtapArrowRecords = metrics!(
+            (
+                UnivariateMetrics,
+                ("id", UInt16, vec![1u16]),
+                ("resource.id", UInt16, vec![1u16]),
+                ("scope.id", UInt16, vec![1u16]),
+                ("name", UInt16, vec![1u16]),
+                ("metric_type", UInt8, vec![MetricType::Sum as u8]),
+                (
+                    "aggregation_temporality",
+                    Int32,
+                    vec![AggregationTemporality::Delta as i32]
+                ),
+                ("is_monotonic", Boolean, vec![true])
+            ),
+            (
+                NumberDataPoints,
+                ("id", UInt32, vec![1u32]),
+                ("parent_id", UInt16, vec![1u16])
+            ),
+        )
+        .into();
+
+        run_test(
+            json!({}),
+            vec![
+                Action::SendPdata {
+                    interests: Interests::ACKS | Interests::NACKS,
+                    payload: OtapPayload::from(records),
+                },
+                Action::AssertNoPdata,
+                Action::AssertUpstream(UpstreamExpectation::AckCount(0)),
+                Action::AssertUpstream(UpstreamExpectation::NackCount(1)),
+            ],
+        );
+    }
+
     #[test]
     fn test_full_passthrough_non_monotonic_cumulative_sum() {
         // A non-monotonic cumulative sum is not aggregatable and should pass

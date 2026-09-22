@@ -24,7 +24,7 @@ use crate::otlp::metrics::data_points::summary::{QuantileArrays, SummaryDpArrays
 use crate::otlp::metrics::exemplar::ExemplarArrays;
 use crate::otlp::metrics::{MetricType, MetricsArrays};
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-use crate::schema::{SpanId, TraceId, consts};
+use crate::schema::{SpanId, TraceId, consts, payloads};
 use crate::views::otap::common::{
     Otap32AttributeIter, OtapAttributeIter, OtapAttributeView, RowGroup, RowGroupIter,
     build_attribute_index, ensure_transport_ids_decoded, group_by_resource_id, group_by_scope_id,
@@ -84,6 +84,8 @@ fn metrics_root_batch(
 /// This reads only root metrics columns and avoids decoding child IDs or
 /// constructing hierarchy indexes.
 pub fn otap_metrics_have_aggregatable_metrics(records: &OtapArrowRecords) -> Result<bool, Error> {
+    validate_otap_metrics_schema(records)?;
+
     let Some((_, metrics_batch)) = metrics_root_batch(records) else {
         return Ok(false);
     };
@@ -124,6 +126,30 @@ pub fn otap_metrics_have_aggregatable_metrics(records: &OtapArrowRecords) -> Res
     }
 
     Ok(false)
+}
+
+fn validate_otap_metrics_schema(records: &OtapArrowRecords) -> Result<(), Error> {
+    for payload_type in records.allowed_payload_types() {
+        let Some(record_batch) = records.get(*payload_type) else {
+            continue;
+        };
+
+        if *payload_type == ArrowPayloadType::MultivariateMetrics {
+            let _metrics = MetricsArrays::try_from(record_batch)?;
+            let _resources = ResourceArrays::try_from(record_batch)?;
+            let _scopes = ScopeArrays::try_from(record_batch)?;
+            continue;
+        }
+
+        payloads::get(*payload_type)
+            .check_match(record_batch)
+            .map_err(|source| Error::InvalidSchemaForPayload {
+                payload_type: *payload_type,
+                source,
+            })?;
+    }
+
+    Ok(())
 }
 
 fn aggregation_temporality_from_column(
@@ -2058,6 +2084,7 @@ mod tests {
                 ("id", UInt16, ids),
                 ("resource.id", UInt16, resource_ids),
                 ("scope.id", UInt16, scope_ids),
+                ("name", Utf8, vec!["metric"; len]),
                 ("metric_type", UInt8, metric_types),
                 ("aggregation_temporality", Int32, aggregation_temporality),
                 ("is_monotonic", Boolean, is_monotonic)
@@ -2116,6 +2143,66 @@ mod tests {
         );
 
         assert!(otap_metrics_have_aggregatable_metrics(&records).unwrap());
+    }
+
+    /// Scenario: A passthrough metrics root has a wrongly typed required name column.
+    /// Guarantees: Preflight rejects the malformed root instead of forwarding it.
+    #[test]
+    fn aggregatable_preflight_rejects_malformed_root_schema() {
+        let records: OtapArrowRecords = crate::metrics!(
+            (
+                UnivariateMetrics,
+                ("id", UInt16, vec![1u16]),
+                ("resource.id", UInt16, vec![1u16]),
+                ("scope.id", UInt16, vec![1u16]),
+                ("name", UInt16, vec![1u16]),
+                ("metric_type", UInt8, vec![MetricType::Sum as u8]),
+                (
+                    "aggregation_temporality",
+                    Int32,
+                    vec![AggregationTemporality::Delta as i32]
+                ),
+                ("is_monotonic", Boolean, vec![true])
+            ),
+            (
+                NumberDataPoints,
+                ("id", UInt32, vec![1u32]),
+                ("parent_id", UInt16, vec![1u16])
+            ),
+        )
+        .into();
+
+        assert!(otap_metrics_have_aggregatable_metrics(&records).is_err());
+    }
+
+    /// Scenario: A passthrough metrics payload contains a malformed child parent ID.
+    /// Guarantees: Preflight rejects the child schema instead of forwarding it.
+    #[test]
+    fn aggregatable_preflight_rejects_malformed_child_schema() {
+        let records: OtapArrowRecords = crate::metrics!(
+            (
+                UnivariateMetrics,
+                ("id", UInt16, vec![1u16]),
+                ("resource.id", UInt16, vec![1u16]),
+                ("scope.id", UInt16, vec![1u16]),
+                ("name", Utf8, vec!["delta.sum"]),
+                ("metric_type", UInt8, vec![MetricType::Sum as u8]),
+                (
+                    "aggregation_temporality",
+                    Int32,
+                    vec![AggregationTemporality::Delta as i32]
+                ),
+                ("is_monotonic", Boolean, vec![true])
+            ),
+            (
+                NumberDataPoints,
+                ("id", UInt32, vec![1u32]),
+                ("parent_id", Utf8, vec!["invalid"])
+            ),
+        )
+        .into();
+
+        assert!(otap_metrics_have_aggregatable_metrics(&records).is_err());
     }
 
     #[test]
