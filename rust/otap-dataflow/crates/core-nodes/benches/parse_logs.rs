@@ -33,6 +33,10 @@ fn main() {
     let mut output = std::io::stdout().lock();
     let limits = json!({"max_input_bytes":1048576,"max_scratch_bytes":8388608,
         "max_pattern_bytes":4096,"max_compiled_regex_bytes":1048576,"max_json_depth":32,"max_entries":4096});
+    json_width_probe(&mut output, &limits);
+    if std::env::args().any(|argument| argument == "--json-width-only") {
+        return;
+    }
     for format in ["json", "regex", "csv"] {
         let prefix = if format == "json" { "/" } else { "" };
         let mut config = json!({"format":format,"on_error":"preserve","limits":limits,
@@ -162,6 +166,49 @@ fn main() {
         ).expect("write allocation result");
     }
     scheduling_probe(&mut output, &limits);
+}
+
+fn json_width_probe(output: &mut impl Write, limits: &serde_json::Value) {
+    for fields in [8, 64, 512, 4096] {
+        let object: serde_json::Map<String, serde_json::Value> = (0..fields)
+            .map(|index| (format!("key{index:04}"), json!("value")))
+            .collect();
+        let input = serde_json::to_string(&object).expect("serialize wide JSON fixture");
+        let mut configuration = json!({
+            "format":"json", "on_error":"preserve", "limits":limits,
+            "body":{"source":"/key0000"},
+        });
+        let bound = BenchLogParser::new(configuration.clone()).scratch_bound(&input);
+        configuration["limits"]["max_scratch_bytes"] = bound.into();
+        let parser = BenchLogParser::new(configuration.clone());
+        let profiler = dhat::Profiler::builder().testing().build();
+        assert!(parser.parse(&input));
+        let peak = dhat::HeapStats::get().max_bytes;
+        drop(profiler);
+        assert!(peak <= bound, "wide JSON peak exceeds reservation");
+        configuration["limits"]["max_scratch_bytes"] = (bound - 1).into();
+        let insufficient = BenchLogParser::new(configuration);
+        let profiler = dhat::Profiler::builder().testing().build();
+        assert!(!insufficient.parse(&input));
+        let rejected_peak = dhat::HeapStats::get().max_bytes;
+        drop(profiler);
+        assert_eq!(
+            rejected_peak, 0,
+            "scratch rejection must precede allocations"
+        );
+        let iterations = (200_000 / fields).clamp(25, 10_000);
+        let started = Instant::now();
+        for _ in 0..iterations {
+            assert!(black_box(parser.parse(black_box(&input))));
+        }
+        let elapsed = started.elapsed().as_secs_f64();
+        let records_per_second = iterations as f64 / elapsed;
+        let nanos_per_field = elapsed * 1e9 / (iterations * fields) as f64;
+        writeln!(output,
+            "mode=json_width fields={fields} input_bytes={} requested_peak_bytes={peak} reserved_bytes={bound} rejected_peak_bytes={rejected_peak} iterations={iterations} records_per_second={records_per_second:.1} nanos_per_field={nanos_per_field:.1}",
+            input.len(),
+        ).expect("write JSON width result");
+    }
 }
 
 fn scheduling_probe(output: &mut impl Write, limits: &serde_json::Value) {

@@ -21,6 +21,10 @@ use arrow::{
 };
 use arrow_schema::DataType;
 
+/// Bounds one contiguous copy so cooperative yields keep the same item and byte quanta.
+const COPY_RUN_ITEMS: usize = 128;
+const COPY_RUN_BYTES: usize = 256 * 1024;
+
 /// A local work quantum shared across cooperating Arrow processing phases.
 #[derive(Default)]
 pub struct CooperativeBudget {
@@ -35,6 +39,11 @@ impl CooperativeBudget {
             yield_disabled: true,
             ..Self::default()
         }
+    }
+
+    /// Reports whether this budget can yield, so callers can skip accounting it would discard.
+    fn yields(&self) -> bool {
+        !self.yield_disabled
     }
 
     /// Yield after a bounded item or byte quantum; one indivisible item may exceed it.
@@ -131,8 +140,9 @@ where
         }
     }
     let data = values.to_data();
-    let capacities = if matches!(values.data_type(), DataType::Utf8 | DataType::Binary) {
-        let offsets = data.buffer::<i32>(0);
+    let offsets = matches!(values.data_type(), DataType::Utf8 | DataType::Binary)
+        .then(|| data.buffer::<i32>(0));
+    let capacities = if let Some(offsets) = offsets {
         let mut bytes = 0;
         for (index, is_live) in live.iter().copied().enumerate() {
             budget.consume(1, 0).await;
@@ -147,19 +157,47 @@ where
     let mut selected = MutableArrayData::with_capacities(vec![&data], false, capacities);
     let mut remapped = vec![0; live.len()];
     let mut next_key = 0;
-    for (index, is_live) in live.into_iter().enumerate() {
-        if is_live {
-            let bytes = data
-                .slice(index, 1)
-                .get_slice_memory_size()
-                .unwrap_or(usize::MAX);
-            budget.consume(1, bytes).await;
-            selected.extend(0, index, index + 1);
+    let mut index = 0;
+    let yields = budget.yields();
+    let byte_limit = if yields { COPY_RUN_BYTES } else { usize::MAX };
+    // Without an offsets buffer the per-value size is unknown, so sample one element to cap the
+    // run. That is exact for fixed-width values and an estimate for variable-width nested values.
+    let run_items = if offsets.is_some() || live.is_empty() || !yields {
+        COPY_RUN_ITEMS
+    } else {
+        let element_bytes = data.slice(0, 1).get_slice_memory_size().unwrap_or(0);
+        COPY_RUN_ITEMS
+            .min(COPY_RUN_BYTES / element_bytes.max(1))
+            .max(1)
+    };
+    while index < live.len() {
+        if !live[index] {
+            budget.consume(1, 0).await;
+            index += 1;
+            continue;
+        }
+        let start = index;
+        let mut run_bytes = 0;
+        while index < live.len() && live[index] && index - start < run_items {
+            if let Some(offsets) = offsets {
+                let value_bytes = (offsets[index + 1] - offsets[index]) as usize;
+                if index > start && run_bytes + value_bytes > byte_limit {
+                    break;
+                }
+                run_bytes += value_bytes;
+            }
             remapped[index] = next_key;
             next_key += 1;
-        } else {
-            budget.consume(1, 0).await;
+            index += 1;
         }
+        if offsets.is_none() && yields {
+            run_bytes = data
+                .slice(start, index - start)
+                .get_slice_memory_size()
+                .unwrap_or(usize::MAX);
+        }
+        budget.consume(index - start, run_bytes).await;
+        selected.extend(0, start, index);
     }
     let mut keys = Vec::with_capacity(dictionary.len());
     for key in dictionary.keys().iter() {
@@ -417,6 +455,140 @@ mod test {
         let expected =
             RecordBatch::try_from_iter([("body", Arc::new(expected) as Arc<dyn Array>)]).unwrap();
         assert_eq!(sanitize_record_batch(&input), Some(expected));
+    }
+
+    /// Scenario: Live values form runs exceeding the item and byte copy quanta, split by a dead gap.
+    /// Guarantees: Bounded run copying matches filter-based selection and still yields at run boundaries.
+    #[tokio::test(flavor = "current_thread")]
+    async fn bounded_copy_runs_match_filtered_selection() {
+        use arrow::array::BooleanArray;
+        use arrow::compute::filter;
+        use std::{cell::Cell, rc::Rc};
+        const VALUES: usize = 400;
+        for width in [1usize, 8 * 1024] {
+            let values: Arc<dyn Array> = Arc::new(StringArray::from_iter_values(
+                (0..VALUES).map(|index| "v".repeat(width) + &index.to_string()),
+            ));
+            let live: Vec<bool> = (0..VALUES)
+                .map(|index| !(300..350).contains(&index))
+                .collect();
+            let mut ranks = vec![0u16; VALUES];
+            let mut rank = 0u16;
+            for (index, is_live) in live.iter().enumerate() {
+                if *is_live {
+                    ranks[index] = rank;
+                    rank += 1;
+                }
+            }
+            let keys = UInt16Array::from_iter(
+                (0..VALUES).map(|index| live[index].then_some(index as u16)),
+            );
+            let expected_keys = UInt16Array::from_iter(
+                (0..VALUES).map(|index| live[index].then_some(ranks[index])),
+            );
+            let expected_values =
+                filter(values.as_ref(), &BooleanArray::from(live.clone())).unwrap();
+            let input = RecordBatch::try_from_iter([(
+                "value",
+                Arc::new(DictionaryArray::<UInt16Type>::new(
+                    keys,
+                    Arc::clone(&values),
+                )) as Arc<dyn Array>,
+            )])
+            .unwrap();
+            let expected = RecordBatch::try_from_iter([(
+                "value",
+                Arc::new(DictionaryArray::<UInt16Type>::new(
+                    expected_keys,
+                    expected_values,
+                )) as Arc<dyn Array>,
+            )])
+            .unwrap();
+            assert_eq!(sanitize_record_batch(&input).unwrap(), expected);
+            let progress = Rc::new(Cell::new(0));
+            let done = Rc::new(Cell::new(false));
+            let actual = tokio::task::LocalSet::new()
+                .run_until(async {
+                    let observer = tokio::task::spawn_local({
+                        let progress = Rc::clone(&progress);
+                        let done = Rc::clone(&done);
+                        async move {
+                            while !done.get() {
+                                progress.set(progress.get() + 1);
+                                tokio::task::yield_now().await;
+                            }
+                        }
+                    });
+                    let output = sanitize_record_batch_cooperative(
+                        &input,
+                        &mut CooperativeBudget::default(),
+                    )
+                    .await
+                    .unwrap();
+                    done.set(true);
+                    observer.await.unwrap();
+                    output
+                })
+                .await;
+            assert_eq!(actual, expected);
+            assert!(
+                progress.get() > 1,
+                "bounded runs must still yield to other local tasks"
+            );
+        }
+    }
+
+    /// Scenario: A dictionary of wide fixed-size values has one long live run and no offsets buffer.
+    /// Guarantees: Copy runs stay within the byte quantum, so yields track copied bytes not item count.
+    #[tokio::test(flavor = "current_thread")]
+    async fn wide_fixed_size_runs_stay_within_the_byte_quantum() {
+        use arrow::array::FixedSizeBinaryArray;
+        use std::{cell::Cell, rc::Rc};
+        const WIDTH: usize = 32 * 1024;
+        const LIVE: usize = 128;
+        let values =
+            FixedSizeBinaryArray::try_from_iter((0..=LIVE).map(|index| vec![index as u8; WIDTH]))
+                .unwrap();
+        // The final value is unreferenced, so sanitization actually rebuilds the dictionary.
+        let keys = UInt16Array::from_iter_values((0..LIVE).map(|index| index as u16));
+        let batch = RecordBatch::try_from_iter([(
+            "value",
+            Arc::new(DictionaryArray::<UInt16Type>::new(
+                keys,
+                Arc::new(values) as Arc<dyn Array>,
+            )) as Arc<dyn Array>,
+        )])
+        .unwrap();
+        let progress = Rc::new(Cell::new(0));
+        let done = Rc::new(Cell::new(false));
+        let actual = tokio::task::LocalSet::new()
+            .run_until(async {
+                let observer = tokio::task::spawn_local({
+                    let progress = Rc::clone(&progress);
+                    let done = Rc::clone(&done);
+                    async move {
+                        while !done.get() {
+                            progress.set(progress.get() + 1);
+                            tokio::task::yield_now().await;
+                        }
+                    }
+                });
+                let output =
+                    sanitize_record_batch_cooperative(&batch, &mut CooperativeBudget::default())
+                        .await
+                        .unwrap();
+                done.set(true);
+                observer.await.unwrap();
+                output
+            })
+            .await;
+        assert_eq!(actual, sanitize_record_batch(&batch).unwrap());
+        // LIVE * WIDTH is 4 MiB, so a 256 KiB quantum needs far more yields than 128-item runs give.
+        assert!(
+            progress.get() > 8,
+            "wide fixed-size copies must yield on bytes, got {}",
+            progress.get()
+        );
     }
 
     /// Scenario: Nested dictionaries contain null keys and many referenced large values.

@@ -145,6 +145,15 @@ library temporary storage but exclude staged batch output and allocator overhead
 they are not an RSS guarantee. Compilation/storage and normal batch output remain
 subject to processor resource limits.
 
+JSON duplicate-key checks index decoded names within each object without copying
+key strings. Small key sets remain inline; larger sets use a hash table that
+grows with parsed keys, so long values do not allocate unused key buckets.
+Hash-table entries cache their hashes, so resizing does not rehash decoded keys.
+The conservative scratch reservation includes cached hashes, the maximum index
+size and both tables during resizing.
+Tightly sized `max_scratch_bytes` limits may need increasing to accommodate this
+reservation; lazy allocation does not bypass the configured limit.
+
 CSV readers and output/offset buffers, and regex cache/capture storage, are
 reused within one processor. CSV state resets for each framed record; retained
 CSV capacity is included in the scratch reservation before further growth.
@@ -193,6 +202,12 @@ progress and reports the longest processing poll and total batch time for each
 format. It includes transport-ID decoding, parser updates and sanitization, but
 not receiver or output-channel work. These measurements do not establish a
 hard latency bound. Processor tests separately cover atomic output and cancellation.
+
+A JSON-width probe covers 8, 64, 512 and 4096 distinct fields, verifies requested
+allocation at the exact scratch reservation and allocation-free rejection one
+byte below it, and reports time per field. Run only this probe by appending
+`-- --json-width-only` to the benchmark command. These debug-profile figures
+describe scaling, not production capacity or a wall-clock scheduling guarantee.
 
 Historical Windows debug-profile measurements before workspace reuse and
 cooperative updates (not current performance or production capacity estimates):

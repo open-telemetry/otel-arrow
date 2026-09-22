@@ -716,6 +716,27 @@ mod tests {
         assert!(cache.memory_usage() < parser.scratch_bound("").unwrap());
     }
 
+    /// Scenario: A 4096-member JSON record is parsed at its scratch reservation and one byte below it.
+    /// Guarantees: The key index is accounted before extraction and insufficient scratch rejects the record.
+    #[test]
+    fn wide_json_scratch_limit() {
+        let object: serde_json::Map<String, serde_json::Value> = (0..4096)
+            .map(|index| (format!("key{index:04}"), serde_json::json!("value")))
+            .collect();
+        let input = serde_json::to_string(&object).unwrap();
+        let mut configuration = config("json");
+        configuration["body"] = serde_json::json!({"source":"/key0000"});
+        let mut parser = Parser::new(serde_json::from_value(configuration).unwrap()).unwrap();
+        let bound = parser.scratch_bound(&input).unwrap();
+        parser.config.limits.max_scratch_bytes = NonZeroUsize::new(bound).unwrap();
+        assert_eq!(
+            parser.parse(&input, 0, 0).unwrap().body.as_deref(),
+            Some("value")
+        );
+        parser.config.limits.max_scratch_bytes = NonZeroUsize::new(bound - 1).unwrap();
+        assert_eq!(parser.parse(&input, 0, 0), Err(DataError::Limit));
+    }
+
     /// Scenario: A headerless single-column CSV record is an empty string.
     /// Guarantees: The field is present and can map to an empty body without being treated as missing.
     #[test]
