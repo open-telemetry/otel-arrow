@@ -13,7 +13,8 @@ use otel_arrow_dfe_engine::capability::auth::BasicAuthCredential;
 use otel_arrow_dfe_engine::capability::auth::basic_auth_provider::BasicAuthCredentialStream;
 use otel_arrow_dfe_engine::shared::capability::auth::basic_auth_provider::BasicAuthProvider as SharedBasicAuthProvider;
 use otel_arrow_dfe_otap::tls_utils::read_file_with_limit_async;
-use secrecy::{ExposeSecret, SecretString};
+use secrecy::SecretString;
+use secrecy::zeroize::Zeroize;
 use tokio_stream::wrappers::WatchStream;
 
 use crate::common::background_refresh::BackgroundProviderSource;
@@ -42,9 +43,9 @@ impl FlatFileUserPassAuth {
 async fn read_credential(
     file: Option<&PathBuf>,
     file_refresh: Duration,
-    inline: Option<&str>,
+    inline: Option<&SecretString>,
     field: &str,
-) -> Result<(String, Option<Duration>), Error> {
+) -> Result<(SecretString, Option<Duration>), Error> {
     if let Some(path) = file {
         let contents =
             read_file_with_limit_async(path)
@@ -53,16 +54,19 @@ async fn read_credential(
                     path: path.clone(),
                     source,
                 })?;
-        let contents = String::from_utf8(contents).map_err(|_| Error::CredentialAcquisition {
-            message: format!("`{field}_file` does not contain valid UTF-8"),
-        })?;
-        return Ok((
-            contents.trim_end_matches(&['\r', '\n'][..]).to_string(),
-            Some(file_refresh),
-        ));
+        let mut contents_str =
+            String::from_utf8(contents).map_err(|_| Error::CredentialAcquisition {
+                message: format!("`{field}_file` does not contain valid UTF-8"),
+            })?;
+        let password: SecretString = contents_str
+            .trim_end_matches(&['\r', '\n'][..])
+            .to_string()
+            .into();
+        contents_str.zeroize();
+        return Ok((password, Some(file_refresh)));
     }
     if let Some(value) = inline {
-        return Ok((value.to_owned(), None));
+        return Ok((value.clone(), None));
     }
     Err(Error::CredentialAcquisition {
         message: format!("no `{field}` or `{field}_file` configured"),
@@ -78,19 +82,15 @@ impl BackgroundProviderSource<BasicAuthCredential> for FlatFileUserPassAuth {
         let (password, expiry) = read_credential(
             self.config.password_secret_file.as_ref(),
             self.config.password_secret_file_refresh,
-            self.config
-                .password_secret
-                .as_ref()
-                .map(SecretString::expose_secret),
+            self.config.password_secret.as_ref(),
             "password_secret",
         )
         .await?;
 
-        let mut credential =
-            BasicAuthCredential::new(SecretString::expose_secret(&self.config.username), password)
-                .map_err(|e| Error::CredentialAcquisition {
-                    message: e.to_string(),
-                })?;
+        let mut credential = BasicAuthCredential::new(self.config.username.clone(), password)
+            .map_err(|e| Error::CredentialAcquisition {
+                message: e.to_string(),
+            })?;
 
         if let Some(expiry) = expiry {
             credential = credential.with_expiry(
