@@ -382,24 +382,33 @@ fn insert_slice_into_id_bitmap(
                 let dict_arr = parent_id_col
                     .as_dictionary::<UInt8Type>()
                     .slice(start, end - start);
-                if let Some(typed_dict) = dict_arr.downcast_dict::<UInt32Array>() {
-                    typed_dict
-                        .into_iter()
-                        .flatten()
-                        .for_each(|i| id_bitmap.insert(i));
-                }
+                let Some(typed_dict) = dict_arr.downcast_dict::<UInt32Array>() else {
+                    return Err(otel_arrow_dfe_pdata::error::Error::InvalidIdColumnType {
+                        data_type: parent_id_col.data_type().clone(),
+                    }
+                    .into());
+                };
+                typed_dict
+                    .into_iter()
+                    .flatten()
+                    .for_each(|i| id_bitmap.insert(i));
                 Ok(())
             }
             DataType::UInt16 => {
                 let dict_arr = parent_id_col
                     .as_dictionary::<UInt16Type>()
                     .slice(start, end - start);
-                if let Some(typed_dict) = dict_arr.downcast_dict::<UInt32Array>() {
-                    typed_dict
-                        .into_iter()
-                        .flatten()
-                        .for_each(|i| id_bitmap.insert(i));
-                }
+                let Some(typed_dict) = dict_arr.downcast_dict::<UInt32Array>() else {
+                    return Err(otel_arrow_dfe_pdata::error::Error::InvalidIdColumnType {
+                        data_type: parent_id_col.data_type().clone(),
+                    }
+                    .into());
+                };
+                typed_dict
+                    .into_iter()
+                    .flatten()
+                    .for_each(|i| id_bitmap.insert(i));
+
                 Ok(())
             }
             other => Err(otel_arrow_dfe_pdata::error::Error::InvalidIdColumnType {
