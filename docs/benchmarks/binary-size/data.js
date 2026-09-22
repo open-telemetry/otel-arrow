@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790036934362,
+  "lastUpdate": 1790082891427,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -42270,6 +42270,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
             "value": 4.15,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.71,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.97,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.7,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 71.56,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.86,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.54,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 116.51,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 103.85,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "107717825+opentelemetrybot@users.noreply.github.com",
+            "name": "OpenTelemetry Bot",
+            "username": "opentelemetrybot"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1767dba584695c3a752a0970931ba6864cb2dca1",
+          "message": "ci: remediate zizmor findings (#4107)\n\nTracked in\n[open-telemetry/sig-security#293](https://github.com/open-telemetry/sig-security/issues/293).\n\nResolves existing findings from the [OpenTelemetry shared\nworkflow](https://github.com/open-telemetry/shared-workflows/blob/v0.10.0/zizmor/README.md).\n\nThe workflow:\n\n- runs the `regular` persona on pull requests, pushes to `main`, and a\nrandomized weekly schedule;\n- uploads results to GitHub code scanning;\n- uses the shared workflow pinned to an immutable commit.\n\n## Zizmor remediation\n\nThis change also resolves findings from these zizmor rules:\n\n- [`artipacked`](https://docs.zizmor.sh/audits/#artipacked)\n- [`bot-conditions`](https://docs.zizmor.sh/audits/#bot-conditions)\n-\n[`dangerous-triggers`](https://docs.zizmor.sh/audits/#dangerous-triggers)\n-\n[`excessive-permissions`](https://docs.zizmor.sh/audits/#excessive-permissions)\n- [`github-app`](https://docs.zizmor.sh/audits/#github-app)\n- [`github-env`](https://docs.zizmor.sh/audits/#github-env)\n- [`self-repository`](https://docs.zizmor.sh/audits/#self-repository)\n\n## After merge\n\n1. Confirm the Zizmor workflow succeeds on the merged default-branch\ncommit and its code-scanning analysis has no findings.\n2. Mark [the corresponding admin\nPR](https://github.com/open-telemetry/admin/pull/914) ready for review\nand merge it to require zizmor code scanning.\n3. On the next repository pull request, confirm GitHub reports a\nrequired `zizmor` code-scanning result.\n\nIf enforcement unexpectedly blocks a valid change, restore\n`require_zizmor = false` in `open-telemetry/admin` while leaving\nscanning enabled.\n\n---------\n\nCo-authored-by: albertlockett <a.lockett@f5.com>",
+          "timestamp": "2026-09-22T12:20:23Z",
+          "tree_id": "d4c5965944c6813d1706f39c1ecc4b61b708265e",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/1767dba584695c3a752a0970931ba6864cb2dca1"
+        },
+        "date": 1790082878304,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 84.27,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.11,
             "unit": "MB"
           },
           {
