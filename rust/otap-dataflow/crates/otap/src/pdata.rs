@@ -71,13 +71,23 @@ impl<'a> AuthorizedIdentityEntry<'a> {
 }
 
 /// Borrowed single- or multi-valued authorized claim.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy)]
 pub struct AuthorizedClaimValue<'a> {
     storage: &'a PackedAuthorizedIdentity,
     first_value: usize,
     value_count: usize,
     many: bool,
 }
+
+impl PartialEq for AuthorizedClaimValue<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.many == other.many
+            && self.value_count == other.value_count
+            && self.values().eq(other.values())
+    }
+}
+
+impl Eq for AuthorizedClaimValue<'_> {}
 
 impl fmt::Debug for AuthorizedClaimValue<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -3026,6 +3036,50 @@ mod test {
         assert_eq!(groups.as_str(), None);
         assert!(groups.is_many());
         assert_eq!(groups.values().collect::<Vec<_>>(), ["reader"]);
+    }
+
+    /// Scenario: equal claims occupy different offsets in identities with different unrelated data.
+    /// Guarantees: claim and entry equality use cardinality and values, not packed storage identity.
+    #[test]
+    fn authorized_claim_equality_is_value_based() {
+        let subject_first: AuthorizedIdentityPolicy = serde_json::from_value(serde_json::json!([
+            {"claim": "sub", "store_as": "subject"},
+            {"claim": "groups", "store_as": "groups"}
+        ]))
+        .expect("valid authorized identity policy");
+        let groups_first: AuthorizedIdentityPolicy = serde_json::from_value(serde_json::json!([
+            {"claim": "groups", "store_as": "groups"},
+            {"claim": "sub", "store_as": "subject"}
+        ]))
+        .expect("valid authorized identity policy");
+        let left_identity = AuthorizedIdentity::new()
+            .with_subject("reader")
+            .with_claim_values("groups", ["left-group"]);
+        let right_identity = AuthorizedIdentity::new()
+            .with_subject("reader")
+            .with_claim_values("groups", ["right-group"]);
+
+        let left = AuthorizedIdentityEntries::capture(&subject_first, &left_identity)
+            .expect("left identity captured");
+        let right = AuthorizedIdentityEntries::capture(&groups_first, &right_identity)
+            .expect("right identity captured");
+        let left_subject = left.get("subject").expect("left subject");
+        let right_subject = right.get("subject").expect("right subject");
+
+        assert_eq!(left_subject.value(), right_subject.value());
+        assert_eq!(left_subject, right_subject);
+
+        let one_reader = left_subject.value();
+        let many_reader_identity =
+            AuthorizedIdentity::new().with_claim_values("groups", ["reader"]);
+        let many_reader_entries =
+            AuthorizedIdentityEntries::capture(&subject_first, &many_reader_identity)
+                .expect("multi-valued identity captured");
+        let many_reader = many_reader_entries
+            .get("groups")
+            .expect("groups entry")
+            .value();
+        assert_ne!(one_reader, many_reader);
     }
 
     /// Scenario: a packed authorized identity descriptor is corrupted below its declared count.
