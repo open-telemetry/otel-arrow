@@ -567,7 +567,7 @@ impl PackedTransportHeaders {
                 .expect("transport header value range fits packed descriptor");
             descriptor[24] = header.value_kind.encode();
         }
-        assert_eq!(
+        debug_assert_eq!(
             blob_at, packed_len,
             "captured transport header size mismatch"
         );
