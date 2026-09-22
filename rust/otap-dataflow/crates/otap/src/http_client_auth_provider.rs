@@ -9,10 +9,7 @@ use std::{
 
 use bitflags::bitflags;
 use http::{HeaderName, HeaderValue};
-use otel_arrow_dfe_engine::{
-    capability::{ExtensionCapability, registry::Capabilities},
-    local::capability::auth::bearer_token_provider::BearerTokenProvider,
-};
+use otel_arrow_dfe_engine::capability::{ExtensionCapability, registry::Capabilities};
 
 use crate::{
     agent_fed_auth::AgentFedAuth, api_key_auth::ApiKeyAuth, basic_auth::BasicAuth,
@@ -133,7 +130,7 @@ pub fn apply_auth_rejection(
 }
 
 /// An abstraction over [`Capabilities`] to enable testing.
-pub trait CapabilityResolver {
+trait CapabilityResolver {
     /// See [`Capabilities::optional_local`].
     fn optional_local<C: ExtensionCapability>(
         &self,
@@ -149,7 +146,14 @@ impl CapabilityResolver for Capabilities {
 }
 
 /// Create an [`HttpClientAuthProvider`] using the registered [`Capabilities`].
-pub fn new_http_client_auth_provider<T: CapabilityResolver>(
+pub fn new_http_client_auth_provider(
+    capabilities: &Capabilities,
+    supported_providers: HttpClientAuthProviders,
+) -> Result<Option<Box<dyn HttpClientAuthProvider>>, otel_arrow_dfe_config::error::Error> {
+    new_http_client_auth_provider_from_resolver(capabilities, supported_providers)
+}
+
+fn new_http_client_auth_provider_from_resolver<T: CapabilityResolver>(
     capabilities: &T,
     supported_providers: HttpClientAuthProviders,
 ) -> Result<Option<Box<dyn HttpClientAuthProvider>>, otel_arrow_dfe_config::error::Error> {
@@ -221,19 +225,6 @@ fn new_http_client_auth_provider_from_providers(
         // Absent bindings keeps the default (no-auth) behavior
         None
     })
-}
-
-/// Create an [`HttpClientAuthProvider`] using the registered [`BearerTokenProvider`].
-pub fn new_http_client_auth_provider_from_token_provider(
-    token_provider: impl Into<Box<dyn BearerTokenProvider>>,
-) -> impl HttpClientAuthProvider {
-    BearerAuth::new(token_provider.into())
-}
-
-impl<T: BearerTokenProvider + 'static> From<T> for Box<dyn HttpClientAuthProvider> {
-    fn from(value: T) -> Self {
-        Box::new(BearerAuth::new(Box::new(value)))
-    }
 }
 
 #[cfg(any(test, feature = "test-utils"))]
@@ -440,6 +431,7 @@ mod tests {
         local::capability::auth::{
             agent_fed_credential_provider::AgentFedCredentialProvider,
             api_key_provider::ApiKeyProvider, basic_auth_provider::BasicAuthProvider,
+            bearer_token_provider::BearerTokenProvider,
         },
     };
     use tonic::async_trait;
@@ -549,14 +541,20 @@ mod tests {
             ));
 
         assert!(
-            new_http_client_auth_provider(&capabilities, HttpClientAuthProviders::empty())
-                .unwrap()
-                .is_none()
+            new_http_client_auth_provider_from_resolver(
+                &capabilities,
+                HttpClientAuthProviders::empty()
+            )
+            .unwrap()
+            .is_none()
         );
         assert!(
-            new_http_client_auth_provider(&capabilities, HttpClientAuthProviders::BEARER_TOKEN)
-                .unwrap()
-                .is_some()
+            new_http_client_auth_provider_from_resolver(
+                &capabilities,
+                HttpClientAuthProviders::BEARER_TOKEN
+            )
+            .unwrap()
+            .is_some()
         );
     }
 
@@ -568,14 +566,20 @@ mod tests {
         );
 
         assert!(
-            new_http_client_auth_provider(&capabilities, HttpClientAuthProviders::empty())
-                .unwrap()
-                .is_none()
+            new_http_client_auth_provider_from_resolver(
+                &capabilities,
+                HttpClientAuthProviders::empty()
+            )
+            .unwrap()
+            .is_none()
         );
         assert!(
-            new_http_client_auth_provider(&capabilities, HttpClientAuthProviders::BEARER_TOKEN)
-                .unwrap()
-                .is_some()
+            new_http_client_auth_provider_from_resolver(
+                &capabilities,
+                HttpClientAuthProviders::BEARER_TOKEN
+            )
+            .unwrap()
+            .is_some()
         );
     }
 
@@ -585,14 +589,20 @@ mod tests {
             .with_local::<api_key_provider::ApiKeyProvider>(Box::new(MockApiKeyProvider {}));
 
         assert!(
-            new_http_client_auth_provider(&capabilities, HttpClientAuthProviders::empty())
-                .unwrap()
-                .is_none()
+            new_http_client_auth_provider_from_resolver(
+                &capabilities,
+                HttpClientAuthProviders::empty()
+            )
+            .unwrap()
+            .is_none()
         );
         assert!(
-            new_http_client_auth_provider(&capabilities, HttpClientAuthProviders::API_KEY)
-                .unwrap()
-                .is_some()
+            new_http_client_auth_provider_from_resolver(
+                &capabilities,
+                HttpClientAuthProviders::API_KEY
+            )
+            .unwrap()
+            .is_some()
         );
     }
 
@@ -604,14 +614,20 @@ mod tests {
             ));
 
         assert!(
-            new_http_client_auth_provider(&capabilities, HttpClientAuthProviders::empty())
-                .unwrap()
-                .is_none()
+            new_http_client_auth_provider_from_resolver(
+                &capabilities,
+                HttpClientAuthProviders::empty()
+            )
+            .unwrap()
+            .is_none()
         );
         assert!(
-            new_http_client_auth_provider(&capabilities, HttpClientAuthProviders::BASIC)
-                .unwrap()
-                .is_some()
+            new_http_client_auth_provider_from_resolver(
+                &capabilities,
+                HttpClientAuthProviders::BASIC
+            )
+            .unwrap()
+            .is_some()
         );
     }
 
