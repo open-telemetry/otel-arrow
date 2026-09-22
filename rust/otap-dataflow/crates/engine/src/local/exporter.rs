@@ -48,6 +48,7 @@ use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
 use otel_arrow_dfe_telemetry::metrics::{MetricSet, MetricSetHandler};
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use std::marker::PhantomData;
+use std::rc::Rc;
 use std::time::Duration;
 
 /// A trait for egress exporters (!Send definition).
@@ -99,14 +100,13 @@ pub trait Exporter<PData> {
 pub struct EffectHandler<PData> {
     pub(crate) core: EffectHandlerCore<PData>,
     _pd: PhantomData<PData>,
-    /// Propagation policy for filtering captured headers on egress.
-    /// `None` when no propagation policy is configured (zero overhead).
-    propagation_policy: Option<HeaderPropagationPolicy>,
+    /// Immutable propagation policy shared by local handler clones.
+    /// `None` disables propagation.
+    propagation_policy: Option<Rc<HeaderPropagationPolicy>>,
 }
 
 impl<PData> EffectHandler<PData> {
-    /// Creates a new local (!Send) `EffectHandler` with the given exporter node id and metrics
-    /// reporter and pipeline runtime services.
+    /// Creates a local exporter effect handler.
     #[must_use]
     pub fn new(
         node_id: NodeId,
@@ -132,17 +132,17 @@ impl<PData> EffectHandler<PData> {
         self.core.node_interests()
     }
 
-    /// Returns the propagation policy if a header propagation policy is configured.
+    /// Returns the propagation policy.
     ///
-    /// Returns `None` when no propagation policy is active (zero overhead).
+    /// `None` disables propagation.
     #[must_use]
     pub fn propagation_policy(&self) -> Option<&HeaderPropagationPolicy> {
-        self.propagation_policy.as_ref()
+        self.propagation_policy.as_deref()
     }
 
     /// Sets the propagation policy for transport header filtering.
     pub fn set_propagation_policy(&mut self, policy: Option<HeaderPropagationPolicy>) {
-        self.propagation_policy = policy;
+        self.propagation_policy = policy.map(Rc::new);
     }
 
     /// Print an info message to stdout.

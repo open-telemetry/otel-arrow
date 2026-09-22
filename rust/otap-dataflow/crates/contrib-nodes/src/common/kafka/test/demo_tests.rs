@@ -17,17 +17,17 @@ use super::wait::{poll_until, poll_until_async};
 use super::with_cluster;
 
 // Wrapper-smoke-test dependencies, grouped by the node feature that gates them
-// so each feature carries a single `#[cfg]` on its import group rather than one
-// tag per line.
-#[cfg(any(feature = "kafka-exporter", feature = "kafka-receiver"))]
+// so the capability carries a single `#[cfg]` on each import group rather than
+// one tag per line.
+#[cfg(feature = "kafka")]
 use common_wrapper_deps::*;
-#[cfg(feature = "kafka-exporter")]
+#[cfg(feature = "kafka")]
 use exporter_wrapper_deps::*;
-#[cfg(feature = "kafka-receiver")]
+#[cfg(feature = "kafka")]
 use receiver_wrapper_deps::*;
 
 /// Imports shared by both the exporter and receiver wrapper smoke tests.
-#[cfg(any(feature = "kafka-exporter", feature = "kafka-receiver"))]
+#[cfg(feature = "kafka")]
 mod common_wrapper_deps {
     pub(super) use crate::common::kafka::MessageFormat;
     pub(super) use crate::common::kafka::node_harness::KafkaTopics;
@@ -36,7 +36,7 @@ mod common_wrapper_deps {
 }
 
 /// Imports used only by the exporter wrapper smoke test.
-#[cfg(feature = "kafka-exporter")]
+#[cfg(feature = "kafka")]
 mod exporter_wrapper_deps {
     pub(super) use crate::common::kafka::node_harness::KafkaExporterHarness;
     pub(super) use bytes::Bytes;
@@ -48,7 +48,7 @@ mod exporter_wrapper_deps {
 }
 
 /// Imports used only by the receiver wrapper smoke test.
-#[cfg(feature = "kafka-receiver")]
+#[cfg(feature = "kafka")]
 mod receiver_wrapper_deps {
     pub(super) use crate::common::kafka::node_harness::KafkaReceiverHarness;
     pub(super) use otel_arrow_dfe_pdata::TryIntoWithOptions;
@@ -385,7 +385,7 @@ async fn demo_committed_offset_probe_none_when_unconsumed() {
 /// its output on the broker through the test-suite consumer.
 /// Guarantees: the exporter wrapper wires up, accepts pdata, produces to the
 /// configured topic with the OTLP format header, and shuts down cleanly.
-#[cfg(feature = "kafka-exporter")]
+#[cfg(feature = "kafka")]
 #[tokio::test]
 async fn demo_wrapper_exporter_smoke() {
     with_cluster(
@@ -434,7 +434,7 @@ async fn demo_wrapper_exporter_smoke() {
 /// `KafkaReceiverHarness` and read + ack the decoded pdata.
 /// Guarantees: the receiver wrapper wires up, consumes broker records, decodes
 /// them to OtapPdata, supports ack, and shuts down cleanly.
-#[cfg(feature = "kafka-receiver")]
+#[cfg(feature = "kafka")]
 #[tokio::test]
 async fn demo_wrapper_receiver_smoke() {
     with_cluster(

@@ -1,0 +1,6 @@
+type: capabilities
+status:
+  class: library
+  codeowners:
+    active:
+      - gouslu

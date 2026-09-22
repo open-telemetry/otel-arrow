@@ -43,9 +43,9 @@ pub use exporter::AzureMonitorExporter;
 pub use gzip_batcher::{FinalizeResult, GzipBatcher, GzipResult, PushResult};
 pub use heartbeat::Heartbeat;
 pub use metrics::{
-    AzureMonitorExporterExportMetrics, AzureMonitorExporterHeartbeatMetrics,
+    AzureMonitorExporterBatchMetrics, AzureMonitorExporterHeartbeatMetrics,
     AzureMonitorExporterHttpMetrics, AzureMonitorExporterMetricsRc,
-    AzureMonitorExporterOperationalMetrics, ExportSignalAttributes,
+    AzureMonitorExporterOperationalMetrics, BatchSignalAttributes,
 };
 pub use transformer::Transformer;
 
@@ -94,6 +94,7 @@ pub static AZURE_MONITOR_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory 
             exporter_config,
         ))
     },
+    context_declarations: None,
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<Config>,
 };

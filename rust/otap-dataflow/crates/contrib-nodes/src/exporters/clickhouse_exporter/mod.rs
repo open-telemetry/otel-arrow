@@ -75,7 +75,7 @@ use crate::exporters::clickhouse_exporter::transform::transform_batch::BatchTran
 use crate::exporters::clickhouse_exporter::writer::ClickHouseWriter;
 
 mod arrays;
-#[cfg(feature = "clickhouse-exporter-bench")]
+#[cfg(feature = "clickhouse-bench")]
 #[doc(hidden)]
 pub mod bench_support;
 mod config;
@@ -120,7 +120,7 @@ impl ClickhouseExporter {
         pipeline_ctx: PipelineContext,
         config: &serde_json::Value,
     ) -> Result<Self, otel_arrow_dfe_config::error::Error> {
-        let ch_metrics = pipeline_ctx.register_metrics::<ClickhouseExporterMetrics>();
+        let ch_metrics = ClickhouseExporterMetrics::register(&pipeline_ctx);
         let pdata_metrics = ExporterExportMetrics::register(&pipeline_ctx);
 
         let patch: ConfigPatch = serde_json::from_value(config.clone()).map_err(|e| {
@@ -262,6 +262,7 @@ pub static CLICKHOUSE_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
             ))
         },
     validate_config: validate_typed_config::<ConfigPatch>,
+    context_declarations: None,
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
 };
 

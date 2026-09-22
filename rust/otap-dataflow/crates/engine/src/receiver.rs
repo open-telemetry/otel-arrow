@@ -29,8 +29,9 @@ use crate::terminal_state::TerminalState;
 use otel_arrow_dfe_channel::error::SendError;
 use otel_arrow_dfe_channel::mpsc;
 use otel_arrow_dfe_config::PortName;
+use otel_arrow_dfe_config::authorized_identity_policy::AuthorizedIdentityPolicy;
 use otel_arrow_dfe_config::node::NodeUserConfig;
-use otel_arrow_dfe_config::transport_headers_policy::HeaderCapturePolicy;
+use otel_arrow_dfe_config::transport_headers_policy::CompiledHeaderCapturePolicy;
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -65,7 +66,9 @@ pub enum ReceiverWrapper<PData> {
         /// Whether outgoing messages need source node tagging.
         source_tag: SourceTagging,
         /// Pre-resolved capture policy for transport header extraction.
-        capture_policy: Option<HeaderCapturePolicy>,
+        capture_policy: Option<CompiledHeaderCapturePolicy>,
+        /// Pre-resolved authorized identity claim projection policy.
+        authorized_identity_policy: Option<AuthorizedIdentityPolicy>,
     },
     /// A receiver with a `Send` implementation.
     Shared {
@@ -91,7 +94,9 @@ pub enum ReceiverWrapper<PData> {
         /// Whether outgoing messages need source node tagging.
         source_tag: SourceTagging,
         /// Pre-resolved capture policy for transport header extraction.
-        capture_policy: Option<HeaderCapturePolicy>,
+        capture_policy: Option<CompiledHeaderCapturePolicy>,
+        /// Pre-resolved authorized identity claim projection policy.
+        authorized_identity_policy: Option<AuthorizedIdentityPolicy>,
     },
 }
 
@@ -134,6 +139,7 @@ impl<PData> ReceiverWrapper<PData> {
             telemetry: None,
             source_tag: SourceTagging::Disabled,
             capture_policy: None,
+            authorized_identity_policy: None,
         }
     }
 
@@ -162,6 +168,7 @@ impl<PData> ReceiverWrapper<PData> {
             telemetry: None,
             source_tag: SourceTagging::Disabled,
             capture_policy: None,
+            authorized_identity_policy: None,
         }
     }
 
@@ -178,6 +185,7 @@ impl<PData> ReceiverWrapper<PData> {
                 pdata_receiver,
                 source_tag,
                 capture_policy,
+                authorized_identity_policy,
                 ..
             } => ReceiverWrapper::Local {
                 node_id,
@@ -191,6 +199,7 @@ impl<PData> ReceiverWrapper<PData> {
                 telemetry: Some(guard),
                 source_tag,
                 capture_policy,
+                authorized_identity_policy,
             },
             ReceiverWrapper::Shared {
                 node_id,
@@ -203,6 +212,7 @@ impl<PData> ReceiverWrapper<PData> {
                 pdata_receiver,
                 source_tag,
                 capture_policy,
+                authorized_identity_policy,
                 ..
             } => ReceiverWrapper::Shared {
                 node_id,
@@ -216,6 +226,7 @@ impl<PData> ReceiverWrapper<PData> {
                 telemetry: Some(guard),
                 source_tag,
                 capture_policy,
+                authorized_identity_policy,
             },
         }
     }
@@ -246,6 +257,7 @@ impl<PData> ReceiverWrapper<PData> {
                 telemetry,
                 source_tag,
                 capture_policy,
+                authorized_identity_policy,
                 ..
             } => {
                 let (control_sender, control_receiver) =
@@ -271,6 +283,7 @@ impl<PData> ReceiverWrapper<PData> {
                     telemetry,
                     source_tag,
                     capture_policy,
+                    authorized_identity_policy,
                 }
             }
             ReceiverWrapper::Shared {
@@ -285,6 +298,7 @@ impl<PData> ReceiverWrapper<PData> {
                 telemetry,
                 source_tag,
                 capture_policy,
+                authorized_identity_policy,
                 ..
             } => {
                 let (control_sender, control_receiver) =
@@ -310,6 +324,7 @@ impl<PData> ReceiverWrapper<PData> {
                     telemetry,
                     source_tag,
                     capture_policy,
+                    authorized_identity_policy,
                 }
             }
         }
@@ -335,6 +350,7 @@ impl<PData> ReceiverWrapper<PData> {
                     user_config,
                     source_tag,
                     capture_policy,
+                    authorized_identity_policy,
                     ..
                 },
                 metrics_reporter,
@@ -361,6 +377,7 @@ impl<PData> ReceiverWrapper<PData> {
                 );
                 effect_handler.set_source_tagging(source_tag);
                 effect_handler.set_capture_policy(capture_policy);
+                effect_handler.set_authorized_identity_policy(authorized_identity_policy);
                 effect_handler
                     .core
                     .set_pipeline_completion_msg_sender(pipeline_completion_msg_tx);
@@ -376,6 +393,7 @@ impl<PData> ReceiverWrapper<PData> {
                     user_config,
                     source_tag,
                     capture_policy,
+                    authorized_identity_policy,
                     ..
                 },
                 metrics_reporter,
@@ -402,6 +420,7 @@ impl<PData> ReceiverWrapper<PData> {
                 );
                 effect_handler.set_source_tagging(source_tag);
                 effect_handler.set_capture_policy(capture_policy);
+                effect_handler.set_authorized_identity_policy(authorized_identity_policy);
                 effect_handler
                     .core
                     .set_pipeline_completion_msg_sender(pipeline_completion_msg_tx);
@@ -501,7 +520,7 @@ impl<PData> NodeWithPDataSender<PData> for ReceiverWrapper<PData> {
 impl<PData> ReceiverWrapper<PData> {
     /// Returns the wrapper with the given pre-resolved capture engine for
     /// transport header extraction.
-    pub(crate) fn with_capture_policy(self, policy: Option<HeaderCapturePolicy>) -> Self {
+    pub(crate) fn with_capture_policy(self, policy: Option<CompiledHeaderCapturePolicy>) -> Self {
         match self {
             ReceiverWrapper::Local {
                 node_id,
@@ -514,6 +533,7 @@ impl<PData> ReceiverWrapper<PData> {
                 pdata_receiver,
                 telemetry,
                 source_tag,
+                authorized_identity_policy,
                 ..
             } => ReceiverWrapper::Local {
                 node_id,
@@ -527,6 +547,7 @@ impl<PData> ReceiverWrapper<PData> {
                 telemetry,
                 source_tag,
                 capture_policy: policy,
+                authorized_identity_policy,
             },
             ReceiverWrapper::Shared {
                 node_id,
@@ -539,6 +560,7 @@ impl<PData> ReceiverWrapper<PData> {
                 pdata_receiver,
                 telemetry,
                 source_tag,
+                authorized_identity_policy,
                 ..
             } => ReceiverWrapper::Shared {
                 node_id,
@@ -552,6 +574,70 @@ impl<PData> ReceiverWrapper<PData> {
                 telemetry,
                 source_tag,
                 capture_policy: policy,
+                authorized_identity_policy,
+            },
+        }
+    }
+
+    /// Returns the wrapper with the authorized identity claim projection policy.
+    pub(crate) fn with_authorized_identity_policy(
+        self,
+        policy: Option<AuthorizedIdentityPolicy>,
+    ) -> Self {
+        match self {
+            ReceiverWrapper::Local {
+                node_id,
+                user_config,
+                runtime_config,
+                receiver,
+                control_sender,
+                control_receiver,
+                pdata_senders,
+                pdata_receiver,
+                telemetry,
+                source_tag,
+                capture_policy,
+                ..
+            } => ReceiverWrapper::Local {
+                node_id,
+                user_config,
+                runtime_config,
+                receiver,
+                control_sender,
+                control_receiver,
+                pdata_senders,
+                pdata_receiver,
+                telemetry,
+                source_tag,
+                capture_policy,
+                authorized_identity_policy: policy,
+            },
+            ReceiverWrapper::Shared {
+                node_id,
+                user_config,
+                runtime_config,
+                receiver,
+                control_sender,
+                control_receiver,
+                pdata_senders,
+                pdata_receiver,
+                telemetry,
+                source_tag,
+                capture_policy,
+                ..
+            } => ReceiverWrapper::Shared {
+                node_id,
+                user_config,
+                runtime_config,
+                receiver,
+                control_sender,
+                control_receiver,
+                pdata_senders,
+                pdata_receiver,
+                telemetry,
+                source_tag,
+                capture_policy,
+                authorized_identity_policy: policy,
             },
         }
     }
@@ -901,7 +987,7 @@ mod tests {
             Arc::new(NodeUserConfig::new_receiver_config("test")),
             test_runtime.config(),
         )
-        .with_capture_policy(Some(HeaderCapturePolicy::default()));
+        .with_capture_policy(Some(HeaderCapturePolicy::default().compile(|_| true)));
 
         match wrapper {
             ReceiverWrapper::Local { capture_policy, .. } => assert!(
@@ -922,7 +1008,7 @@ mod tests {
             Arc::new(NodeUserConfig::new_receiver_config("test")),
             test_runtime.config(),
         )
-        .with_capture_policy(Some(HeaderCapturePolicy::default()));
+        .with_capture_policy(Some(HeaderCapturePolicy::default().compile(|_| true)));
 
         match wrapper {
             ReceiverWrapper::Shared { capture_policy, .. } => assert!(

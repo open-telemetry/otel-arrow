@@ -1,0 +1,6 @@
+type: oauth2_client_auth
+status:
+  class: extension
+  codeowners:
+    active:
+      - pritishnahar95

@@ -1,0 +1,8 @@
+type: scraper
+status:
+  class: library
+  codeowners:
+    active:
+      - athomas9195
+      - bendu
+      - jitendrabisht14
