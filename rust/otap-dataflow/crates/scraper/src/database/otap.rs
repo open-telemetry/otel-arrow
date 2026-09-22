@@ -18,6 +18,7 @@ use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::{
 use otel_arrow_dfe_pdata::proto::opentelemetry::resource::v1::Resource;
 use prost::Message;
 use std::collections::HashMap;
+use std::fmt;
 use std::mem::size_of;
 
 const DATABASE_SCOPE: &str = "otel-arrow.database_receiver";
@@ -302,7 +303,6 @@ impl OtlpPageEncoder {
 }
 
 /// One encoded OTLP page plus the cursor of its last emitted row.
-#[derive(Debug)]
 pub struct EncodedPage {
     /// Serialized OTLP logs payload.
     pub pdata: OtapPdata,
@@ -317,6 +317,20 @@ pub struct EncodedPage {
     /// Records that used observation time because source event time could not
     /// fit OTLP's unsigned nanosecond range.
     pub event_time_fallbacks: usize,
+}
+
+impl fmt::Debug for EncodedPage {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("EncodedPage")
+            .field("pdata", &"<redacted>")
+            .field("candidate", &self.candidate)
+            .field("row_count", &self.row_count)
+            .field("encoded_bytes", &self.encoded_bytes)
+            .field("deferred_rows", &self.deferred_rows)
+            .field("event_time_fallbacks", &self.event_time_fallbacks)
+            .finish()
+    }
 }
 
 /// Encodes the largest non-empty row prefix that fits `max_batch_bytes`.
@@ -544,9 +558,6 @@ pub enum OtlpMappingError {
     /// A non-empty page produced no candidate cursor.
     #[error("a non-empty database page produced no candidate cursor")]
     MissingCandidate,
-    /// The constructed OTLP envelope did not have its expected shape.
-    #[error("the OTLP logs envelope did not have its expected resource and scope shape")]
-    EnvelopeShape,
 }
 
 #[cfg(test)]
