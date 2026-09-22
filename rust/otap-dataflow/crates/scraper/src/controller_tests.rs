@@ -30,6 +30,7 @@ use otel_arrow_dfe_engine::memory_limiter::{
 };
 use otel_arrow_dfe_engine::message::Receiver;
 use otel_arrow_dfe_engine::receiver::ReceiverWrapper;
+use otel_arrow_dfe_engine::testing::exporter::create_test_pipeline_context;
 use otel_arrow_dfe_engine::testing::{receiver::TestRuntime, test_node};
 use otel_arrow_dfe_otap::testing::{next_ack, next_nack};
 use otel_arrow_dfe_pdata::PayloadData;
@@ -516,16 +517,21 @@ fn matching_acks_reuse_encoder_and_commit_pages_through_the_receiver_loop() {
     drop(SourceLease::acquire(&store.lease_key()).expect("lease released after receiver shutdown"));
 }
 
-struct StartupFailureProbe(DatabaseReceiver<FakeAdapter>);
+struct StartupFailureProbe<A: DriverAdapter>(DatabaseReceiver<A>);
 
 #[async_trait(?Send)]
-impl local::Receiver<OtapPdata> for StartupFailureProbe {
+impl<A: DriverAdapter + 'static> local::Receiver<OtapPdata> for StartupFailureProbe<A> {
     async fn start(
         self: Box<Self>,
         controls: local::ControlChannel<OtapPdata>,
         effects: local::EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
-        let result = local::Receiver::start(Box::new(self.0), controls, effects).await;
+        let result = tokio::time::timeout(
+            Duration::from_secs(2),
+            local::Receiver::start(Box::new(self.0), controls, effects),
+        )
+        .await
+        .expect("configuration failure must terminate the receiver");
         assert!(matches!(
             result,
             Err(Error::ReceiverError {
@@ -596,6 +602,142 @@ fn checkpoint_read_failure_still_cleans_up_adapter_and_worker() {
         "read failure must still attempt adapter cleanup"
     );
     drop(SourceLease::acquire(&store.lease_key()).expect("startup cleanup releases lease"));
+}
+
+struct EmptyMetadataAdapter {
+    inner: FakeAdapter,
+    columns: Vec<ColumnMetadata>,
+    executions: Rc<Cell<usize>>,
+}
+
+#[async_trait(?Send)]
+impl DriverAdapter for EmptyMetadataAdapter {
+    type Error = TestCancellationError;
+    type Cancellation = TestCancellation;
+
+    fn system(&self) -> DatabaseSystem {
+        self.inner.system()
+    }
+
+    fn begin_operation(&mut self) -> Result<Self::Cancellation, Self::Error> {
+        self.inner.begin_operation()
+    }
+
+    async fn validate_query(
+        &mut self,
+        query: &CompiledQuery,
+    ) -> Result<Vec<ColumnMetadata>, Self::Error> {
+        self.inner.validate_query(query).await
+    }
+
+    async fn execute(
+        &mut self,
+        _query: &CompiledQuery,
+        _committed: &CompositeCursor,
+    ) -> Result<QueryPage, Self::Error> {
+        self.executions.set(self.executions.get() + 1);
+        Ok(QueryPage {
+            columns: self.columns.clone(),
+            rows: vec![],
+        })
+    }
+
+    async fn shutdown(&mut self) -> Result<(), Self::Error> {
+        self.inner.shutdown().await
+    }
+}
+
+/// Scenario: Valid startup metadata changes to invalid execution metadata on a zero-row page.
+/// Guarantees: Missing, ambiguous, or unsupported columns fail as Configuration without data or progress, and cleanup releases the lease.
+#[test]
+fn invalid_empty_execution_metadata_fails_and_releases_lease() {
+    for case in [
+        "missing_timestamp",
+        "missing_validation",
+        "duplicate",
+        "number",
+    ] {
+        let mut columns = fake_columns();
+        match case {
+            "missing_timestamp" => columns.retain(|column| column.name != "EVENT_TS"),
+            "missing_validation" => columns.retain(|column| column.name != "EVENT_ID"),
+            "duplicate" => {
+                let mut duplicate = columns[1].clone();
+                duplicate.name = "event_ts".to_owned();
+                columns.push(duplicate);
+            }
+            "number" => columns[1].source_type = "NUMBER".to_owned(),
+            _ => unreachable!(),
+        }
+        let directory = tempfile::tempdir_in(".").expect("empty metadata directory");
+        let config = CheckpointConfig {
+            directory: directory.path().to_string_lossy().into_owned(),
+            on_nack: OnNack::Rewind,
+            nack_backoff: Duration::from_millis(10),
+            max_consecutive_failures: 3,
+        };
+        let store = CheckpointStore::new(
+            directory.path(),
+            "group",
+            "pipeline",
+            "empty",
+            case,
+            "fingerprint".to_owned(),
+        );
+        let lease = SourceLease::acquire(&store.lease_key()).expect("source lease");
+        let shutdown_joined = Rc::new(Cell::new(false));
+        let executions = Rc::new(Cell::new(0));
+        let receiver = StartupFailureProbe(DatabaseReceiver::new(
+            EmptyMetadataAdapter {
+                inner: FakeAdapter {
+                    shutdown_joined: Rc::clone(&shutdown_joined),
+                    lease_key: store.lease_key(),
+                },
+                columns,
+                executions: Rc::clone(&executions),
+            },
+            fake_query(&config),
+            store.clone(),
+            lease,
+            config.nack_backoff,
+            config.max_consecutive_failures,
+            case.to_owned(),
+            normal_admission(),
+            None,
+        ));
+        let runtime = TestRuntime::<OtapPdata>::new();
+        let wrapper = ReceiverWrapper::local(
+            receiver,
+            test_node(runtime.config().name.clone()),
+            Arc::new(NodeUserConfig::new_receiver_config(
+                "urn:otel:receiver:empty_metadata_probe",
+            )),
+            runtime.config(),
+        );
+        runtime
+            .set_receiver(wrapper)
+            .run_test(|_| async {})
+            .run_validation(|mut ctx| async move {
+                assert!(
+                    tokio::time::timeout(Duration::from_secs(1), ctx.recv())
+                        .await
+                        .expect("receiver output closes after failure")
+                        .is_err(),
+                    "invalid empty page emitted data"
+                );
+            });
+        assert_eq!(
+            executions.get(),
+            1,
+            "{case}: startup succeeds before execution fails"
+        );
+        assert!(
+            store.read().expect("checkpoint readable").is_none(),
+            "{case}"
+        );
+        assert!(shutdown_joined.get(), "{case}: adapter cleanup must join");
+        drop(SourceLease::acquire(&store.lease_key()).expect("cleanup releases real lease"));
+    }
 }
 
 /// Scenario: A worker ignores cancellation past an already-expired stop deadline.
@@ -1003,10 +1145,20 @@ fn invalid_cursor_timestamp_is_rejected() {
     ));
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CheckpointStopCase {
+    WriteDrain,
+    WriteShutdown,
+    RetryDrain,
+    RetryShutdown,
+    InheritedDrain,
+}
+
 struct CheckpointProbe {
     store: CheckpointStore,
     control: Arc<WriteControl>,
-    already_draining: bool,
+    case: CheckpointStopCase,
+    stop_deadline: Rc<Cell<Option<Instant>>>,
 }
 
 #[async_trait(?Send)]
@@ -1018,59 +1170,108 @@ impl local::Receiver<OtapPdata> for CheckpointProbe {
     ) -> Result<TerminalState, Error> {
         let worker = ScraperWorker::new().expect("checkpoint worker");
         let abandoned = Cell::new(false);
-        let deadline = self
-            .already_draining
-            .then(|| Instant::now() + Duration::from_millis(30));
-        let outcome = commit_checkpoint(
-            &worker,
-            &self.store,
-            0,
-            &CompositeCursor::new("2026-01-01 00:00:00".into(), 1),
-            1000,
-            Duration::from_millis(1),
-            &mut 0,
-            "test",
-            1,
-            &effects,
-            &mut None,
-            &abandoned,
-            &mut controls,
-            deadline,
-            &poll_admission(),
-        )
-        .await?;
-        assert!(matches!(
-            outcome,
-            CommitOutcome::Stopped(StopRequest::Drain(_))
-        ));
-        if self.already_draining {
-            assert!(self.control.attempts.load(Ordering::SeqCst) < 1000);
-        } else {
-            assert!(abandoned.get());
-            assert_eq!(self.control.completed.load(Ordering::SeqCst), 0);
-        }
-        assert!(
-            read_checkpoint(&worker, &self.store, &effects)
-                .await
-                .expect("read retained checkpoint")
-                .is_none()
+        let already_draining = self.case == CheckpointStopCase::InheritedDrain;
+        let during_write = matches!(
+            self.case,
+            CheckpointStopCase::WriteDrain | CheckpointStopCase::WriteShutdown
         );
+        let shutdown = matches!(
+            self.case,
+            CheckpointStopCase::WriteShutdown | CheckpointStopCase::RetryShutdown
+        );
+        let pipeline = create_test_pipeline_context();
+        let mut metrics = Some(DatabaseReceiverMetrics::register(&pipeline));
+        if already_draining {
+            // Lifecycle counters count observed messages, not successful cleanup.
+            metrics.as_mut().expect("registered metrics").drains.add(1);
+            self.stop_deadline
+                .set(Some(Instant::now() + Duration::from_millis(20)));
+        }
+        let mut failures = 0;
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(2),
+            commit_checkpoint(
+                &worker,
+                &self.store,
+                0,
+                &checkpoint(0, 1).cursor,
+                1000,
+                if already_draining {
+                    Duration::from_millis(1)
+                } else {
+                    Duration::from_secs(60)
+                },
+                &mut failures,
+                "test",
+                1,
+                &effects,
+                &mut metrics,
+                &abandoned,
+                &mut controls,
+                self.stop_deadline.get(),
+                &poll_admission(),
+            ),
+        )
+        .await;
+        let attempts = self.control.attempts.load(Ordering::SeqCst);
+        let completed = self.control.completed.load(Ordering::SeqCst);
+        let retained = read_checkpoint(&worker, &self.store, &effects).await;
         worker
             .stop(Instant::now() + Duration::from_secs(1))
             .await
             .expect("checkpoint worker stopped");
+        let outcome = outcome.expect("checkpoint stop must be bounded")?;
+        let expected_deadline = self.stop_deadline.get().expect("stop was sent");
+        assert!(
+            match outcome {
+                CommitOutcome::Stopped(StopRequest::Shutdown(deadline)) => {
+                    shutdown && deadline == expected_deadline
+                }
+                CommitOutcome::Stopped(StopRequest::Drain(deadline)) => {
+                    !shutdown && deadline == expected_deadline
+                }
+                CommitOutcome::Committed(_) => false,
+            },
+            "stop kind and deadline must survive checkpoint handling"
+        );
+        let metrics = metrics.as_ref().expect("registered metrics");
+        assert_eq!(metrics.drains.get(), u64::from(!shutdown));
+        assert_eq!(metrics.shutdowns.get(), u64::from(shutdown));
+        assert_eq!(metrics.checkpoint_commits.get(), 0);
+        assert_eq!(metrics.checkpoint_failures.get(), u64::from(failures));
+        if during_write {
+            assert!(abandoned.get());
+            assert_eq!(completed, 0);
+            assert_eq!(failures, 0);
+        } else if already_draining {
+            assert!(
+                failures >= 2,
+                "exercise repeated retries without recounting drain"
+            );
+            assert!(attempts < 1000);
+        } else {
+            assert!(!abandoned.get());
+            assert_eq!(failures, 1, "stop must arrive in the first retry backoff");
+            assert_eq!(attempts, 1);
+            assert_eq!(completed, 1);
+        }
+        assert!(retained.expect("read retained checkpoint").is_none());
         Ok(TerminalState::default())
     }
 }
 
-fn run_checkpoint_probe(already_draining: bool) {
+fn run_checkpoint_probe(case: CheckpointStopCase) {
     let directory = tempfile::tempdir_in(".").expect("checkpoint test directory");
+    let during_write = matches!(
+        case,
+        CheckpointStopCase::WriteDrain | CheckpointStopCase::WriteShutdown
+    );
     // Coordinates the local test driver with the actual blocking store writer.
     let control = Arc::new(WriteControl {
-        delay: if already_draining {
-            Duration::ZERO
-        } else {
+        delay: if during_write {
             Duration::from_millis(200)
+        } else {
+            Duration::ZERO
         },
         attempts: AtomicUsize::new(0),
         completed: AtomicUsize::new(0),
@@ -1084,14 +1285,17 @@ fn run_checkpoint_probe(already_draining: bool) {
         "fingerprint".to_owned(),
     );
     let lease = SourceLease::acquire(&store.lease_key()).expect("source lease");
+    let lease_key = store.lease_key();
     store.write_control = Some(Arc::clone(&control));
     let started = Arc::clone(&control);
+    let stop_deadline = Rc::new(Cell::new(None));
     let runtime = TestRuntime::<OtapPdata>::new();
     let wrapper = ReceiverWrapper::local(
         CheckpointProbe {
             store,
             control,
-            already_draining,
+            case,
+            stop_deadline: Rc::clone(&stop_deadline),
         },
         test_node(runtime.config().name.clone()),
         Arc::new(NodeUserConfig::new_receiver_config(
@@ -1102,35 +1306,69 @@ fn run_checkpoint_probe(already_draining: bool) {
     runtime
         .set_receiver(wrapper)
         .run_test(move |ctx| async move {
-            if !already_draining {
-                while started.attempts.load(Ordering::SeqCst) == 0 {
-                    tokio::task::yield_now().await;
-                }
-                ctx.send_control_msg(NodeControlMsg::DrainIngress {
-                    deadline: Instant::now() + Duration::from_millis(10),
-                    reason: "slow checkpoint".to_owned(),
+            if case != CheckpointStopCase::InheritedDrain {
+                tokio::time::timeout(Duration::from_secs(1), async {
+                    while if during_write {
+                        started.attempts.load(Ordering::SeqCst) == 0
+                    } else {
+                        started.completed.load(Ordering::SeqCst) == 0
+                    } {
+                        tokio::task::yield_now().await;
+                    }
                 })
                 .await
-                .expect("drain");
+                .expect("checkpoint reached requested phase");
+                assert_eq!(started.attempts.load(Ordering::SeqCst), 1);
+                assert_eq!(
+                    started.completed.load(Ordering::SeqCst),
+                    usize::from(!during_write)
+                );
+                let deadline = Instant::now() + Duration::from_millis(10);
+                stop_deadline.set(Some(deadline));
+                let reason = "checkpoint lifecycle probe".to_owned();
+                let message = if matches!(
+                    case,
+                    CheckpointStopCase::WriteShutdown | CheckpointStopCase::RetryShutdown
+                ) {
+                    NodeControlMsg::Shutdown { deadline, reason }
+                } else {
+                    NodeControlMsg::DrainIngress { deadline, reason }
+                };
+                ctx.send_control_msg(message).await.expect("stop");
             }
         })
         .run_validation(|_| async {});
     // The probe explicitly confirmed its dedicated worker exited.
     drop(lease);
+    drop(SourceLease::acquire(&lease_key).expect("joined checkpoint worker releases lease"));
 }
 
 /// Scenario: Drain arrives while a checkpoint write is blocked on filesystem work.
 /// Guarantees: Control stays responsive, the cursor is retained, and unjoined work is identified.
 #[test]
 fn slow_checkpoint_write_remains_drainable() {
-    run_checkpoint_probe(false);
+    run_checkpoint_probe(CheckpointStopCase::WriteDrain);
 }
 
 /// Scenario: Repeated checkpoint failures occur after an earlier drain request.
-/// Guarantees: Retries stop at the active deadline and never advance durable progress.
+/// Guarantees: Retries stop at the active deadline, retain durable progress, and count the inherited drain only once.
 #[test]
 fn checkpoint_retries_honor_existing_drain_deadline() {
-    run_checkpoint_probe(true);
+    run_checkpoint_probe(CheckpointStopCase::InheritedDrain);
+}
+
+/// Scenario: Drain and Shutdown are received during an active checkpoint write or its first retry backoff.
+/// Guarantees: Each message counts once, preserves its stop kind/deadline, leaves no checkpoint, and joins the worker before lease release.
+#[test]
+fn checkpoint_write_and_retry_count_lifecycle_messages_once() {
+    for case in [
+        CheckpointStopCase::WriteDrain,
+        CheckpointStopCase::WriteShutdown,
+        CheckpointStopCase::RetryDrain,
+        CheckpointStopCase::RetryShutdown,
+    ] {
+        run_checkpoint_probe(case);
+    }
 }
 
 /// Scenario: Catch-up budgets allow one or two pages, each awaiting its matching ACK.

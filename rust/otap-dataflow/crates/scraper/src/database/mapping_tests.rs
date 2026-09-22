@@ -10,6 +10,77 @@ use prost::Message;
 
 const UNLIMITED_BYTES: u64 = 64 * 1024 * 1024;
 
+/// Scenario: An encoded page contains customer text, binary values, identifiers and a cursor.
+/// Guarantees: Direct, pretty and nested Debug expose only redacted fields and counts, while OTLP data is unchanged.
+#[test]
+fn encoded_page_debug_redacts_direct_and_nested_payloads() {
+    let text = "customer-private-text-726391";
+    let binary = b"customer-private-binary-\x00\xfe\xff-859274";
+    let source = "customer-private-source-192837";
+    let mut input = page(
+        vec![column("TEXT", "VARCHAR2"), column("BINARY", "RAW")],
+        vec![Row {
+            values: vec![
+                CellValue::String(text.to_owned()),
+                CellValue::Bytes(binary.to_vec()),
+            ],
+        }],
+    );
+    let candidate = CompositeCursor::new("2037-04-05T06:07:08.987654321Z".to_owned(), 719_283_465);
+    input.rows[0].cursor = candidate.clone();
+    let encoded = encode_page(
+        input,
+        DatabaseSystem::Oracle,
+        source,
+        &OutputConfig::default(),
+        123,
+        UNLIMITED_BYTES,
+    )
+    .expect("encoding succeeds")
+    .expect("nonempty page");
+    let normal = format!("{encoded:?}");
+    assert_eq!(
+        normal,
+        format!(
+            "EncodedPage {{ pdata: \"<redacted>\", candidate: {:?}, row_count: 1, encoded_bytes: {}, deferred_rows: 0, event_time_fallbacks: 0 }}",
+            candidate, encoded.encoded_bytes
+        )
+    );
+    let nested: Result<Option<&EncodedPage>, OtlpMappingError> = Ok(Some(&encoded));
+    for debug in [
+        normal,
+        format!("{encoded:#?}"),
+        format!("{nested:?}"),
+        format!("{nested:#?}"),
+    ] {
+        assert!(debug.contains("<redacted>"));
+        for sentinel in [
+            text.to_owned(),
+            source.to_owned(),
+            "customer-private-binary".to_owned(),
+            format!("{binary:?}"),
+            candidate.timestamp.clone(),
+            candidate.tie_breaker.to_string(),
+        ] {
+            assert!(
+                !debug.contains(&sentinel),
+                "diagnostic output leaked a sentinel"
+            );
+        }
+        assert!(!debug.contains("OtapPdata"));
+        assert!(!debug.contains("ExportLogsRequest"));
+    }
+    assert_eq!(encoded.candidate, candidate);
+    let logs = decode(encoded);
+    let record = &logs.resource_logs[0].scope_logs[0].log_records[0];
+    assert!(
+        matches!(field_value(record, "TEXT"), any_value::Value::StringValue(value) if value == text)
+    );
+    assert!(
+        matches!(field_value(record, "BINARY"), any_value::Value::BytesValue(value) if value == binary)
+    );
+}
+
 fn column(name: &str, source_type: &str) -> ColumnMetadata {
     ColumnMetadata {
         name: name.to_owned(),

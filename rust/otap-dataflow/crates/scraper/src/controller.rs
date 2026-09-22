@@ -532,16 +532,10 @@ where
                         None => ctrl_msg_recv.recv().await,
                     }
                 } => {
-                    let control = control.map_err(Error::ChannelRecvError)?;
+                    let Some(control) = handle_common_control(
+                        control.map_err(Error::ChannelRecvError)?, &mut metrics, &admission,
+                    ) else { continue };
                     match control {
-                        NodeControlMsg::CollectTelemetry { mut metrics_reporter } => {
-                            if let Some(metrics) = metrics.as_mut() {
-                                _ = metrics_reporter.report(metrics);
-                            }
-                        }
-                        NodeControlMsg::MemoryPressureChanged { update } => {
-                            admission.apply(update);
-                        }
                         NodeControlMsg::Ack(ack) => {
                             let Some(batch_id) = batch_id_from_call_data(&ack.unwind.route.calldata, lease.generation())
                             else {
@@ -636,9 +630,6 @@ where
                             }
                         }
                         NodeControlMsg::DrainIngress { deadline, .. } => {
-                            if let Some(metrics) = metrics.as_mut() {
-                                metrics.drains.add(1);
-                            }
                             state.begin_drain();
                             // Honor the earliest deadline when drain is requested twice.
                             let deadline = drain_deadline
@@ -654,9 +645,6 @@ where
                             }
                         }
                         NodeControlMsg::Shutdown { deadline, .. } => {
-                            if let Some(metrics) = metrics.as_mut() {
-                                metrics.shutdowns.add(1);
-                            }
                             return finish_stop(
                                 StopRequest::Shutdown(deadline),
                                 &effect_handler,
@@ -704,7 +692,6 @@ where
                             return finish_stop(stop, &effect_handler, &metrics).await;
                         }
                     };
-                    let now = Instant::now();
                     let page = match page {
                         Ok(page) => page,
                         Err(error) => {
@@ -718,11 +705,6 @@ where
                             ));
                         }
                     };
-                    if page.is_empty() {
-                        state.finish_cycle(query.interval(), now);
-                        continue;
-                    }
-
                     let observed_time = observed_time_unix_nano().map_err(|error| {
                         receiver_error(&effect_handler, ReceiverErrorKind::Other, error)
                     })?;
@@ -990,13 +972,9 @@ async fn commit_checkpoint(
                 }
                 control = ctrl_msg_recv.recv() => {
                     match control {
-                        Ok(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
-                            if let Some(metrics) = metrics.as_mut() { _ = metrics_reporter.report(metrics); }
-                        }
-                        Ok(NodeControlMsg::MemoryPressureChanged { update }) => {
-                            admission.apply(update);
-                        }
                         Ok(control) => {
+                            let Some(control) = handle_common_control(control, metrics, admission)
+                            else { continue };
                             if let Some(request) = stop_request(&control) {
                                 let request = request.bounded();
                                 let deadline = request.deadline();
@@ -1084,29 +1062,19 @@ async fn commit_checkpoint(
                             }
                         }
                         control = ctrl_msg_recv.recv() => {
-                            let control = control.map_err(Error::ChannelRecvError)?;
-                            match control {
-                                NodeControlMsg::CollectTelemetry { mut metrics_reporter } => {
-                                    if let Some(metrics) = metrics.as_mut() {
-                                        _ = metrics_reporter.report(metrics);
-                                    }
+                            let Some(control) = handle_common_control(
+                                control.map_err(Error::ChannelRecvError)?, metrics, admission,
+                            ) else { continue };
+                            match stop_request(&control) {
+                                Some(stop @ StopRequest::Shutdown(_)) => {
+                                    return Ok(CommitOutcome::Stopped(stop.bounded()));
                                 }
-                                NodeControlMsg::MemoryPressureChanged { update } => {
-                                    admission.apply(update);
+                                Some(StopRequest::Drain(deadline)) => {
+                                    let deadline = worker_stop_deadline(deadline);
+                                    drain_deadline = Some(drain_deadline
+                                        .map_or(deadline, |current| current.min(deadline)));
                                 }
-                                control => {
-                                    match stop_request(&control) {
-                                        Some(stop @ StopRequest::Shutdown(_)) => {
-                                            return Ok(CommitOutcome::Stopped(stop.bounded()));
-                                        }
-                                        Some(StopRequest::Drain(deadline)) => {
-                                            let deadline = worker_stop_deadline(deadline);
-                                            drain_deadline = Some(drain_deadline
-                                                .map_or(deadline, |current| current.min(deadline)));
-                                        }
-                                        None => {}
-                                    }
-                                }
+                                None => {}
                             }
                         }
                         () = &mut retry => break,
@@ -1141,23 +1109,13 @@ where
 
             control = ctrl_msg_recv.recv() => {
                 match control {
-                    Ok(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
-                        if let Some(metrics) = metrics.as_mut() {
-                            _ = metrics_reporter.report(metrics);
-                        }
-                    }
-                    Ok(NodeControlMsg::MemoryPressureChanged { update }) => {
-                        admission.apply(update);
-                    }
                     Ok(control) => {
+                        let Some(control) = handle_common_control(control, metrics, admission)
+                        else { continue };
                         if let Some(stop) = stop_request(&control) {
                             let stop = stop.bounded();
                             if let Some(metrics) = metrics.as_mut() {
                                 metrics.cancellations.add(1);
-                                match stop {
-                                    StopRequest::Drain(_) => metrics.drains.add(1),
-                                    StopRequest::Shutdown(_) => metrics.shutdowns.add(1),
-                                }
                             }
                             let deadline = stop.deadline();
                             if !cancel_and_join(operation.as_mut(), &cancellation, deadline).await {
@@ -1245,28 +1203,16 @@ async fn send_or_stop(
                 return Ok(SendOutcome::Stopped(StopRequest::Drain(deadline)));
             }
             control = ctrl_msg_recv.recv() => {
-                let control = control.map_err(Error::ChannelRecvError)?;
+                let Some(control) = handle_common_control(
+                    control.map_err(Error::ChannelRecvError)?, metrics, admission,
+                ) else { continue };
                 match control {
-                    NodeControlMsg::CollectTelemetry { mut metrics_reporter } => {
-                        if let Some(metrics) = metrics.as_mut() {
-                            _ = metrics_reporter.report(metrics);
-                        }
-                    }
-                    NodeControlMsg::MemoryPressureChanged { update } => {
-                        admission.apply(update);
-                    }
                     NodeControlMsg::DrainIngress { deadline, .. } => {
-                        if let Some(metrics) = metrics.as_mut() {
-                            metrics.drains.add(1);
-                        }
                         state.begin_drain();
                         *drain_deadline =
                             Some(drain_deadline.map_or(deadline, |current| current.min(deadline)));
                     }
                     NodeControlMsg::Shutdown { deadline, .. } => {
-                        if let Some(metrics) = metrics.as_mut() {
-                            metrics.shutdowns.add(1);
-                        }
                         return Ok(SendOutcome::Stopped(StopRequest::Shutdown(deadline)));
                     }
                     control @ (NodeControlMsg::Ack(_) | NodeControlMsg::Nack(_)) => {
@@ -1290,6 +1236,38 @@ async fn send_or_stop(
                 result.map_err(Error::from)?;
                 return Ok(SendOutcome::Sent);
             }
+        }
+    }
+}
+
+/// Handles phase-independent controls and counts each newly received stop message.
+/// The caller retains phase-specific ACK, drain and shutdown behavior.
+fn handle_common_control(
+    control: NodeControlMsg<OtapPdata>,
+    metrics: &mut Option<MetricSet<DatabaseReceiverMetrics>>,
+    admission: &PollAdmission,
+) -> Option<NodeControlMsg<OtapPdata>> {
+    match control {
+        NodeControlMsg::CollectTelemetry {
+            mut metrics_reporter,
+        } => {
+            if let Some(metrics) = metrics.as_mut() {
+                _ = metrics_reporter.report(metrics);
+            }
+            None
+        }
+        NodeControlMsg::MemoryPressureChanged { update } => {
+            admission.apply(update);
+            None
+        }
+        control => {
+            if let (Some(stop), Some(metrics)) = (stop_request(&control), metrics.as_mut()) {
+                match stop {
+                    StopRequest::Drain(_) => metrics.drains.add(1),
+                    StopRequest::Shutdown(_) => metrics.shutdowns.add(1),
+                }
+            }
+            Some(control)
         }
     }
 }

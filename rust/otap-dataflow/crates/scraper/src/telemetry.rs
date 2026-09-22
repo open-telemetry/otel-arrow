@@ -62,10 +62,10 @@ pub struct DatabaseReceiverMetrics {
     /// Active database operations cancelled by a control message.
     #[metric(unit = "{cancellation}")]
     pub cancellations: Counter<u64>,
-    /// Clean ingress drains.
+    /// Drain requests observed, including during checkpoint writes and retries.
     #[metric(unit = "{drain}")]
     pub drains: Counter<u64>,
-    /// Immediate shutdowns.
+    /// Shutdown requests observed, including during checkpoint writes and retries.
     #[metric(unit = "{shutdown}")]
     pub shutdowns: Counter<u64>,
 }

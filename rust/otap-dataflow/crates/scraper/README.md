@@ -360,7 +360,7 @@ The polling controller keeps one OTLP encoder per receiver. It caches validated
 column metadata, the event-time column index, and constant resource/scope
 metadata and wire sizes. Each page's full metadata is compared with the cached
 schema; changed names, order, types, or nullability trigger revalidation before
-encoding. The cache stores only the current schema, not query results or a
+encoding, including for empty result sets. The cache stores only the current schema, not query results or a
 history of schemas.
 
 The encoder moves owned cell strings and bytes into protobuf values, then hands
@@ -423,6 +423,10 @@ representation. `CompiledQuery` also redacts SQL and its initial cursor.
 Timestamp and tie-breaker configuration debug output redacts `initial`,
 including when nested inside `WatermarkConfig`; the actual configured values
 remain available for query binding.
+`EncodedPage` also redacts its serialized payload and cursor in direct, pretty,
+and nested `Debug` output; only counts and sizes remain visible. The payload
+itself still contains the original customer data for delivery. Formatting
+extracted raw payloads directly bypasses this wrapper's protection.
 This is not blanket redaction of every configuration type or error: callers
 must not log raw watermark configuration, native driver errors, endpoints,
 or other sensitive inputs.
@@ -630,7 +634,7 @@ checkpoint storage, and leases do not emit these runtime metrics by themselves.
 | `event_time_fallbacks` | Records whose event time cannot fit the OTLP timestamp range. |
 | `acks`, `nacks`, `replays`, `stale_feedback` | Matched downstream outcomes, replay, and rejected stale feedback. |
 | `checkpoint_commits`, `checkpoint_failures`, `checkpoint_cleanup_failures` | Durable progress and persistence/cleanup failures. |
-| `cancellations`, `drains`, `shutdowns` | Receiver lifecycle operations. |
+| `cancellations`, `drains`, `shutdowns` | Cancellation attempts and received drain/shutdown requests, including during checkpoint writes and retries; not counts of successful cleanup. |
 
 Measurement attributes are intentionally omitted to keep cardinality bounded.
 The RFC's duration histograms, lag gauges, and broader health signals are not
