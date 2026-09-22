@@ -1697,10 +1697,10 @@ impl<T: IdJoinLookupType, const PAGE_SIZE: usize> IdJoinLookup<T, PAGE_SIZE> {
             if let Some(typed_dict) = ids_as_dict.downcast_dict::<PrimitiveArray<T::ArrowType>>() {
                 return Ok(Self::new_from_iter(typed_dict.into_iter()));
             }
-        } else if let Some(ids_as_dict) = ids_arr.as_dictionary_opt::<UInt16Type>() {
-            if let Some(typed_dict) = ids_as_dict.downcast_dict::<PrimitiveArray<T::ArrowType>>() {
-                return Ok(Self::new_from_iter(typed_dict.into_iter()));
-            }
+        } else if let Some(ids_as_dict) = ids_arr.as_dictionary_opt::<UInt16Type>()
+            && let Some(typed_dict) = ids_as_dict.downcast_dict::<PrimitiveArray<T::ArrowType>>()
+        {
+            return Ok(Self::new_from_iter(typed_dict.into_iter()));
         }
 
         Err(otel_arrow_dfe_pdata::error::Error::InvalidIdColumnType {

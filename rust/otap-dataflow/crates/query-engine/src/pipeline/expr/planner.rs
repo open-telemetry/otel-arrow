@@ -1875,9 +1875,9 @@ impl ExprPlanner {
     /// (cross-scope).
     fn build_binary_expr(
         &self,
-        mut left: PlannedOp,
+        left: PlannedOp,
         operator: Operator,
-        mut right: PlannedOp,
+        right: PlannedOp,
         dict_downcast: bool,
     ) -> Result<ScopedExpr> {
         let possible_scope = try_combine_scopes(&left, &right);
@@ -2103,7 +2103,7 @@ impl ScopedExpr {
             }
             Self::BitmapAnd(_, _) | Self::BitmapOr(_, _) | Self::BitmapNot(_) => {
                 let record_scope = match record_type {
-                    RecordType::Child(child_kind) => RecordScope::Child(child_kind.clone()),
+                    RecordType::Child(child_kind) => RecordScope::Child(*child_kind),
                     _ => RecordScope::Signal,
                 };
                 Ok(Cow::Owned(DataScope::Record(record_scope)))

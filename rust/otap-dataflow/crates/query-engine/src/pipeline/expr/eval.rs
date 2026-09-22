@@ -16,10 +16,9 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use arrow::array::{
-    Array, ArrayRef, AsArray, BooleanArray, BooleanBufferBuilder, NullArray, RecordBatch,
-    StringArray, StructArray, UInt16Array, UInt32Array,
+    Array, ArrayRef, AsArray, BooleanArray, BooleanBufferBuilder, RecordBatch, StringArray,
+    StructArray, UInt32Array,
 };
-use arrow::buffer::BooleanBuffer;
 use arrow::compute::filter_record_batch;
 use arrow::compute::kernels::cmp::eq;
 use arrow::datatypes::{DataType, Field, Schema, UInt8Type, UInt16Type, UInt32Type};
@@ -150,7 +149,7 @@ impl ScopedExpr {
                         ..
                     },
                 ..
-            } => evaluate_df_expr(logical_expr, physical_expr, eval_ctx, &record_batch),
+            } => evaluate_df_expr(logical_expr, physical_expr, eval_ctx, record_batch),
             _ => Err(Error::InvalidPipelineError {
                 cause: "only Eval(DatafusionExpr) can be evaluated on a provided batch".into(),
                 query_location: None,
@@ -898,19 +897,15 @@ fn selection_vec_for_ids(id_col: &ArrayRef, selected_ids: &IdMask) -> Result<Boo
                     selected_ids,
                 ))
             }
-            _ => {
-                return Err(otel_arrow_dfe_pdata::error::Error::InvalidIdColumnType {
-                    data_type: id_col.data_type().clone(),
-                }
-                .into());
-            }
-        },
-        _ => {
-            return Err(otel_arrow_dfe_pdata::error::Error::InvalidIdColumnType {
+            _ => Err(otel_arrow_dfe_pdata::error::Error::InvalidIdColumnType {
                 data_type: id_col.data_type().clone(),
             }
-            .into());
+            .into()),
+        },
+        _ => Err(otel_arrow_dfe_pdata::error::Error::InvalidIdColumnType {
+            data_type: id_col.data_type().clone(),
         }
+        .into()),
     }
 }
 

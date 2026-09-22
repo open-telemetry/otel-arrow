@@ -337,7 +337,7 @@ fn scoped_value_to_id_mask(
             for (start, end) in
                 BitSliceIterator::new(bool_values.inner().as_slice(), 0, boolean_arr.len())
             {
-                insert_slice_into_id_bitmap(start, end, &mut bitmap, &parent_ids)?;
+                insert_slice_into_id_bitmap(start, end, &mut bitmap, parent_ids)?;
             }
             Ok(IdMask::Some(bitmap))
         }

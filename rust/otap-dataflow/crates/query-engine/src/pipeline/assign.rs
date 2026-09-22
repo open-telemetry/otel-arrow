@@ -687,7 +687,7 @@ impl AssignPipelineStage {
                 //
                 // the ScopedValue converted to a JoinInput below. The conversion consumes the it,
                 // so extract the values array first
-                let eval_result = scoped_value_to_join_input(scoped_value, &otap_batch)?;
+                let eval_result = scoped_value_to_join_input(scoped_value, otap_batch)?;
                 let ColumnarValue::Array(ref result_values) = eval_result.values else {
                     unreachable!("expected ColumnarResult::Array")
                 };
@@ -705,18 +705,18 @@ impl AssignPipelineStage {
                             AttributeToSameAttributeJoin::new().rows_to_take(
                                 left_join_input,
                                 &eval_result,
-                                &otap_batch,
+                                otap_batch,
                             )?
                         } else {
                             AttributeToDifferentAttributeJoin::new(dest_attrs_id, *result_attrs_id)
-                                .rows_to_take(left_join_input, &eval_result, &otap_batch)?
+                                .rows_to_take(left_join_input, &eval_result, otap_batch)?
                         }
                     }
                     DataScope::Record(_) | DataScope::RootParent(_) => {
                         RecordAttrsToRecordJoin::new().rows_to_take(
                             left_join_input,
                             &eval_result,
-                            &otap_batch,
+                            otap_batch,
                         )?
                     }
                     DataScope::StaticScalar => {
@@ -1856,7 +1856,7 @@ where
     } else if let Some(parent_id_col_dict) = update_parent_ids.as_dictionary_opt::<UInt8Type>() {
         if let Some(typed_dict) = parent_id_col_dict.downcast_dict::<PrimitiveArray<T>>() {
             update_parent_id_set
-                .populate(typed_dict.clone().into_iter().flatten().map(|i| i.into()));
+                .populate(typed_dict.into_iter().flatten().map(|i| i.into()));
             create_upsert_attrs_values_buffer_from_iter::<T, _>(
                 typed_dict.into_iter(),
                 all_parent_id_set,
@@ -1871,7 +1871,7 @@ where
     } else if let Some(parent_id_col_dict) = update_parent_ids.as_dictionary_opt::<UInt16Type>() {
         if let Some(typed_dict) = parent_id_col_dict.downcast_dict::<PrimitiveArray<T>>() {
             update_parent_id_set
-                .populate(typed_dict.clone().into_iter().flatten().map(|i| i.into()));
+                .populate(typed_dict.into_iter().flatten().map(|i| i.into()));
             create_upsert_attrs_values_buffer_from_iter::<T, _>(
                 typed_dict.into_iter(),
                 all_parent_id_set,
