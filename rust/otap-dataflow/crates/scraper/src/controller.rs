@@ -10,8 +10,8 @@
 
 use crate::checkpoint::{CheckpointState, CheckpointStore};
 use crate::database::{
-    CompiledQuery, CompositeCursor, DriverAdapter, DriverCancellation, EncodedPage, encode_page,
-    parse_utc_timestamp, validate_mapping,
+    CatchUpConfig, CompiledQuery, CompositeCursor, DriverAdapter, DriverCancellation, EncodedPage,
+    OtlpPageEncoder, parse_utc_timestamp,
 };
 use crate::partition::SourceLease;
 use crate::telemetry::DatabaseReceiverMetrics;
@@ -20,6 +20,7 @@ use otel_arrow_dfe_channel::error::SendError;
 use otel_arrow_dfe_engine::control::{CallData, Context8u8, NodeControlMsg};
 use otel_arrow_dfe_engine::error::{Error, ReceiverErrorKind, TypedError, format_error_sources};
 use otel_arrow_dfe_engine::local::receiver as local;
+use otel_arrow_dfe_engine::memory_limiter::{LocalReceiverAdmissionState, MemoryPressureChanged};
 use otel_arrow_dfe_engine::terminal_state::TerminalState;
 use otel_arrow_dfe_engine::{Interests, ProducerEffectHandlerExtension};
 use otel_arrow_dfe_otap::pdata::OtapPdata;
@@ -31,6 +32,25 @@ use std::pin::Pin;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const WORKER_STOP_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Shared only by this receiver's local control-wait phases, never by worker threads.
+struct PollAdmission {
+    state: LocalReceiverAdmissionState,
+    cycle_interrupted: Cell<bool>,
+}
+
+impl PollAdmission {
+    fn apply(&self, update: MemoryPressureChanged) {
+        self.state.apply(update);
+        if self.state.should_shed_ingress() {
+            self.interrupt_cycle();
+        }
+    }
+
+    fn interrupt_cycle(&self) {
+        self.cycle_interrupted.set(true);
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 #[error("database worker missed its stop deadline; source is quarantined until process restart")]
@@ -91,6 +111,7 @@ pub struct DatabaseReceiver<A> {
     // The lease is held for the receiver lifetime so no competing receiver
     // can advance the same durable checkpoint.
     _lease: SourceLease,
+    admission: LocalReceiverAdmissionState,
     metrics: Option<MetricSet<DatabaseReceiverMetrics>>,
 }
 
@@ -99,6 +120,9 @@ where
     A: DriverAdapter,
 {
     /// Creates a receiver bound to one durable checkpoint source.
+    ///
+    /// Bootstrap `admission` from the containing pipeline's process memory state
+    /// so pre-existing hard pressure and observe-only mode are honored at startup.
     #[must_use]
     pub fn new(
         adapter: A,
@@ -108,6 +132,7 @@ where
         nack_backoff: Duration,
         max_consecutive_failures: u32,
         source_id: String,
+        admission: LocalReceiverAdmissionState,
         metrics: Option<MetricSet<DatabaseReceiverMetrics>>,
     ) -> Self {
         Self {
@@ -118,6 +143,7 @@ where
             max_consecutive_failures,
             source_id,
             _lease: lease,
+            admission,
             metrics,
         }
     }
@@ -130,6 +156,12 @@ struct PendingPage {
     candidate: CompositeCursor,
 }
 
+#[derive(Clone, Debug)]
+struct PollCycle {
+    started: Instant,
+    pages_started: usize,
+}
+
 /// Committed cursor plus in-flight and scheduling state.
 #[derive(Clone, Debug)]
 struct ReceiverState {
@@ -139,6 +171,8 @@ struct ReceiverState {
     next_batch_id: u64,
     next_poll: Instant,
     draining: bool,
+    catch_up: CatchUpConfig,
+    cycle: Option<PollCycle>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -165,7 +199,7 @@ fn ensure_cursor_advanced(
 }
 
 impl ReceiverState {
-    fn new(checkpoint: CheckpointState, now: Instant) -> Self {
+    fn new(checkpoint: CheckpointState, now: Instant, catch_up: CatchUpConfig) -> Self {
         Self {
             committed: checkpoint.cursor,
             revision: checkpoint.revision,
@@ -173,10 +207,12 @@ impl ReceiverState {
             next_batch_id: 1,
             next_poll: now,
             draining: false,
+            catch_up,
+            cycle: None,
         }
     }
 
-    /// Returns whether a new query may start.
+    /// Returns whether receiver state permits a new query; process admission is checked separately.
     ///
     /// At most one page is in flight per source, so a pending ACK/NACK blocks
     /// the next poll and prevents overlapping database work.
@@ -188,12 +224,39 @@ impl ReceiverState {
         self.next_poll = now.checked_add(delay).unwrap_or(now);
     }
 
-    fn record_sent(&mut self, candidate: CompositeCursor, poll_interval: Duration, now: Instant) {
+    fn begin_poll(&mut self, now: Instant) {
+        let cycle = self.cycle.get_or_insert(PollCycle {
+            started: now,
+            pages_started: 0,
+        });
+        cycle.pages_started = cycle.pages_started.saturating_add(1);
+    }
+
+    fn can_continue_cycle(&self, now: Instant) -> bool {
+        self.cycle.as_ref().is_some_and(|cycle| {
+            cycle.pages_started < self.catch_up.max_pages
+                && now.saturating_duration_since(cycle.started) < self.catch_up.max_duration
+        })
+    }
+
+    fn finish_cycle(&mut self, interval: Duration, now: Instant) {
+        self.cycle = None;
+        self.schedule_after(interval, now);
+    }
+
+    fn schedule_after_commit(&mut self, interval: Duration, now: Instant, interrupted: bool) {
+        if !interrupted && self.can_continue_cycle(now) {
+            self.next_poll = now;
+        } else {
+            self.finish_cycle(interval, now);
+        }
+    }
+
+    fn record_sent(&mut self, candidate: CompositeCursor) {
         debug_assert!(self.pending.is_none());
         let id = self.next_batch_id;
         self.next_batch_id = self.next_batch_id.saturating_add(1);
         self.pending = Some(PendingPage { id, candidate });
-        self.schedule_after(poll_interval, now);
     }
 
     /// Returns the candidate only when the feedback matches the in-flight page.
@@ -220,6 +283,7 @@ impl ReceiverState {
             return false;
         }
         self.pending = None;
+        self.cycle = None;
         self.next_poll = replay_at;
         true
     }
@@ -234,6 +298,25 @@ fn batch_id_from_call_data(call_data: &CallData, generation: u64) -> Option<u64>
         return None;
     }
     call_data.first().copied().map(u64::from)
+}
+
+fn pause_for_pressure(
+    admission: &PollAdmission,
+    state: &mut ReceiverState,
+    encoder: &mut OtlpPageEncoder,
+    interval: Duration,
+    now: Instant,
+) -> bool {
+    if !admission.state.should_shed_ingress() {
+        return false;
+    }
+    encoder.release_scratch();
+    // Only an active cycle needs a new cooldown; pressure must not keep
+    // postponing an already-scheduled idle poll.
+    if state.cycle.is_some() {
+        state.finish_cycle(interval, now);
+    }
+    true
 }
 
 #[async_trait(?Send)]
@@ -254,12 +337,17 @@ where
             max_consecutive_failures,
             source_id,
             _lease: lease,
+            admission,
             mut metrics,
         } = *self;
         let lease = HeldOwnership {
             lease: Some(lease),
             abandoned: Cell::new(false),
             cleanup_joined: Cell::new(false),
+        };
+        let admission = PollAdmission {
+            state: admission,
+            cycle_interrupted: Cell::new(false),
         };
         // All normal and error exits join adapter cleanup before releasing
         // ownership. Drop of this future instead quarantines the lease.
@@ -272,6 +360,7 @@ where
             &mut ctrl_msg_recv,
             &mut metrics,
             &lease.abandoned,
+            &admission,
         ).await? {
             OperationOutcome::Completed(result) => result?,
             OperationOutcome::Stopped(stop) => return finish_stop(stop, &effect_handler, &metrics).await,
@@ -282,6 +371,7 @@ where
                 cursor: query.watermark().initial.clone(),
             }),
             Instant::now(),
+            query.catch_up(),
         );
         if let Some(metrics) = metrics.as_mut() {
             metrics.starts.add(1);
@@ -308,6 +398,7 @@ where
             &mut ctrl_msg_recv,
             &mut metrics,
             &lease.abandoned,
+            &admission,
         )
         .await?
         {
@@ -318,7 +409,9 @@ where
                 return finish_stop(stop, &effect_handler, &metrics).await;
             }
         };
-        validate_mapping(&columns, query.output()).map_err(|error| {
+        let mut encoder = OtlpPageEncoder::new(
+            adapter.system(), source_id.clone(), query.output().clone(), columns,
+        ).map_err(|error| {
             receiver_error(&effect_handler, ReceiverErrorKind::Configuration, error)
         })?;
 
@@ -327,6 +420,12 @@ where
         let mut deferred_feedback = None;
 
         loop {
+            // I/O helpers may have consumed pressure updates, including on an
+            // empty query. Reconcile pressure whenever encoder ownership is local.
+            let pressure_paused = pause_for_pressure(
+                &admission, &mut state, &mut encoder, query.interval(), Instant::now(),
+            );
+            let can_poll = state.can_poll() && !pressure_paused;
             tokio::select! {
                 biased;
 
@@ -354,6 +453,9 @@ where
                             if let Some(metrics) = metrics.as_mut() {
                                 _ = metrics_reporter.report(metrics);
                             }
+                        }
+                        NodeControlMsg::MemoryPressureChanged { update } => {
+                            admission.apply(update);
                         }
                         NodeControlMsg::Ack(ack) => {
                             let Some(batch_id) = batch_id_from_call_data(&ack.unwind.route.calldata, lease.generation())
@@ -384,6 +486,7 @@ where
                                 &lease.abandoned,
                                 &mut ctrl_msg_recv,
                                 drain_deadline,
+                                &admission,
                             )
                             .await?;
                             let committed = match committed {
@@ -394,6 +497,14 @@ where
                             };
                             // In-memory state advances only after the durable write.
                             state.commit(committed);
+                            if admission.state.should_shed_ingress() {
+                                encoder.release_scratch();
+                            }
+                            state.schedule_after_commit(
+                                query.interval(),
+                                Instant::now(),
+                                admission.cycle_interrupted.get(),
+                            );
                             if state.draining {
                                 let deadline = drain_deadline.unwrap_or_else(Instant::now);
                                 return finish_stop(
@@ -471,7 +582,20 @@ where
                     }
                 }
 
-                () = poll_due(state.next_poll, state.can_poll()), if state.can_poll() => {
+                () = poll_due(state.next_poll, can_poll), if can_poll => {
+                    let now = Instant::now();
+                    // A ready timer does not authorize another page after the
+                    // active cycle's budget or an intervening pressure event.
+                    if state.cycle.is_some()
+                        && (admission.cycle_interrupted.get() || !state.can_continue_cycle(now))
+                    {
+                        state.finish_cycle(query.interval(), now);
+                        continue;
+                    }
+                    if state.cycle.is_none() {
+                        admission.cycle_interrupted.set(false);
+                    }
+                    state.begin_poll(now);
                     if let Some(metrics) = metrics.as_mut() {
                         metrics.polls.add(1);
                     }
@@ -485,6 +609,7 @@ where
                         &mut ctrl_msg_recv,
                         &mut metrics,
                         &lease.abandoned,
+                        &admission,
                     )
                     .await?
                     {
@@ -508,34 +633,38 @@ where
                         }
                     };
                     if page.is_empty() {
-                        state.schedule_after(query.interval(), now);
+                        state.finish_cycle(query.interval(), now);
                         continue;
                     }
 
                     let observed_time = observed_time_unix_nano().map_err(|error| {
                         receiver_error(&effect_handler, ReceiverErrorKind::Other, error)
                     })?;
-                    let system = adapter.system();
-                    let encoding_source = source_id.clone();
-                    let output = query.output().clone();
                     let limit = query.max_batch_bytes();
                     // One bounded page per receiver; encoding is CPU-intensive and
                     // must not monopolize the thread-per-core engine runtime.
-                    let encoding = tokio::task::spawn_blocking(move || encode_page(
-                        page, system, &encoding_source, &output, observed_time, limit,
-                    ));
-                    let encoded = match await_database_operation_or_stop(
-                        encoding, NonInterruptible, &mut ctrl_msg_recv, &mut metrics, &lease.abandoned,
+                    // Move the single-owner cache into the job and back, avoiding
+                    // per-poll configuration clones or a shared mutable cache.
+                    let encoding = tokio::task::spawn_blocking(move || {
+                        let encoded = encoder.encode_page(page, observed_time, limit);
+                        (encoder, encoded)
+                    });
+                    let (returned_encoder, encoded) = match await_database_operation_or_stop(
+                        encoding, NonInterruptible, &mut ctrl_msg_recv, &mut metrics, &lease.abandoned, &admission,
                     ).await? {
                         OperationOutcome::Completed(result) => result,
                         OperationOutcome::Stopped(stop) => return finish_stop(stop, &effect_handler, &metrics).await,
                     }.map_err(|error| receiver_error(
                         &effect_handler, ReceiverErrorKind::Other, error,
                     ))?;
+                    encoder = returned_encoder;
+                    if admission.state.should_shed_ingress() {
+                        encoder.release_scratch();
+                    }
                     let encoded = match encoded {
                         Ok(Some(encoded)) => encoded,
                         Ok(None) => {
-                            state.schedule_after(query.interval(), now);
+                            state.finish_cycle(query.interval(), Instant::now());
                             continue;
                         }
                         Err(error) => {
@@ -574,6 +703,7 @@ where
                         &mut drain_deadline,
                         &mut deferred_feedback,
                         lease.generation(),
+                        &admission,
                     )
                     .await?
                     {
@@ -584,7 +714,7 @@ where
                     }
                     // Recording after the successful send keeps the pending
                     // page and the emitted batch ID consistent on every path.
-                    state.record_sent(candidate, query.interval(), Instant::now());
+                    state.record_sent(candidate);
                     if let Some(metrics) = metrics.as_mut() {
                         metrics.batches_sent.add(1);
                         metrics.rows_sent.add(row_count as u64);
@@ -672,7 +802,9 @@ async fn deadline_elapsed(deadline: Option<Instant>) {
 /// Waits until the next poll is due, or forever when polling is blocked.
 async fn poll_due(next_poll: Instant, can_poll: bool) {
     if can_poll {
-        tokio::time::sleep_until(tokio::time::Instant::from_std(next_poll)).await;
+        if next_poll > Instant::now() {
+            tokio::time::sleep_until(tokio::time::Instant::from_std(next_poll)).await;
+        }
     } else {
         std::future::pending::<()>().await;
     }
@@ -706,6 +838,7 @@ async fn commit_checkpoint(
     abandoned: &Cell<bool>,
     ctrl_msg_recv: &mut local::ControlChannel<OtapPdata>,
     mut drain_deadline: Option<Instant>,
+    admission: &PollAdmission,
 ) -> Result<CommitOutcome, Error> {
     loop {
         if let Some(deadline) = drain_deadline.filter(|deadline| Instant::now() >= *deadline) {
@@ -732,6 +865,9 @@ async fn commit_checkpoint(
                     match control {
                         Ok(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
                             if let Some(metrics) = metrics.as_mut() { _ = metrics_reporter.report(metrics); }
+                        }
+                        Ok(NodeControlMsg::MemoryPressureChanged { update }) => {
+                            admission.apply(update);
                         }
                         Ok(control) => {
                             if let Some(request) = stop_request(&control) {
@@ -779,6 +915,7 @@ async fn commit_checkpoint(
                 return Ok(CommitOutcome::Committed(checkpoint));
             }
             Err(error) => {
+                admission.interrupt_cycle();
                 if let Some(stop @ StopRequest::Shutdown(_)) = stop {
                     return Ok(CommitOutcome::Stopped(stop));
                 }
@@ -826,6 +963,9 @@ async fn commit_checkpoint(
                                         _ = metrics_reporter.report(metrics);
                                     }
                                 }
+                                NodeControlMsg::MemoryPressureChanged { update } => {
+                                    admission.apply(update);
+                                }
                                 control => {
                                     match stop_request(&control) {
                                         Some(stop @ StopRequest::Shutdown(_)) => {
@@ -859,6 +999,7 @@ async fn await_database_operation_or_stop<F, T, C>(
     ctrl_msg_recv: &mut local::ControlChannel<OtapPdata>,
     metrics: &mut Option<MetricSet<DatabaseReceiverMetrics>>,
     abandoned: &Cell<bool>,
+    admission: &PollAdmission,
 ) -> Result<OperationOutcome<T>, Error>
 where
     F: Future<Output = T>,
@@ -875,6 +1016,9 @@ where
                         if let Some(metrics) = metrics.as_mut() {
                             _ = metrics_reporter.report(metrics);
                         }
+                    }
+                    Ok(NodeControlMsg::MemoryPressureChanged { update }) => {
+                        admission.apply(update);
                     }
                     Ok(control) => {
                         if let Some(stop) = stop_request(&control) {
@@ -944,10 +1088,14 @@ async fn send_or_stop(
     drain_deadline: &mut Option<Instant>,
     deferred_feedback: &mut Option<NodeControlMsg<OtapPdata>>,
     generation: u64,
+    admission: &PollAdmission,
 ) -> Result<SendOutcome, Error> {
     let pdata = match effect_handler.try_send_message(pdata) {
         Ok(()) => return Ok(SendOutcome::Sent),
-        Err(TypedError::ChannelSendError(SendError::Full(pdata))) => pdata,
+        Err(TypedError::ChannelSendError(SendError::Full(pdata))) => {
+            admission.interrupt_cycle();
+            pdata
+        }
         Err(error) => return Err(error.into()),
     };
     // Backpressure: block on the downstream send while remaining drainable.
@@ -973,6 +1121,9 @@ async fn send_or_stop(
                         if let Some(metrics) = metrics.as_mut() {
                             _ = metrics_reporter.report(metrics);
                         }
+                    }
+                    NodeControlMsg::MemoryPressureChanged { update } => {
+                        admission.apply(update);
                     }
                     NodeControlMsg::DrainIngress { deadline, .. } => {
                         if let Some(metrics) = metrics.as_mut() {

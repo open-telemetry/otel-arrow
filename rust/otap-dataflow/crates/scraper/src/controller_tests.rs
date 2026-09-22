@@ -22,13 +22,22 @@ use crate::database::{
 };
 use otel_arrow_dfe_channel::mpsc::Channel;
 use otel_arrow_dfe_config::node::NodeUserConfig;
-use otel_arrow_dfe_engine::control::AckMsg;
+use otel_arrow_dfe_config::policy::MemoryLimiterMode;
+use otel_arrow_dfe_engine::control::{AckMsg, NackMsg};
 use otel_arrow_dfe_engine::local::message::LocalReceiver;
+use otel_arrow_dfe_engine::memory_limiter::{
+    MemoryPressureBehaviorConfig, MemoryPressureLevel, MemoryPressureState,
+};
 use otel_arrow_dfe_engine::message::Receiver;
 use otel_arrow_dfe_engine::receiver::ReceiverWrapper;
 use otel_arrow_dfe_engine::testing::{receiver::TestRuntime, test_node};
-use otel_arrow_dfe_otap::testing::next_ack;
-use std::cell::Cell;
+use otel_arrow_dfe_otap::testing::{next_ack, next_nack};
+use otel_arrow_dfe_pdata::PayloadData;
+use otel_arrow_dfe_pdata::otlp::OtlpProtoBytes;
+use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::any_value;
+use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::LogsData;
+use prost::Message;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -51,6 +60,27 @@ fn checkpoint(revision: u64, tie_breaker: i64) -> CheckpointState {
     CheckpointState {
         revision,
         cursor: CompositeCursor::new("2026-01-01 00:00:00".to_owned(), tie_breaker),
+    }
+}
+
+fn normal_admission() -> LocalReceiverAdmissionState {
+    LocalReceiverAdmissionState::from_process_state(&MemoryPressureState::default())
+}
+
+fn poll_admission() -> PollAdmission {
+    PollAdmission {
+        state: normal_admission(),
+        cycle_interrupted: Cell::new(false),
+    }
+}
+
+fn pressure(generation: u64, level: MemoryPressureLevel) -> NodeControlMsg<OtapPdata> {
+    NodeControlMsg::MemoryPressureChanged {
+        update: MemoryPressureChanged {
+            generation,
+            level,
+            ..MemoryPressureChanged::initial()
+        },
     }
 }
 
@@ -118,15 +148,16 @@ impl DriverAdapter for FakeAdapter {
     async fn execute(
         &mut self,
         _query: &CompiledQuery,
-        _cursor: &CompositeCursor,
+        committed: &CompositeCursor,
     ) -> Result<QueryPage, Self::Error> {
-        let cursor = CompositeCursor::new("2026-01-01 00:00:00".to_owned(), 1);
+        let cursor =
+            CompositeCursor::new("2026-01-01 00:00:00".to_owned(), committed.tie_breaker + 1);
         Ok(QueryPage {
             columns: fake_columns(),
             rows: vec![CursorRow {
                 row: Row {
                     values: vec![
-                        CellValue::Decimal("1".to_owned()),
+                        CellValue::Decimal(cursor.tie_breaker.to_string()),
                         CellValue::Timestamp("2026-01-01T00:00:00".to_owned()),
                     ],
                 },
@@ -151,6 +182,14 @@ impl DriverAdapter for FakeAdapter {
 }
 
 fn fake_query(checkpoint: &CheckpointConfig) -> CompiledQuery {
+    query_with_polling(checkpoint, Duration::from_millis(1), None)
+}
+
+fn query_with_polling(
+    checkpoint: &CheckpointConfig,
+    interval: Duration,
+    budget_override: Option<CatchUpConfig>,
+) -> CompiledQuery {
     let watermark = WatermarkConfig::Composite {
         timestamp: TimestampCursorConfig {
             column: "EVENT_TS".to_owned(),
@@ -167,7 +206,8 @@ fn fake_query(checkpoint: &CheckpointConfig) -> CompiledQuery {
     CompiledQuery::compile(
         "SELECT EVENT_ID, EVENT_TS FROM EVENTS".to_owned(),
         PollingConfig {
-            interval: Duration::from_secs(60),
+            interval,
+            catch_up: budget_override.unwrap_or_default(),
             timeout: Duration::from_secs(1),
             fetch_size: 10,
             max_rows_per_poll: 10,
@@ -212,6 +252,7 @@ async fn stop_cancels_and_joins_active_operation() {
         &mut control,
         &mut None,
         &Cell::new(false),
+        &poll_admission(),
     )
     .await
     .expect("controlled operation should finish");
@@ -249,6 +290,7 @@ async fn closed_control_channel_cancels_and_joins_active_operation() {
         &mut control,
         &mut None,
         &Cell::new(false),
+        &poll_admission(),
     )
     .await;
 
@@ -263,8 +305,8 @@ async fn closed_control_channel_cancels_and_joins_active_operation() {
 #[test]
 fn ack_commit_advances_cursor_and_clears_pending() {
     let now = Instant::now();
-    let mut state = ReceiverState::new(checkpoint(3, 10), now);
-    state.record_sent(checkpoint(0, 20).cursor, Duration::from_secs(1), now);
+    let mut state = ReceiverState::new(checkpoint(3, 10), now, CatchUpConfig::default());
+    state.record_sent(checkpoint(0, 20).cursor);
     let candidate = state.ack_candidate(1).expect("matching candidate");
 
     state.commit(CheckpointState {
@@ -284,8 +326,8 @@ fn ack_commit_advances_cursor_and_clears_pending() {
 #[test]
 fn nack_retains_cursor_and_schedules_replay() {
     let now = Instant::now();
-    let mut state = ReceiverState::new(checkpoint(3, 10), now);
-    state.record_sent(checkpoint(0, 20).cursor, Duration::from_secs(1), now);
+    let mut state = ReceiverState::new(checkpoint(3, 10), now, CatchUpConfig::default());
+    state.record_sent(checkpoint(0, 20).cursor);
     let replay_at = now + Duration::from_secs(2);
 
     assert!(state.nack(1, replay_at));
@@ -301,10 +343,10 @@ fn nack_retains_cursor_and_schedules_replay() {
 #[test]
 fn only_one_page_is_in_flight_per_source() {
     let now = Instant::now();
-    let mut state = ReceiverState::new(checkpoint(0, 0), now);
+    let mut state = ReceiverState::new(checkpoint(0, 0), now, CatchUpConfig::default());
 
     assert!(state.can_poll());
-    state.record_sent(checkpoint(0, 1).cursor, Duration::from_secs(1), now);
+    state.record_sent(checkpoint(0, 1).cursor);
     assert!(!state.can_poll());
 }
 
@@ -314,8 +356,8 @@ fn only_one_page_is_in_flight_per_source() {
 #[test]
 fn drain_stops_new_polls_until_pending_resolves() {
     let now = Instant::now();
-    let mut state = ReceiverState::new(checkpoint(0, 0), now);
-    state.record_sent(checkpoint(0, 1).cursor, Duration::from_secs(1), now);
+    let mut state = ReceiverState::new(checkpoint(0, 0), now, CatchUpConfig::default());
+    state.record_sent(checkpoint(0, 1).cursor);
     state.begin_drain();
 
     assert!(!state.can_poll());
@@ -328,8 +370,8 @@ fn drain_stops_new_polls_until_pending_resolves() {
 #[test]
 fn stale_feedback_does_not_change_state() {
     let now = Instant::now();
-    let mut state = ReceiverState::new(checkpoint(2, 10), now);
-    state.record_sent(checkpoint(0, 20).cursor, Duration::from_secs(1), now);
+    let mut state = ReceiverState::new(checkpoint(2, 10), now, CatchUpConfig::default());
+    state.record_sent(checkpoint(0, 20).cursor);
     let original_next_poll = state.next_poll;
 
     assert!(state.ack_candidate(2).is_none());
@@ -346,11 +388,11 @@ fn stale_feedback_does_not_change_state() {
 #[test]
 fn batch_ids_increase_monotonically() {
     let now = Instant::now();
-    let mut state = ReceiverState::new(checkpoint(0, 0), now);
-    state.record_sent(checkpoint(0, 1).cursor, Duration::from_secs(1), now);
+    let mut state = ReceiverState::new(checkpoint(0, 0), now, CatchUpConfig::default());
+    state.record_sent(checkpoint(0, 1).cursor);
     let first = state.pending.as_ref().map(|pending| pending.id);
     state.commit(checkpoint(1, 1));
-    state.record_sent(checkpoint(0, 2).cursor, Duration::from_secs(1), now);
+    state.record_sent(checkpoint(0, 2).cursor);
     let second = state.pending.as_ref().map(|pending| pending.id);
 
     assert_eq!(first, Some(1));
@@ -389,11 +431,10 @@ fn equal_candidate_is_rejected_as_non_advancing() {
     ));
 }
 
-/// Scenario: A complete receiver page reaches downstream and receives a matching ACK.
-/// Guarantees: The production loop persists the last emitted cursor before shutdown and
-/// releases the real storage lease only after adapter cleanup.
+/// Scenario: Successive receiver pages use the same encoder across separate blocking jobs and matching ACKs.
+/// Guarantees: Both pages commit in order, cached encoding state survives the handoff, and cleanup precedes lease release.
 #[test]
-fn matching_ack_commits_the_page_through_the_receiver_loop() {
+fn matching_acks_reuse_encoder_and_commit_pages_through_the_receiver_loop() {
     let directory = tempfile::tempdir_in(".").expect("checkpoint test directory");
     let checkpoint = CheckpointConfig {
         directory: directory.path().to_string_lossy().into_owned(),
@@ -422,6 +463,7 @@ fn matching_ack_commits_the_page_through_the_receiver_loop() {
         checkpoint.nack_backoff,
         checkpoint.max_consecutive_failures,
         "fake-source".to_owned(),
+        normal_admission(),
         None,
     );
     let test_runtime = TestRuntime::<OtapPdata>::new();
@@ -439,11 +481,16 @@ fn matching_ack_commits_the_page_through_the_receiver_loop() {
         .set_receiver(wrapper)
         .run_test(|_| async {})
         .run_validation_concurrent(|mut ctx| async move {
-            let pdata = ctx.recv().await.expect("receiver should emit one page");
-            let (_, ack) = next_ack(AckMsg::new(pdata)).expect("ACK subscription frame");
-            ctx.send_control_msg(NodeControlMsg::Ack(ack))
-                .await
-                .expect("ACK should enqueue");
+            for _ in 0..2 {
+                let pdata = ctx
+                    .recv()
+                    .await
+                    .expect("receiver should emit the next page");
+                let (_, ack) = next_ack(AckMsg::new(pdata)).expect("ACK subscription frame");
+                ctx.send_control_msg(NodeControlMsg::Ack(ack))
+                    .await
+                    .expect("ACK should enqueue");
+            }
             ctx.send_control_msg(NodeControlMsg::Shutdown {
                 deadline: Instant::now() + Duration::from_secs(1),
                 reason: "checkpoint committed".to_owned(),
@@ -456,8 +503,8 @@ fn matching_ack_commits_the_page_through_the_receiver_loop() {
         .read()
         .expect("checkpoint should be readable")
         .expect("ACK should install a checkpoint");
-    assert_eq!(committed.revision, 1);
-    assert_eq!(committed.cursor.tie_breaker, 1);
+    assert_eq!(committed.revision, 2);
+    assert_eq!(committed.cursor.tie_breaker, 2);
     assert!(shutdown_joined.get());
     drop(SourceLease::acquire(&store.lease_key()).expect("lease released after receiver shutdown"));
 }
@@ -477,6 +524,7 @@ async fn stuck_worker_quarantines_ownership_at_deadline() {
         &mut control,
         &mut None,
         &abandoned,
+        &poll_admission(),
     )
     .await
     .expect("bounded shutdown");
@@ -602,6 +650,7 @@ impl local::Receiver<OtapPdata> for CheckpointProbe {
             &abandoned,
             &mut controls,
             deadline,
+            &poll_admission(),
         )
         .await?;
         assert!(matches!(
@@ -694,4 +743,926 @@ fn slow_checkpoint_write_remains_drainable() {
 #[test]
 fn checkpoint_retries_honor_existing_drain_deadline() {
     run_checkpoint_probe(true);
+}
+
+/// Scenario: Catch-up budgets allow one or two pages, each awaiting its matching ACK.
+/// Guarantees: Only durable commits permit immediate continuation, and the last allowed page ends the cycle.
+#[test]
+fn catch_up_page_budget_is_ack_gated_and_exact() {
+    let now = Instant::now();
+    let interval = Duration::from_secs(60);
+    for max_pages in [1, 2] {
+        let mut state = ReceiverState::new(
+            checkpoint(0, 0),
+            now,
+            CatchUpConfig {
+                max_pages,
+                max_duration: interval,
+            },
+        );
+        for page in 1..=max_pages {
+            state.begin_poll(now);
+            state.record_sent(checkpoint(0, page as i64).cursor);
+            assert!(!state.can_poll(), "no fetch before ACK");
+            assert_eq!(state.committed.tie_breaker, (page - 1) as i64);
+            assert_eq!(
+                state.next_poll, now,
+                "sending alone does not start an interval"
+            );
+            assert!(state.ack_candidate(page as u64).is_some());
+            assert!(
+                !state.can_poll(),
+                "matching ACK still needs a durable write"
+            );
+            state.commit(checkpoint(page as u64, page as i64));
+            state.schedule_after_commit(interval, now, false);
+            assert_eq!(
+                state.next_poll,
+                if page < max_pages {
+                    now
+                } else {
+                    now + interval
+                }
+            );
+        }
+        assert!(state.cycle.is_none());
+    }
+}
+
+/// Scenario: An ACK completes immediately before or exactly at the elapsed catch-up budget.
+/// Guarantees: ACK wait counts toward elapsed time and the exact boundary disallows another fetch.
+#[test]
+fn catch_up_elapsed_budget_includes_ack_wait() {
+    let now = Instant::now();
+    let budget = Duration::from_secs(1);
+    let interval = Duration::from_secs(60);
+    for elapsed in [budget - Duration::from_nanos(1), budget, budget * 2] {
+        let mut state = ReceiverState::new(
+            checkpoint(0, 0),
+            now,
+            CatchUpConfig {
+                max_pages: 10,
+                max_duration: budget,
+            },
+        );
+        state.begin_poll(now);
+        state.record_sent(checkpoint(0, 1).cursor);
+        assert!(!state.can_poll());
+        assert_eq!(state.can_continue_cycle(now + elapsed), elapsed < budget);
+        state.commit(checkpoint(1, 1));
+        state.schedule_after_commit(interval, now + elapsed, false);
+        assert_eq!(
+            state.next_poll,
+            now + elapsed
+                + if elapsed < budget {
+                    Duration::ZERO
+                } else {
+                    interval
+                }
+        );
+        assert_eq!(state.committed.tie_breaker, 1);
+    }
+}
+
+/// Scenario: An empty page, interrupted send/commit, or NACK terminates a partly used catch-up cycle.
+/// Guarantees: Normal delay or NACK backoff replaces immediate continuation and the next cycle gets a fresh budget.
+#[test]
+fn catch_up_empty_interruption_and_nack_reset_cycle() {
+    let now = Instant::now();
+    let interval = Duration::from_secs(60);
+    for ending in ["empty", "interrupted", "nack"] {
+        let mut state = ReceiverState::new(
+            checkpoint(0, 0),
+            now,
+            CatchUpConfig {
+                max_pages: 2,
+                max_duration: Duration::from_secs(1),
+            },
+        );
+        state.begin_poll(now);
+        let delay = if ending == "nack" {
+            Duration::from_millis(30)
+        } else {
+            interval
+        };
+        match ending {
+            "empty" => state.finish_cycle(interval, now),
+            "interrupted" => {
+                state.record_sent(checkpoint(0, 1).cursor);
+                state.commit(checkpoint(1, 1));
+                state.schedule_after_commit(interval, now, true);
+            }
+            _ => {
+                state.record_sent(checkpoint(0, 1).cursor);
+                assert!(state.nack(1, now + delay));
+            }
+        }
+        assert!(state.cycle.is_none());
+        assert_eq!(state.next_poll, now + delay);
+        assert_eq!(
+            state.committed.tie_breaker,
+            i64::from(ending == "interrupted")
+        );
+        state.begin_poll(now + delay);
+        let cycle = state.cycle.as_ref().expect("fresh cycle");
+        assert_eq!(cycle.started, now + delay);
+        assert_eq!(cycle.pages_started, 1);
+        assert!(state.can_continue_cycle(now + delay));
+    }
+}
+
+/// Scenario: A single-page cycle receives its ACK after a long downstream wait.
+/// Guarantees: The next cycle's interval starts after the durable commit, not after page send.
+#[test]
+fn single_page_cycle_waits_interval_after_commit() {
+    let now = Instant::now();
+    let interval = Duration::from_secs(60);
+    let mut state = ReceiverState::new(
+        checkpoint(0, 0),
+        now,
+        CatchUpConfig {
+            max_pages: 1,
+            ..CatchUpConfig::default()
+        },
+    );
+    state.begin_poll(now);
+    state.record_sent(checkpoint(0, 1).cursor);
+    state.commit(checkpoint(1, 1));
+    state.schedule_after_commit(interval, now + interval * 2, false);
+    assert_eq!(state.next_poll, now + interval * 3);
+    assert!(state.cycle.is_none());
+}
+
+/// Scenario: Hard pressure arrives during the idle interval and clears at its deadline.
+/// Guarantees: Pressure pauses admission without postponing an already-scheduled next cycle.
+#[test]
+fn pressure_pause_preserves_idle_cycle_deadline() {
+    let start = Instant::now();
+    let interval = Duration::from_secs(60 * 60);
+    let mut state = ReceiverState::new(checkpoint(0, 0), start, CatchUpConfig::default());
+    state.record_sent(checkpoint(0, 1).cursor);
+    state.commit(checkpoint(1, 1));
+    state.finish_cycle(interval, start);
+    let original_deadline = state.next_poll;
+    let admission = poll_admission();
+    let mut encoder = OtlpPageEncoder::new(
+        DatabaseSystem::Oracle,
+        "source".to_owned(),
+        OutputConfig::default(),
+        fake_columns(),
+    )
+    .expect("encoder");
+    admission.apply(MemoryPressureChanged {
+        generation: 1,
+        level: MemoryPressureLevel::Hard,
+        retry_after_secs: 1,
+        usage_bytes: 0,
+    });
+    assert!(pause_for_pressure(
+        &admission,
+        &mut state,
+        &mut encoder,
+        interval,
+        start + Duration::from_secs(59 * 60),
+    ));
+    assert_eq!(state.next_poll, original_deadline);
+    admission.apply(MemoryPressureChanged {
+        generation: 2,
+        level: MemoryPressureLevel::Normal,
+        retry_after_secs: 1,
+        usage_bytes: 0,
+    });
+    assert!(!pause_for_pressure(
+        &admission,
+        &mut state,
+        &mut encoder,
+        interval,
+        original_deadline,
+    ));
+    assert!(state.can_poll());
+    assert_eq!(state.next_poll, original_deadline);
+}
+
+/// Scenario: A warmed encoder is idle while a query consumes Hard pressure and returns no rows.
+/// Guarantees: The main-loop pressure gate releases scratch storage despite the empty-query early return.
+#[tokio::test]
+async fn pressure_during_empty_query_releases_encoder_scratch() {
+    let mut encoder = OtlpPageEncoder::new(
+        DatabaseSystem::Oracle,
+        "source".to_owned(),
+        OutputConfig::default(),
+        fake_columns(),
+    )
+    .expect("encoder");
+    _ = encoder
+        .encode_page(
+            QueryPage {
+                columns: fake_columns(),
+                rows: vec![CursorRow {
+                    row: Row {
+                        values: vec![
+                            CellValue::Int64(1),
+                            CellValue::Timestamp("2026-01-01T00:00:00Z".to_owned()),
+                        ],
+                    },
+                    cursor: checkpoint(0, 1).cursor,
+                }],
+            },
+            1,
+            4096,
+        )
+        .expect("warm encoder");
+    assert!(encoder.retained_record_bytes() > 0);
+    let (sender, receiver) = Channel::new(1);
+    sender
+        .send(pressure(1, MemoryPressureLevel::Hard))
+        .expect("queued pressure");
+    let mut controls = local::ControlChannel::new(Receiver::Local(LocalReceiver::mpsc(receiver)));
+    let admission = poll_admission();
+    let result = await_database_operation_or_stop(
+        async {
+            QueryPage {
+                columns: fake_columns(),
+                rows: Vec::new(),
+            }
+        },
+        TestCancellation {
+            cancelled: Rc::new(Cell::new(false)),
+        },
+        &mut controls,
+        &mut None,
+        &Cell::new(false),
+        &admission,
+    )
+    .await
+    .expect("empty query completes");
+    assert!(matches!(result, OperationOutcome::Completed(page) if page.is_empty()));
+    assert!(admission.state.should_shed_ingress());
+    let now = Instant::now();
+    let interval = Duration::from_secs(60);
+    let mut state = ReceiverState::new(
+        checkpoint(1, 1),
+        now,
+        CatchUpConfig {
+            max_pages: 3,
+            max_duration: Duration::from_secs(5),
+        },
+    );
+    state.finish_cycle(interval, now);
+    assert!(pause_for_pressure(
+        &admission,
+        &mut state,
+        &mut encoder,
+        interval,
+        now,
+    ));
+    assert_eq!(encoder.retained_record_bytes(), 0);
+    drop(sender);
+}
+
+/// Scenario: Pressure changes arrive while a database, checkpoint-read, or encoding operation is waiting.
+/// Guarantees: Waiters apply updates without cancelling work; stale recovery cannot reopen admission and hard interruption is sticky.
+#[tokio::test]
+async fn operation_wait_applies_pressure_and_retains_interruption() {
+    for levels in [
+        vec![
+            (2, MemoryPressureLevel::Hard),
+            (1, MemoryPressureLevel::Normal),
+        ],
+        vec![
+            (2, MemoryPressureLevel::Hard),
+            (3, MemoryPressureLevel::Normal),
+        ],
+        vec![(1, MemoryPressureLevel::Soft)],
+    ] {
+        let (sender, receiver) = Channel::new(4);
+        for &(generation, level) in &levels {
+            sender
+                .send(pressure(generation, level))
+                .expect("queued update");
+        }
+        let mut control =
+            local::ControlChannel::new(Receiver::Local(LocalReceiver::mpsc(receiver)));
+        let admission = poll_admission();
+        let cancelled = Rc::new(Cell::new(false));
+        let outcome = await_database_operation_or_stop(
+            tokio::time::sleep(Duration::from_millis(10)),
+            TestCancellation {
+                cancelled: Rc::clone(&cancelled),
+            },
+            &mut control,
+            &mut None,
+            &Cell::new(false),
+            &admission,
+        )
+        .await
+        .expect("operation completes");
+        assert!(matches!(outcome, OperationOutcome::Completed(())));
+        assert!(!cancelled.get());
+        assert_eq!(admission.cycle_interrupted.get(), levels.len() == 2);
+        assert_eq!(
+            admission.state.should_shed_ingress(),
+            levels[levels.len() - 1].0 == 1 && levels.len() == 2
+        );
+        drop(sender);
+    }
+}
+
+struct BacklogAdapter {
+    inner: FakeAdapter,
+    fetched: Rc<RefCell<Vec<i64>>>,
+    delay: Duration,
+    max_id: i64,
+    release_query: Option<Rc<Cell<bool>>>,
+}
+
+#[async_trait(?Send)]
+impl DriverAdapter for BacklogAdapter {
+    type Error = TestCancellationError;
+    type Cancellation = TestCancellation;
+
+    fn system(&self) -> DatabaseSystem {
+        self.inner.system()
+    }
+
+    fn begin_operation(&mut self) -> Result<Self::Cancellation, Self::Error> {
+        self.inner.begin_operation()
+    }
+
+    async fn validate_query(
+        &mut self,
+        query: &CompiledQuery,
+    ) -> Result<Vec<ColumnMetadata>, Self::Error> {
+        self.inner.validate_query(query).await
+    }
+
+    async fn execute(
+        &mut self,
+        query: &CompiledQuery,
+        committed: &CompositeCursor,
+    ) -> Result<QueryPage, Self::Error> {
+        self.fetched.borrow_mut().push(committed.tie_breaker);
+        if let Some(release) = &self.release_query {
+            while !release.get() {
+                tokio::task::yield_now().await;
+            }
+        }
+        tokio::time::sleep(self.delay).await;
+        if committed.tie_breaker >= self.max_id {
+            Ok(QueryPage {
+                columns: fake_columns(),
+                rows: Vec::new(),
+            })
+        } else {
+            self.inner.execute(query, committed).await
+        }
+    }
+
+    async fn shutdown(&mut self) -> Result<(), Self::Error> {
+        self.inner.shutdown().await
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LoopCase {
+    DefaultBudgets,
+    OnePage,
+    EmptyTail,
+    PageLimit,
+    SlowPage,
+    NackReplay,
+    InitialHard,
+    DefaultInitialHard,
+    ObserveOnly,
+    HardPending,
+    HardDuringQuery,
+}
+
+async fn stored_checkpoint(store: &CheckpointStore) -> Option<CheckpointState> {
+    let store = store.clone();
+    tokio::task::spawn_blocking(move || store.read())
+        .await
+        .expect("checkpoint read joins")
+        .expect("checkpoint read succeeds")
+}
+
+fn assert_page_id(pdata: &OtapPdata, expected: u64) {
+    let PayloadData::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(bytes)) =
+        pdata.clone().payload().into_data()
+    else {
+        panic!("expected unchanged OTLP logs protobuf transport");
+    };
+    let logs = LogsData::decode(bytes).expect("valid OTLP logs");
+    let records: Vec<_> = logs
+        .resource_logs
+        .iter()
+        .flat_map(|resource| &resource.scope_logs)
+        .flat_map(|scope| &scope.log_records)
+        .collect();
+    assert_eq!(records.len(), 1, "short page remains one OTLP record");
+    let Some(any_value::Value::KvlistValue(body)) = records[0]
+        .body
+        .as_ref()
+        .and_then(|value| value.value.as_ref())
+    else {
+        panic!("structured database body");
+    };
+    let id = body
+        .values
+        .iter()
+        .find(|value| value.key == "EVENT_ID")
+        .and_then(|value| value.value.as_ref())
+        .and_then(|value| value.value.as_ref());
+    assert_eq!(
+        id,
+        Some(&any_value::Value::StringValue(expected.to_string()))
+    );
+}
+
+fn run_catch_up_loop(case: LoopCase) {
+    let directory = tempfile::tempdir_in(".").expect("checkpoint test directory");
+    let config = CheckpointConfig {
+        directory: directory.path().to_string_lossy().into_owned(),
+        on_nack: OnNack::Rewind,
+        nack_backoff: Duration::from_millis(50),
+        max_consecutive_failures: 3,
+    };
+    let store = CheckpointStore::new(
+        directory.path(),
+        "group",
+        "pipeline",
+        "catch-up",
+        "source",
+        "fingerprint".to_owned(),
+    );
+    let lease = SourceLease::acquire(&store.lease_key()).expect("source lease");
+    let fetched = Rc::new(RefCell::new(Vec::new()));
+    let shutdown_joined = Rc::new(Cell::new(false));
+    let process = MemoryPressureState::default();
+    if case == LoopCase::ObserveOnly {
+        process.configure(MemoryPressureBehaviorConfig {
+            retry_after_secs: 1,
+            fail_readiness_on_hard: false,
+            mode: MemoryLimiterMode::ObserveOnly,
+        });
+    }
+    if matches!(
+        case,
+        LoopCase::InitialHard | LoopCase::DefaultInitialHard | LoopCase::ObserveOnly
+    ) {
+        process.set_level_for_tests(MemoryPressureLevel::Hard);
+    }
+    let admission = LocalReceiverAdmissionState::from_process_state(&process);
+    let release_query = Rc::new(Cell::new(false));
+    let receiver = DatabaseReceiver::new(
+        BacklogAdapter {
+            inner: FakeAdapter {
+                shutdown_joined: Rc::clone(&shutdown_joined),
+                lease_key: store.lease_key(),
+            },
+            fetched: Rc::clone(&fetched),
+            delay: if case == LoopCase::SlowPage {
+                Duration::from_millis(60)
+            } else {
+                Duration::ZERO
+            },
+            max_id: 3,
+            release_query: (case == LoopCase::HardDuringQuery).then(|| Rc::clone(&release_query)),
+        },
+        query_with_polling(
+            &config,
+            Duration::from_secs(60),
+            (!matches!(
+                case,
+                LoopCase::DefaultInitialHard | LoopCase::DefaultBudgets
+            ))
+            .then_some(CatchUpConfig {
+                max_pages: match case {
+                    LoopCase::PageLimit => 2,
+                    LoopCase::OnePage => 1,
+                    _ => 8,
+                },
+                max_duration: if case == LoopCase::SlowPage {
+                    Duration::from_millis(20)
+                } else {
+                    Duration::from_secs(5)
+                },
+            }),
+        ),
+        store.clone(),
+        lease,
+        config.nack_backoff,
+        config.max_consecutive_failures,
+        "source".to_owned(),
+        admission.clone(),
+        None,
+    );
+    let runtime = TestRuntime::<OtapPdata>::new();
+    let wrapper = ReceiverWrapper::local(
+        receiver,
+        test_node(runtime.config().name.clone()),
+        Arc::new(NodeUserConfig::new_receiver_config(
+            "urn:otel:receiver:catch_up_test",
+        )),
+        runtime.config(),
+    );
+    let expected_pages = match case {
+        LoopCase::PageLimit => 2,
+        LoopCase::SlowPage
+        | LoopCase::HardPending
+        | LoopCase::HardDuringQuery
+        | LoopCase::OnePage => 1,
+        _ => 3,
+    };
+    let validation_store = store.clone();
+    runtime
+        .set_receiver(wrapper)
+        .run_test(|_| async {})
+        .run_validation_concurrent(move |mut ctx| async move {
+            tokio::time::timeout(Duration::from_secs(2), async {
+                if matches!(case, LoopCase::InitialHard | LoopCase::DefaultInitialHard) {
+                    assert!(
+                        tokio::time::timeout(Duration::from_millis(30), ctx.recv())
+                            .await
+                            .is_err()
+                    );
+                    assert!(
+                        fetched.borrow().is_empty(),
+                        "startup hard pressure must prevent execute"
+                    );
+                    ctx.send_control_msg(pressure(1, MemoryPressureLevel::Normal))
+                        .await
+                        .expect("resume");
+                }
+                if case == LoopCase::HardDuringQuery {
+                    while fetched.borrow().is_empty() {
+                        tokio::task::yield_now().await;
+                    }
+                    ctx.send_control_msg(pressure(2, MemoryPressureLevel::Hard))
+                        .await
+                        .expect("hard");
+                    while !admission.should_shed_ingress() {
+                        tokio::task::yield_now().await;
+                    }
+                    ctx.send_control_msg(pressure(3, MemoryPressureLevel::Normal))
+                        .await
+                        .expect("recovery");
+                    while admission.should_shed_ingress() {
+                        tokio::task::yield_now().await;
+                    }
+                    release_query.set(true);
+                }
+                for page in 1..=expected_pages {
+                    let mut pdata = ctx.recv().await.expect("next catch-up page");
+                    assert_page_id(&pdata, page);
+                    if page == 1 {
+                        assert!(stored_checkpoint(&validation_store).await.is_none());
+                        assert!(
+                            tokio::time::timeout(Duration::from_millis(20), ctx.recv())
+                                .await
+                                .is_err()
+                        );
+                        assert_eq!(&*fetched.borrow(), &[0], "no fetch before matching ACK");
+                        if case == LoopCase::NackReplay {
+                            let (_, nack) = next_nack(NackMsg::new("replay", pdata))
+                                .expect("NACK subscription");
+                            ctx.send_control_msg(NodeControlMsg::Nack(nack))
+                                .await
+                                .expect("NACK");
+                            assert!(
+                                tokio::time::timeout(Duration::from_millis(20), ctx.recv())
+                                    .await
+                                    .is_err()
+                            );
+                            assert!(stored_checkpoint(&validation_store).await.is_none());
+                            pdata = ctx.recv().await.expect("replayed page");
+                            assert_page_id(&pdata, page);
+                            assert_eq!(&*fetched.borrow(), &[0, 0], "NACK reuses committed cursor");
+                        }
+                        if case == LoopCase::HardPending {
+                            ctx.send_control_msg(pressure(2, MemoryPressureLevel::Hard))
+                                .await
+                                .expect("hard");
+                            ctx.send_control_msg(pressure(1, MemoryPressureLevel::Normal))
+                                .await
+                                .expect("stale recovery");
+                        }
+                    }
+                    let (_, ack) = next_ack(AckMsg::new(pdata)).expect("ACK subscription");
+                    ctx.send_control_msg(NodeControlMsg::Ack(ack))
+                        .await
+                        .expect("ACK");
+                }
+                loop {
+                    if stored_checkpoint(&validation_store)
+                        .await
+                        .is_some_and(|value| value.revision == expected_pages)
+                    {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+                if case == LoopCase::HardPending {
+                    assert!(
+                        tokio::time::timeout(Duration::from_millis(20), ctx.recv())
+                            .await
+                            .is_err()
+                    );
+                    assert_eq!(
+                        &*fetched.borrow(),
+                        &[0],
+                        "stale Normal cannot reopen admission"
+                    );
+                    ctx.send_control_msg(pressure(3, MemoryPressureLevel::Normal))
+                        .await
+                        .expect("recovery");
+                }
+                let expected_fetches = match case {
+                    LoopCase::PageLimit => vec![0, 1],
+                    LoopCase::SlowPage
+                    | LoopCase::HardPending
+                    | LoopCase::HardDuringQuery
+                    | LoopCase::OnePage => {
+                        vec![0]
+                    }
+                    LoopCase::NackReplay => vec![0, 0, 1, 2, 3],
+                    _ => vec![0, 1, 2, 3],
+                };
+                while fetched.borrow().len() < expected_fetches.len() {
+                    tokio::task::yield_now().await;
+                }
+                assert!(
+                    tokio::time::timeout(Duration::from_millis(30), ctx.recv())
+                        .await
+                        .is_err()
+                );
+                assert_eq!(
+                    *fetched.borrow(),
+                    expected_fetches,
+                    "no extra fetch after cycle ends: {case:?}"
+                );
+                ctx.send_control_msg(NodeControlMsg::Shutdown {
+                    deadline: Instant::now() + Duration::from_secs(1),
+                    reason: "catch-up validated".to_owned(),
+                })
+                .await
+                .expect("shutdown");
+            })
+            .await
+            .expect("catch-up completes without waiting for the 60-second interval");
+        });
+    let committed = store.read().expect("checkpoint read").expect("durable ACK");
+    assert_eq!(committed.revision, expected_pages, "{case:?}");
+    assert_eq!(
+        committed.cursor.tie_breaker, expected_pages as i64,
+        "{case:?}"
+    );
+    assert!(shutdown_joined.get());
+    drop(SourceLease::acquire(&store.lease_key()).expect("lease released after cleanup"));
+}
+
+/// Scenario: Bounded catch-up drains short pages, exhausts budgets, replays NACKs, and encounters memory pressure.
+/// Guarantees: Real ACK checkpoints advance in order, empty tails are fetched once, interrupted cycles do not restart early, and cleanup holds the lease.
+#[test]
+fn catch_up_loop_enforces_budgets_feedback_and_memory_admission() {
+    for case in [
+        LoopCase::DefaultBudgets,
+        LoopCase::OnePage,
+        LoopCase::EmptyTail,
+        LoopCase::PageLimit,
+        LoopCase::SlowPage,
+        LoopCase::NackReplay,
+        LoopCase::InitialHard,
+        LoopCase::DefaultInitialHard,
+        LoopCase::ObserveOnly,
+        LoopCase::HardPending,
+        LoopCase::HardDuringQuery,
+    ] {
+        run_catch_up_loop(case);
+    }
+}
+
+struct BlockedSendProbe {
+    admission: Rc<PollAdmission>,
+    started: Rc<Cell<bool>>,
+}
+
+#[async_trait(?Send)]
+impl local::Receiver<OtapPdata> for BlockedSendProbe {
+    async fn start(
+        self: Box<Self>,
+        mut controls: local::ControlChannel<OtapPdata>,
+        effects: local::EffectHandler<OtapPdata>,
+    ) -> Result<TerminalState, Error> {
+        let pdata = OtapPdata::new_todo_context(
+            OtlpProtoBytes::ExportLogsRequest(Vec::new().into()).into(),
+        );
+        effects.send_message(pdata.clone()).await?;
+        let now = Instant::now();
+        let interval = Duration::from_secs(60);
+        let mut state = ReceiverState::new(
+            checkpoint(0, 0),
+            now,
+            CatchUpConfig {
+                max_pages: 3,
+                max_duration: interval,
+            },
+        );
+        state.begin_poll(now);
+        state.record_sent(checkpoint(0, 1).cursor);
+        self.started.set(true);
+        let outcome = send_or_stop(
+            pdata,
+            &mut controls,
+            &effects,
+            &mut state,
+            &mut None,
+            &mut None,
+            &mut None,
+            1,
+            &self.admission,
+        )
+        .await?;
+        assert!(matches!(outcome, SendOutcome::Sent));
+        assert!(self.admission.cycle_interrupted.get());
+        assert!(!self.admission.state.should_shed_ingress());
+        state.commit(checkpoint(1, 1));
+        state.schedule_after_commit(interval, now, self.admission.cycle_interrupted.get());
+        assert_eq!(state.next_poll, now + interval);
+        assert!(state.cycle.is_none());
+        Ok(TerminalState::default())
+    }
+}
+
+/// Scenario: A capacity-one output queue blocks a page while hard pressure rises and recovers.
+/// Guarantees: The send finishes without dropping pdata, applies both controls, and backpressure ends immediate catch-up.
+#[test]
+fn blocked_send_applies_pressure_and_ends_catch_up() {
+    let admission = Rc::new(poll_admission());
+    let started = Rc::new(Cell::new(false));
+    let runtime = TestRuntime::<OtapPdata>::new();
+    let mut config = runtime.config().clone();
+    config.output_pdata_channel.capacity = 1;
+    let wrapper = ReceiverWrapper::local(
+        BlockedSendProbe {
+            admission: Rc::clone(&admission),
+            started: Rc::clone(&started),
+        },
+        test_node(config.name.clone()),
+        Arc::new(NodeUserConfig::new_receiver_config(
+            "urn:otel:receiver:send_probe",
+        )),
+        &config,
+    );
+    runtime
+        .set_receiver(wrapper)
+        .run_test(|_| async {})
+        .run_validation_concurrent(move |mut ctx| async move {
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while !started.get() || !admission.cycle_interrupted.get() {
+                    tokio::task::yield_now().await;
+                }
+                ctx.send_control_msg(pressure(2, MemoryPressureLevel::Hard))
+                    .await
+                    .expect("hard");
+                while !admission.state.should_shed_ingress() {
+                    tokio::task::yield_now().await;
+                }
+                ctx.send_control_msg(pressure(3, MemoryPressureLevel::Normal))
+                    .await
+                    .expect("normal");
+                while admission.state.should_shed_ingress() {
+                    tokio::task::yield_now().await;
+                }
+                let _ = ctx.recv().await.expect("queued page");
+                let _ = ctx.recv().await.expect("blocked page is retained");
+            })
+            .await
+            .expect("blocked sender processes controls");
+        });
+}
+
+struct PressureCheckpointProbe {
+    store: CheckpointStore,
+    admission: Rc<PollAdmission>,
+}
+
+#[async_trait(?Send)]
+impl local::Receiver<OtapPdata> for PressureCheckpointProbe {
+    async fn start(
+        self: Box<Self>,
+        mut controls: local::ControlChannel<OtapPdata>,
+        effects: local::EffectHandler<OtapPdata>,
+    ) -> Result<TerminalState, Error> {
+        let abandoned = Cell::new(false);
+        let outcome = commit_checkpoint(
+            &self.store,
+            0,
+            &checkpoint(0, 1).cursor,
+            1000,
+            Duration::from_millis(100),
+            &mut 0,
+            "pressure-probe",
+            1,
+            &effects,
+            &mut None,
+            &abandoned,
+            &mut controls,
+            None,
+            &self.admission,
+        )
+        .await?;
+        assert!(matches!(
+            outcome,
+            CommitOutcome::Stopped(StopRequest::Shutdown(_))
+        ));
+        assert!(self.admission.cycle_interrupted.get());
+        assert!(!self.admission.state.should_shed_ingress());
+        assert!(!abandoned.get(), "checkpoint worker must join");
+        assert!(stored_checkpoint(&self.store).await.is_none());
+        Ok(TerminalState::default())
+    }
+}
+
+/// Scenario: Hard pressure and recovery arrive during a delayed checkpoint write or its retry backoff.
+/// Guarantees: Both wait phases apply admission updates, retain sticky interruption, and never checkpoint a failed write.
+#[test]
+fn checkpoint_write_and_retry_wait_apply_pressure() {
+    for during_write in [true, false] {
+        let directory = tempfile::tempdir_in(".").expect("checkpoint test directory");
+        // The blocking store worker shares only its existing atomic fault-injection counters.
+        let write = Arc::new(WriteControl {
+            delay: if during_write {
+                Duration::from_millis(100)
+            } else {
+                Duration::ZERO
+            },
+            attempts: AtomicUsize::new(0),
+            completed: AtomicUsize::new(0),
+        });
+        let mut store = CheckpointStore::new(
+            directory.path(),
+            "group",
+            "pipeline",
+            "pressure-probe",
+            "source",
+            "fingerprint".to_owned(),
+        );
+        let lease = SourceLease::acquire(&store.lease_key()).expect("source lease");
+        store.write_control = Some(Arc::clone(&write));
+        let admission = Rc::new(poll_admission());
+        let runtime = TestRuntime::<OtapPdata>::new();
+        let wrapper = ReceiverWrapper::local(
+            PressureCheckpointProbe {
+                store,
+                admission: Rc::clone(&admission),
+            },
+            test_node(runtime.config().name.clone()),
+            Arc::new(NodeUserConfig::new_receiver_config(
+                "urn:otel:receiver:pressure_probe",
+            )),
+            runtime.config(),
+        );
+        runtime
+            .set_receiver(wrapper)
+            .run_test(|_| async {})
+            .run_validation_concurrent(move |ctx| async move {
+                tokio::time::timeout(Duration::from_secs(2), async {
+                    while if during_write {
+                        write.attempts.load(Ordering::SeqCst) == 0
+                    } else {
+                        write.completed.load(Ordering::SeqCst) == 0
+                    } {
+                        tokio::task::yield_now().await;
+                    }
+                    ctx.send_control_msg(pressure(2, MemoryPressureLevel::Hard))
+                        .await
+                        .expect("hard");
+                    while !admission.state.should_shed_ingress() {
+                        tokio::task::yield_now().await;
+                    }
+                    if during_write {
+                        assert_eq!(write.completed.load(Ordering::SeqCst), 0);
+                    } else {
+                        assert_eq!(write.attempts.load(Ordering::SeqCst), 1);
+                    }
+                    ctx.send_control_msg(pressure(3, MemoryPressureLevel::Normal))
+                        .await
+                        .expect("normal");
+                    while admission.state.should_shed_ingress() {
+                        tokio::task::yield_now().await;
+                    }
+                    assert!(admission.cycle_interrupted.get());
+                    ctx.send_control_msg(NodeControlMsg::Shutdown {
+                        deadline: Instant::now() + Duration::from_secs(1),
+                        reason: "pressure wait verified".to_owned(),
+                    })
+                    .await
+                    .expect("shutdown");
+                })
+                .await
+                .expect("checkpoint wait processes pressure");
+            });
+        drop(lease);
+    }
 }

@@ -12,6 +12,7 @@ fn polling() -> PollingConfig {
         fetch_size: 100,
         max_rows_per_poll: 100,
         max_batch_bytes: 10 * 1024 * 1024,
+        catch_up: CatchUpConfig::default(),
     }
 }
 
@@ -37,6 +38,137 @@ fn checkpoint_config() -> CheckpointConfig {
         on_nack: OnNack::Rewind,
         nack_backoff: Duration::from_secs(1),
         max_consecutive_failures: 5,
+    }
+}
+
+fn polling_json() -> serde_json::Value {
+    serde_json::json!({
+        "interval": "1s",
+        "timeout": "1s",
+        "fetch_size": 100,
+        "max_rows_per_poll": 100,
+        "max_batch_bytes": 10485760
+    })
+}
+
+/// Scenario: Polling configuration omits cycle budgets or overrides only one limit.
+/// Guarantees: Bounded multi-page polling is the default and partial overrides retain the other limit.
+#[test]
+fn default_catch_up_and_partial_overrides_compile() {
+    for (override_value, pages, duration) in [
+        (None, 32, Duration::from_secs(10)),
+        (Some(serde_json::json!({})), 32, Duration::from_secs(10)),
+        (
+            Some(serde_json::json!({"max_pages": 1})),
+            1,
+            Duration::from_secs(10),
+        ),
+        (
+            Some(serde_json::json!({"max_duration": "1s"})),
+            32,
+            Duration::from_secs(1),
+        ),
+    ] {
+        let mut value = polling_json();
+        if let Some(override_value) = override_value {
+            value["catch_up"] = override_value;
+        }
+        let config: PollingConfig = serde_json::from_value(value).expect("polling config");
+        let query = CompiledQuery::compile(
+            "SELECT EVENT_TS, EVENT_ID FROM EVENTS".to_owned(),
+            config,
+            &watermark(),
+            &checkpoint_config(),
+            OutputConfig::default(),
+        )
+        .expect("bounded query");
+        assert_eq!(query.catch_up().max_pages, pages);
+        assert_eq!(query.catch_up().max_duration, duration);
+        assert_eq!(query.interval(), Duration::from_secs(1));
+    }
+}
+
+/// Scenario: Cycle configuration is null, misspelled, or uses a fractional page count.
+/// Guarantees: Invalid settings cannot silently disable bounded paging or bypass validation.
+#[test]
+fn rejects_invalid_catch_up_configuration_shapes() {
+    for (catch_up, field) in [
+        (serde_json::Value::Null, "CatchUpConfig"),
+        (
+            serde_json::json!({"max_pages": 32, "max_duration": "10s", "extra": true}),
+            "extra",
+        ),
+    ] {
+        let mut value = polling_json();
+        value["catch_up"] = catch_up;
+        let error = serde_json::from_value::<PollingConfig>(value).expect_err("invalid schema");
+        assert!(error.to_string().contains(field), "{error}");
+    }
+    for pages in [serde_json::json!(0.5), serde_json::json!(-1)] {
+        let mut value = polling_json();
+        value["catch_up"] = serde_json::json!({"max_pages": pages, "max_duration": "10s"});
+        assert!(serde_json::from_value::<PollingConfig>(value).is_err());
+    }
+}
+
+/// Scenario: Catch-up budgets exceed either bound, including a positive sub-millisecond duration.
+/// Guarantees: Compilation rejects invalid budgets with the explicit offending configuration field.
+#[test]
+fn rejects_invalid_catch_up_bounds() {
+    for (pages, duration, field) in [
+        (0, "10s", "query.catch_up.max_pages"),
+        (1025, "10s", "query.catch_up.max_pages"),
+        (32, "0s", "query.catch_up.max_duration"),
+        (32, "0.5ms", "query.catch_up.max_duration"),
+        (32, "300.001s", "query.catch_up.max_duration"),
+    ] {
+        let mut value = polling_json();
+        value["catch_up"] = serde_json::json!({"max_pages": pages, "max_duration": duration});
+        let config: PollingConfig = serde_json::from_value(value).expect("valid schema");
+        let error = CompiledQuery::compile(
+            "SELECT EVENT_TS, EVENT_ID FROM EVENTS".to_owned(),
+            config,
+            &watermark(),
+            &checkpoint_config(),
+            OutputConfig::default(),
+        )
+        .expect_err("invalid budget");
+        assert!(error.to_string().contains(field), "{error}");
+    }
+}
+
+/// Scenario: Explicit catch-up budgets use inclusive bounds or illustrative intermediate values.
+/// Guarantees: The compiled plan and its clone return the same copyable budgets and expose them in Debug.
+#[test]
+fn accepts_catch_up_bounds_and_preserves_compiled_budgets() {
+    for (pages, duration, expected) in [
+        (1, "1ms", Duration::from_millis(1)),
+        (1024, "5min", Duration::from_secs(300)),
+        (32, "10s", Duration::from_secs(10)),
+        (2, "1.5ms", Duration::from_micros(1500)),
+    ] {
+        let mut value = polling_json();
+        value["catch_up"] = serde_json::json!({"max_pages": pages, "max_duration": duration});
+        let config: PollingConfig = serde_json::from_value(value).expect("explicit config");
+        let query = CompiledQuery::compile(
+            "SELECT EVENT_TS, EVENT_ID FROM EVENTS".to_owned(),
+            config,
+            &watermark(),
+            &checkpoint_config(),
+            OutputConfig::default(),
+        )
+        .expect("valid budget");
+        for plan in [&query, &query.clone()] {
+            let budget = plan.catch_up();
+            let copied = budget;
+            assert_eq!(budget.max_pages, pages);
+            assert_eq!(copied.max_duration, expected);
+            let debug = format!("{plan:?}");
+            assert!(debug.contains("catch_up: CatchUpConfig"));
+            assert!(debug.contains(&format!("max_pages: {pages}")));
+            assert!(debug.contains(&format!("max_duration: {expected:?}")));
+            assert!(!debug.contains("SELECT"));
+        }
     }
 }
 

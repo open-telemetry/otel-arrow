@@ -427,3 +427,561 @@ fn falls_back_to_observation_time_for_unrepresentable_event_time() {
             if value == "9999-12-31T23:59:59.999999999"
     ));
 }
+
+/// Scenario: One encoder handles several pages and an empty poll while earlier batches stay alive.
+/// Guarantees: Records, observation times, byte counts, and cursors belong only to their own page;
+/// subsequent encoding does not overwrite payloads already handed downstream.
+#[test]
+fn reused_encoder_keeps_pages_and_downstream_payloads_independent() {
+    let columns = vec![column("PAYLOAD", "VARCHAR2")];
+    let mut encoder = OtlpPageEncoder::new(
+        DatabaseSystem::Oracle,
+        "oracle-audit".to_owned(),
+        OutputConfig::default(),
+        columns.clone(),
+    )
+    .expect("valid mapping");
+    let mut batches = Vec::new();
+    for (iteration, count) in [3, 1, 2].into_iter().enumerate() {
+        let mut input = page(
+            columns.clone(),
+            (0..count)
+                .map(|index| Row {
+                    values: vec![CellValue::String(format!("page-{iteration}-row-{index}"))],
+                })
+                .collect(),
+        );
+        for (index, row) in input.rows.iter_mut().enumerate() {
+            row.cursor = cursor((iteration * 10 + index) as i64);
+        }
+        let observed = 100 + iteration as u64;
+        let encoded = encoder
+            .encode_page(input, observed, UNLIMITED_BYTES)
+            .expect("page encodes")
+            .expect("nonempty page");
+        assert_eq!(encoded.row_count, count);
+        assert_eq!(encoded.deferred_rows, 0);
+        assert_eq!(encoded.event_time_fallbacks, 0);
+        assert_eq!(
+            encoded.candidate,
+            cursor((iteration * 10 + count - 1) as i64)
+        );
+        batches.push((encoded, observed, count));
+        assert!(
+            encoder
+                .encode_page(page(columns.clone(), Vec::new()), 999, UNLIMITED_BYTES)
+                .expect("empty poll encodes")
+                .is_none()
+        );
+    }
+    for (iteration, (encoded, observed, count)) in batches.into_iter().enumerate() {
+        let encoded_bytes = encoded.encoded_bytes;
+        let logs = decode(encoded);
+        assert_eq!(encoded_bytes, logs.encoded_len());
+        let records = &logs.resource_logs[0].scope_logs[0].log_records;
+        assert_eq!(records.len(), count);
+        for (index, record) in records.iter().enumerate() {
+            assert_eq!(record.observed_time_unix_nano, observed);
+            assert_eq!(record.time_unix_nano, observed);
+            assert!(matches!(
+                field_value(record, "PAYLOAD"),
+                any_value::Value::StringValue(value)
+                    if value == &format!("page-{iteration}-row-{index}")
+            ));
+        }
+    }
+}
+
+/// Scenario: Live metadata reorders the event-time column and then renames a body column.
+/// Guarantees: Recompiled plans use the current timestamp index and body keys, including when
+/// the original schema returns after a different schema was cached.
+#[test]
+fn reused_encoder_recompiles_reordered_and_renamed_columns() {
+    let original = vec![
+        column("EVENT_TIME", "TIMESTAMP"),
+        column("PAYLOAD", "VARCHAR2"),
+    ];
+    let output = OutputConfig {
+        timestamp_column: Some("event_time".to_owned()),
+        ..OutputConfig::default()
+    };
+    let mut encoder = OtlpPageEncoder::new(
+        DatabaseSystem::Oracle,
+        "oracle-audit".to_owned(),
+        output,
+        original.clone(),
+    )
+    .expect("valid mapping");
+    for (columns, key, reversed) in [
+        (original.clone(), "PAYLOAD", false),
+        (
+            vec![original[1].clone(), original[0].clone()],
+            "PAYLOAD",
+            true,
+        ),
+        (
+            vec![column("DETAILS", "VARCHAR2"), original[0].clone()],
+            "DETAILS",
+            true,
+        ),
+        (original, "PAYLOAD", false),
+    ] {
+        let mut values = vec![
+            CellValue::Timestamp("2026-08-28T00:00:00".to_owned()),
+            CellValue::String("not a timestamp".to_owned()),
+        ];
+        if reversed {
+            values.reverse();
+        }
+        let encoded = encoder
+            .encode_page(page(columns, vec![Row { values }]), 123, UNLIMITED_BYTES)
+            .expect("changed schema encodes")
+            .expect("one row");
+        let logs = decode(encoded);
+        let record = &logs.resource_logs[0].scope_logs[0].log_records[0];
+        assert_eq!(record.time_unix_nano, 1_787_875_200_000_000_000);
+        assert!(matches!(
+            field_value(record, key),
+            any_value::Value::StringValue(value) if value == "not a timestamp"
+        ));
+        assert!(matches!(
+            field_value(record, "EVENT_TIME"),
+            any_value::Value::StringValue(value) if value == "2026-08-28T00:00:00"
+        ));
+        let Some(any_value::Value::KvlistValue(body)) =
+            record.body.as_ref().and_then(|body| body.value.as_ref())
+        else {
+            panic!("expected body");
+        };
+        assert_eq!(body.values.len(), 2);
+        assert_eq!(body.values[usize::from(!reversed)].key, key);
+    }
+}
+
+/// Scenario: A timestamp column changes only its source type to an unsupported numeric type.
+/// Guarantees: Construction and schema refresh reject metadata before encoding even a valid
+/// timestamp cell, and a rejected refresh leaves the last valid schema usable.
+#[test]
+fn reused_encoder_rejects_source_type_changes_before_row_conversion() {
+    let columns = vec![column("EVENT_TIME", "TIMESTAMP")];
+    let invalid = vec![column("EVENT_TIME", "NUMBER")];
+    let output = OutputConfig {
+        timestamp_column: Some("EVENT_TIME".to_owned()),
+        ..OutputConfig::default()
+    };
+    assert!(matches!(
+        OtlpPageEncoder::new(
+            DatabaseSystem::Oracle,
+            "oracle-audit".to_owned(),
+            output.clone(),
+            invalid.clone(),
+        ),
+        Err(OtlpMappingError::InvalidEventTimeMetadata { .. })
+    ));
+    let mut encoder = OtlpPageEncoder::new(
+        DatabaseSystem::Oracle,
+        "oracle-audit".to_owned(),
+        output,
+        columns.clone(),
+    )
+    .expect("valid mapping");
+    let rows = vec![Row {
+        values: vec![CellValue::Timestamp("2026-08-28T00:00:00".to_owned())],
+    }];
+    for bad_rows in [Vec::new(), rows.clone()] {
+        assert!(matches!(
+            encoder.encode_page(page(invalid.clone(), bad_rows), 123, UNLIMITED_BYTES),
+            Err(OtlpMappingError::InvalidEventTimeMetadata { column, source_type })
+                if column == "EVENT_TIME" && source_type == "NUMBER"
+        ));
+        let recovered = encoder
+            .encode_page(page(columns.clone(), rows.clone()), 456, UNLIMITED_BYTES)
+            .expect("original schema remains valid")
+            .expect("one row");
+        let logs = decode(recovered);
+        assert_eq!(logs.resource_logs[0].scope_logs[0].log_records.len(), 1);
+        assert_eq!(
+            logs.resource_logs[0].scope_logs[0].log_records[0].time_unix_nano,
+            1_787_875_200_000_000_000
+        );
+    }
+}
+
+/// Scenario: A refreshed schema duplicates ASCII-folded names or loses a configured column.
+/// Guarantees: Both initial and refreshed schemas are validated, and rejected schemas cannot
+/// poison a subsequent page using the original timestamp and validation columns.
+#[test]
+fn reused_encoder_recovers_after_duplicate_and_missing_columns() {
+    let columns = vec![
+        column("EVENT_TIME", "TIMESTAMP"),
+        column("PAYLOAD", "VARCHAR2"),
+    ];
+    let output = OutputConfig {
+        timestamp_column: Some("event_time".to_owned()),
+        validation_columns: vec!["payload".to_owned()],
+    };
+    let mut encoder = OtlpPageEncoder::new(
+        DatabaseSystem::Oracle,
+        "oracle-audit".to_owned(),
+        output.clone(),
+        columns.clone(),
+    )
+    .expect("valid mapping");
+    for (invalid, missing) in [
+        (
+            vec![
+                columns[0].clone(),
+                columns[1].clone(),
+                column("payload", "VARCHAR2"),
+            ],
+            None,
+        ),
+        (vec![columns[0].clone()], Some("payload")),
+        (vec![columns[1].clone()], Some("event_time")),
+    ] {
+        let startup = OtlpPageEncoder::new(
+            DatabaseSystem::Oracle,
+            "oracle-audit".to_owned(),
+            output.clone(),
+            invalid.clone(),
+        )
+        .err()
+        .expect("invalid constructor metadata");
+        let refresh = encoder
+            .encode_page(page(invalid, Vec::new()), 123, UNLIMITED_BYTES)
+            .expect_err("invalid refreshed metadata");
+        for error in [startup, refresh] {
+            match missing {
+                Some(expected) => assert!(matches!(
+                    error,
+                    OtlpMappingError::UnknownColumn { name } if name == expected
+                )),
+                None => assert!(matches!(error, OtlpMappingError::DuplicateColumn { .. })),
+            }
+        }
+        let recovered = encoder
+            .encode_page(
+                page(
+                    columns.clone(),
+                    vec![Row {
+                        values: vec![
+                            CellValue::Timestamp("2026-08-28T00:00:00".to_owned()),
+                            CellValue::String("recovered".to_owned()),
+                        ],
+                    }],
+                ),
+                456,
+                UNLIMITED_BYTES,
+            )
+            .expect("original schema survives")
+            .expect("one row");
+        let logs = decode(recovered);
+        let records = &logs.resource_logs[0].scope_logs[0].log_records;
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].time_unix_nano, 1_787_875_200_000_000_000);
+        assert!(matches!(
+            field_value(&records[0], "PAYLOAD"),
+            any_value::Value::StringValue(value) if value == "recovered"
+        ));
+    }
+}
+
+/// Scenario: A column changes only nullability, and null event times alternate with valid times.
+/// Guarantees: Nullable schema refreshes succeed, null timestamps use the current observation
+/// time without counting as out-of-range fallbacks, and event-time state never leaks across pages.
+#[test]
+fn reused_encoder_accepts_nullable_changes_and_null_timestamp_fallback() {
+    let mut columns = vec![column("EVENT_TIME", "TIMESTAMP")];
+    columns[0].nullable = false;
+    let output = OutputConfig {
+        timestamp_column: Some("EVENT_TIME".to_owned()),
+        ..OutputConfig::default()
+    };
+    let mut encoder = OtlpPageEncoder::new(
+        DatabaseSystem::Oracle,
+        "oracle-audit".to_owned(),
+        output,
+        columns.clone(),
+    )
+    .expect("valid mapping");
+    for (nullable, observed, value, expected, fallbacks) in [
+        (
+            false,
+            100,
+            CellValue::Timestamp("9999-12-31T23:59:59.999999999".to_owned()),
+            100,
+            1,
+        ),
+        (true, 200, CellValue::Null, 200, 0),
+        (
+            false,
+            300,
+            CellValue::Timestamp("2026-08-28T00:00:00".to_owned()),
+            1_787_875_200_000_000_000,
+            0,
+        ),
+        (true, 400, CellValue::Null, 400, 0),
+    ] {
+        columns[0].nullable = nullable;
+        let is_null = matches!(value, CellValue::Null);
+        let encoded = encoder
+            .encode_page(
+                page(
+                    columns.clone(),
+                    vec![Row {
+                        values: vec![value],
+                    }],
+                ),
+                observed,
+                UNLIMITED_BYTES,
+            )
+            .expect("nullability refresh encodes")
+            .expect("one row");
+        assert_eq!(encoded.event_time_fallbacks, fallbacks);
+        let logs = decode(encoded);
+        let record = &logs.resource_logs[0].scope_logs[0].log_records[0];
+        assert_eq!(record.time_unix_nano, expected);
+        assert_eq!(record.observed_time_unix_nano, observed);
+        assert_eq!(
+            body_field(record, "EVENT_TIME")
+                .value
+                .as_ref()
+                .expect("AnyValue")
+                .value
+                .is_none(),
+            is_null
+        );
+    }
+}
+
+/// Scenario: A valid row precedes a width error or non-finite float, or the first row is oversized.
+/// Guarantees: Every failed call discards partially mapped records, and the next call has only
+/// its own record, cursor, timestamps, and exact serialized size.
+#[test]
+fn reused_encoder_discards_partial_rows_after_mapping_and_size_errors() {
+    let columns = vec![column("VALUE", "BINARY_DOUBLE")];
+    let output = OutputConfig::default();
+    let mut encoder = OtlpPageEncoder::new(
+        DatabaseSystem::Oracle,
+        "oracle-audit".to_owned(),
+        output.clone(),
+        columns.clone(),
+    )
+    .expect("valid mapping");
+    let good = Row {
+        values: vec![CellValue::Float64(1.5)],
+    };
+    for bad in [
+        Row { values: Vec::new() },
+        Row {
+            values: vec![CellValue::Float64(1.0), CellValue::Float64(2.0)],
+        },
+        Row {
+            values: vec![CellValue::Float64(f64::NAN)],
+        },
+        Row {
+            values: vec![CellValue::Float64(f64::INFINITY)],
+        },
+        Row {
+            values: vec![CellValue::Float64(f64::NEG_INFINITY)],
+        },
+    ] {
+        let width_error = bad.values.len() != columns.len();
+        let error = encoder
+            .encode_page(
+                page(columns.clone(), vec![good.clone(), bad]),
+                100,
+                UNLIMITED_BYTES,
+            )
+            .expect_err("invalid second row fails the whole page");
+        if width_error {
+            assert!(matches!(error, OtlpMappingError::ColumnCount));
+        } else {
+            assert!(matches!(error, OtlpMappingError::NonFiniteFloat));
+        }
+        let recovered = encoder
+            .encode_page(
+                page(columns.clone(), vec![good.clone()]),
+                123,
+                UNLIMITED_BYTES,
+            )
+            .expect("next page recovers")
+            .expect("one row");
+        assert_eq!(recovered.row_count, 1);
+        assert_eq!(recovered.candidate, cursor(0));
+        let bytes = recovered.encoded_bytes;
+        let expected = decode(encode(
+            page(columns.clone(), vec![good.clone()]),
+            &output,
+            UNLIMITED_BYTES,
+        ));
+        let actual = decode(recovered);
+        assert_eq!(bytes, actual.encoded_len());
+        assert_eq!(actual, expected);
+    }
+    let expected = encode(
+        page(columns.clone(), vec![good.clone()]),
+        &output,
+        UNLIMITED_BYTES,
+    );
+    let limit = expected.encoded_bytes as u64 - 1;
+    assert!(matches!(
+        encoder.encode_page(page(columns.clone(), vec![good.clone()]), 123, limit),
+        Err(OtlpMappingError::OversizedFirstRow { encoded_bytes, limit: actual_limit })
+            if encoded_bytes == expected.encoded_bytes && actual_limit == limit
+    ));
+    let recovered = encoder
+        .encode_page(page(columns, vec![good]), 123, UNLIMITED_BYTES)
+        .expect("oversized failure does not poison next page")
+        .expect("one row");
+    assert_eq!(recovered.row_count, 1);
+    assert_eq!(recovered.deferred_rows, 0);
+    assert_eq!(recovered.candidate, cursor(0));
+    assert_eq!(recovered.encoded_bytes, expected.encoded_bytes);
+    assert_eq!(decode(recovered), decode(expected));
+}
+
+/// Scenario: Payload lengths straddle protobuf varint boundaries on repeatedly reused encoders.
+/// Guarantees: Prost-decoded lengths define exact inclusive byte ceilings; one byte less rejects
+/// the first row or emits precisely the preceding prefix with its own cursor and deferred count.
+#[test]
+fn reused_encoder_preserves_exact_varint_boundary_prefixes() {
+    let columns = vec![column("PAYLOAD", "VARCHAR2")];
+    let output = OutputConfig::default();
+    let mut encoder = OtlpPageEncoder::new(
+        DatabaseSystem::Oracle,
+        "oracle-audit".to_owned(),
+        output.clone(),
+        columns.clone(),
+    )
+    .expect("valid mapping");
+    for payload_len in [127, 128, 16_383, 16_384] {
+        let mut input = page(
+            columns.clone(),
+            (0..3)
+                .map(|index| Row {
+                    values: vec![CellValue::String(
+                        char::from(b'a' + index).to_string().repeat(payload_len),
+                    )],
+                })
+                .collect(),
+        );
+        for (index, row) in input.rows.iter_mut().enumerate() {
+            row.cursor = cursor((payload_len + index) as i64);
+        }
+        let mut expected = Vec::new();
+        for count in 1..=3 {
+            let mut prefix = input.clone();
+            prefix.rows.truncate(count);
+            let encoded = encode(prefix, &output, UNLIMITED_BYTES);
+            let encoded_bytes = encoded.encoded_bytes;
+            let logs = decode(encoded);
+            assert_eq!(encoded_bytes, logs.encoded_len());
+            expected.push(logs);
+        }
+        for count in [3, 1, 2, 3] {
+            let exact = expected[count - 1].encoded_len() as u64;
+            let encoded = encoder
+                .encode_page(input.clone(), 123, exact)
+                .expect("exact ceiling accepts prefix")
+                .expect("nonempty prefix");
+            assert_eq!(encoded.row_count, count);
+            assert_eq!(encoded.deferred_rows, 3 - count);
+            assert_eq!(encoded.encoded_bytes as u64, exact);
+            assert_eq!(encoded.candidate, input.rows[count - 1].cursor);
+            assert_eq!(decode(encoded), expected[count - 1]);
+            let below = encoder.encode_page(input.clone(), 123, exact - 1);
+            if count == 1 {
+                assert!(matches!(
+                    below,
+                    Err(OtlpMappingError::OversizedFirstRow { encoded_bytes, limit })
+                        if encoded_bytes as u64 == exact && limit == exact - 1
+                ));
+            } else {
+                let encoded = below
+                    .expect("smaller prefix fits")
+                    .expect("nonempty smaller prefix");
+                assert_eq!(encoded.row_count, count - 1);
+                assert_eq!(encoded.deferred_rows, 4 - count);
+                assert_eq!(encoded.encoded_bytes, expected[count - 2].encoded_len());
+                assert_eq!(encoded.candidate, input.rows[count - 2].cursor);
+                assert_eq!(decode(encoded), expected[count - 2]);
+            }
+        }
+    }
+}
+
+/// Scenario: A manual run compares warmed persistent encoding to the same optimized one-shot API.
+/// Guarantees: Bounded narrow/wide fixtures produce equal payloads and counts; debug timings
+/// isolate cache reuse, not old-branch performance or production throughput, with no speed gate.
+#[test]
+#[ignore = "manual cache-reuse microbenchmark; debug timings are not production throughput"]
+fn compare_warmed_encoder_with_optimized_one_shot() {
+    use std::hint::black_box;
+    use std::time::Instant;
+
+    const ITERATIONS: usize = 32;
+    const ROWS: usize = 16;
+    for width in [16, 256] {
+        let columns: Vec<_> = (0..width)
+            .map(|index| column(&format!("COLUMN_{index}"), "VARCHAR2"))
+            .collect();
+        let input = page(
+            columns.clone(),
+            (0..ROWS)
+                .map(|_| Row {
+                    values: (0..width)
+                        .map(|_| CellValue::String("bounded payload".to_owned()))
+                        .collect(),
+                })
+                .collect(),
+        );
+        let output = OutputConfig::default();
+        let mut encoder = OtlpPageEncoder::new(
+            DatabaseSystem::Oracle,
+            "oracle-audit".to_owned(),
+            output.clone(),
+            columns,
+        )
+        .expect("valid mapping");
+        let warmed = encoder
+            .encode_page(input.clone(), 123, UNLIMITED_BYTES)
+            .expect("warmup")
+            .expect("rows");
+        let baseline = encode(input.clone(), &output, UNLIMITED_BYTES);
+        assert_eq!(warmed.row_count, baseline.row_count);
+        assert_eq!(warmed.encoded_bytes, baseline.encoded_bytes);
+        assert_eq!(decode(warmed), decode(baseline));
+
+        let cached_pages = vec![input.clone(); ITERATIONS];
+        let one_shot_pages = vec![input; ITERATIONS];
+        let mut cached_counts = (0, 0);
+        let start = Instant::now();
+        for page in cached_pages {
+            let encoded = black_box(
+                encoder
+                    .encode_page(black_box(page), 123, UNLIMITED_BYTES)
+                    .expect("cached page")
+                    .expect("rows"),
+            );
+            cached_counts.0 += encoded.row_count;
+            cached_counts.1 += encoded.encoded_bytes;
+        }
+        let cached_elapsed = start.elapsed();
+        let mut one_shot_counts = (0, 0);
+        let start = Instant::now();
+        for page in one_shot_pages {
+            let encoded = black_box(encode(black_box(page), &output, UNLIMITED_BYTES));
+            one_shot_counts.0 += encoded.row_count;
+            one_shot_counts.1 += encoded.encoded_bytes;
+        }
+        let one_shot_elapsed = start.elapsed();
+        assert_eq!(cached_counts, one_shot_counts);
+        assert_eq!(cached_counts.0, ITERATIONS * ROWS);
+        eprintln!(
+            "cache reuse only: columns={width}, rows={ROWS}, iterations={ITERATIONS}, \
+             cached={cached_elapsed:?}, optimized_one_shot={one_shot_elapsed:?}; \
+             debug measurements are not production throughput"
+        );
+    }
+}
