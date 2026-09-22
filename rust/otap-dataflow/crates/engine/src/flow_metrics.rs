@@ -13,58 +13,244 @@
 //! the end node records the total compute duration into the flow metric entity.
 
 use std::borrow::Cow;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use otap_df_telemetry::common_attributes::SignalAttributes;
-use otap_df_telemetry::instrument::{Counter, Mmsc};
-use otap_df_telemetry::metrics::MeasurementMetricSet;
-use otap_df_telemetry_macros::{attribute_set, metric_set};
+use otel_arrow_dfe_telemetry::common_attributes::SignalAttributes;
+use otel_arrow_dfe_telemetry::instrument::{Counter, HistogramDetailed, HistogramNormal, Mmsc};
+#[cfg(test)]
+use otel_arrow_dfe_telemetry::metrics::MetricSetHandler;
+use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSetSnapshot};
+use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
+use otel_arrow_dfe_telemetry_macros::{attribute_set, metric_set};
 
 use crate::attributes::PipelineAttributeSet;
 use crate::context::PipelineContext;
-use otap_df_config::SignalType;
-use otap_df_config::policy::{FlowMetric, TelemetryPolicy};
+use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_config::policy::{DistributionTier, FlowMetric, TelemetryPolicy};
 
 /// Metric set emitted by the start node of a flow range.
-#[metric_set(name = "flow", measurement_attributes = SignalAttributes)]
+#[metric_set(name = "flow.input", measurement_attributes = SignalAttributes)]
 #[derive(Debug, Default, Clone)]
-pub struct FlowConsumedItemsMetrics {
-    /// Number of signal items (log records, spans, or metric data points)
-    /// entering the flow range.
-    #[metric(name = "consumed.items", unit = "{item}")]
-    pub consumed_items: Counter<u64>,
+pub struct FlowInputMessageMetrics {
+    /// Number of PData messages entering the flow range.
+    #[metric(unit = "{message}")]
+    pub messages: Counter<u64>,
 }
 
-/// Duration metric set emitted by the end node of a flow range.
-#[metric_set(name = "flow", measurement_attributes = SignalAttributes)]
+/// Item count emitted by the start node of a flow range.
+#[metric_set(name = "flow.input", measurement_attributes = SignalAttributes)]
 #[derive(Debug, Default, Clone)]
-pub struct FlowDurationMetrics {
-    /// Sum of per-node compute durations (nanoseconds) for messages traversing the flow range.
-    #[metric(name = "compute.duration", unit = "ns")]
-    pub compute_duration: Mmsc,
+pub struct FlowInputItemsMetrics {
+    /// Number of signal items (log records, spans, or metric data points)
+    /// entering the flow range.
+    #[metric(unit = "{item}")]
+    pub items: Counter<u64>,
+}
+
+/// Logical payload size emitted by the start node of a flow range.
+#[metric_set(name = "flow.input", measurement_attributes = SignalAttributes)]
+#[derive(Debug, Default, Clone)]
+pub struct FlowInputSizeMetrics {
+    /// Logical payload bytes entering the flow range.
+    #[metric(unit = "By")]
+    pub size: Counter<u64>,
+}
+
+/// Basic-tier duration metric set emitted by the end node of a flow range.
+#[metric_set(name = "flow.compute", measurement_attributes = SignalAttributes)]
+#[derive(Debug, Default, Clone)]
+pub struct FlowDurationBasicMetrics {
+    /// Sum of per-node compute durations, in seconds, for messages traversing the flow range.
+    #[metric(unit = "s")]
+    pub duration: Mmsc,
+}
+
+/// Normal-tier duration metric set emitted by the end node of a flow range.
+#[metric_set(name = "flow.compute", measurement_attributes = SignalAttributes)]
+#[derive(Debug, Default, Clone)]
+pub struct FlowDurationNormalMetrics {
+    /// Sum of per-node compute durations, in seconds, for messages traversing the flow range.
+    #[metric(unit = "s")]
+    pub duration: HistogramNormal,
+}
+
+/// Detailed-tier duration metric set emitted by the end node of a flow range.
+#[metric_set(name = "flow.compute", measurement_attributes = SignalAttributes)]
+#[derive(Debug, Default, Clone)]
+pub struct FlowDurationDetailedMetrics {
+    /// Sum of per-node compute durations, in seconds, for messages traversing the flow range.
+    #[metric(unit = "s")]
+    pub duration: HistogramDetailed,
+}
+
+/// Registered flow-duration metric set whose descriptor matches its configured tier.
+#[derive(Clone)]
+pub(crate) enum FlowDurationMetricSet {
+    Basic(MeasurementMetricSet<FlowDurationBasicMetrics>),
+    Normal(MeasurementMetricSet<FlowDurationNormalMetrics>),
+    Detailed(MeasurementMetricSet<FlowDurationDetailedMetrics>),
+}
+
+impl From<MeasurementMetricSet<FlowDurationNormalMetrics>> for FlowDurationMetricSet {
+    fn from(metrics: MeasurementMetricSet<FlowDurationNormalMetrics>) -> Self {
+        Self::Normal(metrics)
+    }
+}
+
+impl FlowDurationMetricSet {
+    pub(crate) fn into_measurement(self) -> FlowDurationMeasurement {
+        match self {
+            Self::Basic(metrics) => FlowDurationMeasurement::Basic {
+                metrics,
+                accumulator: Box::new(std::array::from_fn(|_| Mmsc::default())),
+            },
+            Self::Normal(metrics) => FlowDurationMeasurement::Normal {
+                metrics,
+                accumulator: Box::new(std::array::from_fn(|_| HistogramNormal::default())),
+            },
+            Self::Detailed(metrics) => FlowDurationMeasurement::Detailed {
+                metrics,
+                accumulator: Box::new(std::array::from_fn(|_| HistogramDetailed::default())),
+            },
+        }
+    }
+}
+
+/// Flow-duration metric set paired with its matching accumulator.
+#[derive(Clone)]
+pub(crate) enum FlowDurationMeasurement {
+    Basic {
+        metrics: MeasurementMetricSet<FlowDurationBasicMetrics>,
+        accumulator: Box<[Mmsc; FLOW_SIGNAL_COUNT]>,
+    },
+    Normal {
+        metrics: MeasurementMetricSet<FlowDurationNormalMetrics>,
+        accumulator: Box<[HistogramNormal; FLOW_SIGNAL_COUNT]>,
+    },
+    Detailed {
+        metrics: MeasurementMetricSet<FlowDurationDetailedMetrics>,
+        accumulator: Box<[HistogramDetailed; FLOW_SIGNAL_COUNT]>,
+    },
+}
+
+impl FlowDurationMeasurement {
+    pub(crate) fn record(&mut self, signal: SignalType, value: f64) {
+        let index = flow_signal_index(signal);
+        match self {
+            Self::Basic { accumulator, .. } => accumulator[index].record(value),
+            Self::Normal { accumulator, .. } => accumulator[index].record(value),
+            Self::Detailed { accumulator, .. } => accumulator[index].record(value),
+        }
+    }
+
+    fn merge_pending(&mut self) {
+        match self {
+            Self::Basic {
+                metrics,
+                accumulator,
+            } => {
+                for (duration, signal) in accumulator.iter_mut().zip(FLOW_SIGNALS) {
+                    if !duration.is_empty() {
+                        metrics
+                            .with(SignalAttributes { signal })
+                            .duration
+                            .merge(std::mem::take(duration));
+                    }
+                }
+            }
+            Self::Normal {
+                metrics,
+                accumulator,
+            } => {
+                for (duration, signal) in accumulator.iter_mut().zip(FLOW_SIGNALS) {
+                    if !duration.is_empty() {
+                        metrics
+                            .with(SignalAttributes { signal })
+                            .duration
+                            .merge(std::mem::take(duration));
+                    }
+                }
+            }
+            Self::Detailed {
+                metrics,
+                accumulator,
+            } => {
+                for (duration, signal) in accumulator.iter_mut().zip(FLOW_SIGNALS) {
+                    if !duration.is_empty() {
+                        metrics
+                            .with(SignalAttributes { signal })
+                            .duration
+                            .merge(std::mem::take(duration));
+                    }
+                }
+            }
+        }
+    }
+
+    pub(crate) fn report(&mut self, reporter: &mut MetricsReporter) {
+        self.merge_pending();
+        match self {
+            Self::Basic { metrics, .. } => {
+                let _ = reporter.report_measurement(metrics);
+            }
+            Self::Normal { metrics, .. } => {
+                let _ = reporter.report_measurement(metrics);
+            }
+            Self::Detailed { metrics, .. } => {
+                let _ = reporter.report_measurement(metrics);
+            }
+        }
+    }
+
+    pub(crate) fn terminal_snapshots(&mut self) -> Vec<MetricSetSnapshot> {
+        self.merge_pending();
+        match self {
+            Self::Basic { metrics, .. } => metrics.terminal_snapshots(),
+            Self::Normal { metrics, .. } => metrics.terminal_snapshots(),
+            Self::Detailed { metrics, .. } => metrics.terminal_snapshots(),
+        }
+    }
 }
 
 /// Outgoing signal metric set emitted by the end node of a flow range.
-#[metric_set(name = "flow", measurement_attributes = SignalAttributes)]
+#[metric_set(name = "flow.output", measurement_attributes = SignalAttributes)]
 #[derive(Debug, Default, Clone)]
-pub struct FlowProducedItemsMetrics {
+pub struct FlowOutputMessageMetrics {
+    /// Number of PData messages leaving the flow range.
+    #[metric(unit = "{message}")]
+    pub messages: Counter<u64>,
+}
+
+/// Outgoing item metric set emitted by the end node of a flow range.
+#[metric_set(name = "flow.output", measurement_attributes = SignalAttributes)]
+#[derive(Debug, Default, Clone)]
+pub struct FlowOutputItemsMetrics {
     /// Number of signal items (log records, spans, or metric data points) leaving the flow range.
-    #[metric(name = "produced.items", unit = "{item}")]
-    pub produced_items: Counter<u64>,
+    #[metric(unit = "{item}")]
+    pub items: Counter<u64>,
+}
+
+/// Logical payload size emitted by the end node of a flow range.
+#[metric_set(name = "flow.output", measurement_attributes = SignalAttributes)]
+#[derive(Debug, Default, Clone)]
+pub struct FlowOutputSizeMetrics {
+    /// Logical payload bytes leaving the flow range.
+    #[metric(unit = "By")]
+    pub size: Counter<u64>,
 }
 
 /// Dropped signal metric set emitted by a decision node within a flow range.
-#[metric_set(name = "flow", measurement_attributes = SignalAttributes)]
+#[metric_set(name = "flow.dropped", measurement_attributes = SignalAttributes)]
 #[derive(Debug, Default, Clone)]
 pub struct FlowDroppedItemsMetrics {
     /// Number of signal items (log records, spans, or metric data points) a
     /// decision node chose to drop.
-    #[metric(name = "dropped.items", unit = "{item}")]
-    pub dropped_items: Counter<u64>,
+    #[metric(unit = "{item}")]
+    pub items: Counter<u64>,
 }
 
 /// Entity attributes that scope a flow metric set.
@@ -89,17 +275,17 @@ pub struct FlowAttributeSet {
     pub purpose: Cow<'static, str>,
     /// Name of the decision node that recorded `dropped.items`. Always
     /// emitted as the `flow.node.decision` scope attribute; carries an empty
-    /// value for the flow's consumed/produced/duration entity (which is not
+    /// value for the flow's input/output/duration entity (which is not
     /// attributed to a specific decision node). Lets a single flow contain
     /// multiple decision nodes without conflation.
     ///
     /// `dropped.items` aggregates correctly across this attribute: drops at
     /// different decision nodes are disjoint (a dropped item never reaches a
     /// later node), so the sum equals the flow's total removed =
-    /// `consumed.items - produced.items`. There is deliberately no
+    /// `flow.input.items - flow.output.items`. There is deliberately no
     /// per-node "kept" metric: a survivor count is non-additive across series
     /// nodes (nested subsets double-count) and undefined under fan-out, and the
-    /// flow-wide kept count is simply `produced.items`.
+    /// flow-wide kept count is simply `output.items`.
     #[attribute_key = "flow.node.decision"]
     pub decision: Cow<'static, str>,
     /// Pipeline attributes.
@@ -112,7 +298,6 @@ pub type FlowMetricId = usize;
 
 pub(crate) const FLOW_SIGNAL_COUNT: usize = 3;
 pub(crate) type FlowItemAccumulator = [u64; FLOW_SIGNAL_COUNT];
-pub(crate) type FlowDurationAccumulator = [Mmsc; FLOW_SIGNAL_COUNT];
 
 #[must_use]
 pub(crate) const fn flow_signal_index(signal: SignalType) -> usize {
@@ -126,6 +311,29 @@ pub(crate) const fn flow_signal_index(signal: SignalType) -> usize {
 pub(crate) const FLOW_SIGNALS: [SignalType; FLOW_SIGNAL_COUNT] =
     [SignalType::Traces, SignalType::Metrics, SignalType::Logs];
 
+bitflags::bitflags! {
+    /// Flow measurements enabled for a processor effect handler.
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub struct FlowMetricInterests: u8 {
+        /// Aggregate processor compute duration.
+        const COMPUTE_DURATION = 1 << 0;
+        /// Messages entering the flow.
+        const INPUT_MESSAGES = 1 << 1;
+        /// Items entering the flow.
+        const INPUT_ITEMS = 1 << 2;
+        /// Logical payload bytes entering the flow.
+        const INPUT_SIZE = 1 << 3;
+        /// Messages leaving the flow.
+        const OUTPUT_MESSAGES = 1 << 4;
+        /// Items leaving the flow.
+        const OUTPUT_ITEMS = 1 << 5;
+        /// Logical payload bytes leaving the flow.
+        const OUTPUT_SIZE = 1 << 6;
+        /// Items dropped by a decision node.
+        const DROPPED_ITEMS = 1 << 7;
+    }
+}
+
 /// Per-pipeline flow_metric state.
 ///
 /// Holds the start/stop node lookup tables used during processor wiring.
@@ -133,12 +341,20 @@ pub(crate) const FLOW_SIGNALS: [SignalType; FLOW_SIGNAL_COUNT] =
 /// shared) at build time; reporting happens from the processor's own
 /// telemetry path, not from this state.
 pub(crate) struct PipelineFlowMetricState {
+    /// Input message metric sets indexed by internal flow index.
+    pub input_message_metrics: Vec<Option<MeasurementMetricSet<FlowInputMessageMetrics>>>,
     /// Consumed item metric sets indexed by internal flow index.
-    pub consumed_items_metrics: Vec<Option<MeasurementMetricSet<FlowConsumedItemsMetrics>>>,
+    pub input_items_metrics: Vec<Option<MeasurementMetricSet<FlowInputItemsMetrics>>>,
+    /// Input size metric sets indexed by internal flow index.
+    pub input_size_metrics: Vec<Option<MeasurementMetricSet<FlowInputSizeMetrics>>>,
     /// Duration metric sets indexed by internal flow index.
-    pub duration_metrics: Vec<Option<MeasurementMetricSet<FlowDurationMetrics>>>,
+    pub duration_metrics: Vec<Option<FlowDurationMetricSet>>,
     /// Produced item metric sets indexed by internal flow index.
-    pub produced_items_metrics: Vec<Option<MeasurementMetricSet<FlowProducedItemsMetrics>>>,
+    pub output_items_metrics: Vec<Option<MeasurementMetricSet<FlowOutputItemsMetrics>>>,
+    /// Output message metric sets indexed by internal flow index.
+    pub output_message_metrics: Vec<Option<MeasurementMetricSet<FlowOutputMessageMetrics>>>,
+    /// Output size metric sets indexed by internal flow index.
+    pub output_size_metrics: Vec<Option<MeasurementMetricSet<FlowOutputSizeMetrics>>>,
     /// Mapping from node index -> flow metric index where this node is the end node.
     pub end_nodes: HashMap<usize, usize>,
     /// Mapping from node index -> flow metric index where this node is the start node.
@@ -169,12 +385,16 @@ pub(crate) struct DecisionCandidate {
 /// `Option` on `FlowMetricState` -- non-start nodes pay no allocation for
 /// either.
 #[derive(Clone)]
-pub(crate) struct ConsumedFlowMetrics<ItemAccumulator> {
-    /// Consumed item measurement, if enabled for this flow.
-    pub consumed_items: Option<(
-        MeasurementMetricSet<FlowConsumedItemsMetrics>,
+pub(crate) struct InputFlowMetrics<ItemAccumulator> {
+    /// Input message measurement, if enabled for this flow.
+    pub input_messages: Option<(
+        MeasurementMetricSet<FlowInputMessageMetrics>,
         ItemAccumulator,
     )>,
+    /// Consumed item measurement, if enabled for this flow.
+    pub input_items: Option<(MeasurementMetricSet<FlowInputItemsMetrics>, ItemAccumulator)>,
+    /// Input size measurement, if enabled for this flow.
+    pub input_size: Option<(MeasurementMetricSet<FlowInputSizeMetrics>, ItemAccumulator)>,
 }
 
 /// Stop-side measurements for a node that terminates a flow_metric range.
@@ -183,17 +403,21 @@ pub(crate) struct ConsumedFlowMetrics<ItemAccumulator> {
 /// `Option` on `FlowMetricState` -- non-stop nodes pay no allocation for
 /// either.
 #[derive(Clone)]
-pub(crate) struct EndFlowMetrics<DurationAccumulator, ItemAccumulator> {
+pub(crate) struct EndFlowMetrics<DurationMeasurement, ItemAccumulator> {
     /// Duration measurement, if enabled for this flow.
-    pub duration: Option<(
-        MeasurementMetricSet<FlowDurationMetrics>,
-        DurationAccumulator,
-    )>,
+    pub duration: Option<DurationMeasurement>,
     /// Produced item measurement, if enabled for this flow.
-    pub produced_items: Option<(
-        MeasurementMetricSet<FlowProducedItemsMetrics>,
+    pub output_items: Option<(
+        MeasurementMetricSet<FlowOutputItemsMetrics>,
         ItemAccumulator,
     )>,
+    /// Output message measurement, if enabled for this flow.
+    pub output_messages: Option<(
+        MeasurementMetricSet<FlowOutputMessageMetrics>,
+        ItemAccumulator,
+    )>,
+    /// Output size measurement, if enabled for this flow.
+    pub output_size: Option<(MeasurementMetricSet<FlowOutputSizeMetrics>, ItemAccumulator)>,
 }
 
 /// Decision-side measurements for a node that records drop decisions
@@ -222,14 +446,14 @@ pub(crate) struct DecisionFlowMetrics<ItemAccumulator> {
 /// `Arc<Mutex<_>>` / `Arc<Mutex<_>>`. The plain fields
 /// (`is_start`, `active`) are identical in both instantiations and
 /// live here once. Start- and stop-side state lives in
-/// [`ConsumedFlowMetrics`] and [`EndFlowMetrics`] and is `None` for nodes
+/// [`InputFlowMetrics`] and [`EndFlowMetrics`] and is `None` for nodes
 /// that are not the corresponding endpoint of a flow_metric.
 ///
 /// All fields are `pub(crate)` so the local/shared `EffectHandler`
 /// methods can read and write them directly through the
 /// `flow_metric.<field>` access path.
 #[derive(Clone)]
-pub(crate) struct FlowMetricState<Marker, DurationAccumulator, ItemAccumulator> {
+pub(crate) struct FlowMetricState<Marker, DurationMeasurement, ItemAccumulator> {
     /// Marker for the most recent timing point on the current message's
     /// path through `process()`. Armed by `begin_process_timing` before
     /// each PData `process()` call and advanced by
@@ -243,6 +467,8 @@ pub(crate) struct FlowMetricState<Marker, DurationAccumulator, ItemAccumulator> 
     pub is_end: bool,
     /// Whether this node is a decision node for some flow.
     pub is_decision: bool,
+    /// Measurements enabled for this handler.
+    pub interests: FlowMetricInterests,
     /// Whether any flow_metric is configured in this pipeline. Gates the
     /// per-message hook block (consumed item counting and periodic reporting).
     /// True even for count-only flows such as `dropped.items`.
@@ -255,9 +481,9 @@ pub(crate) struct FlowMetricState<Marker, DurationAccumulator, ItemAccumulator> 
     /// Start-side measurements (metric set + accumulator).
     /// `None` when this node is not a flow_metric start node -- non-start
     /// nodes pay no allocation cost for the metric set or accumulator.
-    pub consumed: ConsumedFlowMetrics<ItemAccumulator>,
+    pub input: InputFlowMetrics<ItemAccumulator>,
     /// End-side measurements.
-    pub end: EndFlowMetrics<DurationAccumulator, ItemAccumulator>,
+    pub end: EndFlowMetrics<DurationMeasurement, ItemAccumulator>,
     /// Decision-side measurements (dropped).
     /// Leaving this as 'DecisionFlowMetrics' in case
     /// it will be used to represent other decision-related
@@ -268,7 +494,7 @@ pub(crate) struct FlowMetricState<Marker, DurationAccumulator, ItemAccumulator> 
 /// Concrete `FlowMetricState` for the local (`!Send`) `EffectHandler`.
 pub(crate) type LocalFlowMetricState = FlowMetricState<
     Rc<Cell<Option<Instant>>>,
-    Cell<FlowDurationAccumulator>,
+    RefCell<FlowDurationMeasurement>,
     Cell<FlowItemAccumulator>,
 >;
 
@@ -276,7 +502,7 @@ pub(crate) type LocalFlowMetricState = FlowMetricState<
 /// `EffectHandler`.
 pub(crate) type SharedFlowMetricState = FlowMetricState<
     Arc<Mutex<Option<Instant>>>,
-    Arc<Mutex<FlowDurationAccumulator>>,
+    Arc<Mutex<FlowDurationMeasurement>>,
     Arc<Mutex<FlowItemAccumulator>>,
 >;
 
@@ -287,14 +513,19 @@ impl Default for LocalFlowMetricState {
             is_start: false,
             is_end: false,
             is_decision: false,
+            interests: FlowMetricInterests::empty(),
             active: false,
             needs_timing: false,
-            consumed: ConsumedFlowMetrics {
-                consumed_items: None,
+            input: InputFlowMetrics {
+                input_messages: None,
+                input_items: None,
+                input_size: None,
             },
             end: EndFlowMetrics {
                 duration: None,
-                produced_items: None,
+                output_messages: None,
+                output_items: None,
+                output_size: None,
             },
             decision: DecisionFlowMetrics {
                 dropped_items: None,
@@ -310,14 +541,19 @@ impl Default for SharedFlowMetricState {
             is_start: false,
             is_end: false,
             is_decision: false,
+            interests: FlowMetricInterests::empty(),
             active: false,
             needs_timing: false,
-            consumed: ConsumedFlowMetrics {
-                consumed_items: None,
+            input: InputFlowMetrics {
+                input_messages: None,
+                input_items: None,
+                input_size: None,
             },
             end: EndFlowMetrics {
                 duration: None,
-                produced_items: None,
+                output_messages: None,
+                output_items: None,
+                output_size: None,
             },
             decision: DecisionFlowMetrics {
                 dropped_items: None,
@@ -348,9 +584,13 @@ pub(crate) fn build_flow_metric_state(
     pipeline_context: &PipelineContext,
     pipeline_connections: &[(usize, usize)],
 ) -> Result<PipelineFlowMetricState, crate::error::Error> {
-    let mut consumed_items_metrics = Vec::new();
+    let mut input_message_metrics = Vec::new();
+    let mut input_items_metrics = Vec::new();
+    let mut input_size_metrics = Vec::new();
     let mut duration_metrics = Vec::new();
-    let mut produced_items_metrics = Vec::new();
+    let mut output_items_metrics = Vec::new();
+    let mut output_message_metrics = Vec::new();
+    let mut output_size_metrics = Vec::new();
     let mut end_nodes: HashMap<usize, usize> = HashMap::new();
     let mut start_nodes: HashMap<usize, usize> = HashMap::new();
     let mut decision_candidates: HashMap<usize, DecisionCandidate> = HashMap::new();
@@ -410,18 +650,49 @@ pub(crate) fn build_flow_metric_state(
         let entity_key = pipeline_context
             .metrics_registry()
             .register_entity(attrs.clone());
-        let consumed_items_metric = flow_config.has(FlowMetric::ConsumedItems).then(|| {
-            FlowConsumedItemsMetrics::register(
+        let input_message_metric = flow_config.has(FlowMetric::InputMessages).then(|| {
+            FlowInputMessageMetrics::register(
                 &pipeline_context.metric_set_registrar_for_entity(entity_key),
             )
         });
-        let duration_metric = flow_config.has(FlowMetric::ComputeDuration).then(|| {
-            FlowDurationMetrics::register(
+        let input_items_metric = flow_config.has(FlowMetric::InputItems).then(|| {
+            FlowInputItemsMetrics::register(
                 &pipeline_context.metric_set_registrar_for_entity(entity_key),
             )
         });
-        let produced_items_metric = flow_config.has(FlowMetric::ProducedItems).then(|| {
-            FlowProducedItemsMetrics::register(
+        let input_size_metric = flow_config.has(FlowMetric::InputSize).then(|| {
+            FlowInputSizeMetrics::register(
+                &pipeline_context.metric_set_registrar_for_entity(entity_key),
+            )
+        });
+        let duration_metric = if flow_config.has(FlowMetric::ComputeDuration) {
+            let registrar = pipeline_context.metric_set_registrar_for_entity(entity_key);
+            Some(match flow_config.duration_distribution {
+                DistributionTier::Basic => {
+                    FlowDurationMetricSet::Basic(FlowDurationBasicMetrics::register(&registrar))
+                }
+                DistributionTier::Normal => {
+                    FlowDurationMetricSet::Normal(FlowDurationNormalMetrics::register(&registrar))
+                }
+                DistributionTier::Detailed => FlowDurationMetricSet::Detailed(
+                    FlowDurationDetailedMetrics::register(&registrar),
+                ),
+            })
+        } else {
+            None
+        };
+        let output_message_metric = flow_config.has(FlowMetric::OutputMessages).then(|| {
+            FlowOutputMessageMetrics::register(
+                &pipeline_context.metric_set_registrar_for_entity(entity_key),
+            )
+        });
+        let output_items_metric = flow_config.has(FlowMetric::OutputItems).then(|| {
+            FlowOutputItemsMetrics::register(
+                &pipeline_context.metric_set_registrar_for_entity(entity_key),
+            )
+        });
+        let output_size_metric = flow_config.has(FlowMetric::OutputSize).then(|| {
+            FlowOutputSizeMetrics::register(
                 &pipeline_context.metric_set_registrar_for_entity(entity_key),
             )
         });
@@ -463,9 +734,13 @@ pub(crate) fn build_flow_metric_state(
         }
 
         let id = duration_metrics.len();
-        consumed_items_metrics.push(consumed_items_metric);
+        input_message_metrics.push(input_message_metric);
+        input_items_metrics.push(input_items_metric);
+        input_size_metrics.push(input_size_metric);
         duration_metrics.push(duration_metric);
-        produced_items_metrics.push(produced_items_metric);
+        output_items_metrics.push(output_items_metric);
+        output_message_metrics.push(output_message_metric);
+        output_size_metrics.push(output_size_metric);
         let _ = end_nodes.insert(end_idx, id);
         let _ = start_nodes.insert(start_idx, id);
         resolved_ranges.push((start_idx, end_idx, flow_config.id.clone()));
@@ -476,9 +751,13 @@ pub(crate) fn build_flow_metric_state(
     }
 
     Ok(PipelineFlowMetricState {
-        consumed_items_metrics,
+        input_message_metrics,
+        input_items_metrics,
+        input_size_metrics,
         duration_metrics,
-        produced_items_metrics,
+        output_items_metrics,
+        output_message_metrics,
+        output_size_metrics,
         end_nodes,
         start_nodes,
         decision_candidates,
@@ -486,9 +765,9 @@ pub(crate) fn build_flow_metric_state(
 }
 
 fn invalid_flow_metric_config(error: String) -> crate::error::Error {
-    crate::error::Error::ConfigError(Box::new(otap_df_config::error::Error::InvalidUserConfig {
-        error,
-    }))
+    crate::error::Error::ConfigError(Box::new(
+        otel_arrow_dfe_config::error::Error::InvalidUserConfig { error },
+    ))
 }
 
 /// Compute the "active range" of a flow metric: the set of node indices
@@ -596,9 +875,13 @@ impl PipelineFlowMetricState {
     #[allow(dead_code)]
     pub fn empty() -> Self {
         Self {
-            consumed_items_metrics: Vec::new(),
+            input_message_metrics: Vec::new(),
+            input_items_metrics: Vec::new(),
+            input_size_metrics: Vec::new(),
             duration_metrics: Vec::new(),
-            produced_items_metrics: Vec::new(),
+            output_items_metrics: Vec::new(),
+            output_message_metrics: Vec::new(),
+            output_size_metrics: Vec::new(),
             end_nodes: HashMap::new(),
             start_nodes: HashMap::new(),
             decision_candidates: HashMap::new(),
@@ -608,9 +891,13 @@ impl PipelineFlowMetricState {
     /// Returns `true` if any flow_metrics are configured.
     #[must_use]
     pub fn is_active(&self) -> bool {
-        self.consumed_items_metrics.iter().any(Option::is_some)
+        self.input_message_metrics.iter().any(Option::is_some)
+            || self.input_items_metrics.iter().any(Option::is_some)
+            || self.input_size_metrics.iter().any(Option::is_some)
             || self.duration_metrics.iter().any(Option::is_some)
-            || self.produced_items_metrics.iter().any(Option::is_some)
+            || self.output_items_metrics.iter().any(Option::is_some)
+            || self.output_message_metrics.iter().any(Option::is_some)
+            || self.output_size_metrics.iter().any(Option::is_some)
             || !self.decision_candidates.is_empty()
     }
 
@@ -626,25 +913,104 @@ impl PipelineFlowMetricState {
     }
 }
 
-#[cfg(all(test, feature = "test-utils"))]
+#[cfg(test)]
+impl FlowDurationMeasurement {
+    pub(crate) fn pending_summary(&self, signal: SignalType) -> (u64, f64, f64, f64) {
+        let index = flow_signal_index(signal);
+        match self {
+            Self::Basic { accumulator, .. } => {
+                let value = accumulator[index].get();
+                (value.count, value.sum, value.min, value.max)
+            }
+            Self::Normal { accumulator, .. } => accumulator[index].get().summary(),
+            Self::Detailed { accumulator, .. } => accumulator[index].get().summary(),
+        }
+    }
+
+    pub(crate) fn reported_summary(&self, signal: SignalType) -> (u64, f64, f64, f64) {
+        match self {
+            Self::Basic { metrics, .. } => {
+                let value = metrics.get(SignalAttributes { signal }).duration.get();
+                (value.count, value.sum, value.min, value.max)
+            }
+            Self::Normal { metrics, .. } => metrics
+                .get(SignalAttributes { signal })
+                .duration
+                .get()
+                .summary(),
+            Self::Detailed { metrics, .. } => metrics
+                .get(SignalAttributes { signal })
+                .duration
+                .get()
+                .summary(),
+        }
+    }
+
+    pub(crate) fn is_empty(&self, signal: SignalType) -> bool {
+        self.pending_summary(signal).0 == 0
+    }
+
+    pub(crate) fn accumulator_address(&self) -> *const () {
+        match self {
+            Self::Basic { accumulator, .. } => accumulator.as_ptr().cast(),
+            Self::Normal { accumulator, .. } => accumulator.as_ptr().cast(),
+            Self::Detailed { accumulator, .. } => accumulator.as_ptr().cast(),
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::testing::test_pipeline_ctx;
-    use otap_df_telemetry::attributes::{AttributeSetHandler, AttributeValue};
+    use otel_arrow_dfe_telemetry::attributes::{AttributeSetHandler, AttributeValue};
+    use otel_arrow_dfe_telemetry::descriptor::Instrument;
+    use otel_arrow_dfe_telemetry::metrics::MetricValue;
 
-    fn one_flow_metric_state() -> PipelineFlowMetricState {
+    fn duration_instrument(metrics: &FlowDurationMetricSet) -> Instrument {
+        let attrs = SignalAttributes {
+            signal: SignalType::Logs,
+        };
+        match metrics {
+            FlowDurationMetricSet::Basic(metrics) => {
+                metrics.get(attrs).descriptor().metrics[0].instrument
+            }
+            FlowDurationMetricSet::Normal(metrics) => {
+                metrics.get(attrs).descriptor().metrics[0].instrument
+            }
+            FlowDurationMetricSet::Detailed(metrics) => {
+                metrics.get(attrs).descriptor().metrics[0].instrument
+            }
+        }
+    }
+
+    fn one_flow_metric_state(tier: DistributionTier) -> PipelineFlowMetricState {
         let (ctx, _) = test_pipeline_ctx();
         let entity_key = ctx
             .metrics_registry()
             .register_entity(FlowAttributeSet::default());
         let registrar = ctx.metric_set_registrar_for_entity(entity_key);
-        let consumed_items_metric = FlowConsumedItemsMetrics::register(&registrar);
-        let duration_metric = FlowDurationMetrics::register(&registrar);
-        let produced_items_metric = FlowProducedItemsMetrics::register(&registrar);
+        let input_items_metric = FlowInputItemsMetrics::register(&registrar);
+        let duration_metric = match tier {
+            DistributionTier::Basic => {
+                FlowDurationMetricSet::Basic(FlowDurationBasicMetrics::register(&registrar))
+            }
+            DistributionTier::Normal => {
+                FlowDurationMetricSet::Normal(FlowDurationNormalMetrics::register(&registrar))
+            }
+            DistributionTier::Detailed => {
+                FlowDurationMetricSet::Detailed(FlowDurationDetailedMetrics::register(&registrar))
+            }
+        };
+        let output_items_metric = FlowOutputItemsMetrics::register(&registrar);
         PipelineFlowMetricState {
-            consumed_items_metrics: vec![Some(consumed_items_metric)],
+            input_message_metrics: vec![None],
+            input_items_metrics: vec![Some(input_items_metric)],
+            input_size_metrics: vec![None],
             duration_metrics: vec![Some(duration_metric)],
-            produced_items_metrics: vec![Some(produced_items_metric)],
+            output_items_metrics: vec![Some(output_items_metric)],
+            output_message_metrics: vec![None],
+            output_size_metrics: vec![None],
             end_nodes: HashMap::from([(2, 0)]),
             start_nodes: HashMap::from([(0, 0)]),
             decision_candidates: HashMap::new(),
@@ -663,108 +1029,184 @@ mod tests {
     /// Guarantees: the flow metric state is active.
     #[test]
     fn nonempty_state_is_active() {
-        let state = one_flow_metric_state();
+        let state = one_flow_metric_state(DistributionTier::Normal);
         assert!(state.is_active());
     }
 
-    /// Scenario: compute-duration observations are recorded for one signal bucket.
-    /// Guarantees: the bucket retains the observation count, range, and sum.
+    /// Scenario: Compute-duration observations are recorded at each configured tier.
+    /// Guarantees: Every tier retains identical count, sum, min, and max statistics.
     #[test]
-    fn direct_record_increments_mmsc() {
-        let mut state = one_flow_metric_state();
-        state.duration_metrics[0]
-            .as_mut()
-            .unwrap()
-            .with(SignalAttributes {
-                signal: SignalType::Logs,
-            })
-            .compute_duration
-            .record(100.0);
-        state.duration_metrics[0]
-            .as_mut()
-            .unwrap()
-            .with(SignalAttributes {
-                signal: SignalType::Logs,
-            })
-            .compute_duration
-            .record(200.0);
+    fn duration_tiers_preserve_summary_statistics() {
+        for tier in [
+            DistributionTier::Basic,
+            DistributionTier::Normal,
+            DistributionTier::Detailed,
+        ] {
+            let mut state = one_flow_metric_state(tier);
+            let metrics = state.duration_metrics[0].take().unwrap();
+            let mut duration = metrics.into_measurement();
+            duration.record(SignalType::Logs, 100.0);
+            duration.record(SignalType::Logs, 200.0);
 
-        let snap = state.duration_metrics[0]
-            .as_mut()
-            .unwrap()
-            .get(SignalAttributes {
-                signal: SignalType::Logs,
-            })
-            .compute_duration
-            .get();
-        assert_eq!(snap.count, 2);
-        assert!((snap.min - 100.0).abs() < f64::EPSILON);
-        assert!((snap.max - 200.0).abs() < f64::EPSILON);
-        assert!((snap.sum - 300.0).abs() < f64::EPSILON);
+            let (count, sum, min, max) = duration.pending_summary(SignalType::Logs);
+            assert_eq!(count, 2, "tier: {tier:?}");
+            assert!((min - 100.0).abs() < f64::EPSILON, "tier: {tier:?}");
+            assert!((max - 200.0).abs() < f64::EPSILON, "tier: {tier:?}");
+            assert!((sum - 300.0).abs() < f64::EPSILON, "tier: {tier:?}");
+        }
     }
 
-    /// Scenario: consumed and produced items are recorded for one signal bucket.
+    /// Scenario: Each supported duration tier registers its typed metric set.
+    /// Guarantees: Basic declares an MMSC descriptor and bucketed tiers declare exponential histograms.
+    #[test]
+    fn duration_tiers_register_matching_descriptors() {
+        for (tier, expected) in [
+            (DistributionTier::Basic, Instrument::Mmsc),
+            (DistributionTier::Normal, Instrument::ExponentialHistogram),
+            (DistributionTier::Detailed, Instrument::ExponentialHistogram),
+        ] {
+            let state = one_flow_metric_state(tier);
+            let duration = state.duration_metrics[0].as_ref().unwrap();
+            assert_eq!(duration_instrument(duration), expected, "tier: {tier:?}");
+        }
+    }
+
+    /// Scenario: Each duration tier records through the runtime accumulator and reports a snapshot.
+    /// Guarantees: The descriptor, distribution value, summary, and delta reset all retain the selected tier.
+    #[test]
+    fn duration_tiers_report_matching_distribution_values() {
+        for (tier, expected_instrument, expected_tier) in [
+            (DistributionTier::Basic, Instrument::Mmsc, "basic"),
+            (
+                DistributionTier::Normal,
+                Instrument::ExponentialHistogram,
+                "normal",
+            ),
+            (
+                DistributionTier::Detailed,
+                Instrument::ExponentialHistogram,
+                "detailed",
+            ),
+        ] {
+            let mut state = one_flow_metric_state(tier);
+            let metrics = state.duration_metrics[0].take().unwrap();
+            let mut measurement = metrics.into_measurement();
+            measurement.record(SignalType::Logs, 1.25);
+            measurement.record(SignalType::Logs, 2.75);
+
+            let (snapshot_rx, mut reporter) = MetricsReporter::create_new_and_receiver(1);
+            measurement.report(&mut reporter);
+
+            assert!(measurement.is_empty(SignalType::Logs), "tier: {tier:?}");
+            let snapshot = snapshot_rx.try_recv().expect("duration snapshot");
+            assert_eq!(
+                snapshot.descriptor().metrics[0].instrument,
+                expected_instrument
+            );
+            let [MetricValue::Distribution(value)] = snapshot.get_metrics() else {
+                panic!("expected one distribution value");
+            };
+            assert_eq!(value.tier_name(), expected_tier);
+            assert_eq!(value.summary(), (2, 4.0, 1.25, 2.75));
+        }
+    }
+
+    /// Scenario: Duration measurements are collected repeatedly at each supported tier.
+    /// Guarantees: Collection resets entries in place and retains the boxed accumulator allocation.
+    #[test]
+    fn duration_tiers_reuse_accumulator_allocation() {
+        for tier in [
+            DistributionTier::Basic,
+            DistributionTier::Normal,
+            DistributionTier::Detailed,
+        ] {
+            let mut state = one_flow_metric_state(tier);
+            let metrics = state.duration_metrics[0].take().unwrap();
+            let mut measurement = metrics.into_measurement();
+            let accumulator_address = measurement.accumulator_address();
+            let (_snapshot_rx, mut reporter) = MetricsReporter::create_new_and_receiver(2);
+
+            measurement.record(SignalType::Logs, 1.0);
+            measurement.report(&mut reporter);
+            assert_eq!(
+                measurement.accumulator_address(),
+                accumulator_address,
+                "tier: {tier:?}"
+            );
+
+            measurement.report(&mut reporter);
+            assert_eq!(
+                measurement.accumulator_address(),
+                accumulator_address,
+                "tier: {tier:?}"
+            );
+        }
+    }
+
+    /// Scenario: input and output items are recorded for one signal bucket.
     /// Guarantees: each counter accumulates its item total independently.
     #[test]
     fn direct_record_increments_items() {
-        let mut state = one_flow_metric_state();
-        state.consumed_items_metrics[0]
+        let mut state = one_flow_metric_state(DistributionTier::Normal);
+        state.input_items_metrics[0]
             .as_mut()
             .unwrap()
             .with(SignalAttributes {
                 signal: SignalType::Logs,
             })
-            .consumed_items
+            .items
             .add(10);
-        state.consumed_items_metrics[0]
+        state.input_items_metrics[0]
             .as_mut()
             .unwrap()
             .with(SignalAttributes {
                 signal: SignalType::Logs,
             })
-            .consumed_items
+            .items
             .add(20);
-        state.produced_items_metrics[0]
+        state.output_items_metrics[0]
             .as_mut()
             .unwrap()
             .with(SignalAttributes {
                 signal: SignalType::Logs,
             })
-            .produced_items
+            .items
             .add(7);
-        state.produced_items_metrics[0]
+        state.output_items_metrics[0]
             .as_mut()
             .unwrap()
             .with(SignalAttributes {
                 signal: SignalType::Logs,
             })
-            .produced_items
+            .items
             .add(8);
 
-        let consumed = state.consumed_items_metrics[0]
+        let input = state.input_items_metrics[0]
             .as_mut()
             .unwrap()
             .get(SignalAttributes {
                 signal: SignalType::Logs,
             })
-            .consumed_items
+            .items
             .get();
-        assert_eq!(consumed, 30);
+        assert_eq!(input, 30);
 
-        let produced = state.produced_items_metrics[0]
+        let output = state.output_items_metrics[0]
             .as_mut()
             .unwrap()
             .get(SignalAttributes {
                 signal: SignalType::Logs,
             })
-            .produced_items
+            .items
             .get();
-        assert_eq!(produced, 15);
+        assert_eq!(output, 15);
     }
 
     // -- build_flow_metric_state validation tests --
 
-    use otap_df_config::policy::{FlowBounds, FlowMetric, FlowMetricConfig, TelemetryPolicy};
+    use otel_arrow_dfe_config::policy::{
+        FlowBounds, FlowMetric, FlowMetricConfig, TelemetryPolicy,
+    };
 
     fn policy_with(flow_metrics: Vec<FlowMetricConfig>) -> TelemetryPolicy {
         TelemetryPolicy {
@@ -781,6 +1223,7 @@ mod tests {
                 end_node: stop.to_string(),
             },
             metrics: None,
+            duration_distribution: DistributionTier::Normal,
             purpose: None,
         }
     }
@@ -790,7 +1233,7 @@ mod tests {
     fn assert_invalid_user_config(err: &crate::error::Error, sw_name: &str) {
         match err {
             crate::error::Error::ConfigError(boxed) => match boxed.as_ref() {
-                otap_df_config::error::Error::InvalidUserConfig { error } => {
+                otel_arrow_dfe_config::error::Error::InvalidUserConfig { error } => {
                     assert!(
                         error.contains(sw_name),
                         "expected error to mention `{sw_name}`, got: {error}"
@@ -868,8 +1311,111 @@ mod tests {
             .expect("duration-only config should build");
 
         assert!(state.duration_metrics[0].is_some());
-        assert!(state.consumed_items_metrics[0].is_none());
-        assert!(state.produced_items_metrics[0].is_none());
+        assert!(state.input_message_metrics[0].is_none());
+        assert!(state.input_items_metrics[0].is_none());
+        assert!(state.input_size_metrics[0].is_none());
+        assert!(state.output_message_metrics[0].is_none());
+        assert!(state.output_items_metrics[0].is_none());
+        assert!(state.output_size_metrics[0].is_none());
+    }
+
+    /// Scenario: Flow duration is configured at each supported distribution tier.
+    /// Guarantees: Runtime registration selects the matching typed metric set and descriptor.
+    #[test]
+    fn duration_distribution_selects_matching_metric_set() {
+        for (tier, expected) in [
+            (DistributionTier::Basic, Instrument::Mmsc),
+            (DistributionTier::Normal, Instrument::ExponentialHistogram),
+            (DistributionTier::Detailed, Instrument::ExponentialHistogram),
+        ] {
+            let (ctx, _) = test_pipeline_ctx();
+            let (names, procs) = test_maps(&["a", "b"], &[]);
+            let edges = test_edges(&[("a", "b")], &names);
+            let mut flow = sw("duration", "a", "b");
+            flow.metrics = Some(vec![FlowMetric::ComputeDuration]);
+            flow.duration_distribution = tier;
+
+            let state =
+                build_flow_metric_state(&policy_with(vec![flow]), &names, &procs, &ctx, &edges)
+                    .expect("supported duration tier should build");
+
+            assert_eq!(
+                duration_instrument(state.duration_metrics[0].as_ref().unwrap()),
+                expected,
+                "tier: {tier:?}"
+            );
+        }
+    }
+
+    /// Scenario: Two flows use duration tiers with different OTLP data types.
+    /// Guarantees: Existing flow attributes keep their `flow.compute.duration` streams in distinct scope identities.
+    #[test]
+    fn mixed_duration_types_have_distinct_flow_scopes() {
+        let (ctx, registry) = test_pipeline_ctx();
+        let (names, procs) = test_maps(&["a", "b", "c", "d"], &[]);
+        let edges = test_edges(&[("a", "b"), ("c", "d")], &names);
+        let mut basic = sw("basic_flow", "a", "b");
+        basic.metrics = Some(vec![FlowMetric::ComputeDuration]);
+        basic.duration_distribution = DistributionTier::Basic;
+        let mut normal = sw("normal_flow", "c", "d");
+        normal.metrics = Some(vec![FlowMetric::ComputeDuration]);
+        normal.duration_distribution = DistributionTier::Normal;
+
+        let _state = build_flow_metric_state(
+            &policy_with(vec![basic, normal]),
+            &names,
+            &procs,
+            &ctx,
+            &edges,
+        )
+        .expect("mixed duration tiers should build");
+
+        let mut scopes = Vec::new();
+        registry.visit_metrics_and_reset_with_zeroes(
+            |descriptor, attrs, _| {
+                if descriptor.name != "flow.compute" {
+                    return;
+                }
+                let flow_id = attrs
+                    .iter_attributes()
+                    .find_map(|(key, value)| {
+                        (key == "flow.id").then(|| match value {
+                            AttributeValue::String(value) => value.clone(),
+                            other => panic!("flow.id must be a string, got {other:?}"),
+                        })
+                    })
+                    .expect("flow.compute scope must include flow.id");
+                scopes.push((flow_id, descriptor.metrics[0].instrument));
+            },
+            true,
+        );
+        scopes.sort_by(|left, right| left.0.cmp(&right.0));
+        scopes.dedup();
+
+        assert_eq!(
+            scopes,
+            [
+                ("basic_flow".to_string(), Instrument::Mmsc),
+                ("normal_flow".to_string(), Instrument::ExponentialHistogram),
+            ]
+        );
+    }
+
+    /// Scenario: A count-only flow specifies a duration distribution.
+    /// Guarantees: No duration metric set or accumulator is allocated when compute duration is disabled.
+    #[test]
+    fn duration_distribution_does_not_allocate_when_duration_is_disabled() {
+        let (ctx, _) = test_pipeline_ctx();
+        let (names, procs) = test_maps(&["a", "b"], &[]);
+        let edges = test_edges(&[("a", "b")], &names);
+        let mut flow = sw("items", "a", "b");
+        flow.metrics = Some(vec![FlowMetric::InputItems]);
+        flow.duration_distribution = DistributionTier::Detailed;
+
+        let state = build_flow_metric_state(&policy_with(vec![flow]), &names, &procs, &ctx, &edges)
+            .expect("count-only flow should build");
+
+        assert!(state.duration_metrics[0].is_none());
     }
 
     #[test]

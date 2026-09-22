@@ -3,13 +3,15 @@
 
 use crate::error::ValidationError;
 use crate::metrics_types::{MetricSetSnapshot, MetricsSnapshot};
-use otap_df_admin_api::{
+use otel_arrow_dfe_admin_api::{
     AdminClient, AdminEndpoint, HttpAdminClientSettings, engine::ProbeStatus,
     groups::ShutdownStatus, operations::OperationOptions, telemetry::MetricsOptions,
 };
-use otap_df_config::engine::OtelDataflowSpec;
-use otap_df_controller::Controller;
-use otap_df_otap::OTAP_PIPELINE_FACTORY;
+use otel_arrow_dfe_config::engine::OtelDataflowSpec;
+use otel_arrow_dfe_controller::Controller;
+// Link the core-node factories used by rendered scenarios.
+use otel_arrow_dfe_core_nodes as _;
+use otel_arrow_dfe_otap::OTAP_PIPELINE_FACTORY;
 use std::collections::HashMap;
 use tokio::time::{Duration, sleep};
 
@@ -169,7 +171,7 @@ fn admin_client(admin_base: &str) -> Result<AdminClient, ValidationError> {
         .map_err(admin_error)
 }
 
-fn admin_error(err: otap_df_admin_api::Error) -> ValidationError {
+fn admin_error(err: otel_arrow_dfe_admin_api::Error) -> ValidationError {
     ValidationError::Http(err.to_string())
 }
 
@@ -184,9 +186,9 @@ fn metric_value(set: &MetricSetSnapshot, metric_name: &str) -> Option<u64> {
 // get value from attribute with key node.id
 // basically gets the name of the node from metrics via metric attributes
 fn attribute_node_id(
-    attributes: &HashMap<String, otap_df_telemetry::attributes::AttributeValue>,
+    attributes: &HashMap<String, otel_arrow_dfe_telemetry::attributes::AttributeValue>,
 ) -> Option<String> {
-    use otap_df_telemetry::attributes::AttributeValue;
+    use otel_arrow_dfe_telemetry::attributes::AttributeValue;
     match attributes.get("node.id") {
         Some(AttributeValue::String(v)) => Some(v.clone()),
         _ => None,
@@ -255,10 +257,10 @@ fn validation_finished_and_passed(snapshot: &MetricsSnapshot) -> ValidationPollR
             return ValidationPollResult::NotFinished;
         }
         // Exporter is finished -- check its validation result in the same pass.
-        if metric_value(set, VALIDATION_METRIC_NAME).is_some_and(|v| v < 1) {
-            if let Some(label) = attribute_node_id(&set.attributes) {
-                failed_validation_exporters.push(label);
-            }
+        if metric_value(set, VALIDATION_METRIC_NAME).is_some_and(|v| v < 1)
+            && let Some(label) = attribute_node_id(&set.attributes)
+        {
+            failed_validation_exporters.push(label);
         }
     }
 
@@ -274,10 +276,24 @@ mod tests {
     use super::*;
     use crate::metrics_types::MetricValue;
     use crate::metrics_types::{MetricDataPoint, MetricSetSnapshot, MetricsSnapshot};
-    use otap_df_telemetry::descriptor::{Instrument, MetricValueType, Temporality};
+    use otel_arrow_dfe_telemetry::descriptor::{Instrument, MetricValueType, Temporality};
     use std::collections::HashMap;
     use wiremock::matchers::{method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// Scenario: factories are referenced only by literal URNs.
+    /// Guarantees: core factories are linked for traffic and internal telemetry.
+    #[test]
+    fn simulator_links_core_node_factories() {
+        let receivers = OTAP_PIPELINE_FACTORY.get_receiver_factory_map();
+        assert!(receivers.contains_key("urn:otel:receiver:otlp"));
+        assert!(receivers.contains_key("urn:otel:receiver:internal_telemetry"));
+        assert!(
+            OTAP_PIPELINE_FACTORY
+                .get_exporter_factory_map()
+                .contains_key("urn:otel:exporter:noop")
+        );
+    }
 
     fn set_with_node(set_name: &str, metric: &str, value: u64, node_id: &str) -> MetricSetSnapshot {
         MetricSetSnapshot {
@@ -285,7 +301,7 @@ mod tests {
             brief: "test".into(),
             attributes: HashMap::from([(
                 "node.id".into(),
-                otap_df_telemetry::attributes::AttributeValue::String(node_id.into()),
+                otel_arrow_dfe_telemetry::attributes::AttributeValue::String(node_id.into()),
             )]),
             metrics: vec![MetricDataPoint {
                 name: metric.into(),
@@ -334,7 +350,7 @@ mod tests {
             brief: "test".into(),
             attributes: HashMap::from([(
                 "node.id".into(),
-                otap_df_telemetry::attributes::AttributeValue::String(node_id.into()),
+                otel_arrow_dfe_telemetry::attributes::AttributeValue::String(node_id.into()),
             )]),
             metrics: vec![
                 MetricDataPoint {

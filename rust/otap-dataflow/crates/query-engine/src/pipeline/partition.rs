@@ -20,20 +20,21 @@ use arrow::buffer::{BooleanBuffer, MutableBuffer, NullBuffer};
 use arrow::compute::SortOptions;
 use arrow::datatypes::DataType;
 use arrow::util::bit_util;
-use data_engine_expressions::{PipelineFunction, ScalarExpression};
 use datafusion::execution::context::SessionContext;
 use datafusion::logical_expr::ColumnarValue;
 use datafusion::scalar::ScalarValue;
-use otap_df_pdata::OtapArrowRecords;
-use otap_df_pdata::otap::filter::{IdBitmapPool, filter_otap_batch};
-use otap_df_pdata::otlp::attributes::AttributeValueType;
-use otap_df_pdata::schema::consts;
+use otel_arrow_contrib_data_engine_expressions::{PipelineFunction, ScalarExpression};
+use otel_arrow_dfe_pdata::OtapArrowRecords;
+use otel_arrow_dfe_pdata::otap::filter::{IdBitmapPool, filter_otap_batch};
+use otel_arrow_dfe_pdata::otlp::attributes::AttributeValueType;
+use otel_arrow_dfe_pdata::schema::consts;
 
 use crate::error::{Error, Result};
 use crate::pipeline::Pipeline;
 use crate::pipeline::expr::ScopedExpr;
-use crate::pipeline::expr::eval::align_value_to_root;
+use crate::pipeline::expr::eval::{EvalContext, align_value_to_root};
 use crate::pipeline::expr::planner::ExprPlanner;
+use crate::pipeline::planner::RecordType;
 use crate::pipeline::project::anyval::is_any_value_data_type;
 
 /// Produces partitioned record batches by the results of some evaluated expression.
@@ -83,7 +84,7 @@ impl Partitioner {
         scalar_expr: ScalarExpression,
         functions: Vec<PipelineFunction>,
     ) -> Result<Self> {
-        let expr_planner = ExprPlanner::new();
+        let expr_planner = ExprPlanner::new(true, RecordType::Signal);
         let planned_expr = expr_planner.plan_scalar(&scalar_expr, &functions)?;
 
         Ok(Self {
@@ -305,14 +306,14 @@ impl PartitionValue {
         }
 
         let Some(type_col) = arr.column_by_name(consts::ATTRIBUTE_TYPE) else {
-            return Err(otap_df_pdata::error::Error::ColumnNotFound {
+            return Err(otel_arrow_dfe_pdata::error::Error::ColumnNotFound {
                 name: consts::ATTRIBUTE_TYPE.into(),
             }
             .into());
         };
 
         let Some(type_col) = type_col.as_any().downcast_ref::<UInt8Array>() else {
-            return Err(otap_df_pdata::error::Error::ColumnDataTypeMismatch {
+            return Err(otel_arrow_dfe_pdata::error::Error::ColumnDataTypeMismatch {
                 name: consts::ATTRIBUTE_TYPE.into(),
                 actual: type_col.data_type().clone(),
                 expect: DataType::UInt8,
@@ -322,7 +323,7 @@ impl PartitionValue {
 
         let attr_type =
             AttributeValueType::try_from(type_col.values()[index]).map_err(|error| {
-                otap_df_pdata::error::Error::UnrecognizedAttributeValueType { error }
+                otel_arrow_dfe_pdata::error::Error::UnrecognizedAttributeValueType { error }
             })?;
 
         let values_col = match attr_type {
@@ -368,7 +369,7 @@ fn partition(
         return Ok(());
     }
 
-    let eval_result = match expr.execute_as_value(&otap_batch, session_ctx)? {
+    let eval_result = match expr.execute_as_value(&otap_batch, &EvalContext::new(session_ctx))? {
         Some(result) => {
             // align value to root so we can calculate partitions for the root record batch
             align_value_to_root(result, &otap_batch)?
@@ -894,18 +895,20 @@ impl<'a> AnyValueStructComparator<'a> {
     ) -> Result<Self> {
         let type_col_arr = anyval_struct_arr
             .column_by_name(consts::ATTRIBUTE_TYPE)
-            .ok_or_else(|| otap_df_pdata::error::Error::ColumnNotFound {
+            .ok_or_else(|| otel_arrow_dfe_pdata::error::Error::ColumnNotFound {
                 name: consts::ATTRIBUTE_TYPE.into(),
             })?;
 
         let type_col = type_col_arr
             .as_any()
             .downcast_ref::<UInt8Array>()
-            .ok_or_else(|| otap_df_pdata::error::Error::ColumnDataTypeMismatch {
-                name: consts::ATTRIBUTE_TYPE.into(),
-                actual: type_col_arr.data_type().clone(),
-                expect: DataType::UInt8,
-            })?;
+            .ok_or_else(
+                || otel_arrow_dfe_pdata::error::Error::ColumnDataTypeMismatch {
+                    name: consts::ATTRIBUTE_TYPE.into(),
+                    actual: type_col_arr.data_type().clone(),
+                    expect: DataType::UInt8,
+                },
+            )?;
 
         Ok(Self {
             type_col,
@@ -1054,18 +1057,18 @@ mod test {
     };
     use arrow::buffer::{BooleanBuffer, NullBuffer};
     use arrow::datatypes::{DataType, Field, Fields, UInt8Type, UInt16Type};
-    use otap_df_pdata::otlp::attributes::AttributeValueType;
-    use otap_df_pdata::proto::OtlpProtoMessage;
-    use otap_df_pdata::proto::opentelemetry::common::v1::{
+    use otel_arrow_dfe_pdata::otlp::attributes::AttributeValueType;
+    use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{
         AnyValue, InstrumentationScope, KeyValue,
     };
-    use otap_df_pdata::proto::opentelemetry::logs::v1::{
+    use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::{
         LogRecord, LogsData, ResourceLogs, ScopeLogs,
     };
-    use otap_df_pdata::proto::opentelemetry::resource::v1::Resource;
-    use otap_df_pdata::schema::consts;
-    use otap_df_pdata::testing::round_trip::{otap_to_otlp, otlp_to_otap};
-    use otap_df_query_engine_languages::opl::parser::OplParser;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::resource::v1::Resource;
+    use otel_arrow_dfe_pdata::schema::consts;
+    use otel_arrow_dfe_pdata::testing::round_trip::{otap_to_otlp, otlp_to_otap};
+    use otel_arrow_dfe_query_engine_languages::opl::parser::OplParser;
 
     use crate::parser::default_parser_options;
     use crate::pipeline::partition::{
@@ -1160,7 +1163,7 @@ mod test {
 
     #[test]
     fn test_partition_traces_by_span_name() {
-        use otap_df_pdata::proto::opentelemetry::trace::v1::{
+        use otel_arrow_dfe_pdata::proto::opentelemetry::trace::v1::{
             ResourceSpans, ScopeSpans, Span, Status, TracesData,
         };
 

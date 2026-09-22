@@ -19,7 +19,7 @@ use crate::testing::equiv::assert_equivalent;
 use crate::testing::fixtures::DataGenerator;
 use crate::testing::round_trip::otlp_bytes_to_message;
 use crate::testing::round_trip::otlp_message_to_bytes;
-use otap_df_config::SignalType;
+use otel_arrow_dfe_config::SignalType;
 use std::num::NonZeroU64;
 
 /// Test bytes-based batching with various size limits

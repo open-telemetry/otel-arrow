@@ -40,16 +40,16 @@ use arrow::compute::{filter, take};
 use arrow::datatypes::{DataType, Field, Fields, Schema, UInt16Type};
 use datafusion::logical_expr::ColumnarValue;
 use datafusion::scalar::ScalarValue;
-use otap_df_pdata::OtapArrowRecords;
-use otap_df_pdata::arrays::{
+use otel_arrow_dfe_pdata::OtapArrowRecords;
+use otel_arrow_dfe_pdata::arrays::{
     get_optional_array_from_struct_array_from_record_batch, get_required_struct_array,
 };
-use otap_df_pdata::otap::filter::IdBitmap;
-use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-use otap_df_pdata::schema::consts;
+use otel_arrow_dfe_pdata::otap::filter::IdBitmap;
+use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+use otel_arrow_dfe_pdata::schema::consts;
 
 use crate::error::{Error, Result};
-use crate::pipeline::expr::{DataScope, arg_column_name};
+use crate::pipeline::expr::{DataScope, RecordScope, arg_column_name};
 use crate::pipeline::planner::AttributesIdentifier;
 
 /// Input to the join module, representing an evaluated expression result with its scope
@@ -72,7 +72,7 @@ pub(crate) struct JoinInput {
 
 impl JoinInput {
     pub fn new(values: ColumnarValue, data_scope: Rc<DataScope>, source: &RecordBatch) -> Self {
-        let is_root = *data_scope == DataScope::Root
+        let is_root = *data_scope == DataScope::Record(RecordScope::Signal)
             || matches!(data_scope.as_ref(), DataScope::RootParent(_));
 
         let mut result = Self {
@@ -142,8 +142,8 @@ pub fn join<'a>(
     // determine the join strategy from the source of the data
     match (left.data_scope.as_ref(), right.data_scope.as_ref()) {
         (
-            DataScope::Root | DataScope::RootParent(_),
-            DataScope::Root | DataScope::RootParent(_),
+            DataScope::Record(RecordScope::Signal) | DataScope::RootParent(_),
+            DataScope::Record(RecordScope::Signal) | DataScope::RootParent(_),
         ) => {
             let join_result = EqualScopeJoin::default().join(left, right, otap_batch)?;
             Ok((join_result, left.data_scope.clone()))
@@ -180,31 +180,41 @@ pub fn join<'a>(
                 Ok((join_result, left.data_scope.clone()))
             }
         }
-        (DataScope::Root | DataScope::RootParent(_), DataScope::Attribute(attr_id, _)) => {
+        (
+            DataScope::Record(RecordScope::Signal) | DataScope::RootParent(_),
+            DataScope::Attribute(attr_id, _),
+        ) => {
             let join_exec = RootToAttributesJoin::new(*attr_id);
             let join_result = join_exec.join(left, right, otap_batch)?;
             Ok((join_result, left.data_scope.clone()))
         }
-        (DataScope::Attribute(attr_id, _), DataScope::Root | DataScope::RootParent(_)) => {
-            match attr_id {
-                AttributesIdentifier::Root => {
-                    let join_exec = RootAttrsToRootJoin::new();
-                    let join_result = join_exec.join(left, right, otap_batch)?;
-                    Ok((join_result, left.data_scope.clone()))
-                }
-                AttributesIdentifier::NonRoot(payload_type) => {
-                    let join_exec = NonRootAttrsToRootReverseJoin::new(*payload_type);
-                    let join_result = join_exec.join(left, right, otap_batch)?;
-                    Ok((join_result, right.data_scope.clone()))
-                }
+        (
+            DataScope::Attribute(attr_id, _),
+            DataScope::Record(RecordScope::Signal) | DataScope::RootParent(_),
+        ) => match attr_id {
+            AttributesIdentifier::Root => {
+                let join_exec = RootAttrsToRootJoin::new();
+                let join_result = join_exec.join(left, right, otap_batch)?;
+                Ok((join_result, left.data_scope.clone()))
             }
-        }
-        (DataScope::Root | DataScope::RootParent(_), DataScope::AttributesAll(_)) => {
+            AttributesIdentifier::NonRoot(payload_type) => {
+                let join_exec = NonRootAttrsToRootReverseJoin::new(*payload_type);
+                let join_result = join_exec.join(left, right, otap_batch)?;
+                Ok((join_result, right.data_scope.clone()))
+            }
+        },
+        (
+            DataScope::Record(RecordScope::Signal) | DataScope::RootParent(_),
+            DataScope::AttributesAll(_),
+        ) => {
             let join_exec = AttributesAllSelectionVecJoin::new(false);
             let join_result = join_exec.join(left, right, otap_batch)?;
             Ok((join_result, left.data_scope.clone()))
         }
-        (DataScope::AttributesAll(_), DataScope::Root | DataScope::RootParent(_)) => {
+        (
+            DataScope::AttributesAll(_),
+            DataScope::Record(RecordScope::Signal) | DataScope::RootParent(_),
+        ) => {
             let join_exec = AttributesAllSelectionVecJoin::new(true);
             let join_result = join_exec.join(left, right, otap_batch)?;
             Ok((join_result, right.data_scope.clone()))
@@ -298,7 +308,10 @@ fn compute_join_alignment(
                 ))
             }
         }
-        (DataScope::Root | DataScope::RootParent(_), DataScope::Attribute(attr_id, _)) => {
+        (
+            DataScope::Record(RecordScope::Signal) | DataScope::RootParent(_),
+            DataScope::Attribute(attr_id, _),
+        ) => {
             let exec = RootToAttributesJoin::new(*attr_id);
             let indices = exec.rows_to_take(left, right, otap_batch)?;
             Ok((
@@ -306,26 +319,27 @@ fn compute_join_alignment(
                 left.data_scope.clone(),
             ))
         }
-        (DataScope::Attribute(attr_id, _), DataScope::Root | DataScope::RootParent(_)) => {
-            match attr_id {
-                AttributesIdentifier::Root => {
-                    let exec = RootAttrsToRootJoin::new();
-                    let indices = exec.rows_to_take(left, right, otap_batch)?;
-                    Ok((
-                        JoinAlignment::LeftPreserved(indices),
-                        left.data_scope.clone(),
-                    ))
-                }
-                AttributesIdentifier::NonRoot(payload_type) => {
-                    let exec = NonRootAttrsToRootReverseJoin::new(*payload_type);
-                    let indices = exec.rows_to_take(left, right, otap_batch)?;
-                    Ok((
-                        JoinAlignment::RightPreserved(indices),
-                        right.data_scope.clone(),
-                    ))
-                }
+        (
+            DataScope::Attribute(attr_id, _),
+            DataScope::Record(RecordScope::Signal) | DataScope::RootParent(_),
+        ) => match attr_id {
+            AttributesIdentifier::Root => {
+                let exec = RootAttrsToRootJoin::new();
+                let indices = exec.rows_to_take(left, right, otap_batch)?;
+                Ok((
+                    JoinAlignment::LeftPreserved(indices),
+                    left.data_scope.clone(),
+                ))
             }
-        }
+            AttributesIdentifier::NonRoot(payload_type) => {
+                let exec = NonRootAttrsToRootReverseJoin::new(*payload_type);
+                let indices = exec.rows_to_take(left, right, otap_batch)?;
+                Ok((
+                    JoinAlignment::RightPreserved(indices),
+                    right.data_scope.clone(),
+                ))
+            }
+        },
         (left, right) => Err(Error::ExecutionError {
             cause: format!("invalid data scopes for join: left {left:?} right {right:?}"),
         }),
@@ -357,6 +371,9 @@ pub fn multi_join(
     // are incompatible scopes across 2+ args), but we handle it defensively.
     if results.len() == 1 {
         let result = &results[0];
+        let mut columns = Vec::new();
+        let mut fields = Vec::new();
+
         let values = result.values.to_array(
             result
                 .parent_ids
@@ -365,12 +382,24 @@ pub fn multi_join(
                 .or_else(|| result.ids.as_ref().map(|a| a.len()))
                 .unwrap_or(1),
         )?;
-        let schema = Schema::new(vec![Field::new(
+        fields.push(Field::new(
             arg_column_name(0),
             values.data_type().clone(),
             true,
-        )]);
-        let rb = RecordBatch::try_new(Arc::new(schema), vec![values])?;
+        ));
+        columns.push(values);
+
+        insert_id_columns(
+            result.ids.as_ref(),
+            result.parent_ids.as_ref(),
+            result.scope_ids.as_ref(),
+            result.resource_ids.as_ref(),
+            &mut fields,
+            &mut columns,
+        );
+
+        let schema = Schema::new(fields);
+        let rb = RecordBatch::try_new(Arc::new(schema), columns)?;
         return Ok((rb, result.data_scope.clone()));
     }
 
@@ -485,12 +514,33 @@ pub fn multi_join(
         columns.push(values);
     }
 
-    if let Some(ids) = &accum_ids {
+    insert_id_columns(
+        accum_ids.as_ref(),
+        accum_parent_ids.as_ref(),
+        accum_scope_ids.as_ref(),
+        accum_resource_ids.as_ref(),
+        &mut fields,
+        &mut columns,
+    );
+
+    let record_batch = RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)?;
+    Ok((record_batch, accum_scope))
+}
+
+fn insert_id_columns(
+    ids: Option<&ArrayRef>,
+    parent_ids: Option<&ArrayRef>,
+    scope_ids: Option<&ArrayRef>,
+    resource_ids: Option<&ArrayRef>,
+    fields: &mut Vec<Field>,
+    columns: &mut Vec<ArrayRef>,
+) {
+    if let Some(ids) = ids {
         fields.push(Field::new(consts::ID, ids.data_type().clone(), true));
         columns.push(ids.clone());
     }
 
-    if let Some(parent_ids) = &accum_parent_ids {
+    if let Some(parent_ids) = parent_ids {
         fields.push(Field::new(
             consts::PARENT_ID,
             parent_ids.data_type().clone(),
@@ -499,7 +549,7 @@ pub fn multi_join(
         columns.push(parent_ids.clone());
     }
 
-    if let Some(col) = &accum_resource_ids {
+    if let Some(col) = resource_ids {
         let struct_arr = StructArray::new(
             Fields::from(vec![Field::new(consts::ID, col.data_type().clone(), true)]),
             vec![col.clone()],
@@ -513,7 +563,7 @@ pub fn multi_join(
         columns.push(Arc::new(struct_arr));
     }
 
-    if let Some(col) = &accum_scope_ids {
+    if let Some(col) = scope_ids {
         let struct_arr = StructArray::new(
             Fields::from(vec![Field::new(consts::ID, col.data_type().clone(), true)]),
             vec![col.clone()],
@@ -526,9 +576,6 @@ pub fn multi_join(
         ));
         columns.push(Arc::new(struct_arr));
     }
-
-    let record_batch = RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)?;
-    Ok((record_batch, accum_scope))
 }
 
 // helper functions for producing errors from results. Normally, we wouldn't produce these errors
@@ -1369,7 +1416,7 @@ impl AttributesAllSelectionVecJoin {
     ) -> Result<&UInt16Array> {
         if matches!(
             input.data_scope.as_ref(),
-            DataScope::Root | DataScope::RootParent(_)
+            DataScope::Record(RecordScope::Signal) | DataScope::RootParent(_)
         ) {
             let ids = match attrs_id {
                 AttributesIdentifier::Root => input.ids.as_ref(),
@@ -1388,7 +1435,7 @@ impl AttributesAllSelectionVecJoin {
             // not yet supported
             Err(Error::NotYetSupportedError {
                 message:
-                    "joining result with scope AttributesAll to non-root scope not yet supported"
+                    "joining result with scope AttributesAll to non-record scope not yet supported"
                         .into(),
             })
         }
@@ -1600,7 +1647,7 @@ impl IdJoinLookup {
 mod test {
     use super::*;
     use arrow::array::Int64Array;
-    use otap_df_pdata::otap::Logs;
+    use otel_arrow_dfe_pdata::otap::Logs;
 
     fn empty_otap_batch() -> OtapArrowRecords {
         OtapArrowRecords::Logs(Logs::default())
@@ -1629,11 +1676,11 @@ mod test {
     fn test_multi_join_single_result_returns_single_column() {
         let otap_batch = empty_otap_batch();
         let values: ArrayRef = Arc::new(Int64Array::from(vec![10, 20, 30]));
-        let result = make_result(values, DataScope::Root);
+        let result = make_result(values, DataScope::Record(RecordScope::Signal));
 
         let (rb, scope) = multi_join(&[result], &otap_batch).unwrap();
 
-        assert_eq!(*scope, DataScope::Root);
+        assert_eq!(*scope, DataScope::Record(RecordScope::Signal));
         assert_eq!(rb.num_columns(), 1);
         assert_eq!(rb.num_rows(), 3);
         assert_eq!(rb.schema().field(0).name(), "arg_0");

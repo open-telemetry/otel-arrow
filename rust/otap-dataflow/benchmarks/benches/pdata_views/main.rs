@@ -4,13 +4,15 @@
 //! Benchmarks for implementations of pdata view implementations
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use otap_df_pdata::proto::opentelemetry::common::v1::{AnyValue, InstrumentationScope, KeyValue};
-use otap_df_pdata::proto::opentelemetry::logs::v1::{
+use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{
+    AnyValue, InstrumentationScope, KeyValue,
+};
+use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::{
     LogRecord, LogRecordFlags, LogsData, ResourceLogs, ScopeLogs, SeverityNumber,
 };
-use otap_df_pdata::proto::opentelemetry::resource::v1::Resource;
-use otap_df_pdata::views::bench_helpers::{visit_logs_data, visit_logs_data_ordered};
-use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
+use otel_arrow_dfe_pdata::proto::opentelemetry::resource::v1::Resource;
+use otel_arrow_dfe_pdata::views::bench_helpers::{visit_logs_data, visit_logs_data_ordered};
+use otel_arrow_dfe_pdata::views::otlp::bytes::logs::RawLogsData;
 use prost::Message;
 
 #[cfg(not(windows))]

@@ -11,7 +11,9 @@ use super::{
     SharedAdmissionGate,
 };
 use crate::memory_limiter::{LocalReceiverAdmissionState, SharedReceiverAdmissionState};
-use otap_df_config::policy::{RateLimitUnit, RateLimiterDeclarationScope, RateLimiterPolicy};
+use otel_arrow_dfe_config::policy::{
+    RateLimitUnit, RateLimiterDeclarationScope, RateLimiterPolicy,
+};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 
@@ -227,7 +229,7 @@ mod tests {
     use super::*;
     use crate::admission::{AdmissionContext, AdmissionDecision};
     use crate::memory_limiter::{MemoryPressureState, SharedReceiverAdmissionState};
-    use otap_df_config::policy::{
+    use otel_arrow_dfe_config::policy::{
         RateLimitAggregation, RateLimitEnforcement, RateLimitPressure, TokenBucketPolicy,
     };
     use std::time::Duration;

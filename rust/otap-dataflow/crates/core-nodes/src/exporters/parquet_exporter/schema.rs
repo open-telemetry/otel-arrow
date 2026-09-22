@@ -28,8 +28,8 @@ use arrow::array::{
 };
 use arrow::buffer::{NullBuffer, OffsetBuffer};
 use arrow::datatypes::{DataType, Field, Fields, Schema, TimeUnit};
-use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-use otap_df_pdata::schema::{FieldExt, consts};
+use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+use otel_arrow_dfe_pdata::schema::{FieldExt, consts};
 
 use super::error::ParquetExporterError;
 use super::records::OtapParquetRecords;

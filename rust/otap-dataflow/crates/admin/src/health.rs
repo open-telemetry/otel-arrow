@@ -14,14 +14,14 @@ use axum::http::StatusCode;
 use axum::routing::get;
 use axum::{Json, Router};
 use chrono::Utc;
-use otap_df_admin_types::engine::{
+use otel_arrow_dfe_admin_types::engine::{
     PipelineConditionFailure, ProbeKind, ProbeResponse, ProbeStatus, Status as EngineStatus,
 };
-use otap_df_config::PipelineKey;
-use otap_df_state::conditions::{
+use otel_arrow_dfe_config::PipelineKey;
+use otel_arrow_dfe_state::conditions::{
     Condition as StateCondition, ConditionKind, ConditionReason, ConditionStatus,
 };
-use otap_df_state::pipeline_status::PipelineStatus as StatePipelineStatus;
+use otel_arrow_dfe_state::pipeline_status::PipelineStatus as StatePipelineStatus;
 use std::collections::HashMap;
 
 /// All the routes for health and status endpoints.

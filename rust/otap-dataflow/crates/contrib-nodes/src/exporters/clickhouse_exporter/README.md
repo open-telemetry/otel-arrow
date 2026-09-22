@@ -1,5 +1,9 @@
 # ClickHouse Exporter
 
+- Type: `exporter:clickhouse` (`urn:otel:exporter:clickhouse`)
+- Feature gate: `clickhouse`
+- Stability: Experimental
+
 This exporter accepts OTAP Arrow payloads and serialized OTLP requests,
 reshapes them into ClickHouse-compatible Arrow `RecordBatch`es, and inserts
 them into ClickHouse over HTTP using the official ClickHouse Rust client
@@ -52,7 +56,7 @@ Run from the `rust/otap-dataflow` workspace directory.
 
 ```bash
 cd rust/otap-dataflow
-cargo run --features clickhouse-exporter -- --config configs/trafficgen-clickhouse.yaml
+cargo run --features clickhouse -- --config configs/trafficgen-clickhouse.yaml
 ```
 
 ### 3. Query ClickHouse
@@ -83,6 +87,8 @@ At runtime the exporter does the following:
    generic transform pipeline as a fallback and for other inputs
 6. Returns only signal batches (`Logs`, `Spans`) from the transformer
 7. Inserts those batches into the destination tables
+8. Emits an ACK after a successful insert, a permanent NACK for unsupported or
+   invalid data, or a retryable NACK if insertion fails
 
 ## Supported Payloads
 
@@ -302,12 +308,28 @@ payloads remain internal to the transform process.
 - maps `Logs -> logs table` and `Spans -> traces table`
 - runs at most `max_in_flight` insert requests concurrently
 - drains accepted insert requests until the shutdown deadline
+- preserves each input batch until its insert completes so pipeline delivery
+  tracking reflects the ClickHouse result
 
 If the shutdown deadline expires, the exporter stops waiting for active
 inserts and drops queued inserts that have not started.
 
 There is no longer any special write ordering for attribute tables because
 attribute tables do not exist.
+
+## Telemetry
+
+Input PData message volume is reported by the engine through
+`channel.receiver.messages` and is not duplicated by the exporter.
+
+<!-- markdownlint-disable MD013 -->
+
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `exporter.exports.messages` | `{message}` | `signal`, `outcome` | Number of PData messages whose ClickHouse export reached a terminal outcome. |
+| `exporter.exports.duration` | `s` | `signal`, `outcome` | Time from dequeuing PData through the terminal ClickHouse write result, including conversion, queueing, and transformation. |
+
+<!-- markdownlint-enable MD013 -->
 
 ## Snapshots and Tests
 
@@ -319,8 +341,8 @@ DDL snapshot coverage currently lives in `table_snapshots/` and covers:
 The recommended validation loop for intentional DDL changes is:
 
 ```bash
-cargo test -p otap-df-contrib-nodes --features clickhouse-exporter
-INSTA_UPDATE=always cargo test -p otap-df-contrib-nodes --features clickhouse-exporter
+cargo test -p otel-arrow-dfe-contrib-nodes --features clickhouse
+INSTA_UPDATE=always cargo test -p otel-arrow-dfe-contrib-nodes --features clickhouse
 ```
 
 ## Important Files

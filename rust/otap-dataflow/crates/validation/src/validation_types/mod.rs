@@ -13,9 +13,10 @@ use attributes::{
     validate_require_key_values, validate_require_keys,
 };
 use batch::{validate_batch_bytes, validate_batch_items};
-use otap_df_config::transport_headers::TransportHeaders;
-use otap_df_pdata::proto::OtlpProtoMessage;
-use otap_df_pdata::testing::equiv::validate_equivalent;
+use otel_arrow_dfe_config::ContextEntryName;
+use otel_arrow_dfe_config::transport_headers::TransportHeaders;
+use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
+use otel_arrow_dfe_pdata::testing::equiv::validate_equivalent;
 use serde::{Deserialize, Serialize};
 use signal_dropped::validate_signal_drop;
 use std::time::Duration;
@@ -88,7 +89,7 @@ pub enum ValidationInstructions {
     /// Require specific transport header keys to be present on SUV messages.
     TransportHeaderRequireKey {
         /// Header keys (stored/logical names) that must be present.
-        keys: Vec<String>,
+        keys: Vec<ContextEntryName>,
     },
     /// Require specific transport header key/value pairs on SUV messages.
     TransportHeaderRequireKeyValue {
@@ -98,7 +99,7 @@ pub enum ValidationInstructions {
     /// Forbid specific transport header keys on SUV messages.
     TransportHeaderDeny {
         /// Header keys (stored/logical names) that must NOT be present.
-        keys: Vec<String>,
+        keys: Vec<ContextEntryName>,
     },
 }
 impl ValidationInstructions {
@@ -154,11 +155,11 @@ mod tests {
     use super::*;
     use crate::validation_types::attributes::{AnyValue, KeyValue};
     use crate::validation_types::transport_headers::TransportHeaderKeyValue;
-    use otap_df_config::transport_headers::{TransportHeader, TransportHeaders};
-    use otap_df_pdata::proto::opentelemetry::common::v1::{
+    use otel_arrow_dfe_config::transport_headers::{TransportHeader, TransportHeaders};
+    use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{
         AnyValue as ProtoAny, KeyValue as ProtoKV, any_value::Value as ProtoVal,
     };
-    use otap_df_pdata::proto::opentelemetry::logs::v1::{
+    use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::{
         LogRecord, LogsData, ResourceLogs, ScopeLogs,
     };
     use prost::Message;
@@ -187,6 +188,10 @@ mod tests {
         vec![None; count]
     }
 
+    fn context_name(raw: &str) -> ContextEntryName {
+        ContextEntryName::try_from(raw).expect("valid test context entry name")
+    }
+
     #[test]
     fn equivalence_true_on_matching() {
         let msgs = vec![logs_with_records(2)];
@@ -196,8 +201,8 @@ mod tests {
 
     #[test]
     fn equivalence_false_on_mismatch() {
-        use otap_df_pdata::proto::opentelemetry::common::v1::AnyValue as AV;
-        use otap_df_pdata::proto::opentelemetry::logs::v1::LogRecord;
+        use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::AnyValue as AV;
+        use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::LogRecord;
         // left: single log with body "only"
         let left = vec![OtlpProtoMessage::Logs(LogsData {
             resource_logs: vec![ResourceLogs {
@@ -427,7 +432,7 @@ mod tests {
     #[test]
     fn transport_header_require_key_serialization_check() {
         let instruction = ValidationInstructions::TransportHeaderRequireKey {
-            keys: vec!["x-tenant-id".into()],
+            keys: vec![context_name("x-tenant-id")],
         };
         let yaml = serde_yaml::to_string(&instruction).expect("serialize");
         let back: ValidationInstructions = serde_yaml::from_str(&yaml).expect("deserialize");
@@ -436,7 +441,8 @@ mod tests {
         // Validate that both the original and round-tripped instruction
         // produce identical results when executed.
         let mut headers = TransportHeaders::default();
-        headers.push(TransportHeader::text("x-tenant-id", "x-tenant-id", b"acme"));
+        let name = context_name("x-tenant-id");
+        headers.push(TransportHeader::text(name, b"acme"));
         let transport = vec![Some(headers)];
         let control: Vec<OtlpProtoMessage> = vec![];
         let suv_msgs: Vec<OtlpProtoMessage> = vec![];
@@ -451,7 +457,10 @@ mod tests {
     #[test]
     fn transport_header_require_key_value_serialization_check() {
         let instruction = ValidationInstructions::TransportHeaderRequireKeyValue {
-            pairs: vec![TransportHeaderKeyValue::new("x-tenant-id", "acme")],
+            pairs: vec![TransportHeaderKeyValue::new(
+                context_name("x-tenant-id"),
+                "acme",
+            )],
         };
         let yaml = serde_yaml::to_string(&instruction).expect("serialize");
         let back: ValidationInstructions = serde_yaml::from_str(&yaml).expect("deserialize");
@@ -461,7 +470,7 @@ mod tests {
     #[test]
     fn transport_header_deny_serialization_check() {
         let instruction = ValidationInstructions::TransportHeaderDeny {
-            keys: vec!["x-secret".into()],
+            keys: vec![context_name("x-secret")],
         };
         let yaml = serde_yaml::to_string(&instruction).expect("serialize");
         let back: ValidationInstructions = serde_yaml::from_str(&yaml).expect("deserialize");

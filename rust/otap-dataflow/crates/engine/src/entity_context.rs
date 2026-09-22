@@ -5,11 +5,11 @@
 //! to associate metrics and events with the correct pipeline entity, node entity or the correct
 //! input/output channel entities.
 
-use otap_df_config::PortName;
-use otap_df_telemetry::metrics::{
+use otel_arrow_dfe_config::PortName;
+use otel_arrow_dfe_telemetry::metrics::{
     MeasurementMetricSet, MeasurementMetricSetHandler, MetricSet, MetricSetHandler,
 };
-use otap_df_telemetry::registry::{EntityKey, MetricSetKey, TelemetryRegistryHandle};
+use otel_arrow_dfe_telemetry::registry::{EntityKey, MetricSetKey, TelemetryRegistryHandle};
 use std::cell::{Cell, RefCell};
 use std::fmt::Debug;
 use std::future::Future;
@@ -445,8 +445,8 @@ mod tests {
     use crate::channel_metrics::{ChannelReceiverMetrics, ChannelSenderMetrics};
     use crate::context::ControllerContext;
     use crate::pipeline_metrics::PipelineMetricsMonitor;
-    use otap_df_config::node::NodeKind;
-    use otap_df_telemetry::registry::TelemetryRegistryHandle;
+    use otel_arrow_dfe_config::node::NodeKind;
+    use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
     use std::borrow::Cow;
     use std::collections::HashMap;
 

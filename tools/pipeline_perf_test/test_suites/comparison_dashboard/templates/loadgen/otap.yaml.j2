@@ -43,6 +43,7 @@ groups:
             config:
               grpc_endpoint: "http://{{ engine_hostname | default("localhost") }}:{{ exporter_port | default(4317) }}"
               compression_method: {{ compression_method | default("none") }}
+              streams_per_signal: {{ otap_exporter_streams_per_signal | default(1) }}
               arrow:
                 payload_compression: {{ payload_compression | default("none") }}
 

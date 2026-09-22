@@ -3,6 +3,7 @@
 
 //! Engine and pipeline policy declarations.
 
+use crate::authorized_identity_policy::AuthorizedIdentityPolicy;
 use crate::byte_units;
 use crate::health::HealthPolicy;
 use crate::transport_headers_policy::TransportHeadersPolicy;
@@ -55,6 +56,9 @@ pub struct Policies {
     /// (the feature is entirely opt-in).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) transport_headers: Option<TransportHeadersPolicy>,
+    /// Authorized identity policy selecting verified claims for context storage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) authorized_identity: Option<AuthorizedIdentityPolicy>,
 }
 
 impl Policies {
@@ -79,6 +83,7 @@ impl Policies {
         let mut core_allocation = None;
         let mut memory_limiter = None;
         let mut transport_headers = None;
+        let mut authorized_identity = None;
         let mut effective_rate_limiters = None;
         let mut rate_limiters_resolved = false;
         for scope in scopes {
@@ -105,6 +110,9 @@ impl Policies {
             if transport_headers.is_none() {
                 transport_headers = scope.transport_headers.as_ref();
             }
+            if authorized_identity.is_none() {
+                authorized_identity = scope.authorized_identity.as_ref();
+            }
             if !rate_limiters_resolved
                 && let Some(rate_limiters) = scope
                     .resources
@@ -125,6 +133,7 @@ impl Policies {
                 memory_limiter: memory_limiter.cloned(),
             },
             transport_headers: transport_headers.cloned(),
+            authorized_identity: authorized_identity.cloned(),
             rate_limiters: effective_rate_limiters.unwrap_or_default(),
             rate_limiter_scope: None,
         }
@@ -214,10 +223,9 @@ impl Policies {
             .resources
             .as_ref()
             .and_then(|resources| resources.core_allocation.as_ref())
+            && let Err(e) = core_allocation.validate()
         {
-            if let Err(e) = core_allocation.validate() {
-                errors.push(format!("{path_prefix}.resources.core_allocation: {e}"));
-            }
+            errors.push(format!("{path_prefix}.resources.core_allocation: {e}"));
         }
         if let Some(runtime_recovery) = &self.runtime_recovery {
             errors.extend(
@@ -227,12 +235,17 @@ impl Policies {
         if let Some(telemetry) = &self.telemetry {
             errors.extend(telemetry.validation_errors(&format!("{path_prefix}.telemetry")));
         }
-        if let Some(transport_headers) = &self.transport_headers {
-            if let Err(e) = transport_headers.header_propagation.validate() {
-                errors.push(format!(
-                    "{path_prefix}.transport_headers.header_propagation.default.selector: {e}"
-                ));
-            }
+        if let Some(transport_headers) = &self.transport_headers
+            && let Err(e) = transport_headers.header_propagation.validate()
+        {
+            errors.push(format!(
+                "{path_prefix}.transport_headers.header_propagation.default.selector: {e}"
+            ));
+        }
+        if let Some(authorized_identity) = &self.authorized_identity
+            && let Err(e) = authorized_identity.validate()
+        {
+            errors.push(format!("{path_prefix}.authorized_identity: {e}"));
         }
         if let Some(rate_limiters) = self
             .resources
@@ -270,6 +283,8 @@ pub struct ResolvedPolicies {
     /// Transport headers policy. `None` when the feature is not configured
     /// (opt-in only -- no headers are captured or propagated by default).
     pub transport_headers: Option<TransportHeadersPolicy>,
+    /// Authorized identity claim projection policy.
+    pub authorized_identity: Option<AuthorizedIdentityPolicy>,
     /// Effective named pressure-aware receiver admission rate limiters.
     ///
     /// Names remain available to planning for node bindings, telemetry, and
@@ -288,6 +303,7 @@ impl PartialEq for ResolvedPolicies {
             runtime_recovery,
             resources,
             transport_headers,
+            authorized_identity,
             rate_limiters,
             rate_limiter_scope: _,
         } = self;
@@ -298,6 +314,7 @@ impl PartialEq for ResolvedPolicies {
             runtime_recovery: other_runtime_recovery,
             resources: other_resources,
             transport_headers: other_transport_headers,
+            authorized_identity: other_authorized_identity,
             rate_limiters: other_rate_limiters,
             rate_limiter_scope: _,
         } = other;
@@ -308,6 +325,7 @@ impl PartialEq for ResolvedPolicies {
             && runtime_recovery == other_runtime_recovery
             && resources == other_resources
             && transport_headers == other_transport_headers
+            && authorized_identity == other_authorized_identity
             && rate_limiters == other_rate_limiters
         // Declaration scope is retained for future shared-state planning but
         // has no V1 runtime effect. Include it when scope changes runtime shape.
@@ -351,6 +369,7 @@ impl ResolvedPolicies {
             runtime_recovery: self_runtime_recovery,
             resources: _,
             transport_headers: self_transport_headers,
+            authorized_identity: self_authorized_identity,
             rate_limiters: self_rate_limiters,
             rate_limiter_scope: _,
         } = self;
@@ -361,6 +380,7 @@ impl ResolvedPolicies {
             runtime_recovery: other_runtime_recovery,
             resources: _,
             transport_headers: other_transport_headers,
+            authorized_identity: other_authorized_identity,
             rate_limiters: other_rate_limiters,
             rate_limiter_scope: _,
         } = other;
@@ -370,6 +390,7 @@ impl ResolvedPolicies {
             && self_telemetry == other_telemetry
             && self_runtime_recovery == other_runtime_recovery
             && self_transport_headers == other_transport_headers
+            && self_authorized_identity == other_authorized_identity
             // Declaration scope is preserved for future shared-state planning,
             // but has no V1 runtime effect. Re-add it when scope changes runtime shape.
             && self_rate_limiters == other_rate_limiters
@@ -719,6 +740,19 @@ pub enum MetricLevel {
     Detailed,
 }
 
+/// Aggregation fidelity for distribution instruments.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DistributionTier {
+    /// Preserve summary statistics without buckets.
+    Basic,
+    /// Preserve normal-resolution histogram buckets.
+    #[default]
+    Normal,
+    /// Preserve detailed-resolution histogram buckets.
+    Detailed,
+}
+
 /// Runtime telemetry policy declarations.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -750,6 +784,13 @@ pub struct FlowMetricConfig {
     /// Metrics to enable. Omitted means all metrics are enabled.
     #[serde(default)]
     pub metrics: Option<Vec<FlowMetric>>,
+    /// Aggregation fidelity used by `compute_duration`.
+    ///
+    /// Basic preserves count, sum, min, and max without buckets. Normal and
+    /// detailed use exponential histograms with increasing resolution. The
+    /// default is normal.
+    #[serde(default)]
+    pub duration_distribution: DistributionTier,
     /// Optional per-flow purpose differentiator, emitted as the `flow.purpose`
     /// scope attribute on every metric this flow produces. Lets OTel View
     /// selectors target distinct flavors of processor work (e.g. `filter`
@@ -788,10 +829,18 @@ pub struct FlowBounds {
 pub enum FlowMetric {
     /// Aggregate processor compute duration across the flow.
     ComputeDuration,
-    /// Item count consumed at the start of the flow.
-    ConsumedItems,
-    /// Item count produced at the end of the flow.
-    ProducedItems,
+    /// Message count entering the start of the flow.
+    InputMessages,
+    /// Item count entering the start of the flow.
+    InputItems,
+    /// Logical payload size entering the start of the flow.
+    InputSize,
+    /// Message count leaving the end of the flow.
+    OutputMessages,
+    /// Item count leaving the end of the flow.
+    OutputItems,
+    /// Logical payload size leaving the end of the flow.
+    OutputSize,
     /// Item count a decision node chose to drop.
     DroppedItems,
 }
@@ -1301,6 +1350,41 @@ mod tests {
         );
     }
 
+    /// Scenario: a pipeline-level authorized identity policy overrides an
+    /// engine-level policy.
+    /// Guarantees: policy resolution uses the same nearest-scope precedence as
+    /// the other optional context policy families.
+    #[test]
+    fn authorized_identity_policy_resolves_by_scope() {
+        let engine: Policies = serde_yaml::from_str(
+            r#"
+authorized_identity:
+  - claim: sub
+    store_as: engine_tenant
+"#,
+        )
+        .expect("valid engine policy");
+        let pipeline: Policies = serde_yaml::from_str(
+            r#"
+authorized_identity:
+  - claim: groups
+    store_as: pipeline_groups
+"#,
+        )
+        .expect("valid pipeline policy");
+
+        let resolved = Policies::resolve([&pipeline, &engine]);
+        let policy = resolved
+            .authorized_identity
+            .expect("authorized identity policy resolved");
+        let entries = policy
+            .iter()
+            .map(|entry| (entry.claim.as_ref(), entry.store_as.as_str()))
+            .collect::<Vec<_>>();
+
+        assert_eq!(entries, vec![("groups", "pipeline_groups")]);
+    }
+
     /// Scenario: pipeline and parent scopes specify different runtime recovery policies.
     /// Guarantees: policy resolution selects the complete lower-scope policy family.
     #[test]
@@ -1787,8 +1871,12 @@ hard_limit: 2 GiB
         let flow = &policy.flow_metrics[0];
         assert!(flow.metrics.is_none());
         assert!(flow.has(super::FlowMetric::ComputeDuration));
-        assert!(flow.has(super::FlowMetric::ConsumedItems));
-        assert!(flow.has(super::FlowMetric::ProducedItems));
+        assert!(flow.has(super::FlowMetric::InputMessages));
+        assert!(flow.has(super::FlowMetric::InputItems));
+        assert!(flow.has(super::FlowMetric::InputSize));
+        assert!(flow.has(super::FlowMetric::OutputMessages));
+        assert!(flow.has(super::FlowMetric::OutputItems));
+        assert!(flow.has(super::FlowMetric::OutputSize));
         assert!(flow.has(super::FlowMetric::DroppedItems));
     }
 
@@ -1803,8 +1891,12 @@ hard_limit: 2 GiB
         let policy: super::TelemetryPolicy = serde_yaml::from_str(yaml).expect("parse");
         let flow = &policy.flow_metrics[0];
         assert!(flow.has(super::FlowMetric::ComputeDuration));
-        assert!(!flow.has(super::FlowMetric::ConsumedItems));
-        assert!(!flow.has(super::FlowMetric::ProducedItems));
+        assert!(!flow.has(super::FlowMetric::InputMessages));
+        assert!(!flow.has(super::FlowMetric::InputItems));
+        assert!(!flow.has(super::FlowMetric::InputSize));
+        assert!(!flow.has(super::FlowMetric::OutputMessages));
+        assert!(!flow.has(super::FlowMetric::OutputItems));
+        assert!(!flow.has(super::FlowMetric::OutputSize));
         assert!(!flow.has(super::FlowMetric::DroppedItems));
     }
 
@@ -1820,6 +1912,82 @@ hard_limit: 2 GiB
         let flow = &policy.flow_metrics[0];
         assert!(flow.has(super::FlowMetric::DroppedItems));
         assert!(!flow.has(super::FlowMetric::ComputeDuration));
+    }
+
+    /// Scenario: A flow omits its duration distribution.
+    /// Guarantees: Compute duration retains the normal histogram tier by default.
+    #[test]
+    fn flow_metrics_duration_distribution_defaults_to_normal() {
+        let yaml = r#"
+            flow_metrics:
+              - id: flow1
+                bounds: { start_node: a, end_node: b }
+        "#;
+        let policy: super::TelemetryPolicy = serde_yaml::from_str(yaml).expect("parse");
+        assert_eq!(
+            policy.flow_metrics[0].duration_distribution,
+            super::DistributionTier::Normal
+        );
+    }
+
+    /// Scenario: A flow selects each supported duration distribution tier.
+    /// Guarantees: Basic, normal, and detailed values deserialize without aliases or fallback.
+    #[test]
+    fn flow_metrics_duration_distribution_tiers_are_parsed() {
+        for (name, expected) in [
+            ("basic", super::DistributionTier::Basic),
+            ("normal", super::DistributionTier::Normal),
+            ("detailed", super::DistributionTier::Detailed),
+        ] {
+            let yaml = format!(
+                r#"
+                    flow_metrics:
+                      - id: flow1
+                        bounds: {{ start_node: a, end_node: b }}
+                        duration_distribution: {name}
+                "#
+            );
+            let policy: super::TelemetryPolicy = serde_yaml::from_str(&yaml).expect("parse");
+            assert_eq!(policy.flow_metrics[0].duration_distribution, expected);
+        }
+    }
+
+    /// Scenario: A flow selects `none` as its duration distribution tier.
+    /// Guarantees: Deserialization rejects values outside basic, normal, and detailed.
+    #[test]
+    fn flow_metrics_duration_distribution_rejects_none() {
+        let result = serde_yaml::from_str::<super::TelemetryPolicy>(
+            r#"
+                flow_metrics:
+                  - id: flow1
+                    bounds: { start_node: a, end_node: b }
+                    duration_distribution: none
+            "#,
+        );
+
+        assert!(result.is_err());
+    }
+
+    /// Scenario: JSON schema is generated for flow duration distribution configuration.
+    /// Guarantees: The field exposes only the three distribution tiers to configuration tooling.
+    #[test]
+    fn flow_metrics_duration_distribution_is_in_schema() {
+        let schema = schemars::schema_for!(super::FlowMetricConfig);
+        let json = serde_json::to_value(schema).expect("schema should serialize");
+        let property = &json["properties"]["duration_distribution"];
+        assert_eq!(property["default"], "normal");
+        assert_eq!(
+            property["$ref"],
+            serde_json::json!("#/$defs/DistributionTier")
+        );
+        let variants = json["$defs"]["DistributionTier"]["oneOf"]
+            .as_array()
+            .expect("distribution tier variants");
+        let values = variants
+            .iter()
+            .map(|variant| variant["const"].as_str().expect("string enum value"))
+            .collect::<Vec<_>>();
+        assert_eq!(values, ["basic", "normal", "detailed"]);
     }
 
     #[test]
@@ -1856,6 +2024,7 @@ hard_limit: 2 GiB
                         end_node: "b".to_string(),
                     },
                     metrics: Some(vec![]),
+                    duration_distribution: super::DistributionTier::Normal,
                     purpose: None,
                 }],
                 ..super::TelemetryPolicy::default()
@@ -1884,6 +2053,7 @@ hard_limit: 2 GiB
                         super::FlowMetric::ComputeDuration,
                         super::FlowMetric::ComputeDuration,
                     ]),
+                    duration_distribution: super::DistributionTier::Normal,
                     purpose: None,
                 }],
                 ..super::TelemetryPolicy::default()
@@ -2085,6 +2255,27 @@ hard_limit: 2 GiB
         assert_eq!(errors.len(), 1);
         assert!(errors[0].contains("transport_headers.header_propagation.default.selector"));
         assert!(errors[0].contains("'named' list is required"));
+    }
+
+    /// Scenario: an authorized identity policy contains duplicate destination names.
+    /// Guarantees: policy validation reports the error with the authorized identity path.
+    #[test]
+    fn validates_authorized_identity_policy() {
+        let authorized_identity = serde_json::from_value(serde_json::json!([
+            {"claim": "sub", "store_as": "tenant"},
+            {"claim": "groups", "store_as": "tenant"}
+        ]))
+        .expect("policy parses before semantic validation");
+        let policies = Policies {
+            authorized_identity: Some(authorized_identity),
+            ..Default::default()
+        };
+
+        let errors = policies.validation_errors("policies");
+
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("policies.authorized_identity"));
+        assert!(errors[0].contains("destination `tenant` is configured more than once"));
     }
 
     #[test]

@@ -4,7 +4,7 @@
 # Azure Monitor Exporter.
 #
 # Usage:
-#   cargo run --features azure-monitor-exporter,azure-identity-auth-extension -- --config trafficgen-ame.yaml
+#   cargo run --features azure-monitor,azure-identity-auth -- --config trafficgen-ame.yaml
 
 version: otel_dataflow/v1
 
@@ -18,7 +18,7 @@ policies:
 engine:
   telemetry:
     logs:
-      level: "info,typespec_client_core=warn,otap-df-contrib-nodes=debug"
+      level: "info,typespec_client_core=warn,otel-arrow-dfe-contrib-nodes=debug"
 
 groups:
   default:

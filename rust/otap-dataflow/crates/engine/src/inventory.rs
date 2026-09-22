@@ -6,7 +6,7 @@
 //! This module implements the runtime surface of [RFC 0001: Component
 //! Inventory][rfc]. Components annotated with the
 //! [`#[component_inventory]`][macro] attribute macro (in
-//! `otap-df-engine-macros`) emit one [`ComponentMeta`] entry into the
+//! `otel-arrow-dfe-engine-macros`) emit one [`ComponentMeta`] entry into the
 //! [`COMPONENT_INVENTORY`] distributed slice at link time. Offline tooling
 //! (`cargo xtask component-inventory`, added in a later phase) reads the slice
 //! to detect new/removed components for threat-model drift detection,
@@ -17,11 +17,11 @@
 //! runtime, so the mechanism is zero-cost.
 //!
 //! [rfc]: https://github.com/open-telemetry/otel-arrow/blob/main/rust/otap-dataflow/rfcs/0001-component-inventory.md
-//! [macro]: otap_df_engine_macros::component_inventory
+//! [macro]: otel_arrow_dfe_engine_macros::component_inventory
 
 /// Component category (RFC 0001).
 ///
-/// Re-exported from the leaf `otap-df-component-inventory-syntax` crate, which is
+/// Re-exported from the leaf `otel-arrow-dfe-component-inventory-syntax` crate, which is
 /// the single source of truth shared by the runtime type (here), the
 /// `#[component_inventory]` proc macro, and the `cargo xtask component-inventory`
 /// scanner. Defining it once there (rather than duplicating a string table in
@@ -35,7 +35,7 @@
 /// middle segment (e.g. `urn:otel:`**`receiver`**`:otlp`).
 ///
 /// See [`Category`] for the full list of variants and their intended meanings.
-pub use otap_df_component_inventory_syntax::Category;
+pub use otel_arrow_dfe_component_inventory_syntax::Category;
 
 /// Well-known attribute keys (RFC 0001, "Option A": free-form map + key
 /// constants). Contributors are encouraged to use these constants for the

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use chrono::Utc;
-use otap_df_pdata::{
+use otel_arrow_dfe_pdata::{
     encode::record::{
         attributes::StrKeysAttributesRecordBatchBuilder, logs::LogsRecordBatchBuilder,
     },
@@ -10,7 +10,7 @@ use otap_df_pdata::{
     proto::opentelemetry::arrow::v1::ArrowPayloadType,
 };
 
-use otap_df_pdata::encode::Result;
+use otel_arrow_dfe_pdata::encode::Result;
 
 use crate::receivers::syslog_cef_receiver::parser::parsed_message::ParsedSyslogMessage;
 
@@ -127,7 +127,7 @@ impl ArrowRecordsBuilder {
 mod tests {
     use super::*;
     use crate::receivers::syslog_cef_receiver::parser::parse;
-    use otap_df_pdata::{
+    use otel_arrow_dfe_pdata::{
         otlp::{ProtoBuffer, ProtoBytesEncoder, logs::LogsProtoBytesEncoder},
         proto::opentelemetry::{
             collector::logs::v1::ExportLogsServiceRequest, common::v1::any_value::Value,
@@ -3302,7 +3302,7 @@ mod tests {
 
         // Helper to find attribute by key
         fn find_attr<'a>(
-            attrs: &'a [otap_df_pdata::proto::opentelemetry::common::v1::KeyValue],
+            attrs: &'a [otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::KeyValue],
             key: &str,
         ) -> Option<&'a Value> {
             attrs

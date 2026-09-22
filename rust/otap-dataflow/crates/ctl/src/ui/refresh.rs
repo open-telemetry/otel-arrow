@@ -38,27 +38,27 @@ pub(crate) fn build_command_context(
         prefix_args.push("--connect-timeout".to_string());
         prefix_args.push(format_duration(settings.connect_timeout).to_string());
     }
-    if settings.timeout != defaults.timeout {
-        if let Some(timeout) = settings.timeout {
-            prefix_args.push("--request-timeout".to_string());
-            prefix_args.push(format_duration(timeout).to_string());
-        }
+    if settings.timeout != defaults.timeout
+        && let Some(timeout) = settings.timeout
+    {
+        prefix_args.push("--request-timeout".to_string());
+        prefix_args.push(format_duration(timeout).to_string());
     }
     if settings.tcp_nodelay != defaults.tcp_nodelay {
         prefix_args.push("--tcp-nodelay".to_string());
         prefix_args.push(settings.tcp_nodelay.to_string());
     }
-    if settings.tcp_keepalive != defaults.tcp_keepalive {
-        if let Some(keepalive) = settings.tcp_keepalive {
-            prefix_args.push("--tcp-keepalive".to_string());
-            prefix_args.push(format_duration(keepalive).to_string());
-        }
+    if settings.tcp_keepalive != defaults.tcp_keepalive
+        && let Some(keepalive) = settings.tcp_keepalive
+    {
+        prefix_args.push("--tcp-keepalive".to_string());
+        prefix_args.push(format_duration(keepalive).to_string());
     }
-    if settings.tcp_keepalive_interval != defaults.tcp_keepalive_interval {
-        if let Some(interval) = settings.tcp_keepalive_interval {
-            prefix_args.push("--tcp-keepalive-interval".to_string());
-            prefix_args.push(format_duration(interval).to_string());
-        }
+    if settings.tcp_keepalive_interval != defaults.tcp_keepalive_interval
+        && let Some(interval) = settings.tcp_keepalive_interval
+    {
+        prefix_args.push("--tcp-keepalive-interval".to_string());
+        prefix_args.push(format_duration(interval).to_string());
     }
     if let Some(tls) = &settings.tls {
         if let Some(path) = &tls.ca_file {
@@ -93,7 +93,7 @@ pub(crate) fn build_command_context(
     }
 }
 
-fn canonical_target_url(endpoint: &otap_df_admin_api::AdminEndpoint) -> String {
+fn canonical_target_url(endpoint: &otel_arrow_dfe_admin_api::AdminEndpoint) -> String {
     let mut url = format!(
         "{}://{}:{}",
         endpoint.scheme.as_str(),

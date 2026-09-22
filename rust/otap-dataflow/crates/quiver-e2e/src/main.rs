@@ -26,8 +26,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use clap::{Parser, ValueEnum};
-use quiver::SegmentReadMode;
-use quiver::config::RetentionPolicy;
+use otel_arrow_dfe_quiver::SegmentReadMode;
+use otel_arrow_dfe_quiver::config::RetentionPolicy;
 use tempfile::TempDir;
 use tracing::{Level, info};
 use tracing_subscriber::FmtSubscriber;

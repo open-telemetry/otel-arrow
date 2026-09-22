@@ -38,7 +38,7 @@ Example:
 
 ```toml
 [dependencies]
-otap-df-config = { path = "../crates/config" }
+otel-arrow-dfe-config = { path = "../crates/config" }
 ```
 
 #### 2. Add a [[bench]] entry for the benchmark target
@@ -60,7 +60,7 @@ Use Criterion's macro-based structure. Example:
 
 ```rust
 use criterion::{criterion_group, criterion_main, Criterion};
-use otap_df_config::some_function;
+use otel_arrow_dfe_config::some_function;
 
 fn bench_some_function(c: &mut Criterion) {
     c.bench_function("some_function", |b| b.iter(|| some_function()));

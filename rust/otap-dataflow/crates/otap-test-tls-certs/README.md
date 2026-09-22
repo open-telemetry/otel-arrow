@@ -1,4 +1,4 @@
-# otap-df-test-tls-certs
+# otel-arrow-dfe-test-tls-certs
 
 Internal dev-only helper crate for generating TLS/mTLS test certificates with `rcgen`.
 

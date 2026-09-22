@@ -14,7 +14,8 @@
 //! structured with named fields so callers can inspect exactly which rule was
 //! violated instead of matching on a free-form string.
 
-use otap_df_engine::error::Error as EngineError;
+use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_engine::error::Error as EngineError;
 
 /// Errors produced by the Kafka receiver.
 #[derive(Debug, thiserror::Error)]
@@ -28,17 +29,19 @@ pub enum KafkaReceiverError {
     #[error("unknown kafka topic: {0}")]
     UnknownTopicDecode(#[source] EngineError),
 
-    /// Traces decode/unmarshal failed.
-    #[error("traces decode failed: {0}")]
-    TracesDecode(#[source] EngineError),
-
-    /// Metrics decode/unmarshal failed.
-    #[error("metrics decode failed: {0}")]
-    MetricsDecode(#[source] EngineError),
-
-    /// Logs decode/unmarshal failed.
-    #[error("logs decode failed: {0}")]
-    LogsDecode(#[source] EngineError),
+    /// Decode/unmarshal failed for a routed signal (traces, metrics, or logs).
+    ///
+    /// Carries the [`SignalType`] so the receive loop can increment the correct
+    /// per-signal unmarshal counter and emit a descriptive error log without a
+    /// separate variant per signal.
+    #[error("{signal:?} decode failed: {source}")]
+    SignalDecode {
+        /// The signal whose payload failed to decode.
+        signal: SignalType,
+        /// The underlying decode error.
+        #[source]
+        source: EngineError,
+    },
 
     // ==================== Configuration Errors ====================
     /// A required string field was left empty.
@@ -72,6 +75,17 @@ pub enum KafkaReceiverError {
     /// The same topic appeared under more than one signal.
     #[error("invalid kafka receiver configuration: kafka topics overlap across signals")]
     ConfigOverlappingTopics,
+
+    /// A signal was configured with an encoding that it does not support.
+    #[error(
+        "invalid kafka receiver configuration: {encoding} encoding is not supported for {signal}"
+    )]
+    ConfigUnsupportedEncoding {
+        /// The signal with the unsupported encoding.
+        signal: String,
+        /// The configured encoding.
+        encoding: String,
+    },
 
     /// A literal topic name failed Kafka topic-name validation.
     #[error("invalid kafka receiver configuration: {signal}.topics: {message}")]
@@ -151,6 +165,25 @@ pub enum KafkaReceiverError {
         min: i32,
     },
 
+    /// The transient-NACK initial backoff exceeded its maximum backoff.
+    #[error(
+        "invalid kafka receiver configuration: transient_nack.initial_backoff_ms ({initial}) \
+         must be <= transient_nack.max_backoff_ms ({max})"
+    )]
+    ConfigInvalidTransientNackBackoff {
+        /// The configured initial retry backoff in milliseconds.
+        initial: u64,
+        /// The configured maximum retry backoff in milliseconds.
+        max: u64,
+    },
+
+    /// Kafka replay was requested while librdkafka auto-commit was enabled.
+    #[error(
+        "invalid kafka receiver configuration: transient_nack.mode replay requires \
+         commit.mode manual"
+    )]
+    ConfigTransientNackReplayRequiresManual,
+
     /// A field that must be strictly positive was zero (or negative).
     #[error("invalid kafka receiver configuration: {field} must be > 0")]
     ConfigNonPositiveValue {
@@ -194,9 +227,7 @@ impl KafkaReceiverError {
         match self {
             Self::EmptyPayloadDecode(e)
             | Self::UnknownTopicDecode(e)
-            | Self::TracesDecode(e)
-            | Self::MetricsDecode(e)
-            | Self::LogsDecode(e) => Some(e),
+            | Self::SignalDecode { source: e, .. } => Some(e),
             _ => None,
         }
     }
@@ -212,7 +243,8 @@ mod tests {
     // ---- Construction and configuration ----
 
     /// Scenario (construction and configuration): each decode variant is constructed with an inner EngineError.
-    /// Guarantees: inner() returns the wrapped EngineError for decode variants.
+    /// Guarantees: inner() returns the wrapped EngineError for decode variants,
+    /// including the signal-keyed SignalDecode variant for every signal.
     #[test]
     fn decode_error_inner_returns_engine_error() {
         let cases = [
@@ -222,21 +254,53 @@ mod tests {
             KafkaReceiverError::UnknownTopicDecode(EngineError::PdataConversionError {
                 error: "unknown".to_string(),
             }),
-            KafkaReceiverError::TracesDecode(EngineError::PdataConversionError {
-                error: "traces".to_string(),
-            }),
-            KafkaReceiverError::MetricsDecode(EngineError::PdataConversionError {
-                error: "metrics".to_string(),
-            }),
-            KafkaReceiverError::LogsDecode(EngineError::PdataConversionError {
-                error: "logs".to_string(),
-            }),
+            KafkaReceiverError::SignalDecode {
+                signal: SignalType::Traces,
+                source: EngineError::PdataConversionError {
+                    error: "traces".to_string(),
+                },
+            },
+            KafkaReceiverError::SignalDecode {
+                signal: SignalType::Metrics,
+                source: EngineError::PdataConversionError {
+                    error: "metrics".to_string(),
+                },
+            },
+            KafkaReceiverError::SignalDecode {
+                signal: SignalType::Logs,
+                source: EngineError::PdataConversionError {
+                    error: "logs".to_string(),
+                },
+            },
         ];
         for err in &cases {
             let inner = err.inner().expect("decode variant has inner EngineError");
             assert!(matches!(inner, EngineError::PdataConversionError { .. }));
             assert!(err.source().is_some());
         }
+    }
+
+    /// Scenario (construction and configuration): a SignalDecode error is
+    /// constructed for a specific signal.
+    /// Guarantees: the carried signal is preserved for per-signal telemetry
+    /// mapping and the Display string names that signal, so collapsing the
+    /// three former per-signal variants into one does not lose signal context.
+    #[test]
+    fn signal_decode_error_carries_signal() {
+        let err = KafkaReceiverError::SignalDecode {
+            signal: SignalType::Metrics,
+            source: EngineError::PdataConversionError {
+                error: "bad metrics payload".to_string(),
+            },
+        };
+        match &err {
+            KafkaReceiverError::SignalDecode { signal, .. } => {
+                assert_eq!(*signal, SignalType::Metrics);
+            }
+            other => panic!("expected SignalDecode, got {other:?}"),
+        }
+        assert!(err.to_string().contains("Metrics"));
+        assert!(err.to_string().contains("bad metrics payload"));
     }
 
     // ==================== Configuration Error Tests ====================

@@ -40,8 +40,8 @@ use crate::topic::types::{
     PublishOutcome, SubscriberOptions, TopicOptions, TrackedPublishPermit, TrackedPublishReceipt,
     TrackedTryPublishOutcome,
 };
-use otap_df_config::topic::TopicBroadcastOnLagPolicy;
-use otap_df_config::{SubscriptionGroupName, TopicName};
+use otel_arrow_dfe_config::topic::TopicBroadcastOnLagPolicy;
+use otel_arrow_dfe_config::{SubscriptionGroupName, TopicName};
 
 /// The future type returned by [`TopicState::publish`].
 ///

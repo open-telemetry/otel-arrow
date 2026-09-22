@@ -18,7 +18,7 @@
 //! than re-typed at every call site.
 
 use super::ExtensionCapability;
-use otap_df_config::ExtensionId;
+use otel_arrow_dfe_config::ExtensionId;
 use std::marker::PhantomData;
 
 /// The error returned by a failed capability method invocation.

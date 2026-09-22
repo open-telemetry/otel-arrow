@@ -21,11 +21,11 @@ use crate::message::{Receiver, Sender};
 use crate::node::NodeWithPDataReceiver;
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::testing::{CtrlMsgCounters, create_not_send_channel, setup_test_runtime, test_node};
-use otap_df_channel::error::SendError;
-use otap_df_config::node::NodeUserConfig;
-use otap_df_telemetry::InternalTelemetrySystem;
-use otap_df_telemetry::registry::TelemetryRegistryHandle;
-use otap_df_telemetry::reporter::MetricsReporter;
+use otel_arrow_dfe_channel::error::SendError;
+use otel_arrow_dfe_config::node::NodeUserConfig;
+use otel_arrow_dfe_telemetry::InternalTelemetrySystem;
+use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
+use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use serde_json::Value;
 use std::fmt::Debug;
 use std::future::Future;
@@ -285,6 +285,7 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
                     pipeline_completion_msg_tx,
                     metrics_reporter_start,
                     Interests::empty(),
+                    super::create_test_pipeline_runtime_services(),
                 )
                 .await
                 .map(|terminal_state| {
@@ -399,7 +400,7 @@ pub fn create_test_pipeline_context() -> PipelineContext {
 pub fn create_exporter_from_factory<PData: Clone + Debug + 'static>(
     factory: &ExporterFactory<PData>,
     config: Value,
-) -> Result<ExporterWrapper<PData>, otap_df_config::error::Error> {
+) -> Result<ExporterWrapper<PData>, otel_arrow_dfe_config::error::Error> {
     let pipeline_ctx = create_test_pipeline_context();
     let node = test_node("test_exporter".to_string());
     let mut node_config = NodeUserConfig::new_exporter_config(factory.name);

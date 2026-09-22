@@ -40,6 +40,11 @@ mod tests {
     use crate::scenario::Scenario;
     use crate::traffic::{Capture, Generator};
     use crate::validation_types::attributes::{AnyValue, AttributeDomain, KeyValue};
+    use otel_arrow_dfe_config::ContextEntryName;
+
+    fn context_name(raw: &str) -> ContextEntryName {
+        ContextEntryName::try_from(raw).expect("valid test context entry name")
+    }
 
     #[test]
     fn validation_logs_otlp_to_otlp() {
@@ -1386,12 +1391,10 @@ mod tests {
             .expect("traces otap-to-otap validation failed");
     }
 
-    /// End-to-end validation: transport headers injected by the fake data
-    /// generator survive the full pipeline chain (generator -> SUV -> capture)
-    /// and can be asserted via transport header validation instructions.
+    /// Scenario: transport headers cross an OTLP pipeline.
+    /// Guarantees: required names and values survive. Forbidden headers stay absent.
     ///
-    /// Only OTLP receivers and exporters support transport header
-    /// capture/propagation, so every hop in the chain uses OTLP gRPC.
+    /// This scenario uses OTLP gRPC for every hop.
     #[test]
     fn validation_transport_headers() {
         use crate::validation_types::transport_headers::TransportHeaderKeyValue;
@@ -1433,13 +1436,16 @@ header_propagation:
                     .with_capture_header_keys([header_key])
                     .validate(vec![
                         ValidationInstructions::TransportHeaderRequireKey {
-                            keys: vec![header_key.into()],
+                            keys: vec![context_name(header_key)],
                         },
                         ValidationInstructions::TransportHeaderRequireKeyValue {
-                            pairs: vec![TransportHeaderKeyValue::new(header_key, header_value)],
+                            pairs: vec![
+                                TransportHeaderKeyValue::try_new(header_key, header_value)
+                                    .expect("valid test context entry name"),
+                            ],
                         },
                         ValidationInstructions::TransportHeaderDeny {
-                            keys: vec!["x-should-not-exist".into()],
+                            keys: vec![context_name("x-should-not-exist")],
                         },
                     ])
                     .control_streams(["traffic_gen"])
@@ -1456,13 +1462,13 @@ mod tls_tests {
     use crate::pipeline::Pipeline;
     use crate::scenario::Scenario;
     use crate::traffic::{Capture, Generator, TlsConfig};
-    use otap_test_tls_certs::{ExtendedKeyUsage, write_ca_and_leaf_to_dir};
+    use otel_arrow_dfe_test_tls_certs::{ExtendedKeyUsage, write_ca_and_leaf_to_dir};
 
     /// End-to-end validation: traffic flows through a TLS-enabled OTLP gRPC
     /// receiver in the SUV pipeline.
     #[test]
     fn validation_tls_no_processor() {
-        let _ = otap_df_otap::crypto::install_crypto_provider();
+        let _ = otel_arrow_dfe_otap::crypto::install_crypto_provider();
 
         let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
         let dir = temp_dir.path();
@@ -1513,7 +1519,7 @@ mod tls_tests {
     /// receiver in the SUV pipeline, requiring client certificate authentication.
     #[test]
     fn validation_mtls_no_processor() {
-        let _ = otap_df_otap::crypto::install_crypto_provider();
+        let _ = otel_arrow_dfe_otap::crypto::install_crypto_provider();
 
         let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
         let dir = temp_dir.path();

@@ -16,7 +16,7 @@ use k8s_openapi::api::authorization::v1::{
 use kube::api::{Api, PostParams};
 
 use super::config::ResourceAttributesConfig;
-use otap_df_telemetry::otel_warn;
+use otel_arrow_dfe_telemetry::otel_warn;
 
 use super::error::Error;
 
@@ -87,7 +87,7 @@ impl Reviewer {
         // kube talks to the API server over rustls, which needs a process-wide
         // crypto provider installed. Mirror the other auth extensions and ensure
         // one is present before any TLS handshake.
-        otap_df_otap::crypto::ensure_crypto_provider();
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
         let client = kube::Client::try_default().await.map_err(|source| {
             otel_warn!(
                 "k8s_service_account_token_auth.client_init_failed",

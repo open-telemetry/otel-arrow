@@ -9,12 +9,12 @@
 //! `SO_REUSEPORT`, or attach any selector.
 
 use crate::placement::PipelinePlacement;
-use otap_df_config::engine::ResolvedPipelineConfig;
-use otap_df_engine::listener_group::{
+use otel_arrow_dfe_config::engine::ResolvedPipelineConfig;
+use otel_arrow_dfe_engine::listener_group::{
     ListenerGroupKey, ListenerGroupMember, ListenerGroupPlan, ListenerGroupSnapshot,
     ListenerProtocol,
 };
-use otap_df_telemetry::otel_warn;
+use otel_arrow_dfe_telemetry::otel_warn;
 use std::net::SocketAddr;
 
 // TODO(#3687): Replace controller-owned receiver schema extraction with
@@ -166,10 +166,10 @@ mod tests {
     use super::*;
     use crate::placement::{CorePlacement, PipelinePlacement};
     use core_affinity::CoreId;
-    use otap_df_config::engine::{ResolvedPipelineConfig, ResolvedPipelineRole};
-    use otap_df_config::pipeline::PipelineConfig;
-    use otap_df_config::policy::ResolvedPolicies;
-    use otap_df_engine::topology::TopologyCompleteness;
+    use otel_arrow_dfe_config::engine::{ResolvedPipelineConfig, ResolvedPipelineRole};
+    use otel_arrow_dfe_config::pipeline::PipelineConfig;
+    use otel_arrow_dfe_config::policy::ResolvedPolicies;
+    use otel_arrow_dfe_engine::topology::TopologyCompleteness;
 
     fn placement() -> PipelinePlacement {
         PipelinePlacement {

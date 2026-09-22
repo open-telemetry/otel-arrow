@@ -41,6 +41,15 @@
 //! registered provider, or `kind: tracelogging` to derive the GUID from the
 //! name without any OS lookup.
 //!
+//! Providers resolved by name from the registered ETW provider database as
+//! manifest providers additionally support `event_ids`, an allow-list of up to
+//! 64 unique event IDs filtered server-side by the ETW runtime. This is
+//! rejected for providers that resolve by name-hash (`kind: tracelogging`, and
+//! automatic fallback when no registered provider is found), classic MOF/WMI
+//! providers, unknown registered-provider sources, and literal GUIDs, since the
+//! receiver cannot guarantee that ETW will apply `EventDescriptor.Id` filtering
+//! for those cases.
+//!
 //! ```yaml
 //! etw:
 //!   type: receiver:etw
@@ -51,12 +60,18 @@
 //!       - name: "Microsoft-Windows-Kernel-Process"
 //!         kind: manifest
 //!         level: information
+//!         event_ids: [1, 2, 15]
 //!       - name: "My-Custom-EventSource"
 //!         kind: tracelogging
 //!     batching:
 //!       max_size: 100
 //!       max_duration: "100ms"
 //! ```
+
+otel_arrow_dfe_telemetry::otel_component_scope!(
+    urn = ETW_RECEIVER_URN,
+    target = "otel.receiver.etw",
+);
 
 mod arrow_records_encoder;
 mod session;
@@ -66,31 +81,31 @@ use session::EtwEventData;
 
 use async_trait::async_trait;
 use linkme::distributed_slice;
-use otap_df_config::node::NodeUserConfig;
-use otap_df_engine::ReceiverFactory;
-use otap_df_engine::config::ReceiverConfig;
-use otap_df_engine::context::PipelineContext;
-use otap_df_engine::control::NodeControlMsg;
-use otap_df_engine::node::NodeId;
-use otap_df_engine::receiver::ReceiverWrapper;
-use otap_df_engine::terminal_state::TerminalState;
-use otap_df_engine::{
+use otel_arrow_dfe_config::node::NodeUserConfig;
+use otel_arrow_dfe_engine::ReceiverFactory;
+use otel_arrow_dfe_engine::config::ReceiverConfig;
+use otel_arrow_dfe_engine::context::PipelineContext;
+use otel_arrow_dfe_engine::control::NodeControlMsg;
+use otel_arrow_dfe_engine::node::NodeId;
+use otel_arrow_dfe_engine::receiver::ReceiverWrapper;
+use otel_arrow_dfe_engine::terminal_state::TerminalState;
+use otel_arrow_dfe_engine::{
     MessageSourceLocalEffectHandlerExtension,
     effect_handler::TelemetryTimerCancelHandle,
     error::{Error, ReceiverErrorKind, format_error_sources},
     local::receiver as local,
 };
-use otap_df_otap::OTAP_RECEIVER_FACTORIES;
-use otap_df_otap::pdata::OtapPdata;
-use otap_df_telemetry::instrument::Counter;
-use otap_df_telemetry::metrics::MetricSet;
-use otap_df_telemetry::{otel_info, otel_warn};
-use otap_df_telemetry_macros::metric_set;
+use otel_arrow_dfe_otap::OTAP_RECEIVER_FACTORIES;
+use otel_arrow_dfe_otap::pdata::OtapPdata;
+use otel_arrow_dfe_telemetry::instrument::Counter;
+use otel_arrow_dfe_telemetry::metrics::MetricSet;
+use otel_arrow_dfe_telemetry_macros::metric_set;
 use serde::Deserialize;
 use serde_json::Value;
 use tokio::time::{self, MissedTickBehavior};
 
 use std::cell::RefCell;
+use std::collections::BTreeSet;
 use std::num::NonZeroU16;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -105,6 +120,7 @@ pub const ETW_RECEIVER_URN: &str = "urn:otel:receiver:etw";
 // 512 is non-zero, so `unwrap()` never panics (evaluated at compile time).
 const DEFAULT_BATCH_MAX_SIZE: NonZeroU16 = NonZeroU16::new(512).unwrap();
 const DEFAULT_BATCH_MAX_DURATION: Duration = Duration::from_millis(100);
+const MAX_EVENT_FILTER_EVENT_IDS: usize = 64;
 
 /// Upper bound on the time spent draining queued events during `DrainIngress`.
 ///
@@ -181,6 +197,27 @@ struct ProviderConfig {
     /// When omitted, all keywords are matched.
     #[serde(default)]
     pub keywords: Option<u64>,
+
+    /// Optional allow-list of event IDs (from `EventDescriptor.Id`) to
+    /// capture from this provider. When omitted, all event IDs are
+    /// captured. Filtering happens server-side in the ETW runtime, so
+    /// non-matching events are never delivered to the receiver.
+    ///
+    /// Only supported for name-based providers that resolve to a registered
+    /// manifest provider (`kind: manifest`, or automatic resolution that finds
+    /// a registered manifest provider): manifest events carry stable event IDs
+    /// and ETW can apply event-ID filtering for them. Providers resolved by
+    /// name-hash (for example explicit `kind: tracelogging`, or automatic
+    /// fallback when no registered provider is found), classic MOF/WMI
+    /// providers, unknown registered-provider sources, and literal GUIDs are
+    /// rejected because the receiver cannot guarantee that ETW will apply the
+    /// filter.
+    ///
+    /// At most 64 IDs are supported (the underlying ETW scope filter silently
+    /// stops filtering above that count) and the list must not be explicitly
+    /// empty. Duplicate IDs are removed during deserialization.
+    #[serde(default)]
+    pub event_ids: Option<BTreeSet<u16>>,
 }
 
 /// In-memory OTAP log batching policy.
@@ -234,13 +271,15 @@ impl Config {
     /// * At least one provider must be specified.
     /// * Each provider must specify exactly one of `name` or `guid` (not both, not neither).
     /// * A specified `name` or `guid` must not be empty or whitespace-only.
+    /// * `event_ids` must not be an explicitly empty list and supports at
+    ///   most 64 unique IDs.
     ///
     /// # Errors
     ///
-    /// Returns [`otap_df_config::error::Error::InvalidUserConfig`] when a rule is violated.
-    fn validate(&self) -> Result<(), otap_df_config::error::Error> {
+    /// Returns [`otel_arrow_dfe_config::error::Error::InvalidUserConfig`] when a rule is violated.
+    fn validate(&self) -> Result<(), otel_arrow_dfe_config::error::Error> {
         if self.providers.is_empty() {
-            return Err(otap_df_config::error::Error::InvalidUserConfig {
+            return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                 error: "at least one ETW provider must be configured".to_string(),
             });
         }
@@ -248,14 +287,14 @@ impl Config {
         for (i, provider) in self.providers.iter().enumerate() {
             match (&provider.name, &provider.guid) {
                 (Some(_), Some(_)) => {
-                    return Err(otap_df_config::error::Error::InvalidUserConfig {
+                    return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                         error: format!(
                             "provider[{i}]: 'name' and 'guid' are mutually exclusive - specify one, not both"
                         ),
                     });
                 }
                 (None, None) => {
-                    return Err(otap_df_config::error::Error::InvalidUserConfig {
+                    return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                         error: format!("provider[{i}]: either 'name' or 'guid' must be specified"),
                     });
                 }
@@ -267,44 +306,87 @@ impl Config {
             // here rather than letting it fail later (a blank GUID errors at
             // parse time; a blank name would hash to a bogus GUID on the
             // automatic path).
-            if let Some(name) = &provider.name {
-                if name.trim().is_empty() {
-                    return Err(otap_df_config::error::Error::InvalidUserConfig {
-                        error: format!(
-                            "provider[{i}]: 'name' must not be empty or whitespace-only"
-                        ),
-                    });
-                }
+            if let Some(name) = &provider.name
+                && name.trim().is_empty()
+            {
+                return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
+                    error: format!("provider[{i}]: 'name' must not be empty or whitespace-only"),
+                });
             }
-            if let Some(guid) = &provider.guid {
-                if guid.trim().is_empty() {
-                    return Err(otap_df_config::error::Error::InvalidUserConfig {
-                        error: format!(
-                            "provider[{i}]: 'guid' must not be empty or whitespace-only"
-                        ),
-                    });
-                }
+            if let Some(guid) = &provider.guid
+                && guid.trim().is_empty()
+            {
+                return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
+                    error: format!("provider[{i}]: 'guid' must not be empty or whitespace-only"),
+                });
             }
 
             // `kind` selects a name-resolution strategy and is meaningless for a
             // GUID (which is used verbatim). Reject the combination rather than
             // silently ignoring `kind`.
             if provider.guid.is_some() && provider.kind.is_some() {
-                return Err(otap_df_config::error::Error::InvalidUserConfig {
+                return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                     error: format!(
                         "provider[{i}]: 'kind' applies to name-based providers only - remove 'kind' when specifying a 'guid'"
                     ),
                 });
             }
+
+            if let Some(event_ids) = &provider.event_ids {
+                // A literal GUID does not tell us whether the provider is a
+                // registered manifest, TraceLogging, or classic MOF/WMI
+                // provider. Reject this for now so accepted configurations
+                // always receive real server-side event-ID filtering.
+                if provider.guid.is_some() {
+                    return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
+                        error: format!(
+                            "provider[{i}]: 'event_ids' requires a named provider that resolves to a registered ETW manifest provider"
+                        ),
+                    });
+                }
+
+                // event_ids is only meaningful for providers that resolve to a
+                // stable event ID. Tracelogging providers resolve by name-hash, so
+                // their events cannot be filtered by EventDescriptor.Id. Reject this
+                // combination at config time.
+                if provider.kind == Some(ProviderKind::Tracelogging) {
+                    return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
+                        error: format!(
+                            "provider[{i}]: 'event_ids' is not supported for 'kind: tracelogging' - TraceLogging/EventSource events report EventDescriptor.Id = 0, so ID filtering cannot select individual events"
+                        ),
+                    });
+                }
+
+                // one_collect skips the filter entirely when the event list
+                // is empty, which would silently capture everything -
+                // the opposite of what an explicit empty list implies.
+                if event_ids.is_empty() {
+                    return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
+                        error: format!(
+                            "provider[{i}]: 'event_ids' must not be empty - omit the field to capture all event IDs"
+                        ),
+                    });
+                }
+
+                // Above 64 IDs the underlying ETW scope filter is silently
+                // dropped and all events flow.
+                if event_ids.len() > MAX_EVENT_FILTER_EVENT_IDS {
+                    return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
+                        error: format!(
+                            "provider[{i}]: 'event_ids' supports at most 64 event IDs, got {} - the ETW event-ID filter is silently dropped above that limit",
+                            event_ids.len()
+                        ),
+                    });
+                }
+            }
         }
 
-        if let Some(ref batching) = self.batching {
-            if batching.max_duration.is_zero() {
-                return Err(otap_df_config::error::Error::InvalidUserConfig {
-                    error: "ETW receiver `batching.max_duration` must be greater than zero"
-                        .to_string(),
-                });
-            }
+        if let Some(ref batching) = self.batching
+            && batching.max_duration.is_zero()
+        {
+            return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
+                error: "ETW receiver `batching.max_duration` must be greater than zero".to_string(),
+            });
         }
 
         Ok(())
@@ -352,16 +434,16 @@ impl EtwReceiver {
     fn from_config(
         pipeline: PipelineContext,
         config: &Value,
-    ) -> Result<Self, otap_df_config::error::Error> {
+    ) -> Result<Self, otel_arrow_dfe_config::error::Error> {
         let cfg: Config = serde_json::from_value(config.clone()).map_err(|e| {
-            otap_df_config::error::Error::InvalidUserConfig {
+            otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                 error: e.to_string(),
             }
         })?;
         cfg.validate()?;
 
         let num_cores = pipeline.num_cores();
-        let metrics = pipeline.register_metrics::<EtwReceiverMetrics>();
+        let metrics = EtwReceiverMetrics::register(&pipeline);
         let batching = cfg.batching.clone().unwrap_or_default();
 
         // Acquire this core's consumer channel from the per-session-name
@@ -372,7 +454,7 @@ impl EtwReceiver {
         // folds into its own metric set.
         let (event_rx, session_wide_metrics) =
             session::subscribe(&cfg, num_cores).map_err(|e| {
-                otap_df_config::error::Error::InvalidUserConfig {
+                otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                     error: format!("ETW session initialization failed: {e}"),
                 }
             })?;
@@ -823,24 +905,26 @@ impl EtwReceiver {
 
 /// Register the ETW receiver in the pipeline factory.
 #[allow(unsafe_code)]
-#[otap_df_engine::component_inventory(category = Receiver)]
+#[otel_arrow_dfe_engine::component_inventory(category = Receiver)]
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
 pub static ETW_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
     name: ETW_RECEIVER_URN,
-    create: |pipeline: PipelineContext,
-             node: NodeId,
-             node_config: Arc<NodeUserConfig>,
-             receiver_config: &ReceiverConfig,
-             _capabilities: &otap_df_engine::capability::registry::Capabilities| {
-        Ok(ReceiverWrapper::local(
-            EtwReceiver::from_config(pipeline, &node_config.config)?,
-            node,
-            node_config,
-            receiver_config,
-        ))
-    },
-    wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
-    validate_config: otap_df_config::validation::validate_typed_config::<Config>,
+    create:
+        |pipeline: PipelineContext,
+         node: NodeId,
+         node_config: Arc<NodeUserConfig>,
+         receiver_config: &ReceiverConfig,
+         _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities| {
+            Ok(ReceiverWrapper::local(
+                EtwReceiver::from_config(pipeline, &node_config.config)?,
+                node,
+                node_config,
+                receiver_config,
+            ))
+        },
+    context_declarations: None,
+    wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<Config>,
 };
 
 // -- Receiver trait implementation --------------------------------------------
@@ -986,6 +1070,7 @@ mod tests {
             kind: None,
             level: TraceLevel::default(),
             keywords: None,
+            event_ids: None,
         }
     }
 
@@ -996,6 +1081,7 @@ mod tests {
             kind: None,
             level: TraceLevel::default(),
             keywords: None,
+            event_ids: None,
         }
     }
 
@@ -1047,6 +1133,7 @@ mod tests {
             kind: Some(ProviderKind::Manifest),
             level: TraceLevel::default(),
             keywords: None,
+            event_ids: None,
         }]);
         let err = cfg.validate().unwrap_err();
         let msg = err.to_string();
@@ -1068,6 +1155,132 @@ mod tests {
             kind: Some(ProviderKind::Tracelogging),
             level: TraceLevel::default(),
             keywords: None,
+            event_ids: None,
+        }]);
+        assert!(cfg.validate().is_ok());
+    }
+
+    /// Scenario: A provider configures a well-formed `event_ids` allow-list
+    /// under automatic or manifest-based resolution.
+    /// Guarantees: `Config::validate` accepts the list for automatic (kind:
+    /// None) and manifest-based resolution (kind: Manifest), but rejects it
+    /// for explicit tracelogging (kind: Tracelogging) since hash-resolved
+    /// providers cannot be filtered by EventDescriptor.Id.
+    #[test]
+    fn validate_accepts_event_ids_for_name_based_manifest_resolution() {
+        // Automatic (kind: None) and manifest should be accepted
+        for kind in [None, Some(ProviderKind::Manifest)] {
+            let cfg = make_config(vec![ProviderConfig {
+                name: Some("Microsoft-Windows-Kernel-Process".to_string()),
+                guid: None,
+                kind,
+                level: TraceLevel::default(),
+                keywords: None,
+                event_ids: Some([1, 2, 15].into_iter().collect()),
+            }]);
+            assert!(
+                cfg.validate().is_ok(),
+                "validate must accept event_ids for kind={kind:?}"
+            );
+        }
+
+        // Tracelogging should be rejected
+        let cfg = make_config(vec![ProviderConfig {
+            name: Some("My-Custom-EventSource".to_string()),
+            guid: None,
+            kind: Some(ProviderKind::Tracelogging),
+            level: TraceLevel::default(),
+            keywords: None,
+            event_ids: Some([1, 2, 15].into_iter().collect()),
+        }]);
+        let err = cfg.validate().unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("'event_ids' is not supported for 'kind: tracelogging'"),
+            "validate must reject event_ids for kind: tracelogging, got: {msg}"
+        );
+    }
+
+    /// Scenario: A provider configures a literal `guid` together with
+    /// `event_ids`.
+    /// Guarantees: `Config::validate` rejects the combination because a GUID
+    /// alone does not identify whether the provider is manifest, TraceLogging,
+    /// or classic MOF/WMI, so the receiver cannot guarantee that ETW will apply
+    /// event-ID filtering.
+    #[test]
+    fn validate_rejects_event_ids_with_guid() {
+        let cfg = make_config(vec![ProviderConfig {
+            name: None,
+            guid: Some("22fb2cd6-0e7b-422b-a0c7-2fad1fd0e716".to_string()),
+            kind: None,
+            level: TraceLevel::default(),
+            keywords: None,
+            event_ids: Some([1, 2, 15].into_iter().collect()),
+        }]);
+        let err = cfg.validate().unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("'event_ids' requires a named provider"),
+            "validate must reject event_ids with guid, got: {msg}"
+        );
+    }
+
+    /// Scenario: A provider configures an explicitly empty `event_ids` list.
+    /// Guarantees: `Config::validate` rejects the config, since `one_collect`
+    /// skips the filter entirely when the event list is empty, which would
+    /// silently capture everything instead of nothing.
+    #[test]
+    fn validate_rejects_empty_event_ids() {
+        let cfg = make_config(vec![ProviderConfig {
+            name: Some("Microsoft-Windows-Kernel-Process".to_string()),
+            guid: None,
+            kind: Some(ProviderKind::Manifest),
+            level: TraceLevel::default(),
+            keywords: None,
+            event_ids: Some(BTreeSet::new()),
+        }]);
+        let err = cfg.validate().unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("'event_ids' must not be empty"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    /// Scenario: A provider configures more than 64 `event_ids`.
+    /// Guarantees: `Config::validate` rejects the config, since the
+    /// underlying ETW scope filter is silently dropped above 64 IDs
+    /// (capturing everything) rather than truncated.
+    #[test]
+    fn validate_rejects_more_than_64_event_ids() {
+        let cfg = make_config(vec![ProviderConfig {
+            name: Some("Microsoft-Windows-Kernel-Process".to_string()),
+            guid: None,
+            kind: Some(ProviderKind::Manifest),
+            level: TraceLevel::default(),
+            keywords: None,
+            event_ids: Some((1..=MAX_EVENT_FILTER_EVENT_IDS as u16 + 1).collect()),
+        }]);
+        let err = cfg.validate().unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("supports at most 64 event IDs"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    /// Scenario: A provider configures exactly 64 unique `event_ids`.
+    /// Guarantees: `Config::validate` accepts the config, since 64 is the
+    /// documented cap rather than a rejected boundary.
+    #[test]
+    fn validate_accepts_exactly_64_event_ids() {
+        let cfg = make_config(vec![ProviderConfig {
+            name: Some("Microsoft-Windows-Kernel-Process".to_string()),
+            guid: None,
+            kind: Some(ProviderKind::Manifest),
+            level: TraceLevel::default(),
+            keywords: None,
+            event_ids: Some((1..=MAX_EVENT_FILTER_EVENT_IDS as u16).collect()),
         }]);
         assert!(cfg.validate().is_ok());
     }
@@ -1115,6 +1328,7 @@ mod tests {
             kind: None,
             level: TraceLevel::default(),
             keywords: None,
+            event_ids: None,
         }]);
         let err = cfg.validate().unwrap_err();
         let msg = err.to_string();
@@ -1132,6 +1346,7 @@ mod tests {
             kind: None,
             level: TraceLevel::default(),
             keywords: None,
+            event_ids: None,
         }]);
         let err = cfg.validate().unwrap_err();
         let msg = err.to_string();
@@ -1151,6 +1366,7 @@ mod tests {
                 kind: None,
                 level: TraceLevel::default(),
                 keywords: None,
+                event_ids: None,
             },
         ]);
         let err = cfg.validate().unwrap_err();

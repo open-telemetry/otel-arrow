@@ -8,8 +8,8 @@ use crate::conditions::{
 };
 use crate::phase::PipelinePhase;
 use crate::pipeline_rt_status::PipelineRuntimeStatus;
-use otap_df_config::CoreId;
-use otap_df_config::health::{HealthPolicy, PhaseKind, Quorum};
+use otel_arrow_dfe_config::CoreId;
+use otel_arrow_dfe_config::health::{HealthPolicy, PhaseKind, Quorum};
 use serde::Serialize;
 use serde::ser::SerializeStruct;
 use std::collections::{HashMap, HashSet};

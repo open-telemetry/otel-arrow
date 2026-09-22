@@ -273,10 +273,10 @@ impl TracesProtoBytesEncoder {
         }
 
         // encode the schema url
-        if let Some(col) = &traces_data_arrays.resource_arrays.schema_url {
-            if let Some(val) = col.str_at(index) {
-                result_buf.encode_string(RESOURCE_SPANS_SCHEMA_URL, val)?;
-            }
+        if let Some(col) = &traces_data_arrays.resource_arrays.schema_url
+            && let Some(val) = col.str_at(index)
+        {
+            result_buf.encode_string(RESOURCE_SPANS_SCHEMA_URL, val)?;
         }
 
         Ok(())
@@ -332,10 +332,10 @@ impl TracesProtoBytesEncoder {
         }
 
         // encode the schema url
-        if let Some(col) = &traces_data_arrays.span_arrays.schema_url {
-            if let Some(val) = col.str_at(index) {
-                result_buf.encode_string(SCOPE_SPANS_SCHEMA_URL, val)?;
-            }
+        if let Some(col) = &traces_data_arrays.span_arrays.schema_url
+            && let Some(val) = col.str_at(index)
+        {
+            result_buf.encode_string(SCOPE_SPANS_SCHEMA_URL, val)?;
         }
 
         Ok(())
@@ -353,144 +353,143 @@ impl TracesProtoBytesEncoder {
 
         let span_arrays = &traces_data_arrays.span_arrays;
 
-        if let Some(col) = &span_arrays.trace_id {
-            if let Some(val) = col.slice_at(index) {
-                result_buf.encode_bytes(SPAN_TRACE_ID, val)?;
+        if let Some(col) = &span_arrays.trace_id
+            && let Some(val) = col.slice_at(index)
+        {
+            result_buf.encode_bytes(SPAN_TRACE_ID, val)?;
+        }
+
+        if let Some(col) = &span_arrays.span_id
+            && let Some(val) = col.slice_at(index)
+        {
+            result_buf.encode_bytes(SPAN_SPAN_ID, val)?;
+        }
+
+        if let Some(col) = &span_arrays.trace_state
+            && let Some(val) = col.str_at(index)
+        {
+            result_buf.encode_string(SPAN_TRACE_STATE, val)?;
+        }
+
+        if let Some(col) = &span_arrays.parent_span_id
+            && let Some(val) = col.slice_at(index)
+        {
+            result_buf.encode_bytes(SPAN_PARENT_SPAN_ID, val)?;
+        }
+
+        if let Some(col) = &span_arrays.flags
+            && let Some(val) = col.value_at(index)
+        {
+            result_buf.encode_field_tag(SPAN_FLAGS, wire_types::FIXED32)?;
+            result_buf.extend_from_slice(&val.to_le_bytes())?;
+        }
+
+        if let Some(col) = &span_arrays.name
+            && let Some(val) = col.str_at(index)
+        {
+            result_buf.encode_string(SPAN_NAME, val)?;
+        }
+
+        if let Some(col) = &span_arrays.kind
+            && let Some(val) = col.value_at(index)
+        {
+            result_buf.encode_field_tag(SPAN_KIND, wire_types::VARINT)?;
+            result_buf.encode_varint(val as u64)?;
+        }
+
+        if let Some(col) = &span_arrays.start_time_unix_nano
+            && let Some(start_time) = col.value_at(index)
+        {
+            result_buf.encode_field_tag(SPAN_START_TIME_UNIX_NANO, wire_types::FIXED64)?;
+            result_buf.extend_from_slice(&start_time.to_le_bytes())?;
+
+            // encode end time from start + duration
+            if let Some(col) = &span_arrays.duration_time_unix_nano
+                && let Some(duration) = col.value_at(index)
+            {
+                let end_time = start_time + duration;
+                result_buf.encode_field_tag(SPAN_END_TIME_UNIX_NANO, wire_types::FIXED64)?;
+                result_buf.extend_from_slice(&end_time.to_le_bytes())?;
             }
         }
 
-        if let Some(col) = &span_arrays.span_id {
-            if let Some(val) = col.slice_at(index) {
-                result_buf.encode_bytes(SPAN_SPAN_ID, val)?;
-            }
-        }
-
-        if let Some(col) = &span_arrays.trace_state {
-            if let Some(val) = col.str_at(index) {
-                result_buf.encode_string(SPAN_TRACE_STATE, val)?;
-            }
-        }
-
-        if let Some(col) = &span_arrays.parent_span_id {
-            if let Some(val) = col.slice_at(index) {
-                result_buf.encode_bytes(SPAN_PARENT_SPAN_ID, val)?;
-            }
-        }
-
-        if let Some(col) = &span_arrays.flags {
-            if let Some(val) = col.value_at(index) {
-                result_buf.encode_field_tag(SPAN_FLAGS, wire_types::FIXED32)?;
-                result_buf.extend_from_slice(&val.to_le_bytes())?;
-            }
-        }
-
-        if let Some(col) = &span_arrays.name {
-            if let Some(val) = col.str_at(index) {
-                result_buf.encode_string(SPAN_NAME, val)?;
-            }
-        }
-
-        if let Some(col) = &span_arrays.kind {
-            if let Some(val) = col.value_at(index) {
-                result_buf.encode_field_tag(SPAN_KIND, wire_types::VARINT)?;
-                result_buf.encode_varint(val as u64)?;
-            }
-        }
-
-        if let Some(col) = &span_arrays.start_time_unix_nano {
-            if let Some(start_time) = col.value_at(index) {
-                result_buf.encode_field_tag(SPAN_START_TIME_UNIX_NANO, wire_types::FIXED64)?;
-                result_buf.extend_from_slice(&start_time.to_le_bytes())?;
-
-                // encode end time from start + duration
-                if let Some(col) = &span_arrays.duration_time_unix_nano {
-                    if let Some(duration) = col.value_at(index) {
-                        let end_time = start_time + duration;
-                        result_buf
-                            .encode_field_tag(SPAN_END_TIME_UNIX_NANO, wire_types::FIXED64)?;
-                        result_buf.extend_from_slice(&end_time.to_le_bytes())?;
-                    }
-                }
-            }
-        }
-
-        if let Some(span_attrs) = &traces_data_arrays.span_attrs {
-            if let Some(id) = span_arrays.id.value_at(index) {
-                let attrs_index_iter =
-                    ChildIndexIter::new(id, &span_attrs.parent_id, &mut self.spans_attrs_cursor);
-                for attr_index in attrs_index_iter {
-                    result_buf.encode_len_delimited(SPAN_ATTRIBUTES, |result_buf| {
-                        encode_key_value(span_attrs, attr_index, result_buf)
-                    })?;
-                }
-            }
-        }
-
-        if let Some(col) = span_arrays.dropped_attributes_count {
-            if let Some(val) = col.value_at(index) {
-                result_buf.encode_field_tag(SPAN_DROPPED_ATTRIBUTES_COUNT, wire_types::VARINT)?;
-                result_buf.encode_varint(val as u64)?;
-            }
-        }
-
-        if let Some(span_events) = &traces_data_arrays.span_events {
-            if let Some(id) = span_arrays.id.value_at(index) {
-                let parent_ids = MaybeDictArrayAccessor::Native(span_events.parent_id);
-                let events_index_iter =
-                    ChildIndexIter::new(id, &parent_ids, &mut self.span_events_cursor);
-                for event_index in events_index_iter {
-                    result_buf.encode_len_delimited(SPAN_EVENTS, |result_buf| {
-                        encode_span_event(
-                            event_index,
-                            span_events,
-                            &mut self.span_events_attrs_cursor,
-                            traces_data_arrays.span_event_attrs.as_ref(),
-                            result_buf,
-                        )
-                    })?;
-                }
-            }
-        }
-
-        if let Some(col) = span_arrays.dropped_events_count {
-            if let Some(val) = col.value_at(index) {
-                result_buf.encode_field_tag(SPAN_DROPPED_EVENTS_COUNT, wire_types::VARINT)?;
-                result_buf.encode_varint(val as u64)?;
-            }
-        }
-
-        if let Some(span_links) = &traces_data_arrays.span_links {
-            if let Some(id) = span_arrays.id.value_at(index) {
-                let parent_ids = MaybeDictArrayAccessor::Native(span_links.parent_id);
-                let links_index_iter =
-                    ChildIndexIter::new(id, &parent_ids, &mut self.span_links_cursor);
-                for link_index in links_index_iter {
-                    result_buf.encode_len_delimited(SPAN_LINKS, |result_buf| {
-                        encode_span_link(
-                            link_index,
-                            span_links,
-                            &mut self.span_links_attrs_cursor,
-                            traces_data_arrays.span_link_attrs.as_ref(),
-                            result_buf,
-                        )
-                    })?;
-                }
-            }
-        }
-
-        if let Some(col) = span_arrays.dropped_links_count {
-            if let Some(val) = col.value_at(index) {
-                result_buf.encode_field_tag(SPAN_DROPPED_LINKS_COUNT, wire_types::VARINT)?;
-                result_buf.encode_varint(val as u64)?;
-            }
-        }
-
-        if let Some(status) = &span_arrays.status {
-            if status.status.is_valid(index) {
-                result_buf.encode_len_delimited(SPAN_STATUS, |result_buf| {
-                    self.encode_span_status(index, status, result_buf)
+        if let Some(span_attrs) = &traces_data_arrays.span_attrs
+            && let Some(id) = span_arrays.id.value_at(index)
+        {
+            let attrs_index_iter =
+                ChildIndexIter::new(id, &span_attrs.parent_id, &mut self.spans_attrs_cursor);
+            for attr_index in attrs_index_iter {
+                result_buf.encode_len_delimited(SPAN_ATTRIBUTES, |result_buf| {
+                    encode_key_value(span_attrs, attr_index, result_buf)
                 })?;
             }
+        }
+
+        if let Some(col) = span_arrays.dropped_attributes_count
+            && let Some(val) = col.value_at(index)
+        {
+            result_buf.encode_field_tag(SPAN_DROPPED_ATTRIBUTES_COUNT, wire_types::VARINT)?;
+            result_buf.encode_varint(val as u64)?;
+        }
+
+        if let Some(span_events) = &traces_data_arrays.span_events
+            && let Some(id) = span_arrays.id.value_at(index)
+        {
+            let parent_ids = MaybeDictArrayAccessor::Native(span_events.parent_id);
+            let events_index_iter =
+                ChildIndexIter::new(id, &parent_ids, &mut self.span_events_cursor);
+            for event_index in events_index_iter {
+                result_buf.encode_len_delimited(SPAN_EVENTS, |result_buf| {
+                    encode_span_event(
+                        event_index,
+                        span_events,
+                        &mut self.span_events_attrs_cursor,
+                        traces_data_arrays.span_event_attrs.as_ref(),
+                        result_buf,
+                    )
+                })?;
+            }
+        }
+
+        if let Some(col) = span_arrays.dropped_events_count
+            && let Some(val) = col.value_at(index)
+        {
+            result_buf.encode_field_tag(SPAN_DROPPED_EVENTS_COUNT, wire_types::VARINT)?;
+            result_buf.encode_varint(val as u64)?;
+        }
+
+        if let Some(span_links) = &traces_data_arrays.span_links
+            && let Some(id) = span_arrays.id.value_at(index)
+        {
+            let parent_ids = MaybeDictArrayAccessor::Native(span_links.parent_id);
+            let links_index_iter =
+                ChildIndexIter::new(id, &parent_ids, &mut self.span_links_cursor);
+            for link_index in links_index_iter {
+                result_buf.encode_len_delimited(SPAN_LINKS, |result_buf| {
+                    encode_span_link(
+                        link_index,
+                        span_links,
+                        &mut self.span_links_attrs_cursor,
+                        traces_data_arrays.span_link_attrs.as_ref(),
+                        result_buf,
+                    )
+                })?;
+            }
+        }
+
+        if let Some(col) = span_arrays.dropped_links_count
+            && let Some(val) = col.value_at(index)
+        {
+            result_buf.encode_field_tag(SPAN_DROPPED_LINKS_COUNT, wire_types::VARINT)?;
+            result_buf.encode_varint(val as u64)?;
+        }
+
+        if let Some(status) = &span_arrays.status
+            && status.status.is_valid(index)
+        {
+            result_buf.encode_len_delimited(SPAN_STATUS, |result_buf| {
+                self.encode_span_status(index, status, result_buf)
+            })?;
         }
 
         self.root_cursor.advance();
@@ -504,17 +503,17 @@ impl TracesProtoBytesEncoder {
         status_arrays: &SpanStatusArrays<'_>,
         result_buf: &mut ProtoBuffer,
     ) -> Result<()> {
-        if let Some(col) = &status_arrays.message {
-            if let Some(val) = col.str_at(index) {
-                result_buf.encode_string(SPAN_STATUS_MESSAGE, val)?;
-            }
+        if let Some(col) = &status_arrays.message
+            && let Some(val) = col.str_at(index)
+        {
+            result_buf.encode_string(SPAN_STATUS_MESSAGE, val)?;
         }
 
-        if let Some(col) = &status_arrays.code {
-            if let Some(val) = col.value_at(index) {
-                result_buf.encode_field_tag(SPAN_STATUS_CODE, wire_types::VARINT)?;
-                result_buf.encode_varint(val as u64)?;
-            }
+        if let Some(col) = &status_arrays.code
+            && let Some(val) = col.value_at(index)
+        {
+            result_buf.encode_field_tag(SPAN_STATUS_CODE, wire_types::VARINT)?;
+            result_buf.encode_varint(val as u64)?;
         }
 
         Ok(())

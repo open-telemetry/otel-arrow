@@ -9,10 +9,10 @@
 //! headers) is preserved so plugin-modified batches keep the same downstream
 //! delivery semantics as unmodified data.
 
-use otap_df_engine::error::Error as EngineError;
-use otap_df_otap::pdata::OtapPdata;
-use otap_df_pdata::OtapArrowRecords;
-use otap_df_pdata::TryIntoWithOptions;
+use otel_arrow_dfe_engine::error::Error as EngineError;
+use otel_arrow_dfe_otap::pdata::OtapPdata;
+use otel_arrow_dfe_pdata::OtapArrowRecords;
+use otel_arrow_dfe_pdata::TryIntoWithOptions;
 
 /// Run `run` on `pdata` converted to OTAP records, preserving the pdata context.
 ///
@@ -53,13 +53,13 @@ mod tests {
     use super::*;
     use arrow::array::{Array, StringArray};
     use arrow_select::filter::filter_record_batch;
-    use otap_df_otap::pdata::Context;
-    use otap_df_pdata::otap::Logs;
-    use otap_df_pdata::proto::OtlpProtoMessage;
-    use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-    use otap_df_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
-    use otap_df_pdata::proto::opentelemetry::logs::v1::LogRecord;
-    use otap_df_pdata::testing::round_trip::{otap_to_otlp, to_otap_logs};
+    use otel_arrow_dfe_otap::pdata::Context;
+    use otel_arrow_dfe_pdata::otap::Logs;
+    use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
+    use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::LogRecord;
+    use otel_arrow_dfe_pdata::testing::round_trip::{otap_to_otlp, to_otap_logs};
 
     fn logs_pdata_with_severities(severities: &[&str]) -> OtapPdata {
         let records = to_otap_logs(
@@ -200,7 +200,7 @@ mod tests {
             .iter()
             .map(|record| record.attributes[0].value.as_ref().expect("any value"))
             .map(|v| match v.value.as_ref().expect("typed value") {
-                otap_df_pdata::proto::opentelemetry::common::v1::any_value::Value::StringValue(
+                otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::any_value::Value::StringValue(
                     s,
                 ) => s.clone(),
                 other => panic!("expected string attribute value, got {other:?}"),

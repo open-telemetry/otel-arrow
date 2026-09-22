@@ -61,25 +61,25 @@ pub(crate) fn expand_pipeline_factory(
 
     quote! {
         /// A slice of receiver factories.
-        #[::otap_df_engine::distributed_slice]
-        pub static #receiver_factories_name: [::otap_df_engine::ReceiverFactory<#pdata_type>] = [..];
+        #[::otel_arrow_dfe_engine::distributed_slice]
+        pub static #receiver_factories_name: [::otel_arrow_dfe_engine::ReceiverFactory<#pdata_type>] = [..];
 
         /// A slice of processor factories.
-        #[::otap_df_engine::distributed_slice]
-        pub static #processor_factories_name: [::otap_df_engine::ProcessorFactory<#pdata_type>] = [..];
+        #[::otel_arrow_dfe_engine::distributed_slice]
+        pub static #processor_factories_name: [::otel_arrow_dfe_engine::ProcessorFactory<#pdata_type>] = [..];
 
         /// A slice of exporter factories.
-        #[::otap_df_engine::distributed_slice]
-        pub static #exporter_factories_name: [::otap_df_engine::ExporterFactory<#pdata_type>] = [..];
+        #[::otel_arrow_dfe_engine::distributed_slice]
+        pub static #exporter_factories_name: [::otel_arrow_dfe_engine::ExporterFactory<#pdata_type>] = [..];
 
         /// A slice of extension factories.
-        #[::otap_df_engine::distributed_slice]
-        pub static #extension_factories_name: [::otap_df_engine::ExtensionFactory] = [..];
+        #[::otel_arrow_dfe_engine::distributed_slice]
+        pub static #extension_factories_name: [::otel_arrow_dfe_engine::ExtensionFactory] = [..];
 
         /// The factory registry instance.
         #registry_vis static #registry_name: ::std::sync::LazyLock<PipelineFactory<#pdata_type>> = ::std::sync::LazyLock::new(|| {
             // Reference build_factory unqualified to keep the user's
-            // `use otap_df_engine::build_factory;` import live; the macro
+            // `use otel_arrow_dfe_engine::build_factory;` import live; the macro
             // replaces the static's initializer body, so without this the
             // user would get an unused-import warning at their call site.
             let _ = build_factory::<#pdata_type>;
@@ -92,22 +92,22 @@ pub(crate) fn expand_pipeline_factory(
         });
 
         /// Gets the receiver factory map, initializing it if necessary.
-        pub fn #get_receiver_factory_map_name() -> &'static ::std::collections::HashMap<&'static str, ::otap_df_engine::ReceiverFactory<#pdata_type>> {
+        pub fn #get_receiver_factory_map_name() -> &'static ::std::collections::HashMap<&'static str, ::otel_arrow_dfe_engine::ReceiverFactory<#pdata_type>> {
             #registry_name.get_receiver_factory_map()
         }
 
         /// Gets the processor factory map, initializing it if necessary.
-        pub fn #get_processor_factory_map_name() -> &'static ::std::collections::HashMap<&'static str, ::otap_df_engine::ProcessorFactory<#pdata_type>> {
+        pub fn #get_processor_factory_map_name() -> &'static ::std::collections::HashMap<&'static str, ::otel_arrow_dfe_engine::ProcessorFactory<#pdata_type>> {
             #registry_name.get_processor_factory_map()
         }
 
         /// Gets the exporter factory map, initializing it if necessary.
-        pub fn #get_exporter_factory_map_name() -> &'static ::std::collections::HashMap<&'static str, ::otap_df_engine::ExporterFactory<#pdata_type>> {
+        pub fn #get_exporter_factory_map_name() -> &'static ::std::collections::HashMap<&'static str, ::otel_arrow_dfe_engine::ExporterFactory<#pdata_type>> {
             #registry_name.get_exporter_factory_map()
         }
 
         /// Gets the extension factory map, initializing it if necessary.
-        pub fn #get_extension_factory_map_name() -> &'static ::std::collections::HashMap<&'static str, ::otap_df_engine::ExtensionFactory> {
+        pub fn #get_extension_factory_map_name() -> &'static ::std::collections::HashMap<&'static str, ::otel_arrow_dfe_engine::ExtensionFactory> {
             #registry_name.get_extension_factory_map()
         }
     }

@@ -1,0 +1,53 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+
+exporters:
+  # Benchmarked Go collector (Sarama) Kafka exporter. Aligned with the
+  # canonical kafka_producer_* suite variables to the extent Sarama exposes
+  # each knob; librdkafka-only knobs (linger, queue buffering, partitioner
+  # strategy names) cannot be expressed here and are documented in the
+  # comparison writeup.
+  kafka:
+    brokers:
+      - '{{kafka_hostname}}:9092'
+    protocol_version: '3.0.0'
+    producer:
+      required_acks: {{ kafka_producer_acks_sarama | default(1) }}
+      compression: {{ kafka_producer_compression | default("none") }}
+      max_message_bytes: {{ kafka_producer_max_message_bytes | default(1000000) }}
+      flush_max_messages: {{ kafka_producer_flush_max_messages | default(0) }}
+    # The Go collector's Kafka producer has no producer-level in-flight-batch
+    # cap (unlike DFE's `max_in_flight` and rotel's MAX_CONCURRENT_SENDS). The
+    # closest achievable equivalent is the exporterhelper sending queue, whose
+    # `num_consumers` bounds how many pdata batches are exported concurrently.
+    # Normalized to the same value as DFE/rotel for the exporter comparison.
+    sending_queue:
+      enabled: true
+      num_consumers: {{ kafka_producer_max_in_flight | default(10) }}
+      queue_size: {{ kafka_producer_max_in_flight | default(10) }}
+    logs:
+      topic: otel-logs
+      encoding: otlp_proto
+    metrics:
+      topic: otel-metrics
+      encoding: otlp_proto
+    traces:
+      topic: otel-spans
+      encoding: otlp_proto
+
+service:
+  telemetry:
+    metrics:
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: '0.0.0.0'
+                port: 8086
+  pipelines:
+    {{signal}}:
+      receivers: [otlp]
+      exporters: [kafka]

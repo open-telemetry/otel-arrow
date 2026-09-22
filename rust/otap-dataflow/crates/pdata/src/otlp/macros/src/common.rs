@@ -12,7 +12,7 @@ use syn::Ident;
 
 use super::TokenVec;
 use super::field_info::FieldInfo;
-use otap_df_pdata_otlp_model::OneofCase;
+use otel_arrow_dfe_pdata_otlp_model::OneofCase;
 
 /// Process fields into parameter declarations and bounds for generic types
 pub fn builder_formal_parameters(

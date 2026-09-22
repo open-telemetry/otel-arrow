@@ -5,8 +5,8 @@
 
 mod tests {
     use futures::StreamExt;
-    use otap_df_otap::tls_utils::create_tls_stream;
-    use otap_test_tls_certs::write_ca_and_leaf_to_dir;
+    use otel_arrow_dfe_otap::tls_utils::create_tls_stream;
+    use otel_arrow_dfe_test_tls_certs::write_ca_and_leaf_to_dir;
     use rustls_pki_types::pem::PemObject;
     use rustls_pki_types::{CertificateDer, PrivateKeyDer};
     use std::fs;
@@ -42,7 +42,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_tls_stream_success() {
-        otap_df_otap::crypto::ensure_crypto_provider();
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
         let temp_dir = TempDir::new().unwrap();
         let path = temp_dir.path();
         let _ = write_ca_and_leaf_to_dir(
@@ -104,7 +104,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_tls_stream_handshake_failure_filtered() {
-        otap_df_otap::crypto::ensure_crypto_provider();
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
         let temp_dir = TempDir::new().unwrap();
         let path = temp_dir.path();
         let _ = write_ca_and_leaf_to_dir(
@@ -174,7 +174,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_tls_stream_transport_error_propagated() {
-        otap_df_otap::crypto::ensure_crypto_provider();
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
         let temp_dir = TempDir::new().unwrap();
         let path = temp_dir.path();
         let _ = write_ca_and_leaf_to_dir(
@@ -217,7 +217,7 @@ mod tests {
     /// that don't complete the TLS handshake are timed out.
     #[tokio::test]
     async fn test_handshake_respects_timeout() {
-        otap_df_otap::crypto::ensure_crypto_provider();
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
         let temp_dir = TempDir::new().unwrap();
         let path = temp_dir.path();
         let _ = write_ca_and_leaf_to_dir(
@@ -302,7 +302,7 @@ mod tests {
     /// This tests the buffer_unordered concurrency mechanism.
     #[tokio::test]
     async fn test_concurrent_handshakes_not_blocked() {
-        otap_df_otap::crypto::ensure_crypto_provider();
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
         let temp_dir = TempDir::new().unwrap();
         let path = temp_dir.path();
         let _ = write_ca_and_leaf_to_dir(

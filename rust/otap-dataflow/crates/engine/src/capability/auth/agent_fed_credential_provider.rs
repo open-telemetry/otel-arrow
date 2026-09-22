@@ -10,7 +10,7 @@
 
 use super::BearerToken;
 use crate::capability::error::CapabilityError;
-use otap_df_engine_macros::capability;
+use otel_arrow_dfe_engine_macros::capability;
 use serde_json::{Map, Value};
 use std::sync::Arc;
 
@@ -56,11 +56,15 @@ pub trait AgentFedCredentialProvider {
     /// that same generation. It must not reconstruct this result by calling
     /// separate token and vendor capabilities.
     ///
+    /// Providers must clone and return the same published `Arc` while the host
+    /// snapshot is unchanged. Consumers use `Arc::ptr_eq` as the snapshot
+    /// generation identity so rejected credentials are not retried until the
+    /// host publishes a replacement.
+    ///
     /// The returned future must be cancellation-safe because consumers may
     /// enforce a lookup deadline and drop it before completion. Cancellation
     /// must not leave shared state or locks unusable. Implementations should
-    /// normally clone an already-published snapshot and avoid network I/O or
-    /// other unbounded work in this method.
+    /// avoid network I/O or other unbounded work in this method.
     async fn get_credential(&self) -> Result<Arc<AgentFedCredentialSnapshot>, CapabilityError>;
 }
 

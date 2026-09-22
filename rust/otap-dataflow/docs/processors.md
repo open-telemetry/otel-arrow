@@ -11,26 +11,26 @@ Processors use effect handlers to emit downstream data, Ack/Nack outcomes,
 telemetry, wakeups, and other runtime effects.
 
 This document describes the main processor classes currently represented in
-`core-nodes`. The taxonomy is descriptive; it is not a Rust trait hierarchy or a
-configuration schema.
+`core-nodes`. Development-only processors are cataloged separately because they
+are not part of the published runtime crate. The taxonomy is descriptive; it is
+not a Rust trait hierarchy or a configuration schema.
 
 ## Primary Processor Classes
 
-Each current core processor fits one primary class. Secondary traits, described
+Each current processor fits one primary class. Secondary traits, described
 later, capture cross-cutting behavior.
 
 ### Inline Single-Route Processors
 
 Inline single-route processors have one logical downstream path and handle each
-inbound message in the main `process()` call. They may mutate, observe, delay,
-or drop messages, but they do not maintain router-style multi-output state.
+inbound message in the main `process()` call. They may mutate, observe, or drop
+messages, but they do not maintain router-style multi-output state.
 
 Examples:
 
 - [`attributes_processor`](../crates/core-nodes/src/processors/attributes_processor/README.md)
 - [`filter_processor`](../crates/core-nodes/src/processors/filter_processor/README.md)
 - [`log_sampling_processor`](../crates/core-nodes/src/processors/log_sampling_processor/README.md)
-- [`delay_processor`](../crates/core-nodes/src/processors/delay_processor/README.md)
 - [`debug_processor`](../crates/core-nodes/src/processors/debug_processor/README.md)
 
 ### Stateful Single-Route Schedulers
@@ -111,7 +111,6 @@ routes are produced by transformation execution rather than a static router.
 | [`attributes_processor`](../crates/core-nodes/src/processors/attributes_processor/README.md) | Inline single-route | `single-route`, `inline` | Mutates OpenTelemetry attributes before forwarding. |
 | [`filter_processor`](../crates/core-nodes/src/processors/filter_processor/README.md) | Inline single-route | `single-route`, `inline`, `may-drop` | Filters signals according to configured rules. |
 | [`log_sampling_processor`](../crates/core-nodes/src/processors/log_sampling_processor/README.md) | Inline single-route | `single-route`, `inline`, `may-drop` | Samples logs to reduce volume. |
-| [`delay_processor`](../crates/core-nodes/src/processors/delay_processor/README.md) | Inline single-route | `single-route`, `inline` | Adds artificial delay for testing and rate-shaping scenarios. |
 | [`debug_processor`](../crates/core-nodes/src/processors/debug_processor/README.md) | Inline single-route | `single-route`, `inline` | Observes or emits debug output while preserving simple forward flow. |
 | [`batch_processor`](../crates/core-nodes/src/processors/batch_processor/README.md) | Stateful single-route scheduler | `single-route`, `stateful`, `batching`, `wakeup-driven`, `ack-aware` | Batches by size or time and tracks Ack/Nack-sensitive request state. |
 | [`retry_processor`](../crates/core-nodes/src/processors/retry_processor/README.md) | Stateful single-route scheduler | `single-route`, `stateful`, `retrying`, `ack-aware` | Retries failed downstream delivery using exponential backoff. |
@@ -121,4 +120,15 @@ routes are produced by transformation execution rather than a static router.
 | [`signal_type_router`](../crates/core-nodes/src/processors/signal_type_router/README.md) | Exclusive router | `multi-route`, `exclusive-routing`, `wakeup-driven`, `admission-gated` | Routes by signal type to one selected output. |
 | [`fanout_processor`](../crates/core-nodes/src/processors/fanout_processor/README.md) | Replicating multi-route processor | `multi-route`, `replicating`, `ack-aware`, `admission-gated` | Clones data to configured destinations and aggregates completion. |
 | [`transform_processor`](../crates/core-nodes/src/processors/transform_processor/README.md) | Transforming routed emitter | `multi-route`, `stateful`, `ack-aware` | Runs transformation/query logic that may emit routed outputs. |
+<!-- markdownlint-enable MD013 -->
+
+## Development Processor Classification
+
+Development processors live in the unpublished `dev-nodes` crate and are
+available in `df_engine` only when the `dev-tools` feature is enabled.
+
+<!-- markdownlint-disable MD013 -->
+| Processor | Primary class | Notable secondary traits | Notes |
+| --- | --- | --- | --- |
+| [`delay_processor`](../crates/dev-nodes/src/processors/delay_processor/README.md) | Inline single-route | `single-route`, `inline` | Adds artificial delay for testing and rate-shaping scenarios. |
 <!-- markdownlint-enable MD013 -->

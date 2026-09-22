@@ -1,9 +1,6 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-/// Delay processor.
-pub mod delay_processor;
-
 /// Debug processor.
 pub mod debug_processor;
 
@@ -20,15 +17,15 @@ pub mod attributes_processor;
 pub mod content_router;
 
 /// Durable buffer processor.
+#[cfg(feature = "durable-buffer")]
 pub mod durable_buffer_processor;
 
 /// Partition processor.
+#[cfg(feature = "partition")]
 pub mod partition_processor;
 
-/// Retry processor.
-pub mod retry_processor;
-
 /// Transform processor.
+#[cfg(feature = "transform")]
 pub mod transform_processor;
 
 /// Fan-out processor.
@@ -45,3 +42,6 @@ pub mod log_sampling_processor;
 
 /// Temporal reaggregation processor.
 pub mod temporal_reaggregation_processor;
+
+/// Retry processor.
+pub mod retry_processor;

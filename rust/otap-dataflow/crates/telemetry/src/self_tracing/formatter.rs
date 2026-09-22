@@ -8,9 +8,9 @@ use super::{
     BorrowedLogRecord, LOG_BUFFER_SIZE, LogContext, LogContextFn, LogRecord, SavedCallsite,
 };
 use chrono::{DateTime, Datelike, Timelike, Utc};
-use otap_df_pdata::views::otlp::bytes::logs::RawLogRecord;
-use otap_df_pdata_views::views::common::{AnyValueView, AttributeView, ValueType};
-use otap_df_pdata_views::views::logs::LogRecordView;
+use otel_arrow_dfe_pdata::views::otlp::bytes::logs::RawLogRecord;
+use otel_arrow_dfe_pdata_views::views::common::{AnyValueView, AttributeView, ValueType};
+use otel_arrow_dfe_pdata_views::views::logs::LogRecordView;
 use std::io::{Cursor, Write};
 use std::time::SystemTime;
 use tracing::{Event, Level, Subscriber};
@@ -635,10 +635,10 @@ mod tests {
     use crate::self_tracing::DirectLogRecordEncoder;
     use crate::self_tracing::encoder::level_to_severity_number;
     use bytes::Bytes;
-    use otap_df_pdata::otlp::ProtoBuffer;
-    use otap_df_pdata::proto::opentelemetry::common::v1::any_value::Value;
-    use otap_df_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
-    use otap_df_pdata::proto::opentelemetry::logs::v1::LogRecord as ProtoLogRecord;
+    use otel_arrow_dfe_pdata::otlp::ProtoBuffer;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::any_value::Value;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
+    use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::LogRecord as ProtoLogRecord;
     use prost::Message;
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
@@ -706,15 +706,15 @@ mod tests {
             }
             result.push_str(&kv.key);
             result.push('=');
-            if let Some(ref v) = kv.value {
-                if let Some(ref val) = v.value {
-                    match val {
-                        Value::StringValue(s) => result.push_str(s),
-                        Value::IntValue(i) => result.push_str(&i.to_string()),
-                        Value::BoolValue(b) => result.push_str(if *b { "true" } else { "false" }),
-                        Value::DoubleValue(d) => result.push_str(&format!("{:.6}", d)),
-                        _ => unreachable!(),
-                    }
+            if let Some(ref v) = kv.value
+                && let Some(ref val) = v.value
+            {
+                match val {
+                    Value::StringValue(s) => result.push_str(s),
+                    Value::IntValue(i) => result.push_str(&i.to_string()),
+                    Value::BoolValue(b) => result.push_str(if *b { "true" } else { "false" }),
+                    Value::DoubleValue(d) => result.push_str(&format!("{:.6}", d)),
+                    _ => unreachable!(),
                 }
             }
         }

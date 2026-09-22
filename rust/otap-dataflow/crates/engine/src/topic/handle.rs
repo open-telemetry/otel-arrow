@@ -12,8 +12,8 @@ use crate::topic::types::{
     PublishOutcome, SubscriberOptions, SubscriptionMode, TopicPublishOutcomeConfig,
     TrackedPublishPermit, TrackedPublishReceipt, TrackedTryPublishOutcome,
 };
-use otap_df_config::TopicName;
-use otap_df_config::topic::TopicBroadcastOnLagPolicy;
+use otel_arrow_dfe_config::TopicName;
+use otel_arrow_dfe_config::topic::TopicBroadcastOnLagPolicy;
 use tokio::sync::Semaphore;
 
 /// A handle to a topic, used for publishing and subscribing.

@@ -133,10 +133,10 @@
 
 use crate::context::PipelineContext;
 use cpu_time::ThreadTime;
-use otap_df_telemetry::instrument::{Counter, Gauge, ObserveCounter, ObserveUpDownCounter};
-use otap_df_telemetry::metrics::MetricSet;
-use otap_df_telemetry::registry::TelemetryRegistryHandle;
-use otap_df_telemetry_macros::metric_set;
+use otel_arrow_dfe_telemetry::instrument::{Counter, Gauge, ObserveCounter, ObserveUpDownCounter};
+use otel_arrow_dfe_telemetry::metrics::MetricSet;
+use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
+use otel_arrow_dfe_telemetry_macros::metric_set;
 use std::time::Instant;
 
 #[cfg(all(not(windows), feature = "jemalloc"))]
@@ -510,31 +510,30 @@ impl PipelineMetricsMonitor {
     pub fn update_pipeline_metrics(&mut self) {
         // === Update thread memory allocation metrics (jemalloc only) ===
         #[cfg(all(not(windows), feature = "jemalloc"))]
-        if self.jemalloc_supported {
-            if let (Some(allocated), Some(deallocated)) =
+        if self.jemalloc_supported
+            && let (Some(allocated), Some(deallocated)) =
                 (self.allocated.as_ref(), self.deallocated.as_ref())
-            {
-                // Fast path: `get()` is just `*ptr` and is #[inline].
-                let cur_alloc = allocated.get();
-                let cur_dealloc = deallocated.get();
+        {
+            // Fast path: `get()` is just `*ptr` and is #[inline].
+            let cur_alloc = allocated.get();
+            let cur_dealloc = deallocated.get();
 
-                // Deltas since last time.
-                // Use wrapping_sub to be robust if jemalloc ever wraps the counters.
-                let delta_alloc = cur_alloc.wrapping_sub(self.last_allocated);
-                let delta_dealloc = cur_dealloc.wrapping_sub(self.last_deallocated);
+            // Deltas since last time.
+            // Use wrapping_sub to be robust if jemalloc ever wraps the counters.
+            let delta_alloc = cur_alloc.wrapping_sub(self.last_allocated);
+            let delta_dealloc = cur_dealloc.wrapping_sub(self.last_deallocated);
 
-                // Update baselines.
-                self.last_allocated = cur_alloc;
-                self.last_deallocated = cur_dealloc;
+            // Update baselines.
+            self.last_allocated = cur_alloc;
+            self.last_deallocated = cur_dealloc;
 
-                self.metrics.memory_allocated.observe(cur_alloc);
-                self.metrics.memory_freed.observe(cur_dealloc);
-                self.metrics.memory_allocated_delta.add(delta_alloc);
-                self.metrics.memory_freed_delta.add(delta_dealloc);
-                self.metrics
-                    .memory_usage
-                    .observe(cur_alloc.saturating_sub(cur_dealloc));
-            }
+            self.metrics.memory_allocated.observe(cur_alloc);
+            self.metrics.memory_freed.observe(cur_dealloc);
+            self.metrics.memory_allocated_delta.add(delta_alloc);
+            self.metrics.memory_freed_delta.add(delta_dealloc);
+            self.metrics
+                .memory_usage
+                .observe(cur_alloc.saturating_sub(cur_dealloc));
         }
 
         // === Update thread scheduling / page-fault metrics (when available) ===
@@ -778,7 +777,7 @@ impl Drop for PipelineMetricsMonitor {
 mod jemalloc_tests {
     use super::*;
     use crate::context::ControllerContext;
-    use otap_df_telemetry::registry::TelemetryRegistryHandle;
+    use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
     use std::hint::black_box;
     use std::time::{Duration, Instant};
 
@@ -786,7 +785,7 @@ mod jemalloc_tests {
     // tikv_jemalloc_ctl can read per-thread allocation counters.
     //
     // Run this test with:
-    // `cargo test -p otap-df-engine --lib --features jemalloc-testing pipeline_metrics_monitor_black_box_updates_jemalloc`
+    // `cargo test -p otel-arrow-dfe-engine --lib --features jemalloc-testing pipeline_metrics_monitor_black_box_updates_jemalloc`
     #[global_allocator]
     static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
@@ -857,7 +856,7 @@ mod jemalloc_tests {
 mod non_jemalloc_tests {
     use super::*;
     use crate::context::ControllerContext;
-    use otap_df_telemetry::registry::TelemetryRegistryHandle;
+    use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
     use std::hint::black_box;
     use std::time::{Duration, Instant};
 

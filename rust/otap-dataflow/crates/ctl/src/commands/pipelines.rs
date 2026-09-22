@@ -34,8 +34,8 @@ use crate::troubleshoot::{
     extract_events_from_pipeline_status, filter_logs, filter_metrics_compact, filter_metrics_full,
     tail_events,
 };
-use otap_df_admin_api::AdminClient;
-use otap_df_admin_api::telemetry::MetricsOptions;
+use otel_arrow_dfe_admin_api::AdminClient;
+use otel_arrow_dfe_admin_api::telemetry::MetricsOptions;
 use serde::Serialize;
 use std::io::Write;
 
@@ -346,7 +346,7 @@ pub(crate) async fn run(
                 &args.target.pipeline_group_id,
                 &args.target.pipeline_id,
             )?;
-            let request = otap_df_admin_api::pipelines::ReconfigureRequest {
+            let request = otel_arrow_dfe_admin_api::pipelines::ReconfigureRequest {
                 pipeline,
                 step_timeout_secs: duration_to_admin_timeout_secs(args.step_timeout),
                 drain_timeout_secs: duration_to_admin_timeout_secs(args.drain_timeout),
@@ -385,7 +385,7 @@ pub(crate) async fn run(
                 .await?;
 
             match outcome {
-                otap_df_admin_api::pipelines::ReconfigureOutcome::Accepted(status) => {
+                otel_arrow_dfe_admin_api::pipelines::ReconfigureOutcome::Accepted(status) => {
                     write_mutation_command_output(
                         stdout,
                         args.output,
@@ -411,12 +411,12 @@ pub(crate) async fn run(
                         Ok(())
                     }
                 }
-                otap_df_admin_api::pipelines::ReconfigureOutcome::Completed(status) => {
+                otel_arrow_dfe_admin_api::pipelines::ReconfigureOutcome::Completed(status) => {
                     write_mutation_command_output(stdout, args.output, "completed", &status, || {
                         Ok(render_rollout_status(&human_style, &status))
                     })
                 }
-                otap_df_admin_api::pipelines::ReconfigureOutcome::Failed(status) => {
+                otel_arrow_dfe_admin_api::pipelines::ReconfigureOutcome::Failed(status) => {
                     write_mutation_command_output(stdout, args.output, "failed", &status, || {
                         Ok(render_rollout_status(&human_style, &status))
                     })?;
@@ -425,7 +425,7 @@ pub(crate) async fn run(
                         status.rollout_id
                     )))
                 }
-                otap_df_admin_api::pipelines::ReconfigureOutcome::TimedOut(status) => {
+                otel_arrow_dfe_admin_api::pipelines::ReconfigureOutcome::TimedOut(status) => {
                     write_mutation_command_output(
                         stdout,
                         args.output,
@@ -472,7 +472,7 @@ pub(crate) async fn run(
                 .await?;
 
             match outcome {
-                otap_df_admin_api::pipelines::ShutdownOutcome::Accepted(status) => {
+                otel_arrow_dfe_admin_api::pipelines::ShutdownOutcome::Accepted(status) => {
                     write_mutation_command_output(
                         stdout,
                         args.output,
@@ -498,12 +498,12 @@ pub(crate) async fn run(
                         Ok(())
                     }
                 }
-                otap_df_admin_api::pipelines::ShutdownOutcome::Completed(status) => {
+                otel_arrow_dfe_admin_api::pipelines::ShutdownOutcome::Completed(status) => {
                     write_mutation_command_output(stdout, args.output, "completed", &status, || {
                         Ok(render_shutdown_status(&human_style, &status))
                     })
                 }
-                otap_df_admin_api::pipelines::ShutdownOutcome::Failed(status) => {
+                otel_arrow_dfe_admin_api::pipelines::ShutdownOutcome::Failed(status) => {
                     write_mutation_command_output(stdout, args.output, "failed", &status, || {
                         Ok(render_shutdown_status(&human_style, &status))
                     })?;
@@ -512,7 +512,7 @@ pub(crate) async fn run(
                         status.shutdown_id
                     )))
                 }
-                otap_df_admin_api::pipelines::ShutdownOutcome::TimedOut(status) => {
+                otel_arrow_dfe_admin_api::pipelines::ShutdownOutcome::TimedOut(status) => {
                     write_mutation_command_output(
                         stdout,
                         args.output,

@@ -11,19 +11,19 @@
 #![allow(unused_results)]
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use otap_df_contrib_nodes::exporters::azure_monitor_exporter::{Config, Transformer};
-use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
+use otel_arrow_dfe_contrib_nodes::exporters::azure_monitor_exporter::{Config, Transformer};
+use otel_arrow_dfe_pdata::views::otlp::bytes::logs::RawLogsData;
 use prost::Message;
 use serde_json::json;
 use std::collections::HashMap;
 
-use otap_df_pdata::proto::opentelemetry::common::v1::{
+use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{
     AnyValue, InstrumentationScope, KeyValue, any_value::Value as OtelAnyValueEnum,
 };
-use otap_df_pdata::proto::opentelemetry::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
-use otap_df_pdata::proto::opentelemetry::resource::v1::Resource;
+use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
+use otel_arrow_dfe_pdata::proto::opentelemetry::resource::v1::Resource;
 
-use otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
+use otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
 
 /// Attribute keys carried by every benchmarked log record.
 ///
@@ -57,7 +57,7 @@ fn attr_mapping() -> serde_json::Value {
 }
 
 fn create_config() -> Config {
-    use otap_df_contrib_nodes::exporters::azure_monitor_exporter::config::{
+    use otel_arrow_dfe_contrib_nodes::exporters::azure_monitor_exporter::config::{
         ApiConfig, HeartbeatConfig, SchemaConfig,
     };
 
@@ -82,7 +82,7 @@ fn create_config() -> Config {
 /// Config that emits every log record attribute as-is as its own top-level
 /// column (one column per attribute key) via `attributes: passthrough`.
 fn create_passthrough_config() -> Config {
-    use otap_df_contrib_nodes::exporters::azure_monitor_exporter::config::{
+    use otel_arrow_dfe_contrib_nodes::exporters::azure_monitor_exporter::config::{
         ApiConfig, HeartbeatConfig, SchemaConfig,
     };
 
@@ -222,7 +222,7 @@ fn make_request(
 /// Config that combines explicit resource/scope/field mappings with
 /// `attributes: passthrough`, exercising the collision-aware combined path.
 fn create_combined_config() -> Config {
-    use otap_df_contrib_nodes::exporters::azure_monitor_exporter::config::{
+    use otel_arrow_dfe_contrib_nodes::exporters::azure_monitor_exporter::config::{
         ApiConfig, HeartbeatConfig, SchemaConfig,
     };
 

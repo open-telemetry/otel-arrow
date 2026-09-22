@@ -4,7 +4,7 @@
 //! Compares sequential and packed exponential histogram merging.
 
 use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use otap_df_expohisto::HistogramNN;
+use otel_arrow_dfe_expohisto::HistogramNN;
 use std::hint::black_box;
 
 struct Scenario<const N: usize, const M: usize> {

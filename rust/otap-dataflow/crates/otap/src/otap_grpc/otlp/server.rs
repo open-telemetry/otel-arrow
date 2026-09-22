@@ -16,17 +16,17 @@ use crate::pdata::{Context, OtapPdata};
 use bytes::Bytes;
 use futures::future::BoxFuture;
 use http::{Request, Response};
-use otap_df_config::SignalType;
-use otap_df_engine::control::{CallData, NackMsg};
-use otap_df_engine::shared::receiver::EffectHandler;
-use otap_df_engine::{
+use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_engine::control::{CallData, NackMsg};
+use otel_arrow_dfe_engine::shared::receiver::EffectHandler;
+use otel_arrow_dfe_engine::{
     Interests, MessageSourceSharedEffectHandlerExtension, ProducerEffectHandlerExtension,
 };
-use otap_df_pdata::OtapPayload;
-use otap_df_pdata::OtlpProtoBytes;
-use otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceResponse;
-use otap_df_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceResponse;
-use otap_df_pdata::proto::opentelemetry::collector::trace::v1::ExportTraceServiceResponse;
+use otel_arrow_dfe_pdata::OtapPayload;
+use otel_arrow_dfe_pdata::OtlpProtoBytes;
+use otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceResponse;
+use otel_arrow_dfe_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceResponse;
+use otel_arrow_dfe_pdata::proto::opentelemetry::collector::trace::v1::ExportTraceServiceResponse;
 use prost::Message;
 use prost::bytes::Buf;
 use tokio::sync::oneshot;
@@ -321,13 +321,12 @@ impl UnaryService<OtapPdata> for OtapBatchService {
                     Ok(Ok(())) => {}
                     Ok(Err(nack)) => {
                         let message = format!("Pipeline processing failed: {}", nack.reason);
-                        // Permanent NACKs -> INTERNAL (non-retryable),
-                        // transient NACKs -> UNAVAILABLE (retryable).
-                        return Err(if nack.permanent {
-                            Status::internal(message)
-                        } else {
-                            Status::unavailable(message)
-                        });
+                        // Permanent client rejections -> INVALID_ARGUMENT, other permanent
+                        // failures -> INTERNAL, transient failures -> UNAVAILABLE.
+                        return Err(
+                            crate::nack_status::classify_nack(nack.permanent, nack.cause)
+                                .to_tonic_status(message),
+                        );
                     }
                     Err(_) => {
                         return Err(Status::internal("Response channel closed unexpectedly"));

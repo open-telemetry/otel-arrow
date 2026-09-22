@@ -17,6 +17,7 @@ variables:
   otelcol_image: otel/opentelemetry-collector-contrib:latest
   fluent_bit_image: fluent/fluent-bit:5.0
   rotel_image: streamfold/rotel:latest
+  kafka_image: apache/kafka:latest
 
 # Allowed values for every meta key a suite may declare. Validation rejects
 # any meta key not listed here, and any value (or list element) outside the
@@ -60,6 +61,14 @@ glossary:
     definition: OpenTelemetry Protocol - the standard row-oriented gRPC/HTTP protobuf protocol.
   - term: OTLP HTTP
     definition: OpenTelemetry Protocol over pure HTTP.
+  - term: Kafka OTLP
+    definition: Kafka-based transport using OTLP protobuf message encoding (producer -> broker -> consumer pipeline).
+  - term: Kafka OTAP
+    definition: Kafka-based transport using OTAP Arrow protobuf message encoding (producer -> broker -> consumer pipeline).
+  - term: Kafka Receiver Isolation
+    definition: Benchmark that measures only a variant's Kafka receiver. A fixed DFE Kafka exporter produces to the broker; the benchmarked receiver consumes and forwards to a DFE backend.
+  - term: Kafka Exporter Isolation
+    definition: Benchmark that measures only a variant's Kafka exporter. A DFE loadgen feeds the benchmarked exporter, which produces to the broker; a fixed DFE Kafka receiver consumes on the backend.
 
 # Display registry for dashboard metrics. Names must match the `name` field on
 # per-test metric records in published suite data; units come from those
@@ -129,6 +138,15 @@ suites:
   - suites/dfe/dfe-traces-otlphttp-none-baseline.yaml
   - suites/dfe/dfe-traces-otlphttp-gzip-baseline.yaml
   - suites/dfe/dfe-traces-otlphttp-zstd-baseline.yaml
+  # Isolated Kafka benchmarks (receiver vs exporter, logs signal).
+  - suites/dfe/dfe-logs-kafka-otlp-recv-baseline.yaml
+  - suites/dfe/dfe-logs-kafka-otlp-export-baseline.yaml
+  - suites/dfe/dfe-logs-kafka-otap-recv-baseline.yaml
+  - suites/dfe/dfe-logs-kafka-otap-export-baseline.yaml
+  # DFE Kafka exporter in-flight depth sweep (max_in_flight=1 vs the =1000
+  # baselines above), for a serial-vs-pipelined comparison.
+  - suites/dfe/dfe-logs-kafka-otlp-export-inflight1.yaml
+  - suites/dfe/dfe-logs-kafka-otap-export-inflight1.yaml
 
   # OTel Collector
   - suites/otc/otc-logs-otap-none-baseline.yaml
@@ -152,6 +170,9 @@ suites:
   - suites/otc/otc-traces-otlp-gzip-baseline.yaml
   - suites/otc/otc-traces-otlp-zstd-baseline.yaml
   - suites/otc/otc-traces-otlphttp-none-baseline.yaml
+  # Isolated Kafka benchmarks (receiver vs exporter, logs signal).
+  - suites/otc/otc-logs-kafka-otlp-recv-baseline.yaml
+  - suites/otc/otc-logs-kafka-otlp-export-baseline.yaml
   - suites/dfe/dfe-logs-otap-none-attr-insert.yaml
   - suites/dfe/dfe-logs-otlp-none-attr-insert.yaml
   - suites/dfe/dfe-logs-otap-none-transform-insert.yaml
@@ -192,6 +213,9 @@ suites:
   - suites/rotel/rotel-metrics-otlp-gzip-baseline.yaml
   - suites/rotel/rotel-metrics-otlphttp-gzip-baseline.yaml
   - suites/rotel/rotel-traces-otlp-gzip-baseline.yaml
+  # Isolated Kafka benchmarks (receiver vs exporter, logs signal).
+  - suites/rotel/rotel-logs-kafka-otlp-recv-baseline.yaml
+  - suites/rotel/rotel-logs-kafka-otlp-export-baseline.yaml
 
   # Fluent Bit
   - suites/fbit/fbit-logs-otlp-none-baseline.yaml

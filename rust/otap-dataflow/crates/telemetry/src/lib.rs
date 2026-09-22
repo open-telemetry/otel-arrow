@@ -29,9 +29,9 @@ use crate::error::Error;
 use crate::event::{ObservedEvent, ObservedEventReporter};
 use crate::registry::TelemetryRegistryHandle;
 use log_filter::{RuntimeLogFilter, RuntimeLogFilterHandle};
-use otap_df_config::observed_state::SendPolicy;
-use otap_df_config::pipeline::telemetry::TelemetryConfig;
-use otap_df_config::settings::telemetry::logs::{LogLevel, LoggingProviders, ProviderMode};
+use otel_arrow_dfe_config::observed_state::SendPolicy;
+use otel_arrow_dfe_config::pipeline::telemetry::TelemetryConfig;
+use otel_arrow_dfe_config::settings::telemetry::logs::{LogLevel, LoggingProviders, ProviderMode};
 use self_tracing::LogContextFn;
 use std::sync::Arc;
 use tracing_init::ProviderSetup;
@@ -61,6 +61,7 @@ pub mod semconv;
 pub mod tracing_init;
 
 // Re-export tracing setup types for per-thread subscriber configuration.
+pub use otel_arrow_dfe_telemetry_macros::otel_component_scope;
 pub use tracing_init::TracingSetup;
 
 #[cfg(test)]
@@ -127,7 +128,7 @@ where
 #[doc(hidden)]
 pub use internal_events::_private;
 
-// Re-export tracing::Level so callers can use otap_df_telemetry::Level without
+// Re-export tracing::Level so callers can use otel_arrow_dfe_telemetry::Level without
 // adding tracing as a direct dependency.
 pub use tracing::Level;
 
@@ -145,7 +146,7 @@ pub use tracing::warn_span as otel_warn_span;
 pub use self_tracing::LogContext;
 
 /// The URN for the internal telemetry receiver.
-pub use otap_df_config::engine::INTERNAL_TELEMETRY_RECEIVER_URN;
+pub use otel_arrow_dfe_config::engine::INTERNAL_TELEMETRY_RECEIVER_URN;
 
 /// Settings for internal telemetry consumption by the Internal Telemetry Receiver.
 ///
@@ -284,7 +285,7 @@ impl InternalTelemetrySystem {
             )
         };
 
-        let (log_filter, log_filter_handle) = RuntimeLogFilter::new(&config.logs.level);
+        let (log_filter, log_filter_handle) = RuntimeLogFilter::new(config.logs.level.as_ref());
 
         Ok(Self {
             registry: telemetry_registry,
@@ -380,13 +381,10 @@ impl InternalTelemetrySystem {
         &self.its_reporter
     }
 
-    /// Returns the desired configured log level.
-    ///
-    /// Before the first reconciliation this may differ from the effective startup
-    /// filter when `RUST_LOG` supplied that filter.
+    /// Returns the effective log level installed in tracing filters.
     #[must_use]
     pub fn log_level(&self) -> LogLevel {
-        self.log_filter.configured_level()
+        self.log_filter.effective_level()
     }
 
     /// Returns the handle for applying runtime log-level configuration.
@@ -438,11 +436,11 @@ impl Default for InternalTelemetrySystem {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_config::pipeline::telemetry::AttributeValue as ConfigAttributeValue;
-    use otap_df_config::settings::telemetry::logs::{
+    use otel_arrow_dfe_config::pipeline::telemetry::AttributeValue as ConfigAttributeValue;
+    use otel_arrow_dfe_config::settings::telemetry::logs::{
         InternalLogTapConfig, LoggingProviders, LogsConfig, ProviderMode,
     };
-    use otap_df_pdata::proto::opentelemetry::logs::v1::ResourceLogs;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::ResourceLogs;
     use prost::Message;
     use std::time::Duration;
 
@@ -475,16 +473,41 @@ mod tests {
     }
 
     /// Scenario: runtime reconciliation changes the shared internal log filter.
-    /// Guarantees: InternalTelemetrySystem reports the current configured level.
+    /// Guarantees: InternalTelemetrySystem reports the current effective level.
     #[test]
     fn log_level_follows_runtime_filter_updates() {
         with_cleared_rust_log(|| {
             let its = test_system(&TelemetryConfig::default());
             let level: LogLevel = serde_yaml::from_str("debug").expect("valid log level");
 
-            its.log_filter_handle().apply(&level);
+            its.log_filter_handle().apply(Some(&level));
 
             assert_eq!(its.log_level(), level);
+        });
+    }
+
+    /// Scenario: RUST_LOG is set and the telemetry configuration omits logs.level.
+    /// Guarantees: InternalTelemetrySystem installs the captured environment directive.
+    #[test]
+    fn omitted_log_level_uses_rust_log() {
+        with_rust_log(Some("debug"), || {
+            let its = test_system(&TelemetryConfig::default());
+
+            assert_eq!(its.log_level().as_str(), "debug");
+        });
+    }
+
+    /// Scenario: telemetry configuration explicitly sets logs.level while RUST_LOG is present.
+    /// Guarantees: InternalTelemetrySystem installs the explicit configuration immediately.
+    #[test]
+    fn explicit_log_level_overrides_rust_log() {
+        with_rust_log(Some("debug"), || {
+            let mut config = TelemetryConfig::default();
+            config.logs.level =
+                Some(serde_yaml::from_str("info").expect("explicit level should parse"));
+            let its = test_system(&config);
+
+            assert_eq!(its.log_level().as_str(), "info");
         });
     }
 
@@ -677,7 +700,7 @@ mod tests {
                 .as_ref()
                 .and_then(|value| value.value.as_ref()),
             Some(
-                &otap_df_pdata::proto::opentelemetry::common::v1::any_value::Value::StringValue(
+                &otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::any_value::Value::StringValue(
                     "my-test-service".to_owned()
                 )
             )

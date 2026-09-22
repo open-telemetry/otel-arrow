@@ -5,14 +5,14 @@ use super::*;
 use crate::receivers::host_metrics_receiver::semconv::{attr, metric};
 use crate::receivers::host_metrics_receiver::{ProcessLabelsConfig, ProcessMetricsConfig};
 #[cfg(feature = "dev-tools")]
-use otap_df_pdata::proto::opentelemetry::common::v1::AnyValue;
-use otap_df_pdata::proto::opentelemetry::common::v1::{KeyValue, any_value};
+use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::AnyValue;
+use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{KeyValue, any_value};
 #[cfg(feature = "dev-tools")]
-use otap_df_pdata::proto::opentelemetry::metrics::v1::NumberDataPoint;
-use otap_df_pdata::proto::opentelemetry::metrics::v1::{
+use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::NumberDataPoint;
+use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::{
     AggregationTemporality, Metric, MetricsData, metric as otlp_metric, number_data_point,
 };
-use otap_df_pdata::testing::round_trip::decode_metrics;
+use otel_arrow_dfe_pdata::testing::round_trip::decode_metrics;
 use projection::{CounterStarts, counter_key, counter_key_joined, counter_key_matches_joined};
 #[cfg(feature = "dev-tools")]
 use std::collections::{BTreeMap, BTreeSet};

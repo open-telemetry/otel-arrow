@@ -3,7 +3,7 @@
 
 //! Per-request context handed to an admission gate.
 
-use otap_df_config::SignalType;
+use otel_arrow_dfe_config::SignalType;
 
 /// Transport-neutral, borrow-only context describing one admission request.
 ///

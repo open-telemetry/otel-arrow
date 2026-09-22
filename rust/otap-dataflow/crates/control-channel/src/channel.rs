@@ -57,7 +57,7 @@ use tokio::sync::Notify;
 use tokio::time::{Instant as TokioInstant, Sleep, sleep_until};
 
 // TODO: Consider deduplicating the keyed blocked-sender waiter logic with
-// `otap-df-channel` by extracting a shared `sender_waiters.rs` there.
+// `otel-arrow-dfe-channel` by extracting a shared `sender_waiters.rs` there.
 // The current `mpsc` and `mpmc` waiters carry the same tombstone pattern;
 // this crate fixes it locally first to keep this PR isolated.
 //
@@ -186,24 +186,24 @@ impl SenderWaiters {
     }
 
     fn register_or_refresh(&mut self, waiter_key: &mut Option<SenderWaiterKey>, waker: &Waker) {
-        if let Some(existing_key) = *waiter_key {
-            if let Some(slot) = self.slots.get_mut(existing_key.index) {
-                if slot.in_use && slot.generation == existing_key.generation {
-                    if slot
-                        .waker
-                        .as_ref()
-                        .is_none_or(|existing| !existing.will_wake(waker))
-                    {
-                        slot.waker = Some(waker.clone());
-                    }
-                    if !slot.queued {
-                        slot.queued = true;
-                        self.queue.push_back(existing_key);
-                        self.queued_live += 1;
-                    }
-                    return;
-                }
+        if let Some(existing_key) = *waiter_key
+            && let Some(slot) = self.slots.get_mut(existing_key.index)
+            && slot.in_use
+            && slot.generation == existing_key.generation
+        {
+            if slot
+                .waker
+                .as_ref()
+                .is_none_or(|existing| !existing.will_wake(waker))
+            {
+                slot.waker = Some(waker.clone());
             }
+            if !slot.queued {
+                slot.queued = true;
+                self.queue.push_back(existing_key);
+                self.queued_live += 1;
+            }
+            return;
         }
 
         let index = if let Some(index) = self.free_slots.pop() {
@@ -282,7 +282,7 @@ struct State<PData, Meta = ()> {
     /// bounded FIFO subset of blocked senders without waking every waiter.
     ///
     /// The keyed waiter-slot structure is adapted from the local MPSC channel
-    /// in `otap-df-channel`. The reuse is intentionally narrow: only the
+    /// in `otel-arrow-dfe-channel`. The reuse is intentionally narrow: only the
     /// blocked-sender waiting mechanism is borrowed here, while control
     /// admission and delivery remain specific to `Inner`.
     sender_waiters: RefCell<Option<SenderWaiters>>,
@@ -573,14 +573,14 @@ impl<PData, Meta> Future for SendFuture<'_, PData, Meta> {
                 if needs_reset {
                     this.deadline_sleep = Some(Box::pin(sleep_until(deadline)));
                 }
-                if let Some(sleep) = this.deadline_sleep.as_mut() {
-                    if sleep.as_mut().poll(cx).is_ready() {
-                        this.deadline_sleep = None;
-                        if let Some(waiter_key) = this.waiter_key.take() {
-                            this.sender.state.unregister_sender_waiter(waiter_key);
-                        }
-                        continue;
+                if let Some(sleep) = this.deadline_sleep.as_mut()
+                    && sleep.as_mut().poll(cx).is_ready()
+                {
+                    this.deadline_sleep = None;
+                    if let Some(waiter_key) = this.waiter_key.take() {
+                        this.sender.state.unregister_sender_waiter(waiter_key);
                     }
+                    continue;
                 }
             } else {
                 this.deadline_sleep = None;

@@ -9,8 +9,8 @@ use crate::local::message::{LocalReceiver, LocalSender};
 use crate::node_local_scheduler::NodeLocalSchedulerHandle;
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::{Interests, ReceivedAtNode};
-use otap_df_channel::error::{RecvError, SendError};
-use otap_df_channel::mpsc;
+use otel_arrow_dfe_channel::error::{RecvError, SendError};
+use otel_arrow_dfe_channel::mpsc;
 use std::future::Future;
 use std::ops::Add;
 use std::time::{Duration, Instant};
@@ -416,15 +416,13 @@ where
                     .as_ref()
                     .expect("pdata_rx must exist")
                     .is_empty()
-            {
-                if let Err(RecvError::Closed) = self
+                && let Err(RecvError::Closed) = self
                     .pdata_rx
                     .as_mut()
                     .expect("pdata_rx must exist")
                     .try_recv()
-                {
-                    return Ok(self.closed_pdata_shutdown());
-                }
+            {
+                return Ok(self.closed_pdata_shutdown());
             }
 
             // Draining mode: Shutdown pending
@@ -888,7 +886,7 @@ mod tests {
     use crate::WakeupError;
     use crate::local::message::LocalReceiver;
     use crate::testing::TestMsg;
-    use otap_df_channel::mpsc;
+    use otel_arrow_dfe_channel::mpsc;
     use std::time::Duration;
 
     fn local_processor_inbox(
@@ -915,7 +913,7 @@ mod tests {
     /// Scenario: a processor-local delayed resume is scheduled for immediate
     /// delivery while the processor inbox is otherwise idle.
     /// Guarantees: the inbox surfaces the due retained payload as
-    /// `NodeControlMsg::DelayedData` with the original deadline and payload.
+    /// `NodeControlMsg::ResumeData` with the original deadline and payload.
     #[tokio::test]
     async fn processor_inbox_emits_due_delayed_resume_as_control_message() {
         let (_control_tx, _pdata_tx, scheduler, mut inbox) = local_processor_inbox(4);
@@ -930,7 +928,7 @@ mod tests {
             .expect("message should arrive");
         assert!(matches!(
             message,
-            Message::Control(NodeControlMsg::DelayedData { when: observed, data })
+            Message::Control(NodeControlMsg::ResumeData { when: observed, data })
                 if observed == when && *data == TestMsg::new("delayed")
         ));
     }
@@ -990,7 +988,7 @@ mod tests {
                     saw_pdata = true;
                     break;
                 }
-                Message::Control(NodeControlMsg::DelayedData { .. }) => {
+                Message::Control(NodeControlMsg::ResumeData { .. }) => {
                     delayed += 1;
                 }
                 other => panic!("unexpected message {other:?}"),
@@ -1165,7 +1163,7 @@ mod tests {
     /// Scenario: shutdown is latched while the processor-local scheduler still
     /// holds a future delayed resume.
     /// Guarantees: pending delayed resumes become immediately available as
-    /// `DelayedData` control traffic before the latched shutdown is delivered.
+    /// `ResumeData` control traffic before the latched shutdown is delivered.
     #[tokio::test]
     async fn processor_inbox_returns_pending_delayed_resumes_on_shutdown_latch() {
         let (control_tx, _pdata_tx, scheduler, mut inbox) = local_processor_inbox(4);
@@ -1202,7 +1200,7 @@ mod tests {
             .expect("delayed resume should return immediately during shutdown");
         assert!(matches!(
             resumed,
-            Message::Control(NodeControlMsg::DelayedData { when, data })
+            Message::Control(NodeControlMsg::ResumeData { when, data })
                 if when < original_when && *data == TestMsg::new("delayed")
         ));
 

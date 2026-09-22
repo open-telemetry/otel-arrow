@@ -15,10 +15,123 @@ use quote::{format_ident, quote};
 use std::collections::HashSet;
 use syn::parse_quote;
 use syn::{
-    Attribute, Data, DeriveInput, Fields, ItemStruct, LitStr, parse_macro_input, spanned::Spanned,
+    Attribute, Data, DeriveInput, Fields, ItemStruct, LitStr, Token, parse_macro_input,
+    spanned::Spanned,
 };
 
-/// Derive implementation of `otap_df_telemetry::metrics::MetricSetHandler` for a struct.
+struct ComponentTelemetryScopeArgs {
+    urn: syn::Expr,
+    target: LitStr,
+}
+
+impl syn::parse::Parse for ComponentTelemetryScopeArgs {
+    fn parse(input: syn::parse::ParseStream<'_>) -> syn::Result<Self> {
+        let mut urn = None;
+        let mut target = None;
+
+        while !input.is_empty() {
+            let key: syn::Ident = input.parse()?;
+            let _ = input.parse::<Token![=]>()?;
+
+            if key == "urn" {
+                if urn.is_some() {
+                    return Err(syn::Error::new(key.span(), "duplicate `urn` argument"));
+                }
+                urn = Some(input.parse()?);
+            } else if key == "target" {
+                if target.is_some() {
+                    return Err(syn::Error::new(key.span(), "duplicate `target` argument"));
+                }
+                target = Some(input.parse()?);
+            } else {
+                return Err(syn::Error::new(
+                    key.span(),
+                    "unsupported argument; expected `urn` or `target`",
+                ));
+            }
+
+            if input.is_empty() {
+                break;
+            }
+            let _ = input.parse::<Token![,]>()?;
+        }
+
+        Ok(Self {
+            urn: urn.ok_or_else(|| input.error("missing `urn` argument"))?,
+            target: target.ok_or_else(|| input.error("missing `target` argument"))?,
+        })
+    }
+}
+
+/// Binds the `otel_*` event macros in the current module subtree to one
+/// registered component target.
+///
+/// The target is compile-time checked against `urn`. It is the URN without the
+/// `urn:` prefix and with colon separators replaced by dots.
+#[proc_macro]
+pub fn otel_component_scope(input: TokenStream) -> TokenStream {
+    let ComponentTelemetryScopeArgs { urn, target } =
+        parse_macro_input!(input as ComponentTelemetryScopeArgs);
+    let telemetry = quote!(::otel_arrow_dfe_telemetry);
+
+    quote! {
+        const _: () = #telemetry::_private::validate_component_target(#urn, #target);
+
+        #[allow(unused_macros)]
+        macro_rules! otel_debug {
+            ($($tokens:tt)*) => {
+                #telemetry::otel_debug!(
+                    target: #target,
+                    $($tokens)*
+                )
+            };
+        }
+
+        #[allow(unused_macros)]
+        macro_rules! otel_info {
+            ($($tokens:tt)*) => {
+                #telemetry::otel_info!(
+                    target: #target,
+                    $($tokens)*
+                )
+            };
+        }
+
+        #[allow(unused_macros)]
+        macro_rules! otel_warn {
+            ($($tokens:tt)*) => {
+                #telemetry::otel_warn!(
+                    target: #target,
+                    $($tokens)*
+                )
+            };
+        }
+
+        #[allow(unused_macros)]
+        macro_rules! otel_error {
+            ($($tokens:tt)*) => {
+                #telemetry::otel_error!(
+                    target: #target,
+                    $($tokens)*
+                )
+            };
+        }
+
+        #[allow(unused_macros)]
+        macro_rules! otel_event {
+            ($($tokens:tt)*) => {
+                #telemetry::otel_event!(
+                    target: #target,
+                    $($tokens)*
+                )
+            };
+        }
+
+    }
+    .into()
+}
+
+/// Derive implementation of `otel_arrow_dfe_telemetry::metrics::MetricSetHandler` for a struct.
 ///
 /// Container attribute:
 ///   - `#[metrics(name = "my.metrics.name")]`
@@ -91,18 +204,16 @@ pub fn derive_metric_set_handler(input: TokenStream) -> TokenStream {
         // Collect doc comments for brief (concatenate all lines)
         let mut brief_lines: Vec<String> = Vec::new();
         for attr in &field.attrs {
-            if attr.meta.path().is_ident("doc") {
-                if let syn::Meta::NameValue(nv) = &attr.meta {
-                    if let syn::Expr::Lit(syn::ExprLit {
-                        lit: syn::Lit::Str(ls),
-                        ..
-                    }) = &nv.value
-                    {
-                        let line = ls.value().trim().to_string();
-                        if !line.is_empty() {
-                            brief_lines.push(line);
-                        }
-                    }
+            if attr.meta.path().is_ident("doc")
+                && let syn::Meta::NameValue(nv) = &attr.meta
+                && let syn::Expr::Lit(syn::ExprLit {
+                    lit: syn::Lit::Str(ls),
+                    ..
+                }) = &nv.value
+            {
+                let line = ls.value().trim().to_string();
+                if !line.is_empty() {
+                    brief_lines.push(line);
                 }
             }
         }
@@ -139,18 +250,22 @@ pub fn derive_metric_set_handler(input: TokenStream) -> TokenStream {
                             // Handle Mmsc separately -- it has no generic type parameter.
                             if ident_ty == "Mmsc" {
                                 (
-                                    quote!(otap_df_telemetry::descriptor::Instrument::Mmsc),
-                                    quote!(Some(otap_df_telemetry::descriptor::Temporality::Delta)),
-                                    quote!(otap_df_telemetry::descriptor::MetricValueType::F64),
+                                    quote!(otel_arrow_dfe_telemetry::descriptor::Instrument::Mmsc),
+                                    quote!(Some(
+                                        otel_arrow_dfe_telemetry::descriptor::Temporality::Delta
+                                    )),
+                                    quote!(
+                                        otel_arrow_dfe_telemetry::descriptor::MetricValueType::F64
+                                    ),
                                     ident_ty,
                                 )
                             } else if ident_ty == "HistogramNormal"
                                 || ident_ty == "HistogramDetailed"
                             {
                                 (
-                                    quote!(otap_df_telemetry::descriptor::Instrument::ExponentialHistogram),
-                                    quote!(Some(otap_df_telemetry::descriptor::Temporality::Delta)),
-                                    quote!(otap_df_telemetry::descriptor::MetricValueType::F64),
+                                    quote!(otel_arrow_dfe_telemetry::descriptor::Instrument::ExponentialHistogram),
+                                    quote!(Some(otel_arrow_dfe_telemetry::descriptor::Temporality::Delta)),
+                                    quote!(otel_arrow_dfe_telemetry::descriptor::MetricValueType::F64),
                                     ident_ty,
                                 )
                             } else {
@@ -170,14 +285,14 @@ pub fn derive_metric_set_handler(input: TokenStream) -> TokenStream {
                                                 p,
                                             ))) if p.path.is_ident("u64") => {
                                                 quote!(
-                                                otap_df_telemetry::descriptor::MetricValueType::U64
+                                                otel_arrow_dfe_telemetry::descriptor::MetricValueType::U64
                                             )
                                             }
                                             Some(syn::GenericArgument::Type(syn::Type::Path(
                                                 p,
                                             ))) if p.path.is_ident("f64") => {
                                                 quote!(
-                                                otap_df_telemetry::descriptor::MetricValueType::F64
+                                                otel_arrow_dfe_telemetry::descriptor::MetricValueType::F64
                                             )
                                             }
                                             _ => {
@@ -203,35 +318,35 @@ pub fn derive_metric_set_handler(input: TokenStream) -> TokenStream {
                                     .as_str()
                                 {
                                     "Counter" => (
-                                        quote!(otap_df_telemetry::descriptor::Instrument::Counter),
+                                        quote!(otel_arrow_dfe_telemetry::descriptor::Instrument::Counter),
                                         quote!(Some(
-                                            otap_df_telemetry::descriptor::Temporality::Delta
+                                            otel_arrow_dfe_telemetry::descriptor::Temporality::Delta
                                         )),
                                     ),
                                     "ObserveCounter" => (
-                                        quote!(otap_df_telemetry::descriptor::Instrument::Counter),
+                                        quote!(otel_arrow_dfe_telemetry::descriptor::Instrument::Counter),
                                         quote!(Some(
-                                            otap_df_telemetry::descriptor::Temporality::Cumulative
+                                            otel_arrow_dfe_telemetry::descriptor::Temporality::Cumulative
                                         )),
                                     ),
                                     "UpDownCounter" => (
                                         quote!(
-                                        otap_df_telemetry::descriptor::Instrument::UpDownCounter
+                                        otel_arrow_dfe_telemetry::descriptor::Instrument::UpDownCounter
                                     ),
                                         quote!(Some(
-                                            otap_df_telemetry::descriptor::Temporality::Cumulative
+                                            otel_arrow_dfe_telemetry::descriptor::Temporality::Cumulative
                                         )),
                                     ),
                                     "ObserveUpDownCounter" => (
                                         quote!(
-                                        otap_df_telemetry::descriptor::Instrument::UpDownCounter
+                                        otel_arrow_dfe_telemetry::descriptor::Instrument::UpDownCounter
                                     ),
                                         quote!(Some(
-                                            otap_df_telemetry::descriptor::Temporality::Cumulative
+                                            otel_arrow_dfe_telemetry::descriptor::Temporality::Cumulative
                                         )),
                                     ),
                                     "Gauge" => (
-                                        quote!(otap_df_telemetry::descriptor::Instrument::Gauge),
+                                        quote!(otel_arrow_dfe_telemetry::descriptor::Instrument::Gauge),
                                         quote!(None),
                                     ),
                                     other => {
@@ -279,7 +394,7 @@ pub fn derive_metric_set_handler(input: TokenStream) -> TokenStream {
                 "Counter" => {
                     metric_field_clear_stmts.push(quote!( self.#field_ident.reset(); ));
                     metric_field_needs_flush_checks.push(quote!(
-                        if !otap_df_telemetry::metrics::MetricValue::from(self.#field_ident.get()).is_zero() {
+                        if !otel_arrow_dfe_telemetry::metrics::MetricValue::from(self.#field_ident.get()).is_zero() {
                             return true;
                         }
                     ));
@@ -303,12 +418,12 @@ pub fn derive_metric_set_handler(input: TokenStream) -> TokenStream {
     let desc_ident = format_ident!("DESCRIPTOR");
 
     let generated = quote! {
-        impl #generics otap_df_telemetry::metrics::MetricSetHandler for #struct_ident #generics {
-            fn descriptor(&self) -> &'static otap_df_telemetry::descriptor::MetricsDescriptor {
-                static #desc_ident: otap_df_telemetry::descriptor::MetricsDescriptor = otap_df_telemetry::descriptor::MetricsDescriptor {
+        impl #generics otel_arrow_dfe_telemetry::metrics::MetricSetHandler for #struct_ident #generics {
+            fn descriptor(&self) -> &'static otel_arrow_dfe_telemetry::descriptor::MetricsDescriptor {
+                static #desc_ident: otel_arrow_dfe_telemetry::descriptor::MetricsDescriptor = otel_arrow_dfe_telemetry::descriptor::MetricsDescriptor {
                     name: #metrics_name,
                     metrics: &[
-                            #( otap_df_telemetry::descriptor::MetricsField {
+                            #( otel_arrow_dfe_telemetry::descriptor::MetricsField {
                                 name: #metric_field_names,
                                 unit: #metric_field_units,
                                 brief: #metric_field_briefs,
@@ -320,9 +435,9 @@ pub fn derive_metric_set_handler(input: TokenStream) -> TokenStream {
                     };
                 &#desc_ident
             }
-            fn snapshot_values(&self) -> ::std::vec::Vec<otap_df_telemetry::metrics::MetricValue> {
+            fn snapshot_values(&self) -> ::std::vec::Vec<otel_arrow_dfe_telemetry::metrics::MetricValue> {
                 let mut out = ::std::vec::Vec::with_capacity(self.descriptor().metrics.len());
-                #( out.push(otap_df_telemetry::metrics::MetricValue::from(self.#metric_field_idents.get())); )*
+                #( out.push(otel_arrow_dfe_telemetry::metrics::MetricValue::from(self.#metric_field_idents.get())); )*
                 out
             }
             fn clear_values(&mut self) {
@@ -341,7 +456,7 @@ pub fn derive_metric_set_handler(input: TokenStream) -> TokenStream {
     generated.into()
 }
 
-/// Derive implementation of `otap_df_telemetry::attributes::AttributeSetHandler` for a struct.
+/// Derive implementation of `otel_arrow_dfe_telemetry::attributes::AttributeSetHandler` for a struct.
 ///
 /// Container attribute:
 ///   - `#[attributes(name = "my.attributes.name")]`
@@ -445,18 +560,16 @@ pub fn derive_attribute_set_handler(input: TokenStream) -> TokenStream {
         // Collect doc comments for description (concatenate all lines)
         let mut desc_lines: Vec<String> = Vec::new();
         for attr in &field.attrs {
-            if attr.meta.path().is_ident("doc") {
-                if let syn::Meta::NameValue(nv) = &attr.meta {
-                    if let syn::Expr::Lit(syn::ExprLit {
-                        lit: syn::Lit::Str(ls),
-                        ..
-                    }) = &nv.value
-                    {
-                        let line = ls.value().trim().to_string();
-                        if !line.is_empty() {
-                            desc_lines.push(line);
-                        }
-                    }
+            if attr.meta.path().is_ident("doc")
+                && let syn::Meta::NameValue(nv) = &attr.meta
+                && let syn::Expr::Lit(syn::ExprLit {
+                    lit: syn::Lit::Str(ls),
+                    ..
+                }) = &nv.value
+            {
+                let line = ls.value().trim().to_string();
+                if !line.is_empty() {
+                    desc_lines.push(line);
                 }
             }
         }
@@ -706,14 +819,14 @@ pub fn derive_attribute_set_handler(input: TokenStream) -> TokenStream {
 }
 
 /// Returns the path prefix used to reference the telemetry crate from generated
-/// code: `crate` when expanding inside `otap-df-telemetry` itself, and
-/// `::otap_df_telemetry` for every downstream crate.
+/// code: `crate` when expanding inside `otel-arrow-dfe-telemetry` itself, and
+/// `::otel_arrow_dfe_telemetry` for every downstream crate.
 fn telemetry_crate_root() -> proc_macro2::TokenStream {
     let crate_name = std::env::var("CARGO_PKG_NAME").unwrap_or_default();
-    if crate_name == "otap-df-telemetry" {
+    if crate_name == "otel-arrow-dfe-telemetry" {
         quote!(crate)
     } else {
-        quote!(::otap_df_telemetry)
+        quote!(::otel_arrow_dfe_telemetry)
     }
 }
 
@@ -738,7 +851,7 @@ fn to_snake_case(ident: &str) -> String {
     out
 }
 
-/// Derive implementation of `otap_df_telemetry::attributes::AttributeEnum` for a
+/// Derive implementation of `otel_arrow_dfe_telemetry::attributes::AttributeEnum` for a
 /// unit-only enum.
 ///
 /// Each variant's string form defaults to the `snake_case` of its identifier and
@@ -789,16 +902,14 @@ pub fn derive_attribute_enum(input: TokenStream) -> TokenStream {
         // Optional `#[attribute_value = "..."]` override for the variant string.
         let mut override_val: Option<String> = None;
         for attr in &variant.attrs {
-            if attr.path().is_ident("attribute_value") {
-                if let syn::Meta::NameValue(nv) = &attr.meta {
-                    if let syn::Expr::Lit(syn::ExprLit {
-                        lit: syn::Lit::Str(s),
-                        ..
-                    }) = &nv.value
-                    {
-                        override_val = Some(s.value());
-                    }
-                }
+            if attr.path().is_ident("attribute_value")
+                && let syn::Meta::NameValue(nv) = &attr.meta
+                && let syn::Expr::Lit(syn::ExprLit {
+                    lit: syn::Lit::Str(s),
+                    ..
+                }) = &nv.value
+            {
+                override_val = Some(s.value());
             }
         }
 
@@ -833,7 +944,7 @@ pub fn derive_attribute_enum(input: TokenStream) -> TokenStream {
 /// Attribute macro that injects `#[repr(C, align(64))]` and wires up the MetricSetHandler derive
 /// and descriptor name via a container attribute.
 /// Usage:
-///   #[otap_df_telemetry_macros::metric_set(name = "my")]
+///   #[otel_arrow_dfe_telemetry_macros::metric_set(name = "my")]
 ///   pub struct MyMetrics { #[metric(name = "x", unit = "{unit}")] x: Counter<u64>, ... }
 #[proc_macro_attribute]
 pub fn metric_set(attr: TokenStream, item: TokenStream) -> TokenStream {
@@ -897,7 +1008,7 @@ pub fn metric_set(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     // Ensure the MetricSetHandler derive is attached
     let derive_attr: Attribute =
-        parse_quote!(#[derive(otap_df_telemetry_macros::MetricSetHandler)]);
+        parse_quote!(#[derive(otel_arrow_dfe_telemetry_macros::MetricSetHandler)]);
     s.attrs.push(derive_attr);
 
     // Add container descriptor attribute consumed by the derive
@@ -1147,7 +1258,7 @@ pub fn attribute_set(attr: TokenStream, item: TokenStream) -> TokenStream {
     // All item attribute sets implement AttributeSetHandler so future signal
     // emitters can serialize their values without depending on metric buckets.
     let derive_attr: Attribute =
-        parse_quote!(#[derive(otap_df_telemetry_macros::AttributeSetHandler)]);
+        parse_quote!(#[derive(otel_arrow_dfe_telemetry_macros::AttributeSetHandler)]);
     s.attrs.push(derive_attr);
 
     // Add container descriptor attribute consumed by the derive
@@ -1325,6 +1436,35 @@ fn parse_attribute_field_attr(attr: &Attribute) -> syn::Result<Option<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Scenario: component telemetry scope arguments are supplied in either possible order.
+    /// Guarantees: named arguments parse independently of their source order.
+    #[test]
+    fn component_telemetry_scope_arguments_accept_any_order() {
+        let permutations = [
+            r#"urn = COMPONENT_URN, target = "otel.processor.transform""#,
+            r#"target = "otel.processor.transform", urn = COMPONENT_URN"#,
+        ];
+
+        for arguments in permutations {
+            let parsed = syn::parse_str::<ComponentTelemetryScopeArgs>(arguments)
+                .expect("named component telemetry scope arguments should parse in any order");
+            assert_eq!(parsed.target.value(), "otel.processor.transform");
+        }
+    }
+
+    /// Scenario: a component telemetry scope repeats one named argument.
+    /// Guarantees: duplicate arguments are rejected instead of silently replacing a value.
+    #[test]
+    fn component_telemetry_scope_arguments_reject_duplicates() {
+        let err = syn::parse_str::<ComponentTelemetryScopeArgs>(
+            r#"urn = COMPONENT_URN, target = "otel.processor.transform", target = "otel.exporter.transform""#,
+        )
+        .err()
+        .expect("duplicate component telemetry scope arguments should fail");
+
+        assert_eq!(err.to_string(), "duplicate `target` argument");
+    }
 
     /// Scenario: A metric field declares the supported name and unit arguments.
     /// Guarantees: The parser returns both values without an error.

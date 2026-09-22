@@ -3,7 +3,7 @@
 
 //! Definition of all states/phases that a pipeline can be in.
 
-use otap_df_config::health::PhaseKind;
+use otel_arrow_dfe_config::health::PhaseKind;
 use serde::Serialize;
 use std::fmt;
 use std::fmt::Display;

@@ -11,7 +11,7 @@ use crate::error::Error;
 use crate::error::Error::InvalidTransition;
 use crate::phase::{DeletionMode, FailReason, PipelinePhase};
 use chrono::{DateTime, Utc};
-use otap_df_telemetry::event::{
+use otel_arrow_dfe_telemetry::event::{
     EngineEvent, ErrorEvent as ErrEv, ErrorSummary, EventType, ObservedEvent, RequestEvent as Req,
     SuccessEvent as OkEv,
 };
@@ -599,7 +599,7 @@ impl Serialize for PipelineRuntimeStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_telemetry::event::{
+    use otel_arrow_dfe_telemetry::event::{
         ErrorEvent as ErrEv, ErrorSummary, RequestEvent as Req, SuccessEvent as OkEv,
     };
 

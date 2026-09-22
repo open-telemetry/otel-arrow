@@ -6,7 +6,7 @@ use crate::Interests;
 use crate::control::NodeControlMsg;
 use crate::message::{ExporterInbox, Message, ProcessorInbox, Receiver};
 use crate::testing::dst::common::setup_dst_runtime;
-use otap_df_channel::mpsc;
+use otel_arrow_dfe_channel::mpsc;
 use std::time::Duration;
 
 // Seeded inbox sweep covering the three behaviors that matter for the

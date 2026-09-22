@@ -128,10 +128,10 @@ dependency bumps):
 - Apply the `skipchangelog` label (for maintainers).
 - Documentation-only PRs (all changed files are under a `docs/` or `rfcs/`
   directory).
-- PRs confined to `rust/experimental/` -- those crates are not released and
-  ship no `CHANGELOG.md`, so there is no changelog to write an entry into. A
+- PRs confined to `rust/contrib/` -- those independently scoped projects ship
+  no repository changelog, so there is no changelog to write an entry into. A
   PR that also touches a released module (for example `rust/otap-dataflow/`)
-  is *not* exempt, even if the bulk of the change is experimental.
+  is *not* exempt, even if the bulk of the change is under `rust/contrib/`.
 - For dependency-update PRs: Renovate auto-applies the `dependencies` label
   and bot-authored PRs are exempt.
 
@@ -242,6 +242,18 @@ work on an open issue - is described in
 [ISSUE_TRIAGE.md](./ISSUE_TRIAGE.md).
 
 ## Our Development Process
+
+### Code review is shared work
+
+Reviewing is part of contributing, not work reserved for approvers and
+maintainers. Regular contributors should budget time to review peer changes,
+and reviews from non-approvers are encouraged and treated as meaningful
+technical input.
+
+Component ownership metadata identifies contributors who can provide domain
+review for OTAP Dataflow crates and nodes. An approver or maintainer approval
+is still required to merge. See the [code review policy](./CODE_REVIEW.md) for
+review expectations, role boundaries, and ownership maintenance.
 
 ### How to Receive Comments
 
@@ -406,6 +418,7 @@ repository](https://github.com/open-telemetry/community/blob/main/guides/contrib
 
 ### Approvers
 
+- [Aaron Marten](https://github.com/AaronRM), Microsoft
 - [Cijo Thomas](https://github.com/cijothomas), Microsoft
 
 For more information about the approver role, see the [community
@@ -419,7 +432,6 @@ repository](https://github.com/open-telemetry/community/blob/main/guides/contrib
 
 ### Triagers
 
-- [Aaron Marten](https://github.com/AaronRM), Microsoft
 - [Tom Tan](https://github.com/ThomsonTan), Microsoft
 
 For more information about the triager role, see the [community

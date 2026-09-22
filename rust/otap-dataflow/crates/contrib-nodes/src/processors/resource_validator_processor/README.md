@@ -3,7 +3,7 @@
 ## Metadata
 
 - Type: `processor:resource_validator` (`urn:otel:processor:resource_validator`)
-- Feature gate: `resource-validator-processor`
+- Feature gate: `resource-validator`
 - Stability: Experimental
 
 ## Overview
@@ -77,9 +77,11 @@ config:
 | Attribute wrong type (not string)            | Permanent NACK            |
 | Attribute value not in allowed list          | Permanent NACK            |
 
-> **Note:** The processor sends a permanent NACK (`NackMsg::new_permanent`), but
-> the receiver currently maps all NACKs to HTTP 503 / gRPC UNAVAILABLE. Returning
-> HTTP 400 / gRPC INVALID_ARGUMENT for permanent NACKs requires receiver-side changes.
+> **Note:** Validation failures are sent as permanent, client-caused refusals
+> (`NackMsg::new_permanent_with_cause(..., NackCause::Refused)`), which the OTLP
+> receivers map to HTTP 400 / gRPC INVALID_ARGUMENT. An internal conversion error
+> is a permanent server failure and maps to HTTP 500 / gRPC INTERNAL. Transient
+> failures continue to map to HTTP 503 / gRPC UNAVAILABLE.
 
 ## Metrics
 
@@ -95,12 +97,12 @@ config:
 
 ## Feature Flag
 
-This processor is experimental and requires the `resource-validator-processor`
+This processor is experimental and requires the `resource-validator`
 feature flag:
 
 ```toml
 [dependencies]
-otap-df-otap = { version = "...", features = ["resource-validator-processor"] }
+otel-arrow-dfe-otap = { version = "...", features = ["resource-validator"] }
 ```
 
 ## Extensibility for Dynamic Auth Context

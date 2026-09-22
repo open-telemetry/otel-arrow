@@ -345,18 +345,11 @@
   const controlCompletionPendingSendsEl = document.getElementById(
     "control-completion-pending-sends"
   );
-  const controlDelayedDataQueuedEl = document.getElementById(
-    "control-delayed-data-queued"
-  );
   const controlTimersActiveEl = document.getElementById("control-timers-active");
-  const controlDelayedDataSentRateEl = document.getElementById(
-    "control-delayed-data-sent-rate"
-  );
   const controlTimerTickRateEl = document.getElementById("control-timer-tick-rate");
   const controlCollectTelemetryRateEl = document.getElementById(
     "control-collect-telemetry-rate"
   );
-  const controlDelayReturnRateEl = document.getElementById("control-delay-return-rate");
   const controlDeliverAckRateEl = document.getElementById("control-deliver-ack-rate");
   const controlDeliverNackRateEl = document.getElementById("control-deliver-nack-rate");
   const controlAckAttemptRateEl = document.getElementById("control-ack-attempt-rate");
@@ -502,13 +495,11 @@
       metrics: [
         { key: "control.runtime.pending_sends.buffered", color: "rgba(248,113,113,0.9)" },
         { key: "control.completion.pending_sends.buffered", color: "rgba(167,139,250,0.9)" },
-        { key: "control.delayed_data.queued", color: "rgba(52,211,153,0.9)" },
       ],
     },
     controlRuntimeFlow: {
       canvasId: "pipeChartControlRuntimeFlow",
       metrics: [
-        { key: "control.runtime.delayed_data.sent.rate", color: "rgba(34,197,94,0.9)" },
         { key: "control.runtime.timer_tick.sent.rate", color: "rgba(56,189,248,0.9)" },
         { key: "control.runtime.collect_telemetry.sent.rate", color: "rgba(249,115,22,0.9)" },
       ],
@@ -2210,14 +2201,11 @@
         "pending_sends.buffered": 0,
         "timers.active": 0,
         "telemetry_timers.active": 0,
-        "delayed_data.queued": 0,
       },
       runtimeCounters: {
         "shutdown.deadline_forced": 0,
-        "delay_data.returned_during_drain": 0,
         "timer_tick.sent": 0,
         "collect_telemetry.sent": 0,
-        "delayed_data.sent": 0,
       },
       completionGauges: {
         "pending_sends.buffered": 0,
@@ -2291,12 +2279,9 @@
       setText(controlDrainDeadlineForcedEl, "n/a");
       setText(controlRuntimePendingSendsEl, "n/a");
       setText(controlCompletionPendingSendsEl, "n/a");
-      setText(controlDelayedDataQueuedEl, "n/a");
       setText(controlTimersActiveEl, "n/a");
-      setText(controlDelayedDataSentRateEl, "n/a");
       setText(controlTimerTickRateEl, "n/a");
       setText(controlCollectTelemetryRateEl, "n/a");
-      setText(controlDelayReturnRateEl, "n/a");
       setText(controlDeliverAckRateEl, "n/a");
       setText(controlDeliverNackRateEl, "n/a");
       setText(controlAckAttemptRateEl, "n/a");
@@ -2317,7 +2302,6 @@
     const pendingReceivers = runtimeGauges["drain.pending_receivers"] || 0;
     const runtimePendingSends = runtimeGauges["pending_sends.buffered"] || 0;
     const completionPendingSends = completionGauges["pending_sends.buffered"] || 0;
-    const delayedDataQueued = runtimeGauges["delayed_data.queued"] || 0;
     const timersActive = runtimeGauges["timers.active"] || 0;
 
     setText(
@@ -2337,7 +2321,6 @@
       controlCompletionPendingSendsEl,
       Math.round(completionPendingSends).toString()
     );
-    setText(controlDelayedDataQueuedEl, Math.round(delayedDataQueued).toString());
     setText(controlTimersActiveEl, Math.round(timersActive).toString());
     setText(
       controlAckDroppedEl,
@@ -2350,11 +2333,6 @@
 
     const previousRuntime = controlPlanePrev?.runtimeCounters || null;
     const previousCompletion = controlPlanePrev?.completionCounters || null;
-    const delayedDataSentRate = calcCumulativeRate(
-      runtimeCounters["delayed_data.sent"],
-      previousRuntime ? previousRuntime["delayed_data.sent"] : null,
-      sampleSeconds
-    );
     const timerTickRate = calcCumulativeRate(
       runtimeCounters["timer_tick.sent"],
       previousRuntime ? previousRuntime["timer_tick.sent"] : null,
@@ -2363,11 +2341,6 @@
     const collectTelemetryRate = calcCumulativeRate(
       runtimeCounters["collect_telemetry.sent"],
       previousRuntime ? previousRuntime["collect_telemetry.sent"] : null,
-      sampleSeconds
-    );
-    const delayReturnRate = calcCumulativeRate(
-      runtimeCounters["delay_data.returned_during_drain"],
-      previousRuntime ? previousRuntime["delay_data.returned_during_drain"] : null,
       sampleSeconds
     );
     const deliverAckRate = calcCumulativeRate(
@@ -2401,10 +2374,8 @@
       sampleSeconds
     );
 
-    setText(controlDelayedDataSentRateEl, formatRate(delayedDataSentRate));
     setText(controlTimerTickRateEl, formatRate(timerTickRate));
     setText(controlCollectTelemetryRateEl, formatRate(collectTelemetryRate));
-    setText(controlDelayReturnRateEl, formatRate(delayReturnRate));
     setText(controlDeliverAckRateEl, formatRate(deliverAckRate));
     setText(controlDeliverNackRateEl, formatRate(deliverNackRate));
     setText(controlAckAttemptRateEl, formatRate(ackAttemptRate));
@@ -2432,12 +2403,6 @@
     recordPipelineMetric(
       "control.completion.pending_sends.buffered",
       completionPendingSends,
-      timestamp
-    );
-    recordPipelineMetric("control.delayed_data.queued", delayedDataQueued, timestamp);
-    recordPipelineMetric(
-      "control.runtime.delayed_data.sent.rate",
-      delayedDataSentRate,
       timestamp
     );
     recordPipelineMetric(
@@ -3211,15 +3176,6 @@
       el: controlCompletionPendingSendsEl,
       format: (value) =>
         Number.isFinite(value) ? `${Math.round(value)}` : "n/a",
-    },
-    "control.delayed_data.queued": {
-      el: controlDelayedDataQueuedEl,
-      format: (value) =>
-        Number.isFinite(value) ? `${Math.round(value)}` : "n/a",
-    },
-    "control.runtime.delayed_data.sent.rate": {
-      el: controlDelayedDataSentRateEl,
-      format: (value) => formatRate(value),
     },
     "control.runtime.timer_tick.sent.rate": {
       el: controlTimerTickRateEl,

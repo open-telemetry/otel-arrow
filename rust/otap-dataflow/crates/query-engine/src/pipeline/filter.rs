@@ -5,8 +5,11 @@ use std::sync::Arc;
 
 use crate::error::{Error, Result};
 use crate::pipeline::PipelineStage;
+use crate::pipeline::expr::eval::EvalContext;
+use crate::pipeline::expr::types::MetricDataPointType;
+use crate::pipeline::expr::{ChildRecordKind, RecordScope};
 use crate::pipeline::expr::{DataScope, ScopedExpr, ScopedValue, eval::resolve_attrs_payload_type};
-use crate::pipeline::planner::AttributesIdentifier;
+use crate::pipeline::planner::{AttributesIdentifier, RecordType};
 use crate::pipeline::state::ExecutionState;
 
 use arrow::array::{
@@ -22,13 +25,14 @@ use datafusion::execution::TaskContext;
 use datafusion::execution::context::SessionContext;
 use datafusion::logical_expr::ColumnarValue;
 use datafusion::scalar::ScalarValue;
-use otap_df_pdata::OtapArrowRecords;
-use otap_df_pdata::arrays::MaybeDictArrayAccessor;
-use otap_df_pdata::otap::filter::{ChildBatchFilterIdHelper, IdBitmapPool, filter_otap_batch};
+use otel_arrow_dfe_pdata::OtapArrowRecords;
+use otel_arrow_dfe_pdata::arrays::MaybeDictArrayAccessor;
+use otel_arrow_dfe_pdata::otap::filter::{
+    ChildBatchFilterIdHelper, IdBitmapPool, filter_otap_batch,
+};
 
-// TODO - need to wire this back into the expression evaluation
-#[allow(dead_code)]
 pub(crate) mod compare;
+pub(crate) mod data_points;
 
 /// This stage evaluates a `ScopedExpr` tree to produce a root-aligned boolean selection
 /// vector, then filters the OTAP batch using that vector.
@@ -66,7 +70,7 @@ impl PipelineStage for FilterPipelineStage {
         // Evaluate the ScopedExpr tree to produce a boolean result, then align to root.
         let result = self
             .predicate
-            .execute_as_value(&otap_batch, session_context)?;
+            .execute_as_value(&otap_batch, &EvalContext::new(session_context))?;
 
         // Convert the result to a root-aligned BooleanArray selection vector.
         let selection_vec = match result {
@@ -76,7 +80,7 @@ impl PipelineStage for FilterPipelineStage {
             }
             Some(scoped_value) => {
                 // if not root-scoped, align to root
-                if scoped_value.scope != DataScope::Root
+                if scoped_value.scope != DataScope::Record(RecordScope::Signal)
                     && !(matches!(scoped_value.scope, DataScope::RootParent(_)))
                     && scoped_value.scope != DataScope::StaticScalar
                 {
@@ -110,7 +114,7 @@ impl PipelineStage for FilterPipelineStage {
     ) -> Result<RecordBatch> {
         let result = self
             .predicate
-            .evaluate_on_batch(session_context, &attrs_record_batch)?;
+            .evaluate_on_batch(&attrs_record_batch, &EvalContext::new(session_context))?;
 
         let selection_vec = scoped_value_to_boolean_array(result, attrs_record_batch.num_rows())?;
         let new_batch = filter_record_batch(&attrs_record_batch, &selection_vec)?;
@@ -118,8 +122,126 @@ impl PipelineStage for FilterPipelineStage {
         Ok(new_batch)
     }
 
-    fn supports_exec_on_attributes(&self) -> bool {
-        true
+    async fn execute_on_metric_data_points(
+        &mut self,
+        mut otap_batch: OtapArrowRecords,
+        session_ctx: &SessionContext,
+        _config_options: &ConfigOptions,
+        _task_context: Arc<TaskContext>,
+        _exec_options: &mut ExecutionState,
+    ) -> Result<OtapArrowRecords> {
+        for metric_data_point_type in MetricDataPointType::all() {
+            let dp_payload_type = metric_data_point_type.payload_type();
+            if otap_batch.get(dp_payload_type).is_some() {
+                let predicate_eval_value = self.predicate.execute_as_value(
+                    &otap_batch,
+                    &EvalContext::new_for_metrics_data_points(metric_data_point_type, session_ctx),
+                )?;
+                match predicate_eval_value {
+                    Some(value) => {
+                        self.filter_metric_data_points(
+                            value,
+                            &metric_data_point_type,
+                            &mut otap_batch,
+                        )?;
+                    }
+                    None => {
+                        // the expression evaluated to None, which we will treat as false.
+                        // this may happen in the case of a predicate involving a field that
+                        // does not exist, in which case the predicate should fail (unless the
+                        // planner specifically planned it to pass, in which case null wouldn't
+                        // have been returned here).
+                        data_points::remove_all_metric_data_points(
+                            &mut otap_batch,
+                            &metric_data_point_type,
+                        );
+                    }
+                }
+            }
+        }
+
+        Ok(otap_batch)
+    }
+
+    fn supports_exec_on(&self, record_type: &RecordType) -> bool {
+        match record_type {
+            RecordType::Signal => true,
+            RecordType::Attributes => true,
+            RecordType::Child(ChildRecordKind::DataPoint) => true,
+        }
+    }
+}
+
+impl FilterPipelineStage {
+    fn filter_metric_data_points(
+        &mut self,
+        predicate_eval_value: ScopedValue,
+        metric_data_point_type: &MetricDataPointType,
+        otap_batch: &mut OtapArrowRecords,
+    ) -> Result<()> {
+        let is_aligned = matches!(
+            predicate_eval_value.scope,
+            DataScope::Record(RecordScope::Child(ChildRecordKind::DataPoint)),
+        );
+
+        match predicate_eval_value.values {
+            ColumnarValue::Scalar(scalar) => {
+                match scalar {
+                    ScalarValue::Boolean(Some(true)) => {
+                        // all rows pass, nothing to be filtered
+                        Ok(())
+                    }
+                    ScalarValue::Boolean(_) => {
+                        // no rows pass, data points must be removed
+                        data_points::remove_all_metric_data_points(
+                            otap_batch,
+                            metric_data_point_type,
+                        );
+                        Ok(())
+                    }
+                    _ => Err(Error::ExecutionError {
+                        cause: format!(
+                            "Received scalar of type {:?} when filtering metric data points. expected boolean",
+                            scalar.data_type(),
+                        ),
+                    }),
+                }
+            }
+            ColumnarValue::Array(arr) => {
+                // get a selection vector (boolean array of rows passing predicate) that is aligned
+                // with the row order of the data point record batch
+                let arr_aligned = if is_aligned {
+                    arr
+                } else {
+                    // the normal course of action here would be to align this to the row order of
+                    // the data point batch via a join, but currently we don't support this. the
+                    // planner actually should have returned an Error::NotYetSupported for exprs
+                    // that would end up here, so this error is just here for being defensive.
+                    return Err(Error::ExecutionError {
+                        cause: "misaligned expression predicate result when filtering data points"
+                            .into(),
+                    });
+                };
+
+                let selection_vec =
+                    as_boolean_array(&arr_aligned).map_err(|_| Error::ExecutionError {
+                        cause: format!(
+                            "expected boolean array for filter selection, found {}",
+                            arr_aligned.data_type()
+                        ),
+                    })?;
+
+                let mut id_bitmap = self.id_bitmap_pool.acquire();
+                let result = data_points::filter_metric_data_points(
+                    otap_batch,
+                    metric_data_point_type,
+                    selection_vec,
+                    &mut id_bitmap,
+                );
+                self.id_bitmap_pool.release(id_bitmap);
+                result
+            }
+        }
     }
 }
 
@@ -162,8 +284,8 @@ pub(crate) fn scoped_value_to_boolean_array(
     }
 }
 
-/// Align a predicate evaluation result to the root scope and produce a `BooleanArray`
-/// selection vector.
+/// Align a predicate evaluation result to the root signal batch and produce a `BooleanArray`
+/// selection vector
 ///
 /// This is the standard way for filter and conditional consumers to convert a `ScopedValue`
 /// (which may be in any scope) into a root-aligned boolean selection vector:
@@ -184,7 +306,7 @@ pub(crate) fn align_selection_to_root(
     match result {
         None => Ok(BooleanArray::new(BooleanBuffer::new_unset(num_rows), None)),
         Some(scoped_value) => {
-            let aligned = if scoped_value.scope != DataScope::Root
+            let aligned = if !matches!(scoped_value.scope, DataScope::Record(RecordScope::Signal))
                 && scoped_value.scope != DataScope::StaticScalar
             {
                 // copy out the attrs_id before moving value, since AttributesIdentifier is Copy
@@ -197,7 +319,7 @@ pub(crate) fn align_selection_to_root(
 
                 match maybe_attrs_id {
                     Some(attrs_id) => {
-                        align_selection_vec_from_atts(scoped_value, &attrs_id, otap_batch)
+                        align_selection_vec_from_attrs(scoped_value, &attrs_id, otap_batch)
                     }
                     _ => Err(Error::NotYetSupportedError {
                         message: format!(
@@ -219,7 +341,7 @@ pub(crate) fn align_selection_to_root(
 /// Uses the parent_id column from the child result and the id column on the root batch
 /// to map each child row to its corresponding root row. Root rows with no matching child
 /// row get null values.
-fn align_selection_vec_from_atts(
+fn align_selection_vec_from_attrs(
     value: ScopedValue,
     attrs_id: &AttributesIdentifier,
     otap_batch: &OtapArrowRecords,
@@ -262,7 +384,7 @@ fn align_selection_vec_from_atts(
             // no ID column means no attributes exist -- return all-null for the root
             return Ok(ScopedValue::new(
                 null_columnar_value_for_rows(&value.values, num_rows)?,
-                DataScope::Root,
+                DataScope::Record(RecordScope::Signal),
                 root_rb,
             ));
         }
@@ -292,7 +414,7 @@ fn align_selection_vec_from_atts(
             let all_false = BooleanArray::new(BooleanBuffer::new_unset(num_rows), None);
             return Ok(ScopedValue::new(
                 ColumnarValue::Array(Arc::new(all_false)),
-                DataScope::Root,
+                DataScope::Record(RecordScope::Signal),
                 root_rb,
             ));
         }
@@ -344,7 +466,7 @@ fn align_selection_vec_from_atts(
 
         return Ok(ScopedValue::new(
             ColumnarValue::Array(aligned_values),
-            DataScope::Root,
+            DataScope::Record(RecordScope::Signal),
             root_rb,
         ));
     }
@@ -375,7 +497,7 @@ fn align_selection_vec_from_atts(
 
     Ok(ScopedValue::new(
         ColumnarValue::Array(aligned_values),
-        DataScope::Root,
+        DataScope::Record(RecordScope::Signal),
         root_rb,
     ))
 }
@@ -399,9 +521,9 @@ mod test {
     use crate::pipeline::{Pipeline, PipelineOptions};
 
     use super::*;
-    use otap_df_pdata::OtapPayloadHelpers;
-    use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-    use otap_df_pdata::schema::consts;
+    use otel_arrow_dfe_pdata::OtapPayloadHelpers;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+    use otel_arrow_dfe_pdata::schema::consts;
 
     /// Test helper to build an IdBitmap from a slice of u32 values.
     fn id_bitmap_from(ids: &[u32]) -> IdBitmap {
@@ -411,31 +533,31 @@ mod test {
         }
         bm
     }
-    use data_engine_kql_parser::{KqlParser, Parser};
-    use otap_df_pdata::otap::filter::IdBitmap;
-    use otap_df_pdata::otap::{Logs, Traces};
-    use otap_df_pdata::proto::OtlpProtoMessage;
-    use otap_df_pdata::proto::opentelemetry::common::v1::{
+    use otel_arrow_contrib_data_engine_kql_parser::{KqlParser, Parser};
+    use otel_arrow_dfe_pdata::otap::filter::IdBitmap;
+    use otel_arrow_dfe_pdata::otap::{Logs, Traces};
+    use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{
         AnyValue, InstrumentationScope, KeyValue,
     };
-    use otap_df_pdata::proto::opentelemetry::logs::v1::{
+    use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::{
         LogRecord, LogsData, ResourceLogs, ScopeLogs,
     };
 
-    use otap_df_pdata::proto::opentelemetry::metrics::v1::exponential_histogram_data_point::Buckets;
-    use otap_df_pdata::proto::opentelemetry::metrics::v1::{
+    use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::exponential_histogram_data_point::Buckets;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::{
         AggregationTemporality, Exemplar, ExponentialHistogram, ExponentialHistogramDataPoint,
         Gauge, Histogram, HistogramDataPoint, Metric, MetricsData, NumberDataPoint, Sum, Summary,
         SummaryDataPoint,
     };
-    use otap_df_pdata::proto::opentelemetry::resource::v1::Resource;
-    use otap_df_pdata::proto::opentelemetry::trace::v1::span::{Event, Link};
-    use otap_df_pdata::proto::opentelemetry::trace::v1::{Span, Status};
-    use otap_df_pdata::testing::round_trip::{
+    use otel_arrow_dfe_pdata::proto::opentelemetry::resource::v1::Resource;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::trace::v1::span::{Event, Link};
+    use otel_arrow_dfe_pdata::proto::opentelemetry::trace::v1::{Span, Status};
+    use otel_arrow_dfe_pdata::testing::round_trip::{
         otap_to_otlp, otlp_to_otap, to_logs_data, to_metrics_data, to_otap_logs, to_otap_metrics,
         to_otap_traces, to_traces_data,
     };
-    use otap_df_query_engine_languages::opl::parser::OplParser;
+    use otel_arrow_dfe_query_engine_languages::opl::parser::OplParser;
 
     use crate::pipeline::test::{
         exec_logs_pipeline, exec_metrics_pipeline, otap_to_logs_data, otap_to_metrics_data,
@@ -2286,6 +2408,49 @@ mod test {
         test_filter_with_or::<OplParser>().await;
     }
 
+    /// Scenario: when left-side of OR expression will execute with data scope of attributes
+    /// and some rows that pass the predicate on right-side do not have such attributes
+    /// Guarantees: we correctly return rows on the RHS that pass this predicate (or the inverse
+    /// of the expected results in the case where the case where the overall predicate is inverted)
+    #[tokio::test]
+    async fn test_filter_attr_or_record_some_rows_no_attrs() {
+        let log_records = vec![
+            LogRecord::build()
+                .event_name("1")
+                .severity_text("INFO")
+                .attributes(vec![])
+                .finish(),
+            LogRecord::build()
+                .event_name("1")
+                .severity_text("ERROR")
+                .attributes(vec![
+                    KeyValue::new("x", AnyValue::new_string("a")),
+                    KeyValue::new("z", AnyValue::new_int(4)),
+                ])
+                .finish(),
+        ];
+
+        let result = exec_logs_pipeline::<OplParser>(
+            r#"logs | where attributes["z"] + 1 > 0 or severity_text == "INFO""#,
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        pretty_assertions::assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[0].clone(), log_records[1].clone()],
+        );
+
+        let result = exec_logs_pipeline::<OplParser>(
+            r#"logs | where not(attributes["z"] + 1 > 0 or severity_text == "ERROR")"#,
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        pretty_assertions::assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[0].clone()],
+        );
+    }
+
     async fn test_filter_with_not<P: Parser>() {
         let log_records = vec![
             LogRecord::build()
@@ -2398,7 +2563,6 @@ mod test {
         );
 
         // check simple inverted "and" filter with mixed attributes & properties predicates
-        // check simple inverted "and" filter with attributes predicates
         let result = exec_logs_pipeline::<P>(
             "logs | where not(attributes[\"x\"] == \"c\" and severity_text == \"DEBUG\")",
             to_logs_data(log_records.clone()),
@@ -2408,6 +2572,31 @@ mod test {
             &result.resource_logs[0].scope_logs[0].log_records,
             &[log_records[0].clone(), log_records[1].clone()],
         );
+
+        // check that the inverted "and" produces all matches when one side has no matches and each
+        // side of the "and" is from different data sources. This will be planned with a short
+        // circuit strategy and we want to ensure the value produced by is properly inverted
+        let result = exec_logs_pipeline::<P>(
+            "logs | where not(severity_text == \"TRACE\" and attributes[\"x\"] == \"a\")",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        pretty_assertions::assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[
+                log_records[0].clone(),
+                log_records[1].clone(),
+                log_records[2].clone()
+            ],
+        );
+
+        // same test case as above - but now with double not, so no records should pass filter
+        let result = exec_logs_pipeline::<P>(
+            "logs | where not(not(severity_text == \"TRACE\" and attributes[\"x\"] == \"a\"))",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        pretty_assertions::assert_eq!(result.resource_logs.len(), 0);
     }
 
     #[tokio::test]
@@ -2425,6 +2614,7 @@ mod test {
             LogRecord::build()
                 .event_name("1")
                 .severity_text("INFO")
+                .severity_number(9i32)
                 .attributes(vec![
                     KeyValue::new("x", AnyValue::new_string("a")),
                     KeyValue::new("y", AnyValue::new_string("d")),
@@ -2433,6 +2623,7 @@ mod test {
             LogRecord::build()
                 .event_name("2")
                 .severity_text("ERROR")
+                .severity_number(17i32)
                 .attributes(vec![
                     KeyValue::new("x", AnyValue::new_string("b")),
                     KeyValue::new("y", AnyValue::new_string("e")),
@@ -2441,6 +2632,7 @@ mod test {
             LogRecord::build()
                 .event_name("3")
                 .severity_text("DEBUG")
+                .severity_number(5i32)
                 .attributes(vec![
                     KeyValue::new("x", AnyValue::new_string("c")),
                     KeyValue::new("y", AnyValue::new_string("f")),
@@ -2479,6 +2671,31 @@ mod test {
         pretty_assertions::assert_eq!(
             &result.resource_logs[0].scope_logs[0].log_records,
             &[log_records[1].clone()],
+        );
+
+        // check that the inverted "or" produces all matches when one side has is all true and each
+        // side of the "or" is from different data sources. This will be planned with a short
+        // circuit strategy and we want to ensure the value produced by is properly inverted
+        let result = exec_logs_pipeline::<P>(
+            "logs | where not(severity_number > 0 or attributes[\"x\"] == \"a\")",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        pretty_assertions::assert_eq!(result.resource_logs.len(), 0);
+
+        // same test case as above but now with double not - so all rows should be returned
+        let result = exec_logs_pipeline::<P>(
+            "logs | where not(not(severity_number > 0 or attributes[\"x\"] == \"a\"))",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        pretty_assertions::assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[
+                log_records[0].clone(),
+                log_records[1].clone(),
+                log_records[2].clone()
+            ],
         );
     }
 
@@ -2772,6 +2989,132 @@ mod test {
     #[tokio::test]
     async fn test_filter_no_attrs_opl_parser() {
         test_filter_no_attrs::<OplParser>().await;
+    }
+
+    /// Helper: build 3 log records with no attributes for OR-with-absent-attrs tests.
+    /// severity_text values: ["WARN", "ERROR", "WARN"].
+    fn logs_no_attrs() -> Vec<LogRecord> {
+        vec![
+            LogRecord::build()
+                .event_name("1")
+                .severity_text("WARN")
+                .finish(),
+            LogRecord::build()
+                .event_name("2")
+                .severity_text("ERROR")
+                .finish(),
+            LogRecord::build()
+                .event_name("3")
+                .severity_text("WARN")
+                .finish(),
+        ]
+    }
+
+    /// Scenario: OR expression where the left side references an absent attributes
+    /// payload and the right side matches root-scoped fields.
+    /// Guarantees: when evaluating `attributes["x"] == 10 or severity_text == "WARN"`
+    /// on a batch with no attributes payload at all, rows matching the right side of
+    /// the OR are still returned -- the absent left side does not suppress them.
+    async fn test_filter_or_with_absent_attrs_payload<P: Parser>() {
+        let log_records = logs_no_attrs();
+
+        // attributes["x"] == 10 or severity_text == "WARN"
+        //
+        // No log records have attributes, so the left side of the OR references an
+        // entirely absent attributes payload. The right side matches rows 0 and 2.
+        // The OR should still return rows 0 and 2.
+        let result = exec_logs_pipeline::<P>(
+            "logs | where attributes[\"x\"] == 10 or severity_text == \"WARN\"",
+            to_logs_data(log_records),
+        )
+        .await;
+        let result_records = &result.resource_logs[0].scope_logs[0].log_records;
+        assert_eq!(result_records.len(), 2);
+        assert_eq!(result_records[0].event_name, "1");
+        assert_eq!(result_records[1].event_name, "3");
+    }
+
+    /// Scenario: Evaluate an OR-with-absent-attrs predicate using the OPL parser.
+    /// Guarantees: OPL planning/evaluation returns the same rows as the shared test expects.
+    #[tokio::test]
+    async fn test_filter_or_with_absent_attrs_payload_opl_parser() {
+        test_filter_or_with_absent_attrs_payload::<OplParser>().await;
+    }
+
+    /// Scenario: Evaluate an OR-with-absent-attrs predicate using the KQL parser.
+    /// Guarantees: KQL planning/evaluation returns the same rows as the shared test expects.
+    #[tokio::test]
+    async fn test_filter_or_with_absent_attrs_payload_kql_parser() {
+        test_filter_or_with_absent_attrs_payload::<KqlParser>().await;
+    }
+
+    /// Scenario: OR expression where the right side references an absent attributes
+    /// payload and the left side matches root-scoped fields.
+    /// Guarantees: same correctness as the left-absent case, but exercises the code
+    /// path where the first child has already been evaluated when the second child
+    /// is found to be absent.
+    async fn test_filter_or_with_absent_attrs_payload_reversed<P: Parser>() {
+        let log_records = logs_no_attrs();
+
+        // severity_text == "WARN" or attributes["x"] == 10
+        let result = exec_logs_pipeline::<P>(
+            "logs | where severity_text == \"WARN\" or attributes[\"x\"] == 10",
+            to_logs_data(log_records),
+        )
+        .await;
+        let result_records = &result.resource_logs[0].scope_logs[0].log_records;
+        assert_eq!(result_records.len(), 2);
+        assert_eq!(result_records[0].event_name, "1");
+        assert_eq!(result_records[1].event_name, "3");
+    }
+
+    /// Scenario: Evaluate a reversed OR-with-absent-attrs predicate using the OPL parser.
+    /// Guarantees: OPL planning/evaluation returns the same rows as the shared test expects.
+    #[tokio::test]
+    async fn test_filter_or_with_absent_attrs_payload_reversed_opl_parser() {
+        test_filter_or_with_absent_attrs_payload_reversed::<OplParser>().await;
+    }
+
+    /// Scenario: Evaluate a reversed OR-with-absent-attrs predicate using the KQL parser.
+    /// Guarantees: KQL planning/evaluation returns the same rows as the shared test expects.
+    #[tokio::test]
+    async fn test_filter_or_with_absent_attrs_payload_reversed_kql_parser() {
+        test_filter_or_with_absent_attrs_payload_reversed::<KqlParser>().await;
+    }
+
+    /// Scenario: NOT(OR) expression where one side references an absent attributes
+    /// payload.
+    /// Guarantees: NOT(false OR severity_text == "WARN") correctly inverts to return
+    /// only the rows where severity_text != "WARN".
+    async fn test_filter_not_or_with_absent_attrs_payload<P: Parser>() {
+        let log_records = logs_no_attrs();
+
+        // not(attributes["x"] == 10 or severity_text == "WARN")
+        //
+        // With absent attrs: NOT(false OR severity_text == "WARN") = NOT(severity_text == "WARN")
+        // Only row 1 (ERROR) should pass.
+        let result = exec_logs_pipeline::<P>(
+            "logs | where not(attributes[\"x\"] == 10 or severity_text == \"WARN\")",
+            to_logs_data(log_records),
+        )
+        .await;
+        let result_records = &result.resource_logs[0].scope_logs[0].log_records;
+        assert_eq!(result_records.len(), 1);
+        assert_eq!(result_records[0].event_name, "2");
+    }
+
+    /// Scenario: Evaluate a NOT(OR)-with-absent-attrs predicate using the OPL parser.
+    /// Guarantees: OPL planning/evaluation returns the same rows as the shared test expects.
+    #[tokio::test]
+    async fn test_filter_not_or_with_absent_attrs_payload_opl_parser() {
+        test_filter_not_or_with_absent_attrs_payload::<OplParser>().await;
+    }
+
+    /// Scenario: Evaluate a NOT(OR)-with-absent-attrs predicate using the KQL parser.
+    /// Guarantees: KQL planning/evaluation returns the same rows as the shared test expects.
+    #[tokio::test]
+    async fn test_filter_not_or_with_absent_attrs_payload_kql_parser() {
+        test_filter_not_or_with_absent_attrs_payload::<KqlParser>().await;
     }
 
     async fn test_filter_property_is_null<P: Parser>(null_lit: &str) {

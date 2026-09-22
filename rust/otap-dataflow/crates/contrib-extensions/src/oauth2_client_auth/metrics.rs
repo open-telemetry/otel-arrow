@@ -3,10 +3,10 @@
 
 //! Telemetry for the OAuth 2.0 Client Auth extension.
 
-use otap_df_telemetry::instrument::{Counter, Mmsc};
-use otap_df_telemetry_macros::metric_set;
+use otel_arrow_dfe_telemetry::instrument::{Counter, Mmsc};
+use otel_arrow_dfe_telemetry_macros::metric_set;
 
-use crate::common::token_refresh::TokenProviderMetrics;
+use crate::common::background_refresh::BackgroundProviderMetrics;
 
 /// Telemetry metrics for the OAuth 2.0 Client Auth extension.
 #[metric_set(name = "extension.oauth2_client_auth")]
@@ -26,7 +26,7 @@ pub struct OAuth2ClientAuthMetrics {
     pub auth_success_latency: Mmsc,
 }
 
-impl TokenProviderMetrics for OAuth2ClientAuthMetrics {
+impl BackgroundProviderMetrics for OAuth2ClientAuthMetrics {
     fn successes(&mut self) -> &mut Counter<u64> {
         &mut self.auth_successes
     }

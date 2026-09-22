@@ -4,8 +4,8 @@
 //! Controller-owned runtime placement metadata.
 
 use core_affinity::CoreId;
-use otap_df_config::{PipelineGroupId, PipelineId};
-use otap_df_engine::topology::{NumaTopology, TopologyCompleteness};
+use otel_arrow_dfe_config::{PipelineGroupId, PipelineId};
+use otel_arrow_dfe_engine::topology::{NumaTopology, TopologyCompleteness};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Stable placement snapshot for a controller deployment generation.

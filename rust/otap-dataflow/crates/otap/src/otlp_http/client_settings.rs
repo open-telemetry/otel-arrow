@@ -12,8 +12,8 @@ use std::io;
 use std::time::Duration;
 use tower::limit::ConcurrencyLimitLayer;
 use {
-    crate::tls_utils::read_file_with_limit_async, otap_df_config::tls::TlsClientConfig,
-    otap_df_telemetry::otel_error, reqwest::Certificate, reqwest::Identity,
+    crate::tls_utils::read_file_with_limit_async, otel_arrow_dfe_config::tls::TlsClientConfig,
+    otel_arrow_dfe_telemetry::otel_error, reqwest::Certificate, reqwest::Identity,
 };
 
 use crate::compression::{CompressionMethod, deserialize_compression_method};

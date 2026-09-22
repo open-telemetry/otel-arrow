@@ -5,8 +5,8 @@
 //! and responses. Provides a RouteData to retrieve the data for
 //! Ack/Nack handling. Based on the slotmap crate.
 
-use otap_df_engine::control::CallData;
-use otap_df_engine::error::Error;
+use otel_arrow_dfe_engine::control::CallData;
+use otel_arrow_dfe_engine::error::Error;
 use slotmap::{Key as SlotKey, KeyData, SlotMap, new_key_type};
 
 new_key_type! {

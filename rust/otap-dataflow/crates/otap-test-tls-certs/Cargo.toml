@@ -1,5 +1,5 @@
 [package]
-name = "otap-df-test-tls-certs"
+name = "otel-arrow-dfe-test-tls-certs"
 version.workspace = true
 authors.workspace = true
 repository.workspace = true

@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use crate::error::Error;
 use crate::topic::PipelineTopicBinding;
-use otap_df_config::TopicName;
+use otel_arrow_dfe_config::TopicName;
 use parking_lot::RwLock;
 
 /// A thread-safe, mutable, named collection of pipeline-scoped topic bindings.

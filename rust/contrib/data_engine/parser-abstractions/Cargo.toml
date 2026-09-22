@@ -1,0 +1,23 @@
+[package]
+name = "otel-arrow-contrib-data-engine-parser-abstractions"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+homepage = "https://github.com/open-telemetry/otel-arrow"
+documentation = "https://docs.rs/otel-arrow-contrib-data-engine-parser-abstractions"
+license.workspace = true
+readme = "README.md"
+publish = true
+rust-version.workspace = true
+description = "Experimental, pre-1.0 pest-based parser abstractions shared by data-engine query language front ends"
+keywords = ["opentelemetry", "query-engine", "parser", "experimental"]
+categories = ["parsing", "compilers"]
+
+[dependencies]
+chrono = { workspace = true }
+pest = { workspace = true }
+pest_derive = { workspace = true }
+thiserror = { workspace = true }
+
+otel-arrow-contrib-data-engine-expressions = { path = "../expressions", version = "=0.1.0" }

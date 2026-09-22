@@ -40,30 +40,37 @@
 //! If neither a signal-specific named route nor a default output exists, the
 //! message is dropped with the historical routing-failure behavior.
 
+otel_arrow_dfe_telemetry::otel_component_scope!(
+    urn = SIGNAL_TYPE_ROUTER_URN,
+    target = "otel.processor.type_router",
+);
+
 use async_trait::async_trait;
 use linkme::distributed_slice;
-use otap_df_config::PortName;
-use otap_df_config::error::Error as ConfigError;
-use otap_df_config::node::NodeUserConfig;
-use otap_df_engine::config::ProcessorConfig;
-use otap_df_engine::context::PipelineContext;
-use otap_df_engine::control::{NackCause, NackMsg, NodeControlMsg, WakeupRevision, WakeupSlot};
-use otap_df_engine::error::{Error as EngineError, ProcessorErrorKind};
-use otap_df_engine::local::processor as local;
-use otap_df_engine::message::Message;
-use otap_df_engine::node::NodeId;
-use otap_df_engine::processor::ProcessorWrapper;
-use otap_df_engine::{
+use otel_arrow_dfe_config::PortName;
+use otel_arrow_dfe_config::error::Error as ConfigError;
+use otel_arrow_dfe_config::node::NodeUserConfig;
+use otel_arrow_dfe_engine::config::ProcessorConfig;
+use otel_arrow_dfe_engine::context::PipelineContext;
+use otel_arrow_dfe_engine::control::{
+    NackCause, NackMsg, NodeControlMsg, WakeupRevision, WakeupSlot,
+};
+use otel_arrow_dfe_engine::error::{Error as EngineError, ProcessorErrorKind};
+use otel_arrow_dfe_engine::local::processor as local;
+use otel_arrow_dfe_engine::message::Message;
+use otel_arrow_dfe_engine::node::NodeId;
+use otel_arrow_dfe_engine::processor::ProcessorWrapper;
+use otel_arrow_dfe_engine::{
     ConsumerEffectHandlerExtension, MessageSourceLocalEffectHandlerExtension, ProcessorFactory,
     ProcessorRuntimeRequirements, RouteAdmission, WakeupError,
 };
-use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
-use otap_df_otap::pdata::OtapPdata;
-use otap_df_telemetry::common_attributes::Outcome;
-use otap_df_telemetry::instrument::Counter;
-use otap_df_telemetry::metrics::MeasurementMetricSet;
-use otap_df_telemetry::reporter::MetricsReporter;
-use otap_df_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
+use otel_arrow_dfe_otap::OTAP_PROCESSOR_FACTORIES;
+use otel_arrow_dfe_otap::pdata::OtapPdata;
+use otel_arrow_dfe_telemetry::common_attributes::Outcome;
+use otel_arrow_dfe_telemetry::instrument::Counter;
+use otel_arrow_dfe_telemetry::metrics::MeasurementMetricSet;
+use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
+use otel_arrow_dfe_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -110,7 +117,7 @@ pub struct SignalTypeRouterAttributes {
     /// Specific reason for the outcome.
     pub reason: SignalTypeRouterReason,
     /// The telemetry signal type.
-    pub signal: otap_df_config::SignalType,
+    pub signal: otel_arrow_dfe_config::SignalType,
 }
 
 /// Measurement metrics for the SignalTypeRouter processor.
@@ -143,14 +150,14 @@ impl SignalTypeRouterMetrics {
     pub fn report(
         &mut self,
         reporter: &mut MetricsReporter,
-    ) -> Result<(), otap_df_telemetry::error::Error> {
+    ) -> Result<(), otel_arrow_dfe_telemetry::error::Error> {
         reporter.report_measurement(&mut self.metrics)
     }
 
     /// Records a specific outcome and reason.
     pub fn record(
         &mut self,
-        signal: otap_df_config::SignalType,
+        signal: otel_arrow_dfe_config::SignalType,
         outcome: Outcome,
         reason: SignalTypeRouterReason,
     ) {
@@ -187,7 +194,7 @@ enum SelectedRouteKind {
 
 #[derive(Clone, Copy, Debug)]
 struct SelectedRouteContext {
-    signal_type: otap_df_config::SignalType,
+    signal_type: otel_arrow_dfe_config::SignalType,
     route_kind: SelectedRouteKind,
 }
 
@@ -267,10 +274,8 @@ impl SignalTypeRouter {
             }
         }
 
-        if default_reachable {
-            if let Some(default_port) = effect_handler.default_port() {
-                let _ = candidates.insert(default_port.clone());
-            }
+        if default_reachable && let Some(default_port) = effect_handler.default_port() {
+            let _ = candidates.insert(default_port.clone());
         }
 
         self.admission.observe_pause_candidate_ports(candidates);
@@ -294,7 +299,7 @@ impl SignalTypeRouter {
         &mut self,
         port: &str,
         effect_handler: &mut local::EffectHandler<OtapPdata>,
-        signal_type: otap_df_config::SignalType,
+        signal_type: otel_arrow_dfe_config::SignalType,
         data: OtapPdata,
     ) -> Result<(), EngineError> {
         if let Some(m) = self.metrics.as_mut() {
@@ -320,7 +325,7 @@ impl SignalTypeRouter {
         &mut self,
         port: &str,
         effect_handler: &mut local::EffectHandler<OtapPdata>,
-        signal_type: otap_df_config::SignalType,
+        signal_type: otel_arrow_dfe_config::SignalType,
         data: OtapPdata,
     ) -> Result<(), EngineError> {
         if let Some(m) = self.metrics.as_mut() {
@@ -347,7 +352,7 @@ impl SignalTypeRouter {
         &mut self,
         port: &str,
         effect_handler: &mut local::EffectHandler<OtapPdata>,
-        signal_type: otap_df_config::SignalType,
+        signal_type: otel_arrow_dfe_config::SignalType,
         data: OtapPdata,
         reason: &str,
     ) -> Result<(), EngineError> {
@@ -521,9 +526,9 @@ impl local::Processor<OtapPdata> for SignalTypeRouter {
                 // allowed when the named port is not wired at all, not when the
                 // named route exists but is blocked or closed.
                 let desired_port = match st {
-                    otap_df_config::SignalType::Traces => PORT_TRACES,
-                    otap_df_config::SignalType::Metrics => PORT_METRICS,
-                    otap_df_config::SignalType::Logs => PORT_LOGS,
+                    otel_arrow_dfe_config::SignalType::Traces => PORT_TRACES,
+                    otel_arrow_dfe_config::SignalType::Metrics => PORT_METRICS,
+                    otel_arrow_dfe_config::SignalType::Logs => PORT_LOGS,
                 };
 
                 // Probe wiring first so send failures on the named port stay
@@ -653,38 +658,42 @@ pub fn create_signal_type_router(
 
 /// Register SignalTypeRouter as an OTAP processor factory
 #[allow(unsafe_code)]
-#[otap_df_engine::component_inventory(category = Processor)]
+#[otel_arrow_dfe_engine::component_inventory(category = Processor)]
 #[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
 pub static SIGNAL_TYPE_ROUTER_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFactory {
     name: SIGNAL_TYPE_ROUTER_URN,
-    create: |pipeline: PipelineContext,
-             node: NodeId,
-             node_config: Arc<NodeUserConfig>,
-             proc_cfg: &ProcessorConfig,
-             _capabilities: &otap_df_engine::capability::registry::Capabilities| {
-        // Deserialize the (currently empty) router configuration
-        let router_config: SignalTypeRouterConfig =
-            serde_json::from_value(node_config.config.clone()).map_err(|e| {
-                ConfigError::InvalidUserConfig {
-                    error: format!("Failed to parse SignalTypeRouter configuration: {e}"),
-                }
-            })?;
-        router_config.validate()?;
+    create:
+        |pipeline: PipelineContext,
+         node: NodeId,
+         node_config: Arc<NodeUserConfig>,
+         proc_cfg: &ProcessorConfig,
+         _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities| {
+            // Deserialize the (currently empty) router configuration
+            let router_config: SignalTypeRouterConfig =
+                serde_json::from_value(node_config.config.clone()).map_err(|e| {
+                    ConfigError::InvalidUserConfig {
+                        error: format!("Failed to parse SignalTypeRouter configuration: {e}"),
+                    }
+                })?;
+            router_config.validate()?;
 
-        // Create the router with metrics registered via PipelineContext
-        let router = SignalTypeRouter::with_pipeline_ctx(pipeline, router_config);
+            // Create the router with metrics registered via PipelineContext
+            let router = SignalTypeRouter::with_pipeline_ctx(pipeline, router_config);
 
-        Ok(ProcessorWrapper::local(router, node, node_config, proc_cfg))
-    },
-    wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
-    validate_config: otap_df_config::validation::validate_typed_config::<SignalTypeRouterConfig>,
+            Ok(ProcessorWrapper::local(router, node, node_config, proc_cfg))
+        },
+    context_declarations: None,
+    wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<
+        SignalTypeRouterConfig,
+    >,
 };
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_engine::testing::{processor::TestRuntime, test_node};
-    use otap_df_pdata::otap::{Logs, OtapArrowRecords};
+    use otel_arrow_dfe_engine::testing::{processor::TestRuntime, test_node};
+    use otel_arrow_dfe_pdata::otap::{Logs, OtapArrowRecords};
     use serde_json::json;
 
     #[test]
@@ -724,7 +733,7 @@ mod tests {
 
     #[test]
     fn test_process_messages_pass_through() {
-        use otap_df_config::node::NodeUserConfig;
+        use otel_arrow_dfe_config::node::NodeUserConfig;
         use std::sync::Arc;
 
         let test_runtime = TestRuntime::new();
@@ -761,17 +770,17 @@ mod tests {
     mod admission_policy {
         use super::*;
         use crate::processors::exclusive_router_admission::OnFullPolicy;
-        use otap_df_channel::error::RecvError;
-        use otap_df_channel::mpsc;
-        use otap_df_engine::Interests;
-        use otap_df_engine::control::{
+        use otel_arrow_dfe_channel::error::RecvError;
+        use otel_arrow_dfe_channel::mpsc;
+        use otel_arrow_dfe_engine::Interests;
+        use otel_arrow_dfe_engine::control::{
             NackCause, NodeControlMsg, PipelineCompletionMsg, PipelineCompletionMsgReceiver,
             pipeline_completion_msg_channel,
         };
-        use otap_df_engine::local::message::LocalSender;
-        use otap_df_engine::message::Sender;
-        use otap_df_engine::node::NodeWithPDataSender;
-        use otap_df_otap::testing::{TestCallData, next_nack};
+        use otel_arrow_dfe_engine::local::message::LocalSender;
+        use otel_arrow_dfe_engine::message::Sender;
+        use otel_arrow_dfe_engine::node::NodeWithPDataSender;
+        use otel_arrow_dfe_otap::testing::{TestCallData, next_nack};
         use std::sync::Arc;
 
         fn subscribed_pdata(payload: OtapArrowRecords, upstream_node_id: usize) -> OtapPdata {
@@ -1189,26 +1198,26 @@ mod tests {
 
     mod telemetry {
         use super::*;
-        use otap_df_channel::error::RecvError;
-        use otap_df_channel::mpsc;
-        use otap_df_engine::Interests;
-        use otap_df_engine::context::ControllerContext;
-        use otap_df_engine::control::{
+        use otel_arrow_dfe_channel::error::RecvError;
+        use otel_arrow_dfe_channel::mpsc;
+        use otel_arrow_dfe_engine::Interests;
+        use otel_arrow_dfe_engine::context::ControllerContext;
+        use otel_arrow_dfe_engine::control::{
             NodeControlMsg, PipelineCompletionMsg, PipelineCompletionMsgReceiver,
             pipeline_completion_msg_channel,
         };
-        use otap_df_engine::local::message::LocalSender;
-        use otap_df_engine::local::processor::{
+        use otel_arrow_dfe_engine::local::message::LocalSender;
+        use otel_arrow_dfe_engine::local::processor::{
             EffectHandler as LocalEffectHandler, Processor as _,
         };
-        use otap_df_engine::message::{Message, Sender};
-        use otap_df_engine::testing::setup_test_runtime;
-        use otap_df_otap::pdata::OtapPdata;
-        use otap_df_otap::testing::{TestCallData, next_nack};
-        use otap_df_pdata::otap::{Logs, OtapArrowRecords};
-        use otap_df_telemetry::InternalTelemetrySystem;
-        use otap_df_telemetry::registry::TelemetryRegistryHandle;
-        use otap_df_telemetry::reporter::MetricsReporter;
+        use otel_arrow_dfe_engine::message::{Message, Sender};
+        use otel_arrow_dfe_engine::testing::setup_test_runtime;
+        use otel_arrow_dfe_otap::pdata::OtapPdata;
+        use otel_arrow_dfe_otap::testing::{TestCallData, next_nack};
+        use otel_arrow_dfe_pdata::otap::{Logs, OtapArrowRecords};
+        use otel_arrow_dfe_telemetry::InternalTelemetrySystem;
+        use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
+        use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
         use std::collections::HashMap;
         use std::time::Duration;
         use tokio::task::JoinHandle;
@@ -1278,29 +1287,31 @@ mod tests {
             }
         }
 
-        fn signal_name(st: otap_df_config::SignalType) -> &'static str {
+        fn signal_name(st: otel_arrow_dfe_config::SignalType) -> &'static str {
             match st {
-                otap_df_config::SignalType::Logs => "logs",
-                otap_df_config::SignalType::Metrics => "metrics",
-                otap_df_config::SignalType::Traces => "traces",
+                otel_arrow_dfe_config::SignalType::Logs => "logs",
+                otel_arrow_dfe_config::SignalType::Metrics => "metrics",
+                otel_arrow_dfe_config::SignalType::Traces => "traces",
             }
         }
 
-        fn signal_payload(st: otap_df_config::SignalType) -> OtapArrowRecords {
+        fn signal_payload(st: otel_arrow_dfe_config::SignalType) -> OtapArrowRecords {
             match st {
-                otap_df_config::SignalType::Logs => OtapArrowRecords::Logs(Logs::default()),
-                otap_df_config::SignalType::Metrics => {
+                otel_arrow_dfe_config::SignalType::Logs => OtapArrowRecords::Logs(Logs::default()),
+                otel_arrow_dfe_config::SignalType::Metrics => {
                     OtapArrowRecords::Metrics(Default::default())
                 }
-                otap_df_config::SignalType::Traces => OtapArrowRecords::Traces(Default::default()),
+                otel_arrow_dfe_config::SignalType::Traces => {
+                    OtapArrowRecords::Traces(Default::default())
+                }
             }
         }
 
-        fn signal_named_port(st: otap_df_config::SignalType) -> &'static str {
+        fn signal_named_port(st: otel_arrow_dfe_config::SignalType) -> &'static str {
             match st {
-                otap_df_config::SignalType::Logs => PORT_LOGS,
-                otap_df_config::SignalType::Metrics => PORT_METRICS,
-                otap_df_config::SignalType::Traces => PORT_TRACES,
+                otel_arrow_dfe_config::SignalType::Logs => PORT_LOGS,
+                otel_arrow_dfe_config::SignalType::Metrics => PORT_METRICS,
+                otel_arrow_dfe_config::SignalType::Traces => PORT_TRACES,
             }
         }
 
@@ -1324,7 +1335,7 @@ mod tests {
         }
 
         async fn assert_full_rejection_for_route(
-            st: otap_df_config::SignalType,
+            st: otel_arrow_dfe_config::SignalType,
             route_port: &'static str,
             test_name: &'static str,
             upstream_node_id: usize,
@@ -1344,7 +1355,13 @@ mod tests {
 
             let mut senders = HashMap::new();
             let _ = senders.insert(route_port.into(), Sender::Local(LocalSender::mpsc(tx)));
-            let mut eh = LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
+            let mut eh = LocalEffectHandler::new(
+                node_id.clone(),
+                senders,
+                None,
+                reporter.clone(),
+                otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+            );
             let (completion_tx, mut completion_rx) = pipeline_completion_msg_channel(4);
             eh.set_pipeline_completion_msg_sender(completion_tx);
 
@@ -1461,7 +1478,7 @@ mod tests {
                 let mut senders = HashMap::new();
                 let _ = senders.insert(PORT_LOGS.into(), Sender::Local(LocalSender::mpsc(tx_logs)));
                 let mut eh =
-                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
+                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone(), otel_arrow_dfe_engine::testing::test_pipeline_runtime_services());
 
                 // Send a logs pdata -> should route to named port
                 let pdata = OtapPdata::new_default(OtapArrowRecords::Logs(Logs::default()).into());
@@ -1542,7 +1559,7 @@ assert_eq!(
                 let mut senders = HashMap::new();
                 let _ = senders.insert(PORT_LOGS.into(), Sender::Local(LocalSender::mpsc(tx_logs)));
                 let mut eh =
-                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
+                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone(), otel_arrow_dfe_engine::testing::test_pipeline_runtime_services());
                 let (completion_tx, mut completion_rx) = pipeline_completion_msg_channel(4);
                 eh.set_pipeline_completion_msg_sender(completion_tx);
 
@@ -1635,8 +1652,8 @@ assert_eq!(
         fn test_metrics_named_logs_full() {
             let (rt, local) = setup_test_runtime();
             rt.block_on(local.run_until(assert_full_rejection_for_route(
-                otap_df_config::SignalType::Logs,
-                signal_named_port(otap_df_config::SignalType::Logs),
+                otel_arrow_dfe_config::SignalType::Logs,
+                signal_named_port(otel_arrow_dfe_config::SignalType::Logs),
                 "signal_router_named_logs_full",
                 83,
             )));
@@ -1663,7 +1680,7 @@ assert_eq!(
                 let mut senders = HashMap::new();
                 let _ = senders.insert("out".into(), Sender::Local(LocalSender::mpsc(tx_out)));
                 let mut eh =
-                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
+                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone(), otel_arrow_dfe_engine::testing::test_pipeline_runtime_services());
 
                 let pdata = OtapPdata::new_default(OtapArrowRecords::Logs(Logs::default()).into());
                 router
@@ -1739,7 +1756,7 @@ assert_eq!(
                 let mut senders = HashMap::new();
                 let _ = senders.insert("out".into(), Sender::Local(LocalSender::mpsc(tx_out)));
                 let mut eh =
-                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
+                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone(), otel_arrow_dfe_engine::testing::test_pipeline_runtime_services());
                 let (completion_tx, mut completion_rx) = pipeline_completion_msg_channel(4);
                 eh.set_pipeline_completion_msg_sender(completion_tx);
 
@@ -1830,7 +1847,7 @@ assert_eq!(
         fn test_metrics_default_logs_full() {
             let (rt, local) = setup_test_runtime();
             rt.block_on(local.run_until(assert_full_rejection_for_route(
-                otap_df_config::SignalType::Logs,
+                otel_arrow_dfe_config::SignalType::Logs,
                 "out",
                 "signal_router_default_logs_full",
                 84,
@@ -1860,7 +1877,7 @@ assert_eq!(
                 let (tx_logs, _rx_logs) = mpsc::Channel::new(1);
                 tx_logs
                     .send(OtapPdata::new_default(
-                        signal_payload(otap_df_config::SignalType::Logs).into(),
+                        signal_payload(otel_arrow_dfe_config::SignalType::Logs).into(),
                     ))
                     .expect("prefill should occupy the blocked logs route");
                 let (tx_metrics, rx_metrics) = mpsc::Channel::new(1);
@@ -1872,7 +1889,7 @@ assert_eq!(
                     Sender::Local(LocalSender::mpsc(tx_metrics)),
                 );
                 let mut eh =
-                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
+                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone(), otel_arrow_dfe_engine::testing::test_pipeline_runtime_services());
                 let (completion_tx, mut completion_rx) = pipeline_completion_msg_channel(4);
                 eh.set_pipeline_completion_msg_sender(completion_tx);
 
@@ -1880,7 +1897,7 @@ assert_eq!(
                 router
                     .process(
                         Message::PData(subscribed_pdata(
-                            signal_payload(otap_df_config::SignalType::Logs),
+                            signal_payload(otel_arrow_dfe_config::SignalType::Logs),
                             upstream_node_id,
                         )),
                         &mut eh,
@@ -1891,7 +1908,7 @@ assert_eq!(
                 router
                     .process(
                         Message::PData(OtapPdata::new_default(
-                            signal_payload(otap_df_config::SignalType::Metrics).into(),
+                            signal_payload(otel_arrow_dfe_config::SignalType::Metrics).into(),
                         )),
                         &mut eh,
                     )
@@ -1987,7 +2004,7 @@ assert_eq!(
                 let mut senders = HashMap::new();
                 let _ = senders.insert(PORT_TRACES.into(), Sender::Local(LocalSender::mpsc(tx)));
                 let mut eh =
-                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
+                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone(), otel_arrow_dfe_engine::testing::test_pipeline_runtime_services());
 
                 let pdata =
                     OtapPdata::new_default(OtapArrowRecords::Traces(Default::default()).into());
@@ -2058,7 +2075,7 @@ assert_eq!(
                 let mut senders = HashMap::new();
                 let _ = senders.insert(PORT_TRACES.into(), Sender::Local(LocalSender::mpsc(tx)));
                 let mut eh =
-                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
+                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone(), otel_arrow_dfe_engine::testing::test_pipeline_runtime_services());
 
                 let pdata =
                     OtapPdata::new_default(OtapArrowRecords::Traces(Default::default()).into());
@@ -2130,8 +2147,8 @@ assert_eq!(
         fn test_metrics_named_traces_full() {
             let (rt, local) = setup_test_runtime();
             rt.block_on(local.run_until(assert_full_rejection_for_route(
-                otap_df_config::SignalType::Traces,
-                signal_named_port(otap_df_config::SignalType::Traces),
+                otel_arrow_dfe_config::SignalType::Traces,
+                signal_named_port(otel_arrow_dfe_config::SignalType::Traces),
                 "signal_router_named_traces_full",
                 86,
             )));
@@ -2156,7 +2173,7 @@ assert_eq!(
                 let mut senders = HashMap::new();
                 let _ = senders.insert("out".into(), Sender::Local(LocalSender::mpsc(tx)));
                 let mut eh =
-                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
+                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone(), otel_arrow_dfe_engine::testing::test_pipeline_runtime_services());
 
                 let pdata =
                     OtapPdata::new_default(OtapArrowRecords::Traces(Default::default()).into());
@@ -2227,7 +2244,7 @@ assert_eq!(
                 let mut senders = HashMap::new();
                 let _ = senders.insert("out".into(), Sender::Local(LocalSender::mpsc(tx)));
                 let mut eh =
-                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
+                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone(), otel_arrow_dfe_engine::testing::test_pipeline_runtime_services());
 
                 let pdata =
                     OtapPdata::new_default(OtapArrowRecords::Traces(Default::default()).into());
@@ -2299,7 +2316,7 @@ assert_eq!(
         fn test_metrics_default_traces_full() {
             let (rt, local) = setup_test_runtime();
             rt.block_on(local.run_until(assert_full_rejection_for_route(
-                otap_df_config::SignalType::Traces,
+                otel_arrow_dfe_config::SignalType::Traces,
                 "out",
                 "signal_router_default_traces_full",
                 87,
@@ -2326,7 +2343,7 @@ assert_eq!(
                 let mut senders = HashMap::new();
                 let _ = senders.insert(PORT_METRICS.into(), Sender::Local(LocalSender::mpsc(tx)));
                 let mut eh =
-                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
+                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone(), otel_arrow_dfe_engine::testing::test_pipeline_runtime_services());
 
                 let pdata =
                     OtapPdata::new_default(OtapArrowRecords::Metrics(Default::default()).into());
@@ -2397,7 +2414,7 @@ assert_eq!(
                 let mut senders = HashMap::new();
                 let _ = senders.insert(PORT_METRICS.into(), Sender::Local(LocalSender::mpsc(tx)));
                 let mut eh =
-                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
+                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone(), otel_arrow_dfe_engine::testing::test_pipeline_runtime_services());
 
                 let pdata =
                     OtapPdata::new_default(OtapArrowRecords::Metrics(Default::default()).into());
@@ -2469,8 +2486,8 @@ assert_eq!(
         fn test_metrics_named_metrics_full() {
             let (rt, local) = setup_test_runtime();
             rt.block_on(local.run_until(assert_full_rejection_for_route(
-                otap_df_config::SignalType::Metrics,
-                signal_named_port(otap_df_config::SignalType::Metrics),
+                otel_arrow_dfe_config::SignalType::Metrics,
+                signal_named_port(otel_arrow_dfe_config::SignalType::Metrics),
                 "signal_router_named_metrics_full",
                 88,
             )));
@@ -2495,7 +2512,7 @@ assert_eq!(
                 let mut senders = HashMap::new();
                 let _ = senders.insert("out".into(), Sender::Local(LocalSender::mpsc(tx)));
                 let mut eh =
-                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
+                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone(), otel_arrow_dfe_engine::testing::test_pipeline_runtime_services());
 
                 let pdata =
                     OtapPdata::new_default(OtapArrowRecords::Metrics(Default::default()).into());
@@ -2566,7 +2583,7 @@ assert_eq!(
                 let mut senders = HashMap::new();
                 let _ = senders.insert("out".into(), Sender::Local(LocalSender::mpsc(tx)));
                 let mut eh =
-                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
+                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone(), otel_arrow_dfe_engine::testing::test_pipeline_runtime_services());
 
                 let pdata =
                     OtapPdata::new_default(OtapArrowRecords::Metrics(Default::default()).into());
@@ -2638,7 +2655,7 @@ assert_eq!(
         fn test_metrics_default_metrics_full() {
             let (rt, local) = setup_test_runtime();
             rt.block_on(local.run_until(assert_full_rejection_for_route(
-                otap_df_config::SignalType::Metrics,
+                otel_arrow_dfe_config::SignalType::Metrics,
                 "out",
                 "signal_router_default_metrics_full",
                 89,

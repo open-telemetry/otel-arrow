@@ -8,17 +8,17 @@
 //! and `channel.kind`.
 
 use crate::attributes::ChannelKind;
-use otap_df_config::SignalType;
-use otap_df_telemetry::attributes::AttributeEnum as _;
-use otap_df_telemetry::common_attributes::{
+use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_telemetry::attributes::AttributeEnum as _;
+use otel_arrow_dfe_telemetry::common_attributes::{
     Outcome, OutcomeAttributes, SignalAttributes, SignalOutcomeAttributes,
 };
-use otap_df_telemetry::error::Error as TelemetryError;
-use otap_df_telemetry::instrument::{Counter, Gauge, Mmsc};
-use otap_df_telemetry::metrics::{MeasurementMetricSet, MetricSet, MetricSetSnapshot};
-use otap_df_telemetry::registry::MetricSetKey;
-use otap_df_telemetry::reporter::MetricsReporter;
-use otap_df_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
+use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
+use otel_arrow_dfe_telemetry::instrument::{Counter, Gauge, HistogramNormal};
+use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSet, MetricSetSnapshot};
+use otel_arrow_dfe_telemetry::registry::MetricSetKey;
+use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
+use otel_arrow_dfe_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -155,69 +155,93 @@ pub(crate) struct ControlChannelReceiverMetrics {
     pub(crate) capacity: Gauge<u64>,
 }
 
-/// Ack/nack metrics for consumed messages, owned exclusively by the runtime control manager.
+/// Ack/nack metrics for input messages, owned exclusively by the runtime control manager.
 /// Registered under the input channel entity key so they share the same
 /// channel attributes as the transport metrics.
 #[metric_set(
-    name = "node.consumer",
+    name = "node.input",
     measurement_attributes = SignalOutcomeAttributes
 )]
 #[derive(Debug, Default, Clone)]
-pub struct ConsumedMetrics {
-    /// Duration from entry until the corresponding ack or nack is
-    /// routed, in nanoseconds. This is reported at the detailed level.
-    ///
-    /// TODO: make this Option<Box<Mmsc or Histogram>>.
-    #[metric(name = "consumed.duration", unit = "ns")]
-    pub consumed_duration_ns: Mmsc,
-    /// Consumed messages, grouped by `signal` and `outcome` datapoint attributes.
-    #[metric(name = "consumed.messages", unit = "{message}")]
-    pub consumed_messages: Counter<u64>,
+pub struct NodeInputMetrics {
+    /// Input messages, grouped by `signal` and `outcome` datapoint attributes.
+    #[metric(unit = "{message}")]
+    pub messages: Counter<u64>,
+}
+
+/// Ack/nack completion duration associated with one node boundary.
+#[metric_set(
+    name = "node.completion",
+    measurement_attributes = SignalOutcomeAttributes
+)]
+#[derive(Debug, Default, Clone)]
+pub struct NodeCompletionMetrics {
+    /// Duration from the tracked node boundary until the corresponding
+    /// terminal ack or nack is routed, in seconds.
+    #[metric(unit = "s")]
+    pub duration: HistogramNormal,
 }
 
 /// Optional per-signal item metrics for a node input channel.
 #[metric_set(
-    name = "node.consumer",
+    name = "node.input",
     measurement_attributes = SignalOutcomeAttributes
 )]
 #[derive(Debug, Default, Clone)]
-pub struct ConsumedItemMetrics {
-    /// Consumed signal items, grouped by the `signal` datapoint attribute.
-    #[metric(name = "consumed.items", unit = "{item}")]
-    pub consumed_items: Counter<u64>,
+pub struct NodeInputItemMetrics {
+    /// Input signal items, grouped by the `signal` datapoint attribute.
+    #[metric(unit = "{item}")]
+    pub items: Counter<u64>,
 }
 
-/// Ack/nack metrics for produced messages, owned exclusively by the runtime control manager.
+/// Optional per-signal logical payload-size metrics for a node input channel.
+#[metric_set(
+    name = "node.input",
+    measurement_attributes = SignalOutcomeAttributes
+)]
+#[derive(Debug, Default, Clone)]
+pub struct NodeInputSizeMetrics {
+    /// Input logical payload size, grouped by `signal` and `outcome`.
+    #[metric(unit = "By")]
+    pub size: Counter<u64>,
+}
+
+/// Ack/nack metrics for output messages, owned exclusively by the runtime control manager.
 /// Registered under the output channel entity key so they share the same
 /// channel attributes as the transport metrics.
 #[metric_set(
-    name = "node.producer",
+    name = "node.output",
     measurement_attributes = SignalOutcomeAttributes
 )]
 #[derive(Debug, Default, Clone)]
-pub struct ProducedMetrics {
-    /// Duration from production until the corresponding ack or nack is
-    /// routed, in nanoseconds. This is reported at the detailed level,
-    /// only in receivers. Processors report `consumed.messages`.
-    ///
-    /// TODO: make this Option<Box<Mmsc or Histogram>>.
-    #[metric(name = "produced.duration", unit = "ns")]
-    pub produced_duration_ns: Mmsc,
-    /// Produced messages, grouped by `signal` and `outcome` datapoint attributes.
-    #[metric(name = "produced.messages", unit = "{message}")]
-    pub produced_messages: Counter<u64>,
+pub struct NodeOutputMetrics {
+    /// Output messages, grouped by `signal` and `outcome` datapoint attributes.
+    #[metric(unit = "{message}")]
+    pub messages: Counter<u64>,
 }
 
 /// Optional per-signal item metrics for a node output channel.
 #[metric_set(
-    name = "node.producer",
+    name = "node.output",
     measurement_attributes = SignalOutcomeAttributes
 )]
 #[derive(Debug, Default, Clone)]
-pub struct ProducedItemMetrics {
-    /// Produced signal items, grouped by the `signal` datapoint attribute.
-    #[metric(name = "produced.items", unit = "{item}")]
-    pub produced_items: Counter<u64>,
+pub struct NodeOutputItemMetrics {
+    /// Output signal items, grouped by the `signal` datapoint attribute.
+    #[metric(unit = "{item}")]
+    pub items: Counter<u64>,
+}
+
+/// Optional per-signal logical payload-size metrics for a node output channel.
+#[metric_set(
+    name = "node.output",
+    measurement_attributes = SignalOutcomeAttributes
+)]
+#[derive(Debug, Default, Clone)]
+pub struct NodeOutputSizeMetrics {
+    /// Output logical payload size, grouped by `signal` and `outcome`.
+    #[metric(unit = "By")]
+    pub size: Counter<u64>,
 }
 
 pub(crate) fn control_channel_id(name: &str) -> Cow<'static, str> {
@@ -574,10 +598,10 @@ mod tests {
     use crate::attributes::{ChannelImplementation, ChannelMode, ChannelType};
     use crate::context::{ControllerContext, PipelineContext};
     use crate::local::message::{LocalReceiver, LocalSender};
-    use otap_df_channel::error::{RecvError, SendError};
-    use otap_df_channel::mpsc;
-    use otap_df_config::node::NodeKind;
-    use otap_df_telemetry::registry::TelemetryRegistryHandle;
+    use otel_arrow_dfe_channel::error::{RecvError, SendError};
+    use otel_arrow_dfe_channel::mpsc;
+    use otel_arrow_dfe_config::node::NodeKind;
+    use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
     use std::collections::HashMap;
 
     #[derive(Debug)]
@@ -604,7 +628,7 @@ mod tests {
 
     fn pdata_sender_metrics(
         pipeline_ctx: &PipelineContext,
-        entity_key: otap_df_telemetry::registry::EntityKey,
+        entity_key: otel_arrow_dfe_telemetry::registry::EntityKey,
     ) -> ChannelSenderMetricSets {
         ChannelSenderMetricSets::Pdata(PdataChannelSenderMetricSets {
             messages: pipeline_ctx.register_measurement_metric_set_for_entity(entity_key),
@@ -614,7 +638,7 @@ mod tests {
 
     fn pdata_receiver_metrics(
         pipeline_ctx: &PipelineContext,
-        entity_key: otap_df_telemetry::registry::EntityKey,
+        entity_key: otel_arrow_dfe_telemetry::registry::EntityKey,
     ) -> ChannelReceiverMetricSets {
         ChannelReceiverMetricSets::Pdata(PdataChannelReceiverMetricSets {
             messages: pipeline_ctx.register_measurement_metric_set_for_entity(entity_key),

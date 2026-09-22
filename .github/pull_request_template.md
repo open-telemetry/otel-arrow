@@ -1,27 +1,23 @@
-# Change Summary
+# Change summary
+
+> Chore PR? Open **Preview**, then [use the chore template](?template=chore.md).
 
 <!--Replace with a brief summary of the change in this PR-->
 
-## What issue does this PR close?
+## Related issue
 
 <!--We highly recommend correlation of every PR to an issue-->
 
 * Closes #NNN
 
-## How are these changes tested?
+## Validation
 
-## Are there any user-facing changes?
+<!--How did you confirm your change has the intended effect?-->
 
- <!-- If yes, provide further info below -->
-
-### Changelog
+## User-facing changes
 
 <!--
-User-facing changes need a .chloggen/*.yaml entry. Copy the TEMPLATE.yaml
-in go/.chloggen/ or rust/otap-dataflow/.chloggen/ and fill in the fields.
-If not required, include `chore` in the PR title.
+Describe the impact, or write `None`.
+User-facing changes require a `.chloggen/*.yaml` entry. If no entry is needed,
+include `chore` in the PR title. Documentation-only changes are exempt.
 -->
-
-* [ ] Added a `.chloggen/*.yaml` entry
-* [ ] This PR is a `chore` (indicated in title)
-* [ ] This is a documentation-only PR.

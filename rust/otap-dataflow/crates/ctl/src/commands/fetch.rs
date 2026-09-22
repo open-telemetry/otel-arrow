@@ -10,8 +10,8 @@
 
 use crate::error::CliError;
 use crate::troubleshoot::{PipelineDescribeReport, describe_pipeline};
-use otap_df_admin_api::telemetry::LogsQuery;
-use otap_df_admin_api::{AdminClient, telemetry};
+use otel_arrow_dfe_admin_api::telemetry::LogsQuery;
+use otel_arrow_dfe_admin_api::{AdminClient, telemetry};
 
 /// Fetch retained admin logs or return the current CLI not-found error.
 pub(crate) async fn fetch_logs(
@@ -29,7 +29,7 @@ pub(crate) async fn fetch_rollout(
     pipeline_group_id: &str,
     pipeline_id: &str,
     rollout_id: &str,
-) -> Result<otap_df_admin_api::pipelines::RolloutStatus, CliError> {
+) -> Result<otel_arrow_dfe_admin_api::pipelines::RolloutStatus, CliError> {
     client
         .pipelines()
         .rollout_status(pipeline_group_id, pipeline_id, rollout_id)
@@ -48,7 +48,7 @@ pub(crate) async fn fetch_shutdown(
     pipeline_group_id: &str,
     pipeline_id: &str,
     shutdown_id: &str,
-) -> Result<otap_df_admin_api::pipelines::ShutdownStatus, CliError> {
+) -> Result<otel_arrow_dfe_admin_api::pipelines::ShutdownStatus, CliError> {
     client
         .pipelines()
         .shutdown_status(pipeline_group_id, pipeline_id, shutdown_id)
@@ -66,7 +66,7 @@ pub(crate) async fn fetch_pipeline_status(
     client: &AdminClient,
     pipeline_group_id: &str,
     pipeline_id: &str,
-) -> Result<otap_df_admin_api::pipelines::Status, CliError> {
+) -> Result<otel_arrow_dfe_admin_api::pipelines::Status, CliError> {
     client
         .pipelines()
         .status(pipeline_group_id, pipeline_id)

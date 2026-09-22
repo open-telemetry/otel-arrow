@@ -1,11 +1,14 @@
 [package]
-name = "otap-df-contrib-extensions"
-description = "OTAP Contrib extensions"
+name = "otel-arrow-dfe-contrib-extensions"
+description = "Contrib extensions for the OTel Arrow Dataflow Engine"
 version.workspace = true
 authors.workspace = true
 repository.workspace = true
 license.workspace = true
-publish.workspace = true
+readme = "README.md"
+publish = true
+keywords = ["telemetry", "opentelemetry", "otap", "extensions", "dataflow"]
+categories = ["asynchronous"]
 edition.workspace = true
 rust-version.workspace = true
 
@@ -14,11 +17,11 @@ workspace = true
 
 [dependencies]
 # Workspace crates
-otap-df-config = { workspace = true }
-otap-df-engine = { workspace = true }
-otap-df-otap = { workspace = true }
-otap-df-telemetry = { workspace = true }
-otap-df-telemetry-macros = { workspace = true }
+otel-arrow-dfe-config = { workspace = true }
+otel-arrow-dfe-engine = { workspace = true }
+otel-arrow-dfe-otap = { workspace = true }
+otel-arrow-dfe-telemetry = { workspace = true }
+otel-arrow-dfe-telemetry-macros = { workspace = true }
 
 async-trait.workspace = true
 futures.workspace = true
@@ -45,26 +48,30 @@ sha2 = { workspace = true, optional = true }
 
 [features]
 # Umbrella feature enabling all contrib extensions.
-contrib-extensions = ["azure-identity-auth-extension", "k8s-service-account-token-auth-extension", "oauth2-client-auth-extension"]
+contrib-extensions = [
+    "azure-identity-auth",
+    "k8s-service-account-token-auth",
+    "oauth2-client-auth",
+]
 # Azure Identity authentication extension (BearerTokenProvider capability).
-azure-identity-auth-extension = ["dep:azure_core", "dep:azure_identity", "dep:humantime-serde", "dep:rand"]
+azure-identity-auth = ["dep:azure_core", "dep:azure_identity", "dep:humantime-serde", "dep:rand"]
 # Kubernetes service-account-token authorizer extension (BearerTokenAuthorizer
 # capability) validating tokens via the Kubernetes TokenReview API.
-k8s-service-account-token-auth-extension = ["dep:kube", "dep:k8s-openapi", "dep:humantime-serde", "dep:sha2"]
+k8s-service-account-token-auth = ["dep:kube", "dep:k8s-openapi", "dep:humantime-serde", "dep:sha2"]
 # OAuth 2.0 Client Auth extension (BearerTokenProvider capability).
-oauth2-client-auth-extension = ["dep:oauth2", "dep:reqwest", "dep:http", "dep:jsonwebtoken", "dep:humantime-serde", "dep:rand", "dep:secrecy"]
+oauth2-client-auth = ["dep:oauth2", "dep:reqwest", "dep:http", "dep:jsonwebtoken", "dep:humantime-serde", "dep:rand", "dep:secrecy"]
 
 # JWT assertion-signing backend for the OAuth 2.0 client auth extension. These
 # mirror the workspace `crypto-*` features so a build signs assertions with the
 # same library it uses for TLS. See `oauth2_client_auth::jwt_crypto`.
-crypto-ring = ["dep:ring"]
 crypto-aws-lc = ["jsonwebtoken?/aws_lc_rs"]
 crypto-openssl = ["dep:openssl"]
+crypto-ring = ["dep:ring"]
 
 [dev-dependencies]
-otap-df-engine = { workspace = true, features = ["test-utils"] }
-otap-df-otap = { workspace = true, features = ["crypto-ring"] }
-otap-test-tls-certs = { workspace = true }
+otel-arrow-dfe-engine = { workspace = true, features = ["test-utils"] }
+otel-arrow-dfe-otap = { workspace = true, features = ["crypto-ring"] }
+otel-arrow-dfe-test-tls-certs = { workspace = true }
 rcgen = { workspace = true, features = ["aws_lc_rs"] }
 # Test fallback for the JWT signing backend when no `crypto-*` feature is
 # selected, so the suite runs without committing the library to a backend.

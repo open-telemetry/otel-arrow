@@ -3,10 +3,10 @@
 
 //! Telemetry metrics for the log sampling processor.
 
-use otap_df_telemetry::instrument::Counter;
-use otap_df_telemetry_macros::{attribute_set, metric_set};
+use otel_arrow_dfe_telemetry::instrument::Counter;
+use otel_arrow_dfe_telemetry_macros::{attribute_set, metric_set};
 
-use otap_df_config::SignalType;
+use otel_arrow_dfe_config::SignalType;
 
 #[attribute_set(item, registration)]
 #[derive(Debug, Clone, Copy)]

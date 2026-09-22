@@ -3,9 +3,9 @@
 
 //! Metrics for the OTAP DebugProcessor node.
 
-use otap_df_config::SignalType;
-use otap_df_telemetry::instrument::Counter;
-use otap_df_telemetry_macros::{attribute_set, metric_set};
+use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_telemetry::instrument::Counter;
+use otel_arrow_dfe_telemetry_macros::{attribute_set, metric_set};
 
 #[attribute_set(item, measurement)]
 #[derive(Debug, Clone, Copy)]

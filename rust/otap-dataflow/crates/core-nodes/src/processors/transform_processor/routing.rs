@@ -4,8 +4,8 @@
 use std::any::Any;
 
 use async_trait::async_trait;
-use otap_df_pdata::OtapArrowRecords;
-use otap_df_query_engine::{
+use otel_arrow_dfe_pdata::OtapArrowRecords;
+use otel_arrow_dfe_query_engine::{
     error::Result,
     pipeline::routing::{RouteName, Router},
 };

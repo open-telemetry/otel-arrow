@@ -38,14 +38,14 @@
 use crate::AppState;
 use crate::convert::json_shape;
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use otap_df_admin_types::operations::DeleteOptions;
-use otap_df_admin_types::pipelines::{PipelineRolloutState, Status as ApiPipelineStatus};
-use otap_df_config::PipelineKey;
-use otap_df_telemetry::otel_info;
+use otel_arrow_dfe_admin_types::operations::DeleteOptions;
+use otel_arrow_dfe_admin_types::pipelines::{PipelineRolloutState, Status as ApiPipelineStatus};
+use otel_arrow_dfe_config::PipelineKey;
+use otel_arrow_dfe_telemetry::otel_info;
 use serde::Deserialize;
 use std::time::{Duration, Instant};
 
@@ -129,7 +129,7 @@ fn shutdown_is_success(state: &str) -> bool {
 /// Returns committed configuration details for one logical pipeline.
 ///
 /// Credential header values are redacted from the response (see
-/// [`otap_df_config::pipeline::PipelineConfig::redacted_for_snapshot`]) so
+/// [`otel_arrow_dfe_config::pipeline::PipelineConfig::redacted_for_snapshot`]) so
 /// secrets configured in node and extension `headers` are not exposed in
 /// cleartext.
 pub async fn show_pipeline(
@@ -290,7 +290,9 @@ pub async fn shutdown_pipeline(
     Path((pipeline_group_id, pipeline_id)): Path<(String, String)>,
     Query(params): Query<WaitParams>,
     State(state): State<AppState>,
+    headers: HeaderMap,
 ) -> impl IntoResponse {
+    let initiator = crate::pipeline_shutdown_initiator(&headers);
     otel_info!(
         "pipeline.shutdown.requested",
         pipeline_group_id = pipeline_group_id.as_str(),
@@ -299,10 +301,12 @@ pub async fn shutdown_pipeline(
         timeout_secs = params.timeout_secs
     );
 
-    match state
-        .controller
-        .shutdown_pipeline(&pipeline_group_id, &pipeline_id, params.timeout_secs)
-    {
+    match state.controller.shutdown_pipeline(
+        &pipeline_group_id,
+        &pipeline_id,
+        params.timeout_secs,
+        initiator,
+    ) {
         Ok(shutdown) => {
             if !params.wait {
                 return (StatusCode::ACCEPTED, Json(shutdown)).into_response();
@@ -486,11 +490,11 @@ mod tests {
         ShutdownStatus,
     };
     use axum::body::to_bytes;
-    use otap_df_admin_types::operations::{OperationError, OperationErrorKind};
-    use otap_df_config::observed_state::ObservedStateSettings;
-    use otap_df_engine::memory_limiter::MemoryPressureState;
-    use otap_df_state::store::ObservedStateStore;
-    use otap_df_telemetry::registry::TelemetryRegistryHandle;
+    use otel_arrow_dfe_admin_types::operations::{OperationError, OperationErrorKind};
+    use otel_arrow_dfe_config::observed_state::ObservedStateSettings;
+    use otel_arrow_dfe_engine::memory_limiter::MemoryPressureState;
+    use otel_arrow_dfe_state::store::ObservedStateStore;
+    use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
     use serde_json::json;
     use std::sync::Arc;
 
@@ -513,8 +517,11 @@ mod tests {
             _pipeline_group_id: &str,
             _pipeline_id: &str,
             _timeout_secs: u64,
+            initiator: crate::PipelineShutdownInitiator,
         ) -> Result<ShutdownStatus, ControlPlaneError> {
-            self.shutdown_result.clone()
+            let mut status = self.shutdown_result.clone()?;
+            status.initiator = Some(initiator);
+            Ok(status)
         }
 
         fn reconfigure_pipeline(
@@ -653,6 +660,7 @@ mod tests {
             _pipeline_group_id: &str,
             _pipeline_id: &str,
             _timeout_secs: u64,
+            _initiator: crate::PipelineShutdownInitiator,
         ) -> Result<ShutdownStatus, ControlPlaneError> {
             Err(ControlPlaneError::PipelineNotFound)
         }
@@ -823,6 +831,7 @@ mod tests {
                 shutdown_status_result: Ok(None),
                 delete_result: Ok(delete_status("succeeded")),
             }))),
+            HeaderMap::new(),
         )
         .await
         .into_response();
@@ -835,6 +844,45 @@ mod tests {
             serde_json::from_slice(&body).expect("error body should deserialize");
         assert_eq!(error.kind, OperationErrorKind::Conflict);
         assert_eq!(error.message, None);
+    }
+
+    /// Scenario: dfctl submits an explicit pipeline shutdown request.
+    /// Guarantees: the immediate shutdown response reports dfctl as its initiator.
+    #[tokio::test]
+    async fn shutdown_pipeline_reports_dfctl_initiator() {
+        let mut headers = HeaderMap::new();
+        _ = headers.insert(
+            axum::http::header::USER_AGENT,
+            axum::http::HeaderValue::from_static("dfctl/0.51.0"),
+        );
+        let response = shutdown_pipeline(
+            Path(("default".to_string(), "main".to_string())),
+            Query(WaitParams {
+                wait: false,
+                timeout_secs: 60,
+            }),
+            State(test_app_state(Arc::new(StubControlPlane {
+                replace_result: Ok(rollout_status(PipelineRolloutState::Succeeded)),
+                rollout_status_result: Ok(None),
+                shutdown_result: Ok(shutdown_status("pending")),
+                shutdown_status_result: Ok(None),
+                delete_result: Ok(delete_status("succeeded")),
+            }))),
+            headers,
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body should collect");
+        let status: ShutdownStatus =
+            serde_json::from_slice(&body).expect("shutdown body should deserialize");
+        assert_eq!(
+            status.initiator,
+            Some(crate::PipelineShutdownInitiator::Dfctl)
+        );
     }
 
     /// Scenario: a waited pipeline shutdown request times out while the control
@@ -856,6 +904,7 @@ mod tests {
                 shutdown_status_result: Ok(Some(shutdown_status("running"))),
                 delete_result: Ok(delete_status("succeeded")),
             }))),
+            HeaderMap::new(),
         )
         .await
         .into_response();

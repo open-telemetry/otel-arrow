@@ -41,16 +41,20 @@ use crate::error::{Error, TypedError};
 use crate::message::Sender;
 use crate::node::NodeId;
 use crate::output_router::OutputRouter;
+use crate::runtime_services::{CodecEffectHandler, PipelineRuntimeServices};
 use crate::terminal_state::TerminalState;
 use async_trait::async_trait;
-use otap_df_channel::error::RecvError;
-use otap_df_config::PortName;
-use otap_df_config::transport_headers_policy::HeaderCapturePolicy;
-use otap_df_telemetry::error::Error as TelemetryError;
-use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
-use otap_df_telemetry::reporter::MetricsReporter;
+use otel_arrow_dfe_channel::error::RecvError;
+use otel_arrow_dfe_config::PortName;
+use otel_arrow_dfe_config::authorized_identity_policy::AuthorizedIdentityPolicy;
+use otel_arrow_dfe_config::transport_headers_policy::CompiledHeaderCapturePolicy;
+use otel_arrow_dfe_pdata_codec::CodecService;
+use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
+use otel_arrow_dfe_telemetry::metrics::{MetricSet, MetricSetHandler};
+use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::rc::Rc;
 use std::time::Duration;
 use tokio::net::{TcpListener, UdpSocket};
 
@@ -135,14 +139,16 @@ pub struct EffectHandler<PData> {
     pub(crate) core: EffectHandlerCore<PData>,
     /// Output-port router.
     pub router: OutputRouter<Sender<PData>>,
-    /// Capture policy for extracting transport headers from inbound metadata.
-    /// `None` when no capture policy is configured (zero overhead).
-    capture_policy: Option<HeaderCapturePolicy>,
+    /// Immutable capture policy shared by local handler clones.
+    /// `None` disables capture.
+    capture_policy: Option<Rc<CompiledHeaderCapturePolicy>>,
+    /// Immutable authorized identity policy shared by local handler clones.
+    authorized_identity_policy: Option<Rc<AuthorizedIdentityPolicy>>,
 }
 
 /// Implementation for the `!Send` effect handler.
 impl<PData> EffectHandler<PData> {
-    /// Creates a new local (!Send) `EffectHandler` with the given receiver name and timer request sender.
+    /// Creates a local receiver effect handler.
     #[must_use]
     pub fn new(
         node_id: NodeId,
@@ -150,14 +156,16 @@ impl<PData> EffectHandler<PData> {
         default_port: Option<PortName>,
         node_request_sender: RuntimeCtrlMsgSender<PData>,
         metrics_reporter: MetricsReporter,
+        runtime_services: PipelineRuntimeServices,
     ) -> Self {
-        let mut core = EffectHandlerCore::new(node_id.clone(), metrics_reporter);
+        let mut core = EffectHandlerCore::new(node_id.clone(), metrics_reporter, runtime_services);
         core.set_runtime_ctrl_msg_sender(node_request_sender);
         let router = OutputRouter::new(node_id, msg_senders, default_port);
         EffectHandler {
             core,
             router,
             capture_policy: None,
+            authorized_identity_policy: None,
         }
     }
 
@@ -191,17 +199,28 @@ impl<PData> EffectHandler<PData> {
         self.core.node_interests()
     }
 
-    /// Returns the capture policy if a header capture policy is configured.
+    /// Returns the capture policy.
     ///
-    /// Returns `None` when no capture policy is active (zero overhead).
+    /// `None` disables capture.
     #[must_use]
-    pub fn capture_policy(&self) -> Option<&HeaderCapturePolicy> {
-        self.capture_policy.as_ref()
+    pub fn capture_policy(&self) -> Option<&CompiledHeaderCapturePolicy> {
+        self.capture_policy.as_deref()
     }
 
     /// Sets the capture policy for transport header extraction.
-    pub fn set_capture_policy(&mut self, policy: Option<HeaderCapturePolicy>) {
-        self.capture_policy = policy;
+    pub fn set_capture_policy(&mut self, policy: Option<CompiledHeaderCapturePolicy>) {
+        self.capture_policy = policy.map(Rc::new);
+    }
+
+    /// Returns the authorized identity claim projection policy.
+    #[must_use]
+    pub fn authorized_identity_policy(&self) -> Option<&AuthorizedIdentityPolicy> {
+        self.authorized_identity_policy.as_deref()
+    }
+
+    /// Sets the authorized identity claim projection policy.
+    pub fn set_authorized_identity_policy(&mut self, policy: Option<AuthorizedIdentityPolicy>) {
+        self.authorized_identity_policy = policy.map(Rc::new);
     }
 
     /// Sends a message to the next node(s) in the pipeline using the default port.
@@ -331,6 +350,12 @@ impl<PData> EffectHandler<PData> {
     // More methods will be added in the future as needed.
 }
 
+impl<PData> CodecEffectHandler for EffectHandler<PData> {
+    fn codec_service(&self) -> &CodecService {
+        self.core.runtime_services.codecs()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(missing_docs)]
@@ -338,8 +363,8 @@ mod tests {
     use crate::control::runtime_ctrl_msg_channel;
     use crate::local::message::LocalSender;
     use crate::testing::test_node;
-    use otap_df_channel::error::SendError;
-    use otap_df_channel::mpsc;
+    use otel_arrow_dfe_channel::error::SendError;
+    use otel_arrow_dfe_channel::mpsc;
     use std::borrow::Cow;
     use std::collections::{HashMap, HashSet};
     use tokio::time::{Duration, timeout};
@@ -359,7 +384,14 @@ mod tests {
 
         let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let eh = EffectHandler::new(test_node("recv"), senders, None, ctrl_tx, metrics_reporter);
+        let eh = EffectHandler::new(
+            test_node("recv"),
+            senders,
+            None,
+            ctrl_tx,
+            metrics_reporter,
+            crate::testing::test_pipeline_runtime_services(),
+        );
 
         eh.send_message_to("b", 42).await.unwrap();
 
@@ -380,7 +412,14 @@ mod tests {
 
         let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let eh = EffectHandler::new(test_node("recv"), senders, None, ctrl_tx, metrics_reporter);
+        let eh = EffectHandler::new(
+            test_node("recv"),
+            senders,
+            None,
+            ctrl_tx,
+            metrics_reporter,
+            crate::testing::test_pipeline_runtime_services(),
+        );
 
         eh.send_message(7).await.unwrap();
         assert_eq!(rx.recv().await.unwrap(), 7);
@@ -403,6 +442,7 @@ mod tests {
             Some("a".into()),
             ctrl_tx,
             metrics_reporter,
+            crate::testing::test_pipeline_runtime_services(),
         );
 
         eh.send_message(11).await.unwrap();
@@ -426,7 +466,14 @@ mod tests {
 
         let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let eh = EffectHandler::new(test_node("recv"), senders, None, ctrl_tx, metrics_reporter);
+        let eh = EffectHandler::new(
+            test_node("recv"),
+            senders,
+            None,
+            ctrl_tx,
+            metrics_reporter,
+            crate::testing::test_pipeline_runtime_services(),
+        );
 
         let res = eh.send_message(5).await;
         assert!(res.is_err());
@@ -455,7 +502,14 @@ mod tests {
 
         let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let eh = EffectHandler::new(test_node("recv"), senders, None, ctrl_tx, metrics_reporter);
+        let eh = EffectHandler::new(
+            test_node("recv"),
+            senders,
+            None,
+            ctrl_tx,
+            metrics_reporter,
+            crate::testing::test_pipeline_runtime_services(),
+        );
 
         let ports: HashSet<_> = eh.connected_ports().into_iter().collect();
         let expected: HashSet<_> = [Cow::from("a"), Cow::from("b")].into_iter().collect();
@@ -476,6 +530,7 @@ mod tests {
             Some("out".into()),
             ctrl_tx,
             metrics_reporter,
+            crate::testing::test_pipeline_runtime_services(),
         );
 
         // Should succeed when channel has capacity
@@ -497,6 +552,7 @@ mod tests {
             Some("out".into()),
             ctrl_tx,
             metrics_reporter,
+            crate::testing::test_pipeline_runtime_services(),
         );
 
         // First send should succeed
@@ -520,7 +576,14 @@ mod tests {
 
         let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let eh = EffectHandler::new(test_node("recv"), senders, None, ctrl_tx, metrics_reporter);
+        let eh = EffectHandler::new(
+            test_node("recv"),
+            senders,
+            None,
+            ctrl_tx,
+            metrics_reporter,
+            crate::testing::test_pipeline_runtime_services(),
+        );
 
         // Should return configuration error when no default sender
         let result = eh.try_send_message(99);
@@ -538,7 +601,14 @@ mod tests {
 
         let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let eh = EffectHandler::new(test_node("recv"), senders, None, ctrl_tx, metrics_reporter);
+        let eh = EffectHandler::new(
+            test_node("recv"),
+            senders,
+            None,
+            ctrl_tx,
+            metrics_reporter,
+            crate::testing::test_pipeline_runtime_services(),
+        );
 
         // Should succeed when sending to a specific port
         assert!(eh.try_send_message_to("b", 42).is_ok());
@@ -555,7 +625,14 @@ mod tests {
 
         let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let eh = EffectHandler::new(test_node("recv"), senders, None, ctrl_tx, metrics_reporter);
+        let eh = EffectHandler::new(
+            test_node("recv"),
+            senders,
+            None,
+            ctrl_tx,
+            metrics_reporter,
+            crate::testing::test_pipeline_runtime_services(),
+        );
 
         // First send should succeed
         assert!(eh.try_send_message_to("out", 1).is_ok());
@@ -575,7 +652,14 @@ mod tests {
 
         let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let eh = EffectHandler::new(test_node("recv"), senders, None, ctrl_tx, metrics_reporter);
+        let eh = EffectHandler::new(
+            test_node("recv"),
+            senders,
+            None,
+            ctrl_tx,
+            metrics_reporter,
+            crate::testing::test_pipeline_runtime_services(),
+        );
 
         // Should return error for unknown port
         let result = eh.try_send_message_to("unknown", 99);

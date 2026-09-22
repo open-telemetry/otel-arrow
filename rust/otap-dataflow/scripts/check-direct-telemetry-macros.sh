@@ -1,6 +1,6 @@
 #!/bin/bash
 # Script to detect direct use of tracing/log macros instead of otel_* wrappers.
-# All events MUST be emitted using the otel_* macros from otap_df_telemetry.
+# All events MUST be emitted using the otel_* macros from otel_arrow_dfe_telemetry.
 # See docs/telemetry/events-guide.md
 #
 # Usage: ./scripts/check-direct-telemetry-macros.sh
@@ -96,11 +96,11 @@ fi
 # as bare `info!(...)` instead of `tracing::info!(...)`.
 # Catches both single imports (use tracing::info;) and grouped imports
 # (use tracing::{info, warn};).
-if ! check_banned_pattern "use tracing::\({.*\)\?\(info\|warn\|error\|debug\|trace\)" "tracing macro import (use otel_* macros from otap_df_telemetry instead)"; then
+if ! check_banned_pattern "use tracing::\({.*\)\?\(info\|warn\|error\|debug\|trace\)" "tracing macro import (use otel_* macros from otel_arrow_dfe_telemetry instead)"; then
     checks_passed=1
 fi
 
-if ! check_banned_pattern "use log::\({.*\)\?\(info\|warn\|error\|debug\|trace\)" "log macro import (use otel_* macros from otap_df_telemetry instead)"; then
+if ! check_banned_pattern "use log::\({.*\)\?\(info\|warn\|error\|debug\|trace\)" "log macro import (use otel_* macros from otel_arrow_dfe_telemetry instead)"; then
     checks_passed=1
 fi
 
@@ -108,7 +108,7 @@ if [ $checks_passed -eq 0 ]; then
     echo "✅ No direct tracing/log macro usage found!"
     echo "ℹ️  All events use otel_* macros as required by docs/telemetry/events-guide.md."
 else
-    echo "❌ Found direct tracing/log macro usage. Use otel_* macros from otap_df_telemetry instead."
+    echo "❌ Found direct tracing/log macro usage. Use otel_* macros from otel_arrow_dfe_telemetry instead."
     echo ""
     echo "How to fix:"
     echo "  • tracing::info!(...)  → otel_info!(\"event.name\", ...)"
@@ -116,8 +116,8 @@ else
     echo "  • tracing::error!(...) → otel_error!(\"event.name\", ...)"
     echo "  • tracing::debug!(...) → otel_debug!(\"event.name\", ...)"
     echo ""
-    echo "  Import from otap_df_telemetry:"
-    echo "    use otap_df_telemetry::otel_info;"
+    echo "  Import from otel_arrow_dfe_telemetry:"
+    echo "    use otel_arrow_dfe_telemetry::otel_info;"
     echo ""
     echo "  See docs/telemetry/events-guide.md for full details."
     exit 1

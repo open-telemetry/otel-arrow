@@ -11,11 +11,11 @@
 //!
 //! Gauges are instantaneous values that are set via `set`.
 
-use otap_df_expohisto::{Error as HistogramError, HistogramNN};
+use otel_arrow_dfe_expohisto::{Error as HistogramError, HistogramNN};
 
 /// Bucket totals recovered by [`DistributionValue::scan_buckets`], re-exported so
-/// callers need not depend on `otap_df_expohisto` directly.
-pub use otap_df_expohisto::BucketTotals;
+/// callers need not depend on `otel_arrow_dfe_expohisto` directly.
+pub use otel_arrow_dfe_expohisto::BucketTotals;
 use std::fmt::Debug;
 use std::ops::{AddAssign, SubAssign};
 use std::time::Instant;
@@ -666,9 +666,9 @@ pub const HISTOGRAM_DETAILED_WORDS: usize = 26;
 /// This is what an instrument hands to the reporting path: components record
 /// into [`Mmsc`], [`HistogramNormal`], or [`HistogramDetailed`], each of which
 /// yields the matching variant from its `get`. Nothing records into a
-/// `DistributionValue` itself, because the tier a component needs is a property of
-/// the metric and is fixed by the declared field type. Selecting it at runtime
-/// awaits a way to resolve it from configuration.
+/// `DistributionValue` itself, because each concrete metric-set field remains
+/// statically typed. Runtime-configurable metrics select between typed metric
+/// sets before recording begins.
 ///
 /// The tier is carried rather than erased because the reporting path needs it:
 /// the OTLP bridge exports [`DistributionValue::Basic`] as a bucketless histogram
@@ -905,6 +905,16 @@ impl<const N: usize> Histogram<N> {
     #[inline]
     pub fn record(&mut self, value: f64) {
         check_hist_update(self.0.update(value), "Histogram::record rejected value");
+    }
+
+    /// Merges another same-tier histogram into this one.
+    ///
+    /// Both histograms retain their exact aggregate statistics while their
+    /// bucket ranges are reconciled at the coarsest scale needed to fit the
+    /// combined observations.
+    #[inline]
+    pub fn merge(&mut self, other: Self) {
+        check_hist_update(self.0.merge_from(&other.0), "Histogram::merge overflow");
     }
 
     /// Returns `true` when no observations have been recorded this interval.
@@ -1400,6 +1410,22 @@ mod tests {
         let hist_b = normal_of(&[3.5]);
         hist_a.merge(&hist_b);
         assert_eq!(hist_a.count(), 3);
+    }
+
+    /// Scenario: Two normal histogram instruments contain disjoint observation ranges.
+    /// Guarantees: Direct instrument merging retains their combined count, sum, minimum, and maximum.
+    #[test]
+    fn histogram_merge_accumulates_same_tier_observations() {
+        let mut left = HistogramNormal::default();
+        left.record(1.0);
+        left.record(4.0);
+        let mut right = HistogramNormal::default();
+        right.record(16.0);
+        right.record(64.0);
+
+        left.merge(right);
+
+        assert_eq!(left.get().summary(), (4, 85.0, 1.0, 64.0));
     }
 
     /// Scenario: The normal tier is asked to record a negative value in a debug

@@ -11,7 +11,7 @@
 //! impl below mirrors what the macro emits.
 
 use super::*;
-use otap_df_config::ExtensionId;
+use otel_arrow_dfe_config::ExtensionId;
 use std::any::{Any, TypeId};
 use std::collections::{HashMap, HashSet};
 
@@ -23,7 +23,7 @@ trait TestCapLocal {
 }
 
 /// A minimal test capability trait (shared version).
-trait TestCapShared: Send {
+trait TestCapShared: Send + Sync {
     fn value(&self) -> &str;
 }
 
@@ -167,7 +167,7 @@ fn register_local(registry: &mut CapabilityRegistry, ext_id: &'static str, val: 
 fn bindings(
     cap: &'static str,
     ext: &'static str,
-) -> HashMap<otap_df_config::CapabilityId, ExtensionId> {
+) -> HashMap<otel_arrow_dfe_config::CapabilityId, ExtensionId> {
     let mut m = HashMap::new();
     let _ = m.insert(cap.into(), ext.into());
     m
@@ -379,6 +379,101 @@ fn test_optional_returns_none_when_not_bound() {
     let caps = Capabilities::empty();
     assert!(caps.optional_local::<TestCap>().unwrap().is_none());
     assert!(caps.optional_shared::<TestCap>().unwrap().is_none());
+}
+
+/// Scenario: A node binds a local-only capability and requests it through
+/// `optional_shared`.
+/// Guarantees: An incompatible declared binding returns a diagnostic naming
+/// the capability, extension, requested model, and available model.
+#[test]
+fn test_optional_shared_rejects_local_only_binding() {
+    let mut reg = CapabilityRegistry::new();
+    register_local(&mut reg, "ext-a", "local-val");
+
+    let mut tracker = ConsumedTracker::new();
+    let caps = resolve_bindings(
+        &bindings("test_cap", "ext-a"),
+        &reg,
+        &known_exts(&["ext-a"]),
+        &mut tracker,
+    )
+    .unwrap();
+
+    let error = match caps.optional_shared::<TestCap>() {
+        Err(error) => error,
+        Ok(_) => panic!("expected execution model mismatch"),
+    };
+    match error {
+        Error::CapabilityExecutionModelMismatch {
+            capability,
+            extension,
+            requested_execution_model,
+            available_execution_model,
+        } => {
+            assert_eq!(capability, "test_cap");
+            assert_eq!(extension.as_ref(), "ext-a");
+            assert_eq!(requested_execution_model, "shared");
+            assert_eq!(available_execution_model, "local");
+        }
+        other => panic!("expected execution model mismatch, got {other}"),
+    }
+}
+
+/// Scenario: A node binds a local-only capability and requires a shared
+/// implementation.
+/// Guarantees: Required access reports an execution-model mismatch rather than
+/// misclassifying the configured capability as unbound.
+#[test]
+fn test_require_shared_rejects_local_only_binding() {
+    let mut reg = CapabilityRegistry::new();
+    register_local(&mut reg, "ext-a", "local-val");
+
+    let mut tracker = ConsumedTracker::new();
+    let caps = resolve_bindings(
+        &bindings("test_cap", "ext-a"),
+        &reg,
+        &known_exts(&["ext-a"]),
+        &mut tracker,
+    )
+    .unwrap();
+
+    let error = match caps.require_shared::<TestCap>() {
+        Err(error) => error,
+        Ok(_) => panic!("expected execution model mismatch"),
+    };
+    assert!(matches!(
+        error,
+        Error::CapabilityExecutionModelMismatch {
+            requested_execution_model: "shared",
+            available_execution_model: "local",
+            ..
+        }
+    ));
+}
+
+/// Scenario: A node binds a shared-only capability and requests it through
+/// `optional_local`.
+/// Guarantees: Shared-only providers remain valid local providers through the
+/// `SharedAsLocal` adapter.
+#[test]
+fn test_optional_local_adapts_shared_only_binding() {
+    let mut reg = CapabilityRegistry::new();
+    register_shared(&mut reg, "ext-a", "shared-val");
+
+    let mut tracker = ConsumedTracker::new();
+    let caps = resolve_bindings(
+        &bindings("test_cap", "ext-a"),
+        &reg,
+        &known_exts(&["ext-a"]),
+        &mut tracker,
+    )
+    .unwrap();
+
+    let local = caps
+        .optional_local::<TestCap>()
+        .unwrap()
+        .expect("shared binding should adapt to local");
+    assert_eq!(local.value(), "shared-val");
 }
 
 #[test]
@@ -779,7 +874,7 @@ fn test_end_to_end_shared_only_via_bundle() {
     use crate::capability::ExtensionCapabilities;
     use crate::config::ExtensionConfig;
     use crate::extension::ExtensionWrapper;
-    use otap_df_config::extension::ExtensionUserConfig;
+    use otel_arrow_dfe_config::extension::ExtensionUserConfig;
     use std::sync::Arc;
 
     // 1. Build a passive-cloned shared bundle around SharedImpl.
@@ -851,7 +946,7 @@ fn test_end_to_end_local_only_via_bundle() {
     use crate::capability::ExtensionCapabilities;
     use crate::config::ExtensionConfig;
     use crate::extension::ExtensionWrapper;
-    use otap_df_config::extension::ExtensionUserConfig;
+    use otel_arrow_dfe_config::extension::ExtensionUserConfig;
     use std::sync::Arc;
 
     let name: ExtensionId = "kv".into();
@@ -907,7 +1002,7 @@ fn test_end_to_end_shared_constructed_policy_mints_independent_instances() {
     use crate::capability::ExtensionCapabilities;
     use crate::config::ExtensionConfig;
     use crate::extension::ExtensionWrapper;
-    use otap_df_config::extension::ExtensionUserConfig;
+    use otel_arrow_dfe_config::extension::ExtensionUserConfig;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -1006,7 +1101,7 @@ fn test_register_into_rejects_metadata_vs_bundle_mismatch() {
     use crate::capability::ExtensionCapabilities;
     use crate::config::ExtensionConfig;
     use crate::extension::ExtensionWrapper;
-    use otap_df_config::extension::ExtensionUserConfig;
+    use otel_arrow_dfe_config::extension::ExtensionUserConfig;
     use std::sync::Arc;
 
     let name: ExtensionId = "drifty".into();
@@ -1325,7 +1420,7 @@ fn test_register_into_background_no_op() {
     use crate::shared::extension as shared_ext;
     use crate::terminal_state::TerminalState;
     use async_trait::async_trait;
-    use otap_df_config::extension::ExtensionUserConfig;
+    use otel_arrow_dfe_config::extension::ExtensionUserConfig;
     use std::sync::Arc;
 
     // A minimal shared bg-task type. The body of `start()` is irrelevant
@@ -1439,7 +1534,7 @@ fn test_local_entry_produce_uses_double_box_envelope() {
 trait MutSelfCapLocal {
     fn bump(&mut self) -> u32;
 }
-trait MutSelfCapShared: Send {
+trait MutSelfCapShared: Send + Sync {
     fn bump(&mut self) -> u32;
 }
 

@@ -10,10 +10,10 @@
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
-use otap_df_pdata_views::views::common::{
+use otel_arrow_dfe_pdata_views::views::common::{
     AnyValueView, AttributeView, InstrumentationScopeView, ValueType,
 };
-use otap_df_pdata_views::views::resource::ResourceView;
+use otel_arrow_dfe_pdata_views::views::resource::ResourceView;
 use serde::ser::{Error as _, SerializeMap, SerializeSeq};
 use serde::{Serialize, Serializer};
 use std::cell::RefCell;

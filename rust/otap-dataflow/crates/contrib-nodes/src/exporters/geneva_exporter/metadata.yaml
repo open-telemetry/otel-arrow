@@ -1,0 +1,7 @@
+type: geneva
+status:
+  class: exporter
+  codeowners:
+    active:
+      - lalitb
+      - utpilla

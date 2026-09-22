@@ -17,7 +17,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use byte_unit::{Byte, Unit};
-use quiver::config::RetentionPolicy;
+use otel_arrow_dfe_quiver::config::RetentionPolicy;
 use serde::Deserialize;
 
 /// Default retention size cap (10 GiB).

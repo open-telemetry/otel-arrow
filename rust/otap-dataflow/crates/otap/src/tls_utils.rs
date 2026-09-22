@@ -5,9 +5,9 @@ use arc_swap::ArcSwap;
 use base64::prelude::*;
 use futures::{Stream, StreamExt};
 use notify::{Event, RecursiveMode, Watcher};
-use otap_df_config::tls::TlsClientConfig;
-use otap_df_config::tls::TlsServerConfig;
-use otap_df_telemetry::{otel_debug, otel_error, otel_info, otel_warn};
+use otel_arrow_dfe_config::tls::TlsClientConfig;
+use otel_arrow_dfe_config::tls::TlsServerConfig;
+use otel_arrow_dfe_telemetry::{otel_debug, otel_error, otel_info, otel_warn};
 use rustls::RootCertStore;
 use rustls::pki_types::CertificateDer;
 use rustls::server::danger::{ClientCertVerified, ClientCertVerifier};
@@ -326,6 +326,19 @@ async fn add_system_trust_anchors_if_enabled(
         return Ok(tls);
     }
 
+    let mut store = RootCertStore::empty();
+    add_system_trust_anchors_to_root_cert_store(&mut store).await?;
+    Ok(tls.trust_anchors(store.roots))
+}
+
+/// Loads the platform's native CA certificates into the provided [`RootCertStore`].
+///
+/// Certificates are cached process-wide on first load; subsequent calls reuse
+/// the cached set. Unparseable system certificates are silently skipped
+/// (best-effort).
+pub async fn add_system_trust_anchors_to_root_cert_store(
+    store: &mut RootCertStore,
+) -> Result<(), io::Error> {
     // Use cached system roots if available, otherwise load them.
     // Cloning the Vec<CertificateDer> is cheap (ref-counted inner data).
     // OnceCell ensures only one task loads the certificates, preventing race conditions.
@@ -354,7 +367,6 @@ async fn add_system_trust_anchors_if_enabled(
         .await?
         .clone();
 
-    let mut store = RootCertStore::empty();
     // Best-effort: accept that some system certs might not parse.
     let (added, ignored) = store.add_parsable_certificates(roots);
     otel_debug!(
@@ -364,7 +376,7 @@ async fn add_system_trust_anchors_if_enabled(
         message = "Loaded system CA certificates"
     );
 
-    Ok(tls.trust_anchors(store.roots))
+    Ok(())
 }
 
 /// Creates a TLS stream from a TCP listener stream and a TLS acceptor.
@@ -1635,8 +1647,8 @@ pub fn read_file_with_limit_sync(path: &Path) -> Result<Vec<u8>, io::Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_config::tls::TlsConfig;
-    use otap_test_tls_certs as tls_certs;
+    use otel_arrow_dfe_config::tls::TlsConfig;
+    use otel_arrow_dfe_test_tls_certs as tls_certs;
     use std::fs;
     use tempfile::TempDir;
 

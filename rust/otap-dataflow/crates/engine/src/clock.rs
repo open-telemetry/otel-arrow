@@ -4,7 +4,7 @@
 //! Internal clock utilities for engine control-plane timing.
 //!
 //! The engine needs monotonic time for shutdown deadlines, periodic timers,
-//! delayed-data wakeups, and return-path duration metrics. Production code
+//! processor-local resumes, and return-path duration metrics. Production code
 //! should continue to use the system clock, but deterministic simulation tests
 //! need to control time explicitly so they can replay the same interleavings
 //! without depending on wall-clock progress.

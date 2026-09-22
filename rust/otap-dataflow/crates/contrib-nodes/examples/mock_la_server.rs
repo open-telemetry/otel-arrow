@@ -13,7 +13,7 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example mock_la_server -p otap-df-contrib-nodes --features azure-monitor-exporter -- --port 9999
+//! cargo run --example mock_la_server -p otel-arrow-dfe-contrib-nodes --features azure-monitor -- --port 9999
 //! ```
 //!
 //! Then point your Azure Monitor Exporter config at `http://localhost:9999`
@@ -23,16 +23,16 @@
 //!
 //! ```bash
 //! # 10% of requests return 500
-//! cargo run --example mock_la_server -p otap-df-contrib-nodes --features azure-monitor-exporter -- --fail-rate 0.1
+//! cargo run --example mock_la_server -p otel-arrow-dfe-contrib-nodes --features azure-monitor -- --fail-rate 0.1
 //!
 //! # 10% of requests return 429 with Retry-After: 5
-//! cargo run --example mock_la_server -p otap-df-contrib-nodes --features azure-monitor-exporter -- --fail-rate 0.1 --retry-after 5
+//! cargo run --example mock_la_server -p otel-arrow-dfe-contrib-nodes --features azure-monitor -- --fail-rate 0.1 --retry-after 5
 //!
 //! # Artificial 200ms latency
-//! cargo run --example mock_la_server -p otap-df-contrib-nodes --features azure-monitor-exporter -- --latency 200ms
+//! cargo run --example mock_la_server -p otel-arrow-dfe-contrib-nodes --features azure-monitor -- --latency 200ms
 //!
 //! # Return 503 after 1000 successful requests
-//! cargo run --example mock_la_server -p otap-df-contrib-nodes --features azure-monitor-exporter -- --fail-after 1000
+//! cargo run --example mock_la_server -p otel-arrow-dfe-contrib-nodes --features azure-monitor -- --fail-after 1000
 //! ```
 
 use std::io::Read;
@@ -144,27 +144,27 @@ async fn ingest_handler(
     }
 
     // Check payload size limit.
-    if let Some(max_size) = state.cli.payload_too_large {
-        if body.len() > max_size {
-            println!(
-                "[mock-la] POST dcr={dcr} stream={stream} \
-                 \u{2014} 413 Payload Too Large ({} > {max_size})",
-                body.len()
-            );
-            return (StatusCode::PAYLOAD_TOO_LARGE, "Payload Too Large").into_response();
-        }
+    if let Some(max_size) = state.cli.payload_too_large
+        && body.len() > max_size
+    {
+        println!(
+            "[mock-la] POST dcr={dcr} stream={stream} \
+             \u{2014} 413 Payload Too Large ({} > {max_size})",
+            body.len()
+        );
+        return (StatusCode::PAYLOAD_TOO_LARGE, "Payload Too Large").into_response();
     }
 
     // Check fail-after threshold.
     let success_so_far = state.stats.success_count.load(Ordering::Relaxed);
-    if let Some(fail_after) = state.cli.fail_after {
-        if success_so_far >= fail_after {
-            println!(
-                "[mock-la] POST dcr={dcr} stream={stream} \
-                 \u{2014} 503 (fail-after {fail_after} reached)"
-            );
-            return (StatusCode::SERVICE_UNAVAILABLE, "Service Unavailable").into_response();
-        }
+    if let Some(fail_after) = state.cli.fail_after
+        && success_so_far >= fail_after
+    {
+        println!(
+            "[mock-la] POST dcr={dcr} stream={stream} \
+             \u{2014} 503 (fail-after {fail_after} reached)"
+        );
+        return (StatusCode::SERVICE_UNAVAILABLE, "Service Unavailable").into_response();
     }
 
     // Random failure simulation.

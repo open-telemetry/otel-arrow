@@ -9,21 +9,23 @@
 
 #![allow(missing_docs)]
 
-use otap_df_config::SignalType;
-use otap_df_pdata::OtlpProtoBytes;
-use otap_df_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
-use otap_df_pdata::proto::opentelemetry::logs::v1::ResourceLogs;
-use otap_df_pdata::proto::opentelemetry::metrics::v1::{metric, number_data_point};
-use otap_df_telemetry::attributes::{AttributeEnum, AttributeSetHandler, MeasurementAttributeSet};
-use otap_df_telemetry::instrument::Counter;
-use otap_df_telemetry::metrics::otlp::MetricsOtlpEncoder;
-use otap_df_telemetry::metrics::{
+use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_pdata::OtlpProtoBytes;
+use otel_arrow_dfe_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
+use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::ResourceLogs;
+use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::{metric, number_data_point};
+use otel_arrow_dfe_telemetry::attributes::{
+    AttributeEnum, AttributeSetHandler, MeasurementAttributeSet,
+};
+use otel_arrow_dfe_telemetry::instrument::Counter;
+use otel_arrow_dfe_telemetry::metrics::otlp::MetricsOtlpEncoder;
+use otel_arrow_dfe_telemetry::metrics::{
     MeasurementMetricSet, MeasurementMetricSetHandler, MetricSet, MetricSetRegistrar,
     RegistrationMetricSetHandler,
 };
-use otap_df_telemetry::registry::TelemetryRegistryHandle;
-use otap_df_telemetry::reporter::MetricsReporter;
-use otap_df_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
+use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
+use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
+use otel_arrow_dfe_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
 use prost::Message;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, AttributeEnum)]
@@ -136,7 +138,11 @@ impl TestRegistrar {
 
 impl MetricSetRegistrar for TestRegistrar {
     fn register_metric_set<
-        M: otap_df_telemetry::metrics::MetricSetHandler + Default + std::fmt::Debug + Send + Sync,
+        M: otel_arrow_dfe_telemetry::metrics::MetricSetHandler
+            + Default
+            + std::fmt::Debug
+            + Send
+            + Sync,
     >(
         &self,
     ) -> MetricSet<M> {
@@ -178,12 +184,16 @@ impl MetricSetRegistrar for TestRegistrar {
 
 struct ExistingEntityRegistrar {
     registry: TelemetryRegistryHandle,
-    entity_key: otap_df_telemetry::registry::EntityKey,
+    entity_key: otel_arrow_dfe_telemetry::registry::EntityKey,
 }
 
 impl MetricSetRegistrar for ExistingEntityRegistrar {
     fn register_metric_set<
-        M: otap_df_telemetry::metrics::MetricSetHandler + Default + std::fmt::Debug + Send + Sync,
+        M: otel_arrow_dfe_telemetry::metrics::MetricSetHandler
+            + Default
+            + std::fmt::Debug
+            + Send
+            + Sync,
     >(
         &self,
     ) -> MetricSet<M> {
@@ -432,7 +442,7 @@ fn measurement_metric_set_its_export_preserves_bucket_points() {
                         .as_ref()
                         .and_then(|value| value.value.as_ref())
                         .map(|value| match value {
-                            otap_df_pdata::proto::opentelemetry::common::v1::any_value::Value::StringValue(value) => value.as_str(),
+                            otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::any_value::Value::StringValue(value) => value.as_str(),
                             _ => panic!("expected string datapoint attribute"),
                         })
                         .expect("datapoint attribute value");

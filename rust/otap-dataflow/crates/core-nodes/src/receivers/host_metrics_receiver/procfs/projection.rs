@@ -69,7 +69,7 @@ impl HostSnapshot {
     /// Converts a snapshot directly into an OTAP Arrow metrics batch.
     pub fn into_otap_records(
         self,
-    ) -> Result<otap_df_pdata::otap::OtapArrowRecords, arrow::error::ArrowError> {
+    ) -> Result<otel_arrow_dfe_pdata::otap::OtapArrowRecords, arrow::error::ArrowError> {
         let mut b = HostMetricsArrowBuilder::new();
         b.append_resource(&self.resource);
         project_snapshot(&self, &mut b);

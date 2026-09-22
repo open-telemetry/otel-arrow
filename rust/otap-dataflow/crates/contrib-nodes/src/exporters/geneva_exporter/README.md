@@ -3,7 +3,7 @@
 ## Metadata
 
 - Type: `urn:microsoft:exporter:geneva`
-- Feature gate: `geneva-exporter`
+- Feature gate: `geneva`
 - Optional certificate authentication: `geneva-certificate-auth` (disabled by default)
 - Stability: Alpha; supports logs and traces
 
@@ -25,6 +25,8 @@ config:
   environment: production
   account: "my-account"
   namespace: "my-namespace"
+  account_routing:
+    default_group: "my-account-group"
   region: westus2
   config_major_version: 1
   tenant: "my-tenant"
@@ -49,6 +51,8 @@ config:
   environment: production
   account: "my-account"
   namespace: "my-namespace"
+  account_routing:
+    default_group: "my-account-group"
   config_major_version: 1
   tenant: "my-tenant"
   role_name: "df-engine"
@@ -64,8 +68,8 @@ The `attributes` object in each credential snapshot must use this shape:
 {
   "endpoint": "https://ingest.example.com",
   "moniker_map": {
-    "my-account": "my-moniker",
-    "default": "fallback-moniker"
+    "my-account-group": "my-primary-moniker",
+    "another-account-group": "another-primary-moniker"
   }
 }
 ```
@@ -76,16 +80,15 @@ That attribute must be a non-empty absolute HTTPS URL with a host and cannot
 contain embedded credentials, a query string, or a fragment. The exporter
 canonicalizes it before use. The uploader uses that canonical value as both the
 upload base URL and the `endpoint=` query fallback when a token has no usable
-Endpoint claim. The exporter
-selects a non-empty string from `moniker_map` by the configured `account`,
-falling back only to an explicit `default`. A map containing neither key is
-rejected, even if it has a single entry. Empty or malformed routing is also
-rejected. If the configured account or `default` key exists with an invalid
-value, the snapshot is rejected instead of falling back to another entry. The
-selected moniker must be safe to use as one URL query value without additional
-encoding. Surrounding whitespace is trimmed; the remaining value may contain
-only ASCII letters, digits, hyphen, dot, underscore, and tilde. Embedded
-whitespace, non-ASCII text, and reserved delimiters are rejected.
+Endpoint claim. `moniker_map` maps each logical account group to its current
+primary physical moniker. The exporter validates and preserves the complete
+map; the uploader selects the entry named by `account_routing` for each batch.
+An empty map, blank group, or invalid moniker rejects the complete snapshot
+instead of allowing partial routing. Each moniker must be safe to use as one
+URL query value without additional encoding. Surrounding whitespace is
+trimmed; the remaining value may contain only ASCII letters, digits, hyphen,
+dot, underscore, and tilde. Embedded whitespace, non-ASCII text, and reserved
+delimiters are rejected.
 
 The provider must load the token and routing attributes from one atomically
 published host snapshot. Each upload consumes one immutable snapshot, so a host
@@ -111,7 +114,7 @@ source.
 From the `otap-dataflow` directory:
 
 ```bash
-cargo build --release --features geneva-exporter
+cargo build --release --features geneva
 ```
 
 Password-protected PKCS#12 certificate authentication is excluded by default.
@@ -141,6 +144,41 @@ You should see `urn:microsoft:exporter:geneva` in the Exporters list.
 - `max_buffer_size` is currently reserved for a future buffering/flush implementation.
   It is accepted by config parsing but does not change runtime behavior yet.
 
+## Internal telemetry
+
+Input PData message volume is reported by the engine through
+`channel.receiver.messages` and is not duplicated by the exporter.
+
+The exporter uses the shared `exporter.attempted` contract for each encoded
+Geneva batch submitted to the uploader. A message that terminates during
+preparation, or produces no uploadable batch, records one attempt instead.
+
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `exporter.attempted.messages` | `{message}` | `signal`, `outcome` | Number of Geneva delivery attempts, including preparation-only outcomes. |
+| `exporter.attempted.duration` | `s` | `signal`, `outcome` | Time from identifying an encoded batch through its terminal backend result, including concurrency queueing. Emitted when component duration is enabled. |
+| `exporter.attempted.payload.size` | `By` | `signal`, `outcome` | LZ4 chunk-compressed Geneva application-payload bytes submitted to the uploader. Emitted when size measurement is enabled. |
+| `exporter.attempted.items` | `{item}` | `signal`, `outcome` | Log records or spans carried by the attempted batch. Emitted when item counting is enabled. |
+
+All fields use `signal` and `outcome`. Duration, payload size, and item counts
+are emitted only when their corresponding component telemetry is enabled.
+The default `runtime_metrics: basic` omits these metrics. Set
+`runtime_metrics: normal` for attempted messages or `detailed` for all
+measurements. To opt in only this exporter, set the corresponding
+`policies.telemetry` fields: `messages`, `duration`, `item_counts`, and `size`.
+
+Geneva LZ4 chunking is part of the backend's application payload format, so
+`payload.size` measures the encoded batch after LZ4 encoding. It excludes HTTP
+headers, framing, TLS overhead, and any other transport-layer amplification.
+
+Geneva-specific metrics retain details that are outside the shared contract:
+
+| Metric | Attributes | Description |
+| --- | --- | --- |
+| `exporter.geneva.encoding.duration` | `signal`, `outcome` | Geneva encoding duration in seconds. |
+| `exporter.geneva.failures.messages` | `signal`, `error.type` | Bounded conversion, decoding, encoding, upload, and unsupported-signal failures. |
+| `exporter.geneva.skipped.messages` | `signal`, `reason` | Messages skipped because the payload is empty. |
+
 ## Configuration
 
 ```yaml
@@ -152,6 +190,8 @@ config:
   environment: production
   account: "my-account"
   namespace: "my-namespace"
+  account_routing:
+    default_group: "diagnostics"
   region: westus2
   config_major_version: 1
   tenant: "my-tenant"
@@ -193,6 +233,11 @@ config:
   environment: production
   account: "my-account"
   namespace: "my-namespace"
+  account_routing:
+    default_group: "diagnostics"
+    events:
+      AuditLogs: "audit"
+      raw: "raw"
   region: westus2
   config_major_version: 1
   tenant: "my-tenant"
@@ -223,15 +268,26 @@ config:
 
 How a record flows through the exporter and uploader:
 
-| Incoming event name | Destination table (after mapping) | OBO applied (query params) |
-| --- | --- | --- |
-| `audit` | `AuditLogs` | `onbehalfid=Microsoft.AuditService`, `onbehalfannotations=<Config .../>` |
-| `raw` | `raw` | `onbehalfid=Microsoft.RawService` (no annotations) |
-| `foo` (unmapped) | `Log` (default) | none -- `Log` is not in `obo.events` |
+<!-- markdownlint-disable MD013 -->
+
+| Incoming event | Destination table | Account group | OBO query parameters |
+| --- | --- | --- | --- |
+| `audit` | `AuditLogs` | `audit` | `onbehalfid=Microsoft.AuditService`, `onbehalfannotations=<Config .../>` |
+| `raw` | `raw` | `raw` | `onbehalfid=Microsoft.RawService` |
+| `foo` | `Log` | `diagnostics` | none |
+
+<!-- markdownlint-enable MD013 -->
 
 The uploader resolves the destination table first, then looks up OBO by that
 resolved name. A single flat `obo.events` map is shared across `logs` and
 `spans`, keyed by event/table name.
+
+`account_routing` uses the same destination event/table names. Its required
+`default_group` handles events without an exact override, while `events` maps
+selected destinations to logical GCS account groups. The uploader resolves the
+chosen logical group to the primary physical moniker from the current GCS or
+agent-fed credential snapshot; YAML config contains group names, not physical
+monikers.
 
 Gotcha: because OBO keys on the destination, keying an entry on the source value
 silently disables OBO. If you wrote `obo.events.audit` instead of

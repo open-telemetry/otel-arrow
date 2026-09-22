@@ -1,0 +1,61 @@
+name: DFE Kafka Exporter OTLP (Logs)
+slug: dfe_logs_kafka_otlp_export
+description: >-
+  Exporter-isolation benchmark. A DFE loadgen sends OTLP logs to the benchmarked
+  DFE Kafka exporter, which produces to the broker; a fixed DFE Kafka receiver
+  in the backend consumes them. Isolates DFE Kafka exporter performance.
+orchestrator_template: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/orchestrator/dfe-kafka-export-single-core-multi-rate.yaml
+
+meta:
+  binary: dfe
+  protocols: []
+  signals: [logs]
+  compression: none
+
+variables:
+  report: ../pipeline_perf_test/test_suites/comparison_dashboard/reports/report_logs.yaml
+  # Fixed DFE OTLP loadgen.
+  loadgen_config: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/loadgen/otlp.yaml.j2
+  # Benchmarked DFE Kafka exporter (producer side).
+  kafka_producer_config: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/engine/kafka-producer-otlp.yaml.j2
+  # Fixed DFE reference consumer (backend side).
+  backend_config: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/engine/kafka-backend-otlp.yaml.j2
+  protocol: otlp
+  signal: logs
+  loadgen_max_batch_size: 1000
+  # Offline synthetic load source (semantic_conventions fetches the semconv
+  # registry from GitHub at runtime, which the sandboxed containers cannot reach).
+  data_source: synthetic
+  num_log_attributes: 12
+  compression_method: none
+  wait_for_result: true
+
+  # --- Canonical Kafka producer tuning (single source of truth) ---
+  kafka_producer_acks: one
+  kafka_producer_acks_sarama: 1
+  kafka_producer_compression: none
+  kafka_producer_linger_ms: 5
+  kafka_producer_max_message_bytes: 10485760
+  kafka_producer_partitioner: consistent_random
+  kafka_producer_partitioner_rotel: consistent-random
+  kafka_producer_batch_num_messages: 10000
+  kafka_producer_queue_buffering_max_messages: 100000
+  kafka_producer_flush_max_messages: 0
+  # Normalized in-flight delivery depth across all three exporters (see
+  # KAFKA_BENCHMARK_COMPARISON.md). DFE applies it via its native exporter
+  # `max_in_flight`; rotel is fixed at MAX_CONCURRENT_SENDS=1000; the Go
+  # collector approximates it via exporterhelper sending_queue.num_consumers.
+  kafka_producer_max_in_flight: 1000
+
+  # --- Canonical Kafka consumer tuning (single source of truth) ---
+  kafka_consumer_group_id: kafka-benchmark-consumer
+  kafka_consumer_auto_offset_reset: earliest
+  kafka_consumer_commit_interval_ms: 1000
+  kafka_consumer_session_timeout_ms: 30000
+  kafka_consumer_heartbeat_interval_ms: 3000
+  kafka_consumer_fetch_min_bytes: 1
+  kafka_consumer_fetch_max_bytes: 1048576
+  kafka_consumer_fetch_max_wait_ms: 500
+  kafka_consumer_max_partition_fetch_bytes: 1048576
+  kafka_consumer_isolation_level: read_uncommitted
+  kafka_consumer_isolation_level_sarama: ReadUncommitted

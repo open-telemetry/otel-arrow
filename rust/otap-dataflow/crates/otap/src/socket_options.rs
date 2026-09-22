@@ -38,7 +38,7 @@ pub(crate) fn apply_socket_options(
 
         #[cfg(target_os = "windows")]
         if tcp_keepalive_retries.is_some() {
-            otap_df_telemetry::otel_warn!(
+            otel_arrow_dfe_telemetry::otel_warn!(
                 "Socket.KeepaliveRetriesIgnored",
                 platform = "windows",
                 message = "tcp_keepalive_retries is configured but ignored on Windows: TcpKeepalive::with_retries is not available on this platform"

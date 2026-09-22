@@ -185,15 +185,53 @@ pub struct NodePolicies {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct NodeTelemetryPolicy {
-    /// Opt this node into per-signal produced/consumed item counts on its
-    /// `node.producer` / `node.consumer` metric sets.
+    /// Opt this node into input/output message counters.
+    ///
+    /// This enables the applicable `node.input.messages` and
+    /// `node.output.messages` metrics, plus shared
+    /// `receiver.received.messages` or `exporter.attempted.messages` metrics
+    /// for those node kinds. `runtime_metrics: normal` or `detailed` enables
+    /// message counters for every node without this flag.
+    #[serde(default)]
+    pub messages: bool,
+
+    /// Opt this node into terminal Ack/Nack completion duration.
+    ///
+    /// This enables `node.completion.duration` without enabling node input or
+    /// output message counters. `runtime_metrics: detailed` enables completion
+    /// duration for every node without this flag.
+    #[serde(default)]
+    pub completion_duration: bool,
+
+    /// Opt this node into node-implemented local duration measurements, such as
+    /// `receiver.processing.duration`, `processor.compute.duration`, or
+    /// `exporter.attempted.duration`.
+    ///
+    /// Off by default because duration instrumentation requires clock reads on
+    /// the data path. `runtime_metrics: detailed` enables local duration
+    /// for every node without this flag.
+    #[serde(default)]
+    pub duration: bool,
+
+    /// Opt this node into node-implemented and per-signal input/output item
+    /// counts.
     ///
     /// Off by default because counting items requires inspecting each batch,
-    /// which is expensive for OTLP payloads. Only recorded when the resolved
-    /// `runtime_metrics` is `normal` or higher; `runtime_metrics: detailed`
-    /// enables it for every node without this flag.
+    /// which is expensive for OTLP payloads. This option applies at any runtime
+    /// metric level. `runtime_metrics: detailed` enables it for every node
+    /// without this flag.
     #[serde(default)]
     pub item_counts: bool,
+
+    /// Opt this node into per-signal input/output logical payload size and
+    /// node-implemented encoded payload size at receiver/exporter boundaries.
+    ///
+    /// Off by default because measuring OTAP payloads requires walking their
+    /// Arrow arrays and buffers. This option applies at any runtime metric
+    /// level. `runtime_metrics: detailed` enables it for every node without
+    /// this flag.
+    #[serde(default)]
+    pub size: bool,
 }
 
 /// Node kinds
@@ -315,11 +353,11 @@ impl NodeUserConfig {
             .unwrap_or_default()
     }
 
-    /// Validates transport header policy fields on this node and pushes any
-    /// errors into the provided vector. Receivers may only declare
-    /// `header_capture`; exporters may only declare `header_propagation`;
-    /// processors may declare neither.
-    pub fn validate_transport_header_fields(&self, node_name: &str, errors: &mut Vec<Error>) {
+    /// Validates this node's transport-header policies.
+    ///
+    /// Only receivers may declare `header_capture`.
+    /// Only exporters may declare `header_propagation`.
+    pub fn validate_transport_header_policies(&self, node_name: &str, errors: &mut Vec<Error>) {
         let kind = self.kind();
 
         if self.header_capture.is_some() && kind != NodeKind::Receiver {
@@ -352,12 +390,12 @@ impl NodeUserConfig {
 
         // Validate the selector shape inside node-level header_propagation so
         // that invalid selectors are rejected uniformly.
-        if let Some(propagation) = &self.header_propagation {
-            if let Err(e) = propagation.validate() {
-                errors.push(Error::InvalidUserConfig {
-                    error: format!("node `{node_name}`: header_propagation.default.selector: {e}"),
-                });
-            }
+        if let Some(propagation) = &self.header_propagation
+            && let Err(e) = propagation.validate()
+        {
+            errors.push(Error::InvalidUserConfig {
+                error: format!("node `{node_name}`: header_propagation.default.selector: {e}"),
+            });
         }
     }
 
@@ -436,11 +474,10 @@ pub(crate) fn redact_secret_headers(value: &mut Value) {
                         }
                         Value::Array(entries) => {
                             for entry in entries.iter_mut() {
-                                if let Value::Object(fields) = entry {
-                                    if let Some(static_value) = fields.get_mut("value") {
-                                        *static_value =
-                                            Value::String(REDACTED_HEADER_VALUE.to_owned());
-                                    }
+                                if let Value::Object(fields) = entry
+                                    && let Some(static_value) = fields.get_mut("value")
+                                {
+                                    *static_value = Value::String(REDACTED_HEADER_VALUE.to_owned());
                                 }
                             }
                             continue;
@@ -507,7 +544,12 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ContextEntryName;
     use std::collections::BTreeSet;
+
+    fn context_name(raw: &str) -> ContextEntryName {
+        ContextEntryName::try_from(raw).expect("valid test context entry name")
+    }
 
     #[test]
     fn node_user_config_minimal_valid() {
@@ -519,23 +561,43 @@ mod tests {
         assert!(cfg.outputs.is_empty());
     }
 
-    /// Scenario: a node config opts into item counts through its restricted policy block.
-    /// Guarantees: node telemetry configuration stays namespaced under `policies`.
+    /// Scenario: a node config opts into every optional node measurement.
+    /// Guarantees: node telemetry configuration stays namespaced under `policies` with independent measurement controls.
     #[test]
-    fn node_user_config_parses_item_count_policy() {
+    fn node_user_config_parses_measurement_policy() {
         let yaml = r#"
 type: "processor:batch"
 policies:
   telemetry:
+    messages: true
+    completion_duration: true
+    duration: true
     item_counts: true
+    size: true
 "#;
         let cfg: NodeUserConfig = serde_yaml::from_str(yaml).unwrap();
-        assert!(
-            cfg.policies
-                .as_ref()
-                .and_then(|policies| policies.telemetry.as_ref())
-                .is_some_and(|telemetry| telemetry.item_counts)
-        );
+        let telemetry = cfg
+            .policies
+            .as_ref()
+            .and_then(|policies| policies.telemetry.as_ref())
+            .expect("node telemetry policy");
+        assert!(telemetry.messages);
+        assert!(telemetry.completion_duration);
+        assert!(telemetry.duration);
+        assert!(telemetry.item_counts);
+        assert!(telemetry.size);
+    }
+
+    /// Scenario: a node telemetry policy omits every optional measurement.
+    /// Guarantees: messages, completion duration, local duration, item counts, and size remain disabled by default.
+    #[test]
+    fn node_telemetry_policy_defaults_optional_measurements_off() {
+        let telemetry = NodeTelemetryPolicy::default();
+        assert!(!telemetry.messages);
+        assert!(!telemetry.completion_duration);
+        assert!(!telemetry.duration);
+        assert!(!telemetry.item_counts);
+        assert!(!telemetry.size);
     }
 
     #[test]
@@ -686,7 +748,7 @@ config:
 
         // No validation errors for receiver + header_capture
         let mut errors = Vec::new();
-        cfg.validate_transport_header_fields("test_node", &mut errors);
+        cfg.validate_transport_header_policies("test_node", &mut errors);
         assert!(errors.is_empty());
 
         let capture = cfg.header_capture.as_ref().unwrap();
@@ -717,7 +779,7 @@ config:
 
         // No validation errors for exporter + header_propagation
         let mut errors = Vec::new();
-        cfg.validate_transport_header_fields("test_node", &mut errors);
+        cfg.validate_transport_header_policies("test_node", &mut errors);
         assert!(errors.is_empty());
 
         let propagation = cfg.header_propagation.as_ref().unwrap();
@@ -750,7 +812,7 @@ capabilities:
         let mut cfg = NodeUserConfig::new_processor_config("processor:batch");
         cfg.header_capture = Some(HeaderCapturePolicy::default());
         let mut errors = Vec::new();
-        cfg.validate_transport_header_fields("batch", &mut errors);
+        cfg.validate_transport_header_policies("batch", &mut errors);
         assert_eq!(errors.len(), 1);
         assert!(errors[0].to_string().contains("header_capture"));
         assert!(errors[0].to_string().contains("processor"));
@@ -761,7 +823,7 @@ capabilities:
         let mut cfg = NodeUserConfig::new_exporter_config("exporter:otap");
         cfg.header_capture = Some(HeaderCapturePolicy::default());
         let mut errors = Vec::new();
-        cfg.validate_transport_header_fields("otap_export", &mut errors);
+        cfg.validate_transport_header_policies("otap_export", &mut errors);
         assert_eq!(errors.len(), 1);
         assert!(errors[0].to_string().contains("header_capture"));
         assert!(errors[0].to_string().contains("exporter"));
@@ -772,7 +834,7 @@ capabilities:
         let mut cfg = NodeUserConfig::new_receiver_config("receiver:otap");
         cfg.header_propagation = Some(HeaderPropagationPolicy::default());
         let mut errors = Vec::new();
-        cfg.validate_transport_header_fields("otap_ingest", &mut errors);
+        cfg.validate_transport_header_policies("otap_ingest", &mut errors);
         assert_eq!(errors.len(), 1);
         assert!(errors[0].to_string().contains("header_propagation"));
         assert!(errors[0].to_string().contains("receiver"));
@@ -784,7 +846,7 @@ capabilities:
         assert!(cfg.header_capture.is_none());
         assert!(cfg.header_propagation.is_none());
         let mut errors = Vec::new();
-        cfg.validate_transport_header_fields("test", &mut errors);
+        cfg.validate_transport_header_policies("test", &mut errors);
         assert!(errors.is_empty());
     }
 
@@ -806,7 +868,7 @@ capabilities:
             vec![],
         ));
         let mut errors = Vec::new();
-        cfg.validate_transport_header_fields("otap_export", &mut errors);
+        cfg.validate_transport_header_policies("otap_export", &mut errors);
         assert_eq!(errors.len(), 1);
         assert!(errors[0].to_string().contains("header_propagation"));
         assert!(errors[0].to_string().contains("'named' list is required"));
@@ -823,14 +885,14 @@ capabilities:
             PropagationDefault {
                 selector: PropagationSelector {
                     selector_type: PropagationSelectorType::Named,
-                    named: Some(vec!["tenant_id".to_string()]),
+                    named: Some(vec![context_name("tenant_id")]),
                 },
                 ..Default::default()
             },
             vec![],
         ));
         let mut errors = Vec::new();
-        cfg.validate_transport_header_fields("otap_export", &mut errors);
+        cfg.validate_transport_header_policies("otap_export", &mut errors);
         assert!(errors.is_empty());
     }
 

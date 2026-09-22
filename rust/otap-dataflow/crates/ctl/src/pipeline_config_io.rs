@@ -10,7 +10,7 @@
 //! path the same validation behavior as non-interactive `dfctl` commands.
 
 use crate::error::CliError;
-use otap_df_admin_api::config::pipeline::PipelineConfig;
+use otel_arrow_dfe_admin_api::config::pipeline::PipelineConfig;
 use std::fs;
 use std::io::Read;
 use std::path::Path;
@@ -82,7 +82,7 @@ fn looks_like_json(content: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_admin_api::config::pipeline::{PipelineConfigBuilder, PipelineType};
+    use otel_arrow_dfe_admin_api::config::pipeline::{PipelineConfigBuilder, PipelineType};
 
     fn pipeline_config() -> PipelineConfig {
         PipelineConfigBuilder::new()

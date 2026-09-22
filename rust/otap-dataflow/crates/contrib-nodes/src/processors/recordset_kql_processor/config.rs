@@ -18,8 +18,8 @@ mod tests {
     use super::super::processor::RecordsetKqlProcessor;
 
     use super::*;
-    use otap_df_engine::context::{ControllerContext, PipelineContext};
-    use otap_df_telemetry::registry::TelemetryRegistryHandle;
+    use otel_arrow_dfe_engine::context::{ControllerContext, PipelineContext};
+    use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
     use pretty_assertions::assert_eq;
     use serde_json::json;
 

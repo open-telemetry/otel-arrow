@@ -9,7 +9,7 @@ use std::time::Duration;
 use serde::Deserialize;
 
 /// Default maximum duration of a Kubernetes review request.
-pub(crate) const DEFAULT_REVIEW_TIMEOUT: Duration = Duration::from_secs(10);
+pub(crate) const DEFAULT_REVIEW_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Default time an authorization decision is cached, keyed by the token's
 /// SHA-256 digest (never the plaintext token; see `cache.rs`).
@@ -51,7 +51,7 @@ pub struct Config {
     pub cache_max_entries: usize,
 
     /// Maximum duration of each `TokenReview` or `SubjectAccessReview` request.
-    /// Accepts human-readable durations (e.g. `10s`, `500ms`). Must be non-zero.
+    /// Accepts human-readable durations (e.g. `5s`, `500ms`). Must be non-zero.
     #[serde(with = "humantime_serde", default = "default_review_timeout")]
     pub review_timeout: Duration,
 }

@@ -48,6 +48,12 @@
     "attributes": {}
   },
   {
+    "id": "urn:otel:exporter:file",
+    "category": "Exporter",
+    "description": null,
+    "attributes": {}
+  },
+  {
     "id": "urn:otel:exporter:kafka",
     "category": "Exporter",
     "description": null,

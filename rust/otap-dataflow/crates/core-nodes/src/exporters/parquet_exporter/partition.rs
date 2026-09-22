@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use otap_df_pdata::{
+use otel_arrow_dfe_pdata::{
     proto::opentelemetry::arrow::v1::ArrowPayloadType, schema::get_schema_metadata,
 };
 
@@ -92,10 +92,10 @@ pub mod test {
 
     use arrow::array::{ArrayRef, RecordBatch, UInt16Array};
     use arrow::datatypes::{DataType, Field, Schema};
-    use otap_df_pdata::otap::Logs;
-    use otap_df_pdata::otap::OtapArrowRecords;
-    use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-    use otap_df_pdata::schema::consts;
+    use otel_arrow_dfe_pdata::otap::Logs;
+    use otel_arrow_dfe_pdata::otap::OtapArrowRecords;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+    use otel_arrow_dfe_pdata::schema::consts;
     use std::sync::Arc;
 
     use crate::exporters::parquet_exporter::config::PartitioningStrategy;

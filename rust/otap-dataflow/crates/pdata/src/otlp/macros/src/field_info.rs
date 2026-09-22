@@ -3,8 +3,8 @@
 
 //! Field analysis and metadata extraction for OTLP code generation.
 
-use otap_df_pdata_otlp_model::OneofCase;
-use otap_df_pdata_otlp_model::OneofMapping;
+use otel_arrow_dfe_pdata_otlp_model::OneofCase;
+use otel_arrow_dfe_pdata_otlp_model::OneofMapping;
 use quote::ToTokens;
 
 /// Comprehensive information about a struct field for OTLP code generation.
@@ -110,25 +110,25 @@ fn parse_prost_tag_and_type(field: &syn::Field) -> (u32, String) {
         .iter()
         .find(|attr| attr.path().is_ident("prost"));
 
-    if let Some(attr) = prost_attr {
-        if let syn::Meta::List(meta_list) = &attr.meta {
-            let tokens = &meta_list.tokens;
-            let attr_str = tokens.to_string();
+    if let Some(attr) = prost_attr
+        && let syn::Meta::List(meta_list) = &attr.meta
+    {
+        let tokens = &meta_list.tokens;
+        let attr_str = tokens.to_string();
 
-            // Parse tag number using helper function
-            let tag = parse_tag_value(&attr_str).unwrap_or(0);
+        // Parse tag number using helper function
+        let tag = parse_tag_value(&attr_str).unwrap_or(0);
 
-            // Extract first identifier as protobuf type (string, int64, message, etc.)
-            let proto_type = attr_str
-                .split(',')
-                .next()
-                .map(|first_part| first_part.trim())
-                .filter(|type_part| !type_part.starts_with("tag"))
-                .map(|type_part| type_part.to_string())
-                .unwrap_or_else(|| "unknown".to_string());
+        // Extract first identifier as protobuf type (string, int64, message, etc.)
+        let proto_type = attr_str
+            .split(',')
+            .next()
+            .map(|first_part| first_part.trim())
+            .filter(|type_part| !type_part.starts_with("tag"))
+            .map(|type_part| type_part.to_string())
+            .unwrap_or_else(|| "unknown".to_string());
 
-            return (tag, proto_type);
-        }
+        return (tag, proto_type);
     }
 
     // Return default values instead of panicking, which helps us see more of what's happening
@@ -141,7 +141,7 @@ impl FieldInfo {
         field_path: &str,
         _inner_type: &syn::Type,
     ) -> (Option<syn::Type>, Option<syn::Type>) {
-        otap_df_pdata_otlp_model::FIELD_TYPE_OVERRIDES
+        otel_arrow_dfe_pdata_otlp_model::FIELD_TYPE_OVERRIDES
             .get(field_path)
             .and_then(|over| {
                 // Parse datatype and fieldtype with proper error handling

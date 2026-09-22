@@ -17,13 +17,13 @@
 //! The `#[capability]` proc macro expands the trait below into:
 //!
 //! - A `pub(crate) mod local` containing the `!Send` `NoOpStateful` trait variant
-//! - A `pub(crate) mod shared` containing the `Send` `NoOpStateful` trait variant
+//! - A `pub(crate) mod shared` containing the `Send + Sync` `NoOpStateful` trait variant
 //! - A `SharedAsLocalNoOpStateful` adapter (auto-delegates `&mut self`)
 //! - A zero-sized `pub struct NoOpStateful` registration handle
 //! - `local_entry::<E>` / `shared_entry::<E>` factory bridges
 //! - A `KNOWN_CAPABILITIES` distributed-slice entry
 
-use otap_df_engine_macros::capability;
+use otel_arrow_dfe_engine_macros::capability;
 
 /// No-op test capability with per-instance mutable state.
 ///
@@ -81,5 +81,5 @@ pub trait NoOpStateful {
 
 /// The `!Send` (local) variant of the [`NoOpStateful`] capability trait.
 pub use local::NoOpStateful as LocalNoOpStateful;
-/// The `Send` (shared) variant of the [`NoOpStateful`] capability trait.
+/// The `Send + Sync` (shared) variant of the [`NoOpStateful`] capability trait.
 pub use shared::NoOpStateful as SharedNoOpStateful;

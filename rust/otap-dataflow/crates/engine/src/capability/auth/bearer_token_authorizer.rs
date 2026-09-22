@@ -26,14 +26,14 @@
 //! This capability is bearer-specific by design (the credential is always a
 //! token string) and **transport- and library-agnostic**: the token is carried
 //! by [`BearerToken`](super::BearerToken), a secret-protecting wrapper built
-//! from plain `&str` (a bare token or a whole `Authorization` header value),
-//! never from any HTTP/RPC crate's request type. A receiver extracts it from
-//! whatever transport it uses (gRPC, HTTP, ...).
+//! from plain `&str` (a bare token or a validated bearer `Authorization` header
+//! value), never from any HTTP/RPC crate's request type. A receiver extracts it
+//! from whatever transport it uses (gRPC, HTTP, ...).
 //!
 //! The `#[capability]` proc macro expands the trait into:
 //!
 //! - `pub(crate) mod local::BearerTokenAuthorizer` (`!Send` trait variant)
-//! - `pub(crate) mod shared::BearerTokenAuthorizer` (`Send` trait variant)
+//! - `pub(crate) mod shared::BearerTokenAuthorizer` (`Send + Sync` trait variant)
 //! - A `SharedAsLocalBearerTokenAuthorizer` adapter
 //! - A zero-sized `pub struct BearerTokenAuthorizer` registration handle
 //! - `local_entry::<E>` / `shared_entry::<E>` factory bridges
@@ -41,7 +41,7 @@
 
 use super::{AuthzDecision, BearerToken};
 use crate::capability::error::CapabilityError;
-use otap_df_engine_macros::capability;
+use otel_arrow_dfe_engine_macros::capability;
 
 /// Authenticates and admits an inbound bearer token against a configured
 /// policy.
@@ -53,8 +53,8 @@ pub trait BearerTokenAuthorizer {
     /// Decides whether the caller presenting `credential` is permitted.
     ///
     /// `credential` wraps the bearer token exactly as presented (see
-    /// [`BearerToken`] for constructing one from a bare token or a whole
-    /// `Authorization` header value).
+    /// [`BearerToken`] for constructing one from a bare token or a validated
+    /// bearer `Authorization` header value).
     ///
     /// The authorizer **authenticates** the token (verifying its
     /// signature/authenticity, expiry, issuer, audience, or via an external
@@ -80,5 +80,10 @@ pub trait BearerTokenAuthorizer {
     /// when the authorizer **cannot reach a decision** (e.g. its token-review or
     /// policy backend is unreachable). Callers must **fail closed** -- treat an
     /// `Err` as a deny -- since an undetermined decision must never grant access.
+    ///
+    /// Callers may enforce their own deadline by dropping this future. Implementations
+    /// must therefore be cancellation-safe and must not rely on the future running to
+    /// completion for correctness or resource cleanup. Provider-specific operation
+    /// timeouts remain the implementation's responsibility.
     async fn authorize(&self, credential: &BearerToken) -> Result<AuthzDecision, CapabilityError>;
 }

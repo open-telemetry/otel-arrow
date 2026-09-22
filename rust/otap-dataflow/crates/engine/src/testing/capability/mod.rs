@@ -18,7 +18,7 @@ use crate::capability::registry::{
     Capabilities, CapabilityRegistry, ConsumedTracker, resolve_bindings,
 };
 #[cfg(any(test, feature = "test-utils"))]
-use otap_df_config::{CapabilityId, ExtensionId};
+use otel_arrow_dfe_config::{CapabilityId, ExtensionId};
 #[cfg(any(test, feature = "test-utils"))]
 use std::collections::{HashMap, HashSet};
 

@@ -3,9 +3,9 @@
 
 //! Metrics for the PartitionProcessor node.
 
-use otap_df_telemetry::common_attributes::OutcomeAttributes;
-use otap_df_telemetry::instrument::Counter;
-use otap_df_telemetry_macros::metric_set;
+use otel_arrow_dfe_telemetry::common_attributes::OutcomeAttributes;
+use otel_arrow_dfe_telemetry::instrument::Counter;
+use otel_arrow_dfe_telemetry_macros::metric_set;
 
 /// Partition operations grouped by outcome.
 #[metric_set(
@@ -22,10 +22,10 @@ pub struct Metrics {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_engine::context::ControllerContext;
-    use otap_df_telemetry::common_attributes::Outcome;
-    use otap_df_telemetry::metrics::MeasurementMetricSet;
-    use otap_df_telemetry::registry::TelemetryRegistryHandle;
+    use otel_arrow_dfe_engine::context::ControllerContext;
+    use otel_arrow_dfe_telemetry::common_attributes::Outcome;
+    use otel_arrow_dfe_telemetry::metrics::MeasurementMetricSet;
+    use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
 
     fn new_test_metrics() -> MeasurementMetricSet<Metrics> {
         let registry = TelemetryRegistryHandle::new();

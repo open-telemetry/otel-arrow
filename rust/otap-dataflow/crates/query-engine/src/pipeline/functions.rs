@@ -17,6 +17,7 @@ mod contains;
 mod fnv;
 pub(crate) mod is_type;
 mod murmur3;
+mod now;
 mod regexp_substr;
 #[cfg(feature = "sha1-hash")]
 mod sha1;
@@ -27,6 +28,7 @@ mod xxh3;
 
 make_udf_function!(contains::ExtendedContainsFunc, contains);
 make_udf_function!(fnv::FnvHashFunc, fnv_hash);
+make_udf_function!(now::NowFunc, now);
 make_udf_function!(murmur3::Murmur3HashFunc, murmur3_hash);
 #[cfg(feature = "sha1-hash")]
 make_udf_function!(sha1::Sha1Func, sha1_hash);
@@ -89,6 +91,59 @@ pub(crate) fn arity_range(signature: &TypeSignature) -> Option<Range<usize>> {
             } else {
                 None
             }
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod test {
+    use arrow::datatypes::DataType;
+    use datafusion::error::Result;
+    use datafusion::functions::make_udf_function;
+    use datafusion::logical_expr::{
+        self as datafusion_expr, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
+    };
+
+    make_udf_function!(AlwaysPanicUdf, always_panic);
+
+    /// UDF that will always panic when evaluated.
+    ///
+    /// This can be used in tests that are asserting that some expression does not evaluate
+    #[derive(Debug, Hash, Eq, PartialEq)]
+    struct AlwaysPanicUdf {
+        signature: Signature,
+    }
+
+    impl AlwaysPanicUdf {
+        fn new() -> Self {
+            Self {
+                signature: Signature::any(1, Volatility::Volatile),
+            }
+        }
+    }
+
+    impl ScalarUDFImpl for AlwaysPanicUdf {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
+        fn name(&self) -> &str {
+            "always_panic"
+        }
+
+        fn signature(&self) -> &Signature {
+            &self.signature
+        }
+
+        fn return_type(&self, _arg_types: &[DataType]) -> Result<DataType> {
+            Ok(DataType::Boolean)
+        }
+
+        fn invoke_with_args(
+            &self,
+            _args: ScalarFunctionArgs,
+        ) -> Result<datafusion::logical_expr::ColumnarValue> {
+            panic!("AlwaysPanicUdf not expected to evaluate")
         }
     }
 }

@@ -16,7 +16,7 @@ use super::registry::{
 };
 use super::{ExtensionCapability, KNOWN_CAPABILITIES, KnownCapability};
 use crate::capability::factory::{LocalInstanceFactory, SharedInstanceFactory};
-use otap_df_config::{CapabilityId, ExtensionId};
+use otel_arrow_dfe_config::{CapabilityId, ExtensionId};
 use std::any::{Any, TypeId};
 use std::collections::{HashMap, HashSet};
 
@@ -25,7 +25,7 @@ use std::collections::{HashMap, HashSet};
 trait MacroTestCapLocal {
     fn value(&self) -> &str;
 }
-trait MacroTestCapShared: Send {
+trait MacroTestCapShared: Send + Sync {
     fn value(&self) -> &str;
 }
 

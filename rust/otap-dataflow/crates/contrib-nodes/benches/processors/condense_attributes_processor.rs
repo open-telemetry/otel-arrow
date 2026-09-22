@@ -4,15 +4,15 @@
 //! Benchmarks for the Condense Attributes processor.
 
 use criterion::{BatchSize, BenchmarkId, Criterion, criterion_group, criterion_main};
-use otap_df_contrib_nodes::processors::condense_attributes_processor::CondenseAttributesProcessor;
-use otap_df_engine::testing::test_pipeline_ctx;
-use otap_df_pdata::TryIntoWithOptions;
-use otap_df_pdata::proto::opentelemetry::{
+use otel_arrow_dfe_contrib_nodes::processors::condense_attributes_processor::CondenseAttributesProcessor;
+use otel_arrow_dfe_engine::testing::test_pipeline_ctx;
+use otel_arrow_dfe_pdata::TryIntoWithOptions;
+use otel_arrow_dfe_pdata::proto::opentelemetry::{
     collector::logs::v1::ExportLogsServiceRequest,
     common::v1::{AnyValue, KeyValue},
     logs::v1::{LogRecord, ResourceLogs, ScopeLogs},
 };
-use otap_df_pdata::{OtapArrowRecords, OtlpProtoBytes};
+use otel_arrow_dfe_pdata::{OtapArrowRecords, OtlpProtoBytes};
 use prost::Message as _;
 use serde_json::json;
 use std::hint::black_box;

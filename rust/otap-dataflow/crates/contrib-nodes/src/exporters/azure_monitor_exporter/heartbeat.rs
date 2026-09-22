@@ -251,7 +251,7 @@ mod tests {
     // ==================== Test Helpers ====================
 
     fn create_test_client() -> Client {
-        otap_df_otap::crypto::ensure_crypto_provider();
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
         Client::builder().build().unwrap()
     }
 
@@ -655,7 +655,7 @@ mod tests {
     /// and is unaffected, but we install the provider unconditionally so the
     /// tests behave the same everywhere.
     fn build_test_heartbeat(overrides: &HeartbeatOverrides) -> Heartbeat {
-        otap_df_otap::crypto::ensure_crypto_provider();
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
         Heartbeat::new(&test_api_config(), overrides).unwrap()
     }
 

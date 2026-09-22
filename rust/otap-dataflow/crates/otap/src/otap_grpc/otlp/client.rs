@@ -10,9 +10,9 @@
 
 use bytes::Bytes;
 use http::uri::PathAndQuery;
-use otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceResponse;
-use otap_df_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceResponse;
-use otap_df_pdata::proto::opentelemetry::collector::trace::v1::ExportTraceServiceResponse;
+use otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceResponse;
+use otel_arrow_dfe_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceResponse;
+use otel_arrow_dfe_pdata::proto::opentelemetry::collector::trace::v1::ExportTraceServiceResponse;
 use prost::Message;
 use prost::bytes::BufMut;
 use std::marker::PhantomData;

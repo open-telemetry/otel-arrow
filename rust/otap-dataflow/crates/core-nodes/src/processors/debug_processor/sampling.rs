@@ -3,7 +3,7 @@
 
 //! Implementation of the Sampler for the DebugProcessor
 
-use otap_df_engine::error::Error;
+use otel_arrow_dfe_engine::error::Error;
 use serde::Deserialize;
 use tokio::time::{Duration, Instant};
 

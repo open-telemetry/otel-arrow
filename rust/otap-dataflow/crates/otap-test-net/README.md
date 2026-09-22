@@ -1,4 +1,4 @@
-# otap-df-test-net
+# otel-arrow-dfe-test-net
 
 Loopback-only ephemeral port pickers for tests and validation harnesses.
 

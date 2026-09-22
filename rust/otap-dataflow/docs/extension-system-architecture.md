@@ -97,8 +97,13 @@ struct MyLocalExtension {
 ```
 
 Shared capabilities return `Box<dyn shared::Trait>` --
-each consumer gets an independent clone. For shared
-extensions to share mutable state across clones (e.g.,
+each consumer gets an independent clone, and the generated
+shared capability trait requires `Send + Sync`. This is
+separate from the shared extension implementation's
+`Send + Clone` execution-model bound: `Sync` is required on
+the capability object so concurrent consumers may retain it
+behind shared references. For shared extensions to share
+mutable state across clones (e.g.,
 token senders, connection pools), fields should be wrapped
 in `Arc`, similar to how `tokio`, `axum`, and `reqwest`
 handle shared state:
@@ -154,7 +159,8 @@ themselves, and they never touch pipeline data directly.
 |  +-----------+  +-----------+                            |
 |                                                          |
 |  Local consumers get Box<dyn local::Trait>               |
-|  Shared consumers get Box<dyn shared::Trait> (Send)      |
+|  Shared consumers get Box<dyn shared::Trait>             |
+|  Shared capability trait objects are Send + Sync         |
 +----------------------------------------------------------+
 ```
 
@@ -297,7 +303,8 @@ themselves, and they never touch pipeline data directly.
    `capabilities.require_local::<BearerTokenProvider>()`
    (returns `Box<dyn local::BearerTokenProvider>`) or
    `capabilities.require_shared::<KeyValueStore>()`
-   (returns `Box<dyn shared::KeyValueStore>`, which is `Send`).
+   (returns `Box<dyn shared::KeyValueStore>`, which is
+   `Send + Sync`).
    The zero-sized registration struct carries associated
    types (`Local` and `Shared`) that map to the correct
    trait object variants. Sealing via `ExtensionCapability`
@@ -324,6 +331,8 @@ themselves, and they never touch pipeline data directly.
    functions that bridge an extension's
    `SharedInstanceFactory` / `LocalInstanceFactory` into
    a registry entry. Consumers use trait objects directly.
+   Generated shared capability traits require `Send + Sync`;
+   generated local capability traits add neither bound.
    Shared data types (e.g., `BearerToken`, `Secret`) are
    hand-written alongside the macro invocation.
 

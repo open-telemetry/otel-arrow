@@ -5,7 +5,7 @@
 //! OTAP data / record batches
 
 use arrow::array::RecordBatch;
-use otap_df_config::SignalType;
+use otel_arrow_dfe_config::SignalType;
 use transform::transport_optimize::{
     RESOURCE_ID_COL_PATH, SCOPE_ID_COL_PATH, apply_transport_optimized_encodings, remap_parent_ids,
     remove_transport_optimized_encodings,
@@ -58,9 +58,11 @@ impl OtapArrowRecords {
         }
     }
 
-    /// Remove the record batch for the given payload type. If the payload type is not valid
-    /// for this type of telemetry signal, this method does nothing.
-    pub fn remove(&mut self, payload_type: ArrowPayloadType) {
+    /// Remove the record batch for the given payload type and returns the removed record batch if
+    /// it was populated on this OTAP batch.
+    ///
+    /// If the payload type is not valid for this type of telemetry signal, this returns None
+    pub fn remove(&mut self, payload_type: ArrowPayloadType) -> Option<RecordBatch> {
         match self {
             Self::Logs(logs) => logs.remove(payload_type),
             Self::Metrics(metrics) => metrics.remove(payload_type),
@@ -108,6 +110,26 @@ impl OtapArrowRecords {
             .filter_map(|payload_type| self.get(*payload_type))
             .map(|batch| memory::record_batch_pinned_bytes(batch, &mut seen))
             .sum()
+    }
+
+    /// Logical Arrow buffer bytes associated with this batch set.
+    ///
+    /// This delegates sizing to Arrow's `ArrayData::get_slice_memory_size`.
+    pub fn logical_arrow_bytes(&self) -> Result<usize> {
+        self.allowed_payload_types()
+            .iter()
+            .filter_map(|payload_type| self.get(*payload_type))
+            .try_fold(0usize, |total, batch| {
+                let batch_bytes = memory::record_batch_logical_bytes(batch)
+                    .map_err(|source| error::Error::LogicalArrowSize { source })?;
+                total
+                    .checked_add(batch_bytes)
+                    .ok_or_else(|| error::Error::LogicalArrowSize {
+                        source: arrow::error::ArrowError::ComputeError(
+                            "Integer overflow computing logical Arrow byte size".to_string(),
+                        ),
+                    })
+            })
     }
 
     /// Get the root payload type for the signal type represented by this OTAP batch
@@ -334,7 +356,7 @@ pub trait OtapBatchStore:
     fn set(&mut self, payload_type: ArrowPayloadType, record_batch: RecordBatch) -> Result<()>;
 
     /// Remove the record batch for the given payload type
-    fn remove(&mut self, payload_type: ArrowPayloadType);
+    fn remove(&mut self, payload_type: ArrowPayloadType) -> Option<RecordBatch>;
 
     /// Get the record batch for the given payload type
     fn get(&self, payload_type: ArrowPayloadType) -> Option<&RecordBatch>;
@@ -471,8 +493,8 @@ impl OtapBatchStore for Logs {
         )
     }
 
-    fn remove(&mut self, payload_type: ArrowPayloadType) {
-        validated_remove(&mut self.inner, payload_type);
+    fn remove(&mut self, payload_type: ArrowPayloadType) -> Option<RecordBatch> {
+        validated_remove(&mut self.inner, payload_type)
     }
 
     fn get(&self, payload_type: ArrowPayloadType) -> Option<&RecordBatch> {
@@ -532,9 +554,11 @@ fn validated_set<const TYPE_MASK: u64, const COUNT: usize>(
 fn validated_remove<const TYPE_MASK: u64, const COUNT: usize>(
     inner: &mut raw_batch_store::RawBatchStore<TYPE_MASK, COUNT>,
     payload_type: ArrowPayloadType,
-) {
+) -> Option<RecordBatch> {
     if raw_batch_store::RawBatchStore::<TYPE_MASK, COUNT>::is_valid_type(payload_type) {
-        inner.remove(payload_type);
+        inner.remove(payload_type)
+    } else {
+        None
     }
 }
 
@@ -819,8 +843,8 @@ impl OtapBatchStore for Metrics {
         )
     }
 
-    fn remove(&mut self, payload_type: ArrowPayloadType) {
-        validated_remove(&mut self.inner, payload_type);
+    fn remove(&mut self, payload_type: ArrowPayloadType) -> Option<RecordBatch> {
+        validated_remove(&mut self.inner, payload_type)
     }
 
     fn get(&self, payload_type: ArrowPayloadType) -> Option<&RecordBatch> {
@@ -991,8 +1015,8 @@ impl OtapBatchStore for Traces {
         )
     }
 
-    fn remove(&mut self, payload_type: ArrowPayloadType) {
-        validated_remove(&mut self.inner, payload_type);
+    fn remove(&mut self, payload_type: ArrowPayloadType) -> Option<RecordBatch> {
+        validated_remove(&mut self.inner, payload_type)
     }
 
     fn get(&self, payload_type: ArrowPayloadType) -> Option<&RecordBatch> {

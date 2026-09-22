@@ -14,7 +14,7 @@ use super::models::{
     DiagnosisFinding, DiagnosisReport, DiagnosisStatus, EvidenceExcerpt, FindingSeverity,
     NormalizedEvent, PipelineDescribeReport,
 };
-use otap_df_admin_api::{groups, pipelines, telemetry};
+use otel_arrow_dfe_admin_api::{groups, pipelines, telemetry};
 use std::collections::BTreeSet;
 
 /// Produces diagnosis findings for a coordinated group shutdown.

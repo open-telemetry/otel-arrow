@@ -5,7 +5,7 @@
 //!
 //! This state must include all the metrics used by the node (if any exist).
 
-use otap_df_telemetry::metrics::MetricSetSnapshot;
+use otel_arrow_dfe_telemetry::metrics::MetricSetSnapshot;
 use std::ops::Add;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};

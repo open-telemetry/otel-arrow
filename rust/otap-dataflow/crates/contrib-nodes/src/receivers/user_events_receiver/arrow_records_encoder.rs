@@ -3,13 +3,13 @@
 
 //! Arrow encoding for Linux user_events logs.
 
-use otap_df_pdata::encode::Result;
-use otap_df_pdata::encode::record::{
+use otel_arrow_dfe_pdata::encode::Result;
+use otel_arrow_dfe_pdata::encode::record::{
     attributes::StrKeysAttributesRecordBatchBuilder, logs::LogsRecordBatchBuilder,
 };
-use otap_df_pdata::otap::{Logs, OtapArrowRecords};
-use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-use otap_df_pdata::schema::{SpanId, TraceId};
+use otel_arrow_dfe_pdata::otap::{Logs, OtapArrowRecords};
+use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+use otel_arrow_dfe_pdata::schema::{SpanId, TraceId};
 
 use super::decoder::{DecodedAttrValue, DecodedUserEventsRecord};
 

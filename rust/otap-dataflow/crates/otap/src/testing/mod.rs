@@ -5,13 +5,13 @@
 
 use crate::pdata::OtapPdata;
 use bytes::Bytes;
-use otap_df_engine::control::{AckMsg, NackMsg, UnwindData, nanos_since_birth};
-use otap_df_engine::testing::exporter::{TestRuntime, create_exporter_from_factory};
-use otap_df_engine::{
+use otel_arrow_dfe_engine::control::{AckMsg, NackMsg, UnwindData, nanos_since_birth};
+use otel_arrow_dfe_engine::testing::exporter::{TestRuntime, create_exporter_from_factory};
+use otel_arrow_dfe_engine::{
     ExporterFactory, Interests,
     control::{CallData, PipelineCompletionMsg},
 };
-use otap_df_pdata::OtlpProtoBytes;
+use otel_arrow_dfe_pdata::OtlpProtoBytes;
 use prost::Message;
 use serde_json::Value;
 use std::ops::Add;
@@ -79,7 +79,7 @@ impl From<TestCallData> for CallData {
 }
 
 impl TryFrom<CallData> for TestCallData {
-    type Error = otap_df_engine::error::Error;
+    type Error = otel_arrow_dfe_engine::error::Error;
 
     fn try_from(value: CallData) -> Result<Self, Self::Error> {
         if value.len() != 2 {
@@ -98,7 +98,7 @@ impl TryFrom<CallData> for TestCallData {
 #[must_use]
 pub fn create_test_pdata() -> OtapPdata {
     // Note this has to be one log record for existing tests.
-    let otlp_service_req = otap_df_pdata::testing::fixtures::log_with_no_scope();
+    let otlp_service_req = otel_arrow_dfe_pdata::testing::fixtures::log_with_no_scope();
     let mut otlp_bytes = vec![];
     otlp_service_req
         .encode(&mut otlp_bytes)
@@ -110,7 +110,7 @@ pub fn create_test_pdata() -> OtapPdata {
 /// Create empty test pdata (a logs request with zero log records).
 #[must_use]
 pub fn create_empty_test_pdata() -> OtapPdata {
-    let empty = otap_df_pdata::proto::opentelemetry::logs::v1::LogsData::new(vec![]);
+    let empty = otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::LogsData::new(vec![]);
     let mut otlp_bytes = vec![];
     empty
         .encode(&mut otlp_bytes)

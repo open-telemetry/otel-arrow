@@ -3,9 +3,9 @@
 
 use std::sync::{LazyLock, RwLock};
 
-use data_engine_expressions::*;
-use data_engine_kql_parser::*;
-use data_engine_recordset::*;
+use otel_arrow_contrib_data_engine_expressions::*;
+use otel_arrow_contrib_data_engine_kql_parser::*;
+use otel_arrow_contrib_data_engine_recordset::*;
 
 use crate::processors::recordset_kql_processor::otlp_bridge::*;
 

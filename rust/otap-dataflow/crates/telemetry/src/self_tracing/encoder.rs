@@ -4,17 +4,19 @@
 //! Direct OTLP bytes encoder for tokio-tracing events.
 
 use super::{LogRecord, SavedCallsite};
+use crate::attributes::AttributeValue;
 use crate::event::LogEvent;
 use crate::registry::EntityKey;
 use crate::registry::TelemetryRegistryHandle;
 use bytes::Bytes;
-use otap_df_config::pipeline::telemetry::{
+use otel_arrow_dfe_config::pipeline::telemetry::{
     AttributeValue as ConfigAttributeValue, AttributeValueArray as ConfigAttributeValueArray,
 };
-use otap_df_pdata::otlp::common::{BoundedBuf, Dropped, EncodeResult, ProtoBuffer};
-use otap_df_pdata::proto::consts::{
+use otel_arrow_dfe_pdata::otlp::common::{BoundedBuf, EncodeFailure, EncodeResult, ProtoBuffer};
+use otel_arrow_dfe_pdata::proto::consts::{
     field_num::common::*, field_num::logs::*, field_num::resource::*, wire_types,
 };
+use slotmap::Key;
 use std::collections::HashMap;
 use std::time::SystemTime;
 use tracing::Level;
@@ -86,8 +88,9 @@ impl<'buf, B: BoundedBuf> DirectLogRecordEncoder<'buf, B> {
 /// Encode the event name from callsite metadata.
 ///
 /// Emits the bare `callsite.name()` (the first argument to `otel_info!` /
-/// `otel_warn!` / ...). The crate name (`callsite.target()`) is **not**
-/// prefixed here; it is conveyed separately through
+/// `otel_warn!` / ...). The tracing target (`callsite.target()`) is **not**
+/// prefixed here; it identifies the static logical software unit and is
+/// conveyed separately through
 /// `InstrumentationScope.name` by [`encode_export_logs_request`] so that
 /// `event.name` on the wire matches the value declared in the
 /// `rust/otap-dataflow/semconv/` registry and validated by
@@ -122,7 +125,7 @@ impl<'buf, B: BoundedBuf> DirectFieldVisitor<'buf, B> {
     /// Encode a string attribute, truncating the value if it doesn't fit.
     ///
     /// Returns `Ok(false)` if the full value was written, `Ok(true)` if the
-    /// value was truncated (with a `[...]` suffix), or `Err(Dropped)` if even
+    /// value was truncated (with a `[...]` suffix), or `Err(EncodeFailure)` if even
     /// a truncated form would not fit. On `Err`, the buffer is left in a state
     /// that is invalid for OTLP (an unfinished partial KeyValue may have been
     /// written), so callers must invoke this within a [`BoundedBuf::try_encode`]
@@ -132,7 +135,7 @@ impl<'buf, B: BoundedBuf> DirectFieldVisitor<'buf, B> {
         buf: &mut B,
         key: &str,
         value: &str,
-    ) -> Result<bool, Dropped> {
+    ) -> Result<bool, EncodeFailure> {
         let mut truncated = false;
         // Use _partial variants so the wrapper length placeholders are patched
         // even when the inner truncating encoder writes partial bytes (it
@@ -146,7 +149,7 @@ impl<'buf, B: BoundedBuf> DirectFieldVisitor<'buf, B> {
                         truncated = was_truncated;
                         Ok(())
                     }
-                    Err(Dropped) => Err(Dropped),
+                    Err(failure) => Err(failure),
                 }
             })
         })?;
@@ -189,17 +192,32 @@ impl<'buf, B: BoundedBuf> DirectFieldVisitor<'buf, B> {
         })
     }
 
-    /// Encode a Debug attribute into a buffer.
+    /// Encode a Debug attribute into a buffer, truncating the value with a
+    /// `[...]` suffix if it does not fit.
+    ///
+    /// Returns `Ok(false)` if the full value was written, `Ok(true)` if the
+    /// value was truncated, or `Err(Dropped)` if even a truncated form would
+    /// not fit.
     #[inline]
     fn encode_debug_attribute_to(
         buf: &mut B,
         key: &str,
         value: &dyn std::fmt::Debug,
-    ) -> EncodeResult {
-        buf.encode_len_delimited(LOG_RECORD_ATTRIBUTES, |buf| {
+    ) -> Result<bool, EncodeFailure> {
+        let mut truncated = false;
+        buf.encode_len_delimited_partial(LOG_RECORD_ATTRIBUTES, |buf| {
             buf.encode_string(KEY_VALUE_KEY, key)?;
-            buf.encode_len_delimited(KEY_VALUE_VALUE, |buf| encode_debug_string(buf, value))
-        })
+            buf.encode_len_delimited_partial(KEY_VALUE_VALUE, |buf| {
+                match encode_debug_string(buf, value) {
+                    Ok(was_truncated) => {
+                        truncated = was_truncated;
+                        Ok(())
+                    }
+                    Err(failure) => Err(failure),
+                }
+            })
+        })?;
+        Ok(truncated)
     }
 
     /// Encode the body as a string. Empty strings are skipped.
@@ -222,43 +240,148 @@ impl<'buf, B: BoundedBuf> DirectFieldVisitor<'buf, B> {
 
     /// Encode the body from a Debug value without allocation.
     ///
-    /// Wrapped in `try_encode` so partial bytes are rolled back on overflow;
-    /// see [`Self::encode_body_string`] for rationale.
+    /// Uses `encode_len_delimited_partial` so the length placeholder is patched
+    /// even when truncation occurs. Wrapped in `try_encode` so a hard failure
+    /// (nothing fits at all) rolls back partial bytes; see
+    /// [`Self::encode_body_string`] for rationale.
     #[inline]
     pub fn encode_body_debug(&mut self, value: &dyn std::fmt::Debug) {
         let _ = self.buf.try_encode(|buf| {
-            buf.encode_len_delimited(LOG_RECORD_BODY, |buf| encode_debug_string(buf, value))
+            buf.encode_len_delimited_partial(LOG_RECORD_BODY, |buf| {
+                match encode_debug_string(buf, value) {
+                    Ok(_truncated) => Ok(()),
+                    Err(failure) => Err(failure),
+                }
+            })
         });
     }
 }
 
-/// Adapter that lets `write!` format directly into a `BoundedBuf` without
-/// an intermediate `String`. `try_extend` returns `Err(Dropped)` on
-/// overflow; we map that to `fmt::Error` so `write!` short-circuits and
-/// the caller learns truncation occurred.
-struct BoundedBufFmt<'a, B: BoundedBuf>(&'a mut B);
+/// Adapter that lets `write!` format directly into a [`BoundedBuf`] without
+/// an intermediate `String`.
+///
+/// When the buffer fills up, the adapter backtracks to make room for a
+/// `[...]` truncation suffix and silently discards all subsequent writes.
+/// The `truncated` flag records whether truncation occurred so callers can
+/// report the partial value instead of dropping it entirely.
+struct BoundedBufFmt<'a, B: BoundedBuf> {
+    buf: &'a mut B,
+    /// Buffer position where formatted content starts (after protobuf framing).
+    content_start: usize,
+    /// Set to `true` once truncation has occurred.
+    truncated: bool,
+}
+
+impl<'a, B: BoundedBuf> BoundedBufFmt<'a, B> {
+    /// Create a new adapter. `content_start` is recorded as the current
+    /// buffer length so the backtracking logic knows which bytes are ours.
+    #[inline]
+    fn new(buf: &'a mut B) -> Self {
+        let content_start = buf.len();
+        Self {
+            buf,
+            content_start,
+            truncated: false,
+        }
+    }
+
+    /// Backtrack from the end of the buffer to make room for `TRUNCATION_SUFFIX`,
+    /// append it, and mark ourselves as truncated.
+    ///
+    /// If there is not enough content to free space for the suffix the buffer
+    /// is left at `content_start` (empty content) and the caller should treat
+    /// this as a hard drop.
+    fn truncate_with_suffix(&mut self) {
+        use otel_arrow_dfe_pdata::otlp::common::TRUNCATION_SUFFIX;
+
+        let suffix_len = TRUNCATION_SUFFIX.len();
+        let cur = self.buf.len();
+
+        // Target position: back up `suffix_len` bytes from the current end,
+        // then walk backwards (at most 3 extra bytes) to a UTF-8 char boundary.
+        // UTF-8 continuation bytes have the bit pattern 10xxxxxx, so we skip
+        // them until we land on a leading byte.
+        let target = cur.saturating_sub(suffix_len).max(self.content_start);
+        let mut pos = target;
+        let slice = self.buf.as_slice();
+        while pos > self.content_start && (slice[pos] & 0xC0) == 0x80 {
+            pos -= 1;
+        }
+        self.buf.truncate(pos);
+
+        // Try to append the suffix. If even this fails (degenerate budget),
+        // leave the buffer at whatever position truncate() set.
+        let _ = self.buf.try_extend(TRUNCATION_SUFFIX);
+        self.truncated = true;
+    }
+}
 
 impl<B: BoundedBuf> std::fmt::Write for BoundedBufFmt<'_, B> {
     #[inline]
     fn write_str(&mut self, s: &str) -> std::fmt::Result {
-        self.0.try_extend(s.as_bytes()).map_err(|_| std::fmt::Error)
+        if self.truncated {
+            // Already truncated -- silently discard further output so the
+            // formatter finishes cleanly.
+            return Ok(());
+        }
+        match self.buf.try_extend(s.as_bytes()) {
+            Ok(()) => Ok(()),
+            Err(_) => {
+                // The full chunk did not fit. Write as much as we can, then
+                // backtrack to append the truncation suffix.
+                let remaining = self.buf.remaining();
+                if remaining > 0 {
+                    // Find the last UTF-8 char boundary within the portion
+                    // of `s` that fits.
+                    let mut end = remaining;
+                    while end > 0 && !s.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    if end > 0 {
+                        // This extend cannot fail -- we checked remaining.
+                        let _ = self.buf.try_extend(&s.as_bytes()[..end]);
+                    }
+                }
+                self.truncate_with_suffix();
+                Ok(())
+            }
+        }
     }
 }
 
-/// Helper to encode a Debug value as a protobuf string field.
-/// This is separate from DirectFieldVisitor to avoid borrow conflicts with the macro.
+/// Encode a `Debug` value as a protobuf string field with truncation support.
+///
+/// If the formatted output fits, returns `Ok(false)`. If it overflows the
+/// buffer, the value is truncated with a `[...]` suffix and `Ok(true)` is
+/// returned. `Err(Dropped)` is returned only when even a minimal truncated
+/// form cannot fit (nothing useful was written).
+///
+/// This function is separate from `DirectFieldVisitor` to avoid borrow
+/// conflicts with the macro.
 #[inline]
-fn encode_debug_string<B: BoundedBuf>(buf: &mut B, value: &dyn std::fmt::Debug) -> EncodeResult {
-    buf.encode_len_delimited(ANY_VALUE_STRING_VALUE, |buf| {
-        // Wrap in a local fmt::Write adapter so the formatter machinery
-        // writes directly into the buffer (no intermediate String). If the
-        // buffer fills up, `write!` returns `Err(fmt::Error)` and we
-        // propagate as `Dropped` so the surrounding `try_encode` rolls
-        // back partial bytes and the caller bumps `dropped_count`.
+fn encode_debug_string<B: BoundedBuf>(
+    buf: &mut B,
+    value: &dyn std::fmt::Debug,
+) -> Result<bool, EncodeFailure> {
+    let mut truncated = false;
+    buf.encode_len_delimited_partial(ANY_VALUE_STRING_VALUE, |buf| {
         use std::fmt::Write as _;
-        let mut adapter = BoundedBufFmt(buf);
-        write!(adapter, "{:?}", value).map_err(|_| Dropped)
-    })
+        let mut adapter = BoundedBufFmt::new(buf);
+        // Ignore the fmt result -- truncation is handled internally by the
+        // adapter; the write!() call always returns Ok because the adapter
+        // silently discards overflow bytes after appending the suffix.
+        let _ = write!(adapter, "{:?}", value);
+        // Extract state before dropping the adapter (which borrows buf).
+        let was_truncated = adapter.truncated;
+        let content_start = adapter.content_start;
+        truncated = was_truncated;
+        if was_truncated && buf.len() <= content_start {
+            // Nothing useful was written (not even the suffix fit).
+            return Err(EncodeFailure::Dropped);
+        }
+        Ok(())
+    })?;
+    Ok(truncated)
 }
 
 /// Compute the per-attribute budget: at most half of remaining space, but
@@ -345,7 +468,7 @@ impl<B: BoundedBuf> tracing::field::Visit for DirectFieldVisitor<'_, B> {
             buf.try_encode(|b| {
                 truncated =
                     DirectFieldVisitor::encode_string_attribute_truncating_to(b, key, value)?;
-                Ok::<(), Dropped>(())
+                Ok::<(), EncodeFailure>(())
             })
         });
         match (fit, truncated) {
@@ -354,7 +477,7 @@ impl<B: BoundedBuf> tracing::field::Visit for DirectFieldVisitor<'_, B> {
                 // Truncated; bytes were preserved.
                 self.dropped_count += 1;
             }
-            (Err(Dropped), _) => {
+            (Err(_), _) => {
                 // Hard failure; everything rolled back.
                 self.dropped_count += 1;
             }
@@ -367,13 +490,24 @@ impl<B: BoundedBuf> tracing::field::Visit for DirectFieldVisitor<'_, B> {
             return;
         }
         let budget = attr_budget(self.buf);
+        let key = field.name();
+        let mut truncated = false;
         let fit = self.buf.with_max_remaining(budget, |buf| {
             buf.try_encode(|b| {
-                DirectFieldVisitor::encode_debug_attribute_to(b, field.name(), value)
+                truncated = DirectFieldVisitor::encode_debug_attribute_to(b, key, value)?;
+                Ok::<(), EncodeFailure>(())
             })
         });
-        if fit.is_err() {
-            self.dropped_count += 1;
+        match (fit, truncated) {
+            (Ok(()), false) => {} // Fully encoded.
+            (Ok(()), true) => {
+                // Truncated; bytes were preserved with [...] suffix.
+                self.dropped_count += 1;
+            }
+            (Err(_), _) => {
+                // Hard failure; everything rolled back.
+                self.dropped_count += 1;
+            }
         }
     }
 }
@@ -499,6 +633,8 @@ const EXPORT_LOGS_REQUEST_RESOURCE_LOGS: u64 = 1;
 /// The Internal Telemetry Receiver uses this to avoid re-encoding scope
 /// attributes for each log event. Entity attributes are looked up once
 /// from the registry and encoded as InstrumentationScope.attributes bytes.
+/// Entity keys must remain registered until their first lookup populates this
+/// cache; a key that is neither registered nor cached cannot be encoded.
 ///
 /// TODO: ScopeToBytesMap grows without any attention to managing memory.
 /// We will require a way to de-register entities that are no longer use
@@ -507,6 +643,15 @@ const EXPORT_LOGS_REQUEST_RESOURCE_LOGS: u64 = 1;
 pub struct ScopeToBytesMap {
     cache: HashMap<EntityKey, Bytes>,
     registry: TelemetryRegistryHandle,
+}
+
+/// A dedicated error value indicating that an EntityKey was not
+/// found.
+pub enum MapError {
+    /// EntityKey is not registered
+    NotRegistered,
+    /// Encoding the registered entity's attributes failed.
+    Failed(EncodeFailure),
 }
 
 impl ScopeToBytesMap {
@@ -519,29 +664,22 @@ impl ScopeToBytesMap {
         }
     }
 
-    /// Get or compute the encoded scope attribute bytes for an entity key.
-    pub fn get_or_encode(&mut self, key: EntityKey) -> Bytes {
+    /// Get or compute scope attributes for a registered or previously cached entity key.
+    pub fn get_or_encode(&mut self, key: EntityKey) -> Result<Bytes, MapError> {
         if let Some(cached) = self.cache.get(&key) {
-            return cached.clone();
+            return Ok(cached.clone());
         }
 
-        let visited = self.registry.visit_entity(key, |attrs| {
-            attrs
-                .iter_attributes()
-                .map(|(a, b)| (a, b.clone()))
-                .collect::<Vec<_>>()
-        });
-        visited
-            .map(|attrs| {
-                let mut buf = ProtoBuffer::with_capacity(128);
-                for (attr_key, attr_value) in attrs {
-                    encode_scope_attribute(&mut buf, attr_key, &attr_value);
-                }
-                let bytes = buf.into_bytes();
+        match self.registry.visit_entity(key, |attrs| {
+            encode_scope_attributes(attrs.iter_attributes())
+        }) {
+            Some(Ok(bytes)) => {
                 let _ = self.cache.insert(key, bytes.clone());
-                bytes
-            })
-            .unwrap_or_default()
+                Ok(bytes)
+            }
+            Some(Err(err)) => Err(MapError::Failed(err)),
+            None => Err(MapError::NotRegistered),
+        }
     }
 
     /// Clear the cache. Call this when entities may have been updated.
@@ -550,14 +688,25 @@ impl ScopeToBytesMap {
     }
 }
 
+/// Encode an iterator of scope attributes.
+fn encode_scope_attributes<'k, 'v>(
+    attrs: impl IntoIterator<Item = (&'k str, &'v AttributeValue)>,
+) -> Result<Bytes, EncodeFailure> {
+    let mut buf = ProtoBuffer::with_capacity(128);
+    for (attr_key, attr_value) in attrs {
+        encode_scope_attribute(&mut buf, attr_key, attr_value)?;
+    }
+    Ok(buf.into_bytes())
+}
+
 /// Encode a single scope attribute as a KeyValue message for InstrumentationScope.attributes.
 #[inline]
 fn encode_scope_attribute(
     buf: &mut ProtoBuffer,
     key: &str,
-    value: &crate::attributes::AttributeValue,
-) {
-    let _ = encode_key_value(buf, INSTRUMENTATION_SCOPE_ATTRIBUTES, key, value);
+    value: &AttributeValue,
+) -> EncodeResult {
+    encode_key_value(buf, INSTRUMENTATION_SCOPE_ATTRIBUTES, key, value)
 }
 
 /// Encode a KeyValue message wrapped in the given outer field tag.
@@ -570,7 +719,7 @@ fn encode_key_value(
     buf: &mut ProtoBuffer,
     outer_field: u64,
     key: &str,
-    value: &crate::attributes::AttributeValue,
+    value: &AttributeValue,
 ) -> EncodeResult {
     buf.encode_len_delimited(outer_field, |buf| {
         buf.encode_string(KEY_VALUE_KEY, key)?;
@@ -580,12 +729,7 @@ fn encode_key_value(
 
 /// Encode an `AttributeValue` as an OTLP AnyValue (the inner value without key wrapping).
 #[inline]
-fn encode_any_value(
-    buf: &mut ProtoBuffer,
-    value: &crate::attributes::AttributeValue,
-) -> EncodeResult {
-    use crate::attributes::AttributeValue;
-
+fn encode_any_value(buf: &mut ProtoBuffer, value: &AttributeValue) -> EncodeResult {
     match value {
         AttributeValue::String(s) => {
             buf.encode_string(ANY_VALUE_STRING_VALUE, s.as_str())?;
@@ -621,51 +765,91 @@ fn encode_any_value(
     Ok(())
 }
 
-/// Encode a LogEvent as a complete ExportLogsServiceRequest.
-///
-/// This version resolves entity keys from the log record's context to populate
-/// the InstrumentationScope.attributes field. The scope cache is used to avoid
-/// re-encoding entity attributes for each log event.
-pub fn encode_export_logs_request(
+fn encode_scope_logs(
     buf: &mut ProtoBuffer,
-    event: &LogEvent,
-    resource_bytes: &Bytes,
+    target: &str,
+    context: &[EntityKey],
+    events: &[LogEvent],
     scope_cache: &mut ScopeToBytesMap,
-) {
-    buf.clear();
-
-    // ExportLogsServiceRequest.resource_logs (field 1, repeated ResourceLogs)
-    let _: EncodeResult = buf.encode_len_delimited(EXPORT_LOGS_REQUEST_RESOURCE_LOGS, |buf| {
-        // ResourceLogs.resource (field 1, Resource message)
-        // Copy pre-encoded resource bytes directly
-        buf.extend_from_slice(resource_bytes)?;
-
-        // ResourceLogs.scope_logs (field 2, repeated ScopeLogs)
-        buf.encode_len_delimited(RESOURCE_LOGS_SCOPE_LOGS, |buf| {
-            // ScopeLogs.scope (field 1, InstrumentationScope message)
-            buf.encode_len_delimited(SCOPE_LOG_SCOPE, |buf| {
-                // InstrumentationScope.name (field 1, string) -- the crate
-                // that emitted the event (i.e. the tracing target,
-                // `env!("CARGO_PKG_NAME")` at the call site). Pairing
-                // scope.name with the bare `event.name` encoded below
-                // keeps `event.name` aligned with the
-                // `rust/otap-dataflow/semconv/` registry.
-                buf.encode_string(INSTRUMENTATION_SCOPE_NAME, event.record.callsite().target())?;
-                for entity_key in event.record.context.iter() {
-                    let scope_bytes = scope_cache.get_or_encode(*entity_key);
-                    buf.extend_from_slice(&scope_bytes)?;
+) -> EncodeResult {
+    buf.encode_len_delimited(RESOURCE_LOGS_SCOPE_LOGS, |buf| {
+        buf.encode_len_delimited(SCOPE_LOG_SCOPE, |buf| {
+            buf.encode_string(INSTRUMENTATION_SCOPE_NAME, target)?;
+            for entity_key in context {
+                match scope_cache.get_or_encode(*entity_key) {
+                    Ok(b) => buf.extend_from_slice(&b)?,
+                    Err(MapError::NotRegistered) => {
+                        buf.extend_from_slice(&encode_scope_attributes(std::iter::once((
+                            "unregistered.entity",
+                            &AttributeValue::Int(entity_key.data().as_ffi() as i64),
+                        )))?)?;
+                    }
+                    Err(MapError::Failed(err)) => return Err(err),
                 }
-                Ok(())
-            })?;
+            }
+            Ok(())
+        })?;
 
-            // ScopeLogs.log_records (field 2, repeated LogRecord)
+        for event in events {
             buf.encode_len_delimited(SCOPE_LOGS_LOG_RECORDS, |buf| {
                 let mut encoder = DirectLogRecordEncoder::new(buf);
                 let _ = encoder.encode_log_record(event.time, &event.record);
                 Ok(())
+            })?;
+        }
+        Ok(())
+    })
+}
+
+/// Encode logs as one request, grouping by scope.
+///
+/// Every entity key referenced by an event must remain registered until its
+/// scope attributes have been cached.
+pub fn encode_export_logs_request(
+    buf: &mut ProtoBuffer,
+    events: &mut [LogEvent],
+    resource_bytes: &Bytes,
+    scope_cache: &mut ScopeToBytesMap,
+) -> EncodeResult {
+    buf.clear();
+    if events.is_empty() {
+        return Ok(());
+    }
+
+    // Sort the events in scope order.
+    events.sort_by(|a, b| {
+        a.record
+            .callsite()
+            .target()
+            .cmp(b.record.callsite().target())
+            .then_with(|| {
+                a.record
+                    .context
+                    .iter()
+                    .map(|key| key.data().as_ffi())
+                    .cmp(b.record.context.iter().map(|key| key.data().as_ffi()))
             })
-        })
     });
+
+    buf.encode_len_delimited(EXPORT_LOGS_REQUEST_RESOURCE_LOGS, |buf| {
+        buf.extend_from_slice(resource_bytes)?;
+
+        for events in events.chunk_by(|a, b| {
+            a.record.callsite().target() == b.record.callsite().target()
+                && a.record.context == b.record.context
+        }) {
+            let first = &events[0];
+
+            encode_scope_logs(
+                buf,
+                first.record.callsite().target(),
+                first.record.context.as_slice(),
+                events,
+                scope_cache,
+            )?;
+        }
+        Ok(())
+    })
 }
 
 #[cfg(test)]
@@ -673,22 +857,22 @@ mod tests {
     use super::*;
     use crate::__log_record_impl;
     use crate::LogContext;
-    use crate::attributes::{AttributeSetHandler, AttributeValue};
+    use crate::attributes::AttributeSetHandler;
     use crate::descriptor::{AttributeField, AttributeValueType, AttributesDescriptor};
     use crate::event::LogEvent;
     use crate::self_tracing::formatter::format_log_record_to_string;
-    use otap_df_config::pipeline::telemetry::{
+    use otel_arrow_dfe_config::pipeline::telemetry::{
         AttributeValue as ConfigAttributeValue, AttributeValueArray as ConfigAttributeValueArray,
     };
-    use otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
-    use otap_df_pdata::proto::opentelemetry::common::v1::{
+    use otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{
         AnyValue, InstrumentationScope, KeyValue,
     };
-    use otap_df_pdata::proto::opentelemetry::logs::v1::LogRecord;
-    use otap_df_pdata::proto::opentelemetry::logs::v1::ResourceLogs;
-    use otap_df_pdata::proto::opentelemetry::logs::v1::ScopeLogs;
-    use otap_df_pdata::proto::opentelemetry::logs::v1::SeverityNumber;
-    use otap_df_pdata::proto::opentelemetry::resource::v1::Resource;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::LogRecord;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::ResourceLogs;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::ScopeLogs;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::SeverityNumber;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::resource::v1::Resource;
     use prost::Message;
     use std::collections::{BTreeMap, HashMap};
     use std::time::{Duration, SystemTime};
@@ -839,7 +1023,13 @@ mod tests {
         let resource_bytes = encode_config_resource_field(&HashMap::new());
 
         let mut buf = ProtoBuffer::default();
-        encode_export_logs_request(&mut buf, &log_event, &resource_bytes, &mut scope_cache);
+        encode_export_logs_request(
+            &mut buf,
+            &mut [log_event.clone()],
+            &resource_bytes,
+            &mut scope_cache,
+        )
+        .unwrap();
 
         let decoded = ExportLogsServiceRequest::decode(buf.into_bytes().as_ref()).unwrap();
         let scope_logs = &decoded.resource_logs.first().unwrap().scope_logs;
@@ -861,13 +1051,13 @@ mod tests {
         // is conveyed via InstrumentationScope.name. See
         // encode_event_name + encode_export_logs_request.
         assert_eq!(event_name, "test.scope.encoding");
-        assert_eq!(scope.name, "otap-df-telemetry");
+        assert_eq!(scope.name, "otel-arrow-dfe-telemetry");
 
         let expected = ExportLogsServiceRequest::new([ResourceLogs::new(
             Resource::build().finish(),
             [ScopeLogs::new(
                 InstrumentationScope::build()
-                    .name("otap-df-telemetry")
+                    .name("otel-arrow-dfe-telemetry")
                     .attributes([
                         KeyValue::new("pipeline.name", AnyValue::new_string("my-pipeline")),
                         KeyValue::new("cpu.id", AnyValue::new_int(3)),
@@ -886,11 +1076,123 @@ mod tests {
         assert_eq!(
             format_log_record_to_string(None, &log_event.record),
             format!(
-                "INFO  otap-df-telemetry::{event_name} entity={:?}\n",
+                "INFO  otel-arrow-dfe-telemetry::{event_name} entity={:?}\n",
                 entity_key
             ),
         );
         assert_eq!(expected, decoded);
+    }
+
+    /// Scenario: a log references an entity key that has been unregistered.
+    /// Guarantees: the scope records the unregistered entity's FFI key as an int64 attribute.
+    #[test]
+    fn encode_export_logs_request_with_unregistered_entity() {
+        let registry = TelemetryRegistryHandle::new();
+        let entity_key = registry.register_entity(TestScopeAttributes::new("removed", 1));
+        assert!(registry.unregister_entity(entity_key));
+        let mut scope_cache = ScopeToBytesMap::new(registry);
+        let record = __log_record_impl!(Level::INFO, "test.unregistered.entity")
+            .into_record(LogContext::from_buf([entity_key]));
+        let mut events = [LogEvent {
+            time: SystemTime::UNIX_EPOCH,
+            record,
+        }];
+        let mut buf = ProtoBuffer::default();
+
+        encode_export_logs_request(&mut buf, &mut events, &Bytes::new(), &mut scope_cache).unwrap();
+
+        let decoded =
+            ExportLogsServiceRequest::decode(buf.into_bytes()).expect("valid logs request");
+        let scope = decoded.resource_logs[0].scope_logs[0]
+            .scope
+            .as_ref()
+            .expect("scope present");
+        assert_eq!(
+            scope.attributes,
+            [KeyValue::new(
+                "unregistered.entity",
+                AnyValue::new_int(entity_key.data().as_ffi() as i64),
+            )]
+        );
+    }
+
+    /// Scenario: a batch interleaves records from two entity contexts.
+    /// Guarantees: equal contexts share one scope regardless of entity-key sort order.
+    #[test]
+    fn encode_export_logs_request_groups_equal_scopes() {
+        fn assert_scope<const N: usize>(
+            scope_logs: &[ScopeLogs],
+            pipeline_name: &'static str,
+            cpu_id: i64,
+            event_names: [&'static str; N],
+        ) {
+            let expected_attributes = [
+                KeyValue::new("pipeline.name", AnyValue::new_string(pipeline_name)),
+                KeyValue::new("cpu.id", AnyValue::new_int(cpu_id)),
+            ];
+            let scope_logs = scope_logs
+                .iter()
+                .find(|scope_logs| {
+                    scope_logs
+                        .scope
+                        .as_ref()
+                        .is_some_and(|scope| scope.attributes == expected_attributes)
+                })
+                .expect("expected scope attributes");
+
+            assert_eq!(
+                scope_logs
+                    .log_records
+                    .iter()
+                    .map(|record| record.event_name.as_str())
+                    .collect::<Vec<_>>(),
+                event_names
+            );
+        }
+
+        let registry = TelemetryRegistryHandle::new();
+        let key_a = registry.register_entity(TestScopeAttributes::new("pipeline-a", 1));
+        let key_b = registry.register_entity(TestScopeAttributes::new("pipeline-b", 2));
+        let mut scope_cache = ScopeToBytesMap::new(registry);
+        let time = SystemTime::UNIX_EPOCH + Duration::from_secs(1);
+        let mut events = vec![
+            LogEvent {
+                time,
+                record: __log_record_impl!(Level::INFO, "test.batch.b-first")
+                    .into_record(LogContext::from_buf([key_b])),
+            },
+            LogEvent {
+                time,
+                record: __log_record_impl!(Level::INFO, "test.batch.a")
+                    .into_record(LogContext::from_buf([key_a])),
+            },
+            LogEvent {
+                time,
+                record: __log_record_impl!(Level::INFO, "test.batch.b-second")
+                    .into_record(LogContext::from_buf([key_b])),
+            },
+        ];
+
+        let mut buf = ProtoBuffer::default();
+        encode_export_logs_request(
+            &mut buf,
+            events.as_mut_slice(),
+            &Bytes::new(),
+            &mut scope_cache,
+        )
+        .unwrap();
+        let decoded =
+            ExportLogsServiceRequest::decode(buf.into_bytes()).expect("valid logs request");
+        let scope_logs = &decoded.resource_logs[0].scope_logs;
+
+        assert_eq!(scope_logs.len(), 2);
+        assert_scope(
+            scope_logs,
+            "pipeline-b",
+            2,
+            ["test.batch.b-first", "test.batch.b-second"],
+        );
+        assert_scope(scope_logs, "pipeline-a", 1, ["test.batch.a"]);
     }
 
     // --- Test infrastructure for Map (kvlist) scope attributes ---
@@ -954,7 +1256,13 @@ mod tests {
 
         let resource_bytes = encode_config_resource_field(&HashMap::new());
         let mut buf = ProtoBuffer::default();
-        encode_export_logs_request(&mut buf, &log_event, &resource_bytes, &mut scope_cache);
+        encode_export_logs_request(
+            &mut buf,
+            &mut [log_event],
+            &resource_bytes,
+            &mut scope_cache,
+        )
+        .unwrap();
 
         let decoded = ExportLogsServiceRequest::decode(buf.into_bytes().as_ref()).unwrap();
         let scope = decoded.resource_logs[0].scope_logs[0]
@@ -963,14 +1271,14 @@ mod tests {
             .expect("scope present");
         let event_name = &decoded.resource_logs[0].scope_logs[0].log_records[0].event_name;
         assert_eq!(event_name, "test.map.encoding");
-        assert_eq!(scope.name, "otap-df-telemetry");
+        assert_eq!(scope.name, "otel-arrow-dfe-telemetry");
 
         // BTreeMap iterates in sorted key order: "priority" before "region".
         let expected = ExportLogsServiceRequest::new([ResourceLogs::new(
             Resource::build().finish(),
             [ScopeLogs::new(
                 InstrumentationScope::build()
-                    .name("otap-df-telemetry")
+                    .name("otel-arrow-dfe-telemetry")
                     .attributes([KeyValue::new(
                         "custom",
                         AnyValue::new_kvlist(vec![
@@ -999,9 +1307,9 @@ mod tests {
     #[test]
     fn record_str_halves_remaining_budget_across_attributes() {
         use crate::self_tracing::encoder::DirectFieldVisitor;
-        use otap_df_pdata::otlp::common::TRUNCATION_SUFFIX;
-        use otap_df_pdata::otlp::common::{BoundedBuf, StackProtoBuffer};
-        use otap_df_pdata::proto::opentelemetry::common::v1::KeyValue as ProtoKeyValue;
+        use otel_arrow_dfe_pdata::otlp::common::TRUNCATION_SUFFIX;
+        use otel_arrow_dfe_pdata::otlp::common::{BoundedBuf, StackProtoBuffer};
+        use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::KeyValue as ProtoKeyValue;
         use prost::Message;
         use tracing::field::Visit;
 
@@ -1059,7 +1367,7 @@ mod tests {
                 .as_ref()
                 .and_then(|v| v.value.as_ref())
                 .map(|v| match v {
-                    otap_df_pdata::proto::opentelemetry::common::v1::any_value::Value::StringValue(s) => s.clone(),
+                    otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::any_value::Value::StringValue(s) => s.clone(),
                     _ => panic!("expected string value"),
                 })
                 .unwrap();
@@ -1118,8 +1426,8 @@ mod tests {
     /// when the value comfortably fits.
     #[test]
     fn record_debug_writes_fmt_output_without_intermediate_string() {
-        use otap_df_pdata::otlp::common::StackProtoBuffer;
-        use otap_df_pdata::proto::opentelemetry::common::v1::KeyValue as ProtoKeyValue;
+        use otel_arrow_dfe_pdata::otlp::common::StackProtoBuffer;
+        use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::KeyValue as ProtoKeyValue;
         use prost::Message;
         use tracing::field::Visit;
 
@@ -1156,7 +1464,7 @@ mod tests {
         let kv = ProtoKeyValue::decode(&cursor[..len as usize]).unwrap();
         assert_eq!(kv.key, "dbg");
         let s = match kv.value.as_ref().unwrap().value.as_ref().unwrap() {
-            otap_df_pdata::proto::opentelemetry::common::v1::any_value::Value::StringValue(s) => {
+            otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::any_value::Value::StringValue(s) => {
                 s.clone()
             }
             other => panic!("expected StringValue, got {other:?}"),
@@ -1164,14 +1472,15 @@ mod tests {
         assert_eq!(s, expected_repr);
     }
 
-    /// When a Debug value overflows the available buffer, `BoundedBufFmt`
-    /// returns `fmt::Error` from the formatter, `encode_debug_string`
-    /// propagates `Dropped`, and the surrounding `try_encode` rolls back
-    /// any partial KeyValue bytes -- leaving the buffer unchanged and
-    /// incrementing `dropped_count`.
+    /// Scenario: a Debug value overflows the available buffer.
+    /// Guarantees: the value is truncated with a `[...]` suffix instead of
+    /// being dropped entirely, `dropped_count` is incremented, and the
+    /// encoded KeyValue is decodable with the suffix at the end.
     #[test]
-    fn record_debug_overflow_rolls_back_and_increments_dropped() {
-        use otap_df_pdata::otlp::common::{BoundedBuf, StackProtoBuffer};
+    fn record_debug_overflow_truncates_with_suffix() {
+        use otel_arrow_dfe_pdata::otlp::common::{BoundedBuf, StackProtoBuffer, TRUNCATION_SUFFIX};
+        use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::KeyValue as ProtoKeyValue;
+        use prost::Message;
         use tracing::field::Visit;
 
         // A Debug impl that writes far more than the buffer can hold.
@@ -1191,20 +1500,182 @@ mod tests {
         let dbg = fields.field("dbg").unwrap();
 
         let mut buf = StackProtoBuffer::<64>::default();
-        let before_len = buf.len();
         let mut visitor = DirectFieldVisitor::new(&mut buf);
         visitor.record_debug(&dbg, &Huge);
         assert_eq!(
             visitor.dropped_count(),
             1,
-            "the single oversized debug field should be counted as dropped"
+            "the single oversized debug field should be counted as dropped (truncated)"
         );
 
-        // No partial KeyValue bytes survive -- the transaction was rolled back.
+        // Buffer should contain a truncated KeyValue, not be empty.
+        assert!(
+            buf.len() > 0,
+            "buffer should contain a truncated attribute, not be empty"
+        );
+
+        // Decode the KeyValue and verify the value ends with the suffix.
+        let bytes = buf.as_ref().to_vec();
+        let mut cursor = bytes.as_slice();
+        let (tag, n) = read_varint(cursor);
+        cursor = &cursor[n..];
+        assert_eq!(tag >> 3, LOG_RECORD_ATTRIBUTES);
+        assert_eq!(tag & 0x7, wire_types::LEN);
+        let (len, n) = read_varint(cursor);
+        cursor = &cursor[n..];
+        let kv = ProtoKeyValue::decode(&cursor[..len as usize]).unwrap();
+        assert_eq!(kv.key, "dbg");
+        let s = match kv.value.as_ref().unwrap().value.as_ref().unwrap() {
+            otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::any_value::Value::StringValue(s) => {
+                s.clone()
+            }
+            other => panic!("expected StringValue, got {other:?}"),
+        };
+        let suffix = std::str::from_utf8(TRUNCATION_SUFFIX).unwrap();
+        assert!(
+            s.ends_with(suffix),
+            "truncated debug value should end with {suffix}, got: {s}"
+        );
+        // The value should contain some content before the suffix.
+        assert!(
+            s.len() > suffix.len(),
+            "truncated value should have content before the suffix"
+        );
+    }
+
+    /// Scenario: a Debug value cannot fit even in truncated form because the
+    /// buffer is too small for key + suffix + protobuf overhead.
+    /// Guarantees: the attribute is hard-dropped (buffer rolled back to
+    /// pre-call length) and `dropped_count` is incremented.
+    #[test]
+    fn record_debug_hard_drop_when_budget_too_small() {
+        use otel_arrow_dfe_pdata::otlp::common::{BoundedBuf, StackProtoBuffer};
+        use tracing::field::Visit;
+
+        struct Tiny;
+        impl std::fmt::Debug for Tiny {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("x")
+            }
+        }
+
+        let meta = &DEBUG_TEST_METADATA;
+        let fields = meta.fields();
+        let dbg = fields.field("dbg").unwrap();
+
+        // A buffer so tiny that even the key "dbg" + protobuf overhead
+        // cannot fit, forcing a hard drop.
+        let mut buf = StackProtoBuffer::<8>::default();
+        let before_len = buf.len();
+        let mut visitor = DirectFieldVisitor::new(&mut buf);
+        visitor.record_debug(&dbg, &Tiny);
+        assert_eq!(
+            visitor.dropped_count(),
+            1,
+            "the field should be counted as dropped"
+        );
         assert_eq!(
             buf.len(),
             before_len,
-            "buffer must be rolled back to its pre-call length"
+            "buffer must be rolled back to its pre-call length on hard drop"
+        );
+    }
+
+    /// Scenario: four Debug values compete for a 256-byte buffer with the
+    /// halving budget policy.
+    /// Guarantees: all four values are truncated (each ends with `[...]`),
+    /// each successive value is shorter than the previous, and the buffer
+    /// does not exceed the inline limit.
+    #[test]
+    fn record_debug_halves_remaining_budget_across_attributes() {
+        use otel_arrow_dfe_pdata::otlp::common::TRUNCATION_SUFFIX;
+        use otel_arrow_dfe_pdata::otlp::common::{BoundedBuf, StackProtoBuffer};
+        use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::KeyValue as ProtoKeyValue;
+        use prost::Message;
+        use tracing::field::Visit;
+
+        const INLINE: usize = 256;
+
+        // A Debug impl that writes 1000 bytes.
+        struct Big;
+        impl std::fmt::Debug for Big {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                for _ in 0..125 {
+                    f.write_str("xxxxxxxx")?;
+                }
+                Ok(())
+            }
+        }
+
+        let meta = &BUDGET_TEST_METADATA;
+        let fields = meta.fields();
+        let a = fields.field("a").unwrap();
+        let b = fields.field("b").unwrap();
+        let c = fields.field("c").unwrap();
+        let d = fields.field("d").unwrap();
+
+        let mut buf = StackProtoBuffer::<INLINE>::default();
+        let mut visitor = DirectFieldVisitor::new(&mut buf);
+        visitor.record_debug(&a, &Big);
+        visitor.record_debug(&b, &Big);
+        visitor.record_debug(&c, &Big);
+        visitor.record_debug(&d, &Big);
+        let dropped = visitor.dropped_count();
+
+        assert_eq!(dropped, 4, "expected 4 truncated attributes");
+        assert!(
+            buf.len() <= INLINE,
+            "buffer len {} exceeds INLINE {}",
+            buf.len(),
+            INLINE
+        );
+
+        // Decode each attribute.
+        let bytes = buf.as_ref().to_vec();
+        let mut cursor = bytes.as_slice();
+        let mut decoded: Vec<(String, String)> = Vec::new();
+        while !cursor.is_empty() {
+            let (tag, n) = read_varint(cursor);
+            cursor = &cursor[n..];
+            let field_num = tag >> 3;
+            let wire_type = tag & 0x7;
+            assert_eq!(wire_type, wire_types::LEN, "expected LEN wire type");
+            assert_eq!(field_num, LOG_RECORD_ATTRIBUTES, "expected ATTRIBUTES tag");
+            let (len, n) = read_varint(cursor);
+            cursor = &cursor[n..];
+            let len = len as usize;
+            let kv_bytes = &cursor[..len];
+            cursor = &cursor[len..];
+            let kv = ProtoKeyValue::decode(kv_bytes).unwrap();
+            let val = kv
+                .value
+                .as_ref()
+                .and_then(|v| v.value.as_ref())
+                .map(|v| match v {
+                    otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::any_value::Value::StringValue(s) => s.clone(),
+                    _ => panic!("expected string value"),
+                })
+                .unwrap();
+            decoded.push((kv.key, val));
+        }
+
+        assert_eq!(decoded.len(), 4, "expected 4 decoded attributes");
+
+        let suffix = std::str::from_utf8(TRUNCATION_SUFFIX).unwrap();
+        for (k, v) in &decoded {
+            assert!(
+                v.ends_with(suffix),
+                "attribute {k} value should end with {suffix}, got len {}",
+                v.len()
+            );
+        }
+
+        // Each successive value should be no longer than the previous one
+        // as the remaining budget is halved across attributes.
+        let lens: Vec<usize> = decoded.iter().map(|(_, v)| v.len()).collect();
+        assert!(
+            lens.windows(2).all(|w| w[0] >= w[1]),
+            "expected non-increasing value lengths, got {lens:?}"
         );
     }
 
@@ -1221,7 +1692,7 @@ mod tests {
 
     static DEBUG_TEST_METADATA: tracing::Metadata<'static> = tracing::Metadata::new(
         "debug_test",
-        "otap-df-telemetry",
+        "otel-arrow-dfe-telemetry",
         Level::INFO,
         Some(file!()),
         Some(line!()),
@@ -1260,7 +1731,7 @@ mod tests {
 
     static BUDGET_TEST_METADATA: tracing::Metadata<'static> = tracing::Metadata::new(
         "budget_test",
-        "otap-df-telemetry",
+        "otel-arrow-dfe-telemetry",
         Level::INFO,
         Some(file!()),
         Some(line!()),

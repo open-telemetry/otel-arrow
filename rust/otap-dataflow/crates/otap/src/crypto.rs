@@ -53,7 +53,7 @@ pub fn install_crypto_provider() -> Result<(), String> {
             .map_err(|_| {
                 "crypto provider is already installed (crypto-symcrypt)".to_string()})?;
         } else {
-            otap_df_telemetry::otel_warn!(
+            otel_arrow_dfe_telemetry::otel_warn!(
             "crypto.no_provider",
             message = "no crypto-* feature enabled: TLS operations will fail at runtime. \
                        Enable exactly one of: crypto-ring, crypto-aws-lc, crypto-openssl, \

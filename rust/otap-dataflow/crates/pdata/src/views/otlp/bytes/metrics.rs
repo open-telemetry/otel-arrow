@@ -41,8 +41,8 @@ use crate::views::otlp::bytes::decode::{
     read_len_delim, read_varint, to_nonzero_range, validate_message_wire_format,
 };
 use crate::views::otlp::bytes::resource::RawResource;
-use otap_df_pdata_views::views::common::Str;
-use otap_df_pdata_views::views::metrics::{
+use otel_arrow_dfe_pdata_views::views::common::Str;
+use otel_arrow_dfe_pdata_views::views::metrics::{
     AggregationTemporality, BucketsView, DataPointFlags, DataType, DataView, ExemplarView,
     ExponentialHistogramDataPointView, ExponentialHistogramView, GaugeView, HistogramDataPointView,
     HistogramView, MetricView, MetricsView, NumberDataPointView, ResourceMetricsView,
@@ -1889,7 +1889,8 @@ impl ExponentialHistogramDataPointView for RawExpHistogramDatapoint<'_> {
         self.byte_parser
             .advance_to_find_field(EXP_HISTOGRAM_DP_SCALE)
             .and_then(|slice| read_varint(slice, 0))
-            .map(|(val, _)| decode_sint32(val as i32))
+            .and_then(|(val, _)| u32::try_from(val).ok())
+            .map(decode_sint32)
             .unwrap_or_default()
     }
 
@@ -1947,7 +1948,8 @@ impl BucketsView for RawBuckets<'_> {
         self.byte_parser
             .advance_to_find_field(EXP_HISTOGRAM_BUCKET_OFFSET)
             .and_then(|slice| read_varint(slice, 0))
-            .map(|(val, _)| decode_sint32(val as i32))
+            .and_then(|(val, _)| u32::try_from(val).ok())
+            .map(decode_sint32)
             .unwrap_or_default()
     }
 }

@@ -239,7 +239,7 @@ engine:
 
 ### TLS/mTLS behaviour
 
-The configuration in the `tls` block will use the structure defined in [`otap_df_config::tls::TlsClientConfig`](
+The configuration in the `tls` block will use the structure defined in [`otel_arrow_dfe_config::tls::TlsClientConfig`](
 https://github.com/open-telemetry/otel-arrow/blob/f45dc00642f0187020a4a46de796a07bf368d443/rust/otap-dataflow/crates/config/src/tls.rs#L49-L92)
 
 If the key is supplied without the certificate, or the certificate is
@@ -525,7 +525,7 @@ The server should supply the engine config as JSON, embedded within the
 an `AgentConfigFile` message.
 
 The `body` of the message should contain the JSON serialized
-`otap_df_config::engine::OtelDataflowSpec` and the `content_type` field should
+`otel_arrow_dfe_config::engine::OtelDataflowSpec` and the `content_type` field should
 identify that the body is JSON serialized.
 
 ```rs

@@ -28,7 +28,7 @@
     Hash,
     PartialOrd,
     Ord,
-    otap_df_telemetry_macros::AttributeEnum,
+    otel_arrow_dfe_telemetry_macros::AttributeEnum,
 )]
 pub enum AdmissionDimension {
     /// Payload bytes, as measured by the component at its admission point.

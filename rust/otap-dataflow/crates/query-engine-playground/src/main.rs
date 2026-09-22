@@ -7,7 +7,7 @@
 //! # Running
 //!
 //! ```bash
-//! cargo run -p otap-df-query-engine-playground
+//! cargo run -p otel-arrow-dfe-query-engine-playground
 //! ```
 //!
 //! Then open `http://localhost:3000` in a browser.
@@ -38,16 +38,16 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
-use data_engine_parser_abstractions::Parser;
-use otap_df_pdata::otap::OtapArrowRecords;
-use otap_df_pdata::proto::OtlpProtoMessage;
-use otap_df_pdata::proto::opentelemetry::logs::v1::LogsData;
-use otap_df_pdata::proto::opentelemetry::metrics::v1::MetricsData;
-use otap_df_pdata::proto::opentelemetry::trace::v1::TracesData;
-use otap_df_pdata::testing::round_trip::{otap_to_otlp, otlp_to_otap};
-use otap_df_query_engine::parser::default_parser_options;
-use otap_df_query_engine::pipeline::Pipeline;
-use otap_df_query_engine_languages::opl::parser::OplParser;
+use otel_arrow_contrib_data_engine_parser_abstractions::Parser;
+use otel_arrow_dfe_pdata::otap::OtapArrowRecords;
+use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
+use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::LogsData;
+use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::MetricsData;
+use otel_arrow_dfe_pdata::proto::opentelemetry::trace::v1::TracesData;
+use otel_arrow_dfe_pdata::testing::round_trip::{otap_to_otlp, otlp_to_otap};
+use otel_arrow_dfe_query_engine::parser::default_parser_options;
+use otel_arrow_dfe_query_engine::pipeline::Pipeline;
+use otel_arrow_dfe_query_engine_languages::opl::parser::OplParser;
 use prost::Message;
 use serde::{Deserialize, Serialize};
 
@@ -252,14 +252,14 @@ async fn execute_pipeline(req: ExecuteRequest) -> Result<ExecuteResponse, String
 fn build_arrow_tables(result: &OtapArrowRecords) -> HashMap<String, String> {
     let mut tables = HashMap::new();
     for payload_type in result.allowed_payload_types() {
-        if let Some(batch) = result.get(*payload_type) {
-            if batch.num_rows() > 0 {
-                let text = match pretty_format_batches(std::slice::from_ref(batch)) {
-                    Ok(formatted) => formatted.to_string(),
-                    Err(e) => format!("(formatting error: {e})"),
-                };
-                let _: Option<String> = tables.insert(payload_type.as_str_name().to_string(), text);
-            }
+        if let Some(batch) = result.get(*payload_type)
+            && batch.num_rows() > 0
+        {
+            let text = match pretty_format_batches(std::slice::from_ref(batch)) {
+                Ok(formatted) => formatted.to_string(),
+                Err(e) => format!("(formatting error: {e})"),
+            };
+            let _: Option<String> = tables.insert(payload_type.as_str_name().to_string(), text);
         }
     }
     tables

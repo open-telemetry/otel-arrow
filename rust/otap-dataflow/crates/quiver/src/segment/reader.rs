@@ -16,7 +16,7 @@
 //! for high-throughput replay scenarios.
 //!
 //! ```ignore
-//! use quiver::segment::SegmentReader;
+//! use otel_arrow_dfe_quiver::segment::SegmentReader;
 //!
 //! // Open with memory mapping (requires `mmap` feature)
 //! let reader = SegmentReader::open_mmap(&path)?;
@@ -900,7 +900,8 @@ impl SegmentReader {
     /// Arrow IPC file with schema:
     ///
     /// - `bundle_index`: UInt32
-    /// - `item_count`: UInt64 (optional; defaults to 0 for legacy segments)
+    /// - `item_count`: nullable UInt64 (optional for legacy segments)
+    /// - `byte_count`: nullable UInt64 (optional for legacy segments)
     /// - `slot_refs`: List<Struct<slot_id: UInt16, stream_id: UInt32, chunk_index: UInt32>>
     ///
     /// Each row represents one [`ManifestEntry`] describing which stream chunks
@@ -932,8 +933,35 @@ impl SegmentReader {
             Self::get_primitive_column::<arrow_array::types::UInt32Type>(&batch, "bundle_index")?;
 
         // item_count is optional for backward compatibility with legacy segments.
-        let item_counts: Option<Vec<u64>> =
-            Self::get_primitive_column::<arrow_array::types::UInt64Type>(&batch, "item_count").ok();
+        // Null values preserve bundles replayed without an authoritative count.
+        let item_counts = batch
+            .column_by_name("item_count")
+            .and_then(|column| column.as_primitive_opt::<arrow_array::types::UInt64Type>())
+            .map(|array| {
+                (0..array.len())
+                    .map(|index| {
+                        if array.is_null(index) {
+                            None
+                        } else {
+                            Some(array.value(index))
+                        }
+                    })
+                    .collect::<Vec<_>>()
+            });
+        let byte_counts = batch
+            .column_by_name("byte_count")
+            .and_then(|column| column.as_primitive_opt::<arrow_array::types::UInt64Type>())
+            .map(|array| {
+                (0..array.len())
+                    .map(|index| {
+                        if array.is_null(index) {
+                            None
+                        } else {
+                            Some(array.value(index))
+                        }
+                    })
+                    .collect::<Vec<_>>()
+            });
 
         // Get the slot_refs list column
         let slot_refs_col =
@@ -965,8 +993,9 @@ impl SegmentReader {
 
         let mut entries = Vec::with_capacity(batch.num_rows());
         for (i, &bundle_index) in bundle_indices.iter().enumerate() {
-            let item_count = item_counts.as_ref().map(|counts| counts[i]).unwrap_or(0);
-            let mut entry = ManifestEntry::new(bundle_index, item_count);
+            let item_count = item_counts.as_ref().and_then(|counts| counts[i]);
+            let byte_count = byte_counts.as_ref().and_then(|counts| counts[i]);
+            let mut entry = ManifestEntry::new_with_counts(bundle_index, item_count, byte_count);
 
             // Get the struct array for this bundle's slot refs
             let slot_refs_for_bundle = slot_refs_list.value(i);
@@ -1158,6 +1187,8 @@ mod tests {
         }
     }
 
+    /// Scenario: A segment written in the current format is opened normally.
+    /// Guarantees: The reader exposes the expected counts and current format version.
     #[tokio::test]
     async fn reader_opens_valid_segment() {
         let seg = TestSegment::new().await;
@@ -1443,6 +1474,40 @@ mod tests {
         assert!(matches!(result, Err(SegmentError::ChecksumMismatch { .. })));
     }
 
+    /// Scenario: Segment manifest bytes are corrupt during startup loss recovery.
+    /// Guarantees: Whole-file validation rejects the summary instead of publishing partial loss.
+    #[tokio::test]
+    async fn loss_summary_rejects_corrupt_metadata() {
+        let seg = TestSegment::new().await;
+        let reader = SegmentReader::open(&seg.path).expect("open");
+        let manifest_offset = reader.footer.manifest_offset as usize;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let permissions = std::fs::Permissions::from_mode(0o644);
+            std::fs::set_permissions(&seg.path, permissions).expect("set permissions");
+        }
+        #[cfg(not(unix))]
+        {
+            let mut permissions = std::fs::metadata(&seg.path)
+                .expect("metadata")
+                .permissions();
+            #[allow(clippy::permissions_set_readonly_false)]
+            permissions.set_readonly(false);
+            std::fs::set_permissions(&seg.path, permissions).expect("set permissions");
+        }
+
+        let mut bytes = std::fs::read(&seg.path).expect("read");
+        bytes[manifest_offset] ^= 0xFF;
+        std::fs::write(&seg.path, bytes).expect("write");
+
+        assert!(matches!(
+            SegmentReader::open(&seg.path),
+            Err(SegmentError::ChecksumMismatch { .. })
+        ));
+    }
+
     #[tokio::test]
     async fn reader_stream_lookup_by_id() {
         let seg = TestSegment::new().await;
@@ -1512,6 +1577,75 @@ mod tests {
         assert_eq!(
             bundle.payload(SlotId::new(1)).map(|b| b.num_rows()),
             Some(3)
+        );
+    }
+
+    /// Scenario: A manifest mixes known-zero, known-nonzero, and unknown byte counts.
+    /// Guarantees: Byte-count presence and nullability survive segment round-trip.
+    #[tokio::test]
+    async fn roundtrip_optional_manifest_byte_counts() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("byte_counts.qseg");
+        let schema = test_schema();
+        let fingerprint = [0x33; 32];
+
+        let bundles = [
+            TestBundle::new(slot_descriptors())
+                .with_payload(SlotId::new(0), fingerprint, make_batch(&schema, &[], &[]))
+                .with_byte_count(0),
+            TestBundle::new(slot_descriptors())
+                .with_payload(
+                    SlotId::new(0),
+                    fingerprint,
+                    make_batch(&schema, &[1], &["one"]),
+                )
+                .with_byte_count(123),
+            TestBundle::new(slot_descriptors()).with_payload(
+                SlotId::new(0),
+                fingerprint,
+                make_batch(&schema, &[2], &["unknown"]),
+            ),
+        ];
+
+        let mut open_segment = OpenSegment::new();
+        for bundle in &bundles {
+            let _ = open_segment.append(bundle);
+        }
+        let _ = SegmentWriter::new(SegmentSeq::new(1), true)
+            .write_segment(&path, open_segment)
+            .await
+            .expect("write");
+
+        let reader = SegmentReader::open(&path).expect("open");
+        assert_eq!(
+            reader
+                .manifest()
+                .iter()
+                .map(ManifestEntry::exact_byte_count)
+                .collect::<Vec<_>>(),
+            vec![Some(0), Some(123), None]
+        );
+        assert!(
+            reader
+                .manifest()
+                .iter()
+                .any(|entry| entry.exact_byte_count().is_none()),
+            "a partial byte-count column must not be treated as an exact segment total"
+        );
+    }
+
+    /// Scenario: A legacy manifest contains no byte-count column.
+    /// Guarantees: The new reader accepts it without inventing logical bytes.
+    #[tokio::test]
+    async fn reads_manifest_without_byte_count_column() {
+        let seg = TestSegment::new().await;
+        let reader = SegmentReader::open(&seg.path).expect("open");
+
+        assert!(
+            reader
+                .manifest()
+                .iter()
+                .all(|entry| entry.exact_byte_count().is_none())
         );
     }
 

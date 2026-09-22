@@ -12,11 +12,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use quiver::SegmentReadMode;
-use quiver::budget::DiskBudget;
-use quiver::config::RetentionPolicy;
-use quiver::subscriber::SubscriberId;
-use quiver::{CancellationToken, QuiverConfig, QuiverEngine};
+use otel_arrow_dfe_quiver::SegmentReadMode;
+use otel_arrow_dfe_quiver::budget::DiskBudget;
+use otel_arrow_dfe_quiver::config::RetentionPolicy;
+use otel_arrow_dfe_quiver::subscriber::SubscriberId;
+use otel_arrow_dfe_quiver::{CancellationToken, QuiverConfig, QuiverEngine};
 use tempfile::TempDir;
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
@@ -373,10 +373,10 @@ pub async fn run(
         // Periodic cleanup of completed segments (all engines use their own cleanup)
         if last_cleanup.elapsed() >= cleanup_interval {
             for engine in &engines {
-                if let Ok(deleted) = engine.cleanup_completed_segments() {
-                    if deleted > 0 {
-                        let _ = total_cleaned.fetch_add(deleted as u64, Ordering::Relaxed);
-                    }
+                if let Ok(deleted) = engine.cleanup_completed_segments()
+                    && deleted > 0
+                {
+                    let _ = total_cleaned.fetch_add(deleted as u64, Ordering::Relaxed);
                 }
             }
             last_cleanup = Instant::now();
@@ -598,11 +598,11 @@ pub async fn run(
     }
 
     // Handle temp directory
-    if let Some(tmp) = tmp {
-        if config.keep_temp {
-            let kept_path = tmp.keep();
-            output.log(&format!("Keeping temp directory: {}", kept_path.display()));
-        }
+    if let Some(tmp) = tmp
+        && config.keep_temp
+    {
+        let kept_path = tmp.keep();
+        output.log(&format!("Keeping temp directory: {}", kept_path.display()));
     }
 
     // Check for concerning growth
@@ -701,7 +701,7 @@ fn create_engine_config(
     engine_idx: usize,
     engine_count: usize,
 ) -> QuiverConfig {
-    use quiver::DurabilityMode;
+    use otel_arrow_dfe_quiver::DurabilityMode;
 
     let mut config = QuiverConfig::default().with_data_dir(data_dir);
 

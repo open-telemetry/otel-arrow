@@ -10,42 +10,44 @@
 //! platforms the factory rejects construction with a clear error.
 #![cfg_attr(not(target_os = "linux"), allow(dead_code))]
 
+otel_arrow_dfe_telemetry::otel_component_scope!(
+    urn = JOURNALD_RECEIVER_URN,
+    target = "otel.receiver.journald",
+);
+
 #[cfg(target_os = "linux")]
 use async_trait::async_trait;
 use linkme::distributed_slice;
 #[cfg(target_os = "linux")]
-use otap_df_channel::error::SendError;
-use otap_df_config::node::NodeUserConfig;
-use otap_df_engine::ReceiverFactory;
-use otap_df_engine::config::ReceiverConfig;
-use otap_df_engine::context::PipelineContext;
+use otel_arrow_dfe_channel::error::SendError;
+use otel_arrow_dfe_config::node::NodeUserConfig;
+use otel_arrow_dfe_engine::ReceiverFactory;
+use otel_arrow_dfe_engine::config::ReceiverConfig;
+use otel_arrow_dfe_engine::context::PipelineContext;
 #[cfg(target_os = "linux")]
-use otap_df_engine::control::{CallData, Context8u8, NodeControlMsg};
+use otel_arrow_dfe_engine::control::{CallData, Context8u8, NodeControlMsg};
 #[cfg(target_os = "linux")]
-use otap_df_engine::error::{Error, ReceiverErrorKind, TypedError};
+use otel_arrow_dfe_engine::error::{Error, ReceiverErrorKind, TypedError};
 #[cfg(target_os = "linux")]
-use otap_df_engine::local::receiver as local;
-use otap_df_engine::node::NodeId;
-use otap_df_engine::receiver::ReceiverWrapper;
+use otel_arrow_dfe_engine::local::receiver as local;
+use otel_arrow_dfe_engine::node::NodeId;
+use otel_arrow_dfe_engine::receiver::ReceiverWrapper;
 #[cfg(target_os = "linux")]
-use otap_df_engine::terminal_state::TerminalState;
+use otel_arrow_dfe_engine::terminal_state::TerminalState;
 #[cfg(target_os = "linux")]
-use otap_df_engine::{
+use otel_arrow_dfe_engine::{
     Interests, MessageSourceLocalEffectHandlerExtension, ProducerEffectHandlerExtension,
 };
-use otap_df_otap::OTAP_RECEIVER_FACTORIES;
+use otel_arrow_dfe_otap::OTAP_RECEIVER_FACTORIES;
 #[cfg(target_os = "linux")]
-use otap_df_otap::pdata::Context;
-use otap_df_otap::pdata::OtapPdata;
+use otel_arrow_dfe_otap::pdata::Context;
+use otel_arrow_dfe_otap::pdata::OtapPdata;
 #[cfg(target_os = "linux")]
-use otap_df_pdata::OtapPayload;
-use otap_df_telemetry::instrument::Counter;
-use otap_df_telemetry::metrics::MetricSet;
+use otel_arrow_dfe_pdata::OtapPayload;
+mod metrics;
+use metrics::*;
 #[cfg(target_os = "linux")]
-use otap_df_telemetry::metrics::MetricSetSnapshot;
-#[cfg(target_os = "linux")]
-use otap_df_telemetry::{otel_debug, otel_info, otel_warn};
-use otap_df_telemetry_macros::metric_set;
+use otel_arrow_dfe_telemetry::metrics::MetricSetSnapshot;
 use serde_json::Value;
 #[cfg(any(target_os = "linux", test))]
 use std::collections::BTreeMap;
@@ -84,47 +86,7 @@ pub const JOURNALD_RECEIVER_URN: &str = "urn:otel:receiver:journald";
 ///
 /// Tracks lifecycle transitions, downstream delivery, Ack/Nack handling, and
 /// durable cursor checkpoint progress.
-#[metric_set(name = "receiver.journald")]
-#[derive(Debug, Default, Clone)]
-pub struct JournaldReceiverMetrics {
-    /// Number of times the receiver was started.
-    #[metric(unit = "{start}")]
-    pub starts: Counter<u64>,
-    /// Number of clean drain transitions.
-    #[metric(unit = "{drain}")]
-    pub drains: Counter<u64>,
-    /// Number of clean shutdown transitions.
-    #[metric(unit = "{shutdown}")]
-    pub shutdowns: Counter<u64>,
-    /// Number of log batches emitted downstream.
-    #[metric(unit = "{batch}")]
-    pub batches_sent: Counter<u64>,
-    /// Number of log records emitted downstream.
-    #[metric(unit = "{record}")]
-    pub records_sent: Counter<u64>,
-    /// Number of downstream Acks observed.
-    #[metric(unit = "{ack}")]
-    pub acks: Counter<u64>,
-    /// Number of downstream Nacks observed.
-    #[metric(unit = "{nack}")]
-    pub nacks: Counter<u64>,
-    /// Number of durable cursor commits completed.
-    #[metric(unit = "{commit}")]
-    pub cursor_commits: Counter<u64>,
-    /// Number of durable cursor commit failures.
-    #[metric(unit = "{failure}")]
-    pub checkpoint_failures: Counter<u64>,
-    /// Number of source read failures reported by the worker.
-    #[metric(unit = "{failure}")]
-    pub source_failures: Counter<u64>,
-    /// Number of journald fields dropped by extraction safety limits.
-    #[metric(unit = "{field}")]
-    pub source_dropped_fields: Counter<u64>,
-    /// Number of times the worker was asked to rewind after a Nack.
-    #[metric(unit = "{rewind}")]
-    pub rewinds: Counter<u64>,
-}
-
+///
 /// Journald receiver instance.
 pub struct JournaldReceiver {
     #[allow(dead_code)]
@@ -132,23 +94,25 @@ pub struct JournaldReceiver {
     #[cfg(target_os = "linux")]
     checkpoint_path: PathBuf,
     _lease: SourceLease,
-    metrics: Option<MetricSet<JournaldReceiverMetrics>>,
+    metrics: Option<JournaldReceiverMetrics>,
 }
 
 #[allow(unsafe_code)]
-#[otap_df_engine::component_inventory(category = Receiver)]
+#[otel_arrow_dfe_engine::component_inventory(category = Receiver)]
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
 /// Declares the journald receiver as a local receiver factory.
 pub static JOURNALD_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
     name: JOURNALD_RECEIVER_URN,
-    create: |pipeline: PipelineContext,
-             node: NodeId,
-             node_config: Arc<NodeUserConfig>,
-             receiver_config: &ReceiverConfig,
-             _capabilities: &otap_df_engine::capability::registry::Capabilities| {
-        create_journald_receiver(pipeline, node, node_config, receiver_config)
-    },
-    wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    create:
+        |pipeline: PipelineContext,
+         node: NodeId,
+         node_config: Arc<NodeUserConfig>,
+         receiver_config: &ReceiverConfig,
+         _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities| {
+            create_journald_receiver(pipeline, node, node_config, receiver_config)
+        },
+    context_declarations: None,
+    wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config: validate_journald_config,
 };
 
@@ -158,9 +122,9 @@ fn create_journald_receiver(
     node: NodeId,
     node_config: Arc<NodeUserConfig>,
     receiver_config: &ReceiverConfig,
-) -> Result<ReceiverWrapper<OtapPdata>, otap_df_config::error::Error> {
+) -> Result<ReceiverWrapper<OtapPdata>, otel_arrow_dfe_config::error::Error> {
     if pipeline.num_cores() > 1 {
-        return Err(otap_df_config::error::Error::InvalidUserConfig {
+        return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
             error: "journald must run in a one-core source pipeline; use \
                  receiver:journald -> exporter:topic and fan out downstream"
                 .to_owned(),
@@ -174,7 +138,7 @@ fn create_journald_receiver(
         receiver_config.name.as_ref(),
         &receiver.config.source_id,
     );
-    receiver.metrics = Some(pipeline.register_metrics::<JournaldReceiverMetrics>());
+    receiver.metrics = Some(JournaldReceiverMetrics::register(&pipeline));
     Ok(ReceiverWrapper::local(
         receiver,
         node,
@@ -189,14 +153,14 @@ fn create_journald_receiver(
     _node: NodeId,
     _node_config: Arc<NodeUserConfig>,
     _receiver_config: &ReceiverConfig,
-) -> Result<ReceiverWrapper<OtapPdata>, otap_df_config::error::Error> {
+) -> Result<ReceiverWrapper<OtapPdata>, otel_arrow_dfe_config::error::Error> {
     Err(unsupported_platform_error())
 }
 
 #[cfg(target_os = "linux")]
-fn validate_journald_config(config: &Value) -> Result<(), otap_df_config::error::Error> {
+fn validate_journald_config(config: &Value) -> Result<(), otel_arrow_dfe_config::error::Error> {
     let parsed: Config = serde_json::from_value(config.clone()).map_err(|e| {
-        otap_df_config::error::Error::InvalidUserConfig {
+        otel_arrow_dfe_config::error::Error::InvalidUserConfig {
             error: e.to_string(),
         }
     })?;
@@ -204,22 +168,22 @@ fn validate_journald_config(config: &Value) -> Result<(), otap_df_config::error:
 }
 
 #[cfg(not(target_os = "linux"))]
-fn validate_journald_config(_config: &Value) -> Result<(), otap_df_config::error::Error> {
+fn validate_journald_config(_config: &Value) -> Result<(), otel_arrow_dfe_config::error::Error> {
     Err(unsupported_platform_error())
 }
 
 #[cfg(not(target_os = "linux"))]
-fn unsupported_platform_error() -> otap_df_config::error::Error {
-    otap_df_config::error::Error::InvalidUserConfig {
+fn unsupported_platform_error() -> otel_arrow_dfe_config::error::Error {
+    otel_arrow_dfe_config::error::Error::InvalidUserConfig {
         error: "journald receiver is supported only on Linux".to_owned(),
     }
 }
 
 impl JournaldReceiver {
     /// Builds a receiver from a JSON config value.
-    fn from_config(config: &Value) -> Result<Self, otap_df_config::error::Error> {
+    fn from_config(config: &Value) -> Result<Self, otel_arrow_dfe_config::error::Error> {
         let parsed: Config = serde_json::from_value(config.clone()).map_err(|e| {
-            otap_df_config::error::Error::InvalidUserConfig {
+            otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                 error: e.to_string(),
             }
         })?;
@@ -227,7 +191,7 @@ impl JournaldReceiver {
     }
 
     /// Builds a receiver from an already-deserialized `Config`.
-    fn new(config: Config) -> Result<Self, otap_df_config::error::Error> {
+    fn new(config: Config) -> Result<Self, otel_arrow_dfe_config::error::Error> {
         let runtime = RuntimeConfig::try_from(config)?;
         let lease = SourceLease::acquire(&runtime.lease_key)?;
         Ok(Self {
@@ -243,10 +207,10 @@ impl JournaldReceiver {
 #[cfg(target_os = "linux")]
 fn terminal_state(
     deadline: std::time::Instant,
-    metrics: &Option<MetricSet<JournaldReceiverMetrics>>,
+    metrics: &mut Option<JournaldReceiverMetrics>,
 ) -> TerminalState {
-    if let Some(metrics) = metrics {
-        TerminalState::new(deadline, [metrics.snapshot()])
+    if let Some(metrics) = metrics.as_mut() {
+        TerminalState::new(deadline, metrics.snapshot())
     } else {
         TerminalState::new::<[MetricSetSnapshot; 0]>(deadline, [])
     }
@@ -258,7 +222,7 @@ struct WorkerBatch {
     id: u64,
     first_cursor: String,
     last_cursor: String,
-    records: otap_df_pdata::otap::OtapArrowRecords,
+    records: otel_arrow_dfe_pdata::otap::OtapArrowRecords,
     record_count: usize,
     dropped_fields: u64,
 }
@@ -285,7 +249,7 @@ enum WorkerError {
     Journal(#[from] journal::JournalError),
     #[error("failed to encode journald batch: {source}")]
     Encode {
-        source: otap_df_pdata::encode::Error,
+        source: otel_arrow_dfe_pdata::encode::Error,
     },
     #[error("journald receiver event channel closed")]
     EventChannelClosed,
@@ -293,6 +257,26 @@ enum WorkerError {
     UnexpectedCommand,
     #[error("journald cannot rewind before the first checkpoint is committed")]
     RewindBeforeCheckpoint,
+}
+
+#[cfg(target_os = "linux")]
+impl From<&WorkerError> for SourceErrorType {
+    fn from(err: &WorkerError) -> Self {
+        match err {
+            WorkerError::Journal(journal_err) => match journal_err {
+                journal::JournalError::JournalAccess { .. } => SourceErrorType::Permission,
+                journal::JournalError::CursorUtf8 { .. } => SourceErrorType::CorruptJournal,
+                journal::JournalError::SystemdCall { rc, .. } => match -rc {
+                    libc::EACCES | libc::EPERM => SourceErrorType::Permission,
+                    libc::EBADMSG | libc::EUCLEAN => SourceErrorType::CorruptJournal,
+                    libc::EIO => SourceErrorType::IoFailure,
+                    _ => SourceErrorType::Other,
+                },
+                _ => SourceErrorType::Other,
+            },
+            _ => SourceErrorType::Other,
+        }
+    }
 }
 
 #[cfg(any(target_os = "linux", test))]
@@ -631,16 +615,16 @@ fn worker_loop_inner(
                     .filter(|remaining| !remaining.is_zero())
                     .map(|remaining| remaining.min(config.wait_timeout))
             };
-            if let Some(timeout) = read_timeout {
-                if let Some(entry) = reader.next_entry_with_wait_timeout(timeout)? {
-                    if builder.len() == 0 {
-                        first_cursor = entry.cursor.clone();
-                        first_record_at = StdInstant::now();
-                    }
-                    dropped_fields = dropped_fields.saturating_add(entry.dropped_fields);
-                    builder.append(&entry);
-                    last_cursor = entry.cursor;
+            if let Some(timeout) = read_timeout
+                && let Some(entry) = reader.next_entry_with_wait_timeout(timeout)?
+            {
+                if builder.len() == 0 {
+                    first_cursor = entry.cursor.clone();
+                    first_record_at = StdInstant::now();
                 }
+                dropped_fields = dropped_fields.saturating_add(entry.dropped_fields);
+                builder.append(&entry);
+                last_cursor = entry.cursor;
             }
         }
 
@@ -728,7 +712,13 @@ impl local::Receiver<OtapPdata> for JournaldReceiver {
         } = *self;
 
         if let Some(metrics) = metrics.as_mut() {
-            metrics.starts.add(1);
+            metrics
+                .lifecycle
+                .with(TransitionAttributes {
+                    transition_type: TransitionType::Start,
+                })
+                .transitions
+                .add(1);
         }
 
         otel_info!(
@@ -780,14 +770,14 @@ impl local::Receiver<OtapPdata> for JournaldReceiver {
                     drop(event_rx);
                     join_worker(worker, &effect_handler).await?;
                     effect_handler.notify_receiver_drained().await?;
-                    return Ok(terminal_state(deadline, &metrics));
+                    return Ok(terminal_state(deadline, &mut metrics));
                 }
 
                 msg = ctrl_msg_recv.recv() => {
                     match msg {
                         Ok(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
                             if let Some(metrics) = metrics.as_mut() {
-                                let _ = metrics_reporter.report(metrics);
+                                let _ = metrics.report(&mut metrics_reporter);
                             }
                         }
                         Ok(NodeControlMsg::Ack(ack)) => {
@@ -795,10 +785,19 @@ impl local::Receiver<OtapPdata> for JournaldReceiver {
                                 continue;
                             };
                             if let Some(effect) = apply_pending_ack(&mut pending, batch_id) {
-                                if let Some(metrics) = metrics.as_mut() {
-                                    if effect.record_ack {
-                                        metrics.acks.add(1);
-                                    }
+                                if let Some(metrics) = metrics.as_mut()
+                                    && effect.record_ack
+                                {
+                                    metrics
+                                        .acknowledgements
+                                        .with(
+                                            otel_arrow_dfe_telemetry::common_attributes::OutcomeAttributes {
+                                                outcome:
+                                                    otel_arrow_dfe_telemetry::common_attributes::Outcome::Success,
+                                            },
+                                        )
+                                        .responses
+                                        .add(1);
                                 }
                                 if let Some(command) = effect.command {
                                     send_worker_command(&worker.cmd_tx, command, &effect_handler).await?;
@@ -814,10 +813,10 @@ impl local::Receiver<OtapPdata> for JournaldReceiver {
                             {
                                 if let Some(metrics) = metrics.as_mut() {
                                     if effect.record_nack {
-                                        metrics.nacks.add(1);
+                                        metrics.acknowledgements.with(otel_arrow_dfe_telemetry::common_attributes::OutcomeAttributes { outcome: otel_arrow_dfe_telemetry::common_attributes::Outcome::Refused }).responses.add(1);
                                     }
                                     if effect.record_rewind {
-                                        metrics.rewinds.add(1);
+                                        metrics.acknowledgements.with(otel_arrow_dfe_telemetry::common_attributes::OutcomeAttributes { outcome: otel_arrow_dfe_telemetry::common_attributes::Outcome::Refused }).rewinds.add(1);
                                     }
                                 }
                                 if let Some(command) = effect.command {
@@ -834,7 +833,7 @@ impl local::Receiver<OtapPdata> for JournaldReceiver {
                         }
                         Ok(NodeControlMsg::DrainIngress { deadline, .. }) => {
                             if let Some(metrics) = metrics.as_mut() {
-                                metrics.drains.add(1);
+                                metrics.lifecycle.with(TransitionAttributes { transition_type: TransitionType::Drain }).transitions.add(1);
                             }
                             otel_info!(
                                 "journald_receiver.drain_ingress",
@@ -849,7 +848,7 @@ impl local::Receiver<OtapPdata> for JournaldReceiver {
                         }
                         Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
                             if let Some(metrics) = metrics.as_mut() {
-                                metrics.shutdowns.add(1);
+                                metrics.lifecycle.with(TransitionAttributes { transition_type: TransitionType::Shutdown }).transitions.add(1);
                             }
                             otel_info!(
                                 "journald_receiver.shutdown",
@@ -859,7 +858,7 @@ impl local::Receiver<OtapPdata> for JournaldReceiver {
                                 send_worker_command(&worker.cmd_tx, WorkerCommand::Shutdown, &effect_handler).await;
                             drop(event_rx);
                             join_worker(worker, &effect_handler).await?;
-                            return Ok(terminal_state(deadline, &metrics));
+                            return Ok(terminal_state(deadline, &mut metrics));
                         }
                         Ok(_) => {}
                         Err(e) => {
@@ -894,7 +893,7 @@ impl local::Receiver<OtapPdata> for JournaldReceiver {
                             }
                             let mut pdata = OtapPdata::new(
                                 Context::default(),
-                                OtapPayload::OtapArrowRecords(batch.records),
+                                OtapPayload::from(batch.records),
                             );
                             let mut calldata = CallData::new();
                             calldata.push(Context8u8::from(batch.id));
@@ -939,20 +938,20 @@ impl local::Receiver<OtapPdata> for JournaldReceiver {
                                                 drop(event_rx);
                                                 join_worker(worker, &effect_handler).await?;
                                                 effect_handler.notify_receiver_drained().await?;
-                                                return Ok(terminal_state(deadline, &metrics));
+                                                return Ok(terminal_state(deadline, &mut metrics));
                                             }
 
                                             msg = ctrl_msg_recv.recv() => {
                                                 match msg {
                                                     Ok(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
                                                         if let Some(metrics) = metrics.as_mut() {
-                                                            let _ = metrics_reporter.report(metrics);
+                                                            let _ = metrics.report(&mut metrics_reporter);
                                                         }
                                                         continue;
                                                     }
                                                     Ok(NodeControlMsg::DrainIngress { deadline, .. }) => {
                                                         if let Some(metrics) = metrics.as_mut() {
-                                                            metrics.drains.add(1);
+                                                            metrics.lifecycle.with(TransitionAttributes { transition_type: TransitionType::Drain }).transitions.add(1);
                                                         }
                                                         let local_deadline = StdInstant::now()
                                                             .checked_add(config.drain_timeout)
@@ -963,13 +962,13 @@ impl local::Receiver<OtapPdata> for JournaldReceiver {
                                                     }
                                                     Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
                                                         if let Some(metrics) = metrics.as_mut() {
-                                                            metrics.shutdowns.add(1);
+                                                            metrics.lifecycle.with(TransitionAttributes { transition_type: TransitionType::Shutdown }).transitions.add(1);
                                                         }
                                                         let _ =
                                                             send_worker_command(&worker.cmd_tx, WorkerCommand::Shutdown, &effect_handler).await;
                                                         drop(event_rx);
                                                         join_worker(worker, &effect_handler).await?;
-                                                        return Ok(terminal_state(deadline, &metrics));
+                                                        return Ok(terminal_state(deadline, &mut metrics));
                                                     }
                                                     Ok(_) => {
                                                         continue;
@@ -1001,9 +1000,9 @@ impl local::Receiver<OtapPdata> for JournaldReceiver {
                                         },
                                     );
                                     if let Some(metrics) = metrics.as_mut() {
-                                        metrics.batches_sent.add(1);
-                                        metrics.records_sent.add(record_count as u64);
-                                        metrics.source_dropped_fields.add(dropped_fields);
+                                        metrics.output.batches.add(1);
+                                        metrics.output.records.add(record_count as u64);
+                                        metrics.output.dropped_fields.add(dropped_fields);
                                     }
                                     if drain_deadline.is_some() {
                                         send_worker_command(
@@ -1042,7 +1041,7 @@ impl local::Receiver<OtapPdata> for JournaldReceiver {
                                     let _ = pending.remove(&batch_id);
                                     checkpoint_failures = 0;
                                     if let Some(metrics) = metrics.as_mut() {
-                                        metrics.cursor_commits.add(1);
+                                        metrics.checkpoints.with(otel_arrow_dfe_telemetry::common_attributes::OutcomeAttributes { outcome: otel_arrow_dfe_telemetry::common_attributes::Outcome::Success }).commits.add(1);
                                     }
                                     otel_debug!(
                                         "journald_receiver.cursor_committed",
@@ -1054,7 +1053,7 @@ impl local::Receiver<OtapPdata> for JournaldReceiver {
                                 Err(err) => {
                                     checkpoint_failures = checkpoint_failures.saturating_add(1);
                                     if let Some(metrics) = metrics.as_mut() {
-                                        metrics.checkpoint_failures.add(1);
+                                        metrics.checkpoints.with(otel_arrow_dfe_telemetry::common_attributes::OutcomeAttributes { outcome: otel_arrow_dfe_telemetry::common_attributes::Outcome::Failure }).commits.add(1);
                                     }
                                     otel_warn!(
                                         "journald_receiver.checkpoint_failed",
@@ -1086,7 +1085,13 @@ impl local::Receiver<OtapPdata> for JournaldReceiver {
                         }
                         Some(WorkerEvent::Failed(err)) => {
                             if let Some(metrics) = metrics.as_mut() {
-                                metrics.source_failures.add(1);
+                                metrics
+                                    .source_errors
+                                    .with(SourceErrorAttributes {
+                                        error_type: SourceErrorType::from(&err),
+                                    })
+                                    .events
+                                    .add(1);
                             }
                             let error = err.to_string();
                             otel_warn!(
@@ -1101,12 +1106,12 @@ impl local::Receiver<OtapPdata> for JournaldReceiver {
                         Some(WorkerEvent::Stopped) | None => {
                             drop(event_rx);
                             join_worker(worker, &effect_handler).await?;
-                            if let Some(deadline) = drain_deadline {
-                                if pending.is_empty() {
+                            if let Some(deadline) = drain_deadline
+                                && pending.is_empty()
+                            {
                                     effect_handler.notify_receiver_drained().await?;
-                                    return Ok(terminal_state(deadline, &metrics));
+                                    return Ok(terminal_state(deadline, &mut metrics));
                                 }
-                            }
                             return Err(terminal_error(&effect_handler, "journald worker stopped unexpectedly"));
                         }
                     }
@@ -1131,14 +1136,14 @@ struct SourceLease {
 }
 
 impl SourceLease {
-    fn acquire(key: &str) -> Result<Self, otap_df_config::error::Error> {
+    fn acquire(key: &str) -> Result<Self, otel_arrow_dfe_config::error::Error> {
         let mut leases = JOURNALD_LEASES.lock().map_err(|_| {
-            otap_df_config::error::Error::InvalidUserConfig {
+            otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                 error: "journald lease registry is unavailable".to_owned(),
             }
         })?;
         if !leases.insert(key.to_owned()) {
-            return Err(otap_df_config::error::Error::InvalidUserConfig {
+            return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                 error: format!("another journald receiver already targets source `{key}`"),
             });
         }
@@ -1216,8 +1221,8 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn factory_rejects_multi_core_pipeline() {
-        let registry = otap_df_telemetry::registry::TelemetryRegistryHandle::new();
-        let controller = otap_df_engine::context::ControllerContext::new(registry);
+        let registry = otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle::new();
+        let controller = otel_arrow_dfe_engine::context::ControllerContext::new(registry);
         let pipeline =
             controller.pipeline_context_with("test-group".into(), "test-pipeline".into(), 0, 2, 0);
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(JOURNALD_RECEIVER_URN));
@@ -1310,5 +1315,53 @@ mod tests {
             Some(PendingDecision::FailSent)
         );
         assert!(apply_pending_nack(&mut pending, 7, OnNack::Fail).is_none());
+    }
+
+    /// Scenario: Journal reader and systemd worker errors are classified for source metrics.
+    /// Guarantees: Permission, corrupt journal, IO, and unknown errors map to appropriate SourceErrorType variants.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_source_error_classification() {
+        let access_err = WorkerError::Journal(journal::JournalError::JournalAccess {
+            root_path: PathBuf::from("/"),
+            journal_files: 1,
+            unreadable_files: 1,
+            unreadable_directories: 0,
+            first_error: "permission denied".into(),
+        });
+        assert_eq!(
+            SourceErrorType::from(&access_err),
+            SourceErrorType::Permission
+        );
+
+        let perm_call = WorkerError::Journal(journal::JournalError::SystemdCall {
+            operation: "sd_journal_open",
+            rc: -libc::EACCES,
+        });
+        assert_eq!(
+            SourceErrorType::from(&perm_call),
+            SourceErrorType::Permission
+        );
+
+        let corrupt_call = WorkerError::Journal(journal::JournalError::SystemdCall {
+            operation: "sd_journal_next",
+            rc: -libc::EBADMSG,
+        });
+        assert_eq!(
+            SourceErrorType::from(&corrupt_call),
+            SourceErrorType::CorruptJournal
+        );
+
+        let io_call = WorkerError::Journal(journal::JournalError::SystemdCall {
+            operation: "sd_journal_next",
+            rc: -libc::EIO,
+        });
+        assert_eq!(SourceErrorType::from(&io_call), SourceErrorType::IoFailure);
+
+        let other_call = WorkerError::Journal(journal::JournalError::SystemdCall {
+            operation: "sd_journal_next",
+            rc: -libc::EINVAL,
+        });
+        assert_eq!(SourceErrorType::from(&other_call), SourceErrorType::Other);
     }
 }

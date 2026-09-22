@@ -2,13 +2,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use bytes::{BufMut, Bytes, BytesMut};
-use otap_df_pdata_views::views::common::{
+use otel_arrow_dfe_pdata_views::views::common::{
     AnyValueView, AttributeView, InstrumentationScopeView, Str, ValueType,
 };
-use otap_df_pdata_views::views::logs::{
+use otel_arrow_dfe_pdata_views::views::logs::{
     LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView,
 };
-use otap_df_pdata_views::views::resource::ResourceView;
+use otel_arrow_dfe_pdata_views::views::resource::ResourceView;
 use serde_json::Value;
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -483,15 +483,15 @@ impl Transformer {
         if !schema.attribute_mapping.is_empty() {
             for attr in log_record.attributes() {
                 let attr_key: Cow<'_, str> = String::from_utf8_lossy(attr.key());
-                if let Some(dest) = schema.attribute_mapping.get(attr_key.as_ref()) {
-                    if let Some(val) = attr.value() {
-                        if has_field {
-                            out.push(b',');
-                        }
-                        has_field = true;
-                        out.extend_from_slice(dest);
-                        Self::write_any_value_json(&val, out);
+                if let Some(dest) = schema.attribute_mapping.get(attr_key.as_ref())
+                    && let Some(val) = attr.value()
+                {
+                    if has_field {
+                        out.push(b',');
                     }
+                    has_field = true;
+                    out.extend_from_slice(dest);
+                    Self::write_any_value_json(&val, out);
                 }
             }
         }
@@ -804,10 +804,10 @@ impl Transformer {
     ) {
         for attr in resource.attributes() {
             let key: Cow<'_, str> = String::from_utf8_lossy(attr.key());
-            if let Some(mapped_name) = schema.resource_mapping.get(key.as_ref()) {
-                if let Some(value) = attr.value() {
-                    _ = map.insert(mapped_name.clone(), Self::convert_any_value(&value));
-                }
+            if let Some(mapped_name) = schema.resource_mapping.get(key.as_ref())
+                && let Some(value) = attr.value()
+            {
+                _ = map.insert(mapped_name.clone(), Self::convert_any_value(&value));
             }
         }
     }
@@ -820,10 +820,10 @@ impl Transformer {
     ) {
         for attr in scope.attributes() {
             let key: Cow<'_, str> = String::from_utf8_lossy(attr.key());
-            if let Some(mapped_name) = schema.scope_mapping.get(key.as_ref()) {
-                if let Some(value) = attr.value() {
-                    _ = map.insert(mapped_name.clone(), Self::convert_any_value(&value));
-                }
+            if let Some(mapped_name) = schema.scope_mapping.get(key.as_ref())
+                && let Some(value) = attr.value()
+            {
+                _ = map.insert(mapped_name.clone(), Self::convert_any_value(&value));
             }
         }
     }
@@ -911,7 +911,7 @@ mod tests {
         logs::v1::{LogRecord, ResourceLogs, ScopeLogs},
         resource::v1::Resource,
     };
-    use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
+    use otel_arrow_dfe_pdata::views::otlp::bytes::logs::RawLogsData;
     use prost::Message;
     use serde_json::json;
     use std::collections::HashMap;

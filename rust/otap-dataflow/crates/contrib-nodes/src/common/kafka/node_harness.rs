@@ -14,25 +14,39 @@
 //! Each wrapper is gated by its node feature so it only compiles when that node
 //! (and its `rdkafka`) is present.
 
-#[cfg(any(feature = "kafka-exporter", feature = "kafka-receiver"))]
-use otap_df_engine::context::ControllerContext;
-#[cfg(any(feature = "kafka-exporter", feature = "kafka-receiver"))]
-use otap_df_engine::context::PipelineContext;
-#[cfg(any(feature = "kafka-exporter", feature = "kafka-receiver"))]
-use otap_df_telemetry::registry::TelemetryRegistryHandle;
+#[cfg(feature = "kafka")]
+use otel_arrow_dfe_engine::context::ControllerContext;
+#[cfg(feature = "kafka")]
+use otel_arrow_dfe_engine::context::PipelineContext;
+#[cfg(feature = "kafka")]
+use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
 
 /// Builds a deterministic single-core pipeline context for the wrappers.
-#[cfg(any(feature = "kafka-exporter", feature = "kafka-receiver"))]
+#[cfg(feature = "kafka")]
 fn test_pipeline_context() -> PipelineContext {
+    test_pipeline_context_with_generation(0)
+}
+
+/// Builds a deterministic single-core pipeline context at an explicit deployment
+/// generation, so a cutover test can model an old vs new pipeline instance.
+#[cfg(feature = "kafka")]
+fn test_pipeline_context_with_generation(deployment_generation: u64) -> PipelineContext {
     let registry = TelemetryRegistryHandle::new();
     let controller_ctx = ControllerContext::new(registry);
-    controller_ctx.pipeline_context_with("test-group".into(), "test-pipeline".into(), 0, 1, 0)
+    controller_ctx.pipeline_context_with_generation(
+        "test-group".into(),
+        "test-pipeline".into(),
+        0,
+        1,
+        0,
+        deployment_generation,
+    )
 }
 
 /// Metric-observation helpers shared by the exporter and receiver harnesses.
 ///
 /// Both harnesses read a node's final counters from the
-/// [`otap_df_engine::terminal_state::TerminalState`] it returns at graceful
+/// [`otel_arrow_dfe_engine::terminal_state::TerminalState`] it returns at graceful
 /// shutdown (via `await_terminal_state`). These helpers read individual counter
 /// values out of the resulting [`MetricSetSnapshot`]s.
 ///
@@ -42,12 +56,12 @@ fn test_pipeline_context() -> PipelineContext {
 /// `_` to `.` before lookup.
 // Consumed by the Kafka validation test branch; helpers may be unused on the
 // branch that only finalizes the test suite.
-#[cfg(any(feature = "kafka-exporter", feature = "kafka-receiver"))]
+#[cfg(feature = "kafka")]
 #[allow(dead_code)]
 pub(crate) mod node_metrics {
     use std::collections::HashMap;
 
-    use otap_df_telemetry::metrics::MetricSetSnapshot;
+    use otel_arrow_dfe_telemetry::metrics::MetricSetSnapshot;
 
     /// Normalizes a metric field name to the runtime dotted form so callers may
     /// pass either the Rust identifier (`offset_commit_errors`) or the emitted
@@ -63,19 +77,19 @@ pub(crate) mod node_metrics {
     /// are coerced; the Kafka node counters are all `Counter<u64>`.
     #[must_use]
     pub(crate) fn metric_value(snapshot: &MetricSetSnapshot, name: &str) -> Option<u64> {
-        let wanted = normalize(name);
+        let normalized = normalize(name);
         let fields = snapshot.descriptor().metrics;
         let values = snapshot.get_metrics();
         fields
             .iter()
             .zip(values.iter())
-            .find(|(field, _)| field.name == wanted)
+            .find(|(field, _)| field.name == name || field.name == normalized)
             .map(|(_, value)| value.to_u64_lossy())
     }
 
     /// Accumulates per-field metric values folded across several snapshots.
     ///
-    /// A [`otap_df_engine::terminal_state::TerminalState`] can carry more than
+    /// A [`otel_arrow_dfe_engine::terminal_state::TerminalState`] can carry more than
     /// one [`MetricSetSnapshot`]; fold them together to read a single
     /// cumulative value per field.
     #[derive(Debug, Default, Clone)]
@@ -114,7 +128,11 @@ pub(crate) mod node_metrics {
         /// form), or `0` if never observed.
         #[must_use]
         pub(crate) fn value(&self, name: &str) -> u64 {
-            self.totals.get(&normalize(name)).copied().unwrap_or(0)
+            self.totals
+                .get(name)
+                .or_else(|| self.totals.get(&normalize(name)))
+                .copied()
+                .unwrap_or(0)
         }
 
         /// Returns `true` if any value has been folded for `name`.
@@ -122,21 +140,21 @@ pub(crate) mod node_metrics {
         /// NOTE: [`FoldedMetrics`] folds by field name and ignores measurement
         /// attributes, so it collapses every attribute bucket of a
         /// [`MeasurementMetricSet`] (e.g. the exporter's
-        /// `exporter.kafka.exports.messages`, keyed by `signal` and `outcome`)
+        /// `exporter.exports.messages`, keyed by `signal` and `outcome`)
         /// into a single per-field total. Use it only for flat metric sets; for
         /// attribute-keyed measurement metrics use [`measurement_value`] /
         /// [`kafka_exports`], which select a specific bucket by its attributes.
         ///
-        /// [`MeasurementMetricSet`]: otap_df_telemetry::metrics::MeasurementMetricSet
+        /// [`MeasurementMetricSet`]: otel_arrow_dfe_telemetry::metrics::MeasurementMetricSet
         #[must_use]
         pub(crate) fn contains(&self, name: &str) -> bool {
-            self.totals.contains_key(&normalize(name))
+            self.totals.contains_key(name) || self.totals.contains_key(&normalize(name))
         }
     }
 
     /// Reads a single measurement-metric field for the bucket that matches all
     /// of `attributes`, across every snapshot produced by a
-    /// [`otap_df_engine::terminal_state::TerminalState`].
+    /// [`otel_arrow_dfe_engine::terminal_state::TerminalState`].
     ///
     /// A [`MeasurementMetricSet`] emits one [`MetricSetSnapshot`] per
     /// attribute-value combination (bucket); each snapshot exposes its decoded
@@ -147,7 +165,7 @@ pub(crate) mod node_metrics {
     /// (or `0` if no such bucket was emitted -- an untouched bucket is not
     /// snapshotted). Field names accept the identifier or dotted form.
     ///
-    /// [`MeasurementMetricSet`]: otap_df_telemetry::metrics::MeasurementMetricSet
+    /// [`MeasurementMetricSet`]: otel_arrow_dfe_telemetry::metrics::MeasurementMetricSet
     #[must_use]
     pub(crate) fn measurement_value(
         snapshots: &[MetricSetSnapshot],
@@ -155,7 +173,7 @@ pub(crate) mod node_metrics {
         field: &str,
         attributes: &[(&str, &str)],
     ) -> u64 {
-        let wanted_field = normalize(field);
+        let normalized_field = normalize(field);
         snapshots
             .iter()
             .filter(|snapshot| snapshot.descriptor().name == set_name)
@@ -170,13 +188,13 @@ pub(crate) mod node_metrics {
                 fields
                     .iter()
                     .zip(values.iter())
-                    .find(|(f, _)| f.name == wanted_field)
+                    .find(|(f, _)| f.name == field || f.name == normalized_field)
                     .map(|(_, v)| v.to_u64_lossy())
             })
             .unwrap_or(0)
     }
 
-    /// Returns the Kafka exporter's `exporter.kafka.exports.messages` count for
+    /// Returns the Kafka exporter's `exporter.exports.messages` count for
     /// the `(signal, outcome)` bucket, e.g. `kafka_exports(snaps, "logs",
     /// "success")`. Convenience wrapper over [`measurement_value`] for the
     /// exporter's migrated export counter (replaces the old flat
@@ -192,7 +210,7 @@ pub(crate) mod node_metrics {
     ) -> u64 {
         measurement_value(
             snapshots,
-            "exporter.kafka.exports",
+            "exporter.exports",
             "messages",
             &[("signal", signal), ("outcome", outcome)],
         )
@@ -203,7 +221,7 @@ pub(crate) mod node_metrics {
 // Exporter wrapper
 // ---------------------------------------------------------------------------
 
-#[cfg(feature = "kafka-exporter")]
+#[cfg(feature = "kafka")]
 mod exporter_harness {
     use super::test_pipeline_context;
     use crate::common::kafka::test::cluster::KafkaTestCluster;
@@ -215,23 +233,23 @@ mod exporter_harness {
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
-    use otap_df_config::node::NodeUserConfig;
-    use otap_df_engine::Interests;
-    use otap_df_engine::config::ExporterConfig;
-    use otap_df_engine::control::{
+    use otel_arrow_dfe_config::node::NodeUserConfig;
+    use otel_arrow_dfe_engine::Interests;
+    use otel_arrow_dfe_engine::config::ExporterConfig;
+    use otel_arrow_dfe_engine::control::{
         AckMsg, Controllable, NackMsg, NodeControlMsg, PipelineCompletionMsg,
         PipelineCompletionMsgReceiver, pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
     };
-    use otap_df_engine::error::Error as EngineError;
-    use otap_df_engine::exporter::ExporterWrapper;
-    use otap_df_engine::local::message::{LocalReceiver, LocalSender};
-    use otap_df_engine::message::{Receiver, Sender};
-    use otap_df_engine::node::NodeWithPDataReceiver;
-    use otap_df_engine::terminal_state::TerminalState;
-    use otap_df_engine::testing::{create_not_send_channel, test_node};
-    use otap_df_otap::pdata::OtapPdata;
-    use otap_df_otap::testing::next_nack;
-    use otap_df_telemetry::reporter::MetricsReporter;
+    use otel_arrow_dfe_engine::error::Error as EngineError;
+    use otel_arrow_dfe_engine::exporter::ExporterWrapper;
+    use otel_arrow_dfe_engine::local::message::{LocalReceiver, LocalSender};
+    use otel_arrow_dfe_engine::message::{Receiver, Sender};
+    use otel_arrow_dfe_engine::node::NodeWithPDataReceiver;
+    use otel_arrow_dfe_engine::terminal_state::TerminalState;
+    use otel_arrow_dfe_engine::testing::{create_not_send_channel, test_node};
+    use otel_arrow_dfe_otap::pdata::OtapPdata;
+    use otel_arrow_dfe_otap::testing::next_nack;
+    use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
     use tokio::task::JoinHandle;
 
     /// Opaque holder for channel read-ends kept alive for the harness lifetime.
@@ -295,6 +313,7 @@ mod exporter_harness {
                         completion_tx,
                         metrics_reporter,
                         Interests::empty(),
+                        otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
                     )
                     .await
             });
@@ -364,8 +383,8 @@ mod exporter_harness {
         }
 
         /// Delivers a downstream `NodeControlMsg::Ack` to the running exporter,
-        /// standing in for a downstream node acknowledging a batch. Drives the
-        /// exporter's ack-accounting path (`acks_received`).
+        /// standing in for a downstream node acknowledging a batch. Exporters
+        /// are terminal nodes, so this control does not produce export metrics.
         pub(crate) async fn send_ack(&self, pdata: OtapPdata) {
             self.control_tx
                 .send(NodeControlMsg::Ack(AckMsg::new(pdata)))
@@ -375,8 +394,8 @@ mod exporter_harness {
 
         /// Delivers a downstream `NodeControlMsg::Nack` (with `reason`) to the
         /// running exporter, standing in for a downstream node refusing a batch.
-        /// Drives the exporter's nack-accounting and reason-sanitizing path
-        /// (`nacks_received`).
+        /// Drives the exporter's reason-sanitizing path without producing an
+        /// export outcome.
         pub(crate) async fn send_nack(&self, reason: impl Into<String>, pdata: OtapPdata) {
             self.control_tx
                 .send(NodeControlMsg::Nack(NackMsg::new(reason.into(), pdata)))
@@ -447,21 +466,54 @@ mod exporter_harness {
                 Err(e) => panic!("kafka-test: exporter task panicked: {e}"),
             }
         }
+
+        /// Awaits the spawned exporter task, then drains and counts every
+        /// Ack/Nack unwind message that was buffered on the (never-consumed)
+        /// completion channel, returning both the [`TerminalState`] and the
+        /// buffered count.
+        ///
+        /// Awaiting the task first guarantees the node has dropped its completion
+        /// sender, so the drain sees exactly the messages the node managed to
+        /// report (bounded by channel capacity) and then observes the closed
+        /// channel -- letting a test distinguish "buffered at capacity" from
+        /// "reports abandoned at the shutdown deadline".
+        ///
+        /// # Panics
+        ///
+        /// Panics if the task panicked or the exporter node returned an error
+        /// instead of a terminal state.
+        pub(crate) async fn await_terminal_state_draining_completions(
+            mut self,
+        ) -> (TerminalState, usize) {
+            let terminal_state = match self.join.await {
+                Ok(Ok(terminal_state)) => terminal_state,
+                Ok(Err(e)) => panic!("kafka-test: exporter node returned an error: {e:?}"),
+                Err(e) => panic!("kafka-test: exporter task panicked: {e}"),
+            };
+            let mut buffered = 0usize;
+            // The node has exited and dropped its sender, so `recv` yields every
+            // buffered message and then `Err` (closed) -- a bounded drain.
+            while self.completion_rx.recv().await.is_ok() {
+                buffered += 1;
+            }
+            (terminal_state, buffered)
+        }
     }
 }
 
-#[cfg(feature = "kafka-exporter")]
+#[cfg(feature = "kafka")]
 pub(crate) use exporter_harness::KafkaExporterHarness;
 
 // ---------------------------------------------------------------------------
 // Receiver wrapper
 // ---------------------------------------------------------------------------
 
-#[cfg(feature = "kafka-receiver")]
+#[cfg(feature = "kafka")]
 mod receiver_harness {
-    use super::test_pipeline_context;
+    use super::test_pipeline_context_with_generation;
     use crate::common::kafka::test::cluster::KafkaTestCluster;
     use crate::receivers::kafka_receiver::config::{KafkaReceiverConfig, SignalConfig};
+    use crate::receivers::kafka_receiver::rebalance::RebalanceState;
     use crate::receivers::kafka_receiver::receiver::KAFKA_RECEIVER_URN;
     use crate::receivers::kafka_receiver::receiver::KafkaReceiver;
 
@@ -470,23 +522,23 @@ mod receiver_harness {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use otap_df_channel::mpsc;
-    use otap_df_config::node::NodeUserConfig;
-    use otap_df_config::transport_headers_policy::HeaderCapturePolicy;
-    use otap_df_engine::control::NackMsg;
-    use otap_df_engine::control::{
+    use otel_arrow_dfe_channel::mpsc;
+    use otel_arrow_dfe_config::node::NodeUserConfig;
+    use otel_arrow_dfe_config::transport_headers_policy::HeaderCapturePolicy;
+    use otel_arrow_dfe_engine::control::NackMsg;
+    use otel_arrow_dfe_engine::control::{
         AckMsg, NodeControlMsg, RuntimeControlMsg, RuntimeCtrlMsgReceiver, runtime_ctrl_msg_channel,
     };
-    use otap_df_engine::error::Error as EngineError;
-    use otap_df_engine::local::message::{LocalReceiver, LocalSender};
-    use otap_df_engine::local::receiver as local;
-    use otap_df_engine::local::receiver::Receiver as _;
-    use otap_df_engine::message::{Receiver, Sender};
-    use otap_df_engine::terminal_state::TerminalState;
-    use otap_df_engine::testing::test_node;
-    use otap_df_otap::pdata::OtapPdata;
-    use otap_df_otap::testing::{next_ack, next_nack};
-    use otap_df_telemetry::reporter::MetricsReporter;
+    use otel_arrow_dfe_engine::error::Error as EngineError;
+    use otel_arrow_dfe_engine::local::message::{LocalReceiver, LocalSender};
+    use otel_arrow_dfe_engine::local::receiver as local;
+    use otel_arrow_dfe_engine::local::receiver::Receiver as _;
+    use otel_arrow_dfe_engine::message::{Receiver, Sender};
+    use otel_arrow_dfe_engine::terminal_state::TerminalState;
+    use otel_arrow_dfe_engine::testing::test_node;
+    use otel_arrow_dfe_otap::pdata::OtapPdata;
+    use otel_arrow_dfe_otap::testing::{next_ack, next_nack};
+    use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
     use tokio::task::JoinHandle;
 
     /// Default timeout for [`KafkaReceiverHarness::recv_pdata`].
@@ -504,6 +556,7 @@ mod receiver_harness {
         pdata_rx: Receiver<OtapPdata>,
         control_tx: mpsc::Sender<NodeControlMsg<OtapPdata>>,
         runtime_rx: RuntimeCtrlMsgReceiver<OtapPdata>,
+        rebalance_state: Arc<RebalanceState>,
         join: JoinHandle<Result<TerminalState, EngineError>>,
         _keep_alive: KeepAlive,
     }
@@ -514,15 +567,29 @@ mod receiver_harness {
         /// installed on the effect handler before start. Spawns onto the
         /// current `LocalSet`.
         pub(crate) fn start_with_capture(
-            _cluster: &KafkaTestCluster,
+            cluster: &KafkaTestCluster,
             cfg: KafkaReceiverConfig,
             capture_policy: Option<HeaderCapturePolicy>,
         ) -> Self {
-            let pipeline_ctx = test_pipeline_context();
+            Self::start_with_capture_and_generation(cluster, cfg, capture_policy, 0)
+        }
+
+        /// Like [`start_with_capture`] but builds the receiver at an explicit
+        /// deployment `generation`, so a cutover test can model an old vs new
+        /// pipeline instance (the generation is folded into a static
+        /// `group.instance.id` by `KafkaReceiver::new`).
+        pub(crate) fn start_with_capture_and_generation(
+            _cluster: &KafkaTestCluster,
+            cfg: KafkaReceiverConfig,
+            capture_policy: Option<HeaderCapturePolicy>,
+            generation: u64,
+        ) -> Self {
+            let pipeline_ctx = test_pipeline_context_with_generation(generation);
             let node_config = Arc::new(NodeUserConfig::new_receiver_config(KAFKA_RECEIVER_URN));
-            let receiver = Box::new(
-                KafkaReceiver::new(pipeline_ctx, cfg).expect("kafka receiver config is valid"),
-            );
+            let receiver =
+                KafkaReceiver::new(pipeline_ctx, cfg).expect("kafka receiver config is valid");
+            let rebalance_state = receiver.rebalance_state_for_test();
+            let receiver = Box::new(receiver);
 
             let (control_sender, control_receiver) = mpsc::Channel::new(32);
             let control_receiver = LocalReceiver::mpsc(control_receiver);
@@ -542,8 +609,10 @@ mod receiver_harness {
                 node_config.default_output.clone(),
                 pipeline_ctrl_msg_tx,
                 metrics_reporter,
+                otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
             );
-            effect_handler.set_capture_policy(capture_policy);
+            effect_handler
+                .set_capture_policy(capture_policy.map(|policy| policy.compile(|_| true)));
 
             let keep_alive =
                 KeepAlive(vec![Box::new(control_sender.clone()), Box::new(metrics_rx)]);
@@ -556,6 +625,7 @@ mod receiver_harness {
                 pdata_rx,
                 control_tx: control_sender,
                 runtime_rx: pipeline_ctrl_msg_rx,
+                rebalance_state,
                 join,
                 _keep_alive: keep_alive,
             }
@@ -564,6 +634,17 @@ mod receiver_harness {
         /// Starts the receiver with an explicit `cfg` and no capture policy.
         pub(crate) fn start(cluster: &KafkaTestCluster, cfg: KafkaReceiverConfig) -> Self {
             Self::start_with_capture(cluster, cfg, None)
+        }
+
+        /// Starts the receiver with an explicit `cfg` at deployment `generation`
+        /// (no capture policy). Used by cutover tests to model the old and new
+        /// pipeline instances as distinct deployment generations.
+        pub(crate) fn start_with_generation(
+            cluster: &KafkaTestCluster,
+            cfg: KafkaReceiverConfig,
+            generation: u64,
+        ) -> Self {
+            Self::start_with_capture_and_generation(cluster, cfg, None, generation)
         }
 
         /// Starts the receiver with a default OTLP-proto config for `topics`.
@@ -624,6 +705,64 @@ mod receiver_harness {
             }
         }
 
+        /// Waits until the receiver's rebalance callback has removed a partition
+        /// from its current assignment.
+        ///
+        /// # Panics
+        ///
+        /// Panics if the partition remains assigned when `timeout` elapses.
+        pub(crate) async fn wait_for_partition_revocation(
+            &self,
+            topic: &str,
+            partition: i32,
+            timeout: Duration,
+        ) {
+            let revoked = crate::common::kafka::test::wait::poll_until_async(
+                timeout,
+                Duration::from_millis(25),
+                || async { !self.rebalance_state.is_assigned(topic, partition) },
+            )
+            .await;
+            assert!(
+                revoked,
+                "kafka-test: receiver still owns {topic}/{partition} after waiting for revocation"
+            );
+        }
+
+        /// Returns whether the receiver currently owns `(topic, partition)`.
+        ///
+        /// Non-panicking point-in-time check (unlike
+        /// [`wait_for_partition_assignment`]); lets a test assert a draining
+        /// receiver has released a partition and does not re-acquire it, or
+        /// observe which of several partitions a newly started receiver has
+        /// acquired without knowing in advance which one the rebalance grants.
+        pub(crate) fn is_partition_assigned(&self, topic: &str, partition: i32) -> bool {
+            self.rebalance_state.is_assigned(topic, partition)
+        }
+
+        /// Waits until the receiver's rebalance callback has assigned a partition.
+        ///
+        /// # Panics
+        ///
+        /// Panics if the partition is not assigned when `timeout` elapses.
+        pub(crate) async fn wait_for_partition_assignment(
+            &self,
+            topic: &str,
+            partition: i32,
+            timeout: Duration,
+        ) {
+            let assigned = crate::common::kafka::test::wait::poll_until_async(
+                timeout,
+                Duration::from_millis(25),
+                || async { self.rebalance_state.is_assigned(topic, partition) },
+            )
+            .await;
+            assert!(
+                assigned,
+                "kafka-test: receiver did not acquire {topic}/{partition} before timeout"
+            );
+        }
+
         /// Acknowledges a consumed `pdata`, folding `next_ack` + `AckMsg` +
         /// control-channel send so manual-commit offsets advance.
         pub(crate) fn ack(&self, pdata: OtapPdata) {
@@ -637,7 +776,7 @@ mod receiver_harness {
         /// Negatively-acknowledges a consumed `pdata` with a permanent (terminal)
         /// nack, folding `next_nack` + `NackMsg` + control-channel send. Mirrors
         /// [`ack`](Self::ack); used to exercise the receiver's terminal-nack
-        /// contract (a Nack advances past the message).
+        /// contract (a permanent Nack advances past the message).
         pub(crate) fn nack_permanent(&self, reason: impl Into<String>, pdata: OtapPdata) {
             if let Some((_node_id, nack)) = next_nack(NackMsg::new_permanent(reason.into(), pdata))
             {
@@ -650,16 +789,27 @@ mod receiver_harness {
         /// Negatively-acknowledges a consumed `pdata` with a transient
         /// (non-permanent) nack, folding `next_nack` + `NackMsg::new` +
         /// control-channel send. Mirrors [`nack_permanent`](Self::nack_permanent)
-        /// but leaves `permanent = false`; used to prove the receiver treats a
-        /// transient nack as terminal (advances past the message) identically to
-        /// a permanent nack, since transient retry is delegated to a downstream
-        /// `processor:retry` node.
+        /// but leaves `permanent = false`; receiver tests use it for both the
+        /// explicit commit-and-skip policy and default Kafka replay policy.
         pub(crate) fn nack_transient(&self, reason: impl Into<String>, pdata: OtapPdata) {
             if let Some((_node_id, nack)) = next_nack(NackMsg::new(reason.into(), pdata)) {
                 self.control_tx
                     .send(NodeControlMsg::Nack(nack))
                     .expect("send nack to receiver");
             }
+        }
+
+        /// Waits until the receiver has processed every control message queued
+        /// before this call by collecting one metrics snapshot as a FIFO barrier.
+        pub(crate) async fn wait_for_control_barrier(&self) {
+            let (snapshot_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(64);
+            self.control_tx
+                .send(NodeControlMsg::CollectTelemetry { metrics_reporter })
+                .expect("send metrics barrier to receiver");
+            let _ = tokio::time::timeout(Duration::from_secs(5), snapshot_rx.recv_async())
+                .await
+                .expect("timed out waiting for receiver control barrier")
+                .expect("receiver control barrier channel closed");
         }
 
         /// Requests a graceful shutdown with the given `deadline` from now.
@@ -722,7 +872,7 @@ mod receiver_harness {
     }
 }
 
-#[cfg(feature = "kafka-receiver")]
+#[cfg(feature = "kafka")]
 pub(crate) use receiver_harness::KafkaReceiverHarness;
 
 // ---------------------------------------------------------------------------
@@ -730,7 +880,7 @@ pub(crate) use receiver_harness::KafkaReceiverHarness;
 // ---------------------------------------------------------------------------
 
 /// Per-signal topic/format layout used by the `start_for` wrapper variants.
-#[cfg(any(feature = "kafka-exporter", feature = "kafka-receiver"))]
+#[cfg(feature = "kafka")]
 #[derive(Debug, Clone, Default)]
 pub(crate) struct KafkaTopics {
     /// Optional traces topic + encoding.
@@ -741,7 +891,7 @@ pub(crate) struct KafkaTopics {
     pub(crate) logs: Option<(String, crate::common::kafka::MessageFormat)>,
 }
 
-#[cfg(any(feature = "kafka-exporter", feature = "kafka-receiver"))]
+#[cfg(feature = "kafka")]
 impl KafkaTopics {
     /// A logs-only layout.
     pub(crate) fn logs(topic: impl Into<String>, fmt: crate::common::kafka::MessageFormat) -> Self {

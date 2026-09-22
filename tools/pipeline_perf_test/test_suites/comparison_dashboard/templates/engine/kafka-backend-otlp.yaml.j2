@@ -1,0 +1,72 @@
+version: otel_dataflow/v1
+policies:
+  telemetry:
+    runtime_metrics: normal
+  channel_capacity:
+    control:
+      pipeline: {{ default_pipeline_ctrl_msg_channel_size | default(100) }}
+      node: {{ default_node_ctrl_msg_channel_size | default(100) }}
+    pdata: {{ default_pdata_channel_size | default(100) }}
+  resources:
+    core_allocation:
+      type: core_set
+      set:
+        - start: {{core_start}}
+          end: {{core_end}}
+
+engine: {}
+
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          receiver:
+            # Fixed DFE reference consumer for exporter-isolation suites.
+            # Aligned Kafka consumer tuning is injected from the canonical
+            # kafka_consumer_* suite variables so the reference side is
+            # identical across every benchmarked exporter variant.
+            type: urn:otel:receiver:kafka
+            config:
+              brokers: "{{kafka_hostname}}:9092"
+              group_id: "{{ kafka_consumer_group_id | default('kafka-benchmark-consumer') }}"
+              client_id: "dfe-kafka-backend"
+              auto_offset_reset: {{ kafka_consumer_auto_offset_reset | default("earliest") }}
+              commit:
+                mode: auto
+                interval_ms: {{ kafka_consumer_commit_interval_ms | default(1000) }}
+              session_timeout_ms: {{ kafka_consumer_session_timeout_ms | default(30000) }}
+              heartbeat_interval_ms: {{ kafka_consumer_heartbeat_interval_ms | default(3000) }}
+              min_fetch_bytes: {{ kafka_consumer_fetch_min_bytes | default(1) }}
+              max_fetch_bytes: {{ kafka_consumer_fetch_max_bytes | default(1048576) }}
+              max_fetch_wait_ms: {{ kafka_consumer_fetch_max_wait_ms | default(500) }}
+              max_partition_fetch_bytes: {{ kafka_consumer_max_partition_fetch_bytes | default(1048576) }}
+              isolation_level: {{ kafka_consumer_isolation_level | default("read_uncommitted") }}
+              logs:
+                topics:
+                  - "otel-logs"
+                encoding: otlp_proto
+              metrics:
+                topics:
+                  - "otel-metrics"
+                encoding: otlp_proto
+              traces:
+                topics:
+                  - "otel-spans"
+                encoding: otlp_proto
+
+          perf:
+            type: "urn:otel:exporter:perf"
+            policies:
+              telemetry:
+                item_counts: true
+            config:
+              frequency: 500
+              cpu_usage: false
+              mem_usage: false
+              disk_usage: false
+              io_usage: false
+
+        connections:
+          - from: receiver
+            to: perf

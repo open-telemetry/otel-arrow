@@ -15,8 +15,8 @@ use crate::testing::dst::common::{
     recv_controls, recv_until, setup_dst_runtime, yield_cycles,
 };
 use crate::testing::test_nodes;
-use otap_df_config::policy::TelemetryPolicy;
-use otap_df_telemetry::reporter::MetricsReporter;
+use otel_arrow_dfe_config::policy::TelemetryPolicy;
+use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use std::collections::HashMap;
 use std::time::Duration;
 use tokio::time::timeout;
@@ -77,14 +77,6 @@ async fn run_control_plane_seed(seed: u64) {
             })
             .await
             .unwrap();
-        runtime_tx
-            .send(RuntimeControlMsg::DelayData {
-                node_id: processor_id.index,
-                when: clock.now() + Duration::from_millis(12),
-                data: Box::new(DstPData::new(9000)),
-            })
-            .await
-            .unwrap();
         yield_cycles(2).await;
         for _ in 0..(70 + rng.gen_range(6)) {
             runtime_tx
@@ -100,7 +92,7 @@ async fn run_control_plane_seed(seed: u64) {
         let ack = AckMsg::new(DstPData::with_frames(
             100,
             vec![
-                frame(receiver_id.index, Interests::PRODUCER_METRICS, 1),
+                frame(receiver_id.index, Interests::NODE_OUTPUT_METRICS, 1),
                 frame(
                     processor_id.index,
                     Interests::ACKS
@@ -112,7 +104,7 @@ async fn run_control_plane_seed(seed: u64) {
                         },
                     2,
                 ),
-                frame(exporter_id.index, Interests::CONSUMER_METRICS, 3),
+                frame(exporter_id.index, Interests::NODE_INPUT_METRICS, 3),
             ],
         ));
         completion_tx
@@ -127,9 +119,9 @@ async fn run_control_plane_seed(seed: u64) {
                 DstPData::with_frames(
                     101,
                     vec![
-                        frame(receiver_id.index, Interests::PRODUCER_METRICS, 4),
+                        frame(receiver_id.index, Interests::NODE_OUTPUT_METRICS, 4),
                         frame(processor_id.index, Interests::NACKS, 5),
-                        frame(exporter_id.index, Interests::CONSUMER_METRICS, 6),
+                        frame(exporter_id.index, Interests::NODE_INPUT_METRICS, 6),
                     ],
                 ),
             )
@@ -139,9 +131,9 @@ async fn run_control_plane_seed(seed: u64) {
                 DstPData::with_frames(
                     101,
                     vec![
-                        frame(receiver_id.index, Interests::PRODUCER_METRICS, 4),
+                        frame(receiver_id.index, Interests::NODE_OUTPUT_METRICS, 4),
                         frame(processor_id.index, Interests::NACKS, 5),
-                        frame(exporter_id.index, Interests::CONSUMER_METRICS, 6),
+                        frame(exporter_id.index, Interests::NODE_INPUT_METRICS, 6),
                     ],
                 ),
             )
@@ -166,20 +158,12 @@ async fn run_control_plane_seed(seed: u64) {
             |msgs| {
                 msgs.iter()
                     .any(|msg| matches!(msg, NodeControlMsg::TimerTick {}))
-                    && msgs.iter().any(|msg| {
-                        matches!(
-                            msg,
-                            NodeControlMsg::DelayedData { data, .. } if data.id == 9000
-                        )
-                    })
                     && msgs.iter().any(|msg| matches!(msg, NodeControlMsg::Ack(_)))
                     && msgs
                         .iter()
                         .any(|msg| matches!(msg, NodeControlMsg::Nack(_)))
             },
-            &format!(
-                "seed={seed}: processor control receiver did not observe timer/delay/ack/nack"
-            ),
+            &format!("seed={seed}: processor control receiver did not observe timer/ack/nack"),
         )
         .await;
         assert!(
@@ -187,12 +171,6 @@ async fn run_control_plane_seed(seed: u64) {
                 .iter()
                 .any(|msg| matches!(msg, NodeControlMsg::TimerTick {})),
             "seed={seed}: due timer tick was starved under runtime-control burst"
-        );
-        assert!(
-            processor_msgs.iter().any(
-                |msg| matches!(msg, NodeControlMsg::DelayedData { data, .. } if data.id == 9000)
-            ),
-            "seed={seed}: delayed data did not resume under control pressure"
         );
 
         let ack_msg = processor_msgs.iter().find_map(|msg| match msg {
@@ -308,8 +286,8 @@ async fn run_control_plane_seed(seed: u64) {
     }));
 }
 
-// Exercise seeded control-plane mixes where runtime-control traffic, delayed
-// work, completion unwinding, and receiver-first shutdown all compete. The
+// Exercise seeded control-plane mixes where runtime-control traffic,
+// completion unwinding, and receiver-first shutdown all compete. The
 // assertion surface is liveness and ordering, not a single fixed trace.
 #[test]
 fn dst_runtime_control_plane_seeded() {

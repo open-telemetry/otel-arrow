@@ -13,7 +13,7 @@ engine:
           heartbeat_interval: "5s"
           agent_description:
             identifying_attributes:
-              service.name: "otap-df-engine"
+              service.name: "otel-arrow-dfe-engine"
 groups:
   default:
     pipelines:

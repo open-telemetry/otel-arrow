@@ -27,20 +27,20 @@ use crate::{
     otlp::attributes::parent_id::ParentId,
     proto::opentelemetry::arrow::v1::ArrowPayloadType,
 };
-use otap_df_pdata_views::views::common::{
+use otel_arrow_dfe_pdata_views::views::common::{
     AnyValueView, AttributeView, InstrumentationScopeView, ValueType,
 };
-use otap_df_pdata_views::views::logs::{
+use otel_arrow_dfe_pdata_views::views::logs::{
     LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView,
 };
-use otap_df_pdata_views::views::metrics::{
+use otel_arrow_dfe_pdata_views::views::metrics::{
     self, BucketsView, DataView, ExemplarView, ExponentialHistogramDataPointView,
     ExponentialHistogramView, GaugeView, HistogramDataPointView, HistogramView, MetricView,
     MetricsView, NumberDataPointView, ResourceMetricsView, ScopeMetricsView, SumView,
     SummaryDataPointView, SummaryView, ValueAtQuantileView,
 };
-use otap_df_pdata_views::views::resource::ResourceView;
-use otap_df_pdata_views::views::trace::{
+use otel_arrow_dfe_pdata_views::views::resource::ResourceView;
+use otel_arrow_dfe_pdata_views::views::trace::{
     EventView, LinkView, ResourceSpansView, ScopeSpansView, SpanView, StatusView, TracesView,
 };
 
@@ -3078,9 +3078,9 @@ mod test {
     where
         T: MetricsView,
     {
-        use otap_df_pdata_views::views::common::InstrumentationScopeView;
-        use otap_df_pdata_views::views::metrics::*;
-        use otap_df_pdata_views::views::resource::ResourceView;
+        use otel_arrow_dfe_pdata_views::views::common::InstrumentationScopeView;
+        use otel_arrow_dfe_pdata_views::views::metrics::*;
+        use otel_arrow_dfe_pdata_views::views::resource::ResourceView;
 
         let resources: Vec<_> = metrics_view.resources().collect();
         assert_eq!(resources.len(), 1, "expected 1 resource");
@@ -3277,6 +3277,82 @@ mod test {
             .map(|b| b.bucket_counts().collect())
             .unwrap_or_default();
         assert!(neg_counts.is_empty(), "expected no negative bucket counts");
+    }
+
+    /// Scenario: A metric exemplar has no timestamp set (time_unix_nano defaults to 0).
+    /// Guarantees: Encoding does not fail with `MissingRequiredFields`, and the zero
+    /// timestamp round-trips as a real (non-null) value. Regression test for
+    /// https://github.com/open-telemetry/otel-arrow/issues/4056.
+    #[test]
+    fn test_exemplar_with_no_timestamp() {
+        use crate::proto::opentelemetry::metrics::v1::{
+            AggregationTemporality, Exemplar, ExponentialHistogram, ExponentialHistogramDataPoint,
+            Metric, MetricsData, ResourceMetrics, ScopeMetrics,
+        };
+
+        let metrics_data = MetricsData {
+            resource_metrics: vec![ResourceMetrics {
+                scope_metrics: vec![ScopeMetrics {
+                    metrics: vec![
+                        Metric::build()
+                            .data_exponential_histogram(ExponentialHistogram {
+                                aggregation_temporality: AggregationTemporality::Cumulative as i32,
+                                data_points: vec![
+                                    ExponentialHistogramDataPoint::build()
+                                        .exemplars(vec![Exemplar::build().finish()])
+                                        .finish(),
+                                ],
+                            })
+                            .finish(),
+                    ],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+
+        let otap_batch = encode_metrics_otap_batch(&metrics_data)
+            .expect("encoding an exemplar with no timestamp should not fail (issue #4056)");
+
+        let exemplars_batch = otap_batch
+            .get(ArrowPayloadType::ExpHistogramDpExemplars)
+            .expect("ExpHistogramDpExemplars payload should be present");
+        let time_col = exemplars_batch
+            .column_by_name(consts::TIME_UNIX_NANO)
+            .expect("time_unix_nano column should be present, not elided")
+            .as_any()
+            .downcast_ref::<TimestampNanosecondArray>()
+            .expect("time_unix_nano should be a TimestampNanosecondArray");
+        assert_eq!(
+            time_col.null_count(),
+            0,
+            "time_unix_nano must never be null since it is a required field"
+        );
+        assert_eq!(
+            time_col.value(0),
+            0,
+            "the proto3 default (unset) timestamp should round-trip as 0, not be lost"
+        );
+
+        // Complete the round trip: decode the OTAP batch back to OTLP and confirm the
+        // exemplar's timestamp survives as 0 rather than being dropped or defaulted
+        // to something else.
+        let decoded = crate::testing::round_trip::decode_metrics(otap_batch);
+        let decoded_exemplar_ts = decoded.resource_metrics[0].scope_metrics[0].metrics[0]
+            .data
+            .as_ref()
+            .and_then(|d| match d {
+                crate::proto::opentelemetry::metrics::v1::metric::Data::ExponentialHistogram(
+                    eh,
+                ) => eh.data_points[0].exemplars.first(),
+                _ => None,
+            })
+            .expect("decoded metric should be an exponential histogram with an exemplar")
+            .time_unix_nano;
+        assert_eq!(
+            decoded_exemplar_ts, 0,
+            "the exemplar's time_unix_nano should decode back to 0 after a full OTLP -> OTAP -> OTLP round trip"
+        );
     }
 
     /// Scenario: Two metrics without a resource precede one metric with resource metadata.

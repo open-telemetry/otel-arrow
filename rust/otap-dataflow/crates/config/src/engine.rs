@@ -14,7 +14,7 @@ use crate::extension::ExtensionUserConfig;
 use crate::health::HealthPolicy;
 use crate::observed_state::ObservedStateSettings;
 use crate::pipeline::telemetry::TelemetryConfig;
-use crate::pipeline::{PipelineConfig, PipelineConnection, PipelineNodes};
+use crate::pipeline::{PipelineConfig, PipelineConnection, PipelineExtensions, PipelineNodes};
 use crate::pipeline_group::PipelineGroupConfig;
 use crate::policy::{ChannelCapacityPolicy, Policies, TelemetryPolicy};
 use crate::topic::{TopicImplSelectionPolicy, TopicSpec};
@@ -127,8 +127,8 @@ impl EngineConfig {
     /// - `controller.extensions` -- controller-owned extensions whose `config`
     ///   is the same opaque [`Value`] as a node's. See
     ///   [`ControllerExtensions::redacted_for_snapshot`].
-    /// - `observability.pipeline.nodes` -- the engine observability pipeline's
-    ///   node set. See [`PipelineNodes::redacted_for_snapshot`].
+    /// - `observability.pipeline.nodes` and `observability.pipeline.extensions`
+    ///   -- the engine observability pipeline's components.
     /// - `custom` -- opaque, freeform metadata the engine never interprets, but
     ///   the most likely place an embedder stashes arbitrary config (including
     ///   auth `headers`). The whole map is walked with the same
@@ -156,6 +156,11 @@ impl EngineConfig {
             .observability
             .pipeline
             .nodes
+            .redacted_for_snapshot();
+        redacted.observability.pipeline.extensions = redacted
+            .observability
+            .pipeline
+            .extensions
             .redacted_for_snapshot();
         // Redact `headers` anywhere in the freeform `custom` metadata. Wrap the
         // whole map into one `Value::Object` so a top-level key literally named
@@ -359,6 +364,10 @@ pub struct EngineObservabilityPipelineConfig {
     #[serde(default)]
     pub nodes: PipelineNodes,
 
+    /// Extensions scoped to the observability pipeline.
+    #[serde(default, skip_serializing_if = "PipelineExtensions::is_empty")]
+    pub extensions: PipelineExtensions,
+
     /// Explicit graph connections for observability nodes.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub connections: Vec<PipelineConnection>,
@@ -404,6 +413,7 @@ impl EngineObservabilityPipelineConfig {
             self.policies
                 .map(EngineObservabilityPolicies::into_policies),
             self.nodes,
+            self.extensions,
             self.connections,
         )
     }
@@ -436,6 +446,7 @@ impl EngineObservabilityPolicies {
             resources: None,
             runtime_recovery: None,
             transport_headers: None,
+            authorized_identity: None,
         }
     }
 
@@ -564,6 +575,12 @@ engine:
             authorization: "Bearer controller-super-secret"
   observability:
     pipeline:
+      extensions:
+        obs_auth:
+          type: "urn:otel:extension:headers_setter"
+          config:
+            headers:
+              authorization: "Bearer observability-extension-super-secret"
       nodes:
         obs_exporter:
           type: "urn:otel:exporter:otlp"
@@ -584,6 +601,10 @@ engine:
             "observability node credential must not survive redaction: {redacted_json}"
         );
         assert!(
+            !redacted_json.contains("observability-extension-super-secret"),
+            "observability extension credential must not survive redaction: {redacted_json}"
+        );
+        assert!(
             redacted_json.contains(crate::node::REDACTED_HEADER_VALUE),
             "redaction placeholder should be present: {redacted_json}"
         );
@@ -593,7 +614,8 @@ engine:
         let original_json = serde_json::to_string(&spec).expect("spec serializes");
         assert!(
             original_json.contains("controller-super-secret")
-                && original_json.contains("observability-super-secret"),
+                && original_json.contains("observability-super-secret")
+                && original_json.contains("observability-extension-super-secret"),
             "original spec must retain the cleartext credentials: {original_json}"
         );
     }
@@ -671,7 +693,7 @@ engine:
             .as_nanos();
         let sequence = TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
-            "otap-df-config-engine-tests-{}-{}-{}.{}",
+            "otel-arrow-dfe-config-engine-tests-{}-{}-{}.{}",
             std::process::id(),
             suffix,
             sequence,
@@ -905,6 +927,88 @@ groups: {}
 "#;
 
         let _config = OtelDataflowSpec::from_yaml(yaml).expect("ITS metrics config should parse");
+    }
+
+    /// Scenario: an observability pipeline declares an extension and binds its capability.
+    /// Guarantees: parsing and conversion retain the pipeline-scoped extension.
+    #[test]
+    fn from_yaml_accepts_observability_pipeline_extensions_and_capability_bindings() {
+        let yaml = r#"
+version: otel_dataflow/v1
+engine:
+  observability:
+    pipeline:
+      nodes:
+        itr:
+          type: "receiver:internal_telemetry"
+          config:
+            metrics: {}
+        sink:
+          type: "exporter:otlp_grpc"
+          capabilities:
+            bearer_token_provider: auth
+          config:
+            grpc_endpoint: "https://example.com:4317"
+      extensions:
+        auth:
+          type: "urn:microsoft:extension:azure_identity_auth"
+          config:
+            method: managed_identity
+            scope: "https://example.com/.default"
+      connections:
+        - from: itr
+          to: sink
+groups: {}
+"#;
+
+        let config = OtelDataflowSpec::from_yaml(yaml)
+            .expect("observability extension and capability binding should be valid");
+        let pipeline = config.engine.observability.pipeline.into_pipeline_config();
+
+        assert_eq!(pipeline.extensions().len(), 1);
+        assert!(pipeline.extensions().contains_key("auth"));
+    }
+
+    /// Scenario: a regular pipeline binds an extension declared by the observability pipeline.
+    /// Guarantees: validation rejects cross-pipeline capability binding.
+    #[test]
+    fn from_yaml_does_not_expose_observability_extensions_to_regular_pipelines() {
+        let yaml = r#"
+version: otel_dataflow/v1
+engine:
+  observability:
+    pipeline:
+      extensions:
+        auth:
+          type: "urn:microsoft:extension:azure_identity_auth"
+          config: {}
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          receiver:
+            type: "receiver:otlp"
+            config: {}
+          exporter:
+            type: "exporter:otlp_grpc"
+            capabilities:
+              bearer_token_provider: auth
+            config:
+              grpc_endpoint: "https://example.com:4317"
+        connections:
+          - from: receiver
+            to: exporter
+"#;
+
+        let error = OtelDataflowSpec::from_yaml(yaml)
+            .expect_err("regular pipeline must not see observability extension");
+        assert!(
+            error.to_string().contains(
+                "binds capability 'bearer_token_provider' to extension 'auth', but no extension"
+            ),
+            "unexpected validation error: {error}"
+        );
     }
 
     /// Scenario: a configuration uses the removed engine telemetry metrics field.
@@ -2745,8 +2849,12 @@ groups:
         );
     }
 
+    /// Scenario: top-level transport-header and authorized-identity policies
+    /// are resolved with the internal observability pipeline.
+    /// Guarantees: internal observability excludes user-facing receiver
+    /// policies while regular pipelines continue to inherit them.
     #[test]
-    fn resolve_observability_pipeline_has_no_transport_headers() {
+    fn resolve_observability_pipeline_has_no_user_facing_receiver_policies() {
         let yaml = r#"
 version: otel_dataflow/v1
 policies:
@@ -2754,6 +2862,9 @@ policies:
     header_capture:
       headers:
         - match_names: ["x-engine-header"]
+  authorized_identity:
+    - claim: sub
+      store_as: customer_id
 engine:
   observability:
     pipeline:
@@ -2785,8 +2896,6 @@ groups:
         let config = OtelDataflowSpec::from_yaml(yaml).expect("should parse");
         let resolved = config.resolve();
 
-        // The observability pipeline should NOT inherit transport_headers from
-        // the engine level (it's explicitly set to None during resolution).
         let obs = resolved
             .pipelines
             .iter()
@@ -2796,8 +2905,11 @@ groups:
             obs.policies.transport_headers.is_none(),
             "observability pipeline should not have transport_headers"
         );
+        assert!(
+            obs.policies.authorized_identity.is_none(),
+            "observability pipeline should not have authorized_identity"
+        );
 
-        // Regular pipelines should still inherit engine-level transport_headers.
         let main = resolved
             .pipelines
             .iter()
@@ -2806,6 +2918,10 @@ groups:
         assert!(
             main.policies.transport_headers.is_some(),
             "regular pipelines should inherit transport_headers from engine level"
+        );
+        assert!(
+            main.policies.authorized_identity.is_some(),
+            "regular pipelines should inherit authorized_identity from engine level"
         );
     }
 

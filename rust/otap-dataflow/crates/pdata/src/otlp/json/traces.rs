@@ -9,7 +9,7 @@
 
 use super::common::{AttributeIterJson, HexId, ProtoU64, ResourceJson, ScopeJson, Utf8};
 use super::{JsonEncodeError, write_json};
-use otap_df_pdata_views::views::trace::{
+use otel_arrow_dfe_pdata_views::views::trace::{
     EventView, LinkView, ResourceSpansView, ScopeSpansView, SpanView, StatusView, TracesView,
 };
 use serde::ser::{SerializeMap, SerializeSeq};

@@ -1,12 +1,19 @@
-# OTAP Pipeline
+# OTAP Common Runtime
 
-The OTAP (OpenTelemetry Arrow Protocol) crate now primarily contains shared OTAP
-and OTLP transport infrastructure, pdata types, TLS/compression helpers, and
-test support used by node implementations in other crates.
+This crate is currently pre-1.0. Its public API may evolve between minor
+releases.
+
+The OTAP (OpenTelemetry Arrow Protocol) crate is the common runtime layer used
+by Dataflow node crates. It provides the shared OTAP and OTLP transport
+infrastructure, pdata types, TLS and compression helpers, metrics, and test
+support that core, contrib, development, and custom nodes build on.
 
 Core node implementations live in `crates/core-nodes`.
 
-Contrib components (for example Geneva and Azure Monitor exporters, and
+Development-only test, fault-injection, and benchmark nodes live in
+`crates/dev-nodes`.
+
+Contrib nodes (for example Geneva and Azure Monitor exporters, and
 optional contrib processors) live in `crates/contrib-nodes`.
 
 ## Shared Infrastructure
@@ -17,8 +24,22 @@ optional contrib processors) live in `crates/contrib-nodes`.
 - OTLP HTTP client/server support (`src/otlp_http/`, `src/otlp_http.rs`)
 - Compression configuration (`src/compression.rs`)
 - TLS and crypto helpers (`src/tls_utils.rs`, `src/crypto.rs`)
-- Shared receiver metrics (`src/otlp_metrics.rs`)
+- Shared node boundary metrics (`src/metrics.rs`)
+- Shared OTLP receiver metrics (`src/otlp_metrics.rs`)
 - Test fixtures and mocks (`src/otap_mock.rs`, `src/otlp_mock.rs`, `src/testing/`)
+
+## Shared Node Boundary Metrics
+
+This crate provides the shared `ReceiverMetrics` and `ExporterMetrics` helpers
+for external node boundaries. These metrics count external messages and
+node-local export attempts independently from engine-managed PData node
+metrics.
+
+The complete contract, including 1:1, fan-out, aggregation, many-to-many,
+retry, timing, payload-size, and outcome guidance, is in the
+[Internal Telemetry Metrics Guide](https://github.com/open-telemetry/otel-arrow/blob/main/rust/otap-dataflow/docs/telemetry/metrics-guide.md#shared-receiver-and-exporter-boundary-metrics).
+See [Node and Flow Metrics](https://github.com/open-telemetry/otel-arrow/blob/main/rust/otap-dataflow/docs/node-and-flow-metrics.md)
+for operator interpretation.
 
 ## Node Implementations Using This Crate
 

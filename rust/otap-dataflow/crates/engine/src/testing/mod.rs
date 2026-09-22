@@ -14,12 +14,19 @@
 //! The specialized testing utilities for receivers, processors, and exporters are in their respective
 //! submodules.
 
+use crate::Interests;
 use crate::attributes::{ExtensionScopeAttributeSet, PipelineAttributeSet};
 use crate::context::{ControllerContext, ExtensionContext, PipelineContext};
 use crate::control::NodeControlMsg;
-use otap_df_channel::mpsc;
-use otap_df_config::node::NodeKind;
-use otap_df_telemetry::registry::TelemetryRegistryHandle;
+use crate::runtime_services::PipelineRuntimeServices;
+use otel_arrow_dfe_channel::mpsc;
+use otel_arrow_dfe_config::engine::{
+    ResolvedOtelDataflowSpec, ResolvedPipelineConfig, ResolvedPipelineRole,
+};
+use otel_arrow_dfe_config::node::NodeKind;
+use otel_arrow_dfe_config::pipeline::PipelineConfig;
+use otel_arrow_dfe_config::policy::Policies;
+use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
@@ -37,6 +44,26 @@ pub mod receiver;
 
 pub use node::{test_node, test_nodes};
 
+/// Creates fresh pipeline runtime services for one logical test pipeline.
+///
+/// Tests that construct multiple effect handlers for the same pipeline should clone the returned
+/// value and inject one clone into each handler.
+///
+/// # Panics
+///
+/// Panics when the test binary links invalid pdata codec registrations. Such registrations are a
+/// test assembly error; tests for registry validation should construct the registry directly.
+#[cfg(any(test, feature = "test-utils"))]
+#[must_use]
+pub fn test_pipeline_runtime_services() -> PipelineRuntimeServices {
+    create_test_pipeline_runtime_services()
+}
+
+fn create_test_pipeline_runtime_services() -> PipelineRuntimeServices {
+    PipelineRuntimeServices::new(Default::default())
+        .expect("test binary must link valid pdata codec registrations")
+}
+
 /// Create a minimal [`PipelineContext`] suitable for unit tests that
 /// need to register metrics or construct engine objects.
 ///
@@ -44,9 +71,17 @@ pub use node::{test_node, test_nodes};
 /// callers can inspect registered metrics.
 #[must_use]
 pub fn test_pipeline_ctx() -> (PipelineContext, TelemetryRegistryHandle) {
+    test_pipeline_ctx_with_interests(Interests::empty())
+}
+
+/// Create a minimal [`PipelineContext`] with explicit node interests for tests.
+#[must_use]
+pub fn test_pipeline_ctx_with_interests(
+    interests: Interests,
+) -> (PipelineContext, TelemetryRegistryHandle) {
     let registry = TelemetryRegistryHandle::new();
     let controller = ControllerContext::new(registry.clone());
-    let ctx = controller
+    let mut ctx = controller
         .pipeline_context_with("test_grp".into(), "test_pipeline".into(), 0, 1, 0)
         .with_node_context(
             "test_node".into(),
@@ -54,7 +89,36 @@ pub fn test_pipeline_ctx() -> (PipelineContext, TelemetryRegistryHandle) {
             NodeKind::Processor,
             HashMap::new(),
         );
+    ctx.set_node_interests(interests);
     (ctx, registry)
+}
+
+/// Compiles and installs bindings for one test pipeline.
+///
+/// Ignores engine and group policies.
+/// Compile the full engine configuration to test inheritance or multiple pipelines.
+///
+/// # Errors
+///
+/// Returns configuration or declaration errors.
+pub fn install_test_context_bindings<PData: 'static + Clone + std::fmt::Debug>(
+    pipeline_ctx: &mut PipelineContext,
+    factory: &crate::PipelineFactory<PData>,
+    pipeline: PipelineConfig,
+) -> Result<(), crate::error::Error> {
+    let resolved = ResolvedOtelDataflowSpec {
+        engine: Default::default(),
+        pipelines: vec![ResolvedPipelineConfig {
+            pipeline_group_id: pipeline_ctx.pipeline_group_id(),
+            pipeline_id: pipeline_ctx.pipeline_id(),
+            policies: Policies::resolve(pipeline.policies()),
+            pipeline,
+            role: ResolvedPipelineRole::Regular,
+        }],
+    };
+    pipeline_ctx
+        .set_compiled_context_bindings(factory.compile_initial_context(&resolved)?.bindings);
+    Ok(())
 }
 
 /// Create a minimal [`ExtensionContext`] suitable for unit tests of the
@@ -76,7 +140,7 @@ pub fn test_extension_ctx() -> (ExtensionContext, TelemetryRegistryHandle) {
 pub struct TestMsg(pub String);
 
 impl crate::ReceivedAtNode for TestMsg {
-    fn received_at_node(&mut self, _node_id: usize, _node_interests: crate::Interests) {}
+    fn received_at_node(&mut self, _node_id: usize, _node_interests: Interests) {}
 }
 
 impl crate::processor::FlowMetricHook for TestMsg {}

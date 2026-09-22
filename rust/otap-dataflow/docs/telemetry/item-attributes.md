@@ -67,7 +67,7 @@ Use `#[attribute_value]` where an OpenTelemetry semantic convention specifies a
 different wire value.
 
 ```rust
-use otap_df_telemetry_macros::AttributeEnum;
+use otel_arrow_dfe_telemetry_macros::AttributeEnum;
 
 #[derive(Debug, Clone, Copy, AttributeEnum)]
 pub enum LossOutcome {
@@ -118,9 +118,9 @@ have a schema name.
 ```rust
 // This component only works on logs.
 
-use otap_df_telemetry::instrument::Counter;
-use otap_df_config::SignalType;
-use otap_df_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
+use otel_arrow_dfe_telemetry::instrument::Counter;
+use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
 
 #[attribute_set(item, registration)]
 #[derive(Debug, Clone, Copy)]
@@ -163,9 +163,9 @@ only metric sets use the additional dense-bucket implementation generated for
 ```rust
 // This component has multiple possible outcomes.
 
-use otap_df_telemetry::instrument::Counter;
-use otap_df_config::SignalType;
-use otap_df_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
+use otel_arrow_dfe_telemetry::instrument::Counter;
+use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
 
 #[derive(Debug, Clone, Copy, AttributeEnum)]
 pub enum LossOutcome {
@@ -220,9 +220,9 @@ the fixed attribute value and record through `with(...)`.
 ```rust
 // This component only works on logs but also has multiple possible outcomes.
 
-use otap_df_telemetry::instrument::Counter;
-use otap_df_config::SignalType;
-use otap_df_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
+use otel_arrow_dfe_telemetry::instrument::Counter;
+use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
 
 #[derive(Debug, Clone, Copy, AttributeEnum)]
 pub enum LossOutcome {

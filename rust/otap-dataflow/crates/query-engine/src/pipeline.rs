@@ -7,7 +7,6 @@
 use arrow::array::RecordBatch;
 use arrow::compute::concat_batches;
 use async_trait::async_trait;
-use data_engine_expressions::PipelineExpression;
 use datafusion::config::ConfigOptions;
 use datafusion::execution::TaskContext;
 use datafusion::execution::config::SessionConfig;
@@ -15,16 +14,17 @@ use datafusion::execution::context::SessionContext;
 use datafusion::physical_plan::common::collect;
 use datafusion::physical_plan::streaming::PartitionStream;
 use datafusion::physical_plan::{ExecutionPlan, execute_stream};
-use otap_df_pdata::OtapArrowRecords;
-use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+use otel_arrow_contrib_data_engine_expressions::PipelineExpression;
+use otel_arrow_dfe_pdata::OtapArrowRecords;
+use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use std::sync::Arc;
 
 use crate::error::{Error, Result};
-use crate::pipeline::planner::PipelinePlanner;
+use crate::pipeline::planner::{PipelinePlanner, RecordType};
 use crate::pipeline::state::ExecutionState;
 use crate::table::RecordBatchPartitionStream;
 
-mod apply_attrs;
+mod apply;
 mod assign;
 mod attributes;
 mod concat;
@@ -81,21 +81,44 @@ pub trait PipelineStage {
         _session_context: &SessionContext,
         _config_options: &ConfigOptions,
         _task_context: Arc<TaskContext>,
-        _exec_options: &mut ExecutionState,
+        _exec_state: &mut ExecutionState,
     ) -> Result<RecordBatch> {
         return Err(Error::ExecutionError {
             cause: "Unexpected invocation of pipeline stage that does not support processing attributes".into()
         });
     }
 
-    /// Returns a flag indicating that this stage of the pipeline on a [`RecordBatch`] containing
-    /// a set of attributes. This will be used during planning to determine if invalid pipeline
-    /// stages have been specified in a pipeline handling attributes record batches.
+    /// Execute this stage on the data points of the metric.
     ///
-    /// If a type chooses to implement this method and return true, it should also add an
-    /// implementation for `execute_on_attributes`.
-    fn supports_exec_on_attributes(&self) -> bool {
-        false
+    /// When the pipeline stage is executed via this method call, it should perform its operation
+    /// as if the "root" of any expression is the metric data points record batch. It may need to
+    /// perform multiple evaluations on each of the various metric data point types.
+    async fn execute_on_metric_data_points(
+        &mut self,
+        _otap_batch: OtapArrowRecords,
+        _session_context: &SessionContext,
+        _config_options: &ConfigOptions,
+        _task_context: Arc<TaskContext>,
+        _exec_state: &mut ExecutionState,
+    ) -> Result<OtapArrowRecords> {
+        return Err(Error::ExecutionError {
+            cause: "Unexpected invocation of pipeline stage that does not support execution on metric data points".into()
+         });
+    }
+
+    /// Returns a flag indicating that this stage of the pipeline can execute where the passed
+    /// type of record would be the root of the expression.
+    ///
+    /// This is used by the planner to reject invalid/unsupported operations applied to some type
+    /// of record. For example, if some pipeline stage returns true/false when record type is
+    /// the `Attributes` variant, the planner will either accept/reject this type of pipeline stage
+    /// being used in an operation call like `apply attributes { ... }`
+    ///
+    /// If an implementation overrides this to return `true` for `RecordType::Attributes`,
+    /// should also implement `execute_on_attributes`. Likewise for `RecordType::Child(DataPoint)`
+    /// and `execute_on_metric_data_points`.
+    fn supports_exec_on(&self, record_type: &RecordType) -> bool {
+        matches!(record_type, RecordType::Signal)
     }
 
     /// When pipeline stages execute within the context of a conditional branch, they will only see
@@ -376,27 +399,28 @@ impl Pipeline {
 mod test {
     use std::sync::Arc;
 
-    use data_engine_expressions::PipelineExpression;
+    use otel_arrow_contrib_data_engine_expressions::PipelineExpression;
 
-    use data_engine_parser_abstractions::Parser;
     use datafusion::catalog::streaming::StreamingTable;
     use datafusion::logical_expr::{col, lit};
-    use otap_df_pdata::proto::OtlpProtoMessage;
-    use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-    use otap_df_pdata::proto::opentelemetry::logs::v1::{LogRecord, LogsData};
-    use otap_df_pdata::proto::opentelemetry::metrics::v1::{Gauge, Metric, MetricsData, Sum};
-    use otap_df_pdata::proto::opentelemetry::trace::v1::{Span, TracesData};
-    use otap_df_pdata::testing::round_trip::{
+    use otel_arrow_contrib_data_engine_parser_abstractions::Parser;
+    use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::{LogRecord, LogsData};
+    use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::{
+        Gauge, Metric, MetricsData, Sum,
+    };
+    use otel_arrow_dfe_pdata::proto::opentelemetry::trace::v1::{Span, TracesData};
+    use otel_arrow_dfe_pdata::testing::round_trip::{
         otap_to_otlp, otlp_to_otap, to_otap_logs, to_otap_metrics, to_otap_traces,
     };
-    use otap_df_pdata::{OtapPayload, OtlpProtoBytes};
-    use otap_df_query_engine_languages::opl::parser::OplParser;
+    use otel_arrow_dfe_pdata::{OtapPayload, OtlpProtoBytes, TryIntoWithOptions};
+    use otel_arrow_dfe_query_engine_languages::opl::parser::OplParser;
     use prost::Message;
 
     use crate::parser::default_parser_options;
 
     use super::*;
-    use otap_df_pdata::TryIntoWithOptions;
 
     /// helper function for converting [`OtapArrowRecords`] to [`LogsData`]
     pub fn otap_to_logs_data(otap_batch: OtapArrowRecords) -> LogsData {

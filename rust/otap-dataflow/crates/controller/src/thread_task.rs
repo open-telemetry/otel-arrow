@@ -9,7 +9,7 @@ use std::thread;
 use tokio::{runtime::Builder as RtBuilder, task::LocalSet};
 use tokio_util::sync::CancellationToken;
 
-use otap_df_telemetry::TracingSetup;
+use otel_arrow_dfe_telemetry::TracingSetup;
 
 /// Handle to a task running on a dedicated thread.  This represents
 /// OS thread and single-threaded async runtime, without thread

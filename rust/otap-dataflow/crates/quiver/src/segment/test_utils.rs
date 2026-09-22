@@ -92,6 +92,7 @@ pub fn slot_descriptors() -> Vec<SlotDescriptor> {
 pub struct TestBundle {
     descriptor: BundleDescriptor,
     payloads: HashMap<SlotId, (SchemaFingerprint, RecordBatch)>,
+    byte_count: Option<u64>,
 }
 
 impl TestBundle {
@@ -101,6 +102,7 @@ impl TestBundle {
         Self {
             descriptor: BundleDescriptor::new(slots),
             payloads: HashMap::new(),
+            byte_count: None,
         }
     }
 
@@ -113,6 +115,13 @@ impl TestBundle {
         batch: RecordBatch,
     ) -> Self {
         let _ = self.payloads.insert(slot_id, (fingerprint, batch));
+        self
+    }
+
+    /// Sets the authoritative logical payload byte count.
+    #[must_use]
+    pub const fn with_byte_count(mut self, byte_count: u64) -> Self {
+        self.byte_count = Some(byte_count);
         self
     }
 }
@@ -139,5 +148,9 @@ impl RecordBundle for TestBundle {
             .next()
             .map(|(_, batch)| batch.num_rows() as u64)
             .unwrap_or(0)
+    }
+
+    fn byte_count(&self) -> Option<u64> {
+        self.byte_count
     }
 }

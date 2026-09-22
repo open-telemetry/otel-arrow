@@ -7,14 +7,14 @@
 //! on it, and concatenate the results to produce an output.
 
 use arrow::array::RecordBatch;
-use otap_df_pdata::OtapArrowRecords;
-use otap_df_pdata::otap::raw_batch_store::{
+use otel_arrow_dfe_pdata::OtapArrowRecords;
+use otel_arrow_dfe_pdata::otap::raw_batch_store::{
     LOGS_TYPE_MASK, METRICS_TYPE_MASK, POSITION_LOOKUP, RawBatchStore, TRACES_TYPE_MASK,
 };
-use otap_df_pdata::otap::transform::concatenate::concatenate;
-use otap_df_pdata::otap::transform::reindex::reindex;
-use otap_df_pdata::otap::{Logs, Metrics, OtapBatchStore, Traces};
-use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+use otel_arrow_dfe_pdata::otap::transform::concatenate::concatenate;
+use otel_arrow_dfe_pdata::otap::transform::reindex::reindex;
+use otel_arrow_dfe_pdata::otap::{Logs, Metrics, OtapBatchStore, Traces};
+use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 
 use crate::error::{Error, Result};
 
@@ -23,8 +23,8 @@ pub(crate) fn concat_generic<T, const TYPE_MASK: u64, const COUNT: usize>(
 ) -> Result<OtapArrowRecords>
 where
     T: OtapBatchStore<BatchArray = [Option<RecordBatch>; COUNT]>
-        + TryFrom<RawBatchStore<TYPE_MASK, COUNT>, Error = otap_df_pdata::error::Error>
-        + TryFrom<OtapArrowRecords, Error = otap_df_pdata::error::Error>,
+        + TryFrom<RawBatchStore<TYPE_MASK, COUNT>, Error = otel_arrow_dfe_pdata::error::Error>
+        + TryFrom<OtapArrowRecords, Error = otel_arrow_dfe_pdata::error::Error>,
     OtapArrowRecords: From<T>,
 {
     let mut batches = Vec::new();
@@ -90,8 +90,8 @@ pub(crate) fn reindex_generic<T, const TYPE_MASK: u64, const COUNT: usize>(
 ) -> Result<()>
 where
     T: OtapBatchStore<BatchArray = [Option<RecordBatch>; COUNT]>
-        + TryFrom<RawBatchStore<TYPE_MASK, COUNT>, Error = otap_df_pdata::error::Error>
-        + TryFrom<OtapArrowRecords, Error = otap_df_pdata::error::Error>,
+        + TryFrom<RawBatchStore<TYPE_MASK, COUNT>, Error = otel_arrow_dfe_pdata::error::Error>
+        + TryFrom<OtapArrowRecords, Error = otel_arrow_dfe_pdata::error::Error>,
     OtapArrowRecords: From<T>,
 {
     let mut batches = Vec::new();

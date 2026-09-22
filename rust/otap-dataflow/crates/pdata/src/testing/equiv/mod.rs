@@ -19,7 +19,7 @@ mod metrics;
 mod traces;
 
 use crate::proto::OtlpProtoMessage;
-use otap_df_config::SignalType;
+use otel_arrow_dfe_config::SignalType;
 
 use crate::proto::opentelemetry::logs::v1::LogsData;
 use crate::proto::opentelemetry::metrics::v1::MetricsData;

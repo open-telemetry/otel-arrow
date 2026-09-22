@@ -4,8 +4,8 @@
 #![allow(missing_docs)]
 
 mod tests {
-    use otap_df_config::tls::{TlsConfig, TlsServerConfig};
-    use otap_df_otap::tls_utils::load_server_tls_config;
+    use otel_arrow_dfe_config::tls::{TlsConfig, TlsServerConfig};
+    use otel_arrow_dfe_otap::tls_utils::load_server_tls_config;
     use std::fs::File;
     use std::io::Write;
     use tempfile::TempDir;

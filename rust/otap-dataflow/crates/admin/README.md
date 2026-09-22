@@ -1,6 +1,9 @@
 # Admin Interface
 
-`otap-df-admin` provides:
+This crate is currently pre-1.0. Its public API may evolve between minor
+releases.
+
+`otel-arrow-dfe-admin` provides:
 
 - admin, health, status, and telemetry HTTP endpoints;
 - live pipeline mutation endpoints for create, replace, resize, rollout

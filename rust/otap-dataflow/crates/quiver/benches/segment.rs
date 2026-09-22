@@ -22,10 +22,10 @@ use arrow_array::RecordBatch;
 use arrow_array::builder::{Int64Builder, StringBuilder};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use quiver::record_bundle::{
+use otel_arrow_dfe_quiver::record_bundle::{
     BundleDescriptor, PayloadRef, RecordBundle, SchemaFingerprint, SlotDescriptor, SlotId,
 };
-use quiver::segment::{OpenSegment, SegmentReader, SegmentSeq, SegmentWriter};
+use otel_arrow_dfe_quiver::segment::{OpenSegment, SegmentReader, SegmentSeq, SegmentWriter};
 use tokio::runtime::Runtime;
 
 /// Test bundle with configurable row count and schema fingerprint.

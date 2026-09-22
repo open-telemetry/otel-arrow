@@ -4,6 +4,13 @@ groups:
   default:
     pipelines:
       main:
+        extensions:
+          azure_identity:
+            type: urn:microsoft:extension:azure_identity_auth
+            config:
+              method: development
+              scope: https://storage.azure.com/.default
+
         policies:
           channel_capacity:
             control:
@@ -22,12 +29,12 @@ groups:
               registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
           exporter:
             type: exporter:parquet
+            capabilities:
+              bearer_token_provider: azure_identity
             config:
               storage:
                 azure:
                   base_uri: https://mystorageaccount.blob.core.windows.net/mycontainer/telemetry
-                  auth:
-                    type: azure_cli
               partitioning_strategies:
                 - schema_metadata: ["_part_id"]
               writer_options:

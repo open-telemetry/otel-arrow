@@ -7,8 +7,8 @@
 //! focuses instead on defining the interconnection of nodes within the DAG and each node's specific
 //! settings.
 
-use otap_df_config::ExtensionId;
-use otap_df_config::NodeId;
+use otel_arrow_dfe_config::ExtensionId;
+use otel_arrow_dfe_config::NodeId;
 
 /// Default control channel capacity used by legacy constructor paths.
 const DEFAULT_CONTROL_CHANNEL_CAPACITY: usize = 32;

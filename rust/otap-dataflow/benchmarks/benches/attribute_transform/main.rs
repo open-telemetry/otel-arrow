@@ -10,18 +10,18 @@ use arrow::array::{
 use arrow::compute::cast;
 use arrow::datatypes::{DataType, Field, Schema, UInt16Type};
 use criterion::{BatchSize, BenchmarkId, Criterion, criterion_group, criterion_main};
-use otap_df_pdata::otap::transform::transport_optimize::apply_transport_optimized_encodings;
-use otap_df_pdata::otlp::attributes::AttributeValueType;
-use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+use otel_arrow_dfe_pdata::otap::transform::transport_optimize::apply_transport_optimized_encodings;
+use otel_arrow_dfe_pdata::otlp::attributes::AttributeValueType;
+use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use std::collections::{BTreeMap, BTreeSet};
 use std::hint::black_box;
 use std::sync::Arc;
 
-use otap_df_pdata::otap::transform::{
+use otel_arrow_dfe_pdata::otap::transform::{
     AttributesTransform, DeleteTransform, LiteralValue, RenameTransform, UpsertTransform,
     transform_attributes, transform_attributes_with_stats,
 };
-use otap_df_pdata::schema::{FieldExt, consts};
+use otel_arrow_dfe_pdata::schema::{FieldExt, consts};
 
 #[cfg(not(windows))]
 use tikv_jemallocator::Jemalloc;

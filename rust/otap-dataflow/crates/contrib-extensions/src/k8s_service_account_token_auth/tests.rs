@@ -12,12 +12,12 @@ use std::time::{Duration, Instant};
 use k8s_openapi::api::authentication::v1::{TokenReviewStatus, UserInfo};
 use k8s_openapi::api::authorization::v1::SubjectAccessReviewStatus;
 
-use otap_df_config::error::Error as ConfigError;
-use otap_df_engine::capability::auth::{
+use otel_arrow_dfe_config::error::Error as ConfigError;
+use otel_arrow_dfe_engine::capability::auth::{
     AuthorizedIdentity, AuthzDecision, BearerToken, DenyReason,
 };
-use otap_df_engine::local::capability::auth::bearer_token_authorizer::BearerTokenAuthorizer as LocalBearerTokenAuthorizer;
-use otap_df_engine::shared::capability::auth::bearer_token_authorizer::BearerTokenAuthorizer as SharedBearerTokenAuthorizer;
+use otel_arrow_dfe_engine::local::capability::auth::bearer_token_authorizer::BearerTokenAuthorizer as LocalBearerTokenAuthorizer;
+use otel_arrow_dfe_engine::shared::capability::auth::bearer_token_authorizer::BearerTokenAuthorizer as SharedBearerTokenAuthorizer;
 
 use super::authorizer::{LocalK8sServiceAccountTokenAuth, SharedK8sServiceAccountTokenAuth};
 use super::cache::{Entries, LocalDecisionCache, SharedDecisionCache, SharedSlot, digest};
@@ -51,7 +51,7 @@ fn config_defaults_apply() {
     assert!(cfg.audiences[0].resource_attributes.is_none());
     assert_eq!(cfg.cache_ttl, Duration::from_secs(300));
     assert_eq!(cfg.cache_max_entries, 1024);
-    assert_eq!(cfg.review_timeout, Duration::from_secs(10));
+    assert_eq!(cfg.review_timeout, Duration::from_secs(5));
 }
 
 /// Scenario: parse configs that omit `audiences`, supply an empty list, or a
@@ -358,7 +358,7 @@ fn validate_config_hook_accepts_valid_and_rejects_invalid() {
 /// a collector still starts when the API server is briefly unreachable.
 #[test]
 fn factory_create_builds_both_variants_without_a_cluster() {
-    let (ctx, _registry) = otap_df_engine::testing::test_extension_ctx();
+    let (ctx, _registry) = otel_arrow_dfe_engine::testing::test_extension_ctx();
     let user_config = Arc::new(ExtensionUserConfig::new(
         K8S_SERVICE_ACCOUNT_TOKEN_AUTH_URN.into(),
         serde_json::json!({
@@ -386,7 +386,7 @@ fn factory_create_builds_both_variants_without_a_cluster() {
 /// runtime.
 #[test]
 fn factory_create_rejects_an_invalid_config() {
-    let (ctx, _registry) = otap_df_engine::testing::test_extension_ctx();
+    let (ctx, _registry) = otel_arrow_dfe_engine::testing::test_extension_ctx();
     let user_config = Arc::new(ExtensionUserConfig::new(
         K8S_SERVICE_ACCOUNT_TOKEN_AUTH_URN.into(),
         serde_json::json!({}),
@@ -1939,8 +1939,8 @@ async fn decide_lists_every_matched_audience_when_all_admit() {
 //
 //   K8S_SAT_TOKEN="$(kubectl create token sat-tester -n sat-authz-test \
 //     --audience=https://sat-authz-test.example)" \
-//   cargo test -p otap-df-contrib-extensions \
-//     --features k8s-service-account-token-auth-extension \
+//   cargo test -p otel-arrow-dfe-contrib-extensions \
+//     --features k8s-service-account-token-auth \
 //     k8s_service_account_token_auth -- --ignored --nocapture
 //
 // The cluster is expected to have the fixtures from the extension's test setup:

@@ -25,9 +25,9 @@ pub(crate) use model::*;
 use crate::args::UiStartView;
 use crate::troubleshoot::PipelineDescribeReport;
 use humantime::format_duration;
-use otap_df_admin_api::{engine, groups, pipelines, telemetry};
-use otap_df_config::pipeline::PipelineConfig;
-use otap_df_config::policy::{CoreAllocation, CoreAllocationStrategy};
+use otel_arrow_dfe_admin_api::{engine, groups, pipelines, telemetry};
+use otel_arrow_dfe_config::pipeline::PipelineConfig;
+use otel_arrow_dfe_config::policy::{CoreAllocation, CoreAllocationStrategy};
 use std::collections::BTreeMap;
 use std::time::Duration;
 

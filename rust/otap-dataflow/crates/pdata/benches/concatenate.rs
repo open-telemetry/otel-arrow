@@ -15,12 +15,14 @@ use arrow::array::{
 use arrow::buffer::ScalarBuffer;
 use arrow::datatypes::{ArrowPrimitiveType, DataType, UInt16Type, UInt32Type};
 use criterion::{BatchSize, BenchmarkId, Criterion, criterion_group, criterion_main};
-use otap_df_pdata::otap::transform::concatenate::concatenate;
-use otap_df_pdata::otap::transform::reindex::reindex;
-use otap_df_pdata::otap::{Logs, Metrics, OtapArrowRecords, OtapBatchStore, Traces};
-use otap_df_pdata::schema::consts::{ID, PARENT_ID};
-use otap_df_pdata::testing::fixtures::{DataGenerator, LogsConfig, MetricsConfig, TracesConfig};
-use otap_df_pdata::testing::round_trip::otlp_to_otap;
+use otel_arrow_dfe_pdata::otap::transform::concatenate::concatenate;
+use otel_arrow_dfe_pdata::otap::transform::reindex::reindex;
+use otel_arrow_dfe_pdata::otap::{Logs, Metrics, OtapArrowRecords, OtapBatchStore, Traces};
+use otel_arrow_dfe_pdata::schema::consts::{ID, PARENT_ID};
+use otel_arrow_dfe_pdata::testing::fixtures::{
+    DataGenerator, LogsConfig, MetricsConfig, TracesConfig,
+};
+use otel_arrow_dfe_pdata::testing::round_trip::otlp_to_otap;
 
 const NUM_BATCHES: usize = 10;
 const BATCH_SIZES: &[usize] = &[100, 1000];
@@ -121,7 +123,7 @@ fn bench_group(
 fn bench_reindex<const N: usize>(
     group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
     signal_name: &str,
-    reindex_fn: fn(&mut [[Option<RecordBatch>; N]]) -> otap_df_pdata::error::Result<()>,
+    reindex_fn: fn(&mut [[Option<RecordBatch>; N]]) -> otel_arrow_dfe_pdata::error::Result<()>,
     data: &[[Option<RecordBatch>; N]],
 ) {
     let _ = group.bench_with_input(BenchmarkId::from_parameter(signal_name), data, |b, data| {

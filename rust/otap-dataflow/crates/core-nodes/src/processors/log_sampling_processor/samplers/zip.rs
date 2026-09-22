@@ -22,11 +22,11 @@
 use super::Sampler;
 use arrow::array::{BooleanArray, BooleanBufferBuilder};
 use async_trait::async_trait;
-use otap_df_config::error::Error as ConfigError;
-use otap_df_engine::error::Error as EngineError;
-use otap_df_engine::local::processor as local;
-use otap_df_otap::pdata::OtapPdata;
-use otap_df_pdata::otap::OtapArrowRecords;
+use otel_arrow_dfe_config::error::Error as ConfigError;
+use otel_arrow_dfe_engine::error::Error as EngineError;
+use otel_arrow_dfe_engine::local::processor as local;
+use otel_arrow_dfe_otap::pdata::OtapPdata;
+use otel_arrow_dfe_pdata::otap::OtapArrowRecords;
 use serde::Deserialize;
 use std::time::Duration;
 

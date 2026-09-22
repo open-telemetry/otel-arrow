@@ -19,7 +19,7 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use otap_df_engine::capability::auth::AuthzDecision;
+use otel_arrow_dfe_engine::capability::auth::AuthzDecision;
 use sha2::{Digest, Sha256};
 use tokio::sync::OnceCell;
 
@@ -64,7 +64,7 @@ impl SlotHandle for Rc<OnceCell<FlightResult>> {
     }
 }
 
-/// Slot handle used by the shared (`Send`, cross-thread) variant.
+/// Slot handle used by the shared (`Send + Sync`, cross-thread) variant.
 pub(crate) type SharedSlot = Arc<OnceCell<FlightResult>>;
 
 /// Slot handle used by the local (`!Send`, thread-per-core) variant.
@@ -81,9 +81,9 @@ pub(crate) fn digest(token: &str) -> TokenDigest {
     hasher.finalize().into()
 }
 
-// -- Shared variant cache (Send; Mutex + Arc slots) -------------------------
+// -- Shared variant cache (Send + Sync; Mutex + Arc slots) ------------------
 
-/// Decision cache for the shared (`Send`) capability variant.
+/// Decision cache for the shared (`Send + Sync`) capability variant.
 pub(crate) struct SharedDecisionCache {
     entries: Mutex<Entries<SharedSlot>>,
 }
@@ -125,20 +125,20 @@ impl SharedDecisionCache {
         cleanup.armed = false;
         match result {
             Ok(decision) => {
-                if lease.complete_on_success {
-                    if let Ok(mut entries) = self.entries.lock() {
-                        entries.complete(&key, lease.handle(), Instant::now());
-                    }
+                if lease.complete_on_success
+                    && let Ok(mut entries) = self.entries.lock()
+                {
+                    entries.complete(&key, lease.handle(), Instant::now());
                 }
                 // Cloned after the guard is released; a deep clone under it
                 // would stall requests for unrelated tokens.
                 Ok(decision.clone())
             }
             Err(error) => {
-                if lease.tracked {
-                    if let Ok(mut entries) = self.entries.lock() {
-                        entries.remove(&key, lease.handle());
-                    }
+                if lease.tracked
+                    && let Ok(mut entries) = self.entries.lock()
+                {
+                    entries.remove(&key, lease.handle());
                 }
                 Err(error.clone())
             }

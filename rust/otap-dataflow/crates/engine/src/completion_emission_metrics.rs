@@ -8,12 +8,12 @@
 //! completion lane through `notify_ack` / `notify_nack`.
 
 use crate::entity_context::NodeTelemetryHandle;
-use otap_df_config::MetricLevel;
-use otap_df_telemetry::error::Error as TelemetryError;
-use otap_df_telemetry::instrument::Counter;
-use otap_df_telemetry::metrics::{MetricSet, MetricSetSnapshot};
-use otap_df_telemetry::reporter::MetricsReporter;
-use otap_df_telemetry_macros::metric_set;
+use otel_arrow_dfe_config::MetricLevel;
+use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
+use otel_arrow_dfe_telemetry::instrument::Counter;
+use otel_arrow_dfe_telemetry::metrics::{MetricSet, MetricSetSnapshot};
+use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
+use otel_arrow_dfe_telemetry_macros::metric_set;
 use std::sync::{Arc, Mutex};
 
 /// Node-scoped completion counters emitted from effect handlers.

@@ -22,8 +22,8 @@ use base64::Engine;
 use base64::prelude::*;
 use http::Uri;
 use ipnet::IpNet;
-use otap_df_config::tls::TlsClientConfig;
-use otap_df_telemetry::{otel_debug, otel_warn};
+use otel_arrow_dfe_config::tls::TlsClientConfig;
+use otel_arrow_dfe_telemetry::{otel_debug, otel_warn};
 use rustls::RootCertStore;
 use rustls_native_certs::load_native_certs;
 use rustls_pki_types::pem::PemObject;
@@ -73,12 +73,12 @@ impl SensitiveUrl {
 
         // Redact credentials in the authority if present.
         // This intentionally mirrors the existing behavior of `ProxyConfig`'s logging.
-        if let Ok(uri) = url.parse::<Uri>() {
-            if let Some(authority) = uri.authority() {
-                let auth_str = authority.as_str();
-                if let Some((_, host)) = auth_str.rsplit_once('@') {
-                    return Cow::Owned(url.replace(auth_str, &format!("[REDACTED]@{host}")));
-                }
+        if let Ok(uri) = url.parse::<Uri>()
+            && let Some(authority) = uri.authority()
+        {
+            let auth_str = authority.as_str();
+            if let Some((_, host)) = auth_str.rsplit_once('@') {
+                return Cow::Owned(url.replace(auth_str, &format!("[REDACTED]@{host}")));
             }
         }
 
@@ -314,19 +314,19 @@ impl ProxyConfig {
 
         fn split_host_and_port(pattern: &str) -> (Cow<'_, str>, Option<u16>) {
             // Bracketed IPv6: [::1]:4317
-            if let Some(rest) = pattern.strip_prefix('[') {
-                if let Some(end) = rest.find(']') {
-                    let host = &rest[..end];
-                    let after = &rest[end + 1..];
-                    if let Some(port_str) = after.strip_prefix(':') {
-                        if !port_str.is_empty() && port_str.chars().all(|c| c.is_ascii_digit()) {
-                            if let Ok(p) = port_str.parse::<u16>() {
-                                return (Cow::Borrowed(host), Some(p));
-                            }
-                        }
-                    }
-                    return (Cow::Borrowed(host), None);
+            if let Some(rest) = pattern.strip_prefix('[')
+                && let Some(end) = rest.find(']')
+            {
+                let host = &rest[..end];
+                let after = &rest[end + 1..];
+                if let Some(port_str) = after.strip_prefix(':')
+                    && !port_str.is_empty()
+                    && port_str.chars().all(|c| c.is_ascii_digit())
+                    && let Ok(p) = port_str.parse::<u16>()
+                {
+                    return (Cow::Borrowed(host), Some(p));
                 }
+                return (Cow::Borrowed(host), None);
             }
 
             // CIDRs never have ports.
@@ -335,16 +335,14 @@ impl ProxyConfig {
             }
 
             // Hostname/IPv4 with port: example.com:443, 127.0.0.1:4317
-            if let Some((lhs, rhs)) = pattern.rsplit_once(':') {
-                if !lhs.contains(':')
-                    && !rhs.is_empty()
-                    && rhs.chars().all(|c| c.is_ascii_digit())
-                    && rhs.len() <= 5
-                {
-                    if let Ok(p) = rhs.parse::<u16>() {
-                        return (Cow::Borrowed(lhs), Some(p));
-                    }
-                }
+            if let Some((lhs, rhs)) = pattern.rsplit_once(':')
+                && !lhs.contains(':')
+                && !rhs.is_empty()
+                && rhs.chars().all(|c| c.is_ascii_digit())
+                && rhs.len() <= 5
+                && let Ok(p) = rhs.parse::<u16>()
+            {
+                return (Cow::Borrowed(lhs), Some(p));
             }
 
             (Cow::Borrowed(pattern), None)
@@ -370,10 +368,10 @@ impl ProxyConfig {
             }
 
             let (pattern_host, pattern_port) = split_host_and_port(&pattern);
-            if let Some(pattern_port) = pattern_port {
-                if pattern_port != port {
-                    continue;
-                }
+            if let Some(pattern_port) = pattern_port
+                && pattern_port != port
+            {
+                continue;
             }
 
             let pattern_host = pattern_host.as_ref().trim_end_matches('.');
@@ -386,13 +384,13 @@ impl ProxyConfig {
             // Handle CIDR notation (e.g., "192.168.0.0/16", "10.0.0.0/8")
             if pattern_host.contains('/') {
                 if let Ok(net) = pattern_host.parse::<IpNet>() {
-                    if let Some(ip) = host_ip {
-                        if net.contains(&ip) {
-                            return true;
-                        }
+                    if let Some(ip) = host_ip
+                        && net.contains(&ip)
+                    {
+                        return true;
                     }
                 } else {
-                    otap_df_telemetry::otel_warn!(
+                    otel_arrow_dfe_telemetry::otel_warn!(
                         "otap_grpc_exporter.proxy.invalid_cidr",
                         pattern = pattern_host
                     );
@@ -1007,7 +1005,7 @@ mod tests {
 
     async fn start_tls_proxy_for_handshake_failure()
     -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
-        use otap_test_tls_certs::{ExtendedKeyUsage, generate_ca};
+        use otel_arrow_dfe_test_tls_certs::{ExtendedKeyUsage, generate_ca};
         use rustls_pki_types::pem::PemObject;
         use rustls_pki_types::{CertificateDer, PrivateKeyDer};
         use std::sync::Arc;
@@ -1302,8 +1300,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_build_proxy_tls_connector_rejects_partial_mtls_config() {
-        use otap_df_config::tls::TlsConfig;
-        use otap_test_tls_certs::generate_ca;
+        use otel_arrow_dfe_config::tls::TlsConfig;
+        use otel_arrow_dfe_test_tls_certs::generate_ca;
 
         let ca = generate_ca("Proxy Config Test CA");
         let tls = TlsClientConfig {
@@ -1342,8 +1340,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_connect_tcp_stream_with_proxy_config_maps_tls_handshake_error() {
-        use otap_df_config::tls::TlsConfig;
-        use otap_test_tls_certs::generate_ca;
+        use otel_arrow_dfe_config::tls::TlsConfig;
+        use otel_arrow_dfe_test_tls_certs::generate_ca;
 
         let (proxy_addr, proxy_task) = start_tls_proxy_for_handshake_failure().await;
         let wrong_ca = generate_ca("Wrong Proxy Trust CA");

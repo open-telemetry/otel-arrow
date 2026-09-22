@@ -1,5 +1,5 @@
 [package]
-name = "otap-df-control-channel"
+name = "otel-arrow-dfe-control-channel"
 description = "Standalone control-aware bounded channel for OTAP dataflow"
 version.workspace = true
 authors.workspace = true

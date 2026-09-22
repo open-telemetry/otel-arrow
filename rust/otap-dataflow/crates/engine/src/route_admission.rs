@@ -7,7 +7,7 @@
 //! downstream admission failures from configuration or runtime errors.
 
 use crate::error::TypedError;
-use otap_df_channel::error::SendError;
+use otel_arrow_dfe_channel::error::SendError;
 
 /// Result of non-blocking admission to a selected output route.
 ///

@@ -1,5 +1,8 @@
 # Quiver (Experimental) - Arrow-Based Persistence for OTAP Dataflow
 
+This crate is currently pre-1.0. Its public API may evolve between minor
+releases.
+
 Quiver is a standalone, embeddable Arrow-based segment store packaged as a
 reusable Rust crate. It provides durable buffering with crash recovery for
 telemetry pipelines. See `ARCHITECTURE.md` for design details.
@@ -21,14 +24,14 @@ Not yet suitable for production use.
 
 ```bash
 cd rust/otap-dataflow
-cargo test -p otap-df-quiver      # unit tests + doc tests
-cargo bench -p otap-df-quiver     # Criterion benchmarks
+cargo test -p otel-arrow-dfe-quiver      # unit tests + doc tests
+cargo bench -p otel-arrow-dfe-quiver     # Criterion benchmarks
 ```
 
 ## Usage
 
 ```rust,no_run
-use quiver::{QuiverEngine, QuiverConfig, DiskBudget, RetentionPolicy, SubscriberId, CancellationToken};
+use otel_arrow_dfe_quiver::{QuiverEngine, QuiverConfig, DiskBudget, RetentionPolicy, SubscriberId, CancellationToken};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -86,7 +89,7 @@ When the disk budget is exhausted, `ingest()` returns `QuiverError::StorageAtCap
 The embedding layer should handle this by slowing ingestion:
 
 ```rust,no_run
-use quiver::QuiverError;
+use otel_arrow_dfe_quiver::QuiverError;
 
 match engine.ingest(&bundle).await {
     Ok(()) => { /* success */ }

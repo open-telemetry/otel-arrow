@@ -3,13 +3,13 @@
 
 //! Metrics for the AttributesProcessor node.
 
-use otap_df_engine::context::PipelineContext;
-use otap_df_telemetry::common_attributes::{Outcome, OutcomeAttributes};
-use otap_df_telemetry::error::Error;
-use otap_df_telemetry::instrument::Counter;
-use otap_df_telemetry::metrics::MeasurementMetricSet;
-use otap_df_telemetry::reporter::MetricsReporter;
-use otap_df_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
+use otel_arrow_dfe_engine::context::PipelineContext;
+use otel_arrow_dfe_telemetry::common_attributes::{Outcome, OutcomeAttributes};
+use otel_arrow_dfe_telemetry::error::Error;
+use otel_arrow_dfe_telemetry::instrument::Counter;
+use otel_arrow_dfe_telemetry::metrics::MeasurementMetricSet;
+use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
+use otel_arrow_dfe_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
 
 /// Actions performed on attributes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, AttributeEnum)]

@@ -15,7 +15,7 @@ use crate::proto::opentelemetry::collector::trace::v1::ExportTraceServiceRequest
 use arrow::array::RecordBatch;
 use arrow::error::ArrowError;
 use arrow::ipc::reader::StreamReader;
-use otap_df_config::ConversionOptions;
+use otel_arrow_dfe_config::ConversionOptions;
 use prost::Message;
 use std::collections::HashMap;
 use std::io::Cursor;

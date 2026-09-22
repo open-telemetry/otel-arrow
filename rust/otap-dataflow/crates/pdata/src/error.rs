@@ -3,6 +3,7 @@
 
 //! Error and result types
 
+use crate::otlp::common::EncodeFailure;
 use crate::otlp::metrics::MetricType;
 use crate::{
     otlp::attributes::AttributeValueType, proto::opentelemetry::arrow::v1::ArrowPayloadType,
@@ -10,7 +11,7 @@ use crate::{
 use arrow::datatypes::DataType;
 use arrow::error::ArrowError;
 use num_enum::TryFromPrimitiveError;
-use otap_df_config::SignalType;
+use otel_arrow_dfe_config::SignalType;
 use std::num::TryFromIntError;
 
 /// Result type
@@ -137,6 +138,9 @@ pub enum Error {
     #[error("Failed to batch OTAP data: {}", source)]
     Batching { source: ArrowError },
 
+    #[error("Failed to measure logical Arrow bytes: {}", source)]
+    LogicalArrowSize { source: ArrowError },
+
     #[error("Batch is empty")]
     EmptyBatch,
 
@@ -251,8 +255,8 @@ pub enum Error {
     },
 }
 
-impl From<crate::otlp::common::Dropped> for Error {
-    fn from(_: crate::otlp::common::Dropped) -> Self {
+impl From<EncodeFailure> for Error {
+    fn from(_: EncodeFailure) -> Self {
         Error::Dropped
     }
 }

@@ -13,16 +13,18 @@ use async_trait::async_trait;
 use datafusion::config::ConfigOptions;
 use datafusion::execution::TaskContext;
 use datafusion::prelude::SessionContext;
-use otap_df_pdata::OtapArrowRecords;
+use otel_arrow_dfe_pdata::OtapArrowRecords;
 
-use otap_df_pdata::otap::filter::{IdBitmapPool, filter_otap_batch};
+use otel_arrow_dfe_pdata::otap::filter::{IdBitmapPool, filter_otap_batch};
 
 use crate::error::Result;
 use crate::pipeline::concat::{
     concatenate_attrs_record_batches, concatenate_logs, concatenate_metrics, concatenate_traces,
 };
+use crate::pipeline::expr::eval::EvalContext;
 use crate::pipeline::expr::{DataScope, ScopedExpr};
 use crate::pipeline::filter::{align_selection_to_root, scoped_value_to_boolean_array};
+use crate::pipeline::planner::RecordType;
 use crate::pipeline::state::ExecutionState;
 use crate::pipeline::{BoxedPipelineStage, PipelineStage};
 
@@ -147,14 +149,15 @@ impl PipelineStage for ConditionalPipelineStage {
             // would have less rows which could make filter faster.
             let predicate_result = branch
                 .condition
-                .execute_as_value(&otap_batch, session_ctx)?;
+                .execute_as_value(&otap_batch, &EvalContext::new(session_ctx))?;
 
             let predicate_selection_vec = match predicate_result {
                 None => BooleanArray::new(BooleanBuffer::new_unset(root_batch.num_rows()), None),
                 Some(scoped_value) => {
-                    if scoped_value.scope != DataScope::Root
-                        && !(matches!(scoped_value.scope, DataScope::RootParent(_)))
-                        && scoped_value.scope != DataScope::StaticScalar
+                    if !(matches!(
+                        scoped_value.scope,
+                        DataScope::Record(_) | DataScope::RootParent(_)
+                    )) && scoped_value.scope != DataScope::StaticScalar
                     {
                         align_selection_to_root(Some(scoped_value), &otap_batch)?
                     } else {
@@ -279,7 +282,7 @@ impl PipelineStage for ConditionalPipelineStage {
             // evaluate the branch condition directly on the attributes record batch
             let predicate = branch
                 .condition
-                .evaluate_on_batch(session_ctx, &attrs_record_batch)?;
+                .evaluate_on_batch(&attrs_record_batch, &EvalContext::new(session_ctx))?;
             let predicate_selection_vec =
                 scoped_value_to_boolean_array(predicate, attrs_record_batch.num_rows())?;
 
@@ -337,8 +340,8 @@ impl PipelineStage for ConditionalPipelineStage {
         Ok(final_result)
     }
 
-    fn supports_exec_on_attributes(&self) -> bool {
-        true
+    fn supports_exec_on(&self, record_type: &RecordType) -> bool {
+        matches!(record_type, RecordType::Attributes | RecordType::Signal)
     }
 }
 
@@ -351,8 +354,8 @@ mod test {
         },
     };
     use arrow::array::UInt16Array;
-    use data_engine_parser_abstractions::Parser;
-    use otap_df_pdata::{
+    use otel_arrow_contrib_data_engine_parser_abstractions::Parser;
+    use otel_arrow_dfe_pdata::{
         otap::Logs,
         proto::opentelemetry::{
             arrow::v1::ArrowPayloadType,
@@ -362,7 +365,7 @@ mod test {
         schema::consts,
         testing::round_trip::{otap_to_otlp, to_logs_data},
     };
-    use otap_df_pdata::{
+    use otel_arrow_dfe_pdata::{
         proto::{
             OtlpProtoMessage,
             opentelemetry::{
@@ -373,7 +376,7 @@ mod test {
         },
         testing::round_trip::{otlp_to_otap, to_metrics_data, to_traces_data},
     };
-    use otap_df_query_engine_languages::opl::parser::OplParser;
+    use otel_arrow_dfe_query_engine_languages::opl::parser::OplParser;
 
     use super::*;
 

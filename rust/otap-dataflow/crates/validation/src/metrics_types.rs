@@ -3,8 +3,8 @@
 
 //! Deserialization types for the admin telemetry metrics endpoint.
 
-use otap_df_telemetry::attributes::AttributeValue;
-use otap_df_telemetry::descriptor::{Instrument, MetricValueType, Temporality};
+use otel_arrow_dfe_telemetry::attributes::AttributeValue;
+use otel_arrow_dfe_telemetry::descriptor::{Instrument, MetricValueType, Temporality};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -108,7 +108,7 @@ impl From<f64> for MetricValue {
 /// the fields the endpoint emits, including the `details` object carrying the
 /// bucket-derived values (zero count, relative error, `p50`/`p90`/`p99`) that
 /// only the exponential-histogram tiers populate.
-pub use otap_df_admin_api::telemetry::{DistributionDetails, DistributionSummary};
+pub use otel_arrow_dfe_admin_api::telemetry::{DistributionDetails, DistributionSummary};
 
 fn format_metric_value(value: &MetricValue) -> String {
     match value {
@@ -127,7 +127,7 @@ fn format_metric_value(value: &MetricValue) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_telemetry::descriptor::{Instrument, MetricValueType, Temporality};
+    use otel_arrow_dfe_telemetry::descriptor::{Instrument, MetricValueType, Temporality};
 
     #[test]
     fn format_attribute_and_metric_values_cover_variants() {

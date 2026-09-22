@@ -7,12 +7,12 @@
 //! pairs) appear for each attribute list or do **not** appear within configured domains (resource,
 //! scope, or the signal itself).
 
-use otap_df_pdata::proto::OtlpProtoMessage;
-use otap_df_pdata::proto::opentelemetry::common::v1 as proto_common;
-use otap_df_pdata::proto::opentelemetry::common::v1::{
+use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
+use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1 as proto_common;
+use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{
     AnyValue as ProtoValue, KeyValue as ProtoKeyValue, any_value::Value as ProtoAnyValue,
 };
-use otap_df_pdata::proto::opentelemetry::{
+use otel_arrow_dfe_pdata::proto::opentelemetry::{
     logs::v1 as proto_logs, metrics::v1 as proto_metrics, trace::v1 as proto_trace,
 };
 use serde::{Deserialize, Serialize};
@@ -154,16 +154,12 @@ fn collect_log_attrs<'a>(
     let include_signal = domains.contains(&AttributeDomain::Signal);
 
     for resource_logs in &logs.resource_logs {
-        if include_resource {
-            if let Some(resource) = resource_logs.resource.as_ref() {
-                out.push(resource.attributes.as_slice());
-            }
+        if include_resource && let Some(resource) = resource_logs.resource.as_ref() {
+            out.push(resource.attributes.as_slice());
         }
         for scope_logs in &resource_logs.scope_logs {
-            if include_scope {
-                if let Some(scope) = scope_logs.scope.as_ref() {
-                    out.push(scope.attributes.as_slice());
-                }
+            if include_scope && let Some(scope) = scope_logs.scope.as_ref() {
+                out.push(scope.attributes.as_slice());
             }
             if include_signal {
                 for record in &scope_logs.log_records {
@@ -186,16 +182,12 @@ fn collect_span_attrs<'a>(
     let include_signal = domains.contains(&AttributeDomain::Signal);
 
     for resource_spans in &traces.resource_spans {
-        if include_resource {
-            if let Some(resource) = resource_spans.resource.as_ref() {
-                out.push(resource.attributes.as_slice());
-            }
+        if include_resource && let Some(resource) = resource_spans.resource.as_ref() {
+            out.push(resource.attributes.as_slice());
         }
         for scope_spans in &resource_spans.scope_spans {
-            if include_scope {
-                if let Some(scope) = scope_spans.scope.as_ref() {
-                    out.push(scope.attributes.as_slice());
-                }
+            if include_scope && let Some(scope) = scope_spans.scope.as_ref() {
+                out.push(scope.attributes.as_slice());
             }
             if include_signal {
                 for span in &scope_spans.spans {
@@ -220,16 +212,12 @@ fn collect_metric_attrs<'a>(
     let include_signal = domains.contains(&AttributeDomain::Signal);
 
     for resource_metrics in &metrics.resource_metrics {
-        if include_resource {
-            if let Some(resource) = resource_metrics.resource.as_ref() {
-                out.push(resource.attributes.as_slice());
-            }
+        if include_resource && let Some(resource) = resource_metrics.resource.as_ref() {
+            out.push(resource.attributes.as_slice());
         }
         for scope_metrics in &resource_metrics.scope_metrics {
-            if include_scope {
-                if let Some(scope) = scope_metrics.scope.as_ref() {
-                    out.push(scope.attributes.as_slice());
-                }
+            if include_scope && let Some(scope) = scope_metrics.scope.as_ref() {
+                out.push(scope.attributes.as_slice());
             }
             if include_signal {
                 for metric in &scope_metrics.metrics {
@@ -301,13 +289,13 @@ fn anyvalue_to_proto(val: &AnyValue) -> Option<ProtoValue> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_pdata::proto::opentelemetry::logs::v1::{LogsData, ResourceLogs, ScopeLogs};
-    use otap_df_pdata::proto::opentelemetry::resource::v1::Resource;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::{LogsData, ResourceLogs, ScopeLogs};
+    use otel_arrow_dfe_pdata::proto::opentelemetry::resource::v1::Resource;
 
     #[test]
     fn collect_log_attributes_includes_all_domains() {
-        use otap_df_pdata::proto::opentelemetry::common::v1::InstrumentationScope;
-        use otap_df_pdata::proto::opentelemetry::logs::v1::LogRecord;
+        use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::InstrumentationScope;
+        use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::LogRecord;
 
         fn proto_kv(key: &str, val: &str) -> ProtoKeyValue {
             ProtoKeyValue {
@@ -371,8 +359,8 @@ mod tests {
 
     #[test]
     fn require_keys_must_be_present_in_each_domain() {
-        use otap_df_pdata::proto::opentelemetry::common::v1::InstrumentationScope;
-        use otap_df_pdata::proto::opentelemetry::logs::v1::LogRecord;
+        use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::InstrumentationScope;
+        use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::LogRecord;
         fn proto_kv(key: &str, val: &str) -> ProtoKeyValue {
             ProtoKeyValue {
                 key: key.into(),
@@ -434,7 +422,7 @@ mod tests {
 
     #[test]
     fn deny_keys_blocks_presence() {
-        use otap_df_pdata::proto::opentelemetry::logs::v1::LogRecord;
+        use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::LogRecord;
         fn proto_kv(key: &str, val: &str) -> ProtoKeyValue {
             ProtoKeyValue {
                 key: key.into(),

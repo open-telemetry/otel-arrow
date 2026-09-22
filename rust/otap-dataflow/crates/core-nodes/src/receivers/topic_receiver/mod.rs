@@ -3,36 +3,43 @@
 
 //! Topic receiver.
 
+otel_arrow_dfe_telemetry::otel_component_scope!(
+    urn = TOPIC_RECEIVER_URN,
+    target = "otel.receiver.topic",
+);
+
+mod metrics;
 use async_trait::async_trait;
 use linkme::distributed_slice;
-use otap_df_channel::error::SendError;
-use otap_df_config::TopicName;
-use otap_df_config::error::Error as ConfigError;
-use otap_df_config::node::NodeUserConfig;
-use otap_df_config::topic::{
+use otel_arrow_dfe_channel::error::SendError;
+use otel_arrow_dfe_config::TopicName;
+use otel_arrow_dfe_config::error::Error as ConfigError;
+use otel_arrow_dfe_config::node::NodeUserConfig;
+use otel_arrow_dfe_config::topic::{
     SubscriptionGroupName, TopicAckPropagationMode, TopicBroadcastOnLagPolicy,
 };
-use otap_df_engine::ReceiverFactory;
-use otap_df_engine::config::ReceiverConfig;
-use otap_df_engine::context::PipelineContext;
-use otap_df_engine::control::{CallData, Context8u8, NodeControlMsg};
-use otap_df_engine::error::Error;
-use otap_df_engine::local::receiver as local;
-use otap_df_engine::node::NodeId;
-use otap_df_engine::receiver::ReceiverWrapper;
-use otap_df_engine::terminal_state::TerminalState;
-use otap_df_engine::topic::{
+use otel_arrow_dfe_engine::ReceiverFactory;
+use otel_arrow_dfe_engine::config::ReceiverConfig;
+use otel_arrow_dfe_engine::context::PipelineContext;
+use otel_arrow_dfe_engine::control::{CallData, Context8u8, NodeControlMsg};
+use otel_arrow_dfe_engine::error::Error;
+use otel_arrow_dfe_engine::local::receiver as local;
+use otel_arrow_dfe_engine::node::NodeId;
+use otel_arrow_dfe_engine::receiver::ReceiverWrapper;
+use otel_arrow_dfe_engine::terminal_state::TerminalState;
+use otel_arrow_dfe_engine::topic::{
     Delivery, RecvDelivery, SubscriberOptions, Subscription, SubscriptionMode,
 };
-use otap_df_engine::{
+use otel_arrow_dfe_engine::{
     Interests, MessageSourceLocalEffectHandlerExtension, ProducerEffectHandlerExtension,
 };
-use otap_df_otap::OTAP_RECEIVER_FACTORIES;
-use otap_df_otap::pdata::OtapPdata;
-use otap_df_telemetry::instrument::Counter;
-use otap_df_telemetry::metrics::MetricSet;
-use otap_df_telemetry::{otel_info, otel_warn};
-use otap_df_telemetry_macros::metric_set;
+use otel_arrow_dfe_otap::OTAP_RECEIVER_FACTORIES;
+use otel_arrow_dfe_otap::pdata::OtapPdata;
+
+use metrics::{
+    BridgeControl, BridgeResult, LagEventAttributes, LagEventType, TopicReceiverMetrics,
+};
+use otel_arrow_dfe_telemetry::common_attributes::{Outcome, OutcomeAttributes};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use smallvec::smallvec;
@@ -44,58 +51,6 @@ use std::time::Instant;
 
 /// URN for the topic receiver.
 pub const TOPIC_RECEIVER_URN: &str = "urn:otel:receiver:topic";
-
-/// Telemetry metrics for the topic receiver.
-#[metric_set(name = "receiver.topic")]
-#[derive(Debug, Default, Clone)]
-pub struct TopicReceiverMetrics {
-    /// Number of messages forwarded to downstream.
-    #[metric(unit = "{item}")]
-    pub forwarded_messages: Counter<u64>,
-    /// Number of forward failures to downstream channel.
-    #[metric(unit = "{item}")]
-    pub forward_failures: Counter<u64>,
-    /// Number of lag notifications emitted by broadcast subscriptions.
-    #[metric(unit = "{event}")]
-    pub lagged_notifications: Counter<u64>,
-    /// Total messages missed across lag notifications.
-    #[metric(unit = "{item}")]
-    pub lagged_messages: Counter<u64>,
-    /// Number of broadcast subscriptions disconnected because of lag.
-    #[metric(unit = "{event}")]
-    pub lag_disconnects: Counter<u64>,
-    /// Number of downstream backpressure events (>= 500ms blocked).
-    #[metric(unit = "{event}")]
-    pub downstream_backpressure_events: Counter<u64>,
-    /// Total milliseconds blocked while forwarding to downstream.
-    #[metric(unit = "ms")]
-    pub downstream_blocked_ms: Counter<u64>,
-    /// Number of downstream ACK controls successfully bridged to topic ack.
-    #[metric(unit = "{item}")]
-    pub bridged_downstream_acks: Counter<u64>,
-    /// Number of downstream NACK controls successfully bridged to topic nack.
-    #[metric(unit = "{item}")]
-    pub bridged_downstream_nacks: Counter<u64>,
-    /// Number of downstream ACK/NACK controls ignored because topic Ack/Nack
-    /// propagation is disabled for this receiver.
-    #[metric(unit = "{event}")]
-    pub bridge_controls_ignored_propagation_disabled: Counter<u64>,
-    /// Number of downstream ACK/NACK controls missing the bridged topic
-    /// message id in calldata.
-    #[metric(unit = "{event}")]
-    pub bridge_missing_calldata: Counter<u64>,
-    /// Number of downstream ACK/NACK controls carrying an id that is not
-    /// currently tracked by the topic runtime.
-    ///
-    /// With the current raw `message_id` bridge this also includes invalid or
-    /// forged ids; those causes are not distinguishable yet.
-    #[metric(unit = "{event}")]
-    pub bridge_invalid_or_untracked_id: Counter<u64>,
-    /// Number of downstream ACK/NACK controls that failed to bridge for some
-    /// runtime reason other than an unknown message id.
-    #[metric(unit = "{event}")]
-    pub bridge_runtime_failures: Counter<u64>,
-}
 
 /// Topic receiver configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -133,7 +88,7 @@ pub struct TopicReceiver {
     subscription: Subscription<OtapPdata>,
     ack_propagation_mode: TopicAckPropagationMode,
     broadcast_on_lag: Option<TopicBroadcastOnLagPolicy>,
-    metrics: MetricSet<TopicReceiverMetrics>,
+    metrics: TopicReceiverMetrics,
 }
 
 /// Message received from the topic runtime but not yet admitted to the
@@ -142,72 +97,74 @@ struct PendingForward {
     delivery: Delivery<OtapPdata>,
     tracked_message_id: Option<u64>,
     send_started_at: Instant,
-    future: Pin<Box<dyn Future<Output = Result<(), otap_df_engine::error::TypedError<OtapPdata>>>>>,
+    future: Pin<
+        Box<dyn Future<Output = Result<(), otel_arrow_dfe_engine::error::TypedError<OtapPdata>>>>,
+    >,
 }
 
 /// Declares the topic receiver as a local receiver factory.
 #[allow(unsafe_code)]
-#[otap_df_engine::component_inventory(category = Receiver)]
+#[otel_arrow_dfe_engine::component_inventory(category = Receiver)]
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
 pub static TOPIC_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
     name: TOPIC_RECEIVER_URN,
-    create: |pipeline: PipelineContext,
-             node: NodeId,
-             node_config: Arc<NodeUserConfig>,
-             receiver_config: &ReceiverConfig,
-             _capabilities: &otap_df_engine::capability::registry::Capabilities| {
-        let config = TopicReceiver::parse_config(&node_config.config)?;
-        let topic_set =
-            pipeline
-                .topic_set::<OtapPdata>()
-                .ok_or_else(|| ConfigError::InvalidUserConfig {
+    create:
+        |pipeline: PipelineContext,
+         node: NodeId,
+         node_config: Arc<NodeUserConfig>,
+         receiver_config: &ReceiverConfig,
+         _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities| {
+            let config = TopicReceiver::parse_config(&node_config.config)?;
+            let topic_set = pipeline.topic_set::<OtapPdata>().ok_or_else(|| {
+                ConfigError::InvalidUserConfig {
                     error: "Topic set is not available in pipeline context".to_owned(),
-                })?;
-        let topic_binding =
-            topic_set
-                .get_required(&config.topic)
-                .map_err(|_| ConfigError::InvalidUserConfig {
+                }
+            })?;
+            let topic_binding = topic_set.get_required(&config.topic).map_err(|_| {
+                ConfigError::InvalidUserConfig {
                     error: format!(
                         "Unknown topic `{}` for topic receiver (pipeline `{}`/`{}`)",
                         config.topic,
                         pipeline.pipeline_group_id(),
                         pipeline.pipeline_id(),
                     ),
-                })?;
-        let mode = match &config.subscription {
-            TopicSubscriptionConfig::Broadcast {} => SubscriptionMode::Broadcast,
-            TopicSubscriptionConfig::Balanced { group } => SubscriptionMode::Balanced {
-                group: group.clone(),
-            },
-        };
-        let subscription = topic_binding
-            .subscribe(mode, SubscriberOptions::default())
-            .map_err(|e| ConfigError::InvalidUserConfig {
-                error: format!(
-                    "Failed to subscribe topic receiver to `{}`: {e}",
-                    config.topic
-                ),
+                }
             })?;
-        let ack_propagation_mode = topic_binding.default_ack_propagation_mode();
-        let broadcast_on_lag =
-            matches!(&config.subscription, TopicSubscriptionConfig::Broadcast {})
-                .then(|| topic_binding.broadcast_on_lag_policy());
-        let metrics = pipeline
-            .register_metrics_with_topic::<TopicReceiverMetrics>(topic_binding.name().into());
-        Ok(ReceiverWrapper::local(
-            TopicReceiver {
-                config,
-                subscription,
-                ack_propagation_mode,
-                broadcast_on_lag,
-                metrics,
-            },
-            node,
-            node_config,
-            receiver_config,
-        ))
-    },
-    wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
+            let mode = match &config.subscription {
+                TopicSubscriptionConfig::Broadcast {} => SubscriptionMode::Broadcast,
+                TopicSubscriptionConfig::Balanced { group } => SubscriptionMode::Balanced {
+                    group: group.clone(),
+                },
+            };
+            let subscription = topic_binding
+                .subscribe(mode, SubscriberOptions::default())
+                .map_err(|e| ConfigError::InvalidUserConfig {
+                    error: format!(
+                        "Failed to subscribe topic receiver to `{}`: {e}",
+                        config.topic
+                    ),
+                })?;
+            let ack_propagation_mode = topic_binding.default_ack_propagation_mode();
+            let broadcast_on_lag =
+                matches!(&config.subscription, TopicSubscriptionConfig::Broadcast {})
+                    .then(|| topic_binding.broadcast_on_lag_policy());
+            let metrics =
+                TopicReceiverMetrics::register(&pipeline, topic_binding.name().to_string());
+            Ok(ReceiverWrapper::local(
+                TopicReceiver {
+                    config,
+                    subscription,
+                    ack_propagation_mode,
+                    broadcast_on_lag,
+                    metrics,
+                },
+                node,
+                node_config,
+                receiver_config,
+            ))
+        },
+    context_declarations: None,
+    wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config: |config| TopicReceiver::parse_config(config).map(|_| ()),
 };
 
@@ -266,16 +223,17 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
         let run_result: Result<TerminalState, Error> = async {
             loop {
                 if let Some(deadline) = draining_deadline {
-                    if let Some(pending) = pending_forward.take() {
-                        if let Some(reason) = draining_reason.as_deref() {
+                    if let Some(pending) = pending_forward.take()
+                        && let Some(reason) = draining_reason.as_deref()
+                    {
                             if let Some(message_id) = pending.tracked_message_id {
                                 match subscription.nack(message_id, reason) {
-                                    Ok(()) => metrics.bridged_downstream_nacks.add(1),
+                                    Ok(()) => metrics.record_bridge(BridgeControl::Nack, BridgeResult::Success),
                                     Err(Error::MessageNotTracked) => {
-                                        metrics.bridge_invalid_or_untracked_id.add(1);
+                                        metrics.record_bridge(BridgeControl::Nack, BridgeResult::InvalidOrUntrackedId);
                                     }
                                     Err(e) => {
-                                        metrics.bridge_runtime_failures.add(1);
+                                        metrics.record_bridge(BridgeControl::Nack, BridgeResult::RuntimeFailure);
                                         otel_warn!(
                                             "topic_receiver.drain_ingress_pending_forward_nack_failed",
                                             node = receiver_id.name.as_ref(),
@@ -295,11 +253,10 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                                 message = "Topic receiver dropped an unsent topic message while entering ingress drain"
                             );
                         }
-                    }
 
                     if pending_tracked_message_ids.is_empty() {
                         effect_handler.notify_receiver_drained().await?;
-                        return Ok(TerminalState::new(deadline, [metrics.snapshot()]));
+                        return Ok(TerminalState::new(deadline, metrics.terminal_snapshots()));
                     }
 
                     if Instant::now() >= deadline {
@@ -313,12 +270,12 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                             );
                             for message_id in pending_tracked_message_ids.drain() {
                                 match subscription.nack(message_id, reason) {
-                                    Ok(()) => metrics.bridged_downstream_nacks.add(1),
+                                    Ok(()) => metrics.record_bridge(BridgeControl::Nack, BridgeResult::Success),
                                     Err(Error::MessageNotTracked) => {
-                                        metrics.bridge_invalid_or_untracked_id.add(1);
+                                        metrics.record_bridge(BridgeControl::Nack, BridgeResult::InvalidOrUntrackedId);
                                     }
                                     Err(e) => {
-                                        metrics.bridge_runtime_failures.add(1);
+                                        metrics.record_bridge(BridgeControl::Nack, BridgeResult::RuntimeFailure);
                                         otel_warn!(
                                             "topic_receiver.drain_ingress_force_nack_failed",
                                             node = receiver_id.name.as_ref(),
@@ -331,7 +288,7 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                             }
                         }
                         effect_handler.notify_receiver_drained().await?;
-                        return Ok(TerminalState::new(deadline, [metrics.snapshot()]));
+                        return Ok(TerminalState::new(deadline, metrics.terminal_snapshots()));
                     }
                 }
 
@@ -354,21 +311,19 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                                 Ok(NodeControlMsg::CollectTelemetry {
                                     mut metrics_reporter,
                                 }) => {
-                                    _ = metrics_reporter.report(&mut metrics);
+                                    _ = metrics.report(&mut metrics_reporter);
                                 }
                                 Ok(NodeControlMsg::Ack(ack)) => {
                                     if ack_propagation_mode != TopicAckPropagationMode::Auto {
-                                        metrics
-                                            .bridge_controls_ignored_propagation_disabled
-                                            .add(1);
+                                        metrics.record_bridge(BridgeControl::Ack, BridgeResult::IgnoredPropagationDisabled);
                                     } else if let Some(message_id) =
                                         Self::decode_topic_message_id(&ack.unwind.route.calldata)
                                     {
                                         let _ = pending_tracked_message_ids.remove(&message_id);
                                         match subscription.ack(message_id) {
-                                            Ok(()) => metrics.bridged_downstream_acks.add(1),
+                                            Ok(()) => metrics.record_bridge(BridgeControl::Ack, BridgeResult::Success),
                                             Err(Error::MessageNotTracked) => {
-                                                metrics.bridge_invalid_or_untracked_id.add(1);
+                                                metrics.record_bridge(BridgeControl::Ack, BridgeResult::InvalidOrUntrackedId);
                                                 otel_warn!(
                                                     "topic_receiver.bridge_ack_untracked_or_invalid_id",
                                                     node = receiver_id.name.as_ref(),
@@ -378,7 +333,7 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                                                 );
                                             }
                                             Err(e) => {
-                                                metrics.bridge_runtime_failures.add(1);
+                                                metrics.record_bridge(BridgeControl::Ack, BridgeResult::RuntimeFailure);
                                                 otel_warn!(
                                                     "topic_receiver.bridge_ack_failed",
                                                     node = receiver_id.name.as_ref(),
@@ -389,7 +344,7 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                                             }
                                         }
                                     } else {
-                                        metrics.bridge_missing_calldata.add(1);
+                                        metrics.record_bridge(BridgeControl::Ack, BridgeResult::MissingCalldata);
                                         otel_warn!(
                                             "topic_receiver.bridge_ack_missing_calldata",
                                             node = receiver_id.name.as_ref(),
@@ -411,17 +366,15 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                                 }
                                 Ok(NodeControlMsg::Nack(nack)) => {
                                     if ack_propagation_mode != TopicAckPropagationMode::Auto {
-                                        metrics
-                                            .bridge_controls_ignored_propagation_disabled
-                                            .add(1);
+                                        metrics.record_bridge(BridgeControl::Nack, BridgeResult::IgnoredPropagationDisabled);
                                     } else if let Some(message_id) =
                                         Self::decode_topic_message_id(&nack.unwind.route.calldata)
                                     {
                                         let _ = pending_tracked_message_ids.remove(&message_id);
                                         match subscription.nack(message_id, nack.reason.as_str()) {
-                                            Ok(()) => metrics.bridged_downstream_nacks.add(1),
+                                            Ok(()) => metrics.record_bridge(BridgeControl::Nack, BridgeResult::Success),
                                             Err(Error::MessageNotTracked) => {
-                                                metrics.bridge_invalid_or_untracked_id.add(1);
+                                                metrics.record_bridge(BridgeControl::Nack, BridgeResult::InvalidOrUntrackedId);
                                                 otel_warn!(
                                                     "topic_receiver.bridge_nack_untracked_or_invalid_id",
                                                     node = receiver_id.name.as_ref(),
@@ -431,7 +384,7 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                                                 );
                                             }
                                             Err(e) => {
-                                                metrics.bridge_runtime_failures.add(1);
+                                                metrics.record_bridge(BridgeControl::Nack, BridgeResult::RuntimeFailure);
                                                 otel_warn!(
                                                     "topic_receiver.bridge_nack_failed",
                                                     node = receiver_id.name.as_ref(),
@@ -442,7 +395,7 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                                             }
                                         }
                                     } else {
-                                        metrics.bridge_missing_calldata.add(1);
+                                        metrics.record_bridge(BridgeControl::Nack, BridgeResult::MissingCalldata);
                                         otel_warn!(
                                             "topic_receiver.bridge_nack_missing_calldata",
                                             node = receiver_id.name.as_ref(),
@@ -452,7 +405,7 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                                     }
                                 }
                                 Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
-                                    return Ok(TerminalState::new(deadline, [metrics.snapshot()]));
+                                    return Ok(TerminalState::new(deadline, metrics.terminal_snapshots()));
                                 }
                                 Ok(_) => {}
                                 Err(e) => return Err(Error::ChannelRecvError(e)),
@@ -469,11 +422,11 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                                     if let Some(message_id) = pending.tracked_message_id {
                                         _ = pending_tracked_message_ids.insert(message_id);
                                     }
-                                    metrics.forwarded_messages.add(1);
+                                    metrics.forward.with(OutcomeAttributes { outcome: Outcome::Success }).messages.add(1);
                                     let blocked_for = pending.send_started_at.elapsed();
                                     if blocked_for.as_millis() >= 500 {
-                                        metrics.downstream_backpressure_events.add(1);
-                                        metrics
+                                        metrics.general.downstream_backpressure_events.add(1);
+                                        metrics.general
                                             .downstream_blocked_ms
                                             .add(blocked_for.as_millis() as u64);
                                         otel_warn!(
@@ -487,7 +440,7 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                                     tokio::task::consume_budget().await;
                                 }
                                 Err(e) => {
-                                    metrics.forward_failures.add(1);
+                                    metrics.forward.with(OutcomeAttributes { outcome: Outcome::Failure }).messages.add(1);
                                     otel_warn!(
                                         "topic_receiver.forward_failed",
                                         node = receiver_id.name.as_ref(),
@@ -522,21 +475,19 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                             Ok(NodeControlMsg::CollectTelemetry {
                                 mut metrics_reporter,
                             }) => {
-                                _ = metrics_reporter.report(&mut metrics);
+                                _ = metrics.report(&mut metrics_reporter);
                             }
                             Ok(NodeControlMsg::Ack(ack)) => {
                                 if ack_propagation_mode != TopicAckPropagationMode::Auto {
-                                    metrics
-                                        .bridge_controls_ignored_propagation_disabled
-                                        .add(1);
+                                    metrics.record_bridge(BridgeControl::Ack, BridgeResult::IgnoredPropagationDisabled);
                                 } else if let Some(message_id) =
                                     Self::decode_topic_message_id(&ack.unwind.route.calldata)
                                 {
                                     let _ = pending_tracked_message_ids.remove(&message_id);
                                     match subscription.ack(message_id) {
-                                        Ok(()) => metrics.bridged_downstream_acks.add(1),
+                                        Ok(()) => metrics.record_bridge(BridgeControl::Ack, BridgeResult::Success),
                                         Err(Error::MessageNotTracked) => {
-                                            metrics.bridge_invalid_or_untracked_id.add(1);
+                                            metrics.record_bridge(BridgeControl::Ack, BridgeResult::InvalidOrUntrackedId);
                                             otel_warn!(
                                                 "topic_receiver.bridge_ack_untracked_or_invalid_id",
                                                 node = receiver_id.name.as_ref(),
@@ -546,7 +497,7 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                                             );
                                         }
                                         Err(e) => {
-                                            metrics.bridge_runtime_failures.add(1);
+                                            metrics.record_bridge(BridgeControl::Ack, BridgeResult::RuntimeFailure);
                                             otel_warn!(
                                                 "topic_receiver.bridge_ack_failed",
                                                 node = receiver_id.name.as_ref(),
@@ -557,7 +508,7 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                                         }
                                     }
                                 } else {
-                                    metrics.bridge_missing_calldata.add(1);
+                                    metrics.record_bridge(BridgeControl::Ack, BridgeResult::MissingCalldata);
                                     otel_warn!(
                                         "topic_receiver.bridge_ack_missing_calldata",
                                         node = receiver_id.name.as_ref(),
@@ -579,17 +530,15 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                             }
                             Ok(NodeControlMsg::Nack(nack)) => {
                                 if ack_propagation_mode != TopicAckPropagationMode::Auto {
-                                    metrics
-                                        .bridge_controls_ignored_propagation_disabled
-                                        .add(1);
+                                    metrics.record_bridge(BridgeControl::Nack, BridgeResult::IgnoredPropagationDisabled);
                                 } else if let Some(message_id) =
                                     Self::decode_topic_message_id(&nack.unwind.route.calldata)
                                 {
                                     let _ = pending_tracked_message_ids.remove(&message_id);
                                     match subscription.nack(message_id, nack.reason.as_str()) {
-                                        Ok(()) => metrics.bridged_downstream_nacks.add(1),
+                                        Ok(()) => metrics.record_bridge(BridgeControl::Nack, BridgeResult::Success),
                                         Err(Error::MessageNotTracked) => {
-                                            metrics.bridge_invalid_or_untracked_id.add(1);
+                                            metrics.record_bridge(BridgeControl::Nack, BridgeResult::InvalidOrUntrackedId);
                                             otel_warn!(
                                                 "topic_receiver.bridge_nack_untracked_or_invalid_id",
                                                 node = receiver_id.name.as_ref(),
@@ -599,7 +548,7 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                                             );
                                         }
                                         Err(e) => {
-                                            metrics.bridge_runtime_failures.add(1);
+                                            metrics.record_bridge(BridgeControl::Nack, BridgeResult::RuntimeFailure);
                                             otel_warn!(
                                                 "topic_receiver.bridge_nack_failed",
                                                 node = receiver_id.name.as_ref(),
@@ -610,7 +559,7 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                                         }
                                     }
                                 } else {
-                                    metrics.bridge_missing_calldata.add(1);
+                                    metrics.record_bridge(BridgeControl::Nack, BridgeResult::MissingCalldata);
                                     otel_warn!(
                                         "topic_receiver.bridge_nack_missing_calldata",
                                         node = receiver_id.name.as_ref(),
@@ -620,7 +569,7 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                                 }
                             }
                             Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
-                                return Ok(TerminalState::new(deadline, [metrics.snapshot()]));
+                                return Ok(TerminalState::new(deadline, metrics.terminal_snapshots()));
                             }
                             Ok(_) => {}
                             Err(e) => return Err(Error::ChannelRecvError(e)),
@@ -662,10 +611,10 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                                         if let Some(message_id) = tracked_message_id {
                                             _ = pending_tracked_message_ids.insert(message_id);
                                         }
-                                        metrics.forwarded_messages.add(1);
+                                        metrics.forward.with(OutcomeAttributes { outcome: Outcome::Success }).messages.add(1);
                                         tokio::task::consume_budget().await;
                                     }
-                                    Err(otap_df_engine::error::TypedError::ChannelSendError(
+                                    Err(otel_arrow_dfe_engine::error::TypedError::ChannelSendError(
                                         SendError::Full(pdata),
                                     )) => {
                                         let effect_handler = effect_handler.clone();
@@ -679,7 +628,7 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                                         });
                                     }
                                     Err(e) => {
-                                        metrics.forward_failures.add(1);
+                                        metrics.forward.with(OutcomeAttributes { outcome: Outcome::Failure }).messages.add(1);
                                         otel_warn!(
                                             "topic_receiver.forward_failed",
                                             node = receiver_id.name.as_ref(),
@@ -692,10 +641,10 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                                 }
                             }
                             Ok(RecvDelivery::Lagged { missed }) => {
-                                metrics.lagged_notifications.add(1);
-                                metrics.lagged_messages.add(missed);
+                                metrics.lag_events.with(LagEventAttributes { event_type: LagEventType::Notification }).events.add(1);
+                                metrics.general.lagged_messages.add(missed);
                                 if broadcast_on_lag == Some(TopicBroadcastOnLagPolicy::Disconnect) {
-                                    metrics.lag_disconnects.add(1);
+                                    metrics.lag_events.with(LagEventAttributes { event_type: LagEventType::Disconnect }).events.add(1);
                                     otel_warn!(
                                         "topic_receiver.lag_disconnect",
                                         topic = config.topic.as_ref(),
@@ -731,25 +680,25 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
 #[cfg(test)]
 mod tests {
     use super::{TOPIC_RECEIVER, TOPIC_RECEIVER_URN, TopicReceiver, TopicSubscriptionConfig};
-    use otap_df_config::node::NodeUserConfig;
-    use otap_df_config::topic::TopicAckPropagationMode;
-    use otap_df_engine::config::ReceiverConfig;
-    use otap_df_engine::control::{
+    use otel_arrow_dfe_config::node::NodeUserConfig;
+    use otel_arrow_dfe_config::topic::TopicAckPropagationMode;
+    use otel_arrow_dfe_engine::config::ReceiverConfig;
+    use otel_arrow_dfe_engine::control::{
         AckMsg, Controllable, NodeControlMsg, pipeline_completion_msg_channel,
         runtime_ctrl_msg_channel,
     };
-    use otap_df_engine::local::message::LocalSender;
-    use otap_df_engine::message::Sender as PDataSender;
-    use otap_df_engine::node::NodeWithPDataSender;
-    use otap_df_engine::testing::exporter::create_test_pipeline_context;
-    use otap_df_engine::testing::{create_not_send_channel, setup_test_runtime, test_node};
-    use otap_df_engine::topic::{
+    use otel_arrow_dfe_engine::local::message::LocalSender;
+    use otel_arrow_dfe_engine::message::Sender as PDataSender;
+    use otel_arrow_dfe_engine::node::NodeWithPDataSender;
+    use otel_arrow_dfe_engine::testing::exporter::create_test_pipeline_context;
+    use otel_arrow_dfe_engine::testing::{create_not_send_channel, setup_test_runtime, test_node};
+    use otel_arrow_dfe_engine::topic::{
         PipelineTopicBinding, TopicBroadcastAckMode, TopicBroadcastOnLagPolicy, TopicBroker,
         TopicOptions, TopicSet, TrackedPublishOutcome,
     };
-    use otap_df_otap::pdata::OtapPdata;
-    use otap_df_otap::testing::{create_test_pdata, next_ack};
-    use otap_df_telemetry::reporter::MetricsReporter;
+    use otel_arrow_dfe_otap::pdata::OtapPdata;
+    use otel_arrow_dfe_otap::testing::{create_test_pdata, next_ack};
+    use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
     use serde_json::json;
     use std::sync::Arc;
     use std::time::{Duration, Instant};
@@ -806,8 +755,8 @@ mod tests {
         let (rt, local_tasks) = setup_test_runtime();
         rt.block_on(local_tasks.run_until(async move {
             let broker = TopicBroker::<OtapPdata>::new();
-            let topic_name =
-                otap_df_config::TopicName::parse("ingress").expect("topic name should parse");
+            let topic_name = otel_arrow_dfe_config::TopicName::parse("ingress")
+                .expect("topic name should parse");
             let base_handle = broker
                 .create_in_memory_topic(
                     topic_name.clone(),
@@ -843,7 +792,7 @@ mod tests {
                 receiver_node.clone(),
                 Arc::new(receiver_user_cfg),
                 &ReceiverConfig::new("topic_receiver"),
-                &otap_df_engine::capability::registry::Capabilities::empty(),
+                &otel_arrow_dfe_engine::capability::registry::Capabilities::empty(),
             )
             .expect("topic receiver should be created");
 
@@ -867,7 +816,8 @@ mod tests {
                         runtime_ctrl_tx,
                         pipeline_completion_tx,
                         metrics_reporter,
-                        otap_df_engine::Interests::empty(),
+                        otel_arrow_dfe_engine::Interests::empty(),
+                        otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
                     )
                     .await
             });
@@ -913,8 +863,8 @@ mod tests {
         let (rt, local_tasks) = setup_test_runtime();
         rt.block_on(local_tasks.run_until(async move {
             let broker = TopicBroker::<OtapPdata>::new();
-            let topic_name =
-                otap_df_config::TopicName::parse("ingress").expect("topic name should parse");
+            let topic_name = otel_arrow_dfe_config::TopicName::parse("ingress")
+                .expect("topic name should parse");
             let handle = broker
                 .create_in_memory_topic(
                     topic_name.clone(),
@@ -944,7 +894,7 @@ mod tests {
                 receiver_node.clone(),
                 Arc::new(receiver_user_cfg),
                 &ReceiverConfig::new("topic_receiver"),
-                &otap_df_engine::capability::registry::Capabilities::empty(),
+                &otel_arrow_dfe_engine::capability::registry::Capabilities::empty(),
             )
             .expect("topic receiver should be created");
 
@@ -967,7 +917,8 @@ mod tests {
                         runtime_ctrl_tx,
                         pipeline_completion_tx,
                         metrics_reporter,
-                        otap_df_engine::Interests::empty(),
+                        otel_arrow_dfe_engine::Interests::empty(),
+                        otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
                     )
                     .await
             });
@@ -1009,8 +960,8 @@ mod tests {
         let (rt, local_tasks) = setup_test_runtime();
         rt.block_on(local_tasks.run_until(async move {
             let broker = TopicBroker::<OtapPdata>::new();
-            let topic_name =
-                otap_df_config::TopicName::parse("ingress").expect("topic name should parse");
+            let topic_name = otel_arrow_dfe_config::TopicName::parse("ingress")
+                .expect("topic name should parse");
             let handle = broker
                 .create_in_memory_topic(
                     topic_name.clone(),
@@ -1047,7 +998,7 @@ mod tests {
                 receiver_node.clone(),
                 Arc::new(receiver_user_cfg),
                 &ReceiverConfig::new("topic_receiver"),
-                &otap_df_engine::capability::registry::Capabilities::empty(),
+                &otel_arrow_dfe_engine::capability::registry::Capabilities::empty(),
             )
             .expect("topic receiver should be created");
 
@@ -1071,7 +1022,8 @@ mod tests {
                         runtime_ctrl_tx,
                         pipeline_completion_tx,
                         metrics_reporter,
-                        otap_df_engine::Interests::empty(),
+                        otel_arrow_dfe_engine::Interests::empty(),
+                        otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
                     )
                     .await
             });
@@ -1105,8 +1057,8 @@ mod tests {
         let (rt, local_tasks) = setup_test_runtime();
         rt.block_on(local_tasks.run_until(async move {
             let broker = TopicBroker::<OtapPdata>::new();
-            let topic_name =
-                otap_df_config::TopicName::parse("ingress").expect("topic name should parse");
+            let topic_name = otel_arrow_dfe_config::TopicName::parse("ingress")
+                .expect("topic name should parse");
             let base_handle = broker
                 .create_in_memory_topic(
                     topic_name.clone(),
@@ -1142,7 +1094,7 @@ mod tests {
                 receiver_node.clone(),
                 Arc::new(receiver_user_cfg),
                 &ReceiverConfig::new("topic_receiver"),
-                &otap_df_engine::capability::registry::Capabilities::empty(),
+                &otel_arrow_dfe_engine::capability::registry::Capabilities::empty(),
             )
             .expect("topic receiver should be created");
 
@@ -1166,7 +1118,8 @@ mod tests {
                         runtime_ctrl_tx,
                         pipeline_completion_tx,
                         metrics_reporter,
-                        otap_df_engine::Interests::empty(),
+                        otel_arrow_dfe_engine::Interests::empty(),
+                        otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
                     )
                     .await
             });
@@ -1226,8 +1179,8 @@ mod tests {
         let (rt, local_tasks) = setup_test_runtime();
         rt.block_on(local_tasks.run_until(async move {
             let broker = TopicBroker::<OtapPdata>::new();
-            let topic_name =
-                otap_df_config::TopicName::parse("ingress").expect("topic name should parse");
+            let topic_name = otel_arrow_dfe_config::TopicName::parse("ingress")
+                .expect("topic name should parse");
             let handle = broker
                 .create_in_memory_topic(
                     topic_name.clone(),
@@ -1264,7 +1217,7 @@ mod tests {
                 receiver_node.clone(),
                 Arc::new(receiver_user_cfg),
                 &ReceiverConfig::new("topic_receiver"),
-                &otap_df_engine::capability::registry::Capabilities::empty(),
+                &otel_arrow_dfe_engine::capability::registry::Capabilities::empty(),
             )
             .expect("topic receiver should be created");
 
@@ -1288,7 +1241,8 @@ mod tests {
                         runtime_ctrl_tx,
                         pipeline_completion_tx,
                         metrics_reporter,
-                        otap_df_engine::Interests::empty(),
+                        otel_arrow_dfe_engine::Interests::empty(),
+                        otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
                     )
                     .await
             });

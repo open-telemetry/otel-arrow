@@ -5,7 +5,7 @@
 ## Metadata
 
 - Type: `exporter:otlp_grpc` (`urn:otel:exporter:otlp_grpc`)
-- Feature gate: Default
+- Feature gate: `otlp`
 - Stability: Experimental
 
 ## Overview
@@ -167,11 +167,25 @@ Input PData message volume is reported by the engine through
 `channel.receiver.messages` with its `signal` attribute on the PData input
 channel and is not duplicated by the exporter.
 
-#### `exporter.pdata.exports`
+#### `exporter.attempted`
 
 | Metric | Unit | Attributes | Description |
 | --- | --- | --- | --- |
-| `exporter.pdata.exports.messages` | `{message}` | `signal`, `outcome` | Number of PData messages whose export reached a terminal outcome. |
+| `exporter.attempted.messages` | `{message}` | `signal`, `outcome` | Number of component-local gRPC delivery attempts, including preparation failures. |
+| `exporter.attempted.duration` | `s` | `signal`, `outcome` | Attempt time through the terminal local or backend result, excluding Ack/Nack notification. Emitted when component duration is enabled. |
+| `exporter.attempted.payload.size` | `By` | `signal`, `outcome` | Uncompressed OTLP protobuf payload bytes submitted by the attempt before transport compression. Emitted when size measurement is enabled. |
+| `exporter.attempted.items` | `{item}` | `signal`, `outcome` | Signal items handled by the attempt. Emitted when item counting is enabled. |
+
+#### `exporter.otlp_grpc.failures`
+
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `exporter.otlp_grpc.failures.messages` | `{message}` | `signal`, `error.type` | Failed OTLP gRPC exports classified by actionable error type. |
+
+`error.type` is one of `encoding`, `authentication`, `authorization`,
+`timeout`, `throttled`, `unavailable`, `rejected`, `server_error`, `transport`,
+or `other`. Successful exports and Ack/Nack notification failures do not emit
+this metric.
 
 ### Events
 

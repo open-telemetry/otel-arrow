@@ -4,7 +4,7 @@
 #[cfg(test)]
 mod pest_tests {
     use crate::ottl::parser::{OttlPestParser, Rule};
-    use data_engine_parser_abstractions::*;
+    use otel_arrow_contrib_data_engine_parser_abstractions::*;
 
     #[test]
     fn test_pest_string_literal() {
@@ -70,7 +70,7 @@ mod pest_tests {
 #[cfg(test)]
 mod parse_tests {
     use crate::ottl::parser::{OttlPestParser, Rule};
-    use data_engine_parser_abstractions::*;
+    use otel_arrow_contrib_data_engine_parser_abstractions::*;
 
     #[test]
     fn test_parse_string_literal() {

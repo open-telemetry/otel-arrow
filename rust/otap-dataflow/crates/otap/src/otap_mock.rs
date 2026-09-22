@@ -16,7 +16,7 @@ use arrow::{
     array::{RecordBatch, UInt16Array},
     datatypes::{DataType, Field, Schema},
 };
-use otap_df_pdata::{
+use otel_arrow_dfe_pdata::{
     Consumer,
     otap::{
         Logs, Metrics, OtapArrowRecords, Traces, from_record_messages, testing::complete_batch,

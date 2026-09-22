@@ -10,7 +10,7 @@ pub enum ClickhouseExporterError {
 
     // Pdata / Otap Record related errors
     #[error("Pdata error: {0}")]
-    Child(#[from] otap_df_pdata::error::Error),
+    Child(#[from] otel_arrow_dfe_pdata::error::Error),
 
     // Clickhouse client related errors
     #[error("Table creation error: {error}")]

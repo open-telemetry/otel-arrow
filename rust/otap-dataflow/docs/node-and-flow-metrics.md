@@ -11,10 +11,11 @@ receiver --> processor A --> processor B --> exporter
                 `-- flow metrics (processors only)
 ```
 
-Use **node metrics** to see the signal items a specific receiver, processor, or
-exporter consumes and produces. Use **flow metrics** to measure a selected,
-contiguous processor range as one operation: how many items entered and left,
-how long processing took, and which decision nodes removed items.
+Use **node metrics** to see the messages, signal items, and logical payload size
+a specific receiver, processor, or exporter consumes and produces. Use **flow
+metrics** to measure a selected, contiguous processor range as one operation:
+how many items entered and left, how long processing took, and which decision
+nodes removed items.
 
 Both metric layers are emitted through the engine's internal observability
 pipeline. Configure an `engine.observability.pipeline` to export them, or use
@@ -29,46 +30,81 @@ configuration.
 | Which node changed the count of logs, metrics, or traces? | Node item metrics |
 | What is the aggregate compute time for selected processor stages? | Flow metrics |
 | Which decision processor dropped items within a processor range? | Flow metrics |
-| How many items did a receiver admit or exporter emit? | Node item metrics |
+| How many items entered or left a node as PData? | Node item metrics |
 
 ## Node Metrics
 
-With `policies.telemetry.runtime_metrics: normal` or `detailed`, every node
-emits message outcome counters on its existing `node.consumer` and
-`node.producer` metric sets:
+A **message** is the PData batch that moves between nodes. An **item** is an
+individual log record, metric data point, or span in that batch. One message
+can contain multiple items. **Logical size** is the byte size of the current
+in-memory payload representation. **Payload size** is the encoded application
+payload observed at a receiver or exporter boundary.
 
-### Messages and Items
+**Completion duration** measures from a node boundary until the terminal ACK
+or NACK: from input for processors and exporters, and from output for
+receivers. **Local duration** uses the boundary defined by each node
+instrument, which may include encoding or backend latency. Use
+`flow.compute.duration` instead for compute time across a processor range.
 
-A message is the PData batch that moves between nodes. An item is an individual
-log record, metric data point, or span in that batch. One message can contain
-multiple items, so message counts measure batch traffic while item counts
-measure the volume of telemetry data inside those batches.
+**`none`** and **`basic`** enable no node metrics by default. **`normal`** adds
+message measurements, and **`detailed`** adds every optional measurement. A
+**per-node policy** enables its measurement at any runtime metric level.
 
-| Metric | Meaning | Emitted by | Availability |
-| --- | --- | --- | --- |
-| `consumed.messages` | Messages received by a node | `node.consumer` | `normal` or `detailed` |
-| `produced.messages` | Messages emitted by a node | `node.producer` | `normal` or `detailed` |
-| `consumed.items` | Items a node receives | `node.consumer` | `detailed`, or `normal` plus item-count opt-in |
-| `produced.items` | Items a node emits | `node.producer` | `detailed`, or `normal` plus item-count opt-in |
+| Measurement | Engine-managed metrics | Node-implemented metrics | Default level | Per-node policy |
+| --- | --- | --- | --- | --- |
+| Messages | `node.input.messages`, `node.output.messages` | `receiver.received.messages`, `exporter.attempted.messages` | `normal` | `messages: true` |
+| Items | `node.input.items`, `node.output.items` | `exporter.attempted.items` | `detailed` | `item_counts: true` |
+| Logical size | `node.input.size`, `node.output.size` | - | `detailed` | `size: true` |
+| Payload size | - | `receiver.received.payload.size`, `exporter.attempted.payload.size` | `detailed` | `size: true` |
+| Completion duration | `node.completion.duration` | - | `detailed` | `completion_duration: true` |
+| Local duration | - | `receiver.processing.duration`, `processor.compute.duration`, `exporter.attempted.duration` | `detailed` | `duration: true` |
 
-Both message and item counters have bounded `signal` and `outcome` data-point
-attributes. `signal` is one of `logs`, `metrics`, or `traces`; `outcome` is
-`success`, `failure`, or `refused`, recorded during terminal ACK/NACK
-unwinding. The metric-set entity attributes identify the pipeline and node, so
-group by those attributes when comparing nodes.
+The `node.input.*` metrics apply to processors and exporters.
+`node.output.*` metrics apply to receivers and processors. Node-implemented
+metrics require the implementation to use the corresponding shared
+instrumentation.
 
-### Enable Item Counts
+### Interpret Boundary Cardinality
 
-Item counting is disabled by default because examining OTLP payloads can be
-expensive. It requires `policies.telemetry.runtime_metrics: detailed` or
-`normal` with a per-node opt in; `normal` alone does not enable item counts.
+Receiver and exporter boundary counts do not necessarily match PData message
+counts:
+
+```text
+receiver.received = classified external messages
+node.output       = terminal PData lifecycle at the output boundary
+node.input        = terminal PData lifecycle at the input boundary
+exporter.attempted = node-local export attempts
+```
+
+Fan-out, aggregation, batching, and retries can make these counts differ.
+Receivers without classifiable external messages may omit
+`receiver.received`. Use `channel.sender.messages` and
+`channel.receiver.messages` for immediate channel transport counts.
+
+`receiver.received` success means receiver acceptance; `node.output` describes
+the resulting PData lifecycle. For exporters, `node.input` success means the
+node ACKed the PData under its policy; `exporter.attempted` describes external
+attempts. Do not subtract counts unless the node documents a 1:1 mapping.
+
+See
+[`Shared receiver and exporter boundary metrics`](telemetry/metrics-guide.md#shared-receiver-and-exporter-boundary-metrics)
+for topology and buffering rules.
+
+Engine-managed node message, item, and size counters have bounded `signal` and
+`outcome` data-point attributes. `signal` is one of `logs`, `metrics`, or
+`traces`; `outcome` is `success`, `failure`, or `refused`, recorded during
+terminal ACK/NACK unwinding. Receiver and exporter boundary metrics record
+outcomes at their node-defined boundaries instead. The metric-set entity
+attributes identify the pipeline and node, so group by those attributes when
+comparing nodes.
+
+### Enable Optional Measurements
 
 > [!WARNING]
-> Item counting adds work to the data path. Its cost depends on the signal
-> representation and batch size; in particular, OTLP-encoded payloads must be
-> inspected to count their items. Measure the impact on a representative
-> workload before enabling it broadly. Prefer per-node opt-in when only a
-> specific stage needs signal-level accounting.
+> Item counting and sizing may inspect the payload; completion and local
+> duration add timing and bookkeeping. Measure the impact on a representative
+> workload before enabling these measurements broadly. Prefer per-node opt-in
+> when only a specific stage needs them.
 
 To enable it for every node in a pipeline, use `detailed`:
 
@@ -78,40 +114,37 @@ policies:
     runtime_metrics: detailed
 ```
 
-To enable it only for selected nodes, use `normal` at the pipeline and opt in
-the relevant nodes:
+To enable it only for selected nodes, opt in the relevant nodes:
 
 ```yaml
-policies:
-  telemetry:
-    runtime_metrics: normal
 nodes:
   sampler:
     type: processor:log_sampling
     policies:
       telemetry:
         item_counts: true
+        size: true
     config: {}
 ```
 
 This narrower configuration is appropriate when only a small part of a
-pipeline needs signal-level accounting. `detailed` enables item counts for
-every node without a node-level `item_counts` setting.
+pipeline needs payload measurements. `detailed` enables item counts and size
+for every node without node-level settings.
 
 ### Interpret Node Counts
 
-For a linear topology, a node's `produced.items` normally matches the next
-node's `consumed.items` for the same signal. A filtering or sampling processor
-can produce fewer items than it consumes; a fan-out processor can produce an
-item on more than one output. Compare counts only along the particular edge or
+For a linear topology, a node's `output.items` normally matches the next
+node's `input.items` for the same signal. A filtering or sampling processor
+can emit fewer items than it receives; a fan-out processor can emit an item on
+more than one output. Compare counts only along the particular edge or
 topology behavior being investigated.
 
 Node metrics are the right choice when operators need to locate where a signal
 count changes, including receiver admission, processors, and exporter output.
 Use the runnable
-[`trafficgen-per-signal-metrics-demo.yaml`](../configs/trafficgen-per-signal-metrics-demo.yaml)
-example to inspect the metrics on every node or on an individually opted-in
-processor.
+[`trafficgen-node-metrics.yaml`](../configs/trafficgen-node-metrics.yaml)
+example to inspect the metrics on every node, compare local duration with
+flow duration, or observe an individually opted-in processor.
 
 ## Flow Metrics
 
@@ -127,11 +160,16 @@ policies:
         bounds:
           start_node: enrich
           end_node: filter
+        duration_distribution: normal
         purpose: transform
         metrics:
+          - input_messages
+          - input_items
+          - input_size
+          - output_messages
+          - output_items
+          - output_size
           - compute_duration
-          - consumed_items
-          - produced_items
           - dropped_items
 ```
 
@@ -141,10 +179,32 @@ from the start processor and rejects interleaved flow ranges. Omit `metrics` to
 enable every supported flow metric. When present, it must not be empty and must
 not repeat a metric.
 
+`duration_distribution` controls the aggregation used by `compute_duration`:
+
+| Value | OTLP representation | Retained data |
+| --- | --- | --- |
+| `basic` | Bucketless `Histogram` | Count, sum, min, and max |
+| `normal` | `ExponentialHistogram` | Normal-resolution buckets and summary statistics |
+| `detailed` | `ExponentialHistogram` | Higher-resolution buckets and summary statistics |
+
+The setting defaults to `normal`. Use `basic` for lower aggregation cost or
+compatibility with consumers that do not support exponential histograms. Basic
+distributions do not retain buckets, so percentiles cannot be reconstructed.
+The setting is ignored when `compute_duration` is not enabled. Its distribution
+tier is independent of `runtime_metrics`, which controls whether broader metric
+families are enabled.
+
+Each flow's attributes are part of its OTLP instrumentation scope, so flows
+using different tiers have distinct metric stream identities. Some backends
+flatten instrumentation scopes and require one data type per metric name. Use
+the same wire type across flows and deployments when exporting to such a
+backend: `basic` produces `Histogram`, while `normal` and `detailed` produce
+`ExponentialHistogram`.
+
 ### Flow Metrics and Attributes
 
-All flow metrics use the `flow` instrumentation scope and include these scope
-attributes:
+Flow metrics use the `flow.input`, `flow.output`, `flow.compute`, and
+`flow.dropped` instrumentation scopes and include these scope attributes:
 
 | Attribute | Meaning |
 | --- | --- |
@@ -155,8 +215,9 @@ attributes:
 | `flow.node.decision` | The decision processor that emitted `dropped.items`, or an empty value for other flow metrics. |
 
 `flow.purpose` lets OpenTelemetry Views select a specific kind of flow when
-multiple flows use the shared `flow` scope. For example, a view can select
-`scope_name: flow` with `scope_attributes: { flow.purpose: transform }` to
+multiple flows use the shared directional scopes. For example, a view can
+select `scope_name: flow.compute` with
+`scope_attributes: { flow.purpose: transform }` to
 rename or route only transformation-flow metrics.
 
 The metrics have a bounded `signal` data-point attribute with values `logs`,
@@ -166,20 +227,27 @@ processor range, before its terminal ACK/NACK outcome is known. They describe
 range traversal and decision-node drops, independently of the eventual node
 outcome.
 
+An end processor that ACKs without sending, such as a filter that removes every
+item, does not increment any `flow.output` metric. It still records
+`flow.compute.duration` and may record `flow.dropped.items`.
+
 | Configuration value | Emitted metric | Meaning |
 | --- | --- | --- |
-| `consumed_items` | `consumed.items` | Signal items entering the start processor. |
-| `compute_duration` | `compute.duration` | Aggregate processor compute duration in the range. |
-| `produced_items` | `produced.items` | Signal items leaving the end processor. |
-| `dropped_items` | `dropped.items` | Signal items a decision processor in the range chose to drop. |
+| `input_messages` | `flow.input.messages` | PData messages entering the start processor. |
+| `input_items` | `flow.input.items` | Signal items entering the start processor. |
+| `input_size` | `flow.input.size` | Logical payload bytes entering the start processor. |
+| `output_messages` | `flow.output.messages` | PData sends leaving the end processor. |
+| `output_items` | `flow.output.items` | Signal items leaving the end processor. |
+| `output_size` | `flow.output.size` | Logical payload bytes leaving the end processor. |
+| `compute_duration` | `flow.compute.duration` | Histogram of aggregate processor compute duration in the range, in seconds. |
+| `dropped_items` | `flow.dropped.items` | Signal items a decision processor in the range chose to drop. |
 
-For a linear flow, the sum of `dropped.items` across
-`flow.node.decision` equals `consumed.items - produced.items`. There is no
+For a linear flow, the sum of `flow.dropped.items` across
+`flow.node.decision` equals `flow.input.items - flow.output.items`. There is no
 per-decision-node kept metric: counts that survive one decision can reach a
 later decision, so per-node kept counts are not additive. Use the flow's
-`produced.items` as the flow-wide surviving count.
+`flow.output.items` as the flow-wide surviving count.
 
 See
-[`trafficgen-flow-metrics-demo.yaml`](../configs/trafficgen-flow-metrics-demo.yaml)
-for a runnable flow with sampling, filtering, transform, and recordset
-decision nodes.
+[`trafficgen-node-metrics.yaml`](../configs/trafficgen-node-metrics.yaml)
+for a runnable comparison of node and flow metrics around a sampling processor.

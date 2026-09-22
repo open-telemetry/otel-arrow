@@ -22,8 +22,8 @@ use crate::topic::types::{
     TrackedPublishReceipt, TrackedPublishTracker, TrackedTryPublishOutcome,
 };
 use futures_core::Stream;
-use otap_df_config::topic::{TopicBroadcastAckMode, TopicBroadcastOnLagPolicy};
-use otap_df_config::{SubscriptionGroupName, TopicName};
+use otel_arrow_dfe_config::topic::{TopicBroadcastAckMode, TopicBroadcastOnLagPolicy};
+use otel_arrow_dfe_config::{SubscriptionGroupName, TopicName};
 use parking_lot::{Mutex, RwLock};
 use smallvec::SmallVec;
 use std::collections::HashSet;

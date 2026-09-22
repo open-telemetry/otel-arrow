@@ -9,8 +9,8 @@ use crate::channel_metrics::{
     ChannelSenderMetricsState, SharedChannelQueueDepth, SharedChannelReceiverMetricsHandle,
     SharedChannelSenderMetricsHandle,
 };
-use otap_df_channel::error::{RecvError, SendError};
-use otap_df_config::SignalType;
+use otel_arrow_dfe_channel::error::{RecvError, SendError};
+use otel_arrow_dfe_config::SignalType;
 use std::sync::{Arc, Mutex};
 
 enum SharedSenderInner<T> {
@@ -133,16 +133,16 @@ impl<T> SharedSender<T> {
         {
             queue_depth.record_send();
         }
-        if let Some(metrics) = &self.metrics {
-            if let Ok(mut metrics) = metrics.lock() {
-                match &result {
-                    Ok(()) => metrics.record_send_ok(signal),
-                    Err(SendError::Full(_)) => {
-                        metrics.record_send_error(signal, ChannelSendErrorType::Full);
-                    }
-                    Err(SendError::Closed(_)) => {
-                        metrics.record_send_error(signal, ChannelSendErrorType::Closed);
-                    }
+        if let Some(metrics) = &self.metrics
+            && let Ok(mut metrics) = metrics.lock()
+        {
+            match &result {
+                Ok(()) => metrics.record_send_ok(signal),
+                Err(SendError::Full(_)) => {
+                    metrics.record_send_error(signal, ChannelSendErrorType::Full);
+                }
+                Err(SendError::Closed(_)) => {
+                    metrics.record_send_error(signal, ChannelSendErrorType::Closed);
                 }
             }
         }
@@ -169,16 +169,16 @@ impl<T> SharedSender<T> {
         {
             queue_depth.record_send();
         }
-        if let Some(metrics) = &self.metrics {
-            if let Ok(mut metrics) = metrics.lock() {
-                match &result {
-                    Ok(()) => metrics.record_send_ok(signal),
-                    Err(SendError::Full(_)) => {
-                        metrics.record_send_error(signal, ChannelSendErrorType::Full);
-                    }
-                    Err(SendError::Closed(_)) => {
-                        metrics.record_send_error(signal, ChannelSendErrorType::Closed);
-                    }
+        if let Some(metrics) = &self.metrics
+            && let Ok(mut metrics) = metrics.lock()
+        {
+            match &result {
+                Ok(()) => metrics.record_send_ok(signal),
+                Err(SendError::Full(_)) => {
+                    metrics.record_send_error(signal, ChannelSendErrorType::Full);
+                }
+                Err(SendError::Closed(_)) => {
+                    metrics.record_send_error(signal, ChannelSendErrorType::Closed);
                 }
             }
         }
@@ -299,12 +299,11 @@ impl<T> SharedReceiver<T> {
         {
             queue_depth.record_receive();
         }
-        if let Some(metrics) = &self.metrics {
-            if let Ok(mut metrics) = metrics.lock() {
-                if let Ok(message) = &result {
-                    metrics.record_recv_ok(self.signal.and_then(|extract| extract(message)));
-                }
-            }
+        if let Some(metrics) = &self.metrics
+            && let Ok(mut metrics) = metrics.lock()
+            && let Ok(message) = &result
+        {
+            metrics.record_recv_ok(self.signal.and_then(|extract| extract(message)));
         }
 
         result
@@ -328,12 +327,11 @@ impl<T> SharedReceiver<T> {
         {
             queue_depth.record_receive();
         }
-        if let Some(metrics) = &self.metrics {
-            if let Ok(mut metrics) = metrics.lock() {
-                if let Ok(message) = &result {
-                    metrics.record_recv_ok(self.signal.and_then(|extract| extract(message)));
-                }
-            }
+        if let Some(metrics) = &self.metrics
+            && let Ok(mut metrics) = metrics.lock()
+            && let Ok(message) = &result
+        {
+            metrics.record_recv_ok(self.signal.and_then(|extract| extract(message)));
         }
 
         result
@@ -362,7 +360,7 @@ impl<T> SharedReceiver<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_channel::error::RecvError;
+    use otel_arrow_dfe_channel::error::RecvError;
 
     #[test]
     fn test_mpsc_try_recv_empty_returns_empty_not_closed() {

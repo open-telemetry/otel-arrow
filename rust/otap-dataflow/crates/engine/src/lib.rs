@@ -33,9 +33,9 @@ use context::ExtensionContext;
 use context::NodeNameIndex;
 use context::PipelineContext;
 pub use linkme::distributed_slice;
-use otap_df_config::MetricLevel;
-use otap_df_config::SignalType;
-use otap_df_config::{
+use otel_arrow_dfe_config::MetricLevel;
+use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_config::{
     PipelineGroupId, PipelineId, PortName,
     engine::INTERNAL_TELEMETRY_RECEIVER_URN,
     node::NodeUserConfig,
@@ -43,12 +43,9 @@ use otap_df_config::{
     policy::{
         ChannelCapacityPolicy, RateLimiterDeclarationScope, RateLimiterPolicy, TelemetryPolicy,
     },
-    transport_headers_policy::{
-        HeaderCapturePolicy, HeaderPropagationPolicy, TransportHeadersPolicy,
-    },
 };
-use otap_df_telemetry::InternalTelemetrySettings;
-use otap_df_telemetry::{otel_debug, otel_debug_span, otel_info, otel_warn};
+use otel_arrow_dfe_telemetry::InternalTelemetrySettings;
+use otel_arrow_dfe_telemetry::{otel_debug, otel_debug_span, otel_info, otel_warn};
 use std::borrow::Cow;
 use std::fmt::Debug;
 use std::num::NonZeroUsize;
@@ -62,16 +59,19 @@ pub mod admission;
 pub mod capability;
 #[doc(hidden)]
 pub mod clock;
+pub mod context_declaration;
 pub mod error;
 pub mod exporter;
 pub mod extension;
 mod extension_lifecycle;
 mod extension_monitor;
 pub mod inventory;
-pub use otap_df_engine_macros::component_inventory;
+pub use otel_arrow_dfe_engine_macros::component_inventory;
 pub mod message;
 pub mod processor;
 pub mod receiver;
+pub mod retained_work;
+pub mod runtime_services;
 
 mod attributes;
 mod channel_metrics;
@@ -156,15 +156,18 @@ pub struct ReceiverFactory<PData> {
         node_config: Arc<NodeUserConfig>,
         receiver_config: &ReceiverConfig,
         capabilities: &capability::registry::Capabilities,
-    ) -> Result<ReceiverWrapper<PData>, otap_df_config::error::Error>,
+    ) -> Result<ReceiverWrapper<PData>, otel_arrow_dfe_config::error::Error>,
+    /// Optional context declarations derived from the node configuration.
+    pub context_declarations: Option<context_declaration::ContextDeclarationProvider>,
     /// Optional wiring constraints enforced during pipeline build.
     pub wiring_contract: wiring_contract::WiringContract,
     /// Validates the node-specific config statically, without creating the component.
     ///
-    /// Use [`otap_df_config::validation::validate_typed_config`] for components with a
-    /// typed `Config` struct, or [`otap_df_config::validation::no_config`] for components
+    /// Use [`otel_arrow_dfe_config::validation::validate_typed_config`] for components with a
+    /// typed `Config` struct, or [`otel_arrow_dfe_config::validation::no_config`] for components
     /// that accept no user configuration.
-    pub validate_config: fn(config: &serde_json::Value) -> Result<(), otap_df_config::error::Error>,
+    pub validate_config:
+        fn(config: &serde_json::Value) -> Result<(), otel_arrow_dfe_config::error::Error>,
 }
 
 // Note: We don't use `#[derive(Clone)]` here to avoid forcing the `PData` type to implement `Clone`.
@@ -173,6 +176,7 @@ impl<PData> Clone for ReceiverFactory<PData> {
         ReceiverFactory {
             name: self.name,
             create: self.create,
+            context_declarations: self.context_declarations,
             wiring_contract: self.wiring_contract,
             validate_config: self.validate_config,
         }
@@ -200,15 +204,18 @@ pub struct ProcessorFactory<PData> {
         node_config: Arc<NodeUserConfig>,
         processor_config: &ProcessorConfig,
         capabilities: &capability::registry::Capabilities,
-    ) -> Result<ProcessorWrapper<PData>, otap_df_config::error::Error>,
+    ) -> Result<ProcessorWrapper<PData>, otel_arrow_dfe_config::error::Error>,
+    /// Optional context declarations derived from the node configuration.
+    pub context_declarations: Option<context_declaration::ContextDeclarationProvider>,
     /// Optional wiring constraints enforced during pipeline build.
     pub wiring_contract: wiring_contract::WiringContract,
     /// Validates the node-specific config statically, without creating the component.
     ///
-    /// Use [`otap_df_config::validation::validate_typed_config`] for components with a
-    /// typed `Config` struct, or [`otap_df_config::validation::no_config`] for components
+    /// Use [`otel_arrow_dfe_config::validation::validate_typed_config`] for components with a
+    /// typed `Config` struct, or [`otel_arrow_dfe_config::validation::no_config`] for components
     /// that accept no user configuration.
-    pub validate_config: fn(config: &serde_json::Value) -> Result<(), otap_df_config::error::Error>,
+    pub validate_config:
+        fn(config: &serde_json::Value) -> Result<(), otel_arrow_dfe_config::error::Error>,
 }
 
 // Note: We don't use `#[derive(Clone)]` here to avoid forcing the `PData` type to implement `Clone`.
@@ -217,6 +224,7 @@ impl<PData> Clone for ProcessorFactory<PData> {
         ProcessorFactory {
             name: self.name,
             create: self.create,
+            context_declarations: self.context_declarations,
             wiring_contract: self.wiring_contract,
             validate_config: self.validate_config,
         }
@@ -244,15 +252,18 @@ pub struct ExporterFactory<PData> {
         node_config: Arc<NodeUserConfig>,
         exporter_config: &ExporterConfig,
         capabilities: &capability::registry::Capabilities,
-    ) -> Result<ExporterWrapper<PData>, otap_df_config::error::Error>,
+    ) -> Result<ExporterWrapper<PData>, otel_arrow_dfe_config::error::Error>,
+    /// Optional context declarations derived from the node configuration.
+    pub context_declarations: Option<context_declaration::ContextDeclarationProvider>,
     /// Optional wiring constraints enforced during pipeline build.
     pub wiring_contract: wiring_contract::WiringContract,
     /// Validates the node-specific config statically, without creating the component.
     ///
-    /// Use [`otap_df_config::validation::validate_typed_config`] for components with a
-    /// typed `Config` struct, or [`otap_df_config::validation::no_config`] for components
+    /// Use [`otel_arrow_dfe_config::validation::validate_typed_config`] for components with a
+    /// typed `Config` struct, or [`otel_arrow_dfe_config::validation::no_config`] for components
     /// that accept no user configuration.
-    pub validate_config: fn(config: &serde_json::Value) -> Result<(), otap_df_config::error::Error>,
+    pub validate_config:
+        fn(config: &serde_json::Value) -> Result<(), otel_arrow_dfe_config::error::Error>,
 }
 
 // Note: We don't use `#[derive(Clone)]` here to avoid forcing the `PData` type to implement `Clone`.
@@ -261,6 +272,7 @@ impl<PData> Clone for ExporterFactory<PData> {
         ExporterFactory {
             name: self.name,
             create: self.create,
+            context_declarations: self.context_declarations,
             wiring_contract: self.wiring_contract,
             validate_config: self.validate_config,
         }
@@ -295,12 +307,13 @@ pub struct ExtensionFactory {
     /// A function that creates a new extension instance.
     pub create: fn(
         ext_ctx: &ExtensionContext,
-        name: otap_df_config::ExtensionId,
-        ext_config: Arc<otap_df_config::extension::ExtensionUserConfig>,
+        name: otel_arrow_dfe_config::ExtensionId,
+        ext_config: Arc<otel_arrow_dfe_config::extension::ExtensionUserConfig>,
         extension_config: &ExtensionConfig,
-    ) -> Result<ExtensionBundle, otap_df_config::error::Error>,
+    ) -> Result<ExtensionBundle, otel_arrow_dfe_config::error::Error>,
     /// Validates the node-specific config statically, without creating the component.
-    pub validate_config: fn(config: &serde_json::Value) -> Result<(), otap_df_config::error::Error>,
+    pub validate_config:
+        fn(config: &serde_json::Value) -> Result<(), otel_arrow_dfe_config::error::Error>,
 }
 
 impl NamedFactory for ExtensionFactory {
@@ -343,30 +356,35 @@ pub struct Interests: u16 {
     /// Return data
     const RETURN_DATA = 1 << 2;
 
-    /// Entry-timestamp should be recorded for detailed metrics.
-    const ENTRY_TIMESTAMP = 1 << 3;
+    /// Collect node completion duration through terminal Ack/Nack unwinding.
+    const NODE_COMPLETION_DURATION = 1 << 3;
 
-    /// Consumer metrics will be instrumented by recording the route
-    /// and optional timing.
-    const CONSUMER_METRICS = 1 << 4;
+    /// Instrument the node input metric family.
+    const NODE_INPUT_METRICS = 1 << 4;
 
-    /// Producer metrics will be instrumented by recording the route
-    /// and optional timing.
-    const PRODUCER_METRICS = 1 << 5;
+    /// Instrument the node output metric family.
+    const NODE_OUTPUT_METRICS = 1 << 5;
 
     /// Source-tagging requested. A frame with no other interests may be inserted.
     const SOURCE_TAGGING = 1 << 6;
 
-    /// Process-duration timing requested for processors.
-    const PROCESS_DURATION = 1 << 7;
+    /// Collect item counts for telemetry associated with this node. This feeds
+    /// engine-owned node input/output metrics and node-implemented metrics that
+    /// report item counts. Opt-in because counting OTLP items is expensive.
+    const NODE_ITEM_COUNTS = 1 << 8;
 
-    /// Per-signal produced/consumed item counts requested. Opt-in (counting
-    /// items is expensive for OTLP payloads): enabled at the `Detailed` metric
-    /// level, or per node via `policies.telemetry.item_counts`.
-    const PRODUCED_CONSUMED_ITEM_COUNTS = 1 << 8;
+    /// Collect size measurements for telemetry associated with this node. This
+    /// feeds engine-owned logical PData size and node-implemented boundary
+    /// payload size metrics, each using the semantics of its metric contract.
+    const NODE_SIZE = 1 << 9;
 
-    /// Pipeline-metrics is either CONSUMER_METRICS or PRODUCER_METRICS.
-    const PIPELINE_METRICS = Self::CONSUMER_METRICS.bits() | Self::PRODUCER_METRICS.bits();
+    /// Collect node-implemented local duration measurements. Engine-owned node
+    /// and flow timing is controlled separately by the pipeline metric
+    /// interests and `NODE_COMPLETION_DURATION`.
+    const NODE_LOCAL_DURATION = 1 << 7;
+
+    /// Node metrics include either the input or output metric family.
+    const NODE_METRICS = Self::NODE_INPUT_METRICS.bits() | Self::NODE_OUTPUT_METRICS.bits();
 }
 }
 
@@ -375,21 +393,52 @@ impl Interests {
     ///
     /// None:     empty()
     /// Basic:    empty() with only channel metrics, no use of Context
-    /// Normal:   CONSUMER_METRICS | PRODUCER_METRICS | PROCESS_DURATION
-    /// Detailed: CONSUMER_METRICS | PRODUCER_METRICS | PROCESS_DURATION
-    ///           | ENTRY_TIMESTAMP | PRODUCED_CONSUMED_ITEM_COUNTS
+    /// Normal:   NODE_INPUT_METRICS | NODE_OUTPUT_METRICS
+    /// Detailed: NODE_INPUT_METRICS | NODE_OUTPUT_METRICS
+    ///           | NODE_COMPLETION_DURATION | NODE_ITEM_COUNTS
+    ///           | NODE_SIZE | NODE_LOCAL_DURATION
     #[must_use]
     pub fn from_metric_level(level: MetricLevel) -> Self {
         match level {
             MetricLevel::None | MetricLevel::Basic => Self::empty(),
-            MetricLevel::Normal => Self::PIPELINE_METRICS | Self::PROCESS_DURATION,
+            MetricLevel::Normal => Self::NODE_METRICS,
             MetricLevel::Detailed => {
-                Self::PIPELINE_METRICS
-                    | Self::PROCESS_DURATION
-                    | Self::ENTRY_TIMESTAMP
-                    | Self::PRODUCED_CONSUMED_ITEM_COUNTS
+                Self::NODE_METRICS
+                    | Self::NODE_COMPLETION_DURATION
+                    | Self::NODE_ITEM_COUNTS
+                    | Self::NODE_SIZE
+                    | Self::NODE_LOCAL_DURATION
             }
         }
+    }
+
+    /// Derives effective interests for one node from the pipeline metric level
+    /// and the node's optional telemetry policy.
+    #[must_use]
+    pub fn for_node(level: MetricLevel, node_config: &NodeUserConfig) -> Self {
+        let mut interests = Self::from_metric_level(level);
+        if let Some(telemetry) = node_config
+            .policies
+            .as_ref()
+            .and_then(|policies| policies.telemetry.as_ref())
+        {
+            if telemetry.messages {
+                interests |= Self::NODE_METRICS;
+            }
+            if telemetry.completion_duration {
+                interests |= Self::NODE_COMPLETION_DURATION;
+            }
+            if telemetry.item_counts {
+                interests |= Self::NODE_ITEM_COUNTS;
+            }
+            if telemetry.size {
+                interests |= Self::NODE_SIZE;
+            }
+            if telemetry.duration {
+                interests |= Self::NODE_LOCAL_DURATION;
+            }
+        }
+        interests
     }
 }
 
@@ -463,15 +512,15 @@ impl processor::FlowMetricHook for String {}
 /// Trait for setting exit information in the Context, for PData consumers.
 pub trait StampOutputPort {
     /// Called automatically when a PData message is sent on an output channel.
-    fn stamp_output_port_index(&mut self, index: u16);
+    fn stamp_output_port_index(&mut self, node_id: usize, index: u16);
 }
 
 impl StampOutputPort for () {
-    fn stamp_output_port_index(&mut self, _index: u16) {}
+    fn stamp_output_port_index(&mut self, _node_id: usize, _index: u16) {}
 }
 
 impl StampOutputPort for String {
-    fn stamp_output_port_index(&mut self, _index: u16) {}
+    fn stamp_output_port_index(&mut self, _node_id: usize, _index: u16) {}
 }
 
 /// Trait for forward-path flow_metric compute accumulation on PData.
@@ -753,7 +802,6 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         mut config: PipelineConfig,
         channel_capacity_policy: ChannelCapacityPolicy,
         telemetry_policy: TelemetryPolicy,
-        transport_headers_policy: Option<TransportHeadersPolicy>,
         rate_limiter_policies: BTreeMap<String, RateLimiterPolicy>,
         rate_limiter_scope: Option<RateLimiterDeclarationScope>,
         internal_telemetry: Option<InternalTelemetrySettings>,
@@ -822,17 +870,17 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
 
         for (name, node_config) in config.node_iter() {
             let (node_type, pipe_node) = match node_config.kind() {
-                otap_df_config::node::NodeKind::Receiver => {
+                otel_arrow_dfe_config::node::NodeKind::Receiver => {
                     let pn = PipeNode::new(receiver_count);
                     receiver_count += 1;
                     (NodeType::Receiver, pn)
                 }
-                otap_df_config::node::NodeKind::Processor => {
+                otel_arrow_dfe_config::node::NodeKind::Processor => {
                     let pn = PipeNode::new(processor_count);
                     processor_count += 1;
                     (NodeType::Processor, pn)
                 }
-                otap_df_config::node::NodeKind::Exporter => {
+                otel_arrow_dfe_config::node::NodeKind::Exporter => {
                     let pn = PipeNode::new(exporter_count);
                     exporter_count += 1;
                     (NodeType::Exporter, pn)
@@ -860,7 +908,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         // bodies run inside this same `build` call, so extension `start()`
         // side effects (which happen later, in `run_forever`) cannot be
         // observed by capability construction.
-        let known_extensions: HashSet<otap_df_config::ExtensionId> =
+        let known_extensions: HashSet<otel_arrow_dfe_config::ExtensionId> =
             config.extensions().keys().cloned().collect();
         let mut capability_registry = capability::registry::CapabilityRegistry::new();
         // Each entry tracks (extension id, bundle, is_background). The
@@ -871,7 +919,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         // unconditionally (they are engine-driven and do not need a
         // node binding to be useful).
         let mut extension_bundles: Vec<(
-            otap_df_config::ExtensionId,
+            otel_arrow_dfe_config::ExtensionId,
             ExtensionBundle,
             bool,
             extension::wrapper::ExtensionEntityKeys,
@@ -949,16 +997,22 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                 node_kind,
                 node_config.identity_attributes(),
             );
+            base_ctx.set_node_interests(Interests::for_node(
+                telemetry_policy.runtime_metrics,
+                node_config,
+            ));
             let invalid_binding = |error: String| {
-                Error::ConfigError(Box::new(otap_df_config::error::Error::InvalidUserConfig {
-                    error: format!(
-                        "Component `{}` in pipeline_group={} pipeline={} node={}: {error}",
-                        node_config.r#type.as_ref(),
-                        pipeline_ctx.pipeline_group_id().as_ref(),
-                        pipeline_ctx.pipeline_id().as_ref(),
-                        name.as_ref(),
-                    ),
-                }))
+                Error::ConfigError(Box::new(
+                    otel_arrow_dfe_config::error::Error::InvalidUserConfig {
+                        error: format!(
+                            "Component `{}` in pipeline_group={} pipeline={} node={}: {error}",
+                            node_config.r#type.as_ref(),
+                            pipeline_ctx.pipeline_group_id().as_ref(),
+                            pipeline_ctx.pipeline_id().as_ref(),
+                            name.as_ref(),
+                        ),
+                    },
+                ))
             };
             let admission = resolve_admission_binding(
                 node_config,
@@ -976,13 +1030,13 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                 .unwrap_or(&empty_capabilities);
 
             match node_kind {
-                otap_df_config::node::NodeKind::Receiver => {
+                otel_arrow_dfe_config::node::NodeKind::Receiver => {
                     // Inject internal telemetry settings into context if this is the ITR node.
                     // The ITR factory will extract these settings during construction.
-                    if node_config.r#type.as_ref() == INTERNAL_TELEMETRY_RECEIVER_URN {
-                        if let Some(ref settings) = internal_telemetry {
-                            base_ctx.set_internal_telemetry(settings.clone());
-                        }
+                    if node_config.r#type.as_ref() == INTERNAL_TELEMETRY_RECEIVER_URN
+                        && let Some(ref settings) = internal_telemetry
+                    {
+                        base_ctx.set_internal_telemetry(settings.clone());
                     }
 
                     let wrapper = self.build_node_wrapper(
@@ -998,14 +1052,13 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                                 node_config.clone(),
                                 channel_capacity_policy.control.node,
                                 channel_capacity_policy.pdata,
-                                &transport_headers_policy,
                                 node_capabilities,
                             )
                         },
                     )?;
                     receivers.push(wrapper);
                 }
-                otap_df_config::node::NodeKind::Processor => {
+                otel_arrow_dfe_config::node::NodeKind::Processor => {
                     let wrapper = self.build_node_wrapper(
                         &mut build_state,
                         &base_ctx,
@@ -1025,7 +1078,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                     )?;
                     processors.push(wrapper);
                 }
-                otap_df_config::node::NodeKind::Exporter => {
+                otel_arrow_dfe_config::node::NodeKind::Exporter => {
                     let wrapper = self.build_node_wrapper(
                         &mut build_state,
                         &base_ctx,
@@ -1039,7 +1092,6 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                                 node_config.clone(),
                                 channel_capacity_policy.control.node,
                                 channel_capacity_policy.pdata,
-                                &transport_headers_policy,
                                 node_capabilities,
                             )
                         },
@@ -1107,7 +1159,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         // (shared-only) only ever populates the consumed_shared set,
         // so the local check naturally fails for it (and the bundle's
         // missing local variant is dropped accordingly).
-        let bound_extensions: HashSet<otap_df_config::ExtensionId> = config
+        let bound_extensions: HashSet<otel_arrow_dfe_config::ExtensionId> = config
             .node_iter()
             .flat_map(|(_, node_config)| node_config.capabilities.values().cloned())
             .collect();
@@ -1119,19 +1171,19 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         // expose multiple capabilities of the same variant -- under the
         // unconsumed view, a single unbound capability would mask the
         // bound ones and the whole variant would be incorrectly dropped.
-        let consumed_local: HashSet<otap_df_config::ExtensionId> =
+        let consumed_local: HashSet<otel_arrow_dfe_config::ExtensionId> =
             consumed_tracker.consumed_local();
-        let consumed_shared: HashSet<otap_df_config::ExtensionId> =
+        let consumed_shared: HashSet<otel_arrow_dfe_config::ExtensionId> =
             consumed_tracker.consumed_shared();
         let extension_wrappers: Vec<(
             extension::ExtensionWrapper,
-            otap_df_telemetry::registry::EntityKey,
+            otel_arrow_dfe_telemetry::registry::EntityKey,
         )> = extension_bundles
             .into_iter()
             .flat_map(|(ext_id, mut bundle, is_background, entity_keys)| {
                 let mut kept: Vec<(
                     extension::ExtensionWrapper,
-                    otap_df_telemetry::registry::EntityKey,
+                    otel_arrow_dfe_telemetry::registry::EntityKey,
                 )> = Vec::new();
 
                 // Category 1: Background -- always kept, no warning.
@@ -1266,10 +1318,10 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
 
         for (node_name, node_config) in config.node_iter() {
             let contract = match node_config.kind() {
-                otap_df_config::node::NodeKind::Receiver => {
-                    let normalized = otap_df_config::node_urn::validate_plugin_urn(
+                otel_arrow_dfe_config::node::NodeKind::Receiver => {
+                    let normalized = otel_arrow_dfe_config::node_urn::validate_plugin_urn(
                         node_config.r#type.as_ref(),
-                        otap_df_config::node::NodeKind::Receiver,
+                        otel_arrow_dfe_config::node::NodeKind::Receiver,
                     )
                     .map_err(|e| Error::ConfigError(Box::new(e)))?;
                     self.get_receiver_factory_map()
@@ -1279,10 +1331,10 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         })?
                         .wiring_contract
                 }
-                otap_df_config::node::NodeKind::Processor => {
-                    let normalized = otap_df_config::node_urn::validate_plugin_urn(
+                otel_arrow_dfe_config::node::NodeKind::Processor => {
+                    let normalized = otel_arrow_dfe_config::node_urn::validate_plugin_urn(
                         node_config.r#type.as_ref(),
-                        otap_df_config::node::NodeKind::Processor,
+                        otel_arrow_dfe_config::node::NodeKind::Processor,
                     )
                     .map_err(|e| Error::ConfigError(Box::new(e)))?;
                     self.get_processor_factory_map()
@@ -1292,10 +1344,10 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         })?
                         .wiring_contract
                 }
-                otap_df_config::node::NodeKind::Exporter => {
-                    let normalized = otap_df_config::node_urn::validate_plugin_urn(
+                otel_arrow_dfe_config::node::NodeKind::Exporter => {
+                    let normalized = otel_arrow_dfe_config::node_urn::validate_plugin_urn(
                         node_config.r#type.as_ref(),
-                        otap_df_config::node::NodeKind::Exporter,
+                        otel_arrow_dfe_config::node::NodeKind::Exporter,
                     )
                     .map_err(|e| Error::ConfigError(Box::new(e)))?;
                     self.get_exporter_factory_map()
@@ -1586,7 +1638,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                     let channel_impl = ChannelImplementation::Internal;
                     // ToDo(LQ): Use a local SPMC channel when available.
                     let (pdata_sender, pdata_receiver) =
-                        otap_df_channel::mpmc::Channel::new(buffer_size);
+                        otel_arrow_dfe_channel::mpmc::Channel::new(buffer_size);
                     let queue_depth = LocalChannelQueueDepth::default();
                     let mut pdata_senders = Vec::with_capacity(num_sources);
                     for ((ctx, telemetry), port) in source_contexts
@@ -1648,7 +1700,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                     let channel_impl = ChannelImplementation::Internal;
                     // ToDo(LQ): Use a local SPSC channel when available.
                     let (pdata_sender, pdata_receiver) =
-                        otap_df_channel::mpsc::Channel::new(buffer_size.get());
+                        otel_arrow_dfe_channel::mpsc::Channel::new(buffer_size.get());
                     let queue_depth = LocalChannelQueueDepth::default();
                     let mut pdata_senders = Vec::with_capacity(num_sources);
                     for ((ctx, telemetry), port) in source_contexts
@@ -1789,7 +1841,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                     let channel_impl = ChannelImplementation::Internal;
                     // ToDo(LQ): Use a local SPMC channel when available.
                     let (pdata_sender, pdata_receiver) =
-                        otap_df_channel::mpmc::Channel::new(buffer_size);
+                        otel_arrow_dfe_channel::mpmc::Channel::new(buffer_size);
                     let mut pdata_senders = Vec::with_capacity(num_sources);
                     for ((ctx, telemetry), port) in source_contexts
                         .iter()
@@ -1832,7 +1884,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                     let channel_impl = ChannelImplementation::Internal;
                     // ToDo(LQ): Use a local SPSC channel when available.
                     let (pdata_sender, pdata_receiver) =
-                        otap_df_channel::mpsc::Channel::new(buffer_size.get());
+                        otel_arrow_dfe_channel::mpsc::Channel::new(buffer_size.get());
                     let mut pdata_senders = Vec::with_capacity(num_sources);
                     for ((ctx, telemetry), port) in source_contexts
                         .iter()
@@ -1879,7 +1931,6 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         node_config: Arc<NodeUserConfig>,
         control_channel_capacity: usize,
         pdata_channel_capacity: usize,
-        transport_headers_policy: &Option<TransportHeadersPolicy>,
         capabilities: &capability::registry::Capabilities,
     ) -> Result<ReceiverWrapper<PData>, Error> {
         let pipeline_group_id = pipeline_ctx.pipeline_group_id();
@@ -1896,9 +1947,9 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         );
 
         // Validate plugin URN structure during registration
-        let normalized = otap_df_config::node_urn::validate_plugin_urn(
+        let normalized = otel_arrow_dfe_config::node_urn::validate_plugin_urn(
             node_config.r#type.as_ref(),
-            otap_df_config::node::NodeKind::Receiver,
+            otel_arrow_dfe_config::node::NodeKind::Receiver,
         )
         .map_err(|e| Error::ConfigError(Box::new(e)))?;
 
@@ -1915,7 +1966,14 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         );
         let create = factory.create;
 
-        let capture_policy = resolve_capture_policy(&node_config, transport_headers_policy);
+        let capture_policy = pipeline_ctx
+            .compiled_context_bindings()
+            .header_capture_policy(&pipeline_ctx.pipeline_key(), &pipeline_ctx.node_id())
+            .cloned();
+        let authorized_identity_policy = pipeline_ctx
+            .compiled_context_bindings()
+            .authorized_identity_policy(&pipeline_ctx.pipeline_key(), &pipeline_ctx.node_id())
+            .cloned();
 
         let receiver = create(
             (*pipeline_ctx).clone(),
@@ -1925,14 +1983,17 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             capabilities,
         )
         .map_err(|e| Error::ConfigError(Box::new(e)))?
-        .with_capture_policy(capture_policy);
+        .with_capture_policy(capture_policy)
+        .with_authorized_identity_policy(authorized_identity_policy);
         pipeline_ctx
             .admission()
             .validate_factory_consumption(normalized.as_str())
             .map_err(|error| {
-                Error::ConfigError(Box::new(otap_df_config::error::Error::InvalidUserConfig {
-                    error: error.to_string(),
-                }))
+                Error::ConfigError(Box::new(
+                    otel_arrow_dfe_config::error::Error::InvalidUserConfig {
+                        error: error.to_string(),
+                    },
+                ))
             })?;
 
         otel_debug!(
@@ -1970,9 +2031,9 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         );
 
         // Validate plugin URN structure during registration
-        let normalized = otap_df_config::node_urn::validate_plugin_urn(
+        let normalized = otel_arrow_dfe_config::node_urn::validate_plugin_urn(
             node_config.r#type.as_ref(),
-            otap_df_config::node::NodeKind::Processor,
+            otel_arrow_dfe_config::node::NodeKind::Processor,
         )
         .map_err(|e| Error::ConfigError(Box::new(e)))?;
 
@@ -2001,9 +2062,11 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             .admission()
             .validate_factory_consumption(normalized.as_str())
             .map_err(|error| {
-                Error::ConfigError(Box::new(otap_df_config::error::Error::InvalidUserConfig {
-                    error: error.to_string(),
-                }))
+                Error::ConfigError(Box::new(
+                    otel_arrow_dfe_config::error::Error::InvalidUserConfig {
+                        error: error.to_string(),
+                    },
+                ))
             })?;
 
         validate_local_wakeup_requirements(&node_id, processor.runtime_requirements())?;
@@ -2027,7 +2090,6 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         node_config: Arc<NodeUserConfig>,
         control_channel_capacity: usize,
         pdata_channel_capacity: usize,
-        transport_headers_policy: &Option<TransportHeadersPolicy>,
         capabilities: &capability::registry::Capabilities,
     ) -> Result<ExporterWrapper<PData>, Error> {
         let pipeline_group_id = pipeline_ctx.pipeline_group_id();
@@ -2044,9 +2106,9 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         );
 
         // Validate plugin URN structure during registration
-        let normalized = otap_df_config::node_urn::validate_plugin_urn(
+        let normalized = otel_arrow_dfe_config::node_urn::validate_plugin_urn(
             node_config.r#type.as_ref(),
-            otap_df_config::node::NodeKind::Exporter,
+            otel_arrow_dfe_config::node::NodeKind::Exporter,
         )
         .map_err(|e| Error::ConfigError(Box::new(e)))?;
 
@@ -2063,7 +2125,10 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         );
         let create = factory.create;
 
-        let propagation_policy = resolve_propagation_policy(&node_config, transport_headers_policy);
+        let propagation_policy = pipeline_ctx
+            .compiled_context_bindings()
+            .header_propagation_policy(&pipeline_ctx.pipeline_key(), &pipeline_ctx.node_id())
+            .cloned();
 
         let exporter = create(
             (*pipeline_ctx).clone(),
@@ -2078,9 +2143,11 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             .admission()
             .validate_factory_consumption(normalized.as_str())
             .map_err(|error| {
-                Error::ConfigError(Box::new(otap_df_config::error::Error::InvalidUserConfig {
-                    error: error.to_string(),
-                }))
+                Error::ConfigError(Box::new(
+                    otel_arrow_dfe_config::error::Error::InvalidUserConfig {
+                        error: error.to_string(),
+                    },
+                ))
             })?;
 
         otel_debug!(
@@ -2093,44 +2160,6 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
 
         Ok(exporter)
     }
-}
-
-/// Resolves the effective capture policy for a receiver node.
-///
-/// Node-level `header_capture` takes precedence over the pipeline-level
-/// `transport_headers_policy`. Returns `None` when neither is configured.
-fn resolve_capture_policy(
-    node_config: &NodeUserConfig,
-    transport_headers_policy: &Option<TransportHeadersPolicy>,
-) -> Option<HeaderCapturePolicy> {
-    node_config
-        .header_capture
-        .as_ref()
-        .or_else(|| {
-            transport_headers_policy
-                .as_ref()
-                .map(|thp| &thp.header_capture)
-        })
-        .cloned()
-}
-
-/// Resolves the effective propagation policy for an exporter node.
-///
-/// Node-level `header_propagation` takes precedence over the pipeline-level
-/// `transport_headers_policy`. Returns `None` when neither is configured.
-fn resolve_propagation_policy(
-    node_config: &NodeUserConfig,
-    transport_headers_policy: &Option<TransportHeadersPolicy>,
-) -> Option<HeaderPropagationPolicy> {
-    node_config
-        .header_propagation
-        .as_ref()
-        .or_else(|| {
-            transport_headers_policy
-                .as_ref()
-                .map(|thp| &thp.header_propagation)
-        })
-        .cloned()
 }
 
 trait TelemetryWrapped: Sized {
@@ -2641,15 +2670,76 @@ fn stable_hash64(value: &str) -> u64 {
 #[cfg(test)]
 mod test {
     use super::*;
-    use otap_df_config::policy::{
+    use otel_arrow_dfe_config::policy::{
         RateLimitAggregation, RateLimitEnforcement, RateLimitPressure, RateLimitUnit,
         TokenBucketPolicy,
     };
-    use otap_df_config::transport_headers_policy::{
-        CaptureDefaults, CaptureRule, HeaderCapturePolicy, HeaderPropagationPolicy,
-        PropagationAction, PropagationDefault, PropagationSelector, PropagationSelectorType,
-    };
     use std::time::Duration;
+
+    /// Scenario: runtime metric levels resolve optional data-path measurements.
+    /// Guarantees: detailed metrics enable node duration, item counts, and size while normal metrics enable none by default.
+    #[test]
+    fn detailed_runtime_metrics_enable_optional_data_path_measurements() {
+        let normal = Interests::from_metric_level(MetricLevel::Normal);
+        assert!(normal.contains(Interests::NODE_METRICS));
+        assert!(!normal.contains(Interests::NODE_COMPLETION_DURATION));
+        assert!(!normal.contains(Interests::NODE_LOCAL_DURATION));
+        assert!(!normal.contains(Interests::NODE_ITEM_COUNTS));
+        assert!(!normal.contains(Interests::NODE_SIZE));
+
+        let detailed = Interests::from_metric_level(MetricLevel::Detailed);
+        assert!(detailed.contains(Interests::NODE_METRICS));
+        assert!(detailed.contains(Interests::NODE_COMPLETION_DURATION));
+        assert!(detailed.contains(Interests::NODE_LOCAL_DURATION));
+        assert!(detailed.contains(Interests::NODE_ITEM_COUNTS));
+        assert!(detailed.contains(Interests::NODE_SIZE));
+    }
+
+    /// Scenario: One node opts into optional measurements below the detailed metric level.
+    /// Guarantees: Effective node interests combine the pipeline level with only that node's telemetry policy.
+    #[test]
+    fn node_telemetry_policy_extends_effective_interests() {
+        let mut node_config = NodeUserConfig::new_exporter_config("console");
+        node_config.policies = Some(otel_arrow_dfe_config::node::NodePolicies {
+            telemetry: Some(otel_arrow_dfe_config::node::NodeTelemetryPolicy {
+                messages: true,
+                completion_duration: true,
+                duration: true,
+                item_counts: true,
+                size: true,
+            }),
+        });
+
+        let interests = Interests::for_node(MetricLevel::Normal, &node_config);
+        assert!(interests.contains(Interests::NODE_METRICS));
+        assert!(interests.contains(Interests::NODE_COMPLETION_DURATION));
+        assert!(interests.contains(Interests::NODE_LOCAL_DURATION));
+        assert!(interests.contains(Interests::NODE_ITEM_COUNTS));
+        assert!(interests.contains(Interests::NODE_SIZE));
+    }
+
+    /// Scenario: One node opts into optional telemetry measurements at the basic metric level.
+    /// Guarantees: all node telemetry interests, including message metrics, can be enabled below their default levels.
+    #[test]
+    fn node_telemetry_policy_enables_interests_at_basic_level() {
+        let mut node_config = NodeUserConfig::new_exporter_config("console");
+        node_config.policies = Some(otel_arrow_dfe_config::node::NodePolicies {
+            telemetry: Some(otel_arrow_dfe_config::node::NodeTelemetryPolicy {
+                messages: true,
+                completion_duration: true,
+                duration: true,
+                item_counts: true,
+                size: true,
+            }),
+        });
+
+        let interests = Interests::for_node(MetricLevel::Basic, &node_config);
+        assert!(interests.contains(Interests::NODE_METRICS));
+        assert!(interests.contains(Interests::NODE_COMPLETION_DURATION));
+        assert!(interests.contains(Interests::NODE_LOCAL_DURATION));
+        assert!(interests.contains(Interests::NODE_ITEM_COUNTS));
+        assert!(interests.contains(Interests::NODE_SIZE));
+    }
 
     fn admission_policy(unit: RateLimitUnit) -> RateLimiterPolicy {
         RateLimiterPolicy {
@@ -2747,160 +2837,10 @@ mod test {
     #[test]
     fn test_interests() {
         assert_eq!(Interests::ACKS | Interests::NACKS, Interests::ACKS_OR_NACKS);
-    }
-
-    // -- resolve_capture_policy tests -----------------------------------------
-
-    fn make_capture_policy_with_rule(name: &str) -> HeaderCapturePolicy {
-        HeaderCapturePolicy::new(
-            CaptureDefaults::default(),
-            vec![CaptureRule {
-                match_names: vec![name.to_owned()],
-                store_as: None,
-                sensitive: false,
-                value_kind: None,
-            }],
-        )
-    }
-
-    #[test]
-    fn test_resolve_capture_policy_node_overrides_pipeline() {
-        let node_policy = make_capture_policy_with_rule("x-node-header");
-        let pipeline_policy = make_capture_policy_with_rule("x-pipeline-header");
-
-        let mut node_config = NodeUserConfig::new_receiver_config("test_receiver");
-        node_config.header_capture = Some(node_policy.clone());
-
-        let transport_headers_policy = Some(TransportHeadersPolicy {
-            header_capture: pipeline_policy,
-            ..Default::default()
-        });
-
-        let policy = resolve_capture_policy(&node_config, &transport_headers_policy);
-        assert!(policy.is_some(), "should resolve a policy");
-
-        // Verify the node-level policy was used by checking that a
-        // "x-node-header" is captured while "x-pipeline-header" is not.
-        let policy = policy.unwrap();
-        let mut captured = otap_df_config::transport_headers::TransportHeaders::new();
-        let _ = policy.capture_from_pairs(
-            [("x-node-header", b"val" as &[u8])].into_iter(),
-            &mut captured,
+        assert_eq!(
+            Interests::NODE_INPUT_METRICS | Interests::NODE_OUTPUT_METRICS,
+            Interests::NODE_METRICS
         );
-        assert_eq!(captured.len(), 1);
-        let _ = policy.capture_from_pairs(
-            [("x-pipeline-header", b"val" as &[u8])].into_iter(),
-            &mut captured,
-        );
-        assert_eq!(captured.len(), 0);
-    }
-
-    #[test]
-    fn test_resolve_capture_policy_falls_back_to_pipeline() {
-        let pipeline_policy = make_capture_policy_with_rule("x-pipeline-header");
-
-        let node_config = NodeUserConfig::new_receiver_config("test_receiver");
-        // node_config.header_capture is None by default
-
-        let transport_headers_policy = Some(TransportHeadersPolicy {
-            header_capture: pipeline_policy,
-            ..Default::default()
-        });
-
-        let policy = resolve_capture_policy(&node_config, &transport_headers_policy);
-        assert!(policy.is_some(), "should fall back to pipeline policy");
-
-        let policy = policy.unwrap();
-        let mut captured = otap_df_config::transport_headers::TransportHeaders::new();
-        let _ = policy.capture_from_pairs(
-            [("x-pipeline-header", b"val" as &[u8])].into_iter(),
-            &mut captured,
-        );
-        assert_eq!(captured.len(), 1);
-    }
-
-    #[test]
-    fn test_resolve_capture_policy_none_when_both_absent() {
-        let node_config = NodeUserConfig::new_receiver_config("test_receiver");
-        let transport_headers_policy = None;
-
-        let policy = resolve_capture_policy(&node_config, &transport_headers_policy);
-        assert!(policy.is_none());
-    }
-
-    // -- resolve_propagation_policy tests -------------------------------------
-
-    fn make_propagation_policy(action: PropagationAction) -> HeaderPropagationPolicy {
-        HeaderPropagationPolicy::new(
-            PropagationDefault {
-                selector: PropagationSelector {
-                    selector_type: PropagationSelectorType::AllCaptured,
-                    named: None,
-                },
-                action,
-                ..Default::default()
-            },
-            vec![],
-        )
-    }
-
-    #[test]
-    fn test_resolve_propagation_policy_node_overrides_pipeline() {
-        let node_policy = make_propagation_policy(PropagationAction::Propagate);
-        let pipeline_policy = make_propagation_policy(PropagationAction::Drop);
-
-        let mut node_config = NodeUserConfig::new_exporter_config("test_exporter");
-        node_config.header_propagation = Some(node_policy);
-
-        let transport_headers_policy = Some(TransportHeadersPolicy {
-            header_propagation: pipeline_policy,
-            ..Default::default()
-        });
-
-        let policy = resolve_propagation_policy(&node_config, &transport_headers_policy);
-        assert!(policy.is_some(), "should resolve a policy");
-
-        // Verify node-level policy (Propagate) was used, not pipeline (Drop).
-        let policy = policy.unwrap();
-        let mut headers = otap_df_config::transport_headers::TransportHeaders::new();
-        headers.push(otap_df_config::transport_headers::TransportHeader::text(
-            "x-test", "x-test", b"val",
-        ));
-        let propagated: Vec<_> = policy.propagate(&headers).collect();
-        assert_eq!(propagated.len(), 1, "node policy should propagate");
-    }
-
-    #[test]
-    fn test_resolve_propagation_policy_falls_back_to_pipeline() {
-        let pipeline_policy = make_propagation_policy(PropagationAction::Propagate);
-
-        let node_config = NodeUserConfig::new_exporter_config("test_exporter");
-        // node_config.header_propagation is None by default
-
-        let transport_headers_policy = Some(TransportHeadersPolicy {
-            header_propagation: pipeline_policy,
-            ..Default::default()
-        });
-
-        let policy = resolve_propagation_policy(&node_config, &transport_headers_policy);
-        assert!(policy.is_some(), "should fall back to pipeline policy");
-
-        let policy = policy.unwrap();
-        let mut headers = otap_df_config::transport_headers::TransportHeaders::new();
-        headers.push(otap_df_config::transport_headers::TransportHeader::text(
-            "x-test", "x-test", b"val",
-        ));
-        let propagated: Vec<_> = policy.propagate(&headers).collect();
-        assert_eq!(propagated.len(), 1, "pipeline policy should propagate");
-    }
-
-    #[test]
-    fn test_resolve_propagation_policy_none_when_both_absent() {
-        let node_config = NodeUserConfig::new_exporter_config("test_exporter");
-        let transport_headers_policy = None;
-
-        let policy = resolve_propagation_policy(&node_config, &transport_headers_policy);
-        assert!(policy.is_none());
     }
 
     // -- ExtensionFactory tests -----------------------------------------------
@@ -2909,13 +2849,15 @@ mod test {
     fn test_extension_factory_named_factory() {
         fn dummy_create(
             _: &ExtensionContext,
-            _: otap_df_config::ExtensionId,
-            _: Arc<otap_df_config::extension::ExtensionUserConfig>,
+            _: otel_arrow_dfe_config::ExtensionId,
+            _: Arc<otel_arrow_dfe_config::extension::ExtensionUserConfig>,
             _: &ExtensionConfig,
-        ) -> Result<ExtensionBundle, otap_df_config::error::Error> {
+        ) -> Result<ExtensionBundle, otel_arrow_dfe_config::error::Error> {
             unimplemented!()
         }
-        fn dummy_validate(_: &serde_json::Value) -> Result<(), otap_df_config::error::Error> {
+        fn dummy_validate(
+            _: &serde_json::Value,
+        ) -> Result<(), otel_arrow_dfe_config::error::Error> {
             Ok(())
         }
 
@@ -2949,17 +2891,19 @@ mod test {
     fn test_extension_factory_validate_config() {
         fn dummy_create(
             _: &ExtensionContext,
-            _: otap_df_config::ExtensionId,
-            _: Arc<otap_df_config::extension::ExtensionUserConfig>,
+            _: otel_arrow_dfe_config::ExtensionId,
+            _: Arc<otel_arrow_dfe_config::extension::ExtensionUserConfig>,
             _: &ExtensionConfig,
-        ) -> Result<ExtensionBundle, otap_df_config::error::Error> {
+        ) -> Result<ExtensionBundle, otel_arrow_dfe_config::error::Error> {
             unimplemented!()
         }
-        fn dummy_validate(config: &serde_json::Value) -> Result<(), otap_df_config::error::Error> {
+        fn dummy_validate(
+            config: &serde_json::Value,
+        ) -> Result<(), otel_arrow_dfe_config::error::Error> {
             if config.is_null() {
                 Ok(())
             } else {
-                Err(otap_df_config::error::Error::InvalidUserConfig {
+                Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                     error: "expected null".into(),
                 })
             }
@@ -2978,19 +2922,19 @@ mod test {
         assert!((factory.validate_config)(&serde_json::json!({"key": "val"})).is_err());
     }
 
-    #[otap_df_telemetry_macros::metric_set(name = "test.extension.factory")]
+    #[otel_arrow_dfe_telemetry_macros::metric_set(name = "test.extension.factory")]
     #[derive(Debug, Default, Clone)]
     struct FactoryTestMetrics {
         #[metric(unit = "{tick}")]
-        ticks: otap_df_telemetry::instrument::Counter<u64>,
+        ticks: otel_arrow_dfe_telemetry::instrument::Counter<u64>,
     }
 
     #[test]
     fn test_extension_factory_create_receives_extension_context() {
         use crate::extension::wrapper::ExtensionVariant;
         use crate::testing::test_extension_ctx;
-        use otap_df_config::extension::{ExtensionUrn, ExtensionUserConfig};
-        use otap_df_telemetry::registry::EntityKey;
+        use otel_arrow_dfe_config::extension::{ExtensionUrn, ExtensionUserConfig};
+        use otel_arrow_dfe_telemetry::registry::EntityKey;
         use std::cell::Cell;
 
         thread_local! {
@@ -2999,17 +2943,19 @@ mod test {
 
         fn entity_registering_create(
             ext_ctx: &ExtensionContext,
-            name: otap_df_config::ExtensionId,
+            name: otel_arrow_dfe_config::ExtensionId,
             _: Arc<ExtensionUserConfig>,
             _: &ExtensionConfig,
-        ) -> Result<ExtensionBundle, otap_df_config::error::Error> {
+        ) -> Result<ExtensionBundle, otel_arrow_dfe_config::error::Error> {
             let entity = ext_ctx.register_extension_entity(name, ExtensionVariant::Local);
             REGISTERED_ENTITY.with(|cell| cell.set(Some(entity)));
-            Err(otap_df_config::error::Error::InvalidUserConfig {
+            Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                 error: "no-op factory".into(),
             })
         }
-        fn dummy_validate(_: &serde_json::Value) -> Result<(), otap_df_config::error::Error> {
+        fn dummy_validate(
+            _: &serde_json::Value,
+        ) -> Result<(), otel_arrow_dfe_config::error::Error> {
             Ok(())
         }
 

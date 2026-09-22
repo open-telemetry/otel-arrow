@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use otap_df_pdata_otlp_model::OneofMapping;
+use otel_arrow_dfe_pdata_otlp_model::OneofMapping;
 
 use super::field_info::FieldInfo;
 use proc_macro::TokenStream;
@@ -53,7 +53,7 @@ impl MessageInfo {
             .expect("Missing #[qualified(\"...\")] attribute on struct");
 
         // Get required parameters for this type.
-        let param_config = otap_df_pdata_otlp_model::REQUIRED_PARAMS
+        let param_config = otel_arrow_dfe_pdata_otlp_model::REQUIRED_PARAMS
             .get(type_name.as_str())
             .expect("No required parameters found for OTLP type");
 
@@ -66,7 +66,7 @@ impl MessageInfo {
         let ignored_names: Vec<_> = param_config.ignored.iter().map(|x| x.to_string()).collect();
 
         // Check if this struct has a oneof field
-        let oneof_mapping = otap_df_pdata_otlp_model::ONEOF_MAPPINGS
+        let oneof_mapping = otel_arrow_dfe_pdata_otlp_model::ONEOF_MAPPINGS
             .iter()
             .find(|(field, _)| field.starts_with(&type_name))
             .map(|(x, y)| (x.clone(), y.clone()));

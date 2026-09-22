@@ -15,10 +15,10 @@ pub use zip::{ZipConfig, ZipSampler};
 use crate::processors::log_sampling_processor::config::Policy;
 use arrow::array::{BooleanArray, BooleanBufferBuilder};
 use async_trait::async_trait;
-use otap_df_engine::error::Error as EngineError;
-use otap_df_engine::local::processor as local;
-use otap_df_otap::pdata::OtapPdata;
-use otap_df_pdata::otap::OtapArrowRecords;
+use otel_arrow_dfe_engine::error::Error as EngineError;
+use otel_arrow_dfe_engine::local::processor as local;
+use otel_arrow_dfe_otap::pdata::OtapPdata;
+use otel_arrow_dfe_pdata::otap::OtapArrowRecords;
 
 /// Trait for log sampling strategies.
 #[async_trait(?Send)]

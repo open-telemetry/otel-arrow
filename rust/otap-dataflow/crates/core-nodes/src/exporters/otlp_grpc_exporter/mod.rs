@@ -9,52 +9,61 @@
 //! request finishes we forward the Ack/Nack to the pipeline runtime so the dataflow can make
 //! progress.
 
+otel_arrow_dfe_telemetry::otel_component_scope!(
+    urn = OTLP_EXPORTER_URN,
+    target = "otel.exporter.otlp_grpc",
+);
+
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::future::FutureExt;
-use futures::stream::{FuturesUnordered, StreamExt};
 use http::HeaderValue;
 use linkme::distributed_slice;
-use otap_df_config::SignalType;
-use otap_df_config::node::NodeUserConfig;
-use otap_df_engine::ConsumerEffectHandlerExtension;
-use otap_df_engine::ExporterFactory;
-use otap_df_engine::config::ExporterConfig;
-use otap_df_engine::context::PipelineContext;
-use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
-use otap_df_engine::error::{Error, ExporterErrorKind, format_error_sources};
-use otap_df_engine::exporter::ExporterWrapper;
-use otap_df_engine::local::capability::auth::bearer_token_provider::BearerTokenProvider;
-use otap_df_engine::local::exporter::{EffectHandler, Exporter};
-use otap_df_engine::message::{ExporterInbox, Message};
-use otap_df_engine::node::NodeId;
-use otap_df_engine::terminal_state::TerminalState;
-use otap_df_otap::OTAP_EXPORTER_FACTORIES;
-use otap_df_otap::metrics::ExporterPDataExportMetrics;
-use otap_df_otap::otap_grpc::client_settings::GrpcClientSettings;
-use otap_df_otap::otap_grpc::otlp::client::{
+use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_config::node::NodeUserConfig;
+use otel_arrow_dfe_config::transport_headers::ValueKind;
+use otel_arrow_dfe_engine::ConsumerEffectHandlerExtension;
+use otel_arrow_dfe_engine::ExporterFactory;
+use otel_arrow_dfe_engine::config::ExporterConfig;
+use otel_arrow_dfe_engine::context::PipelineContext;
+use otel_arrow_dfe_engine::control::{AckMsg, NackMsg, NodeControlMsg};
+use otel_arrow_dfe_engine::error::{Error, ExporterErrorKind, format_error_sources};
+use otel_arrow_dfe_engine::exporter::ExporterWrapper;
+use otel_arrow_dfe_engine::local::capability::auth::bearer_token_provider::BearerTokenProvider;
+use otel_arrow_dfe_engine::local::exporter::{EffectHandler, Exporter};
+use otel_arrow_dfe_engine::message::{ExporterInbox, Message};
+use otel_arrow_dfe_engine::node::NodeId;
+use otel_arrow_dfe_engine::terminal_state::TerminalState;
+use otel_arrow_dfe_otap::OTAP_EXPORTER_FACTORIES;
+use otel_arrow_dfe_otap::metrics::{CompletedExporterAttempt, ExporterAttempt};
+use otel_arrow_dfe_otap::otap_grpc::client_settings::GrpcClientSettings;
+use otel_arrow_dfe_otap::otap_grpc::otlp::client::{
     LogsServiceClient, MetricsServiceClient, TraceServiceClient,
 };
-use otap_df_otap::pdata::{Context, OtapPdata};
-use otap_df_otap::transport_headers::ValueKind;
-use otap_df_pdata::otlp::logs::LogsProtoBytesEncoder;
-use otap_df_pdata::otlp::metrics::MetricsProtoBytesEncoder;
-use otap_df_pdata::otlp::traces::TracesProtoBytesEncoder;
-use otap_df_pdata::otlp::{ProtoBuffer, ProtoBytesEncoder};
-use otap_df_pdata::{OtapArrowRecords, OtapPayload, OtapPayloadHelpers, OtlpProtoBytes};
-use otap_df_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
-use otap_df_telemetry::metrics::MeasurementMetricSet;
-use otap_df_telemetry::{otel_debug, otel_info, otel_warn};
+use otel_arrow_dfe_otap::otlp_exporter::{InFlightExports, default_max_in_flight};
+use otel_arrow_dfe_otap::pdata::{Context, OtapPdata};
+use otel_arrow_dfe_pdata::otlp::logs::LogsProtoBytesEncoder;
+use otel_arrow_dfe_pdata::otlp::metrics::MetricsProtoBytesEncoder;
+use otel_arrow_dfe_pdata::otlp::traces::TracesProtoBytesEncoder;
+use otel_arrow_dfe_pdata::otlp::{ProtoBuffer, ProtoBytesEncoder};
+use otel_arrow_dfe_pdata::{
+    OtapArrowRecords, OtapPayload, OtapPayloadHelpers, OtlpProtoBytes, PayloadData,
+};
 use serde::Deserialize;
 use std::collections::VecDeque;
 use std::future::Future;
 use std::sync::Arc;
+use std::time::Instant;
 use tonic::Code;
 use tonic::codec::CompressionEncoding;
 use tonic::metadata::{MetadataKey, MetadataMap, MetadataValue};
 use tonic::transport::Channel;
 
-use otap_df_otap::bearer_auth::{BearerAuth, BearerAuthEvents, apply_auth_rejection};
+use otel_arrow_dfe_otap::bearer_auth::{BearerAuth, BearerAuthEvents, apply_auth_rejection};
+
+mod metrics;
+
+use metrics::{OtlpGrpcExporterErrorType, OtlpGrpcExporterMetrics};
 
 /// The URN for the OTLP gRPC exporter
 pub const OTLP_EXPORTER_URN: &str = "urn:otel:exporter:otlp_grpc";
@@ -90,10 +99,6 @@ pub struct Config {
     pub num_connections: usize,
 }
 
-pub(crate) const fn default_max_in_flight() -> usize {
-    5
-}
-
 pub(crate) const fn default_num_connections() -> usize {
     1
 }
@@ -101,7 +106,7 @@ pub(crate) const fn default_num_connections() -> usize {
 /// Exporter that sends OTLP data via gRPC
 pub struct OTLPExporter {
     config: Config,
-    pdata_metrics: MeasurementMetricSet<ExporterPDataExportMetrics>,
+    metrics: OtlpGrpcExporterMetrics,
     /// Optional bearer token provider resolved from the
     /// `bearer_token_provider` capability. When bound, a fresh
     /// `authorization: Bearer <token>` is injected on every outgoing request;
@@ -111,7 +116,7 @@ pub struct OTLPExporter {
 
 /// Declare the OTLP Exporter as a local exporter factory
 #[allow(unsafe_code)]
-#[otap_df_engine::component_inventory(category = Exporter)]
+#[otel_arrow_dfe_engine::component_inventory(category = Exporter)]
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
 pub static OTLP_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     name: OTLP_EXPORTER_URN,
@@ -119,13 +124,13 @@ pub static OTLP_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
              node: NodeId,
              node_config: Arc<NodeUserConfig>,
              exporter_config: &ExporterConfig,
-             capabilities: &otap_df_engine::capability::registry::Capabilities| {
+             capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities| {
         // Optionally resolve a bound bearer token provider. Absent binding keeps
         // the default (no-auth) behavior; a bound provider (e.g. the
         // `oauth2_client_auth` extension) supplies refreshed OAuth tokens.
         let token_provider = capabilities
-            .optional_local::<otap_df_engine::capability::auth::bearer_token_provider::BearerTokenProvider>()
-            .map_err(|e| otap_df_config::error::Error::InvalidUserConfig {
+            .optional_local::<otel_arrow_dfe_engine::capability::auth::bearer_token_provider::BearerTokenProvider>()
+            .map_err(|e| otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                 error: e.to_string(),
             })?;
         Ok(ExporterWrapper::local(
@@ -135,7 +140,8 @@ pub static OTLP_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
             exporter_config,
         ))
     },
-    wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    context_declarations: None,
+    wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config,
 };
 
@@ -144,15 +150,15 @@ pub static OTLP_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
 /// Runs before any node is started (initial load and live reconfigure), so bad
 /// configuration is rejected fast and attributed to the offending node rather
 /// than surfacing as an opaque client error at startup.
-fn validate_config(config: &serde_json::Value) -> Result<(), otap_df_config::error::Error> {
+fn validate_config(config: &serde_json::Value) -> Result<(), otel_arrow_dfe_config::error::Error> {
     let cfg: Config = serde_json::from_value(config.clone()).map_err(|e| {
-        otap_df_config::error::Error::InvalidUserConfig {
+        otel_arrow_dfe_config::error::Error::InvalidUserConfig {
             error: e.to_string(),
         }
     })?;
     cfg.grpc
         .validate()
-        .map_err(|e| otap_df_config::error::Error::InvalidUserConfig {
+        .map_err(|e| otel_arrow_dfe_config::error::Error::InvalidUserConfig {
             error: e.to_string(),
         })?;
     Ok(())
@@ -164,18 +170,17 @@ impl OTLPExporter {
         pipeline_ctx: PipelineContext,
         config: &serde_json::Value,
         token_provider: Option<Box<dyn BearerTokenProvider>>,
-    ) -> Result<Self, otap_df_config::error::Error> {
-        let pdata_metrics = ExporterPDataExportMetrics::register(&pipeline_ctx);
+    ) -> Result<Self, otel_arrow_dfe_config::error::Error> {
+        let metrics = OtlpGrpcExporterMetrics::register(&pipeline_ctx);
 
         let config: Config = serde_json::from_value(config.clone()).map_err(|e| {
-            otap_df_config::error::Error::InvalidUserConfig {
+            otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                 error: e.to_string(),
             }
         })?;
-
         Ok(Self {
             config,
-            pdata_metrics,
+            metrics,
             token_provider,
         })
     }
@@ -256,7 +261,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
         grpc_clients.prepopulate_clients();
 
         let mut inflight_exports = InFlightExports::new();
-        let mut pending_msg: Option<Message<OtapPdata>> = None;
+        let mut pending_msg: Option<OtapPdata> = None;
 
         // Consumer-side bearer-token adapter, if a provider is bound. It owns
         // the token subscription, the cached `authorization` header, and token
@@ -275,7 +280,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
         // a deadline being present.
         let margin_sleep = tokio::time::sleep_until(tokio::time::Instant::now());
         tokio::pin!(margin_sleep);
-        let mut armed_margin_deadline: Option<std::time::Instant> = None;
+        let mut armed_margin_deadline: Option<Instant> = None;
 
         // Main loop: 1) finish ready completions, 2) biased wait for a token
         // event, a completion, or the next message, 3) dispatch work while
@@ -284,12 +289,9 @@ impl Exporter<OtapPdata> for OTLPExporter {
             // Backpressure guard: when full and a message is parked, only drain completions.
             if inflight_exports.len() >= max_in_flight && pending_msg.is_some() {
                 if let Some(completed) = inflight_exports.next_completion().await {
-                    let (client, rejected_generation) = finalize_completed_export(
-                        completed,
-                        &effect_handler,
-                        &mut self.pdata_metrics,
-                    )
-                    .await;
+                    let (client, rejected_generation) =
+                        finalize_completed_export(completed, &effect_handler, &mut self.metrics)
+                            .await;
                     apply_auth_rejection(&mut auth, rejected_generation);
                     grpc_clients.release(client);
                 }
@@ -300,8 +302,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
             while let Some(completed) = inflight_exports.next_completion().now_or_never().flatten()
             {
                 let (client, rejected_generation) =
-                    finalize_completed_export(completed, &effect_handler, &mut self.pdata_metrics)
-                        .await;
+                    finalize_completed_export(completed, &effect_handler, &mut self.metrics).await;
                 apply_auth_rejection(&mut auth, rejected_generation);
                 grpc_clients.release(client);
             }
@@ -342,8 +343,8 @@ impl Exporter<OtapPdata> for OTLPExporter {
             };
 
             // Prefer token events, then completions, then the next message.
-            let msg = if let Some(msg) = parked_msg {
-                msg
+            let msg = if let Some(pdata) = parked_msg {
+                Message::PData(pdata)
             } else {
                 tokio::select! {
                     biased;
@@ -382,7 +383,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                             let (client, rejected_generation) = finalize_completed_export(
                                 completed,
                                 &effect_handler,
-                                &mut self.pdata_metrics,
+                                &mut self.metrics,
                             )
                             .await;
                             // Server rejected the token this request used
@@ -419,7 +420,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                     // refresh, so NACK it as retryable -- the same policy the
                     // force-drained batches get below. Without this the parked batch
                     // would be dropped silently.
-                    if let Some(Message::PData(pdata)) = pending_msg.take() {
+                    if let Some(pdata) = pending_msg.take() {
                         debug_assert!(
                             auth.as_ref().is_some_and(|a| !a.is_ready()),
                             "a batch stays parked only while a bound token is unusable"
@@ -431,7 +432,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                             pdata,
                             reason,
                             &effect_handler,
-                            &mut self.pdata_metrics,
+                            &mut self.metrics,
                         )
                         .await;
                     }
@@ -440,7 +441,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                             let (client, rejected_generation) = finalize_completed_export(
                                 completed,
                                 &effect_handler,
-                                &mut self.pdata_metrics,
+                                &mut self.metrics,
                             )
                             .await;
                             // Honor a rejection even while draining, so a later
@@ -451,15 +452,15 @@ impl Exporter<OtapPdata> for OTLPExporter {
                     }
                     return Ok(TerminalState::new(
                         deadline,
-                        self.pdata_metrics.terminal_snapshots(),
+                        self.metrics.terminal_snapshots(),
                     ));
                 }
                 Message::Control(NodeControlMsg::CollectTelemetry {
                     mut metrics_reporter,
                 }) => {
-                    _ = metrics_reporter.report_measurement(&mut self.pdata_metrics);
+                    _ = self.metrics.report(&mut metrics_reporter);
                 }
-                Message::PData(pdata) => {
+                Message::PData(mut pdata) => {
                     if inflight_exports.len() >= max_in_flight {
                         // The guard at the top of the loop stops receiving while a
                         // batch is parked and the budget is full, so parking here
@@ -468,7 +469,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                             pending_msg.is_none(),
                             "a parked batch must be dispatched before another is parked"
                         );
-                        pending_msg = Some(Message::PData(pdata));
+                        pending_msg = Some(pdata);
                         continue;
                     }
 
@@ -478,21 +479,23 @@ impl Exporter<OtapPdata> for OTLPExporter {
                     // force-drains buffered pdata even while auth is pending: with no
                     // usable token we cannot send, so NACK it as retryable -- a token
                     // may yet arrive, so nothing is dropped.
-                    if let Some(a) = auth.as_ref() {
-                        if !a.is_ready() {
-                            let reason = a.not_ready_reason();
-                            nack_without_usable_token(
-                                pdata,
-                                reason,
-                                &effect_handler,
-                                &mut self.pdata_metrics,
-                            )
-                            .await;
-                            continue;
-                        }
+                    if let Some(a) = auth.as_ref()
+                        && !a.is_ready()
+                    {
+                        let reason = a.not_ready_reason();
+                        nack_without_usable_token(
+                            pdata,
+                            reason,
+                            &effect_handler,
+                            &mut self.metrics,
+                        )
+                        .await;
+                        continue;
                     }
 
                     let signal_type = pdata.signal_type();
+                    let mut attempt = self.metrics.boundary.attempt(signal_type);
+                    attempt.set_item_count_with(|| pdata.num_items() as u64);
                     let (context, payload) = pdata.into_parts();
 
                     // The cached bearer header, together with the generation of the
@@ -521,13 +524,14 @@ impl Exporter<OtapPdata> for OTLPExporter {
                     };
 
                     // Dispatch based on signal type and the concrete payload representation.
-                    match (signal_type, payload) {
-                        (SignalType::Logs, OtapPayload::OtapArrowRecords(otap_batch)) => {
+                    match (signal_type, payload.into_data()) {
+                        (SignalType::Logs, PayloadData::OtapArrowRecords(otap_batch)) => {
                             dispatch_otap_export(
                                 otap_batch,
                                 context,
                                 metadata,
                                 SignalType::Logs,
+                                attempt,
                                 &exporter_id,
                                 &mut logs_proto_buffer,
                                 &mut logs_proto_encoder,
@@ -536,17 +540,18 @@ impl Exporter<OtapPdata> for OTLPExporter {
                                     make_export_future(encoded, client)
                                 },
                                 &mut inflight_exports,
-                                &mut self.pdata_metrics,
+                                &mut self.metrics,
                                 &effect_handler,
                             )
                             .await;
                         }
-                        (SignalType::Metrics, OtapPayload::OtapArrowRecords(otap_batch)) => {
+                        (SignalType::Metrics, PayloadData::OtapArrowRecords(otap_batch)) => {
                             dispatch_otap_export(
                                 otap_batch,
                                 context,
                                 metadata,
                                 SignalType::Metrics,
+                                attempt,
                                 &exporter_id,
                                 &mut metrics_proto_buffer,
                                 &mut metrics_proto_encoder,
@@ -555,17 +560,18 @@ impl Exporter<OtapPdata> for OTLPExporter {
                                     make_export_future(encoded, client)
                                 },
                                 &mut inflight_exports,
-                                &mut self.pdata_metrics,
+                                &mut self.metrics,
                                 &effect_handler,
                             )
                             .await;
                         }
-                        (SignalType::Traces, OtapPayload::OtapArrowRecords(otap_batch)) => {
+                        (SignalType::Traces, PayloadData::OtapArrowRecords(otap_batch)) => {
                             dispatch_otap_export(
                                 otap_batch,
                                 context,
                                 metadata,
                                 SignalType::Traces,
+                                attempt,
                                 &exporter_id,
                                 &mut traces_proto_buffer,
                                 &mut traces_proto_encoder,
@@ -574,18 +580,19 @@ impl Exporter<OtapPdata> for OTLPExporter {
                                     make_export_future(encoded, client)
                                 },
                                 &mut inflight_exports,
-                                &mut self.pdata_metrics,
+                                &mut self.metrics,
                                 &effect_handler,
                             )
                             .await;
                         }
-                        (_, OtapPayload::OtlpBytes(service_req)) => {
+                        (_, PayloadData::OtlpBytes(service_req)) => {
                             let prepared = match service_req {
                                 OtlpProtoBytes::ExportLogsRequest(bytes) => prepare_otlp_export(
                                     bytes,
                                     context,
                                     metadata,
                                     SignalType::Logs,
+                                    attempt,
                                     |b| OtlpProtoBytes::ExportLogsRequest(b).into(),
                                 ),
                                 OtlpProtoBytes::ExportMetricsRequest(bytes) => prepare_otlp_export(
@@ -593,6 +600,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                                     context,
                                     metadata,
                                     SignalType::Metrics,
+                                    attempt,
                                     |b| OtlpProtoBytes::ExportMetricsRequest(b).into(),
                                 ),
                                 OtlpProtoBytes::ExportTracesRequest(bytes) => prepare_otlp_export(
@@ -600,6 +608,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                                     context,
                                     metadata,
                                     SignalType::Traces,
+                                    attempt,
                                     |b| OtlpProtoBytes::ExportTracesRequest(b).into(),
                                 ),
                             };
@@ -631,8 +640,12 @@ impl Exporter<OtapPdata> for OTLPExporter {
 /// `auth_failure` marks a rejection of the bearer token this request carried; it
 /// forces the NACK to be retryable even though `UNAUTHENTICATED` is otherwise a
 /// permanent status.
+///
+/// This returns Ok(()) if the result Ack/Nack was successfully routed regardless of
+/// whether the request actually succeeded. E.g. it does not return `Err` for an
+/// unsuccessful request.
 async fn route_export_result<T>(
-    result: Result<T, tonic::Status>,
+    result: &Result<T, GrpcAttemptError>,
     context: Context,
     saved_payload: OtapPayload,
     effect_handler: &EffectHandler<OtapPdata>,
@@ -643,33 +656,27 @@ async fn route_export_result<T>(
             effect_handler
                 .notify_ack(AckMsg::new(OtapPdata::new(context, saved_payload)))
                 .await?;
-            Ok(())
         }
-        Err(e) => {
-            let retryable = is_retryable_grpc_status(&e) || auth_failure;
-            let error_msg = e.to_string();
+        Err((_, status)) => {
+            let retryable = is_retryable_grpc_status(status) || auth_failure;
+            let error_msg = status.to_string();
 
             // TODO(https://github.com/open-telemetry/otel-arrow/issues/3404):
             // NackMsg has no structured retry-after field yet, so we fold the
             // server's advisory RetryInfo delay into the human-readable reason.
             // Replace this with a structured field once #3404 lands.
             let mut reason = error_msg.clone();
-            if let Some(delay) = retry_after(&e) {
+            if let Some(delay) = retry_after(status) {
                 reason.push_str(&format!(" (retry after {})", format_retry_delay(&delay)));
             }
 
             let mut nack = NackMsg::new(&reason, OtapPdata::new(context, saved_payload));
             nack.permanent = !retryable;
             effect_handler.notify_nack(nack).await?;
-            let source_detail = format_error_sources(&e);
-            Err(Error::ExporterError {
-                exporter: effect_handler.exporter_id(),
-                kind: ExporterErrorKind::Transport,
-                error: error_msg,
-                source_detail,
-            })
         }
     }
+
+    Ok(())
 }
 
 /// Prost-generated struct for `google.rpc.Status`.
@@ -740,6 +747,8 @@ fn is_retryable_grpc_status(status: &tonic::Status) -> bool {
     }
 }
 
+type GrpcAttemptError = (OtlpGrpcExporterErrorType, tonic::Status);
+
 /// Extracts the server-suggested retry delay from a `google.rpc.RetryInfo`
 /// detail carried in the status `grpc-status-details-bin` trailer, if present.
 ///
@@ -780,6 +789,7 @@ struct EncodedExport {
     context: Context,
     saved_payload: OtapPayload,
     signal_type: SignalType,
+    attempt: ExporterAttempt,
     /// Per-request metadata plus the bearer token generation it carries.
     metadata: RequestMetadata,
 }
@@ -810,7 +820,8 @@ fn prepare_otap_export<Enc: ProtoBytesEncoder>(
     encoder: &mut Enc,
     exporter: &NodeId,
     signal_type: SignalType,
-) -> Result<EncodedExport, Box<EncodingFailure>> {
+    attempt: ExporterAttempt,
+) -> Result<EncodedExport, (Box<EncodingFailure>, ExporterAttempt)> {
     proto_buffer.clear();
     if let Err(e) = encoder.encode(&mut otap_batch, proto_buffer) {
         let error = Error::ExporterError {
@@ -825,11 +836,14 @@ fn prepare_otap_export<Enc: ProtoBytesEncoder>(
         }
         let saved_payload: OtapPayload = otap_batch.into();
 
-        return Err(Box::new(EncodingFailure {
-            error,
-            context,
-            saved_payload,
-        }));
+        return Err((
+            Box::new(EncodingFailure {
+                error,
+                context,
+                saved_payload,
+            }),
+            attempt,
+        ));
     }
 
     // Maintain the buffer's capacity across repeated calls.
@@ -847,6 +861,7 @@ fn prepare_otap_export<Enc: ProtoBytesEncoder>(
         context,
         saved_payload,
         signal_type,
+        attempt,
         metadata,
     })
 }
@@ -856,6 +871,7 @@ fn prepare_otlp_export(
     context: Context,
     metadata: RequestMetadata,
     signal_type: SignalType,
+    attempt: ExporterAttempt,
     save_payload_fn: impl FnOnce(Bytes) -> OtapPayload,
 ) -> EncodedExport {
     let saved_payload = if context.may_return_payload() {
@@ -869,6 +885,7 @@ fn prepare_otlp_export(
         context,
         saved_payload,
         signal_type,
+        attempt,
         metadata,
     }
 }
@@ -880,12 +897,13 @@ async fn dispatch_otap_export<Enc, Fut, MakeFuture>(
     context: Context,
     metadata: RequestMetadata,
     signal_type: SignalType,
+    attempt: ExporterAttempt,
     exporter_id: &NodeId,
     proto_buffer: &mut ProtoBuffer,
     encoder: &mut Enc,
     make_future: MakeFuture,
     inflight: &mut InFlightExports<Fut, CompletedExport>,
-    pdata_metrics: &mut MeasurementMetricSet<ExporterPDataExportMetrics>,
+    metrics: &mut OtlpGrpcExporterMetrics,
     effect_handler: &EffectHandler<OtapPdata>,
 ) where
     Enc: ProtoBytesEncoder,
@@ -900,18 +918,22 @@ async fn dispatch_otap_export<Enc, Fut, MakeFuture>(
         encoder,
         exporter_id,
         signal_type,
+        attempt,
     ) {
         Ok(encoded) => {
             inflight.push(make_future(encoded));
         }
-        Err(error) => {
-            pdata_metrics
-                .with(SignalOutcomeAttributes {
-                    signal: signal_type,
-                    outcome: Outcome::Failure,
+        Err((error, attempt)) => {
+            let completed = attempt
+                .run(async |attempt| {
+                    Err::<(), _>(attempt.failed(OtlpGrpcExporterErrorType::Encoding))
                 })
-                .messages
-                .inc();
+                .await;
+            let error_type = metrics
+                .boundary
+                .record(completed)
+                .expect_err("encoding attempt must fail");
+            metrics.record_failure(signal_type, error_type);
             _ = notify_prepare_error(error, effect_handler).await;
         }
     }
@@ -951,8 +973,17 @@ async fn notify_prepare_error(
 /// is intentionally excluded: it signals a scope or permission problem that a
 /// refresh will not fix. Always false when no provider is bound, since a
 /// statically configured credential cannot be refreshed.
-fn is_auth_failure(result: &Result<(), tonic::Status>, auth_bound: bool) -> bool {
-    auth_bound && matches!(result, Err(status) if status.code() == Code::Unauthenticated)
+fn is_auth_failure(result: &Result<(), GrpcAttemptError>, auth_bound: bool) -> bool {
+    auth_bound
+        && matches!(
+            result,
+            Err((_, status)) if status.code() == Code::Unauthenticated
+        )
+}
+
+/// Returns the bounded diagnostic category for a failed backend export.
+fn export_error_type(result: &Result<(), GrpcAttemptError>) -> Option<OtlpGrpcExporterErrorType> {
+    result.as_ref().err().map(|(error_type, _)| *error_type)
 }
 
 /// NACKs `pdata` because no usable bearer token is available, and records the
@@ -965,22 +996,27 @@ fn is_auth_failure(result: &Result<(), tonic::Status>, auth_bound: bool) -> bool
 /// because a refreshed token may still arrive, so the batch is deferred rather
 /// than dropped.
 async fn nack_without_usable_token(
-    pdata: OtapPdata,
+    mut pdata: OtapPdata,
     reason: &'static str,
     effect_handler: &EffectHandler<OtapPdata>,
-    pdata_metrics: &mut MeasurementMetricSet<ExporterPDataExportMetrics>,
+    metrics: &mut OtlpGrpcExporterMetrics,
 ) {
     let signal_type = pdata.signal_type();
+    let mut attempt = metrics.boundary.attempt(signal_type);
+    attempt.set_item_count_with(|| pdata.num_items() as u64);
+    let completed = attempt
+        .run(async |attempt| {
+            Err::<(), _>(attempt.refused(OtlpGrpcExporterErrorType::Authentication))
+        })
+        .await;
+    let error_type = metrics
+        .boundary
+        .record(completed)
+        .expect_err("authentication attempt must fail");
+    metrics.record_failure(signal_type, error_type);
     _ = effect_handler
         .notify_nack(NackMsg::new(reason, pdata))
         .await;
-    pdata_metrics
-        .with(SignalOutcomeAttributes {
-            signal: signal_type,
-            outcome: Outcome::Failure,
-        })
-        .messages
-        .inc();
 }
 
 /// Applies the Ack/Nack side effects for a completed gRPC export and returns the
@@ -988,49 +1024,57 @@ async fn nack_without_usable_token(
 async fn finalize_completed_export(
     completed: CompletedExport,
     effect_handler: &EffectHandler<OtapPdata>,
-    pdata_metrics: &mut MeasurementMetricSet<ExporterPDataExportMetrics>,
+    metrics: &mut OtlpGrpcExporterMetrics,
 ) -> (SignalClient, Option<u64>) {
     let CompletedExport {
-        result,
+        attempt,
         context,
         saved_payload,
         signal_type,
-        client,
         token_generation,
     } = completed;
+    let result = metrics.boundary.record(attempt);
+    let (export_result, client) = match result {
+        Ok(client) => (Ok(()), client),
+        Err((error, client)) => (Err(error), client),
+    };
 
     // Record the rejected generation so the caller invalidates exactly the token
     // that was used, before the batch is retried. A stamped generation is what
     // "a provider is bound" means for this request: the dispatch path only
     // reaches a send with a usable token cached, so the generation is `Some`
     // exactly when the request carried a refreshable credential.
-    let auth_failure = is_auth_failure(&result, token_generation.is_some());
+    let auth_failure = is_auth_failure(&export_result, token_generation.is_some());
     let rejected_generation = if auth_failure { token_generation } else { None };
 
-    match route_export_result(result, context, saved_payload, effect_handler, auth_failure).await {
-        Ok(()) => {
-            pdata_metrics
-                .with(SignalOutcomeAttributes {
-                    signal: signal_type,
-                    outcome: Outcome::Success,
-                })
-                .messages
-                .inc();
-        }
-        Err(e) => {
-            otel_warn!(
-                "otlp.exporter.grpc.export_error",
-                message = "OTLP Exporter gRPC service request did not succeed",
-                error = %e
-            );
-            pdata_metrics
-                .with(SignalOutcomeAttributes {
-                    signal: signal_type,
-                    outcome: Outcome::Failure,
-                })
-                .messages
-                .inc();
-        }
+    // The shared outcome describes the backend RPC, independently of whether
+    // its Ack/Nack notification can be delivered to the upstream subscriber.
+    if let Some(error_type) = export_error_type(&export_result) {
+        metrics.record_failure(signal_type, error_type);
+    }
+
+    if let Err(e) = route_export_result(
+        &export_result,
+        context,
+        saved_payload,
+        effect_handler,
+        auth_failure,
+    )
+    .await
+    {
+        otel_warn!(
+            "otlp.exporter.grpc.export_error",
+            message = "error routing export Ack/Nack",
+            error = %e
+        );
+    } else if let Err((_, status)) = &export_result {
+        otel_warn!(
+            "otlp.exporter.grpc.export_error",
+            message = "service request error",
+            code = %status.code(),
+            error_msg = status.message(),
+            source = format_error_sources(status)
+        );
     }
 
     (client, rejected_generation)
@@ -1084,7 +1128,7 @@ fn build_grpc_metadata(
                         otel_debug!(
                             "otlp.exporter.grpc.header_skip",
                             reason = "invalid ascii metadata key",
-                            header_name = header.header_name
+                            header_name = %header.header_name
                         );
                         continue;
                     };
@@ -1092,7 +1136,7 @@ fn build_grpc_metadata(
                         otel_debug!(
                             "otlp.exporter.grpc.header_skip",
                             reason = "invalid ascii metadata value",
-                            header_name = header.header_name
+                            header_name = %header.header_name
                         );
                         continue;
                     };
@@ -1104,7 +1148,7 @@ fn build_grpc_metadata(
                         otel_debug!(
                             "otlp.exporter.grpc.header_skip",
                             reason = "static header takes precedence over propagated header",
-                            header_name = header.header_name
+                            header_name = %header.header_name
                         );
                         continue;
                     }
@@ -1122,7 +1166,7 @@ fn build_grpc_metadata(
                         otel_debug!(
                             "otlp.exporter.grpc.header_skip",
                             reason = "invalid binary metadata key",
-                            header_name = header.header_name
+                            header_name = %header.header_name
                         );
                         continue;
                     };
@@ -1164,6 +1208,7 @@ fn make_export_future(
         context,
         saved_payload,
         signal_type,
+        attempt,
         metadata: RequestMetadata {
             metadata,
             token_generation,
@@ -1175,79 +1220,49 @@ fn make_export_future(
         Some(md) => tonic::Request::from_parts(md, tonic::Extensions::new(), bytes),
         None => tonic::Request::new(bytes),
     };
+    let payload_size = request.get_ref().len();
 
     async move {
-        match client {
-            SignalClient::Logs(mut client) => {
-                let result = client.export(request).await.map(|_| ());
-                CompletedExport {
-                    result,
-                    context,
-                    saved_payload,
-                    signal_type,
-                    client: SignalClient::Logs(client),
-                    token_generation,
+        let completed = attempt
+            .run(async |attempt| {
+                attempt.set_payload_size_with(|| payload_size);
+                let result = match client {
+                    SignalClient::Logs(mut client) => match client.export(request).await {
+                        Ok(_) => Ok(SignalClient::Logs(client)),
+                        Err(status) => Err((
+                            (OtlpGrpcExporterErrorType::from_status(&status), status),
+                            SignalClient::Logs(client),
+                        )),
+                    },
+                    SignalClient::Metrics(mut client) => match client.export(request).await {
+                        Ok(_) => Ok(SignalClient::Metrics(client)),
+                        Err(status) => Err((
+                            (OtlpGrpcExporterErrorType::from_status(&status), status),
+                            SignalClient::Metrics(client),
+                        )),
+                    },
+                    SignalClient::Traces(mut client) => match client.export(request).await {
+                        Ok(_) => Ok(SignalClient::Traces(client)),
+                        Err(status) => Err((
+                            (OtlpGrpcExporterErrorType::from_status(&status), status),
+                            SignalClient::Traces(client),
+                        )),
+                    },
+                };
+                match result {
+                    Ok(client) => Ok(client),
+                    Err(error) if (error.0).0.is_refusal() => Err(attempt.refused(error)),
+                    Err(error) => Err(attempt.failed(error)),
                 }
-            }
-            SignalClient::Metrics(mut client) => {
-                let result = client.export(request).await.map(|_| ());
-                CompletedExport {
-                    result,
-                    context,
-                    saved_payload,
-                    signal_type,
-                    client: SignalClient::Metrics(client),
-                    token_generation,
-                }
-            }
-            SignalClient::Traces(mut client) => {
-                let result = client.export(request).await.map(|_| ());
-                CompletedExport {
-                    result,
-                    context,
-                    saved_payload,
-                    signal_type,
-                    client: SignalClient::Traces(client),
-                    token_generation,
-                }
-            }
+            })
+            .await;
+        CompletedExport {
+            attempt: completed,
+            context,
+            saved_payload,
+            signal_type,
+            token_generation,
         }
-    }
-}
-
-/// FIFO-ish wrapper around the in-flight export RPCs.
-pub(crate) struct InFlightExports<Fut, Output>
-where
-    Fut: Future<Output = Output>,
-{
-    futures: FuturesUnordered<Fut>,
-}
-
-impl<Fut, Output> InFlightExports<Fut, Output>
-where
-    Fut: Future<Output = Output>,
-{
-    pub(crate) fn new() -> Self {
-        Self {
-            futures: FuturesUnordered::new(),
-        }
-    }
-
-    pub(crate) fn len(&self) -> usize {
-        self.futures.len()
-    }
-
-    pub(crate) fn is_empty(&self) -> bool {
-        self.futures.is_empty()
-    }
-
-    pub(crate) fn push(&mut self, future: Fut) {
-        self.futures.push(future);
-    }
-
-    /// Returns a future that resolves once the next export finishes.
-    pub(crate) fn next_completion(&mut self) -> impl Future<Output = Option<Output>> + '_ {
-        self.futures.next()
     }
 }
 
@@ -1368,11 +1383,10 @@ enum SignalClient {
 
 /// Captures everything we need once a single export RPC has completed.
 struct CompletedExport {
-    result: Result<(), tonic::Status>,
+    attempt: CompletedExporterAttempt<SignalClient, (GrpcAttemptError, SignalClient)>,
     context: Context,
     saved_payload: OtapPayload,
     signal_type: SignalType,
-    client: SignalClient,
     /// Generation of the bearer token this request carried, echoed back so an
     /// `UNAUTHENTICATED` response invalidates exactly that token and a stale
     /// rejection is ignored. `None` when no token provider is bound.
@@ -1383,46 +1397,49 @@ struct CompletedExport {
 mod tests {
     use super::*;
 
-    use otap_df_config::node::NodeUserConfig;
-    use otap_df_otap::bearer_auth::test_support::MockTokenProvider;
+    use otel_arrow_dfe_config::ContextEntryName;
+    use otel_arrow_dfe_config::node::NodeUserConfig;
+    use otel_arrow_dfe_otap::bearer_auth::test_support::MockTokenProvider;
     use std::collections::HashMap;
 
-    use otap_df_config::transport_headers::{TransportHeader, TransportHeaders};
-    use otap_df_config::transport_headers_policy::PropagationSelectorType;
-    use otap_df_config::transport_headers_policy::{
+    use otel_arrow_dfe_config::transport_headers::{
+        TransportHeader, TransportHeaders, ValueKind,
+    };
+    use otel_arrow_dfe_config::transport_headers_policy::PropagationSelectorType;
+    use otel_arrow_dfe_config::transport_headers_policy::{
         HeaderPropagationPolicy, PropagationAction, PropagationDefault, PropagationMatch,
         PropagationOverride, PropagationSelector,
     };
-    use otap_df_engine::Interests;
-    use otap_df_engine::context::ControllerContext;
-    use otap_df_engine::control::PipelineCompletionMsg;
-    use otap_df_engine::control::{
+    use otel_arrow_dfe_engine::Interests;
+    use otel_arrow_dfe_engine::context::ControllerContext;
+    use otel_arrow_dfe_engine::control::PipelineCompletionMsg;
+    use otel_arrow_dfe_engine::control::{
         Controllable, PipelineCompletionMsgSender, RuntimeCtrlMsgSender,
         pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
     };
-    use otap_df_engine::error::Error;
-    use otap_df_engine::exporter::ExporterWrapper;
-    use otap_df_engine::local::message::{LocalReceiver, LocalSender};
-    use otap_df_engine::message::{Receiver, Sender};
-    use otap_df_engine::node::NodeWithPDataReceiver;
-    use otap_df_engine::testing::create_not_send_channel;
-    use otap_df_engine::testing::{
+    use otel_arrow_dfe_engine::error::Error;
+    use otel_arrow_dfe_engine::exporter::ExporterWrapper;
+    use otel_arrow_dfe_engine::local::message::{LocalReceiver, LocalSender};
+    use otel_arrow_dfe_engine::message::{Receiver, Sender};
+    use otel_arrow_dfe_engine::node::NodeWithPDataReceiver;
+    use otel_arrow_dfe_engine::testing::create_not_send_channel;
+    use otel_arrow_dfe_engine::testing::{
         exporter::{TestContext, TestRuntime},
-        test_node,
+        test_node, test_pipeline_ctx_with_interests,
     };
-    use otap_df_otap::otlp_grpc::OTLPData;
-    use otap_df_otap::otlp_mock::{LogsServiceMock, MetricsServiceMock, TraceServiceMock};
-    use otap_df_otap::pdata::OtapPdata;
-    use otap_df_otap::testing::{TestCallData, next_ack, next_nack};
-    use otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
-    use otap_df_pdata::proto::opentelemetry::collector::logs::v1::logs_service_server::LogsServiceServer;
-    use otap_df_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
-    use otap_df_pdata::proto::opentelemetry::collector::metrics::v1::metrics_service_server::MetricsServiceServer;
-    use otap_df_pdata::proto::opentelemetry::collector::trace::v1::ExportTraceServiceRequest;
-    use otap_df_pdata::proto::opentelemetry::collector::trace::v1::trace_service_server::TraceServiceServer;
-    use otap_df_telemetry::metrics::MetricSetSnapshot;
-    use otap_df_telemetry::registry::TelemetryRegistryHandle;
-    use otap_df_telemetry::reporter::MetricsReporter;
+    use otel_arrow_dfe_otap::otlp_grpc::OTLPData;
+    use otel_arrow_dfe_otap::otlp_mock::{LogsServiceMock, MetricsServiceMock, TraceServiceMock};
+    use otel_arrow_dfe_otap::pdata::OtapPdata;
+    use otel_arrow_dfe_otap::testing::{TestCallData, next_ack, next_nack};
+    use otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::logs_service_server::LogsServiceServer;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::collector::metrics::v1::metrics_service_server::MetricsServiceServer;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::collector::trace::v1::ExportTraceServiceRequest;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::collector::trace::v1::trace_service_server::TraceServiceServer;
+    use otel_arrow_dfe_telemetry::metrics::MetricSetSnapshot;
+    use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
+    use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
     use prost::Message;
     use std::net::SocketAddr;
     use std::pin::Pin;
@@ -1433,9 +1450,33 @@ mod tests {
     use tonic::codegen::tokio_stream::wrappers::TcpListenerStream;
     use tonic::transport::Server;
 
+    fn context_name(raw: &str) -> ContextEntryName {
+        ContextEntryName::try_from(raw).expect("valid test context entry name")
+    }
+
+    fn text_header(normal: &str, wire_name: &str, value: impl Into<Vec<u8>>) -> TransportHeader {
+        TransportHeader::captured(
+            context_name(normal),
+            wire_name,
+            true,
+            ValueKind::Text,
+            value.into(),
+        )
+    }
+
+    fn binary_header(normal: &str, wire_name: &str, value: impl Into<Vec<u8>>) -> TransportHeader {
+        TransportHeader::captured(
+            context_name(normal),
+            wire_name,
+            true,
+            ValueKind::Binary,
+            value.into(),
+        )
+    }
+
     /// Helper function to wait for and validate an Ack or Nack message with the expected node_id
     async fn wait_for_ack_or_nack(
-        pipeline_completion_rx: &mut otap_df_engine::control::PipelineCompletionMsgReceiver<
+        pipeline_completion_rx: &mut otel_arrow_dfe_engine::control::PipelineCompletionMsgReceiver<
             OtapPdata,
         >,
         expect_ack: bool,
@@ -1585,7 +1626,7 @@ mod tests {
         let (shutdown_sender, shutdown_signal) = tokio::sync::oneshot::channel();
         let (ready_sender, ready_receiver) = tokio::sync::oneshot::channel();
         let grpc_addr = "127.0.0.1";
-        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let grpc_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
         let listening_addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
         // tokio runtime to run grpc server in the background
@@ -1636,7 +1677,7 @@ mod tests {
                     max_in_flight: 32,
                     num_connections: default_num_connections(),
                 },
-                pdata_metrics: ExporterPDataExportMetrics::register(&pipeline_ctx),
+                metrics: OtlpGrpcExporterMetrics::register(&pipeline_ctx),
                 token_provider: None,
             },
             test_node(test_runtime.config().name.clone()),
@@ -1685,7 +1726,7 @@ mod tests {
         let (shutdown_sender, shutdown_signal) = tokio::sync::oneshot::channel();
         let (ready_sender, ready_receiver) = tokio::sync::oneshot::channel();
         let grpc_addr = "127.0.0.1";
-        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let grpc_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
         let listening_addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
         let tokio_rt = Runtime::new().unwrap();
@@ -1703,10 +1744,10 @@ mod tests {
 
             let interceptor =
                 move |req: tonic::Request<()>| -> Result<tonic::Request<()>, tonic::Status> {
-                    if let Some(value) = req.metadata().get("authorization") {
-                        if let Ok(value) = value.to_str() {
-                            *captured_auth_srv.lock().unwrap() = Some(value.to_string());
-                        }
+                    if let Some(value) = req.metadata().get("authorization")
+                        && let Ok(value) = value.to_str()
+                    {
+                        *captured_auth_srv.lock().unwrap() = Some(value.to_string());
                     }
                     Ok(req)
                 };
@@ -1761,7 +1802,7 @@ mod tests {
                     max_in_flight: 32,
                     num_connections: default_num_connections(),
                 },
-                pdata_metrics: ExporterPDataExportMetrics::register(&pipeline_ctx),
+                metrics: OtlpGrpcExporterMetrics::register(&pipeline_ctx),
                 token_provider: None,
             },
             test_node(test_runtime.config().name.clone()),
@@ -1815,7 +1856,7 @@ mod tests {
         let (shutdown_sender, shutdown_signal) = tokio::sync::oneshot::channel();
         let (ready_sender, ready_receiver) = tokio::sync::oneshot::channel();
         let grpc_addr = "127.0.0.1";
-        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let grpc_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
         let listening_addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
         let tokio_rt = Runtime::new().unwrap();
@@ -1890,7 +1931,7 @@ mod tests {
                     max_in_flight: 32,
                     num_connections: default_num_connections(),
                 },
-                pdata_metrics: ExporterPDataExportMetrics::register(&pipeline_ctx),
+                metrics: OtlpGrpcExporterMetrics::register(&pipeline_ctx),
                 token_provider: Some(Box::new(provider)),
             },
             test_node(test_runtime.config().name.clone()),
@@ -2002,7 +2043,7 @@ mod tests {
         let (shutdown_sender, shutdown_signal) = tokio::sync::oneshot::channel();
         let (ready_sender, ready_receiver) = tokio::sync::oneshot::channel();
         let grpc_addr = "127.0.0.1";
-        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let grpc_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
         let listening_addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
         let tokio_rt = Runtime::new().unwrap();
@@ -2040,7 +2081,7 @@ mod tests {
                     max_in_flight: 32,
                     num_connections: default_num_connections(),
                 },
-                pdata_metrics: ExporterPDataExportMetrics::register(&pipeline_ctx),
+                metrics: OtlpGrpcExporterMetrics::register(&pipeline_ctx),
                 token_provider: Some(Box::new(MockTokenProvider::never_publishes())),
             },
             test_node(test_runtime.config().name.clone()),
@@ -2099,8 +2140,8 @@ mod tests {
                                 nack.reason
                             );
                             let (_context, payload) = (*nack.refused).into_parts();
-                            match payload {
-                                OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(
+                            match payload.into_data() {
+                                PayloadData::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(
                                     bytes,
                                 )) => assert_eq!(
                                     bytes, expected_bytes,
@@ -2134,7 +2175,7 @@ mod tests {
         // client will reconnect in the event of a server shutdown
 
         let grpc_addr = "127.0.0.1";
-        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let grpc_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
 
         let tokio_rt = Runtime::new().unwrap();
@@ -2142,11 +2183,9 @@ mod tests {
         let test_runtime = TestRuntime::<OtapPdata>::new();
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(OTLP_EXPORTER_URN));
 
-        let telemetry_registry_handle = TelemetryRegistryHandle::new();
-        let controller_ctx = ControllerContext::new(telemetry_registry_handle.clone());
         let node_id = test_node(test_runtime.config().name.clone());
-        let pipeline_ctx =
-            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let (pipeline_ctx, _telemetry_registry_handle) =
+            test_pipeline_ctx_with_interests(Interests::NODE_INPUT_METRICS);
         let mut exporter = ExporterWrapper::local(
             OTLPExporter {
                 config: Config {
@@ -2158,7 +2197,7 @@ mod tests {
                     max_in_flight: 32,
                     num_connections: default_num_connections(),
                 },
-                pdata_metrics: ExporterPDataExportMetrics::register(&pipeline_ctx),
+                metrics: OtlpGrpcExporterMetrics::register(&pipeline_ctx),
                 token_provider: None,
             },
             node_id.clone(),
@@ -2198,6 +2237,7 @@ mod tests {
                     pipeline_completion_msg_tx,
                     metrics_reporter,
                     Interests::empty(),
+                    otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
                 )
                 .await
                 .map(|_| ())
@@ -2211,7 +2251,7 @@ mod tests {
             server_shutdown_signal2: tokio::sync::oneshot::Sender<bool>,
             pdata_tx: Sender<OtapPdata>,
             control_sender: Sender<NodeControlMsg<OtapPdata>>,
-            mut pipeline_completion_msg_rx: otap_df_engine::control::PipelineCompletionMsgReceiver<
+            mut pipeline_completion_msg_rx: otel_arrow_dfe_engine::control::PipelineCompletionMsgReceiver<
                 OtapPdata,
             >,
             mut req_receiver: tokio::sync::mpsc::Receiver<OTLPData>,
@@ -2224,7 +2264,7 @@ mod tests {
             req.encode(&mut req_bytes).unwrap();
 
             // send a request while the server isn't running and check how we handle it
-            let pdata = OtapPdata::new_default(OtapPayload::OtlpBytes(
+            let pdata = OtapPdata::new_default(OtapPayload::from(
                 OtlpProtoBytes::ExportLogsRequest(req_bytes.clone().into()),
             ))
             .test_subscribe_to(
@@ -2250,7 +2290,7 @@ mod tests {
             _ = server_startup_ack_receiver.recv().await.unwrap();
 
             // send a pdata
-            let pdata = OtapPdata::new_default(OtapPayload::OtlpBytes(
+            let pdata = OtapPdata::new_default(OtapPayload::from(
                 OtlpProtoBytes::ExportLogsRequest(req_bytes.clone().into()),
             ))
             .test_subscribe_to(
@@ -2276,7 +2316,7 @@ mod tests {
             _ = server_shutdown_ack_receiver.recv().await.unwrap();
 
             // send a request while the server isn't running and check that we still handle it correctly
-            let pdata = OtapPdata::new_default(OtapPayload::OtlpBytes(
+            let pdata = OtapPdata::new_default(OtapPayload::from(
                 OtlpProtoBytes::ExportLogsRequest(req_bytes.clone().into()),
             ))
             .test_subscribe_to(
@@ -2300,7 +2340,7 @@ mod tests {
             _ = server_startup_ack_receiver.recv().await.unwrap();
 
             // send another pdata. This ensures the client can reconnect after it was shut down
-            let pdata = OtapPdata::new_default(OtapPayload::OtlpBytes(
+            let pdata = OtapPdata::new_default(OtapPayload::from(
                 OtlpProtoBytes::ExportLogsRequest(req_bytes.clone().into()),
             ))
             .test_subscribe_to(
@@ -2331,7 +2371,7 @@ mod tests {
             let mut logs_failed_count = 0;
             for _ in 0..2 {
                 let metrics = metrics_receiver.recv_async().await.unwrap();
-                if metrics.descriptor().name == "exporter.pdata.exports"
+                if metrics.descriptor().name == "exporter.attempted"
                     && metrics.measurement_attribute_value("signal") == Some("logs")
                 {
                     match metrics.measurement_attribute_value("outcome") {
@@ -2447,6 +2487,21 @@ mod tests {
     /// Helper builds a [`tonic::Status`] with the given code, no details.
     fn status_with_code(code: Code) -> tonic::Status {
         tonic::Status::new(code, "test error")
+    }
+
+    /// Scenario: A dispatched OTLP gRPC request returns either success or a backend status error.
+    /// Guarantees: Only the RPC error produces a diagnostic type, independently of notification delivery.
+    #[test]
+    fn export_error_type_is_derived_from_the_rpc_result() {
+        assert_eq!(export_error_type(&Ok(())), None);
+        let status = status_with_code(Code::Unavailable);
+        assert_eq!(
+            export_error_type(&Err((
+                OtlpGrpcExporterErrorType::from_status(&status),
+                status,
+            ))),
+            Some(OtlpGrpcExporterErrorType::Unavailable)
+        );
     }
 
     /// Helper builds a [`tonic::Status`] carrying a `RetryInfo` in its
@@ -2666,7 +2721,7 @@ mod tests {
     }
 
     #[tonic::async_trait]
-    impl otap_df_pdata::proto::opentelemetry::collector::logs::v1::logs_service_server::LogsService
+    impl otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::logs_service_server::LogsService
         for ErrorLogsServiceMock
     {
         async fn export(
@@ -2674,7 +2729,7 @@ mod tests {
             _request: tonic::Request<ExportLogsServiceRequest>,
         ) -> Result<
             tonic::Response<
-                otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceResponse,
+                otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceResponse,
             >,
             tonic::Status,
         > {
@@ -2705,10 +2760,10 @@ mod tests {
         detail_bytes: Option<Bytes>,
         token_provider: Option<Box<dyn BearerTokenProvider>>,
     ) -> bool {
-        use otap_df_pdata::proto::opentelemetry::collector::logs::v1::logs_service_server::LogsServiceServer;
+        use otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::logs_service_server::LogsServiceServer;
 
         let grpc_addr = "127.0.0.1";
-        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let grpc_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
 
         let tokio_rt = Runtime::new().unwrap();
@@ -2732,7 +2787,7 @@ mod tests {
                     max_in_flight: 1,
                     num_connections: default_num_connections(),
                 },
-                pdata_metrics: ExporterPDataExportMetrics::register(&pipeline_ctx),
+                metrics: OtlpGrpcExporterMetrics::register(&pipeline_ctx),
                 token_provider,
             },
             node_id.clone(),
@@ -2787,6 +2842,7 @@ mod tests {
                     pipeline_completion_msg_tx,
                     metrics_reporter,
                     Interests::empty(),
+                    otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
                 )
                 .await
                 .map(|_| ())
@@ -2795,7 +2851,7 @@ mod tests {
         async fn drive_test(
             pdata_tx: Sender<OtapPdata>,
             control_sender: Sender<NodeControlMsg<OtapPdata>>,
-            mut pipeline_completion_msg_rx: otap_df_engine::control::PipelineCompletionMsgReceiver<
+            mut pipeline_completion_msg_rx: otel_arrow_dfe_engine::control::PipelineCompletionMsgReceiver<
                 OtapPdata,
             >,
             shutdown_tx: tokio::sync::oneshot::Sender<()>,
@@ -2809,7 +2865,7 @@ mod tests {
             let req = ExportLogsServiceRequest::default();
             let mut req_bytes = vec![];
             req.encode(&mut req_bytes).unwrap();
-            let pdata = OtapPdata::new_default(OtapPayload::OtlpBytes(
+            let pdata = OtapPdata::new_default(OtapPayload::from(
                 OtlpProtoBytes::ExportLogsRequest(Bytes::from(req_bytes)),
             ))
             .test_subscribe_to(
@@ -2983,7 +3039,11 @@ mod tests {
     ) -> EffectHandler<OtapPdata> {
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         let node_id = test_node("test-exporter");
-        let mut handler = EffectHandler::new(node_id, metrics_reporter);
+        let mut handler = EffectHandler::new(
+            node_id,
+            metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+        );
         handler.set_propagation_policy(policy);
         handler
     }
@@ -3021,7 +3081,7 @@ mod tests {
     fn test_build_grpc_metadata_returns_none_without_policy() {
         let handler = make_effect_handler_with_policy(None);
         let mut headers = TransportHeaders::new();
-        headers.push(TransportHeader::text("x-tenant-id", "x-tenant-id", b"acme"));
+        headers.push(text_header("x-tenant-id", "x-tenant-id", b"acme"));
         let context = context_with_headers(headers);
 
         let result = build_grpc_metadata(&handler, &context, None, None);
@@ -3045,16 +3105,8 @@ mod tests {
         let handler = make_effect_handler_with_policy(Some(propagate_all_policy()));
 
         let mut headers = TransportHeaders::new();
-        headers.push(TransportHeader::text(
-            "x-tenant-id",
-            "X-Tenant-Id",
-            b"tenant-abc-123",
-        ));
-        headers.push(TransportHeader::text(
-            "x-request-id",
-            "X-Request-Id",
-            b"req-xyz-789",
-        ));
+        headers.push(text_header("x-tenant-id", "X-Tenant-Id", b"tenant-abc-123"));
+        headers.push(text_header("x-request-id", "X-Request-Id", b"req-xyz-789"));
         let context = context_with_headers(headers);
 
         let metadata = build_grpc_metadata(&handler, &context, None, None)
@@ -3083,7 +3135,7 @@ mod tests {
             },
             vec![PropagationOverride {
                 match_rule: PropagationMatch {
-                    stored_names: vec!["authorization".to_string()],
+                    stored_names: vec![context_name("authorization")],
                 },
                 action: PropagationAction::Drop,
                 name: None,
@@ -3093,8 +3145,8 @@ mod tests {
         let handler = make_effect_handler_with_policy(Some(policy));
 
         let mut headers = TransportHeaders::new();
-        headers.push(TransportHeader::text("x-tenant-id", "X-Tenant-Id", b"acme"));
-        headers.push(TransportHeader::text(
+        headers.push(text_header("x-tenant-id", "X-Tenant-Id", b"acme"));
+        headers.push(text_header(
             "authorization",
             "Authorization",
             b"Bearer secret-token",
@@ -3120,7 +3172,7 @@ mod tests {
 
         let binary_value: Vec<u8> = vec![0x00, 0x01, 0xFF, 0xFE, 0x80, 0x7F];
         let mut headers = TransportHeaders::new();
-        headers.push(TransportHeader::binary(
+        headers.push(binary_header(
             "trace-context-bin",
             "trace-context-bin",
             binary_value.clone(),
@@ -3147,7 +3199,7 @@ mod tests {
         let binary_value: Vec<u8> = vec![0xDE, 0xAD, 0xBE, 0xEF];
         let mut headers = TransportHeaders::new();
         // Wire name does NOT end with -bin; build_grpc_metadata should add the suffix.
-        headers.push(TransportHeader::binary(
+        headers.push(binary_header(
             "custom-binary",
             "custom-binary",
             binary_value.clone(),
@@ -3168,17 +3220,17 @@ mod tests {
         let handler = make_effect_handler_with_policy(Some(propagate_all_policy()));
 
         let mut headers = TransportHeaders::new();
-        headers.push(TransportHeader::text(
+        headers.push(text_header(
             "x-forwarded-for",
             "X-Forwarded-For",
             b"10.0.0.1",
         ));
-        headers.push(TransportHeader::text(
+        headers.push(text_header(
             "x-forwarded-for",
             "X-Forwarded-For",
             b"192.168.1.1",
         ));
-        headers.push(TransportHeader::text(
+        headers.push(text_header(
             "x-forwarded-for",
             "X-Forwarded-For",
             b"172.16.0.1",
@@ -3216,7 +3268,7 @@ mod tests {
         let handler = make_effect_handler_with_policy(Some(policy));
 
         let mut headers = TransportHeaders::new();
-        headers.push(TransportHeader::text("x-tenant-id", "X-Tenant-Id", b"acme"));
+        headers.push(text_header("x-tenant-id", "X-Tenant-Id", b"acme"));
         let context = context_with_headers(headers);
 
         let result = build_grpc_metadata(&handler, &context, None, None);
@@ -3256,11 +3308,7 @@ mod tests {
         let handler = make_effect_handler_with_policy(Some(propagate_all_policy()));
 
         let mut transport = TransportHeaders::new();
-        transport.push(TransportHeader::text(
-            "x-tenant-id",
-            "X-Tenant-Id",
-            b"tenant-abc",
-        ));
+        transport.push(text_header("x-tenant-id", "X-Tenant-Id", b"tenant-abc"));
         let context = context_with_headers(transport);
 
         let mut static_headers = HashMap::new();
@@ -3294,7 +3342,7 @@ mod tests {
         let handler = make_effect_handler_with_policy(Some(propagate_all_policy()));
 
         let mut transport = TransportHeaders::new();
-        transport.push(TransportHeader::text(
+        transport.push(text_header(
             "authorization",
             "Authorization",
             b"Bearer propagated",
@@ -3360,7 +3408,7 @@ mod tests {
         let handler = make_effect_handler_with_policy(Some(propagate_all_policy()));
 
         let mut transport = TransportHeaders::new();
-        transport.push(TransportHeader::text(
+        transport.push(text_header(
             "authorization",
             "Authorization",
             b"Bearer propagated",
@@ -3429,7 +3477,8 @@ mod tests {
     /// lapsed or raced token costs a retry rather than dropping the batch.
     #[test]
     fn unauthenticated_is_an_auth_failure_when_a_provider_is_bound() {
-        let result = Err(tonic::Status::unauthenticated("token expired"));
+        let status = tonic::Status::unauthenticated("token expired");
+        let result = Err((OtlpGrpcExporterErrorType::from_status(&status), status));
 
         assert!(is_auth_failure(&result, true));
     }
@@ -3440,7 +3489,8 @@ mod tests {
     /// retrying would loop on the same rejected credential.
     #[test]
     fn unauthenticated_is_permanent_without_a_bound_provider() {
-        let result = Err(tonic::Status::unauthenticated("token expired"));
+        let status = tonic::Status::unauthenticated("token expired");
+        let result = Err((OtlpGrpcExporterErrorType::from_status(&status), status));
 
         assert!(!is_auth_failure(&result, false));
     }
@@ -3452,7 +3502,8 @@ mod tests {
     /// scope or permission problem a refresh cannot fix.
     #[test]
     fn permission_denied_is_not_an_auth_failure() {
-        let result = Err(tonic::Status::permission_denied("scope missing"));
+        let status = tonic::Status::permission_denied("scope missing");
+        let result = Err((OtlpGrpcExporterErrorType::from_status(&status), status));
 
         assert!(!is_auth_failure(&result, true));
     }
