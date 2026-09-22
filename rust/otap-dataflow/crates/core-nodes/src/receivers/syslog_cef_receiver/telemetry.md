@@ -33,7 +33,7 @@ diagnostics.
 | `syslog_cef_receiver.tls.handshake.failed` | `warn` | TLS handshake failed; the connection is closed. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
 | `syslog_cef_receiver.drain_ingress.timeout` | `warn` | Ingress drain timeout expired with connection tasks still active during shutdown. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
 | `syslog_cef_receiver.tcp.read_error` | `warn` | A TCP read failed and the connection is closed. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
-| `syslog_cef_receiver.tcp.framing_error` | `warn` | An invalid, incomplete, or oversized TCP frame caused the connection to close. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
+| `syslog_cef_receiver.tcp.framing_error` | `warn` | An invalid, incomplete, or oversized TCP frame caused the connection to close. Bounded numeric fields identify invalid prefix bytes, incomplete lengths, or size-policy mismatches without logging payload content. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
 | `syslog_cef_receiver.arrow_records.build_failed` | `warn` | Failed to build Arrow records from a parsed batch; the batch is dropped. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
 
 ## Maintenance

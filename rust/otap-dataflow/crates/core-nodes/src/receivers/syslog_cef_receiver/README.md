@@ -96,9 +96,12 @@ exceeds `MAX_MESSAGE_SIZE` and is emitted as multiple bounded-read fragments,
 each emitted fragment is counted separately. Over-limit UDP datagrams are
 dropped; over-limit TCP messages are dropped while the connection remains open.
 If an oversized TCP fragment is over limit, remaining fragments from that same
-oversized line are discarded through the newline.
-Oversized, malformed, or incomplete octet-counted frames close the connection
-so subsequent bytes cannot be interpreted with a desynchronized frame boundary.
+oversized line are discarded through the newline. For an oversized
+octet-counted frame, the receiver processes the first `MAX_MESSAGE_SIZE` payload
+bytes once as a truncated record, then closes the connection without draining
+the remaining declared payload. Malformed or incomplete octet-counted frames
+are rejected and close the connection so subsequent bytes cannot be interpreted
+with a desynchronized frame boundary.
 TCP rate-limit drops are silent because plain syslog TCP has no per-message
 acknowledgement or retry hint.
 
