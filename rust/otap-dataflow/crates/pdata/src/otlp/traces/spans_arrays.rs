@@ -3,7 +3,7 @@
 
 use crate::arrays::{
     ByteArrayAccessor, DurationNanosArrayAccessor, Int32ArrayAccessor, StringArrayAccessor,
-    get_timestamp_nanosecond_array_opt, get_u16_array, get_u32_array_opt,
+    get_timestamp_nanosecond_array_opt, get_u16_array_opt, get_u32_array_opt,
 };
 use crate::error::{Error, Result};
 use crate::otlp::traces::spans_status_arrays::SpanStatusArrays;
@@ -12,7 +12,7 @@ use arrow::array::{RecordBatch, StructArray, TimestampNanosecondArray, UInt16Arr
 use arrow::datatypes::{DataType, Fields};
 
 pub(crate) struct SpansArrays<'a> {
-    pub(crate) id: &'a UInt16Array,
+    pub(crate) id: Option<&'a UInt16Array>,
     pub(crate) schema_url: Option<StringArrayAccessor<'a>>,
     pub(crate) trace_id: Option<ByteArrayAccessor<'a>>,
     pub(crate) span_id: Option<ByteArrayAccessor<'a>>,
@@ -33,7 +33,7 @@ impl<'a> TryFrom<&'a RecordBatch> for SpansArrays<'a> {
     type Error = Error;
 
     fn try_from(rb: &'a RecordBatch) -> Result<Self> {
-        let id = get_u16_array(rb, consts::ID)?;
+        let id = get_u16_array_opt(rb, consts::ID)?;
         let schema_url = rb
             .column_by_name(consts::SCHEMA_URL)
             .map(StringArrayAccessor::try_new)
