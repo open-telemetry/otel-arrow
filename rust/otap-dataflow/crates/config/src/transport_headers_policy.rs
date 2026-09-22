@@ -17,6 +17,7 @@ use hashbrown::{Equivalent, HashMap};
 use http::{HeaderMap, HeaderName};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use smallvec::SmallVec;
 use std::borrow::Cow;
 use std::fmt;
 use std::hash::{Hash, Hasher};
@@ -272,9 +273,8 @@ impl CompiledHeaderCapturePolicy {
         V: Into<Cow<'name, [u8]>>,
     {
         let defaults = &self.defaults;
-        let (lower, upper) = matches.size_hint();
-        let capacity = upper.unwrap_or(lower).min(defaults.max_entries);
-        let mut captured = Vec::with_capacity(capacity);
+        // Unmatched inbound headers should not force small captures onto the heap.
+        let mut captured: SmallVec<[CapturedTransportHeader<'_, '_>; 4]> = SmallVec::new();
         let mut skipped_max_entries: usize = 0;
         let mut skipped_name_too_long: usize = 0;
         let mut skipped_value_too_long: usize = 0;
@@ -311,10 +311,12 @@ impl CompiledHeaderCapturePolicy {
                 }
             };
 
+            let original_name = (capture.preserve_original_name
+                && capture.stored_name.as_str() != wire_name)
+                .then_some(wire_name);
             captured.push(CapturedTransportHeader {
                 name: &capture.stored_name,
-                wire_name,
-                preserve_original_name: capture.preserve_original_name,
+                original_name,
                 value_kind,
                 value,
             });
@@ -911,6 +913,62 @@ mod tests {
         assert_eq!(captured[1].name, "TenantID");
         assert_eq!(captured[1].wire_name(), "x-tenant");
         assert_eq!(captured[1].value.bytes, b"globex");
+    }
+
+    /// Scenario: generic and HTTP capture retain zero to sixteen repeated values among ignored headers.
+    /// Guarantees: empty, inline-sized, and spilled captures preserve order, names, kinds, and bytes.
+    #[test]
+    fn capture_preserves_values_across_inline_capacity() {
+        let policy = HeaderCapturePolicy::new(
+            CaptureDefaults::default(),
+            vec![CaptureRule {
+                match_names: vec![context_name("x-tenant")],
+                store_as: Some(context_name("TenantID")),
+                sensitive: false,
+                value_kind: None,
+            }],
+        )
+        .compile(|_| true);
+
+        for count in [0, 1, 4, 5, 16] {
+            let values: Vec<_> = (0..count).map(|index| format!("tenant-{index}")).collect();
+            let mut headers = HeaderMap::new();
+            for value in &values {
+                _ = headers.append(
+                    HeaderName::from_static("x-tenant"),
+                    http::HeaderValue::from_str(value).expect("valid tenant value"),
+                );
+            }
+            for name in ["x-ignored-a", "x-ignored-b", "x-ignored-c", "x-ignored-d"] {
+                _ = headers.append(
+                    HeaderName::from_static(name),
+                    http::HeaderValue::from_static("ignored"),
+                );
+            }
+
+            for native in [false, true] {
+                let mut captured = TransportHeaders::new();
+                let stats = if native {
+                    policy.capture_from_http_headers(&headers, &mut captured)
+                } else {
+                    policy.capture_from_pairs(
+                        headers
+                            .iter()
+                            .map(|(name, value)| (name.as_str(), value.as_bytes())),
+                        &mut captured,
+                    )
+                };
+
+                assert!(stats.is_none());
+                assert_eq!(captured.len(), count);
+                for (header, value) in captured.iter().zip(&values) {
+                    assert_eq!(header.name, "TenantID");
+                    assert_eq!(header.wire_name(), "x-tenant");
+                    assert_eq!(header.value.value_kind, ValueKind::Text);
+                    assert_eq!(header.value.bytes, value.as_bytes());
+                }
+            }
+        }
     }
 
     /// Scenario: repeated HTTP values cross both value-size and entry-count limits.

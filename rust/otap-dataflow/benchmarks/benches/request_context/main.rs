@@ -20,7 +20,7 @@ use otel_arrow_dfe_config::transport_headers_policy::{
 use rdkafka::message::{Header, Headers, OwnedHeaders};
 use tonic::metadata::{KeyAndValueRef, MetadataKey, MetadataMap, MetadataValue};
 
-const HEADER_COUNTS: [usize; 4] = [1, 4, 16, 32];
+const HEADER_COUNTS: [usize; 7] = [1, 2, 4, 5, 6, 16, 32];
 const PRODUCER_CASES: [ProducerCase; 2] = [ProducerCase::Unrenamed, ProducerCase::Renamed];
 // Stored-name and absent consumers compile the same receive policy.
 const RECEIVE_CONSUMER_CASES: [ConsumerCase; 2] = [ConsumerCase::None, ConsumerCase::Original];

@@ -238,8 +238,7 @@ struct PackedTransportHeaders {
 
 pub(crate) struct CapturedTransportHeader<'name, 'value> {
     pub(crate) name: &'name ContextEntryName,
-    pub(crate) wire_name: &'value str,
-    pub(crate) preserve_original_name: bool,
+    pub(crate) original_name: Option<&'value str>,
     pub(crate) value_kind: ValueKind,
     pub(crate) value: Cow<'value, [u8]>,
 }
@@ -539,49 +538,39 @@ impl PackedTransportHeaders {
             .try_fold(0usize, |total, header| {
                 total
                     .checked_add(header.name.as_str().len())
-                    .and_then(|total| {
-                        total.checked_add(
-                            if header.preserve_original_name
-                                && header.name.as_str() != header.wire_name
-                            {
-                                header.wire_name.len()
-                            } else {
-                                0
-                            },
-                        )
-                    })
+                    .and_then(|total| total.checked_add(header.original_name.map_or(0, str::len)))
                     .and_then(|total| total.checked_add(header.value.len()))
             })
             .expect("transport header blob length overflow");
-        let mut bytes = vec![
-            0;
-            descriptor_len
-                .checked_add(blob_len)
-                .expect("transport header packed length overflow")
-        ];
+        let packed_len = descriptor_len
+            .checked_add(blob_len)
+            .expect("transport header packed length overflow");
+        let mut bytes = vec![0; packed_len];
         let mut blob_at = descriptor_len;
 
         for (index, header) in headers.iter().enumerate() {
             let descriptor_at = index * PACKED_HEADER_LEN;
             let stored = write_blob(&mut bytes, &mut blob_at, header.name.as_str().as_bytes())
                 .expect("preallocated transport header name range");
-            let original = (header.preserve_original_name
-                && header.name.as_str() != header.wire_name)
-                .then(|| {
-                    write_blob(&mut bytes, &mut blob_at, header.wire_name.as_bytes())
-                        .expect("preallocated original transport header name range")
-                });
+            let original = header.original_name.map(|name| {
+                write_blob(&mut bytes, &mut blob_at, name.as_bytes())
+                    .expect("preallocated original transport header name range")
+            });
             let value = write_blob(&mut bytes, &mut blob_at, header.value.as_ref())
                 .expect("preallocated transport header value range");
-
-            write_range(&mut bytes, descriptor_at, stored)
+            let descriptor = &mut bytes[descriptor_at..descriptor_at + PACKED_HEADER_LEN];
+            write_range(descriptor, 0, stored)
                 .expect("transport header name range fits packed descriptor");
-            write_range(&mut bytes, descriptor_at + 8, original.unwrap_or((0, 0)))
+            write_range(descriptor, 8, original.unwrap_or((0, 0)))
                 .expect("original header name range fits packed descriptor");
-            write_range(&mut bytes, descriptor_at + 16, value)
+            write_range(descriptor, 16, value)
                 .expect("transport header value range fits packed descriptor");
-            bytes[descriptor_at + 24] = header.value_kind.encode();
+            descriptor[24] = header.value_kind.encode();
         }
+        assert_eq!(
+            blob_at, packed_len,
+            "captured transport header size mismatch"
+        );
 
         Some(Self {
             bytes: bytes.into_boxed_slice(),
@@ -959,6 +948,57 @@ mod tests {
             result.storage.as_deref(),
             Some(TransportHeadersStorage::Packed(_))
         ));
+    }
+
+    /// Scenario: pre-sized capture packs borrowed, owned, empty, binary, and renamed repeated values.
+    /// Guarantees: both name-retention modes produce byte-identical storage to the owned encoder.
+    #[test]
+    fn captured_packing_matches_owned_encoding() {
+        for preserve_original in [false, true] {
+            let policy = make_capture_policy(vec![
+                rule(&["x-tenant"], Some("tenant")),
+                rule(&["trace-bin", "x-plain"], None),
+            ])
+            .compile(|_| preserve_original);
+            for count in [0, 1, 4, 5, 16] {
+                let mut expected = Vec::new();
+                let mut pairs = Vec::new();
+                for index in 0..count {
+                    let (wire, stored, kind, value): (_, _, _, Cow<'_, [u8]>) = match index % 3 {
+                        0 => (
+                            "X-Tenant",
+                            "tenant",
+                            ValueKind::Text,
+                            Cow::Borrowed(b"acme"),
+                        ),
+                        1 => (
+                            "trace-bin",
+                            "trace-bin",
+                            ValueKind::Binary,
+                            Cow::Owned(vec![0, 0xff, 0x80, 42]),
+                        ),
+                        _ => ("x-plain", "x-plain", ValueKind::Text, Cow::Borrowed(b"")),
+                    };
+                    expected.push(TransportHeader::captured(
+                        context_name(stored),
+                        wire,
+                        preserve_original,
+                        kind,
+                        value.as_ref(),
+                    ));
+                    pairs.push((wire, value));
+                }
+                let mut captured = TransportHeaders::new();
+                assert!(
+                    policy
+                        .capture_from_pairs(pairs.into_iter(), &mut captured)
+                        .is_none()
+                );
+                let expected =
+                    PackedTransportHeaders::build(expected).map(TransportHeadersStorage::Packed);
+                assert_eq!(captured.storage.as_deref(), expected.as_ref());
+            }
+        }
     }
 
     /// Scenario: a packed header descriptor is corrupted below its declared count.
