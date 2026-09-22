@@ -382,6 +382,41 @@ It checks equivalent output and reports timings without a speed assertion.
 Debug-build timings are not production throughput or a comparison with an
 earlier revision.
 
+For large-page memory qualification, run the ignored profile alone in a fresh
+test process:
+
+```powershell
+cargo test -p otel-arrow-dfe-scraper profile_large_owned_page_memory -- --ignored --nocapture --test-threads=1
+```
+
+It constructs 10,000 owned rows with a 24 KiB string each, under a 256 MiB
+`max_batch_bytes` limit, and reports normalized-row and serialized-payload sizes.
+The phase markers allow an external process-memory sampler to capture the
+baseline, completed input, and retained output. Measure the test process, not
+Cargo or a concurrently running test suite.
+
+Peak resident memory is a measured property, not the sum of the reported
+logical byte counters: row storage, protobuf metadata, the output buffer,
+allocator overhead, and the runtime can coexist. This synthetic profile does
+not include an Oracle client, native fetch/prefetch buffers, transport
+compression, gRPC/TLS buffers, or other pipeline nodes. Deployment sizing must
+include those separately; the profile is not a container-memory guarantee.
+
+One encoder-only Windows x64 debug measurement (Rust 1.98.1, three fresh
+processes, OS peak working set sampled every 10 ms) produced:
+
+| Quantity | Result |
+| --- | --- |
+| Rows and string size | 10,000 rows, 24 KiB per row |
+| Accounted normalized-row storage | 234.91 MiB |
+| Serialized OTLP payload | 236.07 MiB |
+| Peak process working set | 482.43-482.44 MiB |
+
+Both logical representations fit the 256 MiB setting, while peak resident
+memory was much larger. The measured peak includes the test process and
+encoding allocations, not native database or downstream buffers. It is a
+workload-specific sizing example, not a portable peak-memory bound.
+
 `CellValue` and `CompositeCursor` debug output redact their values; nested
 cursor rows/pages therefore do not reveal the cursor through their debug
 representation. `CompiledQuery` also redacts SQL and its initial cursor.
@@ -544,12 +579,35 @@ it is not a database-source ownership key.
 
 ### Shutdown and Live Configuration Changes
 
-The planned polling controller will offload encoding and checkpoint I/O while
-handling control messages. Checkpoint retries will honor an already-active
-drain deadline. Worker-stop waits will respect the earlier supplied deadline
-and the five-second stop cap. Unconfirmed cleanup will retain ownership until
-process exit rather than allowing overlapping source work; uninterruptible
-native work can require a supervisor to terminate the process.
+Each receiver owns one dedicated thread for encoding and checkpoint I/O, with
+a capacity-one request queue and nonblocking submission. This keeps large-page
+encoding and filesystem calls off the pipeline's async thread without creating
+per-page threads or using Tokio's runtime-owned blocking pool.
+
+The controller continues processing control messages while work runs.
+Checkpoint retries inherit an already-active drain deadline rather than waiting
+for a new stop message. Active-operation cancellation and checkpoint stop waits
+use the earlier supplied deadline and a five-second cap. Final adapter and
+scraper-worker cleanup are attempted concurrently within the remaining stop
+budget; ordinary error exits receive a five-second cleanup budget. A drain may
+still wait for downstream feedback until its supplied deadline; this is not a
+universal five-second bound on the entire drain.
+
+Worker completion requires an explicit exit acknowledgement, not merely a
+dropped result handle. If native work or a scraper job cannot be confirmed
+stopped, the receiver reports an error and retains its source lease until
+process exit. The dedicated scraper thread does not make Tokio runtime
+destruction wait for a stalled filesystem/encoding job. The thread is not
+forcibly killed: a supervisor must terminate/restart the process to clear an
+unconfirmed worker and its quarantined ownership. Starting a replacement
+receiver in the same process must not bypass that quarantine.
+
+Adapter cancellation must stop the whole operation. In particular, native fetch
+and conversion loops must check cancellation between calls rather than assume
+interrupting one call stops later calls. Potentially uninterruptible native
+operations, including the cancellation operation itself, must use adapter-owned
+workers rather than the pipeline runtime's blocking pool. Timing out a future
+does not cancel a running native call.
 
 Stop the existing pipeline before starting it with changed configuration,
 including interval-only changes. A replacement started first can conflict with

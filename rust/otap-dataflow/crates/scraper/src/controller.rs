@@ -29,9 +29,85 @@ use otel_arrow_dfe_telemetry::{otel_debug, otel_info, otel_warn};
 use std::cell::Cell;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::mpsc::{SyncSender, TrySendError, sync_channel};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use tokio::sync::oneshot;
 
 const WORKER_STOP_TIMEOUT: Duration = Duration::from_secs(5);
+
+type ScraperJob = Box<dyn FnOnce() + Send>;
+
+/// One receiver owns one thread and at most one active plus one queued job.
+/// Filesystem calls can hang indefinitely: Tokio's blocking pool would make
+/// runtime drop wait forever even after an async operation timeout. The detached
+/// thread instead reports completion after dropping all job-loop resources.
+struct ScraperWorker {
+    jobs: Option<SyncSender<ScraperJob>>,
+    exited: oneshot::Receiver<()>,
+}
+
+#[derive(Debug, thiserror::Error)]
+enum ScraperWorkerError {
+    #[error("scraper worker queue is full")]
+    Busy,
+    #[error("scraper worker stopped without confirming cleanup; source requires process restart")]
+    Stopped,
+    #[error("scraper worker missed its stop deadline; source requires process restart")]
+    Deadline,
+}
+
+impl ScraperWorker {
+    fn new() -> std::io::Result<Self> {
+        // These channels cross only this receiver's async-core/worker boundary.
+        // Nonblocking submission provides a hard bound without a shared pool.
+        let (jobs, requests) = sync_channel::<ScraperJob>(1);
+        let (exit, exited) = oneshot::channel();
+        let _thread = std::thread::Builder::new()
+            .name("database-scraper".to_owned())
+            .spawn(move || {
+                while let Ok(job) = requests.recv() {
+                    job();
+                }
+                drop(requests);
+                // Panic drops the sender instead; it must never look like success.
+                let _ = exit.send(());
+            })?;
+        Ok(Self {
+            jobs: Some(jobs),
+            exited,
+        })
+    }
+
+    fn run<T: Send + 'static>(
+        &self,
+        job: impl FnOnce() -> T + Send + 'static,
+    ) -> Result<oneshot::Receiver<T>, ScraperWorkerError> {
+        let (response, result) = oneshot::channel();
+        self.jobs
+            .as_ref()
+            .ok_or(ScraperWorkerError::Stopped)?
+            .try_send(Box::new(move || {
+                let _ = response.send(job());
+            }))
+            .map_err(|error| match error {
+                TrySendError::Full(_) => ScraperWorkerError::Busy,
+                TrySendError::Disconnected(_) => ScraperWorkerError::Stopped,
+            })?;
+        Ok(result)
+    }
+
+    async fn stop(mut self, deadline: Instant) -> Result<(), ScraperWorkerError> {
+        drop(self.jobs.take());
+        tokio::time::timeout_at(worker_stop_deadline(deadline).into(), &mut self.exited)
+            .await
+            .map_err(|_| ScraperWorkerError::Deadline)?
+            .map_err(|_| ScraperWorkerError::Stopped)
+    }
+}
+
+fn worker_stop_deadline(deadline: Instant) -> Instant {
+    deadline.min(Instant::now() + WORKER_STOP_TIMEOUT)
+}
 
 /// Shared only by this receiver's local control-wait phases, never by worker threads.
 struct PollAdmission {
@@ -55,6 +131,10 @@ impl PollAdmission {
 #[derive(Debug, thiserror::Error)]
 #[error("database worker missed its stop deadline; source is quarantined until process restart")]
 struct WorkerStopDeadline;
+
+#[derive(Debug, thiserror::Error)]
+#[error("database adapter cleanup failed; source is quarantined until process restart: {0}")]
+struct AdapterCleanupError<E: std::error::Error + 'static>(#[source] E);
 
 #[derive(Clone)]
 struct NonInterruptible;
@@ -88,7 +168,7 @@ impl HeldOwnership<SourceLease> {
 impl<L> Drop for HeldOwnership<L> {
     fn drop(&mut self) {
         if self.abandoned.get() || !self.cleanup_joined.get() {
-            // Native work and spawn_blocking jobs cannot be aborted reliably.
+            // Native work and dedicated worker jobs cannot be aborted reliably.
             // Quarantine the real OS lock until process exit rather than allow
             // another receiver to overlap an operation whose join was lost.
             std::mem::forget(self.lease.take());
@@ -349,13 +429,18 @@ where
             state: admission,
             cycle_interrupted: Cell::new(false),
         };
-        // All normal and error exits join adapter cleanup before releasing
-        // ownership. Drop of this future instead quarantines the lease.
+        let mut worker = None;
+        // All normal and error exits confirm both workers stopped before releasing
+        // ownership, including spawn/read failures. Drop quarantines the lease.
         let result = async {
 
+        worker = Some(ScraperWorker::new().map_err(|error| {
+            receiver_error(&effect_handler, ReceiverErrorKind::Other, error)
+        })?);
+        let worker = worker.as_ref().expect("worker just created");
         // Fail closed on unreadable durable state before any row is fetched.
         let loaded = match await_database_operation_or_stop(
-            read_checkpoint(&checkpoint, &effect_handler),
+            read_checkpoint(worker, &checkpoint, &effect_handler),
             NonInterruptible,
             &mut ctrl_msg_recv,
             &mut metrics,
@@ -473,6 +558,7 @@ where
                                 metrics.acks.add(1);
                             }
                             let committed = commit_checkpoint(
+                                worker,
                                 &checkpoint,
                                 state.revision,
                                 &candidate,
@@ -645,10 +731,12 @@ where
                     // must not monopolize the thread-per-core engine runtime.
                     // Move the single-owner cache into the job and back, avoiding
                     // per-poll configuration clones or a shared mutable cache.
-                    let encoding = tokio::task::spawn_blocking(move || {
+                    let encoding = worker.run(move || {
                         let encoded = encoder.encode_page(page, observed_time, limit);
                         (encoder, encoded)
-                    });
+                    }).map_err(|error| receiver_error(
+                        &effect_handler, ReceiverErrorKind::Other, error,
+                    ))?;
                     let (returned_encoder, encoded) = match await_database_operation_or_stop(
                         encoding, NonInterruptible, &mut ctrl_msg_recv, &mut metrics, &lease.abandoned, &admission,
                     ).await? {
@@ -743,24 +831,39 @@ where
             }
         }
         }.await;
-        let deadline = result
-            .as_ref()
-            .map_or_else(
-                |_| Instant::now() + WORKER_STOP_TIMEOUT,
-                TerminalState::deadline,
-            )
-            .min(Instant::now() + WORKER_STOP_TIMEOUT);
-        match tokio::time::timeout_at(deadline.into(), adapter.shutdown()).await {
-            Ok(Ok(())) => lease.cleanup_joined.set(true),
-            Ok(Err(error)) => {
-                lease.abandoned.set(true);
-                return Err(receiver_error(
-                    &effect_handler,
-                    A::classify_error(&error),
-                    error,
-                ));
+        let deadline = worker_stop_deadline(result.as_ref().map_or_else(
+            |_| Instant::now() + WORKER_STOP_TIMEOUT,
+            TerminalState::deadline,
+        ));
+        // Both cleanup paths get the same budget and are polled even when it
+        // has expired. Never block this core on a std::thread::JoinHandle.
+        let (adapter_stopped, scraper_stopped) = tokio::join!(
+            tokio::time::timeout_at(deadline.into(), adapter.shutdown()),
+            async {
+                match worker {
+                    Some(worker) => worker.stop(deadline).await,
+                    None => Ok(()),
+                }
             }
-            Err(_) => lease.abandoned.set(true),
+        );
+        if matches!(&adapter_stopped, Ok(Ok(()))) && scraper_stopped.is_ok() {
+            lease.cleanup_joined.set(true);
+        } else {
+            lease.abandoned.set(true);
+        }
+        if let Ok(Err(error)) = adapter_stopped {
+            return Err(receiver_error(
+                &effect_handler,
+                A::classify_error(&error),
+                AdapterCleanupError(error),
+            ));
+        }
+        if let Err(error) = scraper_stopped {
+            return Err(receiver_error(
+                &effect_handler,
+                ReceiverErrorKind::Shutdown,
+                error,
+            ));
         }
         if lease.abandoned.get() {
             return Err(receiver_error(
@@ -789,6 +892,22 @@ enum StopRequest {
     Shutdown(Instant),
 }
 
+impl StopRequest {
+    fn deadline(self) -> Instant {
+        match self {
+            Self::Drain(deadline) | Self::Shutdown(deadline) => deadline,
+        }
+    }
+
+    fn bounded(self) -> Self {
+        let deadline = worker_stop_deadline(self.deadline());
+        match self {
+            Self::Drain(_) => Self::Drain(deadline),
+            Self::Shutdown(_) => Self::Shutdown(deadline),
+        }
+    }
+}
+
 /// Waits until the drain deadline, or forever when no drain is pending.
 async fn deadline_elapsed(deadline: Option<Instant>) {
     match deadline {
@@ -811,13 +930,16 @@ async fn poll_due(next_poll: Instant, can_poll: bool) {
 }
 
 async fn read_checkpoint(
+    worker: &ScraperWorker,
     store: &CheckpointStore,
     effect_handler: &local::EffectHandler<OtapPdata>,
 ) -> Result<Option<CheckpointState>, Error> {
     // Checkpoint filesystem work blocks, so it must not run on the local
     // async engine core.
     let store = store.clone();
-    tokio::task::spawn_blocking(move || store.read())
+    worker
+        .run(move || store.read())
+        .map_err(|error| receiver_error(effect_handler, ReceiverErrorKind::Other, error))?
         .await
         .map_err(|error| receiver_error(effect_handler, ReceiverErrorKind::Other, error))?
         .map_err(|error| receiver_error(effect_handler, ReceiverErrorKind::Configuration, error))
@@ -825,6 +947,7 @@ async fn read_checkpoint(
 
 #[allow(clippy::too_many_arguments)]
 async fn commit_checkpoint(
+    worker: &ScraperWorker,
     store: &CheckpointStore,
     revision: u64,
     candidate: &CompositeCursor,
@@ -840,6 +963,8 @@ async fn commit_checkpoint(
     mut drain_deadline: Option<Instant>,
     admission: &PollAdmission,
 ) -> Result<CommitOutcome, Error> {
+    // An already-active drain also bounds filesystem work and its retries.
+    drain_deadline = drain_deadline.map(worker_stop_deadline);
     loop {
         if let Some(deadline) = drain_deadline.filter(|deadline| Instant::now() >= *deadline) {
             return Ok(CommitOutcome::Stopped(StopRequest::Drain(deadline)));
@@ -849,7 +974,9 @@ async fn commit_checkpoint(
         // Only one bounded write is outstanding. Keep processing controls
         // while filesystem work runs off-core; never release ownership if
         // the worker outlives the stop deadline.
-        let mut write = tokio::task::spawn_blocking(move || store.write(revision, &cursor));
+        let mut write = worker
+            .run(move || store.write(revision, &cursor))
+            .map_err(|error| receiver_error(effect_handler, ReceiverErrorKind::Other, error))?;
         let mut stop = drain_deadline.map(StopRequest::Drain);
         let result = loop {
             tokio::select! {
@@ -871,7 +998,8 @@ async fn commit_checkpoint(
                         }
                         Ok(control) => {
                             if let Some(request) = stop_request(&control) {
-                                let deadline = match request { StopRequest::Drain(d) | StopRequest::Shutdown(d) => d };
+                                let request = request.bounded();
+                                let deadline = request.deadline();
                                 if drain_deadline.is_none_or(|current| deadline < current) {
                                     drain_deadline = Some(deadline);
                                     stop = Some(request);
@@ -969,9 +1097,10 @@ async fn commit_checkpoint(
                                 control => {
                                     match stop_request(&control) {
                                         Some(stop @ StopRequest::Shutdown(_)) => {
-                                            return Ok(CommitOutcome::Stopped(stop));
+                                            return Ok(CommitOutcome::Stopped(stop.bounded()));
                                         }
                                         Some(StopRequest::Drain(deadline)) => {
+                                            let deadline = worker_stop_deadline(deadline);
                                             drain_deadline = Some(drain_deadline
                                                 .map_or(deadline, |current| current.min(deadline)));
                                         }
@@ -1022,6 +1151,7 @@ where
                     }
                     Ok(control) => {
                         if let Some(stop) = stop_request(&control) {
+                            let stop = stop.bounded();
                             if let Some(metrics) = metrics.as_mut() {
                                 metrics.cancellations.add(1);
                                 match stop {
@@ -1029,7 +1159,7 @@ where
                                     StopRequest::Shutdown(_) => metrics.shutdowns.add(1),
                                 }
                             }
-                            let deadline = match stop { StopRequest::Drain(d) | StopRequest::Shutdown(d) => d };
+                            let deadline = stop.deadline();
                             if !cancel_and_join(operation.as_mut(), &cancellation, deadline).await {
                                 abandoned.set(true);
                             }
@@ -1061,7 +1191,7 @@ where
     F: Future,
     C: DriverCancellation,
 {
-    let deadline = deadline.min(Instant::now() + WORKER_STOP_TIMEOUT);
+    let deadline = worker_stop_deadline(deadline);
     tokio::time::timeout_at(deadline.into(), async {
         if let Err(error) = cancellation.cancel().await {
             otel_warn!(

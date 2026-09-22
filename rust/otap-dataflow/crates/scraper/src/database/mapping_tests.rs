@@ -967,6 +967,7 @@ fn compare_warmed_encoder_with_optimized_one_shot() {
             cached_counts.0 += encoded.row_count;
             cached_counts.1 += encoded.encoded_bytes;
         }
+
         let cached_elapsed = start.elapsed();
         let mut one_shot_counts = (0, 0);
         let start = Instant::now();
@@ -984,4 +985,62 @@ fn compare_warmed_encoder_with_optimized_one_shot() {
              debug measurements are not production throughput"
         );
     }
+}
+
+/// Scenario: An isolated manual run encodes 10,000 large owned rows near the maximum page byte limit.
+/// Guarantees: All rows fit the separate normalized/OTLP bounds, their final cursor is preserved,
+/// and phase markers let an external sampler measure process peak memory without retaining a cloned input page.
+#[test]
+#[ignore = "manual large-page memory profile; run alone in a fresh process"]
+fn profile_large_owned_page_memory() {
+    use std::hint::black_box;
+    use std::io::Write;
+    use std::time::{Duration, Instant};
+
+    const ROWS: usize = 10_000;
+    const VALUE_BYTES: usize = 24 * 1024;
+    const LIMIT: u64 = 256 * 1024 * 1024;
+
+    println!("memory_profile phase=baseline rows={ROWS} value_bytes={VALUE_BYTES} limit={LIMIT}");
+    std::io::stdout().flush().expect("flush baseline marker");
+    std::thread::sleep(Duration::from_millis(200));
+    let input = page(
+        vec![column("PAYLOAD", "VARCHAR2")],
+        (0..ROWS)
+            .map(|_| Row {
+                values: vec![CellValue::String("x".repeat(VALUE_BYTES))],
+            })
+            .collect(),
+    );
+    let normalized_bytes: u64 = input.rows.iter().map(|row| row.row.normalized_size()).sum();
+    assert!(normalized_bytes <= LIMIT);
+    println!("memory_profile phase=input_ready normalized_bytes={normalized_bytes}");
+    std::io::stdout().flush().expect("flush input marker");
+    std::thread::sleep(Duration::from_millis(200));
+    let mut encoder = OtlpPageEncoder::new(
+        DatabaseSystem::Oracle,
+        "profile-source".to_owned(),
+        OutputConfig::default(),
+        input.columns.clone(),
+    )
+    .expect("profile encoder");
+    let started = Instant::now();
+    let encoded = encoder
+        .encode_page(input, 123, LIMIT)
+        .expect("bounded large page")
+        .expect("nonempty large page");
+    assert_eq!(encoded.row_count, ROWS);
+    assert_eq!(encoded.deferred_rows, 0);
+    assert_eq!(encoded.candidate, cursor(ROWS as i64 - 1));
+    assert!(encoded.encoded_bytes as u64 <= LIMIT);
+    println!(
+        "memory_profile phase=encoded rows={} encoded_bytes={} elapsed_ms={}",
+        encoded.row_count,
+        encoded.encoded_bytes,
+        started.elapsed().as_millis(),
+    );
+    std::io::stdout().flush().expect("flush encoded marker");
+    // Keep the output live long enough for an external process-memory sample.
+    std::thread::sleep(Duration::from_millis(200));
+    drop(black_box(encoded));
 }
