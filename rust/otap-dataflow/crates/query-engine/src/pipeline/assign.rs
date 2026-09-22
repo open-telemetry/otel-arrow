@@ -68,8 +68,8 @@ use crate::pipeline::PipelineStage;
 use crate::pipeline::expr::eval::{EvalContext, scoped_value_to_join_input};
 use crate::pipeline::expr::join::JoinInput;
 use crate::pipeline::expr::join::{
-    AttributeToDifferentAttributeJoin, AttributeToSameAttributeJoin, JoinExec, RootAttrsToRootJoin,
-    RootToAttributesJoin,
+    AttributeToDifferentAttributeJoin, AttributeToSameAttributeJoin, JoinExec,
+    RecordAttrsToRecordJoin, RootToAttributesJoin,
 };
 use crate::pipeline::expr::planner::PlannedOp;
 use crate::pipeline::expr::types::{
@@ -602,7 +602,6 @@ impl AssignPipelineStage {
     where
         u32: From<<T as ArrowPrimitiveType>::Native>,
     {
-        println!("id_col = {id_col:?}");
         let mut parent_id_set = self.id_bitmap_pool.acquire();
         if let Some(id_col) = id_col {
             let id_col = id_col
@@ -617,10 +616,6 @@ impl AssignPipelineStage {
                 })?;
             parent_id_set.populate(id_col.iter().flatten().map(|i| i.into()));
         }
-
-        let ids = parent_id_set.iter().collect::<Vec<_>>();
-        println!("ids = {:?}, len = {:?}", ids, parent_id_set.len());
-
 
         let key_column = attrs_record_batch
             .column_by_name(consts::ATTRIBUTE_KEY)
@@ -717,12 +712,13 @@ impl AssignPipelineStage {
                                 .rows_to_take(left_join_input, &eval_result, &otap_batch)?
                         }
                     }
-                    DataScope::Record(_) | DataScope::RootParent(_) => RootAttrsToRootJoin::new()
-                        .rows_to_take(
-                        left_join_input,
-                        &eval_result,
-                        &otap_batch,
-                    )?,
+                    DataScope::Record(_) | DataScope::RootParent(_) => {
+                        RecordAttrsToRecordJoin::new().rows_to_take(
+                            left_join_input,
+                            &eval_result,
+                            &otap_batch,
+                        )?
+                    }
                     DataScope::StaticScalar => {
                         // safety: if the data scope was scalar, the result would have also been a
                         // Scalar which would have been handled above where we checked the
@@ -882,7 +878,7 @@ impl AssignPipelineStage {
                         }
                     }
                     DataScope::Record(RecordScope::Signal) | DataScope::RootParent(_) => {
-                        RootAttrsToRootJoin::new().rows_to_take(
+                        RecordAttrsToRecordJoin::new().rows_to_take(
                             left_join_input,
                             &eval_result,
                             &otap_batch,
@@ -1913,10 +1909,6 @@ fn create_upsert_attrs_values_buffer_from_iter<
 where
     u32: From<T::Native>,
 {
-    
-    println!("all_parent_id_set.len() = {:?}", all_parent_id_set.len());
-    println!("update_parent_id_set.len() = {:?}", update_parent_id_set.len());
-
     let mut upsert_attr_parent_ids = vec![
         T::Native::default();
         update_parent_id_col.len()

@@ -1,8 +1,6 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-// TODO the module comments are out of date
-
 //! This module contains code used for joining different expression data scopes.
 //!
 //! As the expression evaluates, we may encounter points that need to join data from different
@@ -25,11 +23,6 @@
 //!  of the left input expression. However, if the left->right relationship is one->many, we
 //! produce a result preserving the input order of the right side input, to avoid losing any rows
 //! and to also avoid having ambiguity about the result.
-//!
-//! TODO
-//! - currently assumption is made that all IDs are u16, because we don't yet support evaluation on
-//!   any OTAP batches that uses u32 IDs. Eventually we'll need to support this, when the engine
-//!   behaviour becomes more sophisticated.
 //!
 use std::marker::PhantomData;
 use std::rc::Rc;
@@ -194,7 +187,7 @@ pub fn join<'a>(
         (DataScope::Attribute(attr_id, _), DataScope::Record(_) | DataScope::RootParent(_)) => {
             match attr_id {
                 AttributesIdentifier::Record(_) => {
-                    let join_exec = RootAttrsToRootJoin::new();
+                    let join_exec = RecordAttrsToRecordJoin::new();
                     let join_result = join_exec.join(left, right, otap_batch)?;
                     Ok((join_result, left.data_scope.clone()))
                 }
@@ -240,8 +233,6 @@ pub fn is_one_to_many(
     left_attrs_id: &AttributesIdentifier,
     right_attrs_id: &AttributesIdentifier,
 ) -> bool {
-    // TODO - it might be good to check the payload type of NonRoots here to ensure we're not
-    // just having random payload types in this and making invalid assumptions
     match (left_attrs_id, right_attrs_id) {
         (AttributesIdentifier::Record(_), _) => false,
         (AttributesIdentifier::NonRecord(_), AttributesIdentifier::Record(_)) => true,
@@ -317,7 +308,7 @@ fn compute_join_alignment(
         (DataScope::Attribute(attr_id, _), DataScope::Record(_) | DataScope::RootParent(_)) => {
             match attr_id {
                 AttributesIdentifier::Record(_) => {
-                    let exec = RootAttrsToRootJoin::new();
+                    let exec = RecordAttrsToRecordJoin::new();
                     let indices = exec.rows_to_take(left, right, otap_batch)?;
                     Ok((
                         JoinAlignment::LeftPreserved(indices),
@@ -600,45 +591,48 @@ fn extract_u16_array<'a>(
         .ok_or_else(|| invalid_column_type_error(array.data_type()))
 }
 
-// TODO rename b/c this is a special case
-/// Helper function to perform a simple left-to-right join using parent IDs
-/// Builds a lookup from right_ids, scans left_ids, and creates a take array
-fn build_simple_join_indices(left_ids: &UInt16Array, right_lookup: &U16IdJoinLookup) -> Int32Array {
-    build_simple_join_indices_from_iter(left_ids.iter(), right_lookup)
-}
-
+/// Helper function to perform a simple left-to-right join using an ID/Parent ID relationship.
+///
+/// This returns the indices that should be taken from the right side to match the row order of
+/// the IDs on the left side.
 fn try_build_simple_join_ids<T: IdJoinLookupType, const PAGE_SIZE: usize>(
-    left_ids: Option<&ArrayRef>,
-    column_name: &str,
+    left_ids: &dyn Array,
     right_lookup: &IdJoinLookup<T, PAGE_SIZE>,
 ) -> Result<Int32Array> {
-    let array = left_ids.ok_or_else(|| missing_column_err(column_name))?;
-
-    if let Some(ids_as_primitive) = array.as_primitive_opt::<T::ArrowType>() {
+    if let Some(ids_as_primitive) = left_ids.as_primitive_opt::<T::ArrowType>() {
         Ok(build_simple_join_indices_from_iter(
             ids_as_primitive.iter(),
             right_lookup,
         ))
-    } else if let Some(ids_as_dict) = array.as_dictionary_opt::<UInt8Type>() {
+    } else if let Some(ids_as_dict) = left_ids.as_dictionary_opt::<UInt8Type>() {
         if let Some(typed_dict) = ids_as_dict.downcast_dict::<PrimitiveArray<T::ArrowType>>() {
             Ok(build_simple_join_indices_from_iter(
                 typed_dict.into_iter(),
                 right_lookup,
             ))
         } else {
-            todo!("bad dict vals")
+            Err(otel_arrow_dfe_pdata::error::Error::InvalidIdColumnType {
+                data_type: left_ids.data_type().clone(),
+            }
+            .into())
         }
-    } else if let Some(ids_as_dict) = array.as_dictionary_opt::<UInt16Type>() {
+    } else if let Some(ids_as_dict) = left_ids.as_dictionary_opt::<UInt16Type>() {
         if let Some(typed_dict) = ids_as_dict.downcast_dict::<PrimitiveArray<T::ArrowType>>() {
             Ok(build_simple_join_indices_from_iter::<T, _, _>(
                 typed_dict.into_iter(),
                 right_lookup,
             ))
         } else {
-            todo!("bad dict vals")
+            Err(otel_arrow_dfe_pdata::error::Error::InvalidIdColumnType {
+                data_type: left_ids.data_type().clone(),
+            }
+            .into())
         }
     } else {
-        todo!("bad type")
+        Err(otel_arrow_dfe_pdata::error::Error::InvalidIdColumnType {
+            data_type: left_ids.data_type().clone(),
+        }
+        .into())
     }
 }
 
@@ -964,29 +958,20 @@ impl JoinExec for RootToAttributesJoin {
         right: &JoinInput,
         _otap_batch: &OtapArrowRecords,
     ) -> Result<Int32Array> {
+        // choose the correct ID column type; child record batches (such as metric data points)
+        // have a u32 ID column. by contrast non-child records (such as the root signal type) have
+        // a u16 ID column
         let is_u32_ids = matches!(
             left.data_scope.as_ref(),
             DataScope::Record(RecordScope::Child(_))
         );
-        if is_u32_ids {
-            let right_lookup = U32IdJoinLookup::try_new_from_array(
-                right
-                    .parent_ids
-                    .as_ref()
-                    .ok_or_else(|| missing_column_err(consts::PARENT_ID))?,
-            )?;
-            try_build_simple_join_ids(left.ids.as_ref(), consts::ID, &right_lookup)
-        } else {
-            // build the lookup for the right side of the join by parent ID
-            let right_parent_ids = extract_u16_array(right.parent_ids.as_ref(), consts::PARENT_ID)?;
-            let right_lookup = U16IdJoinLookup::new_from_primitive(right_parent_ids);
 
-            // get the ID column for which we should scan for join
-            let left_id_col = match self.attrs_id {
-                AttributesIdentifier::Record(_) => &left.ids,
+        let left_ids = if !is_u32_ids {
+            match self.attrs_id {
+                AttributesIdentifier::Record(_) => left.ids.as_ref(),
                 AttributesIdentifier::NonRecord(payload_type) => match payload_type {
-                    ArrowPayloadType::ResourceAttrs => &left.resource_ids,
-                    ArrowPayloadType::ScopeAttrs => &left.scope_ids,
+                    ArrowPayloadType::ResourceAttrs => left.resource_ids.as_ref(),
+                    ArrowPayloadType::ScopeAttrs => left.scope_ids.as_ref(),
                     other => {
                         return Err(Error::ExecutionError {
                             cause: format!(
@@ -995,10 +980,26 @@ impl JoinExec for RootToAttributesJoin {
                         });
                     }
                 },
-            };
-            let left_parent_ids = extract_u16_array(left_id_col.as_ref(), consts::ID)?;
+            }
+        } else {
+            // Children (which use u32 Ids) cannot be joined NonRecord attributes (such as
+            // resource/scope) attributes by this strategy so, unlike u16 ID (the root signal)
+            // case, we simply use the ID column from the record
+            left.ids.as_ref()
+        }
+        .ok_or_else(|| missing_column_err(consts::ID))?;
 
-            Ok(build_simple_join_indices(left_parent_ids, &right_lookup))
+        let right_parent_ids = right
+            .parent_ids
+            .as_ref()
+            .ok_or_else(|| missing_column_err(consts::PARENT_ID))?;
+
+        if is_u32_ids {
+            let right_lookup = U32IdJoinLookup::try_new_from_array(right_parent_ids)?;
+            try_build_simple_join_ids(left_ids, &right_lookup)
+        } else {
+            let right_lookup = U16IdJoinLookup::try_new_from_array(right_parent_ids)?;
+            try_build_simple_join_ids(left_ids, &right_lookup)
         }
     }
 
@@ -1020,48 +1021,48 @@ impl JoinExec for RootToAttributesJoin {
     }
 }
 
-/// Joins root attributes (e.g. log.attributes, span.attributes, or metric.attributes) to the root
-/// record batch on root.id == attributes.parent_id
-pub(crate) struct RootAttrsToRootJoin {}
+/// Joins record attributes (e.g. from root signal log/span/metric.attributes, or child record
+/// attributes such as data point attributes) to their associated record record batch on
+/// `attributes.parent_id == record.id`, producing a result that is aligned with the left-side
+/// (the attributes).
+pub(crate) struct RecordAttrsToRecordJoin {}
 
-impl RootAttrsToRootJoin {
+impl RecordAttrsToRecordJoin {
     pub fn new() -> Self {
         Self {}
     }
 }
 
-impl JoinExec for RootAttrsToRootJoin {
+impl JoinExec for RecordAttrsToRecordJoin {
     fn rows_to_take(
         &self,
         left: &JoinInput,
         right: &JoinInput,
         _otap_batch: &OtapArrowRecords,
     ) -> Result<Int32Array> {
-        // TODO commentary on how we know it's u32 ids b/c of this
+        let left_parent_ids = left
+            .parent_ids
+            .as_ref()
+            .ok_or_else(|| missing_column_err(consts::PARENT_ID))?;
+        let right_ids = right
+            .ids
+            .as_ref()
+            .ok_or_else(|| missing_column_err(consts::PARENT_ID))?;
+
+        // choose the correct ID column type; child record batches (such as metric data points)
+        // have a u32 ID column. by contrast non-child records (such as the root signal type) have
+        // a u16 ID column
         let is_u32_ids = matches!(
             left.data_scope.as_ref(),
             DataScope::Attribute(AttributesIdentifier::Record(RecordScope::Child(_)), _)
         );
-        // TODO - the u16 path should proceed the same way as the u32 path
+
         if is_u32_ids {
-            // TODO - it's a bit messy to have to call UInt32Type for this considering the ID lookup type is already U32
-            let right_lookup = U32IdJoinLookup::try_new_from_array(
-                right
-                    .ids
-                    .as_ref()
-                    .ok_or_else(|| missing_column_err(consts::PARENT_ID))?,
-            )?;
-            try_build_simple_join_ids(left.parent_ids.as_ref(), consts::PARENT_ID, &right_lookup)
+            let right_lookup = U32IdJoinLookup::try_new_from_array(right_ids)?;
+            try_build_simple_join_ids(left_parent_ids, &right_lookup)
         } else {
-            // build the lookup for the right side of the join by ID column
-            let right_ids = extract_u16_array(right.ids.as_ref(), consts::ID)?;
-            let right_lookup = U16IdJoinLookup::new_from_primitive(right_ids);
-
-            // scan the parent_ID column from the attributes to determine which rows from the
-            // right values should be taken
-            let left_parent_ids = extract_u16_array(left.parent_ids.as_ref(), consts::PARENT_ID)?;
-
-            Ok(build_simple_join_indices(left_parent_ids, &right_lookup))
+            let right_lookup = U16IdJoinLookup::try_new_from_array(right_ids)?;
+            try_build_simple_join_ids(left_parent_ids, &right_lookup)
         }
     }
 
@@ -1243,30 +1244,29 @@ impl JoinExec for AttributeToSameAttributeJoin {
         right: &JoinInput,
         _otap_batch: &OtapArrowRecords,
     ) -> Result<Int32Array> {
-        // TODO commentary on how we know it's u32 ids b/c of this
+        let left_parent_ids = left
+            .parent_ids
+            .as_ref()
+            .ok_or_else(|| missing_column_err(consts::PARENT_ID))?;
+        let right_parent_ids = right
+            .parent_ids
+            .as_ref()
+            .ok_or_else(|| missing_column_err(consts::PARENT_ID))?;
+
+        // choose the correct ID column type; child record batches (such as metric data points)
+        // have a u32 ID column. by contrast non-child records (such as the root signal type) have
+        // a u16 ID column
         let is_u32_ids = matches!(
             left.data_scope.as_ref(),
             DataScope::Attribute(AttributesIdentifier::Record(RecordScope::Child(_)), _)
         );
-        // TODO - the u16 path should proceed the same way as the u32 path
+
         if is_u32_ids {
-            // TODO - it's a bit messy to have to call UInt32Type for this considering the ID lookup type is already U32
-            let right_lookup = U32IdJoinLookup::try_new_from_array(
-                right
-                    .parent_ids
-                    .as_ref()
-                    .ok_or_else(|| missing_column_err(consts::PARENT_ID))?,
-            )?;
-            try_build_simple_join_ids(left.parent_ids.as_ref(), consts::PARENT_ID, &right_lookup)
+            let right_lookup = U32IdJoinLookup::try_new_from_array(right_parent_ids)?;
+            try_build_simple_join_ids(left_parent_ids, &right_lookup)
         } else {
-            // build a mapping of right-side parent_ids to right-side indices
-            let right_parent_ids = extract_u16_array(right.parent_ids.as_ref(), consts::PARENT_ID)?;
-            let right_lookup = U16IdJoinLookup::new_from_primitive(right_parent_ids);
-
-            // determine which rows to take from the right side values
-            let left_parent_ids = extract_u16_array(left.parent_ids.as_ref(), consts::PARENT_ID)?;
-
-            Ok(build_simple_join_indices(left_parent_ids, &right_lookup))
+            let right_lookup = U16IdJoinLookup::try_new_from_array(right_parent_ids)?;
+            try_build_simple_join_ids(left_parent_ids, &right_lookup)
         }
     }
 
@@ -1579,11 +1579,6 @@ impl JoinExec for AttributesAllSelectionVecJoin {
         }
         .ok_or_else(|| missing_column_err(consts::PARENT_ID))?;
 
-        // TODO this could be optimized -- if we receive a boolean, we don't need to allocate
-        // a full new boolean buffer here. Although - how would we end up in this situation?
-        // Maybe through short circuiting or something? idk - try to figure this out
-        // Once that's done, it would also let us move the parent_ids variable definition closer
-        // to where it's used
         let selection_vec = match vals {
             ColumnarValue::Array(arr) => arr.as_boolean().clone(),
             ColumnarValue::Scalar(ScalarValue::Boolean(Some(true))) => {
@@ -1637,8 +1632,11 @@ impl JoinExec for AttributesAllSelectionVecJoin {
                     selected_lookup.contains(parent_id)
                 })
             }
-            _ => {
-                todo!("invalid ID column type")
+            other => {
+                return Err(otel_arrow_dfe_pdata::error::Error::InvalidIdColumnType {
+                    data_type: other.clone(),
+                }
+                .into());
             }
         };
 

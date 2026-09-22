@@ -535,8 +535,6 @@ fn execute_bitmap_and_as_value(
     }
 
     let right_result = right.execute_as_id_mask(otap_batch, eval_ctx, &mut pool)?;
-    println!("here=\nleft:{left_result:?}\nright:{right_result:?}");
-
     let combined_scope = combine_scope(left_result.scope, right_result.scope);
     let combined = left_result.mask.combine_and(right_result.mask, &mut pool);
     materialize_id_mask_to_value(combined, combined_scope, otap_batch, eval_ctx)
@@ -857,6 +855,9 @@ fn materialize_id_mask_to_value(
     )))
 }
 
+/// Creates a [`BooleanArray`] containing `true` in positions where some element of the ID column
+/// is present in the [`IdMask`]. This returns `Err` if the passed `id_col` is not a known array
+/// type used by OTAP for ID columns (`u16`, `u32` or `Dict<u8/u16, u32>`).
 fn selection_vec_for_ids(id_col: &ArrayRef, selected_ids: &IdMask) -> Result<BooleanArray> {
     match id_col.data_type() {
         DataType::UInt16 => {
@@ -913,6 +914,8 @@ fn selection_vec_for_ids(id_col: &ArrayRef, selected_ids: &IdMask) -> Result<Boo
     }
 }
 
+/// Creates a [`BooleanArray`] containing `true` in positions where some element of the ID iterator
+/// is present in the [`IdMask`].
 fn selection_vec_vec_from_id_iter<I: ExactSizeIterator<Item = Option<u32>>>(
     id_iter: I,
     selected_ids: &IdMask,
