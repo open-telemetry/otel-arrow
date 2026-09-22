@@ -829,6 +829,8 @@ where
             }
         );
         if matches!(&adapter_stopped, Ok(Ok(()))) && scraper_stopped.is_ok() {
+            // Confirmed cleanup supersedes provisional abandonment from an earlier wait.
+            lease.abandoned.set(false);
             lease.cleanup_joined.set(true);
         } else {
             lease.abandoned.set(true);

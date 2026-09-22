@@ -598,7 +598,10 @@ still wait for downstream feedback until its supplied deadline; this is not a
 universal five-second bound on the entire drain.
 
 Worker completion requires an explicit exit acknowledgement, not merely a
-dropped result handle. If native work or a scraper job cannot be confirmed
+dropped result handle. If both adapter and scraper cleanup subsequently succeed,
+an earlier abandonment flag is cleared: the original error is preserved and the
+lease can be reacquired without a process restart.
+If native work or a scraper job cannot be confirmed
 stopped, the receiver reports an error and retains its source lease until
 process exit. The dedicated scraper thread does not make Tokio runtime
 destruction wait for a stalled filesystem/encoding job. The thread is not
