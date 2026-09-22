@@ -191,11 +191,15 @@ where
     handle.shutdown_and_join()
 }
 
+type DeferredExtensionScopeCleanup =
+    Box<dyn FnOnce() -> Result<ThreadLocalTaskHandle<(), Error>, Error> + Send>;
+
 /// Keeps engine and pipeline-group extension scope hosts alive until pipelines stop.
 struct ExtensionScopeSupervisorGuard<
     PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + Unwindable + FlowMetricHook,
 > {
     handle: Option<ThreadLocalTaskHandle<(), Error>>,
+    deferred_cleanup: Option<DeferredExtensionScopeCleanup>,
     runtime: Arc<ControllerRuntime<PData>>,
     descendant_drain_timeout: Duration,
     supervisor_shutdown_timeout: Duration,
@@ -216,6 +220,20 @@ impl<
     ) -> Self {
         Self {
             handle: Some(handle),
+            deferred_cleanup: None,
+            runtime,
+            descendant_drain_timeout: Self::DESCENDANT_DRAIN_TIMEOUT,
+            supervisor_shutdown_timeout: Self::SUPERVISOR_SHUTDOWN_TIMEOUT,
+        }
+    }
+
+    fn without_hosts(
+        runtime: Arc<ControllerRuntime<PData>>,
+        cleanup: impl FnOnce() -> Result<ThreadLocalTaskHandle<(), Error>, Error> + Send + 'static,
+    ) -> Self {
+        Self {
+            handle: None,
+            deferred_cleanup: Some(Box::new(cleanup)),
             runtime,
             descendant_drain_timeout: Self::DESCENDANT_DRAIN_TIMEOUT,
             supervisor_shutdown_timeout: Self::SUPERVISOR_SHUTDOWN_TIMEOUT,
@@ -231,6 +249,7 @@ impl<
     ) -> Self {
         Self {
             handle: Some(handle),
+            deferred_cleanup: None,
             runtime,
             descendant_drain_timeout,
             supervisor_shutdown_timeout,
@@ -309,7 +328,8 @@ impl<
                 ))),
             });
 
-        let remaining = deadline
+        let completion_deadline = live_control::pipeline_shutdown_completion_deadline(deadline);
+        let remaining = completion_deadline
             .checked_duration_since(Instant::now())
             .unwrap_or(Duration::ZERO);
         if !self
@@ -318,7 +338,7 @@ impl<
         {
             return Some(self.timeout_error("system observability shutdown coordination"));
         }
-        let remaining = deadline
+        let remaining = completion_deadline
             .checked_duration_since(Instant::now())
             .unwrap_or(Duration::ZERO);
         if !self.runtime.wait_until_all_instances_exit_for(remaining) {
@@ -332,10 +352,48 @@ impl<
         let deadline = self
             .runtime
             .global_shutdown_deadline_or_insert(self.descendant_drain_timeout);
-        let descendant_error = self.drain_descendants_until(deadline);
+        let mut descendant_error = self.drain_descendants_until(deadline);
         // Provider and observability grace starts after descendant draining.
-        // The supervisor's completion callback owns final telemetry teardown.
+        // The empty-host fallback shares this budget instead of restarting it.
         let supervisor_deadline = Instant::now() + self.supervisor_shutdown_timeout;
+        if self.deferred_cleanup.is_some()
+            && self.runtime.all_producer_instances_exited()
+            && self.runtime.wait_for_runtime_recoveries_for(Duration::ZERO)
+            && self
+                .runtime
+                .wait_for_global_shutdown_completion_for(Duration::ZERO)
+        {
+            self.runtime.mark_extension_scope_hosts_stopped();
+            let observability_error = self.drain_observability_until(
+                self.runtime.observability_shutdown_deadline_or_insert(),
+            );
+            descendant_error = descendant_error.or(observability_error);
+            if self
+                .runtime
+                .wait_until_all_instances_exit_for(Duration::ZERO)
+                && self
+                    .runtime
+                    .wait_for_global_shutdown_completion_for(Duration::ZERO)
+            {
+                // No hosts and no remaining producers: release telemetry leases
+                // without ever creating a supervisor thread or async runtime.
+                self.deferred_cleanup = None;
+                return descendant_error;
+            }
+        }
+        if let Some(start_cleanup) = self.deferred_cleanup.take() {
+            match start_cleanup() {
+                Ok(handle) => self.handle = Some(handle),
+                Err(error) => {
+                    otel_warn!(
+                        "controller.deferred_pipeline_cleanup_start_failed",
+                        error = error.to_string()
+                    );
+                    return descendant_error.or(Some(error));
+                }
+            }
+        }
+        // The supervisor's completion callback owns final telemetry teardown.
         let extension_scope_error = self
             .handle
             .take()
@@ -363,7 +421,7 @@ impl<
 > Drop for ExtensionScopeSupervisorGuard<PData>
 {
     fn drop(&mut self) {
-        if self.handle.is_none() {
+        if self.handle.is_none() && self.deferred_cleanup.is_none() {
             return;
         }
         if let Some(error) = self.shutdown_after_descendants() {
@@ -1792,70 +1850,94 @@ impl<
             move |cancellation_token| obs_state_store_runtime.run(cancellation_token),
         )?);
 
-        // Engine and group extensions run once on a controller-owned LocalSet.
-        // Their immutable shared capability catalog is published only after
-        // every scope passes its startup and readiness barriers.
-        let extension_scope_config = engine_config.clone();
-        let extension_scope_controller_ctx = controller_ctx.clone();
-        let extension_scope_metrics_reporter = metrics_reporter.clone();
-        let extension_scope_registry_for_host = extension_scope_registry.clone();
-        let extension_scope_pipeline_factory = self.pipeline_factory;
         // Keep controller shutdown state alive until the scope-host thread can
         // open the observability phase after its final scope actually exits.
-        let extension_scope_runtime = Arc::clone(&runtime);
         let extension_scope_completion_runtime = Arc::clone(&runtime);
         let extension_scope_metrics_lease = Arc::clone(&metrics_agg_handle);
         let extension_scope_state_lease = Arc::clone(&obs_state_join_handle);
-        let (extension_scope_ready_tx, extension_scope_ready_rx) =
-            std_mpsc::sync_channel::<Result<(), String>>(1);
-        let extension_scope_supervisor_handle = spawn_thread_local_task_with_cleanup(
-            "extension-scope-supervisor",
-            telemetry_system.engine_tracing_setup(),
-            move |cancellation_token| async move {
-                let prepared = match extension_scope_pipeline_factory.prepare_extension_scope_hosts(
-                    &extension_scope_config,
-                    &extension_scope_controller_ctx,
-                    extension_scope_metrics_reporter,
-                    extension_scope_registry_for_host,
-                ) {
-                    Ok(prepared) => prepared,
-                    Err(error) => {
-                        let message = error.to_string();
-                        let _ = extension_scope_ready_tx.send(Err(message));
-                        return Err(Error::PipelineRuntimeError {
-                            source: Box::new(error),
-                        });
-                    }
-                };
-                let running = match prepared
-                    .start_with_shutdown(cancellation_token.clone().cancelled_owned())
-                    .await
-                {
-                    Ok(Some(running)) => running,
-                    Ok(None) => {
-                        let _ = extension_scope_ready_tx
-                            .send(Err("extension scope startup was cancelled".to_owned()));
-                        return Ok(());
-                    }
-                    Err(error) => {
-                        let message = error.to_string();
-                        let _ = extension_scope_ready_tx.send(Err(message));
-                        return Err(Error::PipelineRuntimeError {
-                            source: Box::new(error),
-                        });
-                    }
-                };
-                if extension_scope_ready_tx.send(Ok(())).is_err() {
-                    return running
-                        .shutdown()
+        let scope_cleanup = move |cancellation_token: CancellationToken| {
+            extension_scope_completion_runtime
+                .finish_shutdown_after_extension_scopes(&cancellation_token);
+            drop(extension_scope_metrics_lease);
+            drop(extension_scope_state_lease);
+        };
+        let mut extension_scope_supervisor = if engine_config.extensions.is_empty()
+            && engine_config
+                .groups
+                .values()
+                .all(|group| group.extensions.is_empty())
+        {
+            let tracing_setup = telemetry_system.engine_tracing_setup();
+            ExtensionScopeSupervisorGuard::without_hosts(Arc::clone(&runtime), move || {
+                // Only exceptional teardown needs a thread to retain telemetry
+                // while late pipeline exits finish after the caller's deadline.
+                spawn_thread_local_task_with_cleanup(
+                    "pipeline-shutdown-cleanup",
+                    tracing_setup,
+                    |_| async { Ok(()) },
+                    scope_cleanup,
+                )
+            })
+        } else {
+            // Engine and group extensions run once on a controller-owned LocalSet.
+            // Publish the catalog only after every scope passes its readiness barrier.
+            let extension_scope_config = engine_config.clone();
+            let extension_scope_controller_ctx = controller_ctx.clone();
+            let extension_scope_metrics_reporter = metrics_reporter.clone();
+            let extension_scope_registry_for_host = extension_scope_registry.clone();
+            let extension_scope_pipeline_factory = self.pipeline_factory;
+            let extension_scope_runtime = Arc::clone(&runtime);
+            let (extension_scope_ready_tx, extension_scope_ready_rx) =
+                std_mpsc::sync_channel::<Result<(), String>>(1);
+            let extension_scope_supervisor_handle = spawn_thread_local_task_with_cleanup(
+                "extension-scope-supervisor",
+                telemetry_system.engine_tracing_setup(),
+                move |cancellation_token| async move {
+                    let prepared = match extension_scope_pipeline_factory
+                        .prepare_extension_scope_hosts(
+                            &extension_scope_config,
+                            &extension_scope_controller_ctx,
+                            extension_scope_metrics_reporter,
+                            extension_scope_registry_for_host,
+                        ) {
+                        Ok(prepared) => prepared,
+                        Err(error) => {
+                            let message = error.to_string();
+                            let _ = extension_scope_ready_tx.send(Err(message));
+                            return Err(Error::PipelineRuntimeError {
+                                source: Box::new(error),
+                            });
+                        }
+                    };
+                    drop(extension_scope_config);
+                    let running = match prepared
+                        .start_with_shutdown(cancellation_token.clone().cancelled_owned())
                         .await
-                        .map_err(|error| Error::PipelineRuntimeError {
-                            source: Box::new(error),
+                    {
+                        Ok(Some(running)) => running,
+                        Ok(None) => {
+                            let _ = extension_scope_ready_tx
+                                .send(Err("extension scope startup was cancelled".to_owned()));
+                            return Ok(());
+                        }
+                        Err(error) => {
+                            let message = error.to_string();
+                            let _ = extension_scope_ready_tx.send(Err(message));
+                            return Err(Error::PipelineRuntimeError {
+                                source: Box::new(error),
+                            });
+                        }
+                    };
+                    if extension_scope_ready_tx.send(Ok(())).is_err() {
+                        return running.shutdown().await.map_err(|error| {
+                            Error::PipelineRuntimeError {
+                                source: Box::new(error),
+                            }
                         });
-                }
+                    }
 
-                let failure_runtime = Arc::clone(&extension_scope_runtime);
-                running
+                    let failure_runtime = Arc::clone(&extension_scope_runtime);
+                    running
                     .run(cancellation_token.cancelled_owned(), move |message| {
                         otel_error!(
                             "controller.extension_scope_runtime_failed",
@@ -1876,55 +1958,51 @@ impl<
                     .map_err(|error| Error::PipelineRuntimeError {
                         source: Box::new(error),
                     })
-            },
-            move |cancellation_token| {
-                extension_scope_completion_runtime
-                    .finish_shutdown_after_extension_scopes(&cancellation_token);
-                drop(extension_scope_metrics_lease);
-                drop(extension_scope_state_lease);
-            },
-        )?;
-        match extension_scope_ready_rx.recv() {
-            Ok(Ok(())) => {}
-            Ok(Err(message)) => {
-                let host_error = extension_scope_supervisor_handle
-                    .shutdown_and_join()
-                    .err()
-                    .unwrap_or_else(|| Error::PipelineRuntimeError {
-                        source: Box::new(std::io::Error::other(message)),
-                    });
-                if let Err(error) =
-                    shutdown_telemetry_task("metrics-aggregator", metrics_agg_handle)
-                {
-                    otel_warn!(
-                        "controller.extension_scope_startup_metrics_shutdown_failed",
-                        error = error.to_string()
-                    );
+                },
+                scope_cleanup,
+            )?;
+            match extension_scope_ready_rx.recv() {
+                Ok(Ok(())) => {}
+                Ok(Err(message)) => {
+                    let host_error = extension_scope_supervisor_handle
+                        .shutdown_and_join()
+                        .err()
+                        .unwrap_or_else(|| Error::PipelineRuntimeError {
+                            source: Box::new(std::io::Error::other(message)),
+                        });
+                    if let Err(error) =
+                        shutdown_telemetry_task("metrics-aggregator", metrics_agg_handle)
+                    {
+                        otel_warn!(
+                            "controller.extension_scope_startup_metrics_shutdown_failed",
+                            error = error.to_string()
+                        );
+                    }
+                    return Err(host_error);
                 }
-                return Err(host_error);
-            }
-            Err(error) => {
-                let host_error = extension_scope_supervisor_handle
-                    .shutdown_and_join()
-                    .err()
-                    .unwrap_or_else(|| Error::PipelineRuntimeError {
-                        source: Box::new(error),
-                    });
-                if let Err(error) =
-                    shutdown_telemetry_task("metrics-aggregator", metrics_agg_handle)
-                {
-                    otel_warn!(
-                        "controller.extension_scope_startup_metrics_shutdown_failed",
-                        error = error.to_string()
-                    );
+                Err(error) => {
+                    let host_error = extension_scope_supervisor_handle
+                        .shutdown_and_join()
+                        .err()
+                        .unwrap_or_else(|| Error::PipelineRuntimeError {
+                            source: Box::new(error),
+                        });
+                    if let Err(error) =
+                        shutdown_telemetry_task("metrics-aggregator", metrics_agg_handle)
+                    {
+                        otel_warn!(
+                            "controller.extension_scope_startup_metrics_shutdown_failed",
+                            error = error.to_string()
+                        );
+                    }
+                    return Err(host_error);
                 }
-                return Err(host_error);
             }
-        }
-        let mut extension_scope_supervisor = ExtensionScopeSupervisorGuard::new(
-            extension_scope_supervisor_handle,
-            Arc::clone(&runtime),
-        );
+            ExtensionScopeSupervisorGuard::new(
+                extension_scope_supervisor_handle,
+                Arc::clone(&runtime),
+            )
+        };
 
         Self::spawn_observability_pipeline(
             &runtime,

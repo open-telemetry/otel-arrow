@@ -272,7 +272,9 @@ enum StartupWaitOutcome {
 
 struct ScopeTaskSupervisor {
     events_rx: mpsc::UnboundedReceiver<ScopeEvent>,
-    tasks: FuturesUnordered<task::JoinHandle<(ExtensionDeclarationScope, Result<(), Error>)>>,
+    tasks: FuturesUnordered<
+        task::JoinHandle<(task::Id, ExtensionDeclarationScope, Result<(), Error>)>,
+    >,
     task_ids: HashMap<task::Id, ExtensionDeclarationScope>,
     shutdown_senders: HashMap<ExtensionDeclarationScope, oneshot::Sender<Instant>>,
     shutdown_requested: HashSet<ExtensionDeclarationScope>,
@@ -314,7 +316,7 @@ impl ScopeTaskSupervisor {
             let result = running_scope
                 .run(task_scope.clone(), events, shutdown_rx)
                 .await;
-            (task_scope, result)
+            (task::id(), task_scope, result)
         });
         let _ = self.task_ids.insert(handle.id(), scope.clone());
         self.tasks.push(handle);
@@ -403,7 +405,12 @@ impl ScopeTaskSupervisor {
         first_error: &mut Option<Error>,
     ) {
         let mut events_open = true;
-        while scopes.iter().any(|scope| !self.completed.contains(scope)) {
+        let mut pending: HashSet<_> = scopes
+            .iter()
+            .filter(|scope| !self.completed.contains(*scope))
+            .cloned()
+            .collect();
+        while !pending.is_empty() {
             tokio::select! {
                 biased;
                 event = self.events_rx.recv(), if events_open => {
@@ -419,7 +426,10 @@ impl ScopeTaskSupervisor {
                     let Some(joined) = joined else {
                         break;
                     };
-                    let (_, error) = self.route_completion(joined);
+                    let (scope, error) = self.route_completion(joined);
+                    if let Some(scope) = scope {
+                        let _ = pending.remove(&scope);
+                    }
                     if first_error.is_none() {
                         *first_error = error;
                     }
@@ -427,7 +437,7 @@ impl ScopeTaskSupervisor {
                 else => break,
             }
         }
-        if first_error.is_none() && scopes.iter().any(|scope| !self.completed.contains(scope)) {
+        if first_error.is_none() && !pending.is_empty() {
             *first_error = Some(Error::InternalError {
                 message: "extension scope host tasks disappeared during shutdown".to_owned(),
             });
@@ -436,12 +446,11 @@ impl ScopeTaskSupervisor {
 
     fn route_completion(
         &mut self,
-        joined: Result<(ExtensionDeclarationScope, Result<(), Error>), task::JoinError>,
+        joined: Result<(task::Id, ExtensionDeclarationScope, Result<(), Error>), task::JoinError>,
     ) -> (Option<ExtensionDeclarationScope>, Option<Error>) {
         match joined {
-            Ok((scope, result)) => {
-                self.task_ids
-                    .retain(|_, mapped_scope| mapped_scope != &scope);
+            Ok((id, scope, result)) => {
+                let _ = self.task_ids.remove(&id);
                 let _ = self.completed.insert(scope.clone());
                 let _ = self.shutdown_senders.remove(&scope);
                 let shutdown_was_requested = self.shutdown_requested.contains(&scope);
@@ -619,3 +628,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         Ok((scope, catalog))
     }
 }
+
+#[cfg(test)]
+#[path = "supervisor_tests.rs"]
+mod tests;

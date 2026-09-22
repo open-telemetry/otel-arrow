@@ -318,7 +318,7 @@ pub(crate) async fn report_terminal_metrics(
 ///
 /// Reporting continues after individual failures, but every operation shares
 /// one absolute `deadline` so a long sequence cannot extend shutdown.
-async fn report_metric_snapshots(
+pub(crate) async fn report_metric_snapshots(
     metrics_reporter: &MetricsReporter,
     snapshots: impl IntoIterator<Item = MetricSetSnapshot>,
     phase: &'static str,

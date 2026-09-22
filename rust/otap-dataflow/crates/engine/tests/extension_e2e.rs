@@ -2464,8 +2464,14 @@ groups:
                         .get(&pipeline_id)
                         .expect("pipeline")
                         .clone();
-                    let inherited = registry
-                        .registrations_for_pipeline(&group_id, pipeline_config.extensions());
+                    let inherited = registry.registrations_for_pipeline(
+                        &group_id,
+                        pipeline_config.extensions(),
+                        pipeline_config
+                            .nodes()
+                            .iter()
+                            .flat_map(|(_, node)| node.capabilities.values()),
+                    );
                     let pipeline_ctx =
                         controller_ctx.pipeline_context_with(group_id, pipeline_id, 0, 1, 0);
                     let _entity_key = pipeline_ctx.register_pipeline_entity();
@@ -2572,8 +2578,14 @@ groups:
                         .get(&pipeline_id)
                         .expect("pipeline")
                         .clone();
-                    let inherited = registry
-                        .registrations_for_pipeline(&group_id, pipeline_config.extensions());
+                    let inherited = registry.registrations_for_pipeline(
+                        &group_id,
+                        pipeline_config.extensions(),
+                        pipeline_config
+                            .nodes()
+                            .iter()
+                            .flat_map(|(_, node)| node.capabilities.values()),
+                    );
 
                     for core_id in 0..2 {
                         let pipeline_ctx = controller_ctx.pipeline_context_with(

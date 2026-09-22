@@ -170,8 +170,7 @@ impl RunningExtensionScopeHost {
             .initiate_shutdown_until(Some("extension scope host shutdown"), deadline);
         let timed_out = self.lifecycle.drain_until_deadline().await;
 
-        let mut reporter = self.metrics_reporter.clone();
-        self.report_channel_metrics(&mut reporter);
+        let reporter = self.metrics_reporter.clone();
         let deadline = self.terminal_metrics_deadline.clone().get();
         if let Err(error) = self
             .lifecycle
@@ -183,6 +182,15 @@ impl RunningExtensionScopeHost {
                 error = error.to_string()
             );
         }
+        crate::runtime_pipeline::report_metric_snapshots(
+            &reporter,
+            self.channel_metrics
+                .iter()
+                .flat_map(ChannelMetricsHandle::terminal_snapshots),
+            "extension_scope_final",
+            deadline,
+        )
+        .await;
         if timed_out > 0 {
             return Err(Error::InternalError {
                 message: format!(
@@ -315,8 +323,153 @@ impl RunningExtensionScopeHost {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::channel_metrics::{
+        ChannelReceiverMetricSets, ChannelReceiverMetricsState, ChannelSendErrorType,
+        ChannelSenderMetricSets, ChannelSenderMetricsState, ControlChannelReceiverMetricSets,
+        ControlChannelSenderMetricSets, LocalChannelQueueDepth,
+    };
     use crate::context::ControllerContext;
-    use otel_arrow_dfe_telemetry::InternalTelemetrySystem;
+    use crate::extension::wrapper::ExtensionVariant;
+    use otel_arrow_dfe_config::pipeline::telemetry::TelemetryConfig;
+    use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
+    use otel_arrow_dfe_telemetry::{InternalTelemetrySystem, LogContext};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    fn host_with_pending_channel_metrics() -> (InternalTelemetrySystem, RunningExtensionScopeHost) {
+        let config = TelemetryConfig {
+            reporting_channel_size: 1,
+            ..TelemetryConfig::default()
+        };
+        let telemetry = InternalTelemetrySystem::new(
+            &config,
+            config.reporting_interval,
+            TelemetryRegistryHandle::new(),
+            None,
+            Default::default(),
+            LogContext::new,
+            None,
+        )
+        .expect("telemetry initializes");
+        let context = ControllerContext::new(telemetry.registry()).engine_extension_context();
+        let entity = context.register_extension_entity("provider".into(), ExtensionVariant::Shared);
+        let registry = telemetry.registry();
+        let mut sender = ChannelSenderMetricsState::new(ChannelSenderMetricSets::Control(
+            ControlChannelSenderMetricSets {
+                messages: registry
+                    .register_metric_set_with_measurement_attributes_for_entity(entity),
+                failures: registry
+                    .register_metric_set_with_measurement_attributes_for_entity(entity),
+            },
+        ));
+        sender.record_send_ok(None);
+        sender.record_send_error(None, ChannelSendErrorType::Full);
+        let mut receiver = ChannelReceiverMetricsState::new(
+            ChannelReceiverMetricSets::Control(ControlChannelReceiverMetricSets {
+                metrics: context.register_metric_set_for_entity(entity),
+            }),
+            2,
+            LocalChannelQueueDepth::default(),
+        );
+        for _ in 0..3 {
+            receiver.record_recv_ok(None);
+        }
+        let host = PreparedExtensionScopeHost {
+            context,
+            extensions: Vec::new(),
+            channel_metrics: vec![
+                ChannelMetricsHandle::LocalSender(Rc::new(RefCell::new(sender))),
+                ChannelMetricsHandle::LocalReceiver(Rc::new(RefCell::new(receiver))),
+            ],
+            runtime_policy: ExtensionHostRuntimePolicy {
+                control_node_capacity: 1,
+                pipeline_metrics: false,
+                channel_metrics_enabled: true,
+            },
+        }
+        .start(&telemetry.reporter());
+        (telemetry, host)
+    }
+
+    /// Scenario: a one-slot metrics queue is full at shutdown and its collector resumes within grace.
+    /// Guarantees: deferred channel counters and final gauges are aggregated exactly once before the host exits.
+    #[tokio::test(flavor = "current_thread")]
+    async fn shutdown_retries_deferred_channel_metrics() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let (telemetry, mut host) = host_with_pending_channel_metrics();
+                let reporter = telemetry.reporter();
+                let collection_loop = telemetry.collector().run_collection_loop();
+                let deadline = Instant::now() + Duration::from_secs(5);
+                let mut blocker = Box::pin(reporter.flush_until(deadline));
+                assert!(futures::poll!(blocker.as_mut()).is_pending());
+                host.report_channel_metrics(&mut reporter.clone());
+                let mut shutdown =
+                    Box::pin(host.shutdown_until(&ExtensionDeclarationScope::Engine, deadline));
+                assert!(futures::poll!(shutdown.as_mut()).is_pending());
+                let collector = tokio::task::spawn_local(collection_loop);
+                tokio::time::timeout(Duration::from_secs(5), shutdown)
+                    .await
+                    .expect("shutdown remains bounded")
+                    .expect("host shuts down");
+                blocker.await.expect("queued flush completes");
+                let mut messages = 0;
+                let mut failures = 0;
+                let mut capacity = 0;
+                telemetry.registry().visit_current_metrics(|_, _, metrics| {
+                    for (field, value) in metrics {
+                        match field.name {
+                            "messages" => messages += value.to_u64_lossy(),
+                            "failures" => failures += value.to_u64_lossy(),
+                            "capacity" => capacity += value.to_u64_lossy(),
+                            _ => {}
+                        }
+                    }
+                });
+                assert_eq!((messages, failures, capacity), (5, 1, 2));
+                collector.abort();
+                assert!(
+                    collector
+                        .await
+                        .expect_err("collector stopped")
+                        .is_cancelled()
+                );
+            })
+            .await;
+    }
+
+    /// Scenario: the collector stalls beyond grace or stops with channel counters still pending.
+    /// Guarantees: final channel reporting honors the existing absolute deadline and never hangs host teardown.
+    #[tokio::test(flavor = "current_thread")]
+    async fn shutdown_channel_reporting_is_bounded_when_collector_unavailable() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                for stopped in [false, true] {
+                    let (telemetry, mut host) = host_with_pending_channel_metrics();
+                    let reporter = telemetry.reporter();
+                    let collection_loop = telemetry.collector().run_collection_loop();
+                    let deadline = Instant::now() + Duration::from_millis(30);
+                    let mut blocker = Box::pin(reporter.flush_until(deadline));
+                    assert!(futures::poll!(blocker.as_mut()).is_pending());
+                    let collection_loop = if stopped {
+                        drop(collection_loop);
+                        None
+                    } else {
+                        Some(collection_loop)
+                    };
+                    tokio::time::timeout(
+                        Duration::from_secs(1),
+                        host.shutdown_until(&ExtensionDeclarationScope::Engine, deadline),
+                    )
+                    .await
+                    .expect("unavailable metrics must not hang shutdown")
+                    .expect("host tasks drained");
+                    assert_eq!(host.terminal_metrics_deadline.get(), deadline);
+                    drop(collection_loop);
+                }
+            })
+            .await;
+    }
 
     /// Scenario: an early provider failure uses a metrics fallback before its host begins shutdown.
     /// Guarantees: that local fallback does not constrain the host's later phase deadline.

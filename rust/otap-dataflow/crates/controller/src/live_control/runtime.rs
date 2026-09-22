@@ -1553,6 +1553,10 @@ impl<
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        // A reused key may still retain the previous launch's terminal record.
+        if state.launching_instances.contains_key(deployed_key) {
+            return None;
+        }
         state
             .runtime_instances
             .get(deployed_key)

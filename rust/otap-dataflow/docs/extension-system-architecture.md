@@ -184,6 +184,10 @@ never touch pipeline data directly.
    an error, but the detached thread retains telemetry support until
    all remaining producers and observability actually exit.
 
+   Final host channel metrics use deadline-bounded reliable reporting, so a
+   temporarily full telemetry queue does not discard pending counters when
+   collection resumes within the host's grace period.
+
    *Scope of the guarantee.* This orders **lifecycle
    calls**, not init completion. `start()` is async, so
    invoking it merely enqueues a future; the extension's
@@ -216,6 +220,15 @@ never touch pipeline data directly.
    pipeline core or all controller-hosted extension scopes. Such work
    must move to bounded blocking tasks or dedicated worker
    resources.
+
+   Pipelines copy inherited capability factories only for extension IDs
+   referenced by their node bindings. Unused ancestor providers remain hosted;
+   whole-ID shadowing and declaration diagnostics are unchanged. Group-host
+   completion tracking is linear in the number of hosts. Configurations with
+   no engine or group extensions do not start a supervisor thread or copy a
+   configuration for it. Normal shutdown runs on the controller thread; only
+   timed-out teardown starts deferred cleanup to retain telemetry support for
+   late pipeline exits.
 
 2. **PData-free.** Extensions are completely decoupled from
    the pipeline data type. They use `ExtensionControlMsg`

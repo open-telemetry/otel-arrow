@@ -67,7 +67,7 @@ const PIPELINE_SHUTDOWN_COMPLETION_GRACE: Duration = Duration::from_secs(10);
 const PIPELINE_SHUTDOWN_COMPLETION_GRACE: Duration = Duration::from_secs(1);
 
 /// Returns the controller deadline for observing an instance's terminal exit.
-fn pipeline_shutdown_completion_deadline(drain_deadline: Instant) -> Instant {
+pub(super) fn pipeline_shutdown_completion_deadline(drain_deadline: Instant) -> Instant {
     drain_deadline + PIPELINE_SHUTDOWN_COMPLETION_GRACE
 }
 
@@ -301,8 +301,14 @@ impl<
         pipeline_group_id: &PipelineGroupId,
         pipeline: &PipelineConfig,
     ) -> InheritedExtensionRegistrations {
-        self.extension_scope_registry
-            .registrations_for_pipeline(pipeline_group_id, pipeline.extensions())
+        self.extension_scope_registry.registrations_for_pipeline(
+            pipeline_group_id,
+            pipeline.extensions(),
+            pipeline
+                .nodes()
+                .iter()
+                .flat_map(|(_, node)| node.capabilities.values()),
+        )
     }
 
     /// Exposes the runtime as the admin control-plane trait object.
