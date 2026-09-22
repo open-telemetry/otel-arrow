@@ -1,0 +1,7 @@
+type: internal_telemetry
+status:
+  class: receiver
+  codeowners:
+    active:
+      - jmacd
+      - lquerel

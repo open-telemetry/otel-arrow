@@ -7,7 +7,7 @@
 //!
 //! ```bash
 //! cargo run -p otel-arrow-dfe-contrib-nodes \
-//!   --features user_events-eventheader \
+//!   --features user-events \
 //!   --example user_events_eventheader_producer
 //! ```
 

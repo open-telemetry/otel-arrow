@@ -569,7 +569,7 @@ impl CondenseAttributesProcessor {
         Ok(condensed_count)
     }
 
-    #[cfg(feature = "condense-attributes-processor-bench")]
+    #[cfg(feature = "condense-attributes-bench")]
     #[doc(hidden)]
     pub fn condense_for_benchmark(&self, records: &mut OtapArrowRecords) -> Result<u64, Error> {
         self.condense(records)
