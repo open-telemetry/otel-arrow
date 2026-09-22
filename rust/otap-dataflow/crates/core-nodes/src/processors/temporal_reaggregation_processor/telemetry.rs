@@ -6,7 +6,7 @@
 use otel_arrow_dfe_engine::context::PipelineContext;
 use otel_arrow_dfe_telemetry::common_attributes::{Outcome, OutcomeAttributes};
 use otel_arrow_dfe_telemetry::instrument::Counter;
-use otel_arrow_dfe_telemetry::metrics::MeasurementMetricSet;
+use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSet};
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use otel_arrow_dfe_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
 
@@ -112,11 +112,21 @@ pub struct FlushMetrics {
     pub flushes: Counter<u64>,
 }
 
+/// Counts metric records classified for pass-through.
+#[metric_set(name = "processor.temporal_reaggregation")]
+#[derive(Debug, Default, Clone)]
+pub struct PassthroughMetrics {
+    /// Number of non-aggregatable metric records, independent of data point count.
+    #[metric(unit = "{record}")]
+    pub passthrough_metrics: Counter<u64>,
+}
+
 /// All metrics for the temporal reaggregation processor.
 pub struct TemporalReaggregationMetrics {
     operations: MeasurementMetricSet<OperationMetrics>,
     failures: MeasurementMetricSet<FailureMetrics>,
     flushes: MeasurementMetricSet<FlushMetrics>,
+    passthrough: MetricSet<PassthroughMetrics>,
 }
 
 impl TemporalReaggregationMetrics {
@@ -125,7 +135,13 @@ impl TemporalReaggregationMetrics {
             operations: OperationMetrics::register(pipeline_ctx),
             failures: FailureMetrics::register(pipeline_ctx),
             flushes: FlushMetrics::register(pipeline_ctx),
+            passthrough: PassthroughMetrics::register(pipeline_ctx),
         }
+    }
+
+    /// Record non-aggregatable metric records once per input, before internal retries.
+    pub fn record_passthrough(&mut self, count: u64) {
+        self.passthrough.passthrough_metrics.add(count);
     }
 
     /// Record one successful input operation.
@@ -169,6 +185,7 @@ impl TemporalReaggregationMetrics {
     ) -> Result<(), otel_arrow_dfe_telemetry::error::Error> {
         reporter.report_measurement(&mut self.operations)?;
         reporter.report_measurement(&mut self.failures)?;
-        reporter.report_measurement(&mut self.flushes)
+        reporter.report_measurement(&mut self.flushes)?;
+        reporter.report(&mut self.passthrough)
     }
 }

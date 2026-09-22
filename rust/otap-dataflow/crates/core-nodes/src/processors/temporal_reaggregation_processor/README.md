@@ -86,7 +86,16 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 
 #### `processor.temporal_reaggregation`
 
-Three separate populations are tracked.
+Four separate populations are tracked.
+
+**`passthrough.metrics`** - metric records classified as non-aggregatable:
+
+| Metric | Unit | Description |
+| --- | --- | --- |
+| `processor.temporal_reaggregation.passthrough.metrics` | `{record}` | Number of non-aggregatable metric records, not data points or distinct metric types. |
+
+Recorded once per input before internal overflow retries. Subsequent downstream
+send failures do not undo this count. Metrics without data are not counted.
 
 **`operations`** - one terminal result per metrics PData input:
 
