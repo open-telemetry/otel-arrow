@@ -15,12 +15,12 @@ mod query;
 mod row;
 
 pub use config::{
-    CheckpointConfig, ConfigError, OnNack, OutputConfig, PollingConfig, TieBreakerCursorConfig,
-    TimestampCursorConfig, WatermarkConfig,
+    CatchUpConfig, CheckpointConfig, ConfigError, OnNack, OutputConfig, PollingConfig,
+    TieBreakerCursorConfig, TimestampCursorConfig, WatermarkConfig,
 };
 pub use driver::{DatabaseSystem, DriverAdapter, DriverCancellation};
-pub(crate) use otap::parse_utc_timestamp;
 pub use otap::{EncodedPage, OtlpMappingError, encode_page, validate_mapping};
+pub(crate) use otap::{OtlpPageEncoder, parse_utc_timestamp};
 pub use page::{CompositeCursor, CursorRow, QueryPage};
 pub use query::{CompiledQuery, CompositeWatermark, QueryError};
 pub use row::{CellValue, ColumnMetadata, Row};

@@ -14,23 +14,48 @@ const MAX_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 const MAX_NACK_BACKOFF: Duration = Duration::from_secs(5 * 60);
 const MAX_BYTE_LIMIT: u64 = 256 * 1024 * 1024;
 const MAX_CONSECUTIVE_FAILURES: u32 = 1_000;
+const MAX_CATCH_UP_PAGES: usize = 1024;
+const MAX_CATCH_UP_DURATION: Duration = Duration::from_secs(5 * 60);
+
+/// Budgets for immediately fetching additional acknowledged pages.
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct CatchUpConfig {
+    /// Maximum query-page fetches admitted in one cycle, including empty probes.
+    pub max_pages: usize,
+    /// Elapsed cycle budget that gates the next fetch, not an in-flight deadline.
+    #[serde(with = "humantime_serde")]
+    pub max_duration: Duration,
+}
+
+impl Default for CatchUpConfig {
+    fn default() -> Self {
+        Self {
+            max_pages: 32,
+            max_duration: Duration::from_secs(10),
+        }
+    }
+}
 
 /// Bounds and timing shared by every database receiver.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PollingConfig {
-    /// Delay between completed query executions.
+    /// Delay after a poll cycle ends, not between its acknowledged pages.
     #[serde(with = "humantime_serde")]
     pub interval: Duration,
     /// Native database call timeout.
     #[serde(with = "humantime_serde")]
     pub timeout: Duration,
-    /// Hard row limit for one poll.
+    /// Hard row limit for one fetched page, including in a catch-up cycle.
     pub max_rows_per_poll: usize,
     /// Target number of rows fetched per native driver round trip.
     pub fetch_size: usize,
     /// Byte ceiling applied separately to normalized rows and serialized OTLP.
     pub max_batch_bytes: u64,
+    /// Cycle budgets; omitted fields use defaults. Set max_pages to 1 for single-page cycles.
+    #[serde(default)]
+    pub catch_up: CatchUpConfig,
 }
 
 /// Watermark mode selected by the operator.
@@ -196,6 +221,24 @@ impl PollingConfig {
             return Err(ConfigError::new(format!(
                 "query.max_rows_per_poll must not exceed {MAX_ROWS_PER_POLL}"
             )));
+        }
+        self.catch_up.validate()?;
+        Ok(())
+    }
+}
+
+impl CatchUpConfig {
+    /// Validates the explicit page and elapsed-time budgets.
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        if !(1..=MAX_CATCH_UP_PAGES).contains(&self.max_pages) {
+            return Err(ConfigError::new(format!(
+                "query.catch_up.max_pages must be between 1 and {MAX_CATCH_UP_PAGES}"
+            )));
+        }
+        if !(MIN_INTERVAL..=MAX_CATCH_UP_DURATION).contains(&self.max_duration) {
+            return Err(ConfigError::new(
+                "query.catch_up.max_duration must be between 1ms and 5min",
+            ));
         }
         Ok(())
     }
