@@ -1024,7 +1024,7 @@ impl JoinExec for RecordToAttributesJoin {
 }
 
 /// Joins record attributes (e.g. from root signal log/span/metric.attributes, or child record
-/// attributes such as data point attributes) to their associated record record batch on
+/// attributes such as data point attributes) to their associated record batch on
 /// `attributes.parent_id == record.id`, producing a result that is aligned with the left-side
 /// (the attributes).
 pub(crate) struct RecordAttrsToRecordJoin {}

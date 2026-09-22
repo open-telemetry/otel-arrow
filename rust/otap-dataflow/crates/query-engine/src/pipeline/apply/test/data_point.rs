@@ -1356,7 +1356,7 @@ async fn test_assign_to_data_point_attributes_no_existing_attrs() {
 }
 
 /// Scenario: assigning the value of an attribute from an existing attribute
-/// Guarantees: new attribute is created having the same value as the existing attribtue
+/// Guarantees: new attribute is created having the same value as the existing attribute
 #[tokio::test]
 async fn test_assign_to_data_point_attributes_copy_attribute() {
     let query = "metrics | apply data_points {

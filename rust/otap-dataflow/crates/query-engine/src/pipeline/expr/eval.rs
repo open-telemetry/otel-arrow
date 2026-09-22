@@ -716,9 +716,9 @@ pub(super) fn invert_id_mask(mask: IdMask) -> IdMask {
 /// This function considers a scope not associated with an ID column (like a scalar)
 /// an invalid argument.
 ///
-/// This function expects that if the `IdMask`` variant is `Some` or `NotSome` that the
+/// This function expects that if the `IdMask` variant is `Some` or `NotSome` that the
 /// `mask_scope` wil be `Some` to avoid any ambiguity about which Id column to use when
-/// creating the boolean `ScoopedValue`.
+/// creating the boolean `ScopedValue`.
 fn materialize_id_mask_to_value(
     mask: IdMask,
     mask_scope: Option<DataScope>,

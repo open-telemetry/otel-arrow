@@ -1823,7 +1823,7 @@ impl NextIdTracker {
 }
 
 /// Creates a primitive array containing the `parent_id`s which is an argument to
-/// `upsert_attributes`. This is supposed containing the `parent_id` for the attributes that will
+/// `upsert_attributes`. This is supposed to contain the `parent_id` for the attributes that will
 /// be created/updated, in a specific order where all the updates are followed by all the inserts.
 ///
 ///
@@ -2082,7 +2082,7 @@ fn decompose_any_value_upsert<'a, T: ArrowPrimitiveType>(
             .as_any()
             .downcast_ref::<PrimitiveArray<T>>()
             .ok_or_else(|| Error::ExecutionError {
-                cause: "filtered parent_ids is not UInt16".into(),
+                cause: format!("filtered parent_ids is not of type {:?}", T::DATA_TYPE),
             })?
             .clone();
 
