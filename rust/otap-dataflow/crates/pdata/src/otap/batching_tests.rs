@@ -9,7 +9,7 @@ use crate::testing::equiv::assert_equivalent;
 use crate::testing::fixtures::{DataGenerator, MetricsConfig};
 use crate::testing::round_trip::otap_to_otlp;
 use crate::testing::round_trip::otlp_to_otap;
-use otap_df_config::SignalType;
+use otel_arrow_dfe_config::SignalType;
 use std::num::NonZeroU64;
 use std::sync::Arc;
 

@@ -7,15 +7,15 @@
 
 use arrow::array::RecordBatch;
 use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use otap_df_config::SignalType;
-use otap_df_pdata::OtapArrowRecords;
-use otap_df_pdata::otap::batching::make_item_batches;
-use otap_df_pdata::otap::transform::concatenate::concatenate;
-use otap_df_pdata::otap::transform::reindex::reindex;
-use otap_df_pdata::otap::{Logs, OtapBatchStore};
-use otap_df_pdata::proto::OtlpProtoMessage;
-use otap_df_pdata::testing::fixtures::{DataGenerator, LogsConfig};
-use otap_df_pdata::testing::round_trip::otlp_to_otap;
+use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_pdata::OtapArrowRecords;
+use otel_arrow_dfe_pdata::otap::batching::make_item_batches;
+use otel_arrow_dfe_pdata::otap::transform::concatenate::concatenate;
+use otel_arrow_dfe_pdata::otap::transform::reindex::reindex;
+use otel_arrow_dfe_pdata::otap::{Logs, OtapBatchStore};
+use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
+use otel_arrow_dfe_pdata::testing::fixtures::{DataGenerator, LogsConfig};
+use otel_arrow_dfe_pdata::testing::round_trip::otlp_to_otap;
 use std::hint::black_box;
 use std::num::NonZeroU64;
 
