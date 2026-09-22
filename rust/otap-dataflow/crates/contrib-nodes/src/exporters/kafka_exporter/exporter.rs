@@ -5121,18 +5121,10 @@ pub mod test_support {
                         .await
                         .expect("send trailing pdata");
 
-                    let marker_delivered = tokio::time::timeout(Duration::from_secs(10), async {
-                        loop {
-                            let message = consumer.recv().await;
-                            if message.payload.as_deref() == Some(marker.as_slice()) {
-                                break;
-                            }
-                        }
-                    })
-                    .await
-                    .is_ok();
+                    let msgs = consumer.collect_until_idle(Duration::from_secs(2)).await;
                     assert!(
-                        marker_delivered,
+                        msgs.iter()
+                            .any(|m| m.payload.as_deref() == Some(marker.as_slice())),
                         "the loop keeps running after enqueue pressure; trailing send delivers"
                     );
 

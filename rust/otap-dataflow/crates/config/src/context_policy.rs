@@ -91,14 +91,14 @@ impl ContextEntryDefinition {
         }
 
         for (index, part) in self.0.iter().enumerate() {
-            let (entry, name) = part.entry_ref_and_name();
+            let (kind, entry, name) = part.kind_ref_and_name();
 
             if !output_names.insert(name) {
                 errors.push(format!(
                     "{path_prefix}[{index}] produces duplicate member name `{name}`"
                 ));
             }
-            if !value_references.insert(entry) {
+            if !value_references.insert((kind, entry)) {
                 errors.push(format!(
                     "{path_prefix}[{index}] repeats reference `{}`",
                     entry
@@ -132,14 +132,34 @@ pub enum ContextEntryPart {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum ContextEntryPartKind {
+    TransportHeader,
+    AuthorizedIdentity,
+}
+
 impl ContextEntryPart {
-    fn entry_ref_and_name(&self) -> (&'_ ContextEntryRef, &'_ ContextEntryName) {
-        let (name, store_as) = match self {
-            Self::TransportHeader { name, store_as } => (name, store_as.as_ref()),
-            Self::AuthorizedIdentity { name, store_as } => (name, store_as.as_ref()),
+    fn kind_ref_and_name(
+        &self,
+    ) -> (
+        ContextEntryPartKind,
+        &'_ ContextEntryRef,
+        &'_ ContextEntryName,
+    ) {
+        let (kind, name, store_as) = match self {
+            Self::TransportHeader { name, store_as } => (
+                ContextEntryPartKind::TransportHeader,
+                name,
+                store_as.as_ref(),
+            ),
+            Self::AuthorizedIdentity { name, store_as } => (
+                ContextEntryPartKind::AuthorizedIdentity,
+                name,
+                store_as.as_ref(),
+            ),
         };
         let output_name = store_as.unwrap_or_else(|| name.name());
-        (name, output_name)
+        (kind, name, output_name)
     }
 }
 
@@ -285,6 +305,16 @@ entries:
         let policy = serde_yaml::from_str::<ContextPolicy>(yaml).expect("valid syntax");
 
         assert!(!policy.validation_errors("context").is_empty());
+    }
+
+    /// Scenario: different source types use the same entry name and one member is aliased.
+    /// Guarantees: source type distinguishes references while stored member names stay unique.
+    #[test]
+    fn accepts_same_name_from_different_source_types_with_alias() {
+        let yaml = "entries: {tenant: [{type: transport_header, name: id}, {type: authorized_identity, name: id, store_as: identity_id}]}";
+        let policy = serde_yaml::from_str::<ContextPolicy>(yaml).expect("valid syntax");
+
+        assert!(policy.validation_errors("context").is_empty());
     }
 
     /// Scenario: a part uses an unsupported variant or property.
