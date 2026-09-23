@@ -115,6 +115,7 @@ fn create(
 
     ExtensionWrapper::builder(name, ext_config, extension_config)
         .active()
+        .with_readiness_probe()
         .shared::<FlatFileUserPassAuthExtension>(extension)
         .build()
         .map_err(|e| ConfigError::InvalidUserConfig {
