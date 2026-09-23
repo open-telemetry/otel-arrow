@@ -60,7 +60,7 @@ pub struct Policies {
     /// Authorized identity policy selecting verified claims for context storage.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) authorized_identity: Option<AuthorizedIdentityPolicy>,
-    /// Declarative grouping context entries.
+    /// Composite context entries.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) context: Option<ContextPolicy>,
 }

@@ -352,7 +352,7 @@ policies:
 
 > [!NOTE]
 > Context entry declarations are retained in resolved configuration but do not
-> currently construct, capture, propagate, or consume grouping entries at
+> currently construct, capture, propagate, or consume composite entries at
 > runtime. Conditional elements and runtime support will be added separately.
 
 ## Engine Observability Pipeline
