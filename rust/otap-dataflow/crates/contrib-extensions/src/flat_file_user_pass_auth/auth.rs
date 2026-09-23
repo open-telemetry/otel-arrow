@@ -63,6 +63,13 @@ async fn read_credential(
             .to_string()
             .into();
         contents_str.zeroize();
+        // Note: `file_refresh` is used as expiry. We don't know true expiry of
+        // the password we use the setting to trigger an automatic refresh. Goal
+        // being something external may periodically refresh the password file
+        // and we should pick that up. This could be improved by using a file
+        // watcher to trigger refresh but the current auth model is poll-based
+        // so some infra work needs to be in place as well in order to push a
+        // refresh from inside extension.
         return Ok((password, Some(file_refresh)));
     }
     if let Some(value) = inline {
