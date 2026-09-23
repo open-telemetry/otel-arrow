@@ -8,7 +8,7 @@ use std::fmt;
 use std::time::Duration;
 
 const MAX_ROWS_PER_POLL: usize = 10_000;
-const MAX_FETCH_SIZE: usize = 10_000;
+const MAX_FETCH_SIZE_ROWS: usize = 10_000;
 const MIN_INTERVAL: Duration = Duration::from_millis(1);
 const MAX_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 const MAX_NACK_BACKOFF: Duration = Duration::from_secs(5 * 60);
@@ -50,7 +50,7 @@ pub struct PollingConfig {
     /// Hard row limit for one fetched page, including in a catch-up cycle.
     pub max_rows_per_poll: usize,
     /// Target number of rows fetched per native driver round trip.
-    pub fetch_size: usize,
+    pub fetch_size_rows: usize,
     /// Byte ceiling applied separately to normalized rows and serialized OTLP.
     pub max_batch_bytes: u64,
     /// Cycle budgets; omitted fields use defaults. Set max_pages to 1 for single-page cycles.
@@ -192,9 +192,9 @@ impl PollingConfig {
                 "query.max_rows_per_poll must be greater than zero",
             ));
         }
-        if self.fetch_size == 0 {
+        if self.fetch_size_rows == 0 {
             return Err(ConfigError::new(
-                "query.fetch_size must be greater than zero",
+                "query.fetch_size_rows must be greater than zero",
             ));
         }
         if self.max_batch_bytes == 0 {
@@ -207,14 +207,14 @@ impl PollingConfig {
                 "query.max_batch_bytes must not exceed {MAX_BYTE_LIMIT} bytes"
             )));
         }
-        if self.fetch_size > MAX_FETCH_SIZE {
+        if self.fetch_size_rows > MAX_FETCH_SIZE_ROWS {
             return Err(ConfigError::new(format!(
-                "query.fetch_size must not exceed {MAX_FETCH_SIZE}"
+                "query.fetch_size_rows must not exceed {MAX_FETCH_SIZE_ROWS}"
             )));
         }
-        if self.fetch_size > self.max_rows_per_poll {
+        if self.fetch_size_rows > self.max_rows_per_poll {
             return Err(ConfigError::new(
-                "query.fetch_size must not exceed query.max_rows_per_poll",
+                "query.fetch_size_rows must not exceed query.max_rows_per_poll",
             ));
         }
         if self.max_rows_per_poll > MAX_ROWS_PER_POLL {
