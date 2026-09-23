@@ -57,7 +57,6 @@ use otel_arrow_dfe_pdata::{
     OtapArrowRecords, OtapPayload, OtlpProtoBytes, PayloadData, TryIntoWithOptions,
 };
 use otel_arrow_dfe_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
-use otel_arrow_dfe_telemetry::export_diagnostics::{ExportDiagnostics, ExportErrorKind};
 use otel_arrow_dfe_telemetry::metrics::MetricSetHandler;
 use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSet};
 use std::collections::HashMap;
@@ -110,8 +109,6 @@ const SUPPORTED_ARROW_PAYLOAD_TYPES: &[ArrowPayloadType] = &[
 
 /// Clickhouse exporter that sends OTAP data to Clickhouse backend
 pub struct ClickhouseExporter {
-    preparation: ExportDiagnostics<ExportErrorKind>,
-    diagnostics: ExportDiagnostics<ExportErrorKind>,
     config: Config,
     pdata_metrics: MeasurementMetricSet<ExporterExportMetrics>,
     ch_metrics: MetricSet<ClickhouseExporterMetrics>,
@@ -134,8 +131,6 @@ impl ClickhouseExporter {
         let config: Config = Config::from_patch(patch);
 
         Ok(Self {
-            diagnostics: Default::default(),
-            preparation: Default::default(),
             config,
             pdata_metrics,
             ch_metrics,
@@ -174,23 +169,6 @@ impl ClickhouseExporter {
             result,
         } = completed;
         let signal_type = pdata.signal_type();
-        let now = Instant::now();
-        let report = match &result {
-            Ok(rows) if !rows.is_empty() => self
-                .diagnostics
-                .signal(signal_type)
-                .success(export_started_at, now),
-            // Empty or unmapped batches do not submit anything to the backend.
-            Ok(_) => None,
-            Err(error) => {
-                self.diagnostics
-                    .signal(signal_type)
-                    .failure(now, ExportErrorKind::Io, || error)
-            }
-        };
-        otel_arrow_dfe_telemetry::otel_export_diagnostic!(
-            target: "otel.exporter.clickhouse", report, signal = ?signal_type, stage = "delivery"
-        );
 
         match result {
             Ok(written_rows) => {
@@ -212,7 +190,11 @@ impl ClickhouseExporter {
                         outcome: Outcome::Failure,
                     })
                     .record(export_started_at.elapsed());
-
+                otel_warn!(
+                    "clickhouse.exporter.write.error",
+                    message = format!("Error writing batch to clickhouse: {error}"),
+                    signal_type = format!("{signal_type:?}"),
+                );
                 effect_handler
                     .notify_nack(NackMsg::new(error.to_string(), pdata))
                     .await?;
@@ -389,11 +371,10 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
                                 outcome: Outcome::Failure,
                             })
                             .record(export_started_at.elapsed());
-                        otel_arrow_dfe_telemetry::otel_export_diagnostic!(
-                            target: "otel.exporter.clickhouse",
-                            self.preparation.signal(signal_type).failure(Instant::now(),
-                                ExportErrorKind::Preparation, || &reason),
-                            signal = ?signal_type, stage = "preparation"
+                        otel_warn!(
+                            "clickhouse.exporter.signal.unsupported",
+                            message = reason.clone(),
+                            signal_type = format!("{signal_type:?}"),
                         );
                         notify_permanent_rejection(&effect_handler, reason, pdata).await?;
                         continue;
@@ -422,11 +403,10 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
                                             outcome: Outcome::Failure,
                                         })
                                         .record(export_started_at.elapsed());
-                                    otel_arrow_dfe_telemetry::otel_export_diagnostic!(
-                                        target: "otel.exporter.clickhouse",
-                                        self.preparation.signal(signal_type).failure(Instant::now(),
-                                            ExportErrorKind::Preparation, || &reason),
-                                        signal = ?signal_type, stage = "preparation"
+                                    otel_warn!(
+                                        "clickhouse.exporter.otlp.invalid_protobuf",
+                                        message = "Rejecting malformed raw OTLP logs.",
+                                        error = reason.clone(),
                                     );
                                     notify_permanent_rejection(&effect_handler, reason, pdata)
                                         .await?;
@@ -462,11 +442,10 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
                                         outcome: Outcome::Failure,
                                     })
                                     .record(export_started_at.elapsed());
-                                otel_arrow_dfe_telemetry::otel_export_diagnostic!(
-                                    target: "otel.exporter.clickhouse",
-                                    self.preparation.signal(signal_type).failure(Instant::now(),
-                                        ExportErrorKind::Preparation, || &reason),
-                                    signal = ?signal_type, stage = "preparation"
+                                otel_warn!(
+                                    "clickhouse.exporter.convert.error",
+                                    message = reason.clone(),
+                                    signal_type = format!("{:?}", signal_type),
                                 );
                                 notify_permanent_rejection(&effect_handler, reason, pdata).await?;
                                 continue;
@@ -482,11 +461,11 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
                                     outcome: Outcome::Failure,
                                 })
                                 .record(export_started_at.elapsed());
-                            otel_arrow_dfe_telemetry::otel_export_diagnostic!(
-                                target: "otel.exporter.clickhouse",
-                                self.preparation.signal(signal_type).failure(Instant::now(),
-                                    ExportErrorKind::Preparation, || &reason),
-                                signal = ?signal_type, stage = "preparation"
+                            otel_warn!(
+                                "clickhouse.exporter.decode.error",
+                                message = reason.clone(),
+                                source_detail = format_error_sources(&e),
+                                signal_type = format!("{:?}", signal_type),
                             );
                             notify_permanent_rejection(&effect_handler, reason, pdata).await?;
                             continue;
@@ -523,11 +502,11 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
                                         outcome: Outcome::Failure,
                                     })
                                     .record(export_started_at.elapsed());
-                                otel_arrow_dfe_telemetry::otel_export_diagnostic!(
-                                    target: "otel.exporter.clickhouse",
-                                    self.preparation.signal(signal_type).failure(Instant::now(),
-                                        ExportErrorKind::Preparation, || &reason),
-                                    signal = ?signal_type, stage = "preparation"
+                                otel_warn!(
+                                    "clickhouse.exporter.transform.error",
+                                    message = "Error transforming batch for export.",
+                                    error = e.to_string(),
+                                    signal_type = format!("{:?}", signal_type),
                                 );
                                 notify_permanent_rejection(&effect_handler, reason, pdata).await?;
                                 continue;
@@ -586,42 +565,6 @@ mod tests {
             }),
         )
         .expect("create test exporter")
-    }
-
-    /// Scenario: An empty ClickHouse write completes after an earlier backend failure.
-    /// Guarantees: A local no-op cannot report destination recovery; the episode remains open.
-    #[tokio::test]
-    async fn empty_write_does_not_confirm_recovery() {
-        let mut exporter = test_exporter();
-        let now = Instant::now();
-        let _ = exporter.diagnostics.signal(SignalType::Logs).failure(
-            now - Duration::from_secs(60),
-            ExportErrorKind::Io,
-            || "unavailable",
-        );
-        let (effect_handler, _completion_rx) = completion_harness();
-        exporter
-            .finalize_write(
-                CompletedWrite {
-                    pdata: create_test_pdata(),
-                    export_started_at: now,
-                    result: Ok(Vec::new()),
-                },
-                &effect_handler,
-            )
-            .await
-            .unwrap();
-        let report = exporter
-            .diagnostics
-            .signal(SignalType::Logs)
-            .failure(Instant::now(), ExportErrorKind::Io, || "still unavailable")
-            .unwrap();
-        assert_eq!(
-            report.kind,
-            otel_arrow_dfe_telemetry::export_diagnostics::ReportKind::Summary
-        );
-        assert_eq!(report.total.failures, 2);
-        assert_eq!(report.total.successes, 0);
     }
 
     fn completion_harness() -> (

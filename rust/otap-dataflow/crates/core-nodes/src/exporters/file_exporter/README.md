@@ -126,9 +126,7 @@ No metric contains a destination path.
 | `otelcol.node.file.start` | `info` | `format`, `create_directories`, `open_mode`, `durability`, `tail_recovery`, `max_frame_bytes` | Exporter startup with its non-sensitive bounded configuration. |
 | `otelcol.node.file.writer.start` | `info` | `signal` | A signal writer opened successfully on first use. |
 | `otelcol.node.file.tail.recover` | `warn` | `signal`, `recovered_bytes` | An incomplete final frame was removed. |
-| `otelcol.node.export.degrade` | `warn` | `signal`, `stage`, counts, error sample | First observed failure. |
-| `otelcol.node.export.report` | `warn` | `signal`, `stage`, counts, error sample | At most one failure summary per 60 seconds. |
-| `otelcol.node.export.resume` | `info` | `signal`, `stage`, counts, error sample | Confirmed recovery after 30 failure-free seconds and fresh success. |
+| `otelcol.node.file.operation.fail` | `warn` | `signal`, `operation`, `error` | A signal writer entered an I/O failure state. |
 | `otelcol.node.file.rollback.fail` | `error` | `signal`, `operation`, `error`, `rollback_error` | Rollback failed and the node will terminate. |
 | `otelcol.node.file.stop` | `info` | `reason` | Graceful shutdown completed. |
 
@@ -147,6 +145,3 @@ if its write succeeded but its ACK was not observed before a crash.
 - [Core node catalog](../../../README.md)
 
 <!-- markdownlint-enable MD013 -->
-
-See the [shared exporter diagnostic policy](../../../../../docs/telemetry/events-guide.md#repeated-exporter-failures)
-for report fields, scope, operation stages, and recovery semantics.

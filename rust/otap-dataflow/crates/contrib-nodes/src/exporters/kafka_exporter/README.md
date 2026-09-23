@@ -715,9 +715,10 @@ metric attributes, which keeps cardinality bounded for dynamic tenant routing.
 | Event | Severity | Description |
 | --- | --- | --- |
 | `kafka.exporter.producer_config.overridden_key` | `warn` | A `producer_config` key is also managed by a first-class setting and may be overwritten. |
-| `otelcol.node.export.degrade` | `warn` | First observed failure. |
-| `otelcol.node.export.report` | `warn` | At most one failure summary per 60 seconds. |
-| `otelcol.node.export.resume` | `info` | Confirmed recovery after 30 failure-free seconds and fresh success. |
+| `kafka.exporter.signal.unconfigured` | `warn` | Pdata arrived for a signal without exporter configuration and was permanently nacked. |
+| `kafka.exporter.topic.invalid_header` | `warn` | A transport header supplied an invalid destination topic and the message was permanently nacked. |
+| `kafka.exporter.encode.failed` | `error` | Pdata encoding failed and the message was permanently nacked. |
+| `kafka.exporter.send.failed` | `warn` | Kafka delivery failed and the message was nacked for upstream retry handling. |
 | `kafka.exporter.shutdown.flush_failed` | `warn` | Shutdown flushing failed or timed out; queued and in-flight messages were purged. |
 | `kafka.exporter.producer.poll_thread_join_failed` | `warn` | The producer polling thread could not be joined during teardown. |
 
@@ -747,6 +748,3 @@ metric attributes, which keeps cardinality bounded for dynamic tenant routing.
 - [Configuration model](../../../../../docs/configuration-model.md)
 - [Transport headers](../../../../../docs/transport-headers.md)
 - [Contrib node catalog](../../../README.md)
-
-See the [shared exporter diagnostic policy](../../../../../docs/telemetry/events-guide.md#repeated-exporter-failures)
-for report fields, scope, operation stages, and recovery semantics.

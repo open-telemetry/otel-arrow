@@ -10,7 +10,6 @@ use otel_arrow_dfe_engine::context::PipelineContext;
 use otel_arrow_dfe_otap::metrics::{ExporterAttempt, ExporterMetrics};
 use otel_arrow_dfe_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
 use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
-use otel_arrow_dfe_telemetry::export_diagnostics::{ExportDiagnostics, ExportErrorKind};
 use otel_arrow_dfe_telemetry::instrument::{Counter, HistogramNormal};
 use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSetSnapshot};
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
@@ -132,8 +131,6 @@ struct GenevaSkippedMetrics {
 /// Composite metrics emitted by a Geneva exporter.
 #[derive(Debug)]
 pub(super) struct GenevaExporterMetrics {
-    pub(super) diagnostics: ExportDiagnostics<GenevaExporterErrorType>,
-    pub(super) preparation: ExportDiagnostics<ExportErrorKind>,
     /// Shared per-batch external export attempt metrics.
     pub(super) boundary: ExporterMetrics,
     encoding: MeasurementMetricSet<GenevaEncodingMetrics>,
@@ -147,8 +144,6 @@ impl GenevaExporterMetrics {
     #[must_use]
     pub(super) fn register(pipeline_ctx: &PipelineContext) -> Self {
         Self {
-            diagnostics: Default::default(),
-            preparation: Default::default(),
             boundary: ExporterMetrics::register(pipeline_ctx),
             encoding: GenevaEncodingMetrics::register(pipeline_ctx),
             failures: GenevaFailureMetrics::register(pipeline_ctx),

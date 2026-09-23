@@ -31,7 +31,6 @@ use otel_arrow_dfe_engine::topic::{
 use otel_arrow_dfe_engine::{ConsumerEffectHandlerExtension, ExporterFactory};
 use otel_arrow_dfe_otap::OTAP_EXPORTER_FACTORIES;
 use otel_arrow_dfe_otap::pdata::OtapPdata;
-use otel_arrow_dfe_telemetry::export_diagnostics::{ExportDiagnostics, ExportErrorKind};
 use otel_arrow_dfe_telemetry::instrument::{Counter, Gauge};
 use otel_arrow_dfe_telemetry::metrics::MetricSet;
 use otel_arrow_dfe_telemetry_macros::metric_set;
@@ -263,10 +262,7 @@ impl TopicExporter {
         pending_outcomes: &mut FuturesUnordered<
             Pin<Box<dyn Future<Output = (u64, TrackedPublishOutcome)> + Send>>,
         >,
-        diagnostics: &mut ExportDiagnostics<ExportErrorKind>,
     ) -> Result<Option<BlockedPublish>, Error> {
-        let signal = data.signal_type();
-        let started_at = std::time::Instant::now();
         let should_track_end_to_end = ack_propagation_mode == TopicAckPropagationMode::Auto
             && data.has_ack_or_nack_interests();
 
@@ -280,11 +276,6 @@ impl TopicExporter {
                         .expect("tracked publisher should exist when ack propagation is auto");
                     match tracked_publisher.try_publish(published)? {
                         TrackedTryPublishOutcome::Published(receipt) => {
-                            otel_arrow_dfe_telemetry::otel_export_diagnostic!(
-                                target: "otel.exporter.topic",
-                                diagnostics.signal(signal).success(started_at, std::time::Instant::now()),
-                                signal = ?signal, stage = "admission"
-                            );
                             Self::record_tracked_publish(
                                 receipt,
                                 data,
@@ -302,11 +293,6 @@ impl TopicExporter {
                 } else {
                     match topic.try_publish(published)? {
                         PublishOutcome::Published => {
-                            otel_arrow_dfe_telemetry::otel_export_diagnostic!(
-                                target: "otel.exporter.topic",
-                                diagnostics.signal(signal).success(started_at, std::time::Instant::now()),
-                                signal = ?signal, stage = "admission"
-                            );
                             metrics.published_messages.add(1);
                             effect_handler.notify_ack(AckMsg::new(data)).await?;
                             Ok(None)
@@ -324,11 +310,6 @@ impl TopicExporter {
                         .expect("tracked publisher should exist when ack propagation is auto");
                     match tracked_publisher.try_publish(published)? {
                         TrackedTryPublishOutcome::Published(receipt) => {
-                            otel_arrow_dfe_telemetry::otel_export_diagnostic!(
-                                target: "otel.exporter.topic",
-                                diagnostics.signal(signal).success(started_at, std::time::Instant::now()),
-                                signal = ?signal, stage = "admission"
-                            );
                             Self::record_tracked_publish(
                                 receipt,
                                 data,
@@ -340,11 +321,11 @@ impl TopicExporter {
                         TrackedTryPublishOutcome::DroppedOnFull => {
                             metrics.dropped_messages_on_full.add(1);
                             let exporter_id = effect_handler.exporter_id();
-                            otel_arrow_dfe_telemetry::otel_export_diagnostic!(
-                                target: "otel.exporter.topic",
-                                diagnostics.signal(signal).failure(std::time::Instant::now(), ExportErrorKind::Throttled,
-                                    || "topic admission capacity exhausted; dropping newest message"),
-                                node = exporter_id.name.as_ref(), signal = ?signal, stage = "admission"
+                            otel_warn!(
+                                "topic_exporter.drop_newest",
+                                node = exporter_id.name.as_ref(),
+                                topic = topic.name().as_ref(),
+                                message = "Dropping message because topic queue is full"
                             );
                             effect_handler
                                 .notify_nack(NackMsg::new("topic queue full: dropped newest", data))
@@ -353,11 +334,11 @@ impl TopicExporter {
                         TrackedTryPublishOutcome::MaxInFlightReached => {
                             metrics.dropped_messages_on_outcome_capacity.add(1);
                             let exporter_id = effect_handler.exporter_id();
-                            otel_arrow_dfe_telemetry::otel_export_diagnostic!(
-                                target: "otel.exporter.topic",
-                                diagnostics.signal(signal).failure(std::time::Instant::now(), ExportErrorKind::Throttled,
-                                    || "tracked publish outcome capacity exhausted; dropping newest message"),
-                                node = exporter_id.name.as_ref(), signal = ?signal, stage = "admission"
+                            otel_warn!(
+                                "topic_exporter.outcome_capacity_full",
+                                node = exporter_id.name.as_ref(),
+                                topic = topic.name().as_ref(),
+                                message = "Dropping message because tracked publish outcome capacity is exhausted"
                             );
                             effect_handler
                                 .notify_nack(NackMsg::new(
@@ -370,22 +351,17 @@ impl TopicExporter {
                 } else {
                     match topic.try_publish(published)? {
                         PublishOutcome::Published => {
-                            otel_arrow_dfe_telemetry::otel_export_diagnostic!(
-                                target: "otel.exporter.topic",
-                                diagnostics.signal(signal).success(started_at, std::time::Instant::now()),
-                                signal = ?signal, stage = "admission"
-                            );
                             metrics.published_messages.add(1);
                             effect_handler.notify_ack(AckMsg::new(data)).await?;
                         }
                         PublishOutcome::DroppedOnFull => {
                             metrics.dropped_messages_on_full.add(1);
                             let exporter_id = effect_handler.exporter_id();
-                            otel_arrow_dfe_telemetry::otel_export_diagnostic!(
-                                target: "otel.exporter.topic",
-                                diagnostics.signal(signal).failure(std::time::Instant::now(), ExportErrorKind::Throttled,
-                                    || "topic admission capacity exhausted; dropping newest message"),
-                                node = exporter_id.name.as_ref(), signal = ?signal, stage = "admission"
+                            otel_warn!(
+                                "topic_exporter.drop_newest",
+                                node = exporter_id.name.as_ref(),
+                                topic = topic.name().as_ref(),
+                                message = "Dropping message because topic queue is full"
                             );
                             effect_handler
                                 .notify_nack(NackMsg::new("topic queue full: dropped newest", data))
@@ -413,7 +389,6 @@ impl Exporter<OtapPdata> for TopicExporter {
             mut metrics,
         } = *self;
 
-        let mut diagnostics = ExportDiagnostics::default();
         let mut pending_messages: HashMap<u64, OtapPdata> = HashMap::new();
         let mut pending_outcomes: FuturesUnordered<
             Pin<Box<dyn Future<Output = (u64, TrackedPublishOutcome)> + Send>>,
@@ -598,7 +573,6 @@ impl Exporter<OtapPdata> for TopicExporter {
                                     &mut metrics,
                                     &mut pending_messages,
                                     &mut pending_outcomes,
-                                    &mut diagnostics,
                                 )
                                 .await?;
                                 tokio::task::consume_budget().await;

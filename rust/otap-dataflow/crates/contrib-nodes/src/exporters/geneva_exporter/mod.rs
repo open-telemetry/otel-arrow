@@ -53,7 +53,6 @@ use otel_arrow_dfe_pdata::otlp::OtlpProtoBytes;
 use otel_arrow_dfe_pdata::views::otap::OtapLogsView;
 use otel_arrow_dfe_pdata::views::otlp::bytes::logs::RawLogsData;
 use otel_arrow_dfe_pdata::{OtapArrowRecords, OtapPayload, PayloadData};
-use otel_arrow_dfe_telemetry::export_diagnostics::ExportErrorKind;
 use serde::{Deserialize, Deserializer};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -1133,12 +1132,9 @@ async fn upload_batch_attempt(
     batch: &EncodedBatch,
     signal: SignalType,
     attempt: otel_arrow_dfe_otap::metrics::ExporterAttempt,
-) -> (
-    std::time::Instant,
-    otel_arrow_dfe_otap::metrics::CompletedExporterAttempt<u64, (GenevaExporterErrorType, String)>,
-) {
-    let diagnostic_started_at = std::time::Instant::now();
-    let completed = attempt
+) -> otel_arrow_dfe_otap::metrics::CompletedExporterAttempt<u64, (GenevaExporterErrorType, String)>
+{
+    attempt
         .run(async |attempt| {
             attempt.set_item_count_with(|| batch.row_count as u64);
             attempt.set_payload_size_with(|| batch.compressed_size());
@@ -1161,37 +1157,19 @@ async fn upload_batch_attempt(
                 })
                 .map(|()| batch.row_count as u64)
         })
-        .await;
-    (diagnostic_started_at, completed)
+        .await
 }
 
 fn record_completed_upload(
     metrics: &mut GenevaExporterMetrics,
     signal: SignalType,
-    (started_at, completed): (
-        std::time::Instant,
-        otel_arrow_dfe_otap::metrics::CompletedExporterAttempt<
-            u64,
-            (GenevaExporterErrorType, String),
-        >,
-    ),
+    completed: otel_arrow_dfe_otap::metrics::CompletedExporterAttempt<
+        u64,
+        (GenevaExporterErrorType, String),
+    >,
     first_error: &mut Option<String>,
 ) {
-    let result = metrics.boundary.record(completed);
-    let now = std::time::Instant::now();
-    let report = match &result {
-        Ok(_) => metrics.diagnostics.signal(signal).success(started_at, now),
-        Err((category, error)) => {
-            metrics
-                .diagnostics
-                .signal(signal)
-                .failure(now, *category, || error)
-        }
-    };
-    otel_arrow_dfe_telemetry::otel_export_diagnostic!(
-        target: "microsoft.exporter.geneva", report, signal = ?signal, stage = "delivery"
-    );
-    if let Err((error_type, error)) = result {
+    if let Err((error_type, error)) = metrics.boundary.record(completed) {
         metrics.record_failure(signal, error_type);
         if first_error.is_none() {
             *first_error = Some(error);
@@ -1369,7 +1347,7 @@ impl GenevaExporter {
             PayloadData::OtapArrowRecords(otap_records) => {
                 match otap_records {
                     mut otap_records @ OtapArrowRecords::Logs(_) => {
-                        otel_debug!(
+                        otel_info!(
                             "geneva_exporter.upload",
                             message = "Uploading log batches to Geneva using OTAP record views"
                         );
@@ -1404,7 +1382,7 @@ impl GenevaExporter {
                             .upload_batches_concurrent(&batches, SignalType::Logs)
                             .await?;
 
-                        otel_debug!(
+                        otel_info!(
                             "geneva_exporter.upload",
                             count = batches_uploaded,
                             message = "Successfully uploaded log batches to Geneva using OTAP record views"
@@ -1416,7 +1394,7 @@ impl GenevaExporter {
                         // TODO: Zero-copy view path for future optimization (when TracesView is ready)
 
                         // Fallback path: Convert OTAP Arrow -> OTLP bytes
-                        otel_debug!(
+                        otel_info!(
                             "geneva_exporter.convert",
                             message = "Converting OTAP traces to OTLP bytes (fallback path)"
                         );
@@ -1467,7 +1445,7 @@ impl GenevaExporter {
                             .upload_batches_concurrent(&batches, SignalType::Traces)
                             .await?;
 
-                        otel_debug!(
+                        otel_info!(
                             "geneva_exporter.upload",
                             count = batches_uploaded,
                             message =
@@ -1492,7 +1470,7 @@ impl GenevaExporter {
             PayloadData::OtlpBytes(otlp_bytes) => {
                 match otlp_bytes {
                     OtlpProtoBytes::ExportLogsRequest(bytes) => {
-                        otel_debug!(
+                        otel_info!(
                             "geneva_exporter.upload",
                             message = "Uploading log batches to Geneva using OTLP raw-byte view"
                         );
@@ -1517,7 +1495,7 @@ impl GenevaExporter {
                             .upload_batches_concurrent(&batches, SignalType::Logs)
                             .await?;
 
-                        otel_debug!(
+                        otel_info!(
                             "geneva_exporter.upload",
                             count = batches_uploaded,
                             message = "Successfully uploaded log batches to Geneva using OTLP raw-byte view"
@@ -1526,7 +1504,7 @@ impl GenevaExporter {
                         Ok(batches_uploaded)
                     }
                     OtlpProtoBytes::ExportTracesRequest(bytes) => {
-                        otel_debug!(
+                        otel_info!(
                             "geneva_exporter.upload",
                             message = "Uploading traces to Geneva using OTLP path"
                         );
@@ -1553,7 +1531,7 @@ impl GenevaExporter {
                             .upload_batches_concurrent(&batches, SignalType::Traces)
                             .await?;
 
-                        otel_debug!(
+                        otel_info!(
                             "geneva_exporter.upload",
                             count = batches_uploaded,
                             message = "Successfully uploaded trace batches to Geneva (OTLP path)"
@@ -1692,14 +1670,11 @@ impl Exporter<OtapPdata> for GenevaExporter {
                                     .record_unsubmitted_attempt(unsubmitted_attempt, outcome)
                                     .await;
                             }
-                            if error.unsubmitted_outcome().is_some() {
-                                otel_arrow_dfe_telemetry::otel_export_diagnostic!(
-                                    target: "microsoft.exporter.geneva",
-                                    self.metrics.preparation.signal(signal_type).failure(
-                                        std::time::Instant::now(), ExportErrorKind::Preparation, || error.message()),
-                                    signal = ?signal_type, stage = "preparation"
-                                );
-                            }
+                            otel_info!(
+                                "geneva_exporter.error",
+                                error = error.message(),
+                                message = "Failed to export to Geneva"
+                            );
                             effect_handler
                                 .notify_nack(NackMsg::new(
                                     error.message(),
@@ -2051,12 +2026,7 @@ mod tests {
         let mut first_error = None;
 
         for completed in completed {
-            record_completed_upload(
-                &mut metrics,
-                SignalType::Logs,
-                (Instant::now(), completed),
-                &mut first_error,
-            );
+            record_completed_upload(&mut metrics, SignalType::Logs, completed, &mut first_error);
         }
 
         assert_eq!(first_error.as_deref(), Some("throttled"));

@@ -332,10 +332,11 @@ termination verb `cancel`, and one internal safety verb `abort`.
 
 ## Repeated exporter failures
 
-Exporters use the shared `export_diagnostics` helper to report observed export
-behavior before events reach ITS, console providers, or the retained log tap.
-This policy is independent of metric collection and does not change retries,
-Ack/Nack routing, backpressure, or readiness.
+The OTLP HTTP exporter uses the shared `export_diagnostics` helper to report
+observed export behavior before events reach ITS, console providers, or the
+retained log tap. This policy is independent of metric collection and does not
+change retries, Ack/Nack routing, backpressure, or readiness. Integration with
+other exporters is deferred to future changes.
 
 - `otelcol.node.export.degrade` (WARN): the first failure of an episode.
 - `otelcol.node.export.report` (WARN): a summary at most once every 60 seconds
@@ -353,26 +354,16 @@ categories does not restart an episode or bypass the summary interval.
 
 ### Scope and boundaries
 
-State is local to an exporter instance/core, signal, and configured destination.
-OTAP stream workers for the same signal share local diagnostic state. Dynamic
-Kafka topics and Geneva routes use an aggregate signal scope rather than
-unbounded per-topic or per-tenant maps. A recovery report describes recent
-success in this aggregate scope; it does not assert health of every route.
+State is local to an OTLP HTTP exporter instance/core, signal, and configured
+destination. Success for one signal cannot clear failures for another signal,
+including when signal-specific endpoints are configured.
 
-The `stage` attribute distinguishes delivery, preparation, notification,
-protocol, and admission observations. Preparation and notification errors use
-independent failure summaries and cannot mark a destination recovered. Topic
-exporter events describe admission to the topic queue, not downstream delivery.
-File exporter recovery requires an actual successful write, not opening a file
-or accepting an empty message. OTAP counts failed correlated batches on stream
-failure and confirms success only on a matching successful batch response.
-Azure Monitor counts each HTTP attempt, including internal retries. Geneva
-counts individual uploads, including fan-out from a single input message.
-
-Delivery reporting is integrated with OTLP gRPC/HTTP, OTAP, Kafka, ClickHouse,
-Azure Monitor, Geneva, file, and console exporters. Topic admission failures use
-the same policy. Fatal failures, including Parquet write failures that terminate
-the exporter, retain their existing behavior.
+The `stage` attribute distinguishes delivery, preparation, and notification
+observations. Preparation and notification errors use independent failure
+summaries and cannot mark a destination recovered. Delivery observations come
+from completed HTTP exports before Ack/Nack routing. Partial acceptance and
+permanent rejection remain failed attempts with their existing classifications;
+an upstream notification failure cannot change the observed HTTP outcome.
 
 ### Report fields
 

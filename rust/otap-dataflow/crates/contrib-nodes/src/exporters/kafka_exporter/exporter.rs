@@ -16,7 +16,6 @@
 //! deliveries for throughput.
 
 use super::producer::{ExporterDeliveryFuture, ExporterFutureProducer, ExporterFutureRecord};
-use otel_arrow_dfe_telemetry::export_diagnostics::ExportErrorKind;
 
 use super::config::{KafkaExporterConfig, SignalConfig};
 use super::encoder;
@@ -624,11 +623,10 @@ impl KafkaExporter {
         let signal_config = match Self::get_signal_config(&self.config, signal_type) {
             Ok(cfg) => cfg,
             Err(e) => {
-                otel_arrow_dfe_telemetry::otel_export_diagnostic!(
-                    target: "otel.exporter.kafka",
-                    self.metrics.preparation.signal(signal_type).failure(Instant::now(),
-                        KafkaExporterErrorType::UnconfiguredSignal, || &e),
-                    signal = ?signal_type, stage = "preparation"
+                otel_warn!(
+                    "kafka.exporter.signal.unconfigured",
+                    signal_type = ?signal_type,
+                    error = %e,
                 );
                 self.metrics.record_failure(
                     signal_type,
@@ -673,11 +671,6 @@ impl KafkaExporter {
                     export_start.elapsed(),
                     None,
                 );
-                otel_arrow_dfe_telemetry::otel_export_diagnostic!(
-                    target: "otel.exporter.kafka",
-                    self.metrics.preparation.signal(signal_type).failure(Instant::now(), KafkaExporterErrorType::InvalidTopic, || &e),
-                    signal = ?signal_type, stage = "preparation"
-                );
                 let _ = reporter
                     .nack_permanent(e.to_string(), OtapPdata::new(context, payload))
                     .await;
@@ -719,11 +712,10 @@ impl KafkaExporter {
                 bytes
             }
             Err(e) => {
-                otel_arrow_dfe_telemetry::otel_export_diagnostic!(
-                    target: "otel.exporter.kafka",
-                    self.metrics.preparation.signal(signal_type).failure(Instant::now(),
-                        KafkaExporterErrorType::Encoding, || &e),
-                    signal = ?signal_type, stage = "preparation"
+                otel_error!(
+                    "kafka.exporter.encode.failed",
+                    signal_type = ?signal_type,
+                    error = %e,
                 );
                 self.metrics.record_operation(
                     signal_type,
@@ -787,12 +779,12 @@ impl KafkaExporter {
                 let permanent = is_permanent_send_error(&kafka_err);
                 // `topic` may be a client-supplied (header-routed) value, so
                 // bound/escape it before logging to avoid log injection.
-                otel_arrow_dfe_telemetry::otel_export_diagnostic!(
-                    target: "otel.exporter.kafka",
-                    self.metrics.diagnostics.signal(signal_type).failure(Instant::now(),
-                        KafkaExporterErrorType::from_kafka_error(&kafka_err), || &kafka_err),
-                    signal = ?signal_type, stage = "delivery", permanent = permanent,
-                    topic = %crate::common::kafka::sanitize_for_log(&topic)
+                otel_warn!(
+                    "kafka.exporter.send.failed",
+                    topic = %crate::common::kafka::sanitize_for_log(&topic),
+                    signal_type = ?signal_type,
+                    permanent = permanent,
+                    error = %kafka_err,
                 );
                 let reason = kafka_err.to_string();
                 let refused = OtapPdata::new(context, payload);
@@ -801,13 +793,14 @@ impl KafkaExporter {
                 } else {
                     reporter.nack(reason, refused).await
                 };
-                if let Err(error) = nack_result {
-                    otel_arrow_dfe_telemetry::otel_export_diagnostic!(
-                        target: "otel.exporter.kafka",
-                        self.metrics.notifications.signal(signal_type).failure(Instant::now(),
-                            ExportErrorKind::Notification, || &error),
-                        signal = ?signal_type, stage = "notification"
-                    );
+                if let Err(e) = nack_result
+                    && let Some(eh) = effect_handler
+                {
+                    eh.info(&format!(
+                        "Failed to report nack for Kafka export enqueue failure: {}",
+                        e
+                    ))
+                    .await;
                 }
                 // Enqueue failure was reported synchronously; there is no
                 // in-flight delivery to track.
@@ -832,8 +825,7 @@ impl KafkaExporter {
         effect_handler: Option<&EffectHandler<OtapPdata>>,
     ) {
         let (intent, pdata) = self.record_completion_metrics(meta, result);
-        self.report_completion(intent, pdata, reporter, effect_handler)
-            .await;
+        Self::report_completion(intent, pdata, reporter, effect_handler).await;
     }
 
     /// Records the success/failure metric for a resolved delivery and returns
@@ -861,11 +853,6 @@ impl KafkaExporter {
         //                    purge-error semantics) so the batch can be retried.
         let kafka_err = match result {
             Ok(Ok(_delivery)) => {
-                otel_arrow_dfe_telemetry::otel_export_diagnostic!(
-                    target: "otel.exporter.kafka",
-                    self.metrics.diagnostics.signal(signal_type).success(delivery_start, Instant::now()),
-                    signal = ?signal_type, stage = "delivery"
-                );
                 self.metrics.record_operation(
                     signal_type,
                     KafkaExporterOperation::Delivery,
@@ -895,12 +882,12 @@ impl KafkaExporter {
         let permanent = is_permanent_send_error(&kafka_err);
         // `topic` may be a client-supplied (header-routed) value, so
         // bound/escape it before logging to avoid log injection.
-        otel_arrow_dfe_telemetry::otel_export_diagnostic!(
-            target: "otel.exporter.kafka",
-            self.metrics.diagnostics.signal(signal_type).failure(Instant::now(),
-                KafkaExporterErrorType::from_kafka_error(&kafka_err), || &kafka_err),
-            signal = ?signal_type, stage = "delivery", permanent = permanent,
-            topic = %crate::common::kafka::sanitize_for_log(&topic)
+        otel_arrow_dfe_telemetry::otel_warn!(
+            "kafka.exporter.send.failed",
+            topic = %crate::common::kafka::sanitize_for_log(&topic),
+            signal_type = ?signal_type,
+            permanent = permanent,
+            error = %kafka_err,
         );
         (
             ReportIntent::Nack {
@@ -914,13 +901,11 @@ impl KafkaExporter {
     /// Reports the ack/nack for a finalized delivery to the upstream via the
     /// reporter.
     async fn report_completion(
-        &mut self,
         intent: ReportIntent,
         pdata: OtapPdata,
         reporter: &dyn AckNackReporter,
-        _effect_handler: Option<&EffectHandler<OtapPdata>>,
+        effect_handler: Option<&EffectHandler<OtapPdata>>,
     ) {
-        let signal = pdata.signal_type();
         let (report_result, _context) = match intent {
             ReportIntent::Ack => (
                 reporter.ack(pdata).await,
@@ -935,13 +920,14 @@ impl KafkaExporter {
                 (result, "nack for Kafka export failure")
             }
         };
-        if let Err(error) = report_result {
-            otel_arrow_dfe_telemetry::otel_export_diagnostic!(
-                target: "otel.exporter.kafka",
-                self.metrics.notifications.signal(signal).failure(Instant::now(),
-                    ExportErrorKind::Notification, || &error),
-                signal = ?signal, stage = "notification"
-            );
+        if let Err(e) = report_result
+            && let Some(eh) = effect_handler
+        {
+            eh.info(&format!(
+                "Failed to report nack for Kafka export failure: {}",
+                e
+            ))
+            .await;
         }
     }
 
@@ -1153,10 +1139,6 @@ impl KafkaExporter {
         // ExporterThreadedProducer::drop).
         self.producer = new_producer;
         self.config = new_config;
-        // The producer/destination scope changed after draining the old producer.
-        self.metrics.diagnostics = Default::default();
-        self.metrics.preparation = Default::default();
-        self.metrics.notifications = Default::default();
         self.traces_allowed_topics_regex = new_traces_regex;
         self.metrics_allowed_topics_regex = new_metrics_regex;
         self.logs_allowed_topics_regex = new_logs_regex;
@@ -1307,7 +1289,7 @@ impl Exporter<OtapPdata> for KafkaExporter {
                         // deadline is abandoned rather than allowed to block.
                         let reported = tokio::time::timeout_at(
                             shutdown_deadline,
-                            self.report_completion(
+                            Self::report_completion(
                                 intent,
                                 pdata,
                                 &ack_nack_reporter,

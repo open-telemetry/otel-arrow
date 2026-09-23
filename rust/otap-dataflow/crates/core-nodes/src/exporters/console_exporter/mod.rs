@@ -40,7 +40,6 @@ use otel_arrow_dfe_pdata_views::views::logs::{
 };
 use otel_arrow_dfe_pdata_views::views::metrics::MetricsView;
 use otel_arrow_dfe_pdata_views::views::resource::ResourceView;
-use otel_arrow_dfe_telemetry::export_diagnostics::ExportDiagnostics;
 use otel_arrow_dfe_telemetry::self_tracing::{
     AnsiCode, ColorMode, LOG_BUFFER_SIZE, StyledBufWriter,
 };
@@ -201,8 +200,6 @@ const fn default_record_json_scope() -> bool {
 /// Console exporter that prints OTLP data to stdout.
 pub struct ConsoleExporter {
     formatter: ConsoleFormatter,
-    diagnostics: ExportDiagnostics<ConsoleExportErrorType>,
-    preparation: ExportDiagnostics<ConsoleExportErrorType>,
     metrics: ConsoleExporterMetrics,
 }
 
@@ -221,12 +218,7 @@ impl ConsoleExporter {
                 ConsoleFormatter::RecordJson(RecordJsonFormatter::new(config.record_json))
             }
         };
-        Self {
-            formatter,
-            metrics,
-            diagnostics: Default::default(),
-            preparation: Default::default(),
-        }
+        Self { formatter, metrics }
     }
 
     fn terminal_state(&mut self, deadline: Instant) -> TerminalState {
@@ -283,7 +275,6 @@ impl Exporter<OtapPdata> for ConsoleExporter {
                 }
                 Message::PData(mut data) => {
                     let signal = data.signal_type();
-                    let diagnostic_started_at = Instant::now();
                     let completed = self
                         .metrics
                         .boundary
@@ -296,31 +287,9 @@ impl Exporter<OtapPdata> for ConsoleExporter {
                         })
                         .await;
                     let result = self.metrics.boundary.record(completed);
-                    let now = Instant::now();
-                    let (report, stage) = match &result {
-                        Ok(true) => (
-                            self.diagnostics
-                                .signal(signal)
-                                .success(diagnostic_started_at, now),
-                            "delivery",
-                        ),
-                        Ok(false) => (None, "delivery"),
-                        Err(error) => {
-                            self.metrics.record_error(signal, error.kind);
-                            let (tracker, stage) = if error.kind == ConsoleExportErrorType::Write {
-                                (self.diagnostics.signal(signal), "delivery")
-                            } else {
-                                (self.preparation.signal(signal), "preparation")
-                            };
-                            (
-                                tracker.failure(now, error.kind, || error.detail.as_ref()),
-                                stage,
-                            )
-                        }
-                    };
-                    otel_arrow_dfe_telemetry::otel_export_diagnostic!(
-                        target: "otel.exporter.console", report, signal = ?signal, stage = stage
-                    );
+                    if let Err(error_type) = result {
+                        self.metrics.record_error(signal, error_type);
+                    }
                     effect_handler.notify_ack(AckMsg::new(data)).await?;
                 }
                 _ => {
@@ -331,23 +300,8 @@ impl Exporter<OtapPdata> for ConsoleExporter {
     }
 }
 
-/// Carries diagnostic context without formatting errors on suppressed attempts.
-struct ConsoleExportFailure {
-    kind: ConsoleExportErrorType,
-    detail: Box<dyn std::fmt::Display>,
-}
-
-impl ConsoleExportFailure {
-    fn new(kind: ConsoleExportErrorType, detail: impl std::fmt::Display + 'static) -> Self {
-        Self {
-            kind,
-            detail: Box::new(detail),
-        }
-    }
-}
-
 impl ConsoleExporter {
-    async fn export(&self, payload: &OtapPayload) -> Result<bool, ConsoleExportFailure> {
+    async fn export(&self, payload: &OtapPayload) -> Result<(), ConsoleExportErrorType> {
         match payload.signal_type() {
             SignalType::Logs => self.export_logs(payload).await,
             SignalType::Traces => self.unsupported_signal("traces"),
@@ -355,26 +309,26 @@ impl ConsoleExporter {
         }
     }
 
-    async fn export_logs(&self, payload: &OtapPayload) -> Result<bool, ConsoleExportFailure> {
+    async fn export_logs(&self, payload: &OtapPayload) -> Result<(), ConsoleExportErrorType> {
         match payload.data() {
             PayloadData::OtlpBytes(bytes) => match RawLogsData::try_from(bytes) {
                 Ok(logs_view) => self.formatter.print_logs_data(&logs_view).await,
-                Err(e) => Err(ConsoleExportFailure::new(
-                    ConsoleExportErrorType::OtlpViewCreation,
-                    e,
-                )),
+                Err(e) => {
+                    otel_error!("console.logs_view.otlp_create_failed", error = ?e, message = "Failed to create OTLP logs view");
+                    Err(ConsoleExportErrorType::OtlpViewCreation)
+                }
             },
             PayloadData::OtapArrowRecords(records) => match OtapLogsView::try_from(records) {
                 Ok(logs_view) => self.formatter.print_logs_data(&logs_view).await,
-                Err(e) => Err(ConsoleExportFailure::new(
-                    ConsoleExportErrorType::OtapViewCreation,
-                    e,
-                )),
+                Err(e) => {
+                    otel_error!("console.logs_view.otap_create_failed", error = ?e, message = "Failed to create OTAP logs view");
+                    Err(ConsoleExportErrorType::OtapViewCreation)
+                }
             },
         }
     }
 
-    async fn export_metrics(&self, payload: &OtapPayload) -> Result<bool, ConsoleExportFailure> {
+    async fn export_metrics(&self, payload: &OtapPayload) -> Result<(), ConsoleExportErrorType> {
         if !self.formatter.supports_metrics() {
             return self.unsupported_signal("metrics");
         }
@@ -387,23 +341,23 @@ impl ConsoleExporter {
                 };
                 match RawMetricsData::try_new(metrics_bytes) {
                     Ok(metrics_view) => self.formatter.print_metrics_data(&metrics_view).await,
-                    Err(e) => Err(ConsoleExportFailure::new(
-                        ConsoleExportErrorType::OtlpViewCreation,
-                        e,
-                    )),
+                    Err(e) => {
+                        otel_warn!("console.metrics_view.otlp_create_failed", error = ?e);
+                        Err(ConsoleExportErrorType::OtlpViewCreation)
+                    }
                 }
             }
             PayloadData::OtapArrowRecords(records) => match OtapMetricsView::try_from(records) {
                 Ok(metrics_view) => self.formatter.print_metrics_data(&metrics_view).await,
-                Err(e) => Err(ConsoleExportFailure::new(
-                    ConsoleExportErrorType::OtapViewCreation,
-                    e,
-                )),
+                Err(e) => {
+                    otel_warn!("console.metrics_view.otap_create_failed", error = ?e);
+                    Err(ConsoleExportErrorType::OtapViewCreation)
+                }
             },
         }
     }
 
-    fn unsupported_signal(&self, signal: &'static str) -> Result<bool, ConsoleExportFailure> {
+    fn unsupported_signal(&self, signal: &'static str) -> Result<(), ConsoleExportErrorType> {
         let message = match (signal, &self.formatter) {
             ("metrics", ConsoleFormatter::RecordJson(_)) => {
                 "Console exporter record_json format supports logs only; select pretty to inspect metrics"
@@ -412,10 +366,12 @@ impl ConsoleExporter {
                 "Console exporter does not support this signal in the selected format; use processor:debug followed by exporter:noop to inspect it"
             }
         };
-        Err(ConsoleExportFailure::new(
-            ConsoleExportErrorType::UnsupportedSignal,
-            message,
-        ))
+        otel_warn!(
+            "console.message.unsupported_signal",
+            signal = signal,
+            message = message
+        );
+        Err(ConsoleExportErrorType::UnsupportedSignal)
     }
 }
 
@@ -434,7 +390,7 @@ impl ConsoleFormatter {
     async fn print_logs_data<L: LogsDataView>(
         &self,
         logs_data: &L,
-    ) -> Result<bool, ConsoleExportFailure> {
+    ) -> Result<(), ConsoleExportErrorType> {
         let mut output = Vec::new();
         let format_result = match self {
             Self::Pretty(formatter) => {
@@ -445,10 +401,12 @@ impl ConsoleFormatter {
         };
 
         if let Err(err) = format_result {
-            return Err(ConsoleExportFailure::new(
-                ConsoleExportErrorType::Formatting,
-                err,
-            ));
+            otel_error!(
+                "console.format_failed",
+                error = ?err,
+                message = "Could not format console output"
+            );
+            return Err(ConsoleExportErrorType::Formatting);
         }
 
         // Note: each per-core exporter currently creates a new Tokio stdout handle for every
@@ -460,20 +418,18 @@ impl ConsoleFormatter {
         // each core write its logs to a separate file in parallel.
         use tokio::io::AsyncWriteExt;
         if let Err(err) = tokio::io::stdout().write_all(&output).await {
-            return Err(ConsoleExportFailure::new(
-                ConsoleExportErrorType::Write,
-                err,
-            ));
+            otel_error!("console.write_failed", error = ?err, message = "Could not write to console");
+            return Err(ConsoleExportErrorType::Write);
         }
 
-        Ok(!output.is_empty())
+        Ok(())
     }
 
     /// Format metrics and write the complete payload to stdout.
     async fn print_metrics_data<M: MetricsView>(
         &self,
         metrics_data: &M,
-    ) -> Result<bool, ConsoleExportFailure> {
+    ) -> Result<(), ConsoleExportErrorType> {
         let mut output = Vec::new();
         let format_result = match self {
             Self::Pretty(formatter) => formatter.format_metrics_data_to(metrics_data, &mut output),
@@ -483,21 +439,21 @@ impl ConsoleFormatter {
         };
 
         if let Err(err) = format_result {
-            return Err(ConsoleExportFailure::new(
-                ConsoleExportErrorType::Formatting,
-                err,
-            ));
+            otel_error!(
+                "console.format_failed",
+                error = ?err,
+                message = "Could not format console output"
+            );
+            return Err(ConsoleExportErrorType::Formatting);
         }
 
         use tokio::io::AsyncWriteExt;
         if let Err(err) = tokio::io::stdout().write_all(&output).await {
-            return Err(ConsoleExportFailure::new(
-                ConsoleExportErrorType::Write,
-                err,
-            ));
+            otel_error!("console.write_failed", error = ?err, message = "Could not write to console");
+            return Err(ConsoleExportErrorType::Write);
         }
 
-        Ok(!output.is_empty())
+        Ok(())
     }
 }
 

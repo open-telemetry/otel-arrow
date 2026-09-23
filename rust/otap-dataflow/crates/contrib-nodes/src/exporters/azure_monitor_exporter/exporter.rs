@@ -242,15 +242,7 @@ impl AzureMonitorExporter {
             uncompressed_size,
         );
 
-        // Each HTTP attempt is already diagnosed by the shared client tracker.
-        // Failures that prevented an HTTP attempt need a separate observation.
-        if !matches!(error, Error::ExportFailed { .. }) {
-            otel_arrow_dfe_telemetry::otel_export_diagnostic!(
-                target: "microsoft.exporter.azure_monitor",
-                self.metrics.borrow_mut().preparation.failure(std::time::Instant::now(), error.diagnostic_type(), || &error),
-                signal = "logs", stage = "preparation"
-            );
-        }
+        otel_warn!("azure_monitor_exporter.export.failed", batch_id = batch_id, error = %error);
 
         for (_, context, payload) in failed_messages {
             effect_handler

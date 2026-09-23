@@ -147,18 +147,34 @@ pub enum KafkaExporterError {
 }
 
 impl KafkaExporterError {
-    /// Builds a [`KafkaExporterError::InvalidHeaderTopic`] with sanitized,
-    /// bounded context. The exporter reports the failure using bounded summaries.
+    /// Builds a [`KafkaExporterError::InvalidHeaderTopic`] and emits the routing
+    /// warning once, so all "header present but unusable as a topic" cases
+    /// (non-UTF-8 value or failed Kafka topic validation) share a single
+    /// construction and log site. Both the topic value and the reason are
+    /// sanitized/bounded before they are logged or stored.
     pub(crate) fn invalid_header_topic(topic: impl AsRef<str>, reason: impl Into<String>) -> Self {
         let topic = sanitize_for_log(topic.as_ref());
         let reason = sanitize_for_log(&reason.into());
+        otel_warn!(
+            "kafka.exporter.topic.invalid_header",
+            header_topic = %topic,
+            %reason,
+            "invalid Kafka topic from transport header, permanently nacking batch"
+        );
         Self::InvalidHeaderTopic { topic, reason }
     }
 
-    /// Builds a [`KafkaExporterError::DisallowedHeaderTopic`] with a sanitized,
-    /// bounded topic. The exporter reports the failure using bounded summaries.
+    /// Builds a [`KafkaExporterError::DisallowedHeaderTopic`] and emits the
+    /// routing warning once. The topic value is sanitized/bounded before it is
+    /// logged or stored, since it is client-controlled.
     pub(crate) fn disallowed_header_topic(topic: impl AsRef<str>) -> Self {
         let topic = sanitize_for_log(topic.as_ref());
+        otel_warn!(
+            "kafka.exporter.topic.disallowed_header",
+            header_topic = %topic,
+            "Kafka topic from transport header is not permitted by the routing policy, \
+             permanently nacking batch"
+        );
         Self::DisallowedHeaderTopic { topic }
     }
 }

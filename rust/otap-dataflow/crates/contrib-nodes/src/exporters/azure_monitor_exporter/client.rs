@@ -262,7 +262,6 @@ impl LogsIngestionClient {
         auth_header: &HeaderValue,
         metadata: ExportAttemptMetadata,
     ) -> Result<Duration, Error> {
-        let diagnostic_started_at = Instant::now().into_std();
         let attempt = self.metrics.borrow().boundary.attempt(SignalType::Logs);
         let completed = attempt
             .run(async |attempt| {
@@ -275,19 +274,7 @@ impl LogsIngestionClient {
                 }
             })
             .await;
-        let mut metrics = self.metrics.borrow_mut();
-        let result = metrics.boundary.record(completed);
-        let now = Instant::now().into_std();
-        let report = match &result {
-            Ok(_) => metrics.diagnostics.success(diagnostic_started_at, now),
-            Err(error) => metrics
-                .diagnostics
-                .failure(now, error.diagnostic_type(), || error),
-        };
-        otel_arrow_dfe_telemetry::otel_export_diagnostic!(
-            target: "microsoft.exporter.azure_monitor", report, signal = "logs", stage = "delivery"
-        );
-        result
+        self.metrics.borrow_mut().boundary.record(completed)
     }
 
     async fn try_export_request(

@@ -49,7 +49,6 @@ use otel_arrow_dfe_pdata::otlp::{ProtoBuffer, ProtoBytesEncoder};
 use otel_arrow_dfe_pdata::{
     OtapArrowRecords, OtapPayload, OtapPayloadHelpers, OtlpProtoBytes, PayloadData,
 };
-use otel_arrow_dfe_telemetry::export_diagnostics::ExportErrorKind;
 use serde::Deserialize;
 use std::collections::VecDeque;
 use std::future::Future;
@@ -935,22 +934,7 @@ async fn dispatch_otap_export<Enc, Fut, MakeFuture>(
                 .record(completed)
                 .expect_err("encoding attempt must fail");
             metrics.record_failure(signal_type, error_type);
-            otel_arrow_dfe_telemetry::otel_export_diagnostic!(
-                target: "otel.exporter.otlp_grpc",
-                metrics.preparation.signal(signal_type).failure(Instant::now(), error_type, || &error.error),
-                signal = ?signal_type, stage = "preparation"
-            );
-            if let Err(error) = notify_prepare_error(error, effect_handler).await {
-                otel_arrow_dfe_telemetry::otel_export_diagnostic!(
-                    target: "otel.exporter.otlp_grpc",
-                    metrics.notifications.signal(signal_type).failure(
-                        Instant::now(),
-                        ExportErrorKind::Notification,
-                        || &error,
-                    ),
-                    signal = ?signal_type, stage = "notification"
-                );
-            }
+            _ = notify_prepare_error(error, effect_handler).await;
         }
     }
 }
@@ -1043,7 +1027,6 @@ async fn finalize_completed_export(
     metrics: &mut OtlpGrpcExporterMetrics,
 ) -> (SignalClient, Option<u64>) {
     let CompletedExport {
-        diagnostic_started_at,
         attempt,
         context,
         saved_payload,
@@ -1070,25 +1053,7 @@ async fn finalize_completed_export(
         metrics.record_failure(signal_type, error_type);
     }
 
-    let now = Instant::now();
-    let report = match &export_result {
-        Ok(()) => metrics
-            .diagnostics
-            .signal(signal_type)
-            .success(diagnostic_started_at, now),
-        Err((category, status)) => {
-            metrics
-                .diagnostics
-                .signal(signal_type)
-                .failure(now, *category, || {
-                    format!("{status}: {}", format_error_sources(status))
-                })
-        }
-    };
-    otel_arrow_dfe_telemetry::otel_export_diagnostic!(
-        target: "otel.exporter.otlp_grpc", report, signal = ?signal_type, stage = "delivery"
-    );
-    if let Err(error) = route_export_result(
+    if let Err(e) = route_export_result(
         &export_result,
         context,
         saved_payload,
@@ -1097,14 +1062,18 @@ async fn finalize_completed_export(
     )
     .await
     {
-        otel_arrow_dfe_telemetry::otel_export_diagnostic!(
-            target: "otel.exporter.otlp_grpc",
-            metrics.notifications.signal(signal_type).failure(
-                Instant::now(),
-                ExportErrorKind::Notification,
-                || &error,
-            ),
-            signal = ?signal_type, stage = "notification"
+        otel_warn!(
+            "otlp.exporter.grpc.export_error",
+            message = "error routing export Ack/Nack",
+            error = %e
+        );
+    } else if let Err((_, status)) = &export_result {
+        otel_warn!(
+            "otlp.exporter.grpc.export_error",
+            message = "service request error",
+            code = %status.code(),
+            error_msg = status.message(),
+            source = format_error_sources(status)
         );
     }
 
@@ -1254,7 +1223,6 @@ fn make_export_future(
     let payload_size = request.get_ref().len();
 
     async move {
-        let diagnostic_started_at = Instant::now();
         let completed = attempt
             .run(async |attempt| {
                 attempt.set_payload_size_with(|| payload_size);
@@ -1289,7 +1257,6 @@ fn make_export_future(
             })
             .await;
         CompletedExport {
-            diagnostic_started_at,
             attempt: completed,
             context,
             saved_payload,
@@ -1416,7 +1383,6 @@ enum SignalClient {
 
 /// Captures everything we need once a single export RPC has completed.
 struct CompletedExport {
-    diagnostic_started_at: Instant,
     attempt: CompletedExporterAttempt<SignalClient, (GrpcAttemptError, SignalClient)>,
     context: Context,
     saved_payload: OtapPayload,
