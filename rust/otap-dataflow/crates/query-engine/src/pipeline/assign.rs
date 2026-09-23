@@ -43,7 +43,7 @@ use otel_arrow_dfe_pdata::encode::record::array::{
 use otel_arrow_dfe_pdata::error::Error as PdataError;
 use otel_arrow_dfe_pdata::otap::Logs;
 use otel_arrow_dfe_pdata::otap::filter::IdBitmapPool;
-use otel_arrow_dfe_pdata::otap::transform::cardinality::{
+use otel_arrow_dfe_pdata::otap::transform::concatenate::{
     Cardinality, FieldInfo, estimate_cardinality,
 };
 use otel_arrow_dfe_pdata::otap::transform::upsert_attributes::{
