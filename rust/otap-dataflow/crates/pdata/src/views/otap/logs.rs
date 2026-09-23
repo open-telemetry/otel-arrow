@@ -748,7 +748,9 @@ fn get_log_id(id_array: Option<&UInt16Array>, row_idx: usize) -> Option<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proto::opentelemetry::common::v1::{AnyValue, KeyValue, KeyValueList, any_value};
+    use crate::proto::opentelemetry::common::v1::{
+        AnyValue, ArrayValue, KeyValue, KeyValueList, any_value,
+    };
     use crate::proto::opentelemetry::logs::v1::LogRecord;
     use crate::schema::consts;
     use crate::testing::round_trip::to_otap_logs;
@@ -1137,6 +1139,45 @@ mod tests {
                     assert_eq!(entries[0].key(), b"k".as_slice());
                     let entry_value = entries[0].value().expect("entry value");
                     assert_eq!(entry_value.as_string(), Some(b"v".as_slice()));
+                    checked += 1;
+                }
+            }
+        }
+        assert_eq!(checked, 1);
+    }
+
+    /// Scenario: A log record whose body is an array, encoded through the real OTAP path.
+    /// Guarantees: the body decodes as an Array the view can iterate, not Empty.
+    #[test]
+    fn test_slice_body_decodes_from_serialized_column() {
+        let log = LogRecord {
+            body: Some(AnyValue {
+                value: Some(any_value::Value::ArrayValue(ArrayValue {
+                    values: vec![
+                        AnyValue {
+                            value: Some(any_value::Value::StringValue("a".to_string())),
+                        },
+                        AnyValue {
+                            value: Some(any_value::Value::IntValue(1)),
+                        },
+                    ],
+                })),
+            }),
+            ..Default::default()
+        };
+        let otap = to_otap_logs(vec![log]);
+        let view = OtapLogsView::try_from(&otap).expect("logs view");
+
+        let mut checked = 0;
+        for resource_logs in view.resources() {
+            for scope_logs in resource_logs.scopes() {
+                for log_record in scope_logs.log_records() {
+                    let body = log_record.body().expect("body");
+                    assert_eq!(body.value_type(), ValueType::Array);
+                    let items: Vec<_> = body.as_array().expect("array").collect();
+                    assert_eq!(items.len(), 2);
+                    assert_eq!(items[0].as_string(), Some(b"a".as_slice()));
+                    assert_eq!(items[1].as_int64(), Some(1));
                     checked += 1;
                 }
             }
