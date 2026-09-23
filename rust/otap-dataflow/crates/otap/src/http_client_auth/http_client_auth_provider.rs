@@ -1052,10 +1052,7 @@ mod tests {
         assert!(!auth.is_ready());
         assert!(auth.header().is_none());
         assert!(auth.refresh_deadline().is_none());
-        assert_eq!(
-            auth.not_ready_reason(),
-            "agent-fed bearer token unavailable"
-        );
+        assert_eq!(auth.not_ready_reason(), "mock token unavailable");
     }
 
     /// Scenario: the cached token is still valid but expires inside the
@@ -1082,7 +1079,7 @@ mod tests {
         );
         assert_eq!(
             auth.not_ready_reason(),
-            "agent-fed bearer token at/near expiry; awaiting refresh"
+            "mock token at/near expiry; awaiting refresh"
         );
     }
 
