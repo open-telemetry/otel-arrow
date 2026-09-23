@@ -77,8 +77,8 @@ use crate::pipeline::expr::types::{
     root_field_supports_dict_encoding, root_field_type,
 };
 use crate::pipeline::expr::{
-    ChildRecordKind, DataScope, LeafEval, RecordScope, RootParentStruct, SCALAR_RECORD_BATCH_INPUT,
-    ScopedExpr, ScopedValue, VALUE_COLUMN_NAME,
+    ChildRecordKind, DataScope, LeafEval, RecordScope, RootParentStruct, ScopedExpr, ScopedValue,
+    VALUE_COLUMN_NAME,
 };
 use crate::pipeline::planner::{AttributesIdentifier, ColumnAccessor, RecordType};
 use crate::pipeline::project::anyval::{
@@ -1376,10 +1376,7 @@ impl PipelineStage for AssignPipelineStage {
                 columns,
             )?)
         } else {
-            // since the expression does not require the "value" column, we assume that it is an
-            // expression involving only static literals, in which case the input can just be an
-            // empty record batch
-            Cow::Borrowed(SCALAR_RECORD_BATCH_INPUT.deref())
+            Cow::Borrowed(&attrs_record_batch)
         };
 
         // evaluate the expression

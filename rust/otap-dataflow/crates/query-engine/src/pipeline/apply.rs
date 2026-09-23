@@ -887,6 +887,67 @@ mod test {
     }
 
     #[tokio::test]
+    async fn test_pipeline_set_int_from_logical_with_static() {
+        let input = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_int(1)),
+                    KeyValue::new("k2", AnyValue::new_int(2)),
+                ])
+                .finish(),
+        ]);
+        let query = r#"
+            logs | apply attributes {
+                set value = value > 1
+            }"#;
+
+        let result = exec_logs_pipeline::<OplParser>(query, input.clone()).await;
+        let expected = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_bool(false)),
+                    KeyValue::new("k2", AnyValue::new_bool(true)),
+                ])
+                .finish(),
+        ]);
+
+        assert_equivalent(
+            &[OtlpProtoMessage::Logs(result)],
+            &[OtlpProtoMessage::Logs(expected.clone())],
+        );
+    }
+    #[tokio::test]
+    async fn test_pipeline_set_int_from_logical_with_func_call() {
+        let input = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_string("foo")),
+                    KeyValue::new("k2", AnyValue::new_string("bar")),
+                ])
+                .finish(),
+        ]);
+        let query = r#"
+            logs | apply attributes {
+                set value = contains(value, "f")
+            }"#;
+
+        let result = exec_logs_pipeline::<OplParser>(query, input.clone()).await;
+        let expected = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_bool(true)),
+                    KeyValue::new("k2", AnyValue::new_bool(false)),
+                ])
+                .finish(),
+        ]);
+
+        assert_equivalent(
+            &[OtlpProtoMessage::Logs(result)],
+            &[OtlpProtoMessage::Logs(expected.clone())],
+        );
+    }
+
+    #[tokio::test]
     async fn test_pipeline_set_changes_type() {
         let input = to_logs_data(vec![
             LogRecord::build()
