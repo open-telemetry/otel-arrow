@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790183103451,
+  "lastUpdate": 1790187760501,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -43192,6 +43192,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
             "value": 3.39,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 116.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 103.85,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "lalit_fin@yahoo.com",
+            "name": "Lalit Kumar Bhasin",
+            "username": "lalitb"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "e089acf5622255631afc0d2f91c9373e1f9758ba",
+          "message": "  chore(filelog receiver): add bounded incremental source decoder (#4011)\n\n## Summary\n\nAdds the incremental source decoder for the Filelog receiver.\n\nIt supports UTF-8, ASCII, UTF-16LE, UTF-16BE, and raw bytes. Each\ndecoded unit carries its exact original bytes and source range, allowing\nlater framing and checkpoint logic to preserve file offsets.\n\nThe decoder:\n\n- Keeps incomplete characters and BOM probes across reads without\ntreating temporary EOF as final.\n- Supports preserve_raw, replace, and fail.\n- Reports consumed input on errors and prevents further decoding after a\nfatal failure.\n- Uses fixed-size state with no decoder heap allocations.\n\n## Scope\n\nThis is a source-decoding primitive, not a registered receiver. File\nreading, line/multiline framing, scheduling, batches, and checkpoint\nintegration will follow separately. JSON/CSV/timestamp parsing remains\nprocessor work.\n\nThis PR can merge independently of the checkpoint codec in #3980. It\nimplements the decoding portion of the proposed design in #3939.\n\n## Benchmarks\n\nRecorded throughput with 65,536-byte input chunks:\n\n| Input | Throughput |\n| --- | ---: |\n| ASCII-heavy UTF-8 | 96.1 MiB/s |\n| ASCII | 92.7 MiB/s |\n| Multibyte UTF-8 | 71.4 MiB/s |\n| UTF-16LE BMP text | 95.5 MiB/s |\n| UTF-16BE BMP text | 92.1 MiB/s |\n| UTF-16LE supplementary characters | 137.7 MiB/s |\n| UTF-16BE supplementary characters | 133.6 MiB/s |\n| Raw bytes | 93.5 MiB/s |\n\nResults are medians of three run-mean measurements on a shared x86-64\nLinux/WSL2 host with Rust 1.98.0.\n\nThe isolated allocation test measures zero decoder heap allocations.\nDecoder state occupies 176 bytes on the measured platform.\n\nThese measurements include decoding and event consumption, but exclude\nfile I/O, framing, record construction, and checkpointing. They are not\nend-to-end receiver throughput figures. Reproduction instructions and\nmeasurement limitations are included under benches/filelog_decode/.\n\n  ## Validation\n\nTests cover encoding boundaries, malformed input, BOMs, source offsets,\nchunk partitioning, incomplete-tail completion, and input-buffer reuse.\nCoverage includes all Unicode scalars, independent malformed-input\nvectors, a UTF-16 oracle, and an isolated allocation check.\n\nRelated to #2844.\n\n---------\n\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>\nCopilot-Session: 5b7c0190-89f4-4fa5-bb40-0eb34e606aee",
+          "timestamp": "2026-09-23T17:27:28Z",
+          "tree_id": "5f94867df2e72f906108fdbc8d30deed73970c50",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/e089acf5622255631afc0d2f91c9373e1f9758ba"
+        },
+        "date": 1790187742264,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 84.29,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.07,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.71,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.97,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.7,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 71.59,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.85,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.54,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.38,
             "unit": "MB"
           },
           {
