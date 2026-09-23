@@ -314,7 +314,7 @@ impl PartialEq for ResolvedPolicies {
             resources,
             transport_headers,
             authorized_identity,
-            context,
+            context: _,
             rate_limiters,
             rate_limiter_scope: _,
         } = self;
@@ -326,7 +326,7 @@ impl PartialEq for ResolvedPolicies {
             resources: other_resources,
             transport_headers: other_transport_headers,
             authorized_identity: other_authorized_identity,
-            context: other_context,
+            context: _,
             rate_limiters: other_rate_limiters,
             rate_limiter_scope: _,
         } = other;
@@ -338,8 +338,9 @@ impl PartialEq for ResolvedPolicies {
             && resources == other_resources
             && transport_headers == other_transport_headers
             && authorized_identity == other_authorized_identity
-            && context == other_context
             && rate_limiters == other_rate_limiters
+        // Context declarations are retained for future node bindings but have
+        // no V1 runtime effect. Include them when bindings consume them.
         // Declaration scope is retained for future shared-state planning but
         // has no V1 runtime effect. Include it when scope changes runtime shape.
     }
@@ -383,7 +384,7 @@ impl ResolvedPolicies {
             resources: _,
             transport_headers: self_transport_headers,
             authorized_identity: self_authorized_identity,
-            context: self_context,
+            context: _,
             rate_limiters: self_rate_limiters,
             rate_limiter_scope: _,
         } = self;
@@ -395,7 +396,7 @@ impl ResolvedPolicies {
             resources: _,
             transport_headers: other_transport_headers,
             authorized_identity: other_authorized_identity,
-            context: other_context,
+            context: _,
             rate_limiters: other_rate_limiters,
             rate_limiter_scope: _,
         } = other;
@@ -406,7 +407,8 @@ impl ResolvedPolicies {
             && self_runtime_recovery == other_runtime_recovery
             && self_transport_headers == other_transport_headers
             && self_authorized_identity == other_authorized_identity
-            && self_context == other_context
+            // Context declarations are retained for future node bindings but
+            // have no V1 runtime effect. Include them when bindings consume them.
             // Declaration scope is preserved for future shared-state planning,
             // but has no V1 runtime effect. Re-add it when scope changes runtime shape.
             && self_rate_limiters == other_rate_limiters

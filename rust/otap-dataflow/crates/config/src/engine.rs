@@ -3309,10 +3309,10 @@ groups:
         );
     }
 
-    /// Scenario: an effective context declaration moves from engine to group scope.
-    /// Guarantees: exact and resource-ignoring runtime comparisons observe the scope change.
+    /// Scenario: an unused context declaration moves from engine to group scope.
+    /// Guarantees: resolution retains its scope while runtime comparisons ignore the move.
     #[test]
-    fn resolved_policy_equality_includes_context_scope() {
+    fn resolved_policy_equality_ignores_unused_context_scope() {
         let entries = "{tenant: [{type: transport_header, name: tenant_id}]}";
         let engine = serde_yaml::from_str::<OtelDataflowSpec>(&context_engine_yaml(
             Some(entries),
@@ -3337,8 +3337,16 @@ groups:
         .find(|pipeline| pipeline.role == ResolvedPipelineRole::Regular)
         .expect("group-scoped pipeline");
 
-        assert!(!engine.runtime_matches(&group));
-        assert!(!engine.runtime_shape_matches_ignoring_resources(&group));
+        assert!(matches!(
+            engine.policies.context[0].scope,
+            ContextScope::Engine
+        ));
+        assert!(matches!(
+            &group.policies.context[0].scope,
+            ContextScope::Group(group) if group.as_ref() == "default"
+        ));
+        assert!(engine.runtime_matches(&group));
+        assert!(engine.runtime_shape_matches_ignoring_resources(&group));
     }
 
     /// Scenario: a regular pipeline resolves a declared context entry with no runtime consumer.
