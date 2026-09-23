@@ -166,7 +166,7 @@ metrics:
     otap_dataflow:
       metric_set: otap.processor.batch
 - name: otap.processor.batch.nacked.outbound.slots
-  brief: Number of requests nacked due to inbound slot exhaustion
+  brief: Number of requests nacked due to outbound slot exhaustion
   instrument: counter
   unit: '{msg}'
   stability: development
