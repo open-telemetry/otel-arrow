@@ -63,6 +63,7 @@ use reqwest::{Client, Response};
 use secrecy::ExposeSecret;
 
 use self::config::Config;
+use self::diagnostics::{NotificationOperation, emit_notification, emit_preparation};
 use otel_arrow_dfe_otap::OTAP_EXPORTER_FACTORIES;
 use otel_arrow_dfe_otap::bearer_auth::{BearerAuth, BearerAuthEvents};
 use otel_arrow_dfe_otap::metrics::CompletedExporterAttempt;
@@ -75,6 +76,7 @@ use otel_arrow_dfe_otap::pdata::{Context, OtapPdata};
 
 mod agent_fed_auth;
 mod config;
+mod diagnostics;
 mod metrics;
 
 use self::agent_fed_auth::{AgentFedAuth, AgentFedAuthFailure};
@@ -701,10 +703,13 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                                     .record(completed)
                                     .expect_err("encoding attempt must fail");
                                 self.metrics.record_failure(signal_type, error_type);
-                                otel_arrow_dfe_telemetry::otel_export_diagnostic!(
-                                    target: "otel.exporter.otlp_http",
-                                    self.metrics.preparation.signal(signal_type).failure(Instant::now(), error_type, || &error),
-                                    signal = ?signal_type, stage = "preparation"
+                                emit_preparation(
+                                    self.metrics.preparation.signal(signal_type).failure(
+                                        Instant::now(),
+                                        error_type,
+                                        || &error,
+                                    ),
+                                    signal_type,
                                 );
                                 // Encoding failed because the structured batch is invalid.
                                 let mut nack = NackMsg::new(
@@ -745,10 +750,13 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                                     .record(completed)
                                     .expect_err("compression attempt must fail");
                                 self.metrics.record_failure(signal_type, error_type);
-                                otel_arrow_dfe_telemetry::otel_export_diagnostic!(
-                                    target: "otel.exporter.otlp_http",
-                                    self.metrics.preparation.signal(signal_type).failure(Instant::now(), error_type, || &error),
-                                    signal = ?signal_type, stage = "preparation"
+                                emit_preparation(
+                                    self.metrics.preparation.signal(signal_type).failure(
+                                        Instant::now(),
+                                        error_type,
+                                        || &error,
+                                    ),
+                                    signal_type,
                                 );
                                 let mut nack = NackMsg::new(
                                     error.to_string(),
@@ -1184,21 +1192,16 @@ async fn finalize_completed_export(
     let result = metrics.boundary.record(attempt);
     let pdata = OtapPdata::new(context, saved_payload);
     let now = Instant::now();
+    // Use the same auth-aware decision for diagnostics and the terminal Nack.
+    let retryable = result.as_ref().is_err_and(|error| {
+        error.is_retryable() || (request_auth.is_dynamic() && error.is_auth_failure())
+    });
+    let diagnostic = metrics.diagnostics.signal(signal_type);
     let report = match &result {
-        Ok(()) => metrics
-            .diagnostics
-            .signal(signal_type)
-            .success(diagnostic_started_at, now),
-        Err(error) => {
-            metrics
-                .diagnostics
-                .signal(signal_type)
-                .failure(now, error.error_type(), || error)
-        }
+        Ok(()) => diagnostic.success(diagnostic_started_at, now),
+        Err(error) => diagnostic.failure(now, error.error_type(), retryable, || error),
     };
-    otel_arrow_dfe_telemetry::otel_export_diagnostic!(
-        target: "otel.exporter.otlp_http", report, signal = ?signal_type, stage = "delivery"
-    );
+    diagnostic.emit(report, signal_type);
 
     // Set to the request identity when the server rejects its credential (401),
     // so the caller can invalidate exactly that generation before retry.
@@ -1212,11 +1215,7 @@ async fn finalize_completed_export(
             if auth_failure {
                 rejected_auth = Some(request_auth);
             }
-            Some((
-                error.to_string(),
-                error.is_retryable() || auth_failure,
-                error.error_type(),
-            ))
+            Some((error.to_string(), retryable, error.error_type()))
         }
     };
 
@@ -1225,14 +1224,14 @@ async fn finalize_completed_export(
     match err {
         None => {
             if let Err(error) = effect_handler.notify_ack(AckMsg::new(pdata)).await {
-                otel_arrow_dfe_telemetry::otel_export_diagnostic!(
-                    target: "otel.exporter.otlp_http",
+                emit_notification(
                     metrics.notifications.signal(signal_type).failure(
                         Instant::now(),
                         ExportErrorKind::Notification,
                         || &error,
                     ),
-                    signal = ?signal_type, stage = "notification"
+                    signal_type,
+                    NotificationOperation::Ack,
                 );
             }
         }
@@ -1242,14 +1241,14 @@ async fn finalize_completed_export(
             let mut nack = NackMsg::new(&message, pdata);
             nack.permanent = !retryable;
             if let Err(error) = effect_handler.notify_nack(nack).await {
-                otel_arrow_dfe_telemetry::otel_export_diagnostic!(
-                    target: "otel.exporter.otlp_http",
+                emit_notification(
                     metrics.notifications.signal(signal_type).failure(
                         Instant::now(),
                         ExportErrorKind::Notification,
                         || &error,
                     ),
-                    signal = ?signal_type, stage = "notification"
+                    signal_type,
+                    NotificationOperation::Nack,
                 );
             }
         }
@@ -4189,6 +4188,7 @@ mod test {
                 .failure(
                     Instant::now() + Duration::from_secs(60),
                     OtlpHttpExporterErrorType::PartialRejection,
+                    false,
                     || "test summary",
                 )
                 .unwrap();

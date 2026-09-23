@@ -338,13 +338,18 @@ retained log tap. This policy is independent of metric collection and does not
 change retries, Ack/Nack routing, backpressure, or readiness. Integration with
 other exporters is deferred to future changes.
 
-- `otelcol.node.export.degrade` (WARN): the first failure of an episode.
-- `otelcol.node.export.report` (WARN): a summary at most once every 60 seconds
-  while further failures are observed.
-- `otelcol.node.export.resume` (INFO): an actual successful operation after
+- `otlp.exporter.http.export_error` (WARN): the first failed export of an
+  episode and summaries at most once every 60 seconds while further failures
+  are observed. `diagnostic_kind` distinguishes `first_failure` and `summary`.
+- `otlp.exporter.http.export_recovered` (INFO, `diagnostic_kind = recovery`):
+  an actual successful export after
   30 seconds without an observed failure. The successful operation must have
   started after the most recent failure; old in-flight successes cannot clear
   a newer failure.
+- `otlp.exporter.http.notification_error` (WARN): independently bounded Ack/Nack
+  routing failures, with `diagnostic_kind = first_failure` or `summary`.
+- `otlp.exporter.http.preparation_error` (WARN): independently bounded encoding
+  and compression failures, with `diagnostic_kind = first_failure` or `summary`.
 
 Successful operation before the first failure is silent. Reports are evaluated
 on completions, without probes or timers. Idle periods produce no new reports
@@ -372,6 +377,7 @@ context. The fields describe observations, not unique batches or data loss:
 
 | Field | Meaning |
 | --- | --- |
+| `diagnostic_kind` | `first_failure`, `summary`, or `recovery` |
 | `signal`, `stage` | Signal and observed operation boundary |
 | `episode_seconds` | Time since the initial observed failure |
 | `interval_seconds` | Time since the previous report |
@@ -380,17 +386,28 @@ context. The fields describe observations, not unique batches or data loss:
 | `total_successful_attempts`, `total_failed_attempts` | Counts for the episode |
 | `total_suppressed_diagnostics` | Suppressed failures for the episode |
 | `error_counts`, `total_error_counts` | Bounded `category=count` lists |
-| `error`, `error_sample_age_seconds` | Representative error and its age |
+| `error_sample_age_seconds` | Age of the representative failure |
+
+Delivery errors retain the legacy string `message` and boolean `retryable`.
+Both describe the representative failure, not all failures in the interval;
+retryability uses the same authentication-aware decision as Nack routing.
+Notification errors retain the legacy Ack/Nack-specific `message` and `error`
+sample. Preparation errors have a descriptive `message` and an `error` sample.
+Recovery events have a recovery `message`, the retained `error` sample and its
+age, and episode totals; they omit `retryable`.
 
 The first report includes its triggering failure. Later reports include the
 current observation and exclude observations already covered by earlier
 reports. Error text is formatted only when a failure report is selected,
 escaped for single-line display, and retained up to 1024 UTF-8 bytes.
-Success-triggered reports reuse the previous representative error with its age.
+Success-triggered summaries reuse the previous representative error, its
+retryability, and its age. Recovery reuses the error and its age.
 Callers must still redact sensitive data before supplying diagnostic text.
 
-These events replace per-request failure events in the adopted paths. Update
-log-based alerts to use the new event names and `stage`; use existing attempt
-and failure metrics for rates and impact. The exporter-owned error categories,
+Existing HTTP export and notification error event names are preserved, so
+error-event filters do not need renaming. Log frequency intentionally decreases;
+use existing attempt and failure metrics for rates and impact. The shared
+emission helper emits common fields with the event name and severity chosen by
+the exporter. The exporter-owned error categories,
 metric counts, and retry/permanent decisions remain unchanged. One process may
 emit several reports for an outage because cores and signals are independent.

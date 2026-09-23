@@ -18,4 +18,4 @@ issues: []
 # Use pipe (|) for multiline entries. Breaking entries must include a `Migration:`
 # section with the specific action consumers must take. Keep notes to 200
 # characters and subtext to 300 characters.
-subtext: Reports are scoped per exporter instance and signal, with 60-second summaries and 30-second recovery confirmation. Update log alerts to otelcol.node.export.degrade, report, and resume events. Retry behavior and failure metrics are unchanged.
+subtext: Existing OTLP HTTP error event names are preserved, with 60-second summaries and a recovery event after 30 failure-free seconds. Log frequency decreases; use failure metrics for rates. Retry behavior is unchanged.

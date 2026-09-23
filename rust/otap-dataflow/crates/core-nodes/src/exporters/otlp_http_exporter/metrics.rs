@@ -15,6 +15,7 @@ use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use otel_arrow_dfe_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
 
 use super::agent_fed_auth::AgentFedAuthErrorType;
+use super::diagnostics::DeliveryDiagnostics;
 
 /// Actionable category for a failed OTLP HTTP export.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, AttributeEnum)]
@@ -125,7 +126,7 @@ struct OtlpHttpExporterAuthMetrics {
 
 /// Terminal outcome and failure metrics emitted by an OTLP HTTP exporter.
 pub(super) struct OtlpHttpExporterMetrics {
-    pub(super) diagnostics: ExportDiagnostics<OtlpHttpExporterErrorType>,
+    pub(super) diagnostics: DeliveryDiagnostics,
     pub(super) preparation: ExportDiagnostics<OtlpHttpExporterErrorType>,
     pub(super) notifications: ExportDiagnostics<ExportErrorKind>,
     pub(super) boundary: ExporterMetrics,
@@ -138,7 +139,7 @@ impl OtlpHttpExporterMetrics {
     #[must_use]
     pub(super) fn register(pipeline_ctx: &PipelineContext) -> Self {
         Self {
-            diagnostics: ExportDiagnostics::default(),
+            diagnostics: DeliveryDiagnostics::default(),
             preparation: ExportDiagnostics::default(),
             notifications: ExportDiagnostics::default(),
             boundary: ExporterMetrics::register(pipeline_ctx),

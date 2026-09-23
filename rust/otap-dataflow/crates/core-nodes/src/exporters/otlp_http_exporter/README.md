@@ -263,12 +263,25 @@ Authentication `error.type` is one of `credential_unavailable`,
 | `otlp.exporter.http.receive` | `debug` | A pdata batch was received by the exporter loop. |
 | `otlp.exporter.http.shutdown` | `info` | Exporter shutdown and terminal reason. |
 | `otlp.exporter.http.zero_partial_rejected` | `debug` | A zero-length partial-success response was rejected. |
-| `otelcol.node.export.degrade` | `warn` | First observed failure. |
-| `otelcol.node.export.report` | `warn` | At most one failure summary per 60 seconds. |
-| `otelcol.node.export.resume` | `info` | Confirmed recovery after 30 failure-free seconds and fresh success. |
+| `otlp.exporter.http.export_error` | `warn` | First failed export and further failure summaries at most once per 60 seconds. |
+| `otlp.exporter.http.export_recovered` | `info` | Confirmed recovery after 30 failure-free seconds and fresh success. |
+| `otlp.exporter.http.notification_error` | `warn` | Independently bounded Ack/Nack notification failures. |
+| `otlp.exporter.http.preparation_error` | `warn` | Independently bounded encoding and compression failures. |
 | `otlp.exporter.http.invalid_bearer_token` | `warn` | A bearer token from the provider could not be turned into a valid `Authorization` header. |
 | `otlp.exporter.http.token_stream_closed` | `warn` | The bearer token provider closed its refresh stream; the last token (if any) is reused and no longer refreshes. |
 | `otlp.exporter.http.agent_fed_credential_unavailable` | `warn` | An agent-fed credential check failed; repeated failures are sampled at powers of two. |
+
+Export, preparation, and notification diagnostics include `diagnostic_kind`
+(`first_failure`, `summary`, or `recovery`) and interval/episode counts.
+Existing export and notification error event names are preserved. Export errors
+retain a string `message` and boolean `retryable` describing the representative
+failure, which may differ from other failures counted in the summary. Recovery
+events retain that error sample and its age but omit `retryable`. Notification
+errors retain their Ack/Nack-specific `message` and `error` sample.
+
+Diagnostic frequency is bounded before logs reach subscribers. No reports are
+emitted during idle periods, and silence does not establish recovery. Use
+failure metrics for rates; existing error-event filters do not need renaming.
 
 ## Limits
 

@@ -38,38 +38,38 @@ fn suppression_precedes_all_subscribers() {
         let mut tracker = DiagnosticTracker::default();
         for second in 0..=60 {
             for _ in 0..100 {
-                otel_arrow_dfe_telemetry::otel_export_diagnostic!(
-                    target: "otel.exporter.test",
-                    tracker.failure(start + Duration::from_secs(second), ExportErrorKind::Transport, || {
+                if let Some(report) = tracker.failure(
+                    start + Duration::from_secs(second),
+                    ExportErrorKind::Transport,
+                    || {
                         formats.set(formats.get() + 1);
                         "connection refused"
-                    }),
-                    stage = "delivery", signal = "logs"
-                );
+                    },
+                ) {
+                    otel_arrow_dfe_telemetry::otel_export_diagnostic!(
+                        target: "otel.exporter.test", level: otel_warn,
+                        name: "test.export_error", report: &report,
+                        stage = "delivery", signal = "logs"
+                    );
+                }
             }
         }
+        let report = tracker
+            .success(
+                start + Duration::from_secs(61),
+                start + Duration::from_secs(90),
+            )
+            .expect("fresh success confirms recovery");
         otel_arrow_dfe_telemetry::otel_export_diagnostic!(
-            target: "otel.exporter.test",
-            tracker.success(start + Duration::from_secs(61), start + Duration::from_secs(90)),
+            target: "otel.exporter.test", level: otel_info,
+            name: "test.export_recovered", report: &report,
             stage = "delivery", signal = "logs"
         );
     });
     let expected = vec![
-        (
-            "otelcol.node.export.degrade",
-            "otel.exporter.test",
-            Level::WARN,
-        ),
-        (
-            "otelcol.node.export.report",
-            "otel.exporter.test",
-            Level::WARN,
-        ),
-        (
-            "otelcol.node.export.resume",
-            "otel.exporter.test",
-            Level::INFO,
-        ),
+        ("test.export_error", "otel.exporter.test", Level::WARN),
+        ("test.export_error", "otel.exporter.test", Level::WARN),
+        ("test.export_recovered", "otel.exporter.test", Level::INFO),
     ];
     assert_eq!(
         *first.0.lock().expect("capture lock must not be poisoned"),

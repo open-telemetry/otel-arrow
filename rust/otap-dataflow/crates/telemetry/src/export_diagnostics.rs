@@ -285,37 +285,28 @@ fn bounded_detail(detail: impl fmt::Display) -> String {
     output.0
 }
 
-/// Emit a selected report before it enters any logging provider. The explicit
-/// component target preserves filtering and scope identity across exporters.
+/// Emit common fields for a selected report through the chosen `otel_*` macro.
+/// The caller selects the literal event name, severity macro (`otel_warn` or
+/// `otel_info`), and protocol-specific fields after the tracker selects a report.
+/// Pass a report reference so its representative detail can also be used in fields.
 #[macro_export]
 macro_rules! otel_export_diagnostic {
-    (target: $target:expr, $report:expr, $($fields:tt)+) => {{
-        if let Some(report) = $report {
-            macro_rules! emit {
-                ($level:ident, $name:literal) => {{
-                    $crate::$level!(target: $target, $name,
-                        episode_seconds = report.episode_duration.as_secs_f64(),
-                        interval_seconds = report.interval_duration.as_secs_f64(),
-                        successful_attempts = report.interval.successes,
-                        failed_attempts = report.interval.failures,
-                        suppressed_diagnostics = report.interval.suppressed,
-                        total_successful_attempts = report.total.successes,
-                        total_failed_attempts = report.total.failures,
-                        total_suppressed_diagnostics = report.total.suppressed,
-                        error_counts = %report.interval,
-                        total_error_counts = %report.total,
-                        error = report.detail.as_str(),
-                        error_sample_age_seconds = report.detail_age.as_secs_f64(),
-                        $($fields)+
-                    );
-                }};
-            }
-            match report.kind {
-                $crate::export_diagnostics::ReportKind::Degraded => emit!(otel_warn, "otelcol.node.export.degrade"),
-                $crate::export_diagnostics::ReportKind::Summary => emit!(otel_warn, "otelcol.node.export.report"),
-                $crate::export_diagnostics::ReportKind::Recovered => emit!(otel_info, "otelcol.node.export.resume"),
-            }
-        }
+    (target: $target:expr, level: $level:ident, name: $name:literal, report: $report:expr, $($fields:tt)+) => {{
+        let diagnostic_report = $report;
+        $crate::$level!(target: $target, $name,
+            episode_seconds = diagnostic_report.episode_duration.as_secs_f64(),
+            interval_seconds = diagnostic_report.interval_duration.as_secs_f64(),
+            successful_attempts = diagnostic_report.interval.successes,
+            failed_attempts = diagnostic_report.interval.failures,
+            suppressed_diagnostics = diagnostic_report.interval.suppressed,
+            total_successful_attempts = diagnostic_report.total.successes,
+            total_failed_attempts = diagnostic_report.total.failures,
+            total_suppressed_diagnostics = diagnostic_report.total.suppressed,
+            error_counts = %diagnostic_report.interval,
+            total_error_counts = %diagnostic_report.total,
+            error_sample_age_seconds = diagnostic_report.detail_age.as_secs_f64(),
+            $($fields)+
+        );
     }};
 }
 
