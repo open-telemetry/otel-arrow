@@ -3,7 +3,11 @@
 
 //! Shared functions and data types for contrib extension implementations.
 
-#[cfg(any(feature = "azure-identity-auth", feature = "oauth2-client-auth", feature = "flat-file-user-pass-auth"))]
+#[cfg(any(
+    feature = "azure-identity-auth",
+    feature = "oauth2-client-auth",
+    feature = "flat-file-user-pass-auth"
+))]
 pub mod background_refresh;
 
 #[cfg(any(feature = "azure-identity-auth", feature = "oauth2-client-auth"))]
