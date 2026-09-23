@@ -1090,6 +1090,48 @@ async fn test_filter_data_point_by_attribute_or() {
     .await;
 }
 
+/// Scenario: Filter metric data points by a predicate that will involve joining the
+/// selection vec for some attribute filter with the selection vec for some field on
+/// the data point batch
+/// Guarantees: the engine can filter metric data points by this type of predicate
+#[tokio::test]
+async fn test_filter_data_point_by_attribute_or_record_field() {
+    let query = "metrics | apply data_points {
+        where attributes[\"x\"] == 5 or flags == 2
+    }";
+    run_filter_all_data_point_types_test(
+        query,
+        vec![
+            (
+                2u32,
+                Some(vec![
+                    KeyValue::new("a", AnyValue::new_string("b")),
+                    KeyValue::new("x", AnyValue::new_int(6)),
+                    KeyValue::new("y", AnyValue::new_int(6)),
+                ]),
+            ),
+            (
+                1u32,
+                Some(vec![
+                    KeyValue::new("a", AnyValue::new_string("b")),
+                    KeyValue::new("x", AnyValue::new_int(5)),
+                    KeyValue::new("y", AnyValue::new_int(6)),
+                ]),
+            ),
+            (
+                3u32,
+                Some(vec![
+                    KeyValue::new("a", AnyValue::new_string("b")),
+                    KeyValue::new("y", AnyValue::new_int(6)),
+                ]),
+            ),
+            (4u32, None),
+        ],
+        vec![0, 1],
+    )
+    .await;
+}
+
 /// Scenario: Filter metric data points by a predicate that will involve an ID bitmap inversion
 /// for the NOT expression
 /// Guarantees: the engine can filter metric data points by this type of predicate

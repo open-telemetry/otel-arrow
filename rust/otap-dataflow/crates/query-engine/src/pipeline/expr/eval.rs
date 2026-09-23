@@ -293,7 +293,7 @@ pub(super) fn join_and_eval_value(
     children: &mut [ScopedExpr],
     eval: &mut LeafEval,
     default_null_children: bool,
-    align_children_to_root: bool,
+    align_children_to_record: bool,
     short_circuit: Option<&ShortCircuitStrategy>,
     otap_batch: &OtapArrowRecords,
     eval_ctx: &EvalContext<'_>,
@@ -306,8 +306,13 @@ pub(super) fn join_and_eval_value(
             Some(mut result) => {
                 // maybe align children to root if configured. We skip alignment for scalar results
                 // because it's handled by the join below
-                if align_children_to_root && matches!(result.values, ColumnarValue::Array(_)) {
-                    result = align_value_to_root(result, otap_batch)?;
+                if align_children_to_record && matches!(result.values, ColumnarValue::Array(_)) {
+                    // result = pre_join_align_to_record(result, otap_batch)?;
+                    if let DataScope::Attribute(attrs_id, _) | DataScope::AttributesAll(attrs_id) =
+                        result.scope
+                    {
+                        result = align_attrs_to_record(result, attrs_id, otap_batch, eval_ctx)?
+                    }
                 }
                 result
             }
@@ -337,9 +342,10 @@ pub(super) fn join_and_eval_value(
                         return resolve_or_with_absent_child(
                             other,
                             default,
-                            align_children_to_root,
+                            align_children_to_record,
                             strategy,
                             otap_batch,
+                            eval_ctx,
                         );
                     }
                     // Otherwise, fall back to substituting the identity value and
@@ -433,12 +439,17 @@ fn resolve_or_with_absent_child(
     align_children_to_root: bool,
     strategy: &ShortCircuitStrategy,
     otap_batch: &OtapArrowRecords,
+    eval_ctx: &EvalContext<'_>,
 ) -> Result<Option<ScopedValue>> {
     let mut sv = match other {
         None => absent_default,
         Some(mut sv) => {
-            if align_children_to_root && matches!(sv.values, ColumnarValue::Array(_)) {
-                sv = align_value_to_root(sv, otap_batch)?;
+            if align_children_to_root
+                && matches!(sv.values, ColumnarValue::Array(_))
+                && let DataScope::Attribute(attrs_id, _) | DataScope::AttributesAll(attrs_id) =
+                    sv.scope
+            {
+                sv = align_attrs_to_record(sv, attrs_id, otap_batch, eval_ctx)?
             }
             sv
         }
@@ -1131,20 +1142,39 @@ fn maybe_downcast_dicts(batch: RecordBatch, opts: &ProjectionOptions) -> Result<
     )?)
 }
 
-/// Converts the row order of the passed value to match the root record batch.
-///
-/// The value may have been computed from attributes, or a scalar, or some other expression
-/// will have the row order based on the computation input. This method realigns the rows so
-/// that they match the root batch by invoking join.
-pub(crate) fn align_value_to_root(
+/// Converts the row order of the passed value to match the record batch associated with
+/// the attributes identifier.
+fn align_attrs_to_record(
     value: ScopedValue,
+    attrs_id: AttributesIdentifier,
     otap_batch: &OtapArrowRecords,
+    eval_ctx: &EvalContext<'_>,
 ) -> Result<ScopedValue> {
-    let root_batch = match otap_batch.root_record_batch() {
-        Some(rb) => rb,
-        None => return Ok(value),
-    };
-    align_value_to_record(value, RecordScope::Signal, root_batch, otap_batch)
+    match attrs_id {
+        AttributesIdentifier::Record(RecordScope::Signal) | AttributesIdentifier::NonRecord(_) => {
+            if let Some(root_rb) = otap_batch.root_record_batch() {
+                align_value_to_record(value, RecordScope::Signal, root_rb, otap_batch)
+            } else {
+                Ok(value)
+            }
+        }
+        AttributesIdentifier::Record(RecordScope::Child(ChildRecordKind::DataPoint)) => {
+            if let Some(data_points_rb) = eval_ctx
+                .data_point_type
+                .as_ref()
+                .and_then(|dp_type| otap_batch.get(dp_type.payload_type()))
+            {
+                align_value_to_record(
+                    value,
+                    RecordScope::Child(ChildRecordKind::DataPoint),
+                    data_points_rb,
+                    otap_batch,
+                )
+            } else {
+                Ok(value)
+            }
+        }
+    }
 }
 
 /// Converts the row order of the passed value to match the row order of the "record" (e.g, the
