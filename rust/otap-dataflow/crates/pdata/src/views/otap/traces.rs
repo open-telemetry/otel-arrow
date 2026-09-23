@@ -665,7 +665,7 @@ impl<'a> OtapSpanView<'a> {
     /// Get the span's row ID from the "id" column (used for attribute/event/link matching)
     #[inline]
     fn get_span_row_id(&self) -> Option<u16> {
-        let array = &self.columns()?.id;
+        let array = self.columns()?.id?;
         if array.is_valid(self.row_idx) {
             Some(array.value(self.row_idx))
         } else {
@@ -1208,6 +1208,34 @@ mod tests {
             ],
         )
         .unwrap()
+    }
+
+    /// Rebuilds a record batch without the named column, as a producer that omits it sends.
+    fn drop_column(rb: &RecordBatch, name: &str) -> RecordBatch {
+        let idx = rb.schema().index_of(name).expect("column present");
+        let mut fields = rb.schema().fields().to_vec();
+        let _ = fields.remove(idx);
+        let mut columns = rb.columns().to_vec();
+        let _ = columns.remove(idx);
+        RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).expect("rebuild batch")
+    }
+
+    /// Scenario: a spans-only batch omits the id column that nothing references.
+    /// Guarantees: the traces view still builds and exposes every span.
+    #[test]
+    fn test_spans_batch_without_id_column_builds() {
+        let spans_batch = drop_column(&create_test_spans_batch(), "id");
+        let view =
+            OtapTracesView::new(Some(&spans_batch), None, None, None, None, None, None, None)
+                .expect("view builds without an id column");
+
+        let mut span_count = 0;
+        for resource in view.resources() {
+            for scope in resource.scopes() {
+                span_count += scope.spans().count();
+            }
+        }
+        assert_eq!(span_count, 3, "all spans ingest without an id column");
     }
 
     #[test]
