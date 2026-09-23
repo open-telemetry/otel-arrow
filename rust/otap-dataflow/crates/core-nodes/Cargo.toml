@@ -19,12 +19,12 @@ workspace = true
 otel-arrow-dfe-channel = { workspace = true }
 otel-arrow-dfe-config = { workspace = true }
 otel-arrow-dfe-engine = { workspace = true }
-otel-arrow-dfe-query-engine-languages = { workspace = true }
+otel-arrow-dfe-query-engine-languages = { workspace = true, optional = true }
 otel-arrow-dfe-otap = { workspace = true }
 otel-arrow-dfe-pdata = { workspace = true }
 otel-arrow-dfe-pdata-views = { workspace = true }
-otel-arrow-dfe-query-engine = { workspace = true }
-otel-arrow-dfe-quiver = { workspace = true }
+otel-arrow-dfe-query-engine = { workspace = true, optional = true }
+otel-arrow-dfe-quiver = { workspace = true, optional = true }
 otel-arrow-dfe-telemetry = { workspace = true }
 otel-arrow-dfe-telemetry-macros = { workspace = true }
 
@@ -36,15 +36,15 @@ byte-unit.workspace = true
 bytes.workspace = true
 chrono.workspace = true
 hashbrown.workspace = true
-otel-arrow-contrib-data-engine-expressions.workspace = true
-otel-arrow-contrib-data-engine-kql-parser.workspace = true
+otel-arrow-contrib-data-engine-expressions = { workspace = true, optional = true }
+otel-arrow-contrib-data-engine-kql-parser = { workspace = true, optional = true }
 futures.workspace = true
 futures-timer.workspace = true
 hex.workspace = true
 humantime-serde.workspace = true
 linkme.workspace = true
-object_store = { workspace = true, features = ["fs"] }
-parquet.workspace = true
+object_store = { workspace = true, features = ["fs"], optional = true }
+parquet = { workspace = true, optional = true }
 prost.workspace = true
 prost-types.workspace = true
 rand.workspace = true
@@ -73,12 +73,72 @@ libc.workspace = true
 nix.workspace = true
 
 [features]
+# Compatibility default: existing consumers continue to compile every core node.
+# Minimal consumers should use `default-features = false` and select exact nodes.
+default = ["core-nodes"]
+
+# Keep these umbrella lists exhaustive. Features can appear in both directional
+# categories when they intentionally include source and destination nodes.
+core-nodes = ["core-receivers", "core-processors", "core-exporters"]
+core-receivers = [
+    "host-metrics",
+    "journald",
+    "otap",
+    "otlp",
+    "syslog-cef",
+    "topic",
+]
+core-processors = [
+    "durable-buffer",
+    "partition",
+    "transform",
+]
+core-exporters = [
+    "file",
+    "otap",
+    "otlp",
+    "parquet",
+    "topic",
+]
+
+# Integrations with both sources and destinations.
+otap = []
+otlp = []
+topic = []
+
+# Receivers.
+host-metrics = []
+journald = []
+syslog-cef = []
+
+# Processors.
+durable-buffer = ["dep:otel-arrow-dfe-quiver"]
+partition = [
+    "dep:otel-arrow-dfe-query-engine",
+    "dep:otel-arrow-dfe-query-engine-languages",
+]
+transform = [
+    "dep:otel-arrow-contrib-data-engine-expressions",
+    "dep:otel-arrow-contrib-data-engine-kql-parser",
+    "dep:otel-arrow-dfe-query-engine",
+    "dep:otel-arrow-dfe-query-engine-languages",
+]
+
+# Exporters.
+file = []
+parquet = [
+    "dep:object_store",
+    "dep:parquet",
+]
+
+# Cross-cutting features may imply a node when they have no meaning on their
+# own; for example, Azure storage implies the Parquet exporter.
+# Azure Blob Storage backend for the Parquet exporter.
+azure = ["parquet", "otel-arrow-dfe-otap/azure"]
+bench = []
 # Enables Weaver-backed semantic-convention assertions in core-node tests.
 # Weaver remains a dev-dependency and is not part of the published crate graph.
 dev-tools = []
-# Azure Blob Storage backend for the Parquet exporter.
-azure = ["otel-arrow-dfe-otap/azure"]
-bench = []
 
 [dev-dependencies]
 arrow-ipc.workspace = true
@@ -111,12 +171,13 @@ weaver_semconv.workspace = true
 name = "temporal_reaggregation_processor"
 harness = false
 path = "benches/temporal_reaggregation_processor/main.rs"
+required-features = ["bench"]
 
 [[bench]]
 name = "journald_decode"
 harness = false
 path = "benches/journald_decode/main.rs"
-required-features = ["bench"]
+required-features = ["bench", "journald"]
 
 [[bench]]
 name = "filelog_decode"
