@@ -90,6 +90,24 @@ pub struct HttpClientSettings {
     pub headers: HashMap<String, SecretString>,
 }
 
+/// Rejects header names managed by the OTLP/HTTP exporter or HTTP client.
+pub fn validate_http_header_name(header_name: &http::HeaderName) -> Result<(), String> {
+    if matches!(
+        header_name.as_str(),
+        "content-type"
+            | "content-encoding"
+            | "content-length"
+            | "host"
+            | "accept"
+            | "accept-encoding"
+    ) {
+        return Err(format!(
+            "header \"{header_name}\" is reserved and cannot be set; it is managed by the exporter"
+        ));
+    }
+    Ok(())
+}
+
 impl HttpClientSettings {
     /// Validates the settings at config load time.
     ///
@@ -131,25 +149,7 @@ impl HttpClientSettings {
                      value (must be visible ASCII)"
                 )));
             }
-            // Reject headers the exporter or HTTP client manages itself: the
-            // protocol headers it sets per request, plus the response-negotiation
-            // headers (`accept` / `accept-encoding`) whose effective value is
-            // dictated by what the client can actually parse and decompress and so
-            // is not something a user can truthfully declare here.
-            if matches!(
-                header_name.as_str(),
-                "content-type"
-                    | "content-encoding"
-                    | "content-length"
-                    | "host"
-                    | "accept"
-                    | "accept-encoding"
-            ) {
-                return Err(HttpClientError::InvalidConfig(format!(
-                    "header \"{name}\" is reserved and cannot be set via `headers`; it is managed \
-                     by the exporter"
-                )));
-            }
+            validate_http_header_name(&header_name).map_err(HttpClientError::InvalidConfig)?;
             // HTTP header names are case-insensitive, so two keys differing only in
             // case (e.g. `X-Foo` and `x-foo`) would collide on the wire. Reject such
             // duplicates rather than sending an ambiguous request. `header_name` is

@@ -43,10 +43,11 @@ const PERIODIC_EXPORT_INTERVAL: u64 = 3;
 
 /// Raises shared auth warnings under the Azure Monitor event namespace.
 const AZURE_MONITOR_AUTH_EVENTS: HttpClientAuthProviderEvents = HttpClientAuthProviderEvents {
-    invalid: |source, error| {
+    validate_header_name: |_| Ok(()),
+    on_invalid: |source, error| {
         otel_warn!("azure_monitor_exporter.auth.invalid", source = %source, error = %error);
     },
-    stream_closed: |source| {
+    on_stream_closed: |source| {
         otel_warn!(
             "azure_monitor_exporter.auth.stream_closed",
             source = %source,

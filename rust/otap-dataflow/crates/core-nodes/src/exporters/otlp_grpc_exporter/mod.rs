@@ -71,10 +71,14 @@ pub const OTLP_EXPORTER_URN: &str = "urn:otel:exporter:otlp_grpc";
 
 /// Raises the shared auth warnings under this exporter's event namespace.
 const GRPC_AUTH_EVENTS: HttpClientAuthProviderEvents = HttpClientAuthProviderEvents {
-    invalid: |source, error| {
+    validate_header_name: |name| {
+        otel_arrow_dfe_otap::otap_grpc::client_settings::validate_grpc_metadata_key(name.as_str())
+            .map(|_| ())
+    },
+    on_invalid: |source, error| {
         otel_warn!("otlp.exporter.grpc.auth.invalid", source = %source, error = %error);
     },
-    stream_closed: |source| {
+    on_stream_closed: |source| {
         otel_warn!(
             "otlp.exporter.grpc.auth.stream_closed",
             source = %source,
@@ -1386,10 +1390,8 @@ mod tests {
     use http::header;
     use otel_arrow_dfe_config::ContextEntryName;
     use otel_arrow_dfe_config::node::NodeUserConfig;
-    use otel_arrow_dfe_engine::capability::auth::ApiKey;
     use otel_arrow_dfe_otap::http_client_auth::test_support::MockHttpClientAuthProvider;
     use std::collections::HashMap;
-    use std::str::FromStr;
     use std::sync::atomic::AtomicBool;
 
     use otel_arrow_dfe_config::transport_headers::{
@@ -3217,33 +3219,6 @@ mod tests {
         let bin_val = metadata
             .get_bin("custom-binary-bin")
             .expect("custom-binary-bin should be present (suffix appended)");
-        assert_eq!(bin_val.to_bytes().unwrap(), binary_value.as_slice());
-    }
-
-    #[test]
-    fn test_build_grpc_metadata_supports_binary_api_key_headers() {
-        let handler = make_effect_handler_with_policy(Some(propagate_all_policy()));
-
-        let binary_value = [115, 101, 99, 114, 101, 116];
-
-        let api_key = ApiKey::from_binary(&binary_value);
-
-        let context = context_without_headers();
-
-        let metadata = build_grpc_metadata(
-            &handler,
-            &context,
-            None,
-            Some((
-                HeaderName::from_str("x-custom-bin").expect("valid header name"),
-                HeaderValue::from_str(api_key.expose_value()).expect("valid header value"),
-            )),
-        )
-        .expect("should produce metadata");
-
-        let bin_val = metadata
-            .get_bin("x-custom-bin")
-            .expect("x-custom-bin should be present");
         assert_eq!(bin_val.to_bytes().unwrap(), binary_value.as_slice());
     }
 

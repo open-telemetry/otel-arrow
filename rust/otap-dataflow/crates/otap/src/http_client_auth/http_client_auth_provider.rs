@@ -23,30 +23,39 @@ use crate::http_client_auth::{
     bearer_auth::BearerHttpClientStreamAuthProviderBuilder,
 };
 
-/// The warnings this adapter can raise, supplied by the owning component so
-/// each event name is namespaced to that component (e.g.
-/// `otlp.exporter.grpc.*`) rather than to the provider. Event macros (eg
-/// `otel_warn!`) const-validate the event name, so the name has to be a literal
-/// at the emitting call site; passing the emitters as function pointers
-/// satisfies that without making the adapter generic over a marker type.
+/// Events fired by [`HttpClientAuthProvider`] to be handled by the owning
+/// component.
+///
+/// `on_*` events are provided for logging. The owning component should
+/// namespace logs realitive to itself (e.g. `otlp.exporter.grpc.*`) rather than
+/// to the provider. Event macros (eg `otel_warn!`) const-validate the event
+/// name, so the name has to be a literal at the emitting call site; passing the
+/// emitters as function pointers satisfies that without making the adapter
+/// generic over a marker type.
 #[derive(Clone, Copy)]
 pub struct HttpClientAuthProviderEvents {
-    /// A published credential could not be turned into a header.
-    pub invalid: fn(HttpClientAuthProviderName, &str),
+    /// Validates a provider-selected header name against the consumer's
+    /// transport requirements.
+    pub validate_header_name: fn(&HeaderName) -> Result<(), String>,
 
-    /// The provider closed its stream; no further refreshes will arrive.
-    pub stream_closed: fn(HttpClientAuthProviderName),
+    /// Fired when a provider-published credential could not be turned into a
+    /// header.
+    pub on_invalid: fn(HttpClientAuthProviderName, &str),
+
+    /// Fired if the provider closes its stream; no further refreshes will
+    /// arrive.
+    pub on_stream_closed: fn(HttpClientAuthProviderName),
 }
 
 impl HttpClientAuthProviderEvents {
     /// Emit an invalid event.
     pub fn emit_invalid(&self, source: &dyn HttpClientAuthProvider, error: &str) {
-        (self.invalid)(source.name(), error)
+        (self.on_invalid)(source.name(), error)
     }
 
     /// Emit a stream_closed event.
     pub fn emit_stream_closed(&self, source: &dyn HttpClientAuthProvider) {
-        (self.stream_closed)(source.name())
+        (self.on_stream_closed)(source.name())
     }
 }
 
@@ -379,6 +388,10 @@ impl<TProvider: HttpClientStreamAuthProviderBuilder> HttpClientAuthProvider
             Poll::Ready(Some(auth)) => {
                 match TProvider::build_auth_header(auth) {
                     Ok(mut auth_header) => {
+                        if let Err(e) = (events.validate_header_name)(&auth_header.header_name) {
+                            events.emit_invalid(self, &e);
+                            return Poll::Ready(false);
+                        }
                         // Redact in `Debug`, exclude from HPACK indexing.
                         auth_header.header_value.set_sensitive(true);
                         self.cached_header =
@@ -885,8 +898,15 @@ mod tests {
     /// thread-local; the test harness gives each test its own thread, and every
     /// test resets them before use.
     const TEST_EVENTS: HttpClientAuthProviderEvents = HttpClientAuthProviderEvents {
-        invalid: |_, _| INVALID.set(INVALID.get() + 1),
-        stream_closed: |_| STREAM_CLOSURES.set(STREAM_CLOSURES.get() + 1),
+        validate_header_name: |_| Ok(()),
+        on_invalid: |_, _| INVALID.set(INVALID.get() + 1),
+        on_stream_closed: |_| STREAM_CLOSURES.set(STREAM_CLOSURES.get() + 1),
+    };
+
+    const REJECTING_TEST_EVENTS: HttpClientAuthProviderEvents = HttpClientAuthProviderEvents {
+        validate_header_name: |_| Err("header is reserved by the transport".into()),
+        on_invalid: |_, _| INVALID.set(INVALID.get() + 1),
+        on_stream_closed: |_| STREAM_CLOSURES.set(STREAM_CLOSURES.get() + 1),
     };
 
     fn reset_events() {
@@ -1013,6 +1033,26 @@ mod tests {
             generation, 1,
             "a rejected publication must not advance the generation"
         );
+    }
+
+    /// Scenario: a refresh builds a syntactically valid header whose name is
+    /// reserved by the consuming transport while a usable credential is cached.
+    /// Guarantees: transport validation reports and rejects the refresh before
+    /// it replaces the previously usable credential or advances its generation.
+    #[tokio::test]
+    async fn a_transport_invalid_refresh_leaves_the_cached_token_intact() {
+        let mut auth = auth_over(vec![
+            BearerToken::without_expiry("good"),
+            BearerToken::without_expiry("reserved"),
+        ]);
+
+        assert!(poll_fn(|cx| auth.poll_refresh(cx, &TEST_EVENTS)).await);
+        assert!(!poll_fn(|cx| auth.poll_refresh(cx, &REJECTING_TEST_EVENTS)).await);
+
+        assert_eq!(INVALID.get(), 1);
+        let (_, header, generation) = auth.header().expect("the earlier token must be kept");
+        assert_eq!(header.to_str().unwrap(), "Bearer good");
+        assert_eq!(generation, 1);
     }
 
     /// Scenario: the provider closes its token stream after publishing a token.

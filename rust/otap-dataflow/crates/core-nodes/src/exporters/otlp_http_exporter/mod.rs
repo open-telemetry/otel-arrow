@@ -82,10 +82,12 @@ pub const OTLP_HTTP_EXPORTER_URN: &str = "urn:otel:exporter:otlp_http";
 
 /// Raises the shared auth warnings under this exporter's event namespace.
 const HTTP_AUTH_EVENTS: HttpClientAuthProviderEvents = HttpClientAuthProviderEvents {
-    invalid: |source, error| {
+    validate_header_name:
+        otel_arrow_dfe_otap::otlp_http::client_settings::validate_http_header_name,
+    on_invalid: |source, error| {
         otel_warn!("otlp.exporter.http.auth.invalid", source = %source, error = %error);
     },
-    stream_closed: |source| {
+    on_stream_closed: |source| {
         otel_warn!(
             "otlp.exporter.http.auth.stream_closed",
             source = %source,
