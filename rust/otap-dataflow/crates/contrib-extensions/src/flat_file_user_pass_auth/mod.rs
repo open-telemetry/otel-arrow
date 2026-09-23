@@ -59,6 +59,12 @@ pub const FLAT_FILE_USER_PASS_AUTH_URN: &str = "urn:otel:extension:flat_file_use
 const NON_EXPIRING_BASIC_AUTH_CREDENTIAL_REFRESH_INTERVAL: Duration =
     Duration::from_secs(24 * 60 * 60);
 
+/// Default refresh interval.
+const DEFAULT_BASIC_AUTH_CREDENTIAL_REFRESH_INTERVAL: Duration = Duration::from_secs(60 * 60);
+
+/// Minimum refresh interval.
+const MINIMUM_BASIC_AUTH_CREDENTIAL_REFRESH_INTERVAL: Duration = Duration::from_secs(60 * 5);
+
 /// Refresh this many seconds before `expires_on` (~1 min).
 const BASIC_AUTH_CREDENTIAL_EXPIRY_BUFFER_SECS: Duration = Duration::from_secs(60);
 

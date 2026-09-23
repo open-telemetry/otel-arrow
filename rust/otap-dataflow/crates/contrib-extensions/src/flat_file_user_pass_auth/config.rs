@@ -10,9 +10,11 @@ use otel_arrow_dfe_engine::capability::auth::BasicAuthCredential;
 use secrecy::SecretString;
 use serde::Deserialize;
 
+use crate::flat_file_user_pass_auth::*;
+
 /// Default password secret file refresh (~1 hr).
 pub(crate) fn default_password_secret_file_refresh() -> Duration {
-    Duration::from_secs(60 * 60)
+    DEFAULT_BASIC_AUTH_CREDENTIAL_REFRESH_INTERVAL
 }
 
 /// Configuration for the HTTP Basic Client Auth extension.
@@ -39,7 +41,8 @@ pub struct Config {
     pub password_secret_file: Option<PathBuf>,
 
     /// Refresh duration for the password secret file (if specified). Accepts
-    /// human-readable durations (e.g. `5m`, `30s`). Must be non-zero.
+    /// human-readable durations (e.g. `5m`, `30s`). Must be non-zero. Default
+    /// value: `1h`. Mimimum value: `5m`.
     #[serde(
         with = "humantime_serde",
         default = "default_password_secret_file_refresh"
@@ -63,8 +66,10 @@ impl Config {
             }
         }
 
-        if self.password_secret_file_refresh.is_zero() {
-            return Err("`password_secret_file_refresh` must be greater than zero".to_string());
+        if self.password_secret_file_refresh < MINIMUM_BASIC_AUTH_CREDENTIAL_REFRESH_INTERVAL {
+            return Err(
+                "`password_secret_file_refresh` must be greater than or equal to `5m`".to_string(),
+            );
         }
 
         Ok(())

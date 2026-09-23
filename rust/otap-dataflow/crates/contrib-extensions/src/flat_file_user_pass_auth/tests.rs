@@ -110,13 +110,13 @@ fn config_secret_required_and_valid() {
 }
 
 #[test]
-fn config_password_secret_file_refresh_rejects_zero() {
+fn config_password_secret_file_refresh_rejects_invalid() {
     assert!(
         config_from_json(serde_json::json!({
         "username": "test",
         "password_secret": "<test_secret>",
         "password_secret_file": "<test_secret_path>",
-        "password_secret_file_refresh": "0s" }))
+        "password_secret_file_refresh": "4m" }))
         .is_err()
     )
 }
