@@ -370,10 +370,10 @@ where
     // than rebuilding it from scratch using a PrimitiveBuilder because we only need to rewrite
     // the delta encoded segments
     let parent_id_arr_ref = get_required_array(record_batch, consts::PARENT_ID)?;
-    // TODO - currently we're casting to a primitive array, then casting back to the original
-    // array type when we replace the column. This is fine for u16 IDs, but our u32 IDs may be
-    // dictionary encoded, so we should revisit this for metrics/traces which have attributes
-    // that use this kind of ID
+    // The parent_id column may arrive dictionary encoded, for example u32 IDs on metrics and
+    // traces attributes, so cast it to a plain primitive to materialize the absolute IDs.
+    // `replace_materialized_parent_id_column` then emits the decoded IDs as a plain column
+    // rather than re-encoding them into that dictionary, which would overflow its key.
     let parent_id_arr = cast(&parent_id_arr_ref, &T::ArrayType::DATA_TYPE).map_err(|e| {
         Error::UnexpectedRecordBatchState {
             reason: format!("Failed to cast parent_id column: {}", e),
@@ -559,9 +559,9 @@ where
 
     let encoded_parent_ids = T::get_parent_id_column(record_batch)?;
 
-    // TODO: It would be more efficient here to figure out if the original type was a
-    // dictionary and map the keys. Instead, we build up this primitive array and cast
-    // back to the original type in `replace_materialized_parent_id_column`
+    // Build a plain primitive array of the absolute materialized parent IDs.
+    // `replace_materialized_parent_id_column` emits it as a plain column rather than re-encoding
+    // it into the original transport type, since the decoded IDs are absolute and high cardinality.
     let mut materialized_parent_ids =
         PrimitiveBuilder::<T::ArrayType>::with_capacity(record_batch.num_rows());
 
@@ -615,11 +615,12 @@ where
     materialize_parent_ids_by_columns::<T>(record_batch, [consts::INT_VALUE, consts::DOUBLE_VALUE])
 }
 
-/// Returns a new record batch with the parent ID column replaced by the passed
-/// `materialized_parent_ids` column. This function expects the new parent IDs to have
-/// the same type, nullability and length as the record batch, and it also expects the
-/// original record batch to have a parent_id column. If these conditions are not met,
-/// an error is returned.
+/// Returns a new record batch with the parent_id column replaced by `materialized_parent_ids`.
+/// The decoded parent IDs are emitted as a plain primitive column and the parent_id field's
+/// encoding metadata is set to `encoding`. They are not re-encoded into the incoming column's
+/// transport type. The materialized IDs are absolute and high cardinality, so re-encoding them
+/// into a small dictionary key would overflow it. The record batch must contain a parent_id
+/// column and `materialized_parent_ids` must have the same row count.
 fn replace_materialized_parent_id_column(
     record_batch: &RecordBatch,
     materialized_parent_ids: ArrayRef,
@@ -630,31 +631,42 @@ fn replace_materialized_parent_id_column(
         .index_of(consts::PARENT_ID)
         .expect("parent_id should be in the schema");
 
-    let field = schema.field(parent_id_idx);
+    // Emit the decoded IDs as their plain primitive type. Casting them back into the incoming
+    // transport type would overflow a small dictionary key when the IDs are high cardinality.
+    let decoded_parent_id_type = materialized_parent_ids.data_type().clone();
+
     let columns = record_batch
         .columns()
         .iter()
         .enumerate()
         .map(|(i, col)| {
             if i == parent_id_idx {
-                cast(&materialized_parent_ids, field.data_type()).map_err(|e| {
-                    Error::UnexpectedRecordBatchState {
-                        reason: format!("could not replace parent id {e}"),
-                    }
-                })
+                materialized_parent_ids.clone()
             } else {
-                Ok(col.clone())
+                col.clone()
             }
         })
-        .collect::<Result<Vec<ArrayRef>>>()?;
+        .collect::<Vec<ArrayRef>>();
 
-    // update the field metadata for the parent_id column
-    let schema = update_field_metadata(
-        schema.as_ref(),
-        consts::PARENT_ID,
-        metadata::COLUMN_ENCODING,
-        encoding,
-    );
+    // Rebuild the parent_id field with the decoded type and refreshed encoding metadata,
+    // preserving the field name, nullability and any other metadata.
+    let old_field = schema.field(parent_id_idx);
+    let mut field_metadata = old_field.metadata().clone();
+    let _ = field_metadata.insert(metadata::COLUMN_ENCODING.to_string(), encoding.to_string());
+    let new_parent_id_field = Field::new(
+        old_field.name().clone(),
+        decoded_parent_id_type,
+        old_field.is_nullable(),
+    )
+    .with_metadata(field_metadata);
+
+    let mut fields = schema
+        .fields()
+        .iter()
+        .map(|f| f.as_ref().clone())
+        .collect::<Vec<_>>();
+    fields[parent_id_idx] = new_parent_id_field;
+    let schema = Schema::new_with_metadata(fields, schema.metadata().clone());
 
     RecordBatch::try_new(Arc::new(schema), columns).map_err(|e| Error::UnexpectedRecordBatchState {
         reason: format!("could not replace parent id {e}"),
@@ -4325,6 +4337,60 @@ mod test {
 
         run_test_with_dict_key_type::<UInt8Type>();
         run_test_with_dict_key_type::<UInt16Type>();
+    }
+
+    /// Scenario: a dictionary encoded parent_id whose decoded IDs exceed the dictionary key width.
+    /// Guarantees: the decoded parent_id is materialized as a plain column, not re-encoded into the small key.
+    #[test]
+    fn test_materialize_parent_id_for_attributes_dict_encoded_parent_id() {
+        // 300 rows share the same key, type and value, so every parent_id is delta encoded.
+        // The parent_id arrives dictionary encoded with a UInt8 key over the single delta value 1.
+        // Materialized, the absolute IDs run from 1 to 300, which is more than a UInt8 key can index.
+        let n: u16 = 300;
+
+        let dict_keys = UInt8Array::from_iter_values((0..n).map(|_| 0u8));
+        let dict_values = UInt16Array::from_iter_values([1u16]);
+        let parent_ids_arr = DictionaryArray::<UInt8Type>::new(dict_keys, Arc::new(dict_values));
+
+        let keys_arr = StringArray::from_iter_values((0..n).map(|_| "attr1"));
+        let type_arr = UInt8Array::from_iter_values((0..n).map(|_| AttributeValueType::Str as u8));
+        let string_val_arr = StringArray::from_iter_values((0..n).map(|_| "a"));
+
+        let record_batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(
+                    consts::PARENT_ID,
+                    DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::UInt16)),
+                    false,
+                ),
+                Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+                Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+                Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+            ])),
+            vec![
+                Arc::new(parent_ids_arr),
+                Arc::new(type_arr),
+                Arc::new(keys_arr),
+                Arc::new(string_val_arr),
+            ],
+        )
+        .unwrap();
+
+        let result_batch = materialize_parent_id_for_attributes::<u16>(&record_batch).unwrap();
+
+        // The decoded parent_id is emitted as a plain UInt16 column, not re-encoded as a dictionary.
+        let out_schema = result_batch.schema();
+        let parent_id_field = out_schema.field_with_name(consts::PARENT_ID).unwrap();
+        assert_eq!(parent_id_field.data_type(), &DataType::UInt16);
+        assert_eq!(
+            get_field_metadata(&out_schema, consts::PARENT_ID, metadata::COLUMN_ENCODING),
+            Some(metadata::encodings::PLAIN)
+        );
+
+        // The values are the materialized IDs from 1 to 300.
+        let parent_ids = get_u16_array(&result_batch, consts::PARENT_ID).unwrap();
+        let expected = UInt16Array::from_iter_values(1..=n);
+        assert_eq!(parent_ids, &expected);
     }
 
     #[test]
