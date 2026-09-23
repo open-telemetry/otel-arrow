@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790189607700,
+  "lastUpdate": 1790199886922,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -43525,6 +43525,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 103.91,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "AaronRM@users.noreply.github.com",
+            "name": "Aaron Marten",
+            "username": "AaronRM"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "e5938d4a93787f6ceecf46140a1d7a02100a83da",
+          "message": "fix: prevent Quiver from skipping new telemetry after segment cleanup on restart (#4146)\n\n# Change summary\n\nFixes Quiver silently skipping new telemetry after completed segments\nare cleaned up and the process restarts.\n\nOn startup, the next segment sequence was derived only from segment\nfilenames on disk. Once cleanup removed every completed segment, a\nrestart began numbering again from a lower value, while subscriber\nprogress files still held acknowledgements for those old sequence\nnumbers. Because `SubscriberState::add_segment` keeps an existing entry\nfor a sequence, a restored acked entry hid the new segment that reused\nthat number, so its data was never delivered.\n\nThis change sets the startup allocation floor above both sources that\ncan still reference a sequence:\n\n* `SubscriberRegistry::open` already reads every progress file. It now\nalso records the highest segment each file references (its entry\nsequences plus a nonzero `oldest_incomplete_seg` header), across all\nsubscribers including inactive ones, and exposes it via\n`highest_progress_segment()`.\n* `QuiverEngine` startup sets `next_segment_seq = max(highest segment\nfilename, highest progress reference) + 1` after the registry opens and\nbefore WAL replay, so segments finalized during replay are also numbered\nabove any surviving acknowledgement.\n\nScope is intentionally narrow:\n\n* No new file formats, sidecars, watermarks, or subscriber lifecycle\nstates.\n* Existing error handling is unchanged: an unreadable or corrupt\nprogress file is still logged and that subscriber starts fresh, with no\nrestored acknowledgements.\n* Sequence numbers may still be reused once no segment file or progress\nfile references them; lifetime uniqueness is not required to fix this\nbug.\n* Machine-crash durability is out of scope (see #4137 and #4139).\n\nPossible follow-up hardening, not included here: failing startup on\nprogress I/O or version errors instead of starting fresh, resetting\ncorrupt progress files, guarding against sequence exhaustion, and\nclarifying the semantics of `total_segments_written()`.\n\n## Related issue\n\n* Closes #4024\n\n## Validation\n\n* Added `cleanup_restart_delivers_new_data`, the scenario reported in\nthe issue, run in both `SegmentOnly` and `Wal` durability modes. It\nfails on `main` and passes with this change.\n* Added `startup_combines_progress_and_filename_floors`, covering both\ncases (progress floor higher than disk, and disk higher than progress)\nwith an inactive subscriber.\n* Added `restart_progress_floor_precedes_wal_replay`, which verifies\nthat a WAL tail finalized during reopen is numbered above stale\nacknowledgements and delivered.\n* With the progress floor temporarily disabled, all three new tests\nfail.\n* `cargo xtask check` passes (fmt, clippy, and workspace tests).\n* markdownlint, `tools/sanitycheck.py`, and `make chlog-validate` pass.\n\n## User-facing changes\n\nBug fix: after completed segments are cleaned up and Quiver restarts,\nnewly ingested telemetry is delivered to subscribers instead of being\nsilently treated as already acknowledged. Changelog entry:\n`rust/otap-dataflow/.chloggen/quiver-restart-sequence-floor.yaml`.",
+          "timestamp": "2026-09-23T20:49:12Z",
+          "tree_id": "afa58a0da7f9027a6a08efada3d474fc557904b3",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/e5938d4a93787f6ceecf46140a1d7a02100a83da"
+        },
+        "date": 1790199870061,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 84.3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.12,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.71,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.97,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.7,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 71.59,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.85,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.54,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 116.56,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 103.85,
             "unit": "MB"
           }
         ]
