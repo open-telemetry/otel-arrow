@@ -187,3 +187,8 @@ name = "parse_logs"
 harness = false
 path = "benches/parse_logs.rs"
 required-features = ["bench"]
+
+[[bench]]
+name = "filelog_decode"
+harness = false
+path = "benches/filelog_decode/main.rs"
