@@ -348,6 +348,10 @@ const CBOR_MAJOR_MAP: u8 = 5;
 const CBOR_MAJOR_SIMPLE: u8 = 7;
 const CBOR_INDEFINITE: u8 = 31;
 const CBOR_BREAK: u8 = 0xff;
+const CBOR_NULL: u8 = 0xf6;
+// Maximum CBOR nesting depth scanned while measuring item boundaries. Matches serde_cbor's own
+// recursion limit.
+const CBOR_MAX_DEPTH: usize = 128;
 
 /// Read the argument (length or immediate value) that follows a CBOR head byte, returning the
 /// argument and the number of bytes the head occupies. Indefinite heads are handled by callers.
@@ -375,6 +379,13 @@ fn cbor_is_indefinite(buf: &[u8]) -> bool {
 
 /// Total byte length of the single CBOR item that starts at `buf[0]`.
 fn cbor_item_len(buf: &[u8]) -> Option<usize> {
+    cbor_item_len_at_depth(buf, 0)
+}
+
+fn cbor_item_len_at_depth(buf: &[u8], depth: usize) -> Option<usize> {
+    if depth > CBOR_MAX_DEPTH {
+        return None;
+    }
     let first = *buf.first()?;
     let major = first >> 5;
     let info = first & 0x1f;
@@ -387,9 +398,10 @@ fn cbor_item_len(buf: &[u8]) -> Option<usize> {
                     if *buf.get(pos)? == CBOR_BREAK {
                         return pos.checked_add(1);
                     }
-                    pos = pos.checked_add(cbor_item_len(buf.get(pos..)?)?)?;
+                    pos = pos.checked_add(cbor_item_len_at_depth(buf.get(pos..)?, depth + 1)?)?;
                     if major == CBOR_MAJOR_MAP {
-                        pos = pos.checked_add(cbor_item_len(buf.get(pos..)?)?)?;
+                        pos =
+                            pos.checked_add(cbor_item_len_at_depth(buf.get(pos..)?, depth + 1)?)?;
                     }
                 }
             }
@@ -404,15 +416,15 @@ fn cbor_item_len(buf: &[u8]) -> Option<usize> {
         CBOR_MAJOR_ARRAY => {
             let mut pos = head;
             for _ in 0..arg {
-                pos = pos.checked_add(cbor_item_len(buf.get(pos..)?)?)?;
+                pos = pos.checked_add(cbor_item_len_at_depth(buf.get(pos..)?, depth + 1)?)?;
             }
             Some(pos)
         }
         CBOR_MAJOR_MAP => {
             let mut pos = head;
             for _ in 0..arg {
-                pos = pos.checked_add(cbor_item_len(buf.get(pos..)?)?)?;
-                pos = pos.checked_add(cbor_item_len(buf.get(pos..)?)?)?;
+                pos = pos.checked_add(cbor_item_len_at_depth(buf.get(pos..)?, depth + 1)?)?;
+                pos = pos.checked_add(cbor_item_len_at_depth(buf.get(pos..)?, depth + 1)?)?;
             }
             Some(pos)
         }
@@ -420,20 +432,24 @@ fn cbor_item_len(buf: &[u8]) -> Option<usize> {
     }
 }
 
-/// The `ValueType` of the CBOR item that starts at `buf[0]`.
+/// The `ValueType` of the CBOR item that starts at `buf[0]`. Kept consistent with
+/// `cbor_to_any_value` so values it cannot represent are reported as `Empty`.
 fn cbor_value_type(buf: &[u8]) -> ValueType {
     let Some(first) = buf.first().copied() else {
         return ValueType::Empty;
     };
     match first >> 5 {
-        CBOR_MAJOR_UINT | CBOR_MAJOR_NINT => ValueType::Int64,
+        // Only advertise Int64 when the value fits an i64, matching cbor_to_any_value.
+        CBOR_MAJOR_UINT | CBOR_MAJOR_NINT => cbor_arg(buf)
+            .and_then(|(v, _)| i64::try_from(v).ok())
+            .map_or(ValueType::Empty, |_| ValueType::Int64),
         CBOR_MAJOR_BYTES => ValueType::Bytes,
         CBOR_MAJOR_TEXT => ValueType::String,
         CBOR_MAJOR_ARRAY => ValueType::Array,
         CBOR_MAJOR_MAP => ValueType::KeyValueList,
         CBOR_MAJOR_SIMPLE => match first & 0x1f {
             20 | 21 => ValueType::Bool,
-            25..=27 => ValueType::Double,
+            26 | 27 => ValueType::Double,
             _ => ValueType::Empty,
         },
         _ => ValueType::Empty,
@@ -583,7 +599,12 @@ impl<'a> Iterator for CborMapIter<'a> {
         }
         let key_buf = self.buf.get(self.pos..)?;
         let key_len = cbor_item_len(key_buf)?;
-        let key = cbor_slice(key_buf.get(..key_len)?).unwrap_or(&[]);
+        // Only text keys are supported. Any other key type would corrupt the name, so fail closed.
+        let key = match key_buf.first().copied() {
+            Some(first) if first >> 5 == CBOR_MAJOR_TEXT => cbor_slice(key_buf.get(..key_len)?)?,
+            Some(CBOR_NULL) => &[],
+            _ => return None,
+        };
         self.pos += key_len;
 
         let value_buf = self.buf.get(self.pos..)?;
@@ -983,5 +1004,52 @@ mod tests {
         // One below i64::MIN does not fit an i64.
         let under = [0x3b, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
         assert_eq!(cbor_to_any_value(&under).value_type(), ValueType::Empty);
+    }
+
+    /// Scenario: values that cbor_to_any_value cannot represent are queried for their type.
+    /// Guarantees: cbor_value_type reports Empty so it agrees with the decoded value.
+    #[test]
+    fn test_cbor_value_type_matches_decoding() {
+        // Unsigned i64::MAX + 1 cannot be an i64.
+        let over = [0x1b, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+        assert_eq!(cbor_value_type(&over), ValueType::Empty);
+        assert_eq!(cbor_to_any_value(&over).value_type(), ValueType::Empty);
+
+        // An in-range integer is still Int64.
+        assert_eq!(cbor_value_type(&[0x0a]), ValueType::Int64);
+
+        // Half precision floats are classified but never decoded, so they are Empty.
+        let half = [0xf9, 0x3c, 0x00];
+        assert_eq!(cbor_value_type(&half), ValueType::Empty);
+        assert_eq!(cbor_to_any_value(&half).value_type(), ValueType::Empty);
+
+        // A 64-bit float is still Double.
+        let double = [0xfb, 0x3f, 0xf0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+        assert_eq!(cbor_value_type(&double), ValueType::Double);
+        assert_eq!(cbor_to_any_value(&double).as_double(), Some(1.0));
+    }
+
+    /// Scenario: a serialized CBOR map uses a non-text (integer) key.
+    /// Guarantees: the entry is dropped instead of yielding a corrupted attribute name.
+    #[test]
+    fn test_cbor_non_text_map_key_is_rejected() {
+        // Definite map {1: 2}.
+        let cbor = [0xa1, 0x01, 0x02];
+        let value = OtapAnyValueView::Serialized(&cbor);
+        assert_eq!(value.value_type(), ValueType::KeyValueList);
+        assert!(value.as_kvlist().expect("kvlist").next().is_none());
+    }
+
+    /// Scenario: a valid but pathologically deep CBOR value is scanned.
+    /// Guarantees: boundary scanning stops at the depth cap and fails closed rather than
+    /// recursing until the worker stack overflows.
+    #[test]
+    fn test_cbor_deep_nesting_fails_closed() {
+        // More nested single-element arrays than CBOR_MAX_DEPTH, wrapping a final integer.
+        let mut deep = vec![0x81u8; CBOR_MAX_DEPTH + 50];
+        deep.push(0x00);
+        let value = OtapAnyValueView::Serialized(&deep);
+        assert_eq!(value.value_type(), ValueType::Array);
+        assert!(value.as_array().expect("array").next().is_none());
     }
 }
