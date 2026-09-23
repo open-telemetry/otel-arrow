@@ -55,3 +55,57 @@ impl HttpClientStreamAuthProviderBuilder for BearerHttpClientStreamAuthProviderB
         ))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, Instant};
+
+    use http::header::AUTHORIZATION;
+    use otel_arrow_dfe_engine::capability::auth::BearerToken;
+
+    use super::{BearerHttpClientStreamAuthProviderBuilder, HttpClientStreamAuthProviderBuilder};
+
+    /// Scenario: a bearer token has a known expiry.
+    /// Guarantees: the builder emits the expected Authorization value and preserves expiry.
+    #[test]
+    fn builds_bearer_authorization_header_and_preserves_expiry() {
+        let expires_on = Instant::now() + Duration::from_secs(300);
+        let token = BearerToken::with_expiry("secret-token".to_owned(), Some(expires_on));
+
+        let header = BearerHttpClientStreamAuthProviderBuilder::build_auth_header(token)
+            .expect("header should be valid");
+
+        assert_eq!(header.header_name, AUTHORIZATION);
+        assert_eq!(header.header_value, "Bearer secret-token");
+        assert_eq!(header.expires_on, Some(expires_on));
+    }
+
+    /// Scenario: a bearer token has no known expiry.
+    /// Guarantees: the builder preserves the absent expiry and reports its provider name.
+    #[test]
+    fn supports_non_expiring_token_and_reports_provider_name() {
+        let token = BearerToken::without_expiry("secret-token".to_owned());
+
+        let header = BearerHttpClientStreamAuthProviderBuilder::build_auth_header(token)
+            .expect("header should be valid");
+
+        assert_eq!(header.expires_on, None);
+        assert_eq!(
+            BearerHttpClientStreamAuthProviderBuilder::name().as_ref(),
+            "BearerAuth"
+        );
+    }
+
+    /// Scenario: a bearer token contains a character forbidden in HTTP header values.
+    /// Guarantees: the builder rejects the token instead of producing an invalid header.
+    #[test]
+    fn rejects_malformed_token() {
+        let token = BearerToken::without_expiry("bad\ntoken".to_owned());
+
+        let error = BearerHttpClientStreamAuthProviderBuilder::build_auth_header(token)
+            .err()
+            .expect("header should be rejected");
+
+        assert!(error.starts_with("Malformed token:"));
+    }
+}

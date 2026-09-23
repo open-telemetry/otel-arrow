@@ -44,3 +44,58 @@ impl HttpClientStreamAuthProviderBuilder for BasicHttpClientStreamAuthProviderBu
         ))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, Instant};
+
+    use base64::{Engine as _, engine::general_purpose};
+    use http::header::AUTHORIZATION;
+    use otel_arrow_dfe_engine::capability::auth::BasicAuthCredential;
+
+    use super::{BasicHttpClientStreamAuthProviderBuilder, HttpClientStreamAuthProviderBuilder};
+
+    /// Scenario: a basic-auth credential with a known expiry is converted into an HTTP header.
+    /// Guarantees: the builder emits the expected Authorization value and preserves expiry.
+    #[test]
+    fn builds_basic_authorization_header_and_preserves_expiry() {
+        let expires_on = Instant::now() + Duration::from_secs(300);
+        let credential = BasicAuthCredential::new("Aladdin", "open sesame")
+            .expect("credential should be valid")
+            .with_expiry(expires_on);
+
+        let header = BasicHttpClientStreamAuthProviderBuilder::build_auth_header(credential)
+            .expect("header should be valid");
+
+        assert_eq!(header.header_name, AUTHORIZATION);
+        assert_eq!(header.header_value, "Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ==");
+        assert_eq!(header.expires_on, Some(expires_on));
+    }
+
+    /// Scenario: a non-expiring basic-auth credential contains colons in its password.
+    /// Guarantees: the builder separates username and password once and reports its provider name.
+    #[test]
+    fn supports_colons_in_password_and_reports_provider_name() {
+        let credential =
+            BasicAuthCredential::new("user", "part:part").expect("credential should be valid");
+
+        let header = BasicHttpClientStreamAuthProviderBuilder::build_auth_header(credential)
+            .expect("header should be valid");
+        let encoded = header
+            .header_value
+            .to_str()
+            .expect("header should contain ASCII")
+            .strip_prefix("Basic ")
+            .expect("header should use the Basic scheme");
+        let decoded = general_purpose::STANDARD
+            .decode(encoded)
+            .expect("credentials should be Base64 encoded");
+
+        assert_eq!(decoded, b"user:part:part");
+        assert_eq!(header.expires_on, None);
+        assert_eq!(
+            BasicHttpClientStreamAuthProviderBuilder::name().as_ref(),
+            "BasicAuth"
+        );
+    }
+}

@@ -161,6 +161,7 @@ pub fn new_http_client_auth_provider(
 }
 
 /// Create an [`HttpClientAuthProvider`] using the provided [`BearerTokenProvider`].
+#[must_use]
 pub fn new_http_client_auth_provider_from_bearer_token_provider(
     bearer_token_provider: Box<dyn BearerTokenProvider>,
 ) -> impl HttpClientAuthProvider {
