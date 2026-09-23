@@ -19,6 +19,7 @@ use std::future::poll_fn;
 use std::num::NonZeroUsize;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::task::Poll;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -377,20 +378,13 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
 
                 // Pick up auth refreshes (initial + subsequent) even while pdata
                 // intake is gated, so a pending auth can arrive and unblock us.
-                // The `async` block keeps this lazy: `select!` evaluates a branch
-                // expression even when its `if` guard is false, and `auth` is
-                // `None` when no provider is bound. The `None` arm is unreachable
-                // while the guard holds; it pends rather than panics.
-                () = async {
-                    match auth.as_mut() {
-                        Some(a) => {
-                            if !poll_fn(|cx| a.poll_refresh(cx, &HTTP_AUTH_EVENTS)).await {
-                                self.metrics.record_auth_failure();
-                            }
-                        },
-                        None => std::future::pending().await,
+                refreshed = poll_fn(|cx| match auth.as_mut() {
+                    Some(auth) => auth.poll_refresh(cx, &HTTP_AUTH_EVENTS),
+                    None => Poll::Pending,
+                }), if auth.as_ref().is_some_and(|auth| auth.is_active()) => {
+                    if !refreshed {
+                        self.metrics.record_auth_failure();
                     }
-                }, if auth.as_ref().is_some_and(|a| a.is_active()) => {
                     // A refresh was drained (the adapter caches it and logs any
                     // anomaly); loop to re-evaluate intake readiness.
                     continue;
