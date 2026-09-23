@@ -89,10 +89,7 @@ fn concatenate_without_spec<const N: usize>(
 fn concatenate_signal<S: OtapBatchStore, const N: usize>(
     items: &mut [[Option<RecordBatch>; N]],
 ) -> Result<[Option<RecordBatch>; N]> {
-    concatenate_with_def(items, |i| {
-        let payload_type = S::payload_type_at_idx(i);
-        payloads::get(payload_type)
-    })
+    concatenate_with_def(items, |i| payloads::get(S::payload_type_at_idx(i)))
 }
 
 fn concatenate_with_def<const N: usize>(
@@ -456,6 +453,21 @@ fn finalize_nullability(index: &mut FieldIndex<'_>, batch_count: usize) {
 }
 
 /// Index the fields of a single batch (or struct) into `index`.
+///
+/// Batches that reach concatenation are guaranteed to conform to the payload
+/// spec by the `OtapBatchStore` set-time validation invariant (every batch is
+/// validated via [`PayloadSchema::check_match`] before it can be stored). This
+/// pass therefore does not re-run full validation. It does keep two cheap
+/// guards so that a violated invariant fails as a clean error rather than a
+/// panic deeper in concatenation or silent data loss:
+///
+/// - an unknown field name returns an error instead of being dropped, and
+/// - a field whose value type diverges between batches returns a
+///   `ColumnDataTypeMismatch` instead of later panicking in `cast`/`try_new`.
+///
+/// Both are a single lookup / comparison per field -- far cheaper than a second
+/// full schema walk -- and everything else (dictionary key widths, struct
+/// shape, required-field nullability) is left to the set-time invariant.
 fn index_fields<'a>(
     index: &mut FieldIndex<'a>,
     fields: impl Iterator<Item = (&'a FieldRef, &'a ArrayRef)>,
@@ -468,7 +480,7 @@ fn index_fields<'a>(
             .slot_of(name)
             .ok_or_else(|| Error::ColumnDataTypeMismatch {
                 name: field.name().clone(),
-                // No spec entry; surface the offending column's actual type.
+                // No spec entry for this column name.
                 expect: DataType::Null,
                 actual: field.data_type().clone(),
             })?;
@@ -483,13 +495,9 @@ fn index_fields<'a>(
                 let sub_def = schema.fields()[slot]
                     .data_type
                     .as_struct_schema()
-                    .ok_or_else(|| Error::ColumnDataTypeMismatch {
-                        name: field.name().clone(),
-                        expect: DataType::Null,
-                        actual: field.data_type().clone(),
-                    })?;
+                    .expect("spec struct field has a struct sub-schema");
 
-                // safety: we checked the type
+                // safety: value_type is Struct
                 let struct_array = data
                     .as_any()
                     .downcast_ref::<StructArray>()
@@ -516,74 +524,30 @@ fn index_fields<'a>(
 
         let existing = index.slots[slot].as_mut().expect("slot occupied");
 
-        match (existing.value_type, field.data_type()) {
-            // If the existing value type is a struct, the new value type
-            // must also be a struct.
-            (DataType::Struct(_), x) => {
-                if !matches!(x, DataType::Struct(_)) {
-                    return Err(Error::ColumnDataTypeMismatch {
-                        name: field.name().clone(),
-                        expect: existing.value_type.clone(),
-                        actual: x.clone(),
-                    });
-                }
+        // Guard: all batches contributing to a field must share a value type.
+        // This turns a violated invariant into a clean error rather than a
+        // panic during casting or record-batch construction. It is a single
+        // comparison, not a full re-validation.
+        if existing.value_type != value_type {
+            return Err(Error::ColumnDataTypeMismatch {
+                name: field.name().clone(),
+                expect: existing.value_type.clone(),
+                actual: value_type.clone(),
+            });
+        }
 
-                // safety: we checked the type
-                let struct_array = data
-                    .as_any()
-                    .downcast_ref::<StructArray>()
-                    .expect("Struct array");
+        existing.is_dictionary = existing.is_dictionary || is_dict;
 
-                let struct_index = existing
-                    .struct_index
-                    .as_mut()
-                    .expect("struct field must have a struct index");
-                let iter = struct_array.fields().iter().zip(struct_array.columns());
-                index_fields(struct_index, iter)?;
-            }
-
-            // Cannot change to struct from anything else.
-            (x, DataType::Struct(_)) => {
-                return Err(Error::ColumnDataTypeMismatch {
-                    name: field.name().clone(),
-                    expect: x.clone(),
-                    actual: field.data_type().clone(),
-                });
-            }
-
-            // Upgrading from a native type to a dictionary is allowed as long as
-            // the value type matches.
-            (v1, DataType::Dictionary(k2, v2)) => {
-                if *v1 != **v2 {
-                    return Err(Error::DictionaryValueTypeMismatch {
-                        name: field.name().clone(),
-                        expect: v1.clone(),
-                        actual: v2.as_ref().clone(),
-                    });
-                }
-
-                match **k2 {
-                    DataType::UInt8 | DataType::UInt16 => {}
-                    _ => {
-                        return Err(Error::UnsupportedDictionaryKeyType {
-                            expect_oneof: vec![DataType::UInt8, DataType::UInt16],
-                            actual: k2.as_ref().clone(),
-                        });
-                    }
-                }
-
-                existing.is_dictionary = true;
-            }
-
-            (v1, v2) => {
-                if *v1 != *v2 {
-                    return Err(Error::ColumnDataTypeMismatch {
-                        name: field.name().clone(),
-                        expect: v1.clone(),
-                        actual: v2.clone(),
-                    });
-                }
-            }
+        // Recurse into struct children to index their fields and accumulate
+        // their own statistics.
+        if let Some(struct_index) = existing.struct_index.as_mut() {
+            // safety: value_type equals the recorded struct type (checked above)
+            let struct_array = data
+                .as_any()
+                .downcast_ref::<StructArray>()
+                .expect("Struct array");
+            let iter = struct_array.fields().iter().zip(struct_array.columns());
+            index_fields(struct_index, iter)?;
         }
 
         existing.nullable = existing.nullable || data.null_count() > 0;

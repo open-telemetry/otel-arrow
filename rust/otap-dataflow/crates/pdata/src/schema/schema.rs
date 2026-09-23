@@ -34,6 +34,10 @@ pub fn is_valid_timestamp_time_zone(time_zone: Option<&str>) -> bool {
     }
 }
 
+/// The canonical inner-field name Arrow's `ListBuilder` assigns to list items,
+/// and the name the OTAP encoder therefore produces for every list column.
+const LIST_ITEM_FIELD_NAME: &str = "item";
+
 /// Leaf Arrow data types used in OTAP schemas.
 ///
 /// This is a closed enum of the primitive/variable-length types that actually
@@ -184,9 +188,21 @@ impl DataType {
                 true
             }
             DataType::List(inner_dt) => {
-                let ArrowDT::List(_) = arrow_dt else {
+                let ArrowDT::List(list_field) = arrow_dt else {
                     return false;
                 };
+
+                // Pin the inner field name to the canonical value the OTAP
+                // encoder produces ("item"). The encoder varies the inner
+                // field's nullability by column (list-of-primitive columns are
+                // marked non-nullable via `no_nulls`, list-of-struct columns are
+                // nullable), so nullability is not checked here; concatenation
+                // handles inner-field nullability agreement across batches
+                // directly.
+                if list_field.name() != LIST_ITEM_FIELD_NAME {
+                    return false;
+                }
+
                 // safety: We verified this is a list type.
                 // note: i32 is not the type of the list, but the type of
                 // offsets into the list.

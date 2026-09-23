@@ -68,9 +68,18 @@ fn bench_generated_traces(c: &mut Criterion) {
         bench_stages(
             &mut group,
             n,
-            || bench_index_records::<Traces, { Traces::COUNT }>(&batches, spans_idx).expect("schema unify stage failed"),
-            || bench_select_schema::<Traces, { Traces::COUNT }>(&batches, spans_idx).expect("schema unify stage failed"),
-            || bench_convert_all::<Traces, { Traces::COUNT }>(&batches, spans_idx).expect("schema unify stage failed"),
+            || {
+                bench_index_records::<Traces, { Traces::COUNT }>(&batches, spans_idx)
+                    .expect("schema unify stage failed")
+            },
+            || {
+                bench_select_schema::<Traces, { Traces::COUNT }>(&batches, spans_idx)
+                    .expect("schema unify stage failed")
+            },
+            || {
+                bench_convert_all::<Traces, { Traces::COUNT }>(&batches, spans_idx)
+                    .expect("schema unify stage failed")
+            },
         );
     }
     group.finish();
@@ -86,9 +95,18 @@ fn bench_generated_logs(c: &mut Criterion) {
         bench_stages(
             &mut group,
             n,
-            || bench_index_records::<Logs, { Logs::COUNT }>(&batches, log_attrs_idx).expect("schema unify stage failed"),
-            || bench_select_schema::<Logs, { Logs::COUNT }>(&batches, log_attrs_idx).expect("schema unify stage failed"),
-            || bench_convert_all::<Logs, { Logs::COUNT }>(&batches, log_attrs_idx).expect("schema unify stage failed"),
+            || {
+                bench_index_records::<Logs, { Logs::COUNT }>(&batches, log_attrs_idx)
+                    .expect("schema unify stage failed")
+            },
+            || {
+                bench_select_schema::<Logs, { Logs::COUNT }>(&batches, log_attrs_idx)
+                    .expect("schema unify stage failed")
+            },
+            || {
+                bench_convert_all::<Logs, { Logs::COUNT }>(&batches, log_attrs_idx)
+                    .expect("schema unify stage failed")
+            },
         );
     }
     group.finish();
@@ -116,9 +134,18 @@ fn bench_synthetic(c: &mut Criterion) {
             bench_stages(
                 &mut group,
                 n,
-                || bench_index_records::<Logs, { Logs::COUNT }>(&batches, log_attrs_idx).expect("schema unify stage failed"),
-                || bench_select_schema::<Logs, { Logs::COUNT }>(&batches, log_attrs_idx).expect("schema unify stage failed"),
-                || bench_convert_all::<Logs, { Logs::COUNT }>(&batches, log_attrs_idx).expect("schema unify stage failed"),
+                || {
+                    bench_index_records::<Logs, { Logs::COUNT }>(&batches, log_attrs_idx)
+                        .expect("schema unify stage failed")
+                },
+                || {
+                    bench_select_schema::<Logs, { Logs::COUNT }>(&batches, log_attrs_idx)
+                        .expect("schema unify stage failed")
+                },
+                || {
+                    bench_convert_all::<Logs, { Logs::COUNT }>(&batches, log_attrs_idx)
+                        .expect("schema unify stage failed")
+                },
             );
         }
         group.finish();
