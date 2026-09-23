@@ -338,6 +338,10 @@ Field descriptions:
 - **CRC validation**: If CRC fails, the file is considered corrupted. Recovery
   options: (1) start fresh from latest segment, (2) fail startup, or (3) use
   backup if available. Policy is configurable.
+- **Sequence floor**: Before WAL replay, the next segment sequence is set
+  above both the highest segment filename and the highest segment referenced
+  by any loaded progress file. Restored acknowledgements therefore never
+  apply to new segments whose older files were already cleaned up.
 - **Cleanup coordination**: Before deleting a segment, all subscriber progress
   files must be flushed and show `oldest_incomplete_segment > deleted_segment`.
 
