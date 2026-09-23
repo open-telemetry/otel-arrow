@@ -59,7 +59,7 @@ use tonic::codec::CompressionEncoding;
 use tonic::metadata::{MetadataKey, MetadataMap, MetadataValue};
 use tonic::transport::Channel;
 
-use otel_arrow_dfe_otap::http_client_auth_provider::*;
+use otel_arrow_dfe_otap::http_client_auth::*;
 
 mod metrics;
 
@@ -1393,7 +1393,7 @@ mod tests {
     use otel_arrow_dfe_config::ContextEntryName;
     use otel_arrow_dfe_config::node::NodeUserConfig;
     use otel_arrow_dfe_engine::capability::auth::ApiKey;
-    use otel_arrow_dfe_otap::http_client_auth_provider::test_support::MockHttpClientAuthProvider;
+    use otel_arrow_dfe_otap::http_client_auth::test_support::MockHttpClientAuthProvider;
     use std::collections::HashMap;
     use std::str::FromStr;
     use std::sync::atomic::AtomicBool;

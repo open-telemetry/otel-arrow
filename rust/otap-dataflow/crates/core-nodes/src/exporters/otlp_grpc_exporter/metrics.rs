@@ -5,7 +5,7 @@
 
 use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_engine::context::PipelineContext;
-use otel_arrow_dfe_otap::http_client_auth_provider::HttpClientAuthProvider;
+use otel_arrow_dfe_otap::http_client_auth::HttpClientAuthProvider;
 use otel_arrow_dfe_otap::metrics::ExporterMetrics;
 use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
 use otel_arrow_dfe_telemetry::instrument::Counter;

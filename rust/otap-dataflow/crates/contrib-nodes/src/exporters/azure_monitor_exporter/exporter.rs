@@ -12,9 +12,7 @@ use otel_arrow_dfe_engine::local::capability::auth::bearer_token_provider::Beare
 use otel_arrow_dfe_engine::local::exporter::{EffectHandler, Exporter};
 use otel_arrow_dfe_engine::message::{ExporterInbox, Message};
 use otel_arrow_dfe_engine::terminal_state::TerminalState;
-use otel_arrow_dfe_otap::http_client_auth_provider::{
-    HttpClientAuthProvider, HttpClientAuthProviderEvents,
-};
+use otel_arrow_dfe_otap::http_client_auth::*;
 use otel_arrow_dfe_pdata::otlp::OtlpProtoBytes;
 use otel_arrow_dfe_pdata::views::otap::OtapLogsView;
 use otel_arrow_dfe_pdata::views::otlp::bytes::logs::RawLogsData;
@@ -30,7 +28,6 @@ use super::in_flight_exports::{CompletedExport, InFlightExports};
 use super::metrics::AzureMonitorExporterMetricsRc;
 use super::state::AzureMonitorExporterState;
 use super::transformer::Transformer;
-use otel_arrow_dfe_otap::bearer_auth::BearerAuth;
 use otel_arrow_dfe_otap::pdata::{Context, OtapPdata};
 
 use otel_arrow_dfe_telemetry::common_attributes::{HttpResponse, Outcome};
@@ -144,7 +141,7 @@ impl AzureMonitorExporter {
     async fn finalize_export(
         &mut self,
         effect_handler: &EffectHandler<OtapPdata>,
-        auth: &mut BearerAuth,
+        auth: &mut impl HttpClientAuthProvider,
         completed_export: CompletedExport,
     ) -> Result<(), EngineError> {
         let CompletedExport {
@@ -262,7 +259,7 @@ impl AzureMonitorExporter {
     async fn queue_pending_batch(
         &mut self,
         effect_handler: &EffectHandler<OtapPdata>,
-        auth: &mut BearerAuth,
+        auth: &mut impl HttpClientAuthProvider,
     ) -> Result<(), EngineError> {
         let pending_batch = match self.gzip_batcher.take_pending_batch() {
             Some(batch) => batch,
@@ -325,7 +322,7 @@ impl AzureMonitorExporter {
         payload: OtapPayload,
         log_entries: Vec<Bytes>,
         msg_id: u64,
-        auth: &mut BearerAuth,
+        auth: &mut impl HttpClientAuthProvider,
     ) -> Result<(), EngineError> {
         if context.may_return_payload() {
             self.state.add_msg_to_data(msg_id, context, payload);
@@ -402,7 +399,7 @@ impl AzureMonitorExporter {
     async fn drain_in_flight_exports(
         &mut self,
         effect_handler: &EffectHandler<OtapPdata>,
-        auth: &mut BearerAuth,
+        auth: &mut impl HttpClientAuthProvider,
     ) -> Result<(), EngineError> {
         let completed_exports = self.in_flight_exports.drain().await;
         for completed_export in completed_exports {
@@ -415,7 +412,7 @@ impl AzureMonitorExporter {
     async fn queue_current_batch(
         &mut self,
         effect_handler: &EffectHandler<OtapPdata>,
-        auth: &mut BearerAuth,
+        auth: &mut impl HttpClientAuthProvider,
     ) -> Result<(), EngineError> {
         match self.gzip_batcher.finalize() {
             Ok(FinalizeResult::Ok) => {
@@ -431,7 +428,7 @@ impl AzureMonitorExporter {
     async fn handle_shutdown(
         &mut self,
         effect_handler: &EffectHandler<OtapPdata>,
-        auth: &mut BearerAuth,
+        auth: &mut impl HttpClientAuthProvider,
     ) -> Result<(), EngineError> {
         if auth.is_ready() {
             self.queue_current_batch(effect_handler, auth).await?;
@@ -461,7 +458,7 @@ impl AzureMonitorExporter {
         effect_handler: &EffectHandler<OtapPdata>,
         msg: Result<Message<OtapPdata>, RecvError>,
         msg_id: &mut u64,
-        auth: &mut BearerAuth,
+        auth: &mut impl HttpClientAuthProvider,
     ) -> Result<(), EngineError> {
         match msg {
             Ok(Message::PData(pdata)) => {
@@ -547,7 +544,7 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
 
         let mut msg_id = 0;
 
-        let mut auth = BearerAuth::new(
+        let mut auth = new_http_client_auth_provider_from_bearer_token_provider(
             self.token_provider
                 .take()
                 .expect("bearer token provider is present before startup"),
@@ -827,8 +824,9 @@ mod tests {
         exporter
     }
 
-    async fn auth_with_cached_token() -> BearerAuth {
-        let mut auth = BearerAuth::new(Box::new(MockTokenProvider));
+    async fn auth_with_cached_token() -> impl HttpClientAuthProvider {
+        let mut auth =
+            new_http_client_auth_provider_from_bearer_token_provider(Box::new(MockTokenProvider));
         assert!(poll_fn(|cx| auth.poll_refresh(cx, &AZURE_MONITOR_AUTH_EVENTS)).await);
         assert!(auth.is_ready());
         auth
@@ -992,7 +990,8 @@ mod tests {
         let pipeline_ctx = create_test_pipeline_ctx();
         let mut exporter =
             AzureMonitorExporter::new(pipeline_ctx, config, Box::new(MockTokenProvider)).unwrap();
-        let mut auth = BearerAuth::new(Box::new(MockTokenProvider));
+        let mut auth =
+            new_http_client_auth_provider_from_bearer_token_provider(Box::new(MockTokenProvider));
         assert!(poll_fn(|cx| auth.poll_refresh(cx, &AZURE_MONITOR_AUTH_EVENTS)).await);
         let (_, _, token_generation) = auth.header().expect("mock provider publishes a token");
 
@@ -1168,7 +1167,8 @@ mod tests {
             Interests::NODE_INPUT_METRICS,
         )
         .await;
-        let mut auth = BearerAuth::new(Box::new(MockTokenProvider));
+        let mut auth =
+            new_http_client_auth_provider_from_bearer_token_provider(Box::new(MockTokenProvider));
         assert!(!auth.is_ready(), "no token has been polled yet");
         let effect_handler = test_effect_handler();
 
@@ -1213,7 +1213,8 @@ mod tests {
     #[tokio::test]
     async fn pdata_is_refused_while_no_bearer_token_is_cached() {
         let mut exporter = exporter_targeting("http://localhost".to_string()).await;
-        let mut auth = BearerAuth::new(Box::new(MockTokenProvider));
+        let mut auth =
+            new_http_client_auth_provider_from_bearer_token_provider(Box::new(MockTokenProvider));
         assert!(!auth.is_ready(), "no token has been polled yet");
         assert!(!auth.not_ready_reason().is_empty());
 
@@ -1387,7 +1388,8 @@ mod tests {
     #[tokio::test]
     async fn shutdown_without_a_token_releases_buffered_messages() {
         let mut exporter = exporter_targeting("http://localhost".to_string()).await;
-        let mut auth = BearerAuth::new(Box::new(MockTokenProvider));
+        let mut auth =
+            new_http_client_auth_provider_from_bearer_token_provider(Box::new(MockTokenProvider));
         assert!(!auth.is_ready(), "no token has been polled yet");
 
         exporter

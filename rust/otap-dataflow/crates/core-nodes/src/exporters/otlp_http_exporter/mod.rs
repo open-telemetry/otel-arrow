@@ -62,7 +62,7 @@ use secrecy::ExposeSecret;
 
 use self::config::Config;
 use otel_arrow_dfe_otap::OTAP_EXPORTER_FACTORIES;
-use otel_arrow_dfe_otap::http_client_auth_provider::*;
+use otel_arrow_dfe_otap::http_client_auth::*;
 use otel_arrow_dfe_otap::metrics::CompletedExporterAttempt;
 use otel_arrow_dfe_otap::otlp_exporter::InFlightExports;
 use otel_arrow_dfe_otap::otlp_http::client_settings::{HttpClientError, HttpClientSettings};
@@ -1232,7 +1232,7 @@ mod test {
 
     use super::*;
 
-    use otel_arrow_dfe_otap::http_client_auth_provider::test_support::MockHttpClientAuthProvider;
+    use otel_arrow_dfe_otap::http_client_auth::test_support::MockHttpClientAuthProvider;
     use otel_arrow_dfe_otap::otap_grpc::common::AckRegistry;
     use otel_arrow_dfe_otap::otlp_http::client_settings::HttpClientSettings;
     use otel_arrow_dfe_otap::otlp_http::{HttpServerSettings, serve, tune_max_concurrent_requests};

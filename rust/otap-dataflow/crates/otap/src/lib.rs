@@ -60,20 +60,10 @@ pub mod otlp_http;
 pub mod otlp_exporter;
 
 /// HTTP Client authentication provider.
-pub mod http_client_auth_provider;
+pub mod http_client_auth;
 
 /// Cloud specific auth utilities
 pub mod cloud_auth;
-
-mod agent_fed_auth;
-
-mod api_key_auth;
-
-mod basic_auth;
-
-/// Consumer-side adapter over a bound `bearer_token_provider` capability,
-/// shared by every node that authenticates with a bearer token.
-pub mod bearer_auth;
 
 /// Redacted string type for sensitive values.
 pub mod opaque_string;
