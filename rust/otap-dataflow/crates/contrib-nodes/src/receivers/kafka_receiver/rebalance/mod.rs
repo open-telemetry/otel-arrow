@@ -204,16 +204,21 @@ pub(crate) struct RebalanceState {
     /// rebalances (callback-incremented; a revoke reported for a partition this
     /// consumer did not own is not counted).
     partition_revocations: AtomicU64,
-    /// Count of commit failures during pre-rebalance revoke (callback-incremented).
-    rebalance_commit_errors: AtomicU64,
+    /// Count of async commit-before-revoke calls that failed to enqueue locally
+    /// during pre-rebalance revoke (callback-incremented). A broker rejection of
+    /// the commit is recorded on the commit callback as an `offset_commit_errors`
+    /// instead.
+    rebalance_commit_enqueue_errors: AtomicU64,
     /// Count of failed resume operations while clearing rebalance pause state.
     rebalance_resume_errors: AtomicU64,
     /// Count of offset commits acknowledged by the broker, observed on the
     /// commit callback (callback-incremented). Covers the receiver's async
-    /// steady-state commits and the sync pre-rebalance commit.
+    /// steady-state commits and the async pre-rebalance commit-before-revoke.
     offset_commits: AtomicU64,
     /// Count of offset commits rejected by the broker, observed on the commit
-    /// callback (callback-incremented).
+    /// callback (callback-incremented). Includes broker rejections of the
+    /// commit-before-revoke, since all commits are asynchronous and their broker
+    /// outcome is only known on this callback.
     offset_commit_errors: AtomicU64,
 }
 
@@ -232,8 +237,8 @@ pub(crate) struct RebalanceMetricsDelta {
     /// Unlike the other fields (which are counter deltas), this is an absolute
     /// snapshot used to drive `receiver.kafka.consumer.group.partitions`.
     pub(crate) partitions_owned: u64,
-    /// Commit failures during revoke since the last drain.
-    pub(crate) rebalance_commit_errors: u64,
+    /// Async commit-before-revoke enqueue failures since the last drain.
+    pub(crate) rebalance_commit_enqueue_errors: u64,
     /// Resume failures while clearing rebalance pause state since the last drain.
     pub(crate) rebalance_resume_errors: u64,
     /// Broker-acknowledged offset commits since the last drain.
@@ -254,7 +259,7 @@ impl RebalanceMetricsDelta {
         self.rebalances_total == 0
             && self.partition_assignments == 0
             && self.partition_revocations == 0
-            && self.rebalance_commit_errors == 0
+            && self.rebalance_commit_enqueue_errors == 0
             && self.rebalance_resume_errors == 0
             && self.offset_commits == 0
             && self.offset_commit_errors == 0
@@ -277,7 +282,7 @@ impl RebalanceState {
             rebalances_total: AtomicU64::new(0),
             partition_assignments: AtomicU64::new(0),
             partition_revocations: AtomicU64::new(0),
-            rebalance_commit_errors: AtomicU64::new(0),
+            rebalance_commit_enqueue_errors: AtomicU64::new(0),
             rebalance_resume_errors: AtomicU64::new(0),
             offset_commits: AtomicU64::new(0),
             offset_commit_errors: AtomicU64::new(0),
@@ -398,7 +403,9 @@ impl RebalanceState {
             partition_assignments: self.partition_assignments.swap(0, Ordering::Relaxed),
             partition_revocations: self.partition_revocations.swap(0, Ordering::Relaxed),
             partitions_owned: self.lock_assigned().len() as u64,
-            rebalance_commit_errors: self.rebalance_commit_errors.swap(0, Ordering::Relaxed),
+            rebalance_commit_enqueue_errors: self
+                .rebalance_commit_enqueue_errors
+                .swap(0, Ordering::Relaxed),
             rebalance_resume_errors: self.rebalance_resume_errors.swap(0, Ordering::Relaxed),
             offset_commits: self.offset_commits.swap(0, Ordering::Relaxed),
             offset_commit_errors: self.offset_commit_errors.swap(0, Ordering::Relaxed),
@@ -511,9 +518,11 @@ impl RebalanceState {
         if commit_tpl.count() > 0
             && let Err(e) = consumer.commit(&commit_tpl, CommitMode::Async)
         {
-            let _ = self.rebalance_commit_errors.fetch_add(1, Ordering::Relaxed);
+            let _ = self
+                .rebalance_commit_enqueue_errors
+                .fetch_add(1, Ordering::Relaxed);
             otel_error!(
-                "kafka.rebalance.commit_failed",
+                "kafka.rebalance.commit_enqueue_failed",
                 error = %e,
             );
         }

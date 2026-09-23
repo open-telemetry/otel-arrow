@@ -231,6 +231,12 @@ Highlights:
   `pre_rebalance(Revoke)` also commits **asynchronously** (`CommitMode::Async`),
   enqueuing the commit before the revoke callback returns so owned offsets are
   submitted before the partitions leave the member.
+- Because the commit-before-revoke is asynchronous, a broker rejection of it is
+  observed on the shared commit callback and counted as a generic commit failure
+  (`offset_commits{outcome="failure"}`), not as a rebalance-specific metric. The
+  `group.rebalance.commit_enqueue_failures` counter records only the rare local
+  failure to *enqueue* that async commit. Either way delivery stays at-least-once:
+  an un-persisted commit-before-revoke causes the new owner to redeliver.
 
 ## Rebalance and consumer group
 

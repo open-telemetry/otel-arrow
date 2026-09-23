@@ -387,10 +387,13 @@ impl KafkaReceiver {
                 .consumer
                 .partition_revocations
                 .add(delta.partition_revocations);
+            // Local async-enqueue failures of the commit-before-revoke only;
+            // broker rejections of that commit arrive on the commit callback and
+            // are folded below into `offset_commits` with `outcome="failure"`.
             self.metrics
                 .consumer
-                .rebalance_commit_failures
-                .add(delta.rebalance_commit_errors);
+                .rebalance_commit_enqueue_failures
+                .add(delta.rebalance_commit_enqueue_errors);
             self.metrics
                 .consumer
                 .rebalance_resume_failures

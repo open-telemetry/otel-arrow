@@ -165,6 +165,8 @@ The receiver tracks each consumed message individually per partition. Offsets ar
 
 The `commit.interval_ms` value controls a periodic safety-net timer for offset commits. If `commit.interval_ms` is not set, the safety-net timer is disabled and offsets are committed through terminal downstream feedback. A transient NACK configured for replay remains unresolved and cannot be committed past by this timer.
 
+During a consumer-group rebalance the receiver commits owned offsets before its partitions are revoked (commit-before-revoke). This commit is asynchronous, so if it loses the race with reassignment or is rejected by the broker, the new owner redelivers the un-committed records. Delivery remains at-least-once.
+
 ```yaml
 config:
   commit:
@@ -1008,7 +1010,7 @@ commit mode because librdkafka owns offset management in auto-commit mode.
 | `receiver.kafka.consumer.group.partitions` | `{partition}` | Current partitions owned by this consumer. |
 | `receiver.kafka.consumer.group.partition.assignments` | `{partition}` | Partitions newly acquired across rebalances. |
 | `receiver.kafka.consumer.group.partition.revocations` | `{partition}` | Owned partitions revoked across rebalances. |
-| `receiver.kafka.consumer.group.rebalance.commit_failures` | `{error}` | Synchronous commit calls that failed while partitions were being revoked. |
+| `receiver.kafka.consumer.group.rebalance.commit_enqueue_failures` | `{error}` | Async commit-before-revoke calls that failed to enqueue locally during revocation. Broker rejections of that commit are counted by `offset_commits` with `outcome="failure"`. |
 | `receiver.kafka.consumer.group.rebalance.resume_failures` | `{error}` | Partition resume operations that failed while clearing rebalance pause state. |
 | `receiver.kafka.consumer.group.lag` | `{message}` | Mean broker-committed consumer-group lag across every owned partition. |
 | `receiver.kafka.consumer.group.feedback.after_revocation` | `{response}` | Ack or nack responses ignored because their partition ownership was stale. |
@@ -1051,7 +1053,7 @@ an empty assignment resets it to zero.
 | `receiver.kafka.rebalances_total` | `receiver.kafka.consumer.group.rebalances`. |
 | `receiver.kafka.partitions_assigned` | `receiver.kafka.consumer.group.partitions`. |
 | `receiver.kafka.partition_assignments`, `partition_revocations` | `receiver.kafka.consumer.group.partition.assignments` and `receiver.kafka.consumer.group.partition.revocations`. |
-| `receiver.kafka.rebalance_commit_errors` | `receiver.kafka.consumer.group.rebalance.commit_failures`. |
+| `receiver.kafka.rebalance_commit_errors` | `receiver.kafka.consumer.group.rebalance.commit_enqueue_failures` (local async-enqueue failures only; broker rejections during revoke are now in `offset_commits{outcome="failure"}`). |
 | `receiver.kafka.consumer_lag` | `receiver.kafka.consumer.group.lag`. |
 | `receiver.kafka.acks_for_revoked_partition` | `receiver.kafka.consumer.group.feedback.after_revocation`. |
 
@@ -1075,7 +1077,7 @@ an empty assignment resets it to zero.
 | `kafka.commit.async_failed` | `error` | An asynchronous offset commit was rejected by the broker (observed on the commit callback). |
 | `kafka.rebalance.partitions_assigned` | `info` | Partitions newly assigned during a rebalance (includes `count`, a `partitions` list truncated with a trailing `...` when it exceeds the entry cap, `listed_count`, and `truncated`). |
 | `kafka.rebalance.partitions_revoked` | `info` | Owned partitions revoked during a rebalance (includes `count`, a `partitions` list truncated with a trailing `...` when it exceeds the entry cap, `listed_count`, and `truncated`). |
-| `kafka.rebalance.commit_failed` | `error` | Commit-before-revoke failed during a rebalance. |
+| `kafka.rebalance.commit_enqueue_failed` | `error` | Async commit-before-revoke failed to enqueue during a rebalance. A broker rejection of the commit is reported by `kafka.commit.async_failed` instead. |
 | `kafka.rebalance.resume.fail` | `error` | Clearing persistent client-side pause state failed during `revoke` or `assign`; assignment failures are retried off the callback thread with capped backoff. |
 | `kafka.rebalance.resume.recovered` | `info` | A receive-loop retry cleared persistent pause state after an assignment resume failure. |
 | `kafka.rebalance.assignment_query_failed` | `warn` | Querying the full assignment after a rebalance failed; the receiver fell back to merging the reported delta. |

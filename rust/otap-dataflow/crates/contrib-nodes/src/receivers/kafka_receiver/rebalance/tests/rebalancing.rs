@@ -988,3 +988,67 @@ async fn handle_revoke_commits_before_revoke_reaches_broker() {
     )
     .await;
 }
+
+/// Scenario (commit-before-revoke accounting): a commit-before-revoke enqueues
+/// successfully (so no local enqueue failure occurs), then the broker rejects
+/// that commit -- delivered, as librdkafka does, through the shared
+/// `commit_callback`.
+/// Guarantees: a broker rejection of the async commit-before-revoke is counted
+/// as a generic commit failure (`offset_commit_errors`) and NOT as a rebalance
+/// enqueue failure (`rebalance_commit_enqueue_errors`), which stays zero because
+/// the enqueue itself succeeded. This pins the accounting after commit-before-
+/// revoke became asynchronous: `group.rebalance.commit_enqueue_failures` counts
+/// only local enqueue failures, while broker rejections surface via
+/// `offset_commits{outcome="failure"}`.
+#[tokio::test]
+async fn broker_rejected_commit_before_revoke_counts_as_commit_error_not_enqueue_failure() {
+    const TOPIC: &str = "rebalance-revoke-reject-traces";
+    const GROUP: &str = "revoke-reject-group";
+    const COMMITTABLE: i64 = 5;
+    with_cluster(
+        KafkaTestCluster::builder().topic_with(TOPIC, 1, 1),
+        |cluster| async move {
+            let state = Arc::new(RebalanceState::new(false));
+            let consumer = mock_base_consumer(&cluster, GROUP, Arc::clone(&state));
+
+            // Own the partition with a committable offset so commit-before-revoke
+            // actually issues a commit.
+            let mut full = TopicPartitionList::new();
+            let _ = full.add_partition(TOPIC, 0);
+            state.set_assignment(&full);
+            let mut snapshot = HashMap::new();
+            let _ = snapshot.insert((TOPIC.to_string(), 0), COMMITTABLE);
+            state.set_committable_snapshot(snapshot);
+
+            // Revoke the partition. The commit enqueues successfully against a
+            // healthy broker, so the local enqueue-failure counter must not move.
+            let mut revoke = TopicPartitionList::new();
+            let _ = revoke.add_partition(TOPIC, 0);
+            state.handle_revoke(&consumer, &revoke);
+
+            // Simulate the broker rejecting that async commit-before-revoke: the
+            // outcome is delivered on the shared commit callback (the single
+            // source of truth for commit success/failure), exactly as librdkafka
+            // would report a rejected async commit.
+            let ctx = RebalancingConsumerContext::Default(Arc::clone(&state));
+            ctx.commit_callback(
+                Err(rdkafka::error::KafkaError::ClientCreation(
+                    "broker rejected commit".to_string(),
+                )),
+                &revoke,
+            );
+
+            let delta = state.drain_metrics();
+            assert_eq!(
+                delta.rebalance_commit_enqueue_errors, 0,
+                "a broker rejection must not be counted as a local enqueue failure",
+            );
+            assert_eq!(
+                delta.offset_commit_errors, 1,
+                "a broker-rejected commit-before-revoke must be counted as a \
+                 generic commit failure (offset_commit_errors)",
+            );
+        },
+    )
+    .await;
+}
