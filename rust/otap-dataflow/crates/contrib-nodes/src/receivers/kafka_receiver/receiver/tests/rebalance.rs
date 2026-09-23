@@ -1597,7 +1597,10 @@ async fn inflight_records_on_revoke_are_redelivered_with_bounded_duplication() {
 /// commit-before-revoke never sacrifices at-least-once delivery, and once the
 /// failure clears and the redelivered records are acked, each partition's
 /// committed offset converges to exactly the produced total (nothing is
-/// committed past un-persisted data).
+/// committed past un-persisted data). Replica A's
+/// `group.rebalance.commit_enqueue_failures` stays zero, proving a broker
+/// rejection of the async commit-before-revoke is not miscounted as a local
+/// enqueue failure.
 #[tokio::test]
 async fn revoke_with_failed_commit_redelivers_uncommitted_records_to_new_owner_at_least_once() {
     const TOPIC: &str = "rebalance-failed-commit-traces";
@@ -1745,11 +1748,25 @@ async fn revoke_with_failed_commit_redelivers_uncommitted_records_to_new_owner_a
                 );
             }
 
-            // Teardown (fault already cleared, so closes are clean).
+            // Teardown (fault already cleared, so closes are clean). Tear down B
+            // first, then capture A's terminal metrics to check the accounting
+            // for the rejected async commit-before-revoke A issued when it revoked
+            // a partition to B.
             receiver_b.shutdown(Duration::from_secs(5));
             receiver_b.await_stopped().await;
-            receiver_a.shutdown(Duration::from_secs(5));
-            receiver_a.await_stopped().await;
+            let terminal_a = shutdown_and_terminal(receiver_a, Duration::from_secs(5)).await;
+
+            // A's commit-before-revoke enqueued successfully and was only rejected
+            // by the broker, so it must NOT be miscounted as a local enqueue
+            // failure
+            let mut fa = FoldedMetrics::new();
+            fa.fold_all(terminal_a.metrics());
+            assert_eq!(
+                fa.value("group.rebalance.commit_enqueue_failures"),
+                0,
+                "a broker-rejected commit-before-revoke must not be counted as a \
+                     local enqueue failure",
+            );
         },
     )
     .await;
