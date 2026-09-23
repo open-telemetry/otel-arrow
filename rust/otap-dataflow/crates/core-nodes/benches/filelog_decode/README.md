@@ -65,6 +65,9 @@ and use `std::hint::black_box`. Corpus construction is outside timed work.
 | Allocation measurement | Existing workspace `dhat` 0.3.3, separate from timing |
 | CPU isolation | No affinity pinning, dedicated host or frequency control |
 
+Results apply to the source snapshots identified below. Rerun benchmarks after
+changes that could affect decoder performance or benchmark behavior.
+
 The candidate decoder source SHA-256 was:
 
 ```text
