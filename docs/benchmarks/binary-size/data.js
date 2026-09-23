@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790123272088,
+  "lastUpdate": 1790183103451,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -43088,6 +43088,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-amd64-binary-size",
             "value": 116.51,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 103.85,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "mmaratov@microsoft.com",
+            "name": "Maksat Maratov",
+            "username": "maksmara"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "5d545c035a88a12ba89bba192918b95a176b9e56",
+          "message": "chore(context): optimize request context with packed storage (#4089)\n\n# Change summary\n\nPack captured transport headers and authorized identity claims into\nimmutable shared storage with borrowed access.\n\nThis change:\n\n- Preserves ordering, duplicates, original wire names, value kinds,\nbytes, and identity cardinality.\n- Uses native HTTP `HeaderName` matching without repeated string\nconversion.\n- Keeps empty context allocation-free and cloning near one `Arc`\nincrement.\n- Uses a copy-on-write overlay for appended headers without\nmaterializing the packed base.\n- Preserves the 160-byte `OtapPdata` layout.\n\n## Scope\n\nCloses #3914.\n\nThis PR optimizes existing context behavior. Generic registers,\npredicates, composites, routing, and hash-based lookup remain outside\nits scope. Lookup indexing remains in #3931, and authorized identity\npropagation remains in #4080.\n\n## Design\n\nCaptured descriptors and data share one immutable allocation. Consumers\nreceive borrowed views, while appended headers use a small copy-on-write\noverlay.\n\nStored-name lookup compares packed name bytes before decoding matching\nentries and remains linear by design. In-range decode failures are\ntreated as internal invariant violations rather than silently dropping\ncontext.\n\n## Performance\n\nEnvironment: Intel Core Ultra 7 165H, WSL2, Rust 1.98.1. Results compare\nthe current implementation with pre-PR storage using the same process,\noptimization settings, and pinned CPU. Small differences remain\nsensitive to noise.\n\nRelative to pre-PR:\n\n- gRPC capture is 1-22% faster for 1-6 headers, 18-23% faster at 16, and\n25-47% faster at 32.\n- Native HTTP capture is 36-67% faster for 1-6 headers and 69-77% faster\nat 16-32.\n- The propagation-inclusive gRPC microbenchmark is within 4% of baseline\nor faster through 16 headers, and 8-23% faster at 32.\n- Clone remains approximately 9-10 ns.\n- Appending to cloned captured context remains approximately 43-45 ns\nand is 64-98% faster than the previous `Arc<Vec<_>>` representation.\n- Linear packed lookup adds approximately 16-37 ns; indexing remains\nscoped to #3931.\n\nUp to four captured-header descriptors remain inline. Five headers cause\none scratch allocation, but measurements show no disproportionate\nregression at that boundary. Empty capture performs no allocation.\n\nThe benchmark covers 1, 2, 4, 5, 6, 16, and 32 headers. HTTP\nimprovements include native header-name matching, not only packed\nstorage. Authorized identity capture is not included in these\nmeasurements.\n\n## Validation\n\n- Transport-header and authorized-identity correctness and invariant\ntests.\n- Copy-on-write, ordering, duplicate, lookup, iteration, and\ncapture-limit coverage.\n- HTTP, gRPC, Kafka, propagation, and partition-append coverage.\n- Linux, Windows, and macOS CI.\n- Criterion comparisons against the pre-change implementation.\n\n## User-facing changes\n\nNone. This is an internal performance refactor.\n\n---------\n\nCo-authored-by: Joshua MacDonald <josh.macdonald@gmail.com>\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>\nCopilot-Session: c98adda2-7912-412b-b2af-9067e0ea6a1d",
+          "timestamp": "2026-09-23T16:12:37Z",
+          "tree_id": "3082962d24bfed1f25ea1d3469e0e2e0a07b22bb",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/5d545c035a88a12ba89bba192918b95a176b9e56"
+        },
+        "date": 1790183086388,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 84.29,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.07,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.71,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.97,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.7,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 71.62,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.85,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.54,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.39,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 116.55,
             "unit": "MB"
           },
           {
