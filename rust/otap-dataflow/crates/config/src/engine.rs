@@ -127,14 +127,14 @@ impl OtelDataflowSpec {
 /// Context policies are declared at three nesting levels in the config:
 /// - engine-wide (`policies.context`)
 /// - per-group (`groups.<id>.policies.context`)
-/// - per-pipeline (`groups.<id>.pipelines.<id>.policies.context`). 
-/// 
+/// - per-pipeline (`groups.<id>.pipelines.<id>.policies.context`).
+///
 /// This captures one of these levels together with its [`ContextScope`] and the
 /// config `path`
 struct ContextPolicyLayer<'a> {
     scope: ContextScope,
 
-    /// Dot-delimited path to this layer's policy section in the user config 
+    /// Dot-delimited path to this layer's policy section in the user config
     /// (e.g. `"groups.default.policies"`), included in validation error messages to identify the
     /// declaration site.
     path: String,
