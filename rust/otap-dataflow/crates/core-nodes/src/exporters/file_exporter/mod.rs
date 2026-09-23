@@ -14,6 +14,8 @@ mod writer;
 
 pub use config::{Durability, FileExporterConfig, FileFormat, OpenMode, TailRecovery};
 
+use otel_arrow_dfe_telemetry::export_diagnostics::{ExportDiagnostics, ExportErrorKind};
+
 use async_trait::async_trait;
 use config::RenderedPaths;
 use encoding::{FrameEncodeError, encode_logs, encode_metrics, encode_traces};
@@ -60,7 +62,8 @@ pub struct FileExporter {
     paths: RenderedPaths,
     writers: [Option<SignalWriter>; 3],
     frame: Vec<u8>,
-    failure_active: [bool; 3],
+    diagnostics: ExportDiagnostics<FileOperation>,
+    preparation: ExportDiagnostics<ExportErrorKind>,
     export_metrics: MeasurementMetricSet<FileExporterExportMetrics>,
     signal_metrics: MeasurementMetricSet<FileSignalMetrics>,
     failure_metrics: MeasurementMetricSet<FileFailureMetrics>,
@@ -86,7 +89,8 @@ pub static FILE_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
                 config,
                 paths,
                 writers: std::array::from_fn(|_| None),
-                failure_active: [false; 3],
+                diagnostics: Default::default(),
+                preparation: Default::default(),
                 export_metrics: FileExporterExportMetrics::register(&pipeline),
                 signal_metrics: FileSignalMetrics::register(&pipeline),
                 failure_metrics: FileFailureMetrics::register(&pipeline),
@@ -155,6 +159,7 @@ impl FileExporter {
         mut pdata: OtapPdata,
         effect_handler: &EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
+        let diagnostic_started_at = std::time::Instant::now();
         let signal = pdata.signal_type();
         if pdata.is_empty() {
             effect_handler.notify_ack(AckMsg::new(pdata)).await?;
@@ -174,6 +179,12 @@ impl FileExporter {
                 }
                 error => format!("file exporter rejected invalid pdata: {error}"),
             };
+            otel_arrow_dfe_telemetry::otel_export_diagnostic!(
+                target: "otel.exporter.file",
+                self.preparation.signal(signal).failure(std::time::Instant::now(),
+                    ExportErrorKind::Preparation, || &reason),
+                signal = signal.as_str(), stage = "preparation"
+            );
             effect_handler
                 .notify_nack(NackMsg::new_permanent(&reason, pdata))
                 .await?;
@@ -224,7 +235,7 @@ impl FileExporter {
             }
             return Ok(());
         }
-        self.failure_active[index] = false;
+
         self.signal_metrics
             .with(SignalAttributes { signal })
             .items
@@ -234,6 +245,11 @@ impl FileExporter {
             .bytes
             .add(self.frame.len() as u64);
         self.record_export_outcome(signal, Outcome::Success);
+        otel_arrow_dfe_telemetry::otel_export_diagnostic!(
+            target: "otel.exporter.file",
+            self.diagnostics.signal(signal).success(diagnostic_started_at, std::time::Instant::now()),
+            signal = signal.as_str(), stage = "delivery"
+        );
         effect_handler.notify_ack(AckMsg::new(pdata)).await?;
         Ok(())
     }
@@ -261,7 +277,7 @@ impl FileExporter {
             );
         }
         self.writers[index] = Some(writer);
-        self.failure_active[index] = false;
+
         otel_info!("otelcol.node.file.writer.start", signal = signal.as_str(),);
         Ok(())
     }
@@ -293,7 +309,6 @@ impl FileExporter {
     }
 
     fn log_write_failure(&mut self, signal: SignalType, failure: &WriterFailure) {
-        let index = signal_index(signal);
         if let Some(rollback_error) = failure.rollback_error.as_deref() {
             otel_error!(
                 "otelcol.node.file.rollback.fail",
@@ -303,16 +318,13 @@ impl FileExporter {
                 rollback_error = rollback_error,
                 message = "File write rollback failed"
             );
-        } else if !self.failure_active[index] {
-            otel_warn!(
-                "otelcol.node.file.operation.fail",
-                signal = signal.as_str(),
-                operation = failure.operation.as_str(),
-                error = failure.error.as_str(),
-                message = "File writer entered a failure state"
+        } else {
+            otel_arrow_dfe_telemetry::otel_export_diagnostic!(
+                target: "otel.exporter.file",
+                self.diagnostics.signal(signal).failure(std::time::Instant::now(), failure.operation, || &failure.error),
+                signal = signal.as_str(), stage = "delivery"
             );
         }
-        self.failure_active[index] = true;
     }
 
     async fn finalize(

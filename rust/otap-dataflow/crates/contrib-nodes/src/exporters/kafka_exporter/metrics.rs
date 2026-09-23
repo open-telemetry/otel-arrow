@@ -8,6 +8,7 @@ use otel_arrow_dfe_engine::context::PipelineContext;
 use otel_arrow_dfe_otap::metrics::ExporterExportMetrics;
 use otel_arrow_dfe_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
 use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
+use otel_arrow_dfe_telemetry::export_diagnostics::{ExportDiagnostics, ExportErrorKind};
 use otel_arrow_dfe_telemetry::instrument::{Counter, HistogramNormal};
 use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSetSnapshot};
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
@@ -211,6 +212,9 @@ pub struct KafkaExporterRoutingMetrics {
 /// Composite metrics for the Kafka exporter.
 #[derive(Debug)]
 pub struct KafkaExporterMetrics {
+    pub(super) notifications: ExportDiagnostics<ExportErrorKind>,
+    pub(super) preparation: ExportDiagnostics<KafkaExporterErrorType>,
+    pub(super) diagnostics: ExportDiagnostics<KafkaExporterErrorType>,
     /// Generic terminal export counts shared by all aligned exporters.
     pub exports: MeasurementMetricSet<ExporterExportMetrics>,
     /// Kafka-specific encoded payload measurements.
@@ -228,6 +232,9 @@ impl KafkaExporterMetrics {
     #[must_use]
     pub fn register(pipeline_ctx: &PipelineContext) -> Self {
         Self {
+            diagnostics: Default::default(),
+            notifications: Default::default(),
+            preparation: Default::default(),
             exports: ExporterExportMetrics::register(pipeline_ctx),
             kafka_exports: KafkaExporterExportMetrics::register(pipeline_ctx),
             operations: KafkaExporterOperationMetrics::register(pipeline_ctx),

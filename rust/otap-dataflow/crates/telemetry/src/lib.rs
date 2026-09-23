@@ -44,6 +44,8 @@ pub mod descriptor;
 pub mod error;
 /// Event types for lifecycle and log events.
 pub mod event;
+/// Bounded, local diagnostics for repeated export failures and recovery.
+pub mod export_diagnostics;
 pub mod instrument;
 /// Internal logs/events module for engine.
 pub mod internal_events;

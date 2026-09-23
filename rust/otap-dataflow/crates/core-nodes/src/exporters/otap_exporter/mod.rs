@@ -59,6 +59,9 @@ use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::{
 };
 use otel_arrow_dfe_telemetry::common_attributes::SignalAttributes;
 use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
+use otel_arrow_dfe_telemetry::export_diagnostics::{
+    DiagnosticTracker, ExportDiagnostics, ExportErrorKind,
+};
 use otel_arrow_dfe_telemetry::instrument::HistogramNormal;
 use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSetSnapshot};
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
@@ -87,6 +90,7 @@ use metrics::{OtapExporterErrorType, OtapExporterMetrics as OtapExporterTerminal
 
 /// Exporter that sends OTAP data via gRPC
 pub struct OTAPExporter {
+    preparation: ExportDiagnostics<OtapExporterErrorType>,
     config: Config,
     metrics: OtapExporterTerminalMetrics,
     stream_metrics: OtapExporterStreamMetricSets,
@@ -185,15 +189,35 @@ impl OtapRequestStreamMetricsHandle {
 /// Pipeline-local handle used to record and collect one stream worker's metrics.
 #[derive(Debug, Clone)]
 struct OtapStreamWorkerMetricsHandle {
+    diagnostics: Rc<RefCell<DiagnosticTracker<OtapExporterErrorType>>>,
+    protocol_diagnostics: Rc<RefCell<DiagnosticTracker<ExportErrorKind>>>,
     signal: SignalType,
     metrics: Rc<RefCell<OtapStreamWorkerMetrics>>,
     request_metrics: OtapRequestStreamMetricsHandle,
 }
 
 impl OtapStreamWorkerMetricsHandle {
+    fn diagnose_failure(&self, category: OtapExporterErrorType, detail: &dyn std::fmt::Display) {
+        otel_arrow_dfe_telemetry::otel_export_diagnostic!(
+            target: "otel.exporter.otap",
+            self.diagnostics.borrow_mut().failure(Instant::now(), category, || detail),
+            signal = ?self.signal, stage = "delivery"
+        );
+    }
+
+    fn diagnose_success(&self, started_at: Instant) {
+        otel_arrow_dfe_telemetry::otel_export_diagnostic!(
+            target: "otel.exporter.otap",
+            self.diagnostics.borrow_mut().success(started_at, Instant::now()),
+            signal = ?self.signal, stage = "delivery"
+        );
+    }
+
     fn new(signal: SignalType) -> Self {
         Self {
             signal,
+            diagnostics: Default::default(),
+            protocol_diagnostics: Default::default(),
             metrics: Rc::new(RefCell::new(OtapStreamWorkerMetrics::default())),
             request_metrics: OtapRequestStreamMetricsHandle::new(),
         }
@@ -360,6 +384,7 @@ impl OTAPExporter {
         let metrics = OtapExporterTerminalMetrics::register(&pipeline_ctx);
         let stream_metrics = OtapExporterStreamMetricSets::register(&pipeline_ctx);
         OTAPExporter {
+            preparation: Default::default(),
             config,
             metrics,
             stream_metrics,
@@ -399,6 +424,16 @@ impl OTAPExporter {
     ) -> Result<(), Error> {
         match update {
             PDataMetricsUpdate::IncFailed(signal_type, pdata, export_duration, error_type) => {
+                // Encoding happens inside Tonic's Send request stream. Observe
+                // its outcome here to keep diagnostic state on the owning core.
+                if matches!(error_type, OtapExporterErrorType::Encoding) {
+                    otel_arrow_dfe_telemetry::otel_export_diagnostic!(
+                        target: "otel.exporter.otap",
+                        self.preparation.signal(signal_type).failure(Instant::now(), error_type,
+                            || "failed to encode OTAP request batch"),
+                        signal = ?signal_type, stage = "preparation"
+                    );
+                }
                 self.metrics
                     .record_failure(signal_type, error_type, export_duration);
                 effect_handler
@@ -826,13 +861,17 @@ where
     let mut senders = Vec::with_capacity(streams_per_signal);
     let mut handles = Vec::with_capacity(streams_per_signal);
     let mut worker_metrics = Vec::with_capacity(streams_per_signal);
+    let diagnostics = Rc::new(RefCell::new(DiagnosticTracker::default()));
+    let protocol_diagnostics = Rc::new(RefCell::new(DiagnosticTracker::default()));
 
     for _ in 0..streams_per_signal {
         // The queue is per stream, not shared across the pool. This keeps
         // backpressure local to the stream that is lagging and gives the
         // exporter a useful depth signal for least-loaded routing.
         let (sender, receiver) = tokio::sync::mpsc::channel::<StreamBatch>(stream_queue_capacity);
-        let metrics = OtapStreamWorkerMetricsHandle::new(signal_type);
+        let mut metrics = OtapStreamWorkerMetricsHandle::new(signal_type);
+        metrics.diagnostics = Rc::clone(&diagnostics);
+        metrics.protocol_diagnostics = Rc::clone(&protocol_diagnostics);
         senders.push(sender);
         worker_metrics.push(metrics.clone());
         handles.push(tokio::task::spawn_local(stream_arrow_batches(
@@ -1058,6 +1097,7 @@ async fn stream_arrow_batches<T: StreamingArrowService>(
                             first_export_started_at,
                             first_pdata_outcome_rx,
                             OtapExporterErrorType::Shutdown,
+                            None,
                         )
                         .await;
                         break;
@@ -1092,14 +1132,9 @@ async fn stream_arrow_batches<T: StreamingArrowService>(
                             first_export_started_at,
                             first_pdata_outcome_rx,
                             error_type,
+                            Some((&worker_metrics, &e)),
                         )
                         .await;
-                        otel_error!(
-                            "otap_exporter.request_failed",
-                            message = "Failed to connect, retrying after backoff",
-                            error = %e,
-                            backoff = ?failed_request_backoff
-                        );
                         // Shutdown must preempt reconnect backoff. Otherwise a
                         // failed stream setup can keep the exporter alive until
                         // the current backoff expires, delaying graceful drain
@@ -1129,6 +1164,7 @@ async fn fail_stream_open_pdata(
     first_export_started_at: Instant,
     first_pdata_outcome_rx: oneshot::Receiver<FirstPdataOutcome>,
     error_type: OtapExporterErrorType,
+    diagnostic: Option<(&OtapStreamWorkerMetricsHandle, &dyn std::fmt::Display)>,
 ) {
     // `create_req_stream` runs concurrently (as a stream driven by Tonic's
     // request-body polling) and can still be settling the first pdata's
@@ -1154,6 +1190,9 @@ async fn fail_stream_open_pdata(
     let mut drained = false;
     while let Ok(correlated) = correlation_rx.try_recv() {
         drained = true;
+        if let Some((worker, detail)) = diagnostic {
+            worker.diagnose_failure(error_type, detail);
+        }
         _ = pdata_metrics_tx
             .send(PDataMetricsUpdate::IncFailed(
                 signal_type,
@@ -1164,6 +1203,9 @@ async fn fail_stream_open_pdata(
             .await;
     }
     if !drained && !already_reported {
+        if let Some((worker, detail)) = diagnostic {
+            worker.diagnose_failure(error_type, detail);
+        }
         _ = pdata_metrics_tx
             .send(PDataMetricsUpdate::IncFailed(
                 signal_type,
@@ -1322,6 +1364,7 @@ async fn handle_res_stream(
                         drain_correlation_rx(&mut correlation_rx, &mut correlated_by_batch_id);
                         if let Some(correlated) = correlated_by_batch_id.remove(&status.batch_id) {
                             if batch_status_is_ok(&status) {
+                                worker_metrics.diagnose_success(correlated.export_started_at);
                                 _ = pdata_metrics_tx
                                     .send(PDataMetricsUpdate::IncExported(
                                         signal_type,
@@ -1330,12 +1373,9 @@ async fn handle_res_stream(
                                     ))
                                     .await;
                             } else {
-                                otel_warn!(
-                                    "otap_exporter.batch_status_failed",
-                                    batch_id = status.batch_id,
-                                    status_code = status.status_code,
-                                    status_message = status.status_message.as_str(),
-                                    message = "OTAP server rejected exported batch"
+                                worker_metrics.diagnose_failure(
+                                    OtapExporterErrorType::from_batch_status(status.status_code),
+                                    &status.status_message,
                                 );
                                 _ = pdata_metrics_tx
                                     .send(PDataMetricsUpdate::IncFailed(
@@ -1349,12 +1389,13 @@ async fn handle_res_stream(
                                     .await;
                             }
                         } else {
-                            otel_warn!(
-                                "otap_exporter.batch_status_unmatched",
-                                batch_id = status.batch_id,
-                                status_code = status.status_code,
-                                status_message = status.status_message.as_str(),
-                                message = "Received OTAP batch status without a correlated request"
+                            otel_arrow_dfe_telemetry::otel_export_diagnostic!(
+                                target: "otel.exporter.otap",
+                                worker_metrics.protocol_diagnostics.borrow_mut().failure(
+                                    Instant::now(), ExportErrorKind::Protocol, || format!(
+                                        "unmatched batch status id={} code={}: {}",
+                                        status.batch_id, status.status_code, status.status_message)),
+                                signal = ?signal_type, stage = "protocol"
                             );
                         }
                     },
@@ -1366,22 +1407,19 @@ async fn handle_res_stream(
                             &mut correlation_rx,
                             &mut correlated_by_batch_id,
                             OtapExporterErrorType::Transport,
+                            Some((&worker_metrics, &"response stream closed")),
                         )
                         .await;
                         break
                     }
                     Err(grpc_status) => {
-                        otel_warn!(
-                            "otap_exporter.response_stream_failed",
-                            status = %grpc_status,
-                            message = "OTAP response stream failed"
-                        );
                         fail_correlated_pdata(
                             &pdata_metrics_tx,
                             signal_type,
                             &mut correlation_rx,
                             &mut correlated_by_batch_id,
                             OtapExporterErrorType::from_grpc_status(&grpc_status),
+                            Some((&worker_metrics, &grpc_status)),
                         )
                         .await;
                         break
@@ -1397,6 +1435,7 @@ async fn handle_res_stream(
                         &mut correlation_rx,
                         &mut correlated_by_batch_id,
                         OtapExporterErrorType::Shutdown,
+                        None,
                     )
                     .await;
                 }
@@ -1426,6 +1465,7 @@ async fn fail_correlated_pdata(
     correlation_rx: &mut Receiver<CorrelatedPdata>,
     correlated_by_batch_id: &mut HashMap<i64, CorrelatedPdata>,
     error_type: OtapExporterErrorType,
+    diagnostic: Option<(&OtapStreamWorkerMetricsHandle, &dyn std::fmt::Display)>,
 ) {
     correlation_rx.close();
     while let Some(correlated) = correlation_rx.recv().await {
@@ -1433,6 +1473,9 @@ async fn fail_correlated_pdata(
     }
 
     for (_, correlated) in correlated_by_batch_id.drain() {
+        if let Some((worker, detail)) = diagnostic {
+            worker.diagnose_failure(error_type, detail);
+        }
         _ = pdata_metrics_tx
             .send(PDataMetricsUpdate::IncFailed(
                 signal_type,
@@ -2453,6 +2496,7 @@ mod tests {
                 export_started_at,
                 outcome_rx,
                 OtapExporterErrorType::Shutdown,
+                None,
             ),
             async {
                 // Yield so `fail_stream_open_pdata` reaches its
@@ -2522,6 +2566,7 @@ mod tests {
                 Instant::now(),
                 outcome_rx,
                 OtapExporterErrorType::Shutdown,
+                None,
             ),
             async {
                 tokio::task::yield_now().await;
@@ -2562,6 +2607,7 @@ mod tests {
             Instant::now(),
             outcome_rx,
             OtapExporterErrorType::Shutdown,
+            None,
         )
         .await;
 

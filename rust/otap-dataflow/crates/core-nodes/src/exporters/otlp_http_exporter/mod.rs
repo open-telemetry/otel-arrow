@@ -15,6 +15,7 @@ otel_arrow_dfe_telemetry::otel_component_scope!(
     target = "otel.exporter.otlp_http",
 );
 
+use otel_arrow_dfe_telemetry::export_diagnostics::ExportErrorKind;
 use std::num::NonZeroUsize;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -387,6 +388,7 @@ impl OtlpHttpExporter {
 
 #[derive(Debug)]
 struct CompletedExport {
+    diagnostic_started_at: Instant,
     attempt: CompletedExporterAttempt<(), ServiceRequestError>,
     context: Context,
     saved_payload: OtapPayload,
@@ -699,6 +701,11 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                                     .record(completed)
                                     .expect_err("encoding attempt must fail");
                                 self.metrics.record_failure(signal_type, error_type);
+                                otel_arrow_dfe_telemetry::otel_export_diagnostic!(
+                                    target: "otel.exporter.otlp_http",
+                                    self.metrics.preparation.signal(signal_type).failure(Instant::now(), error_type, || &error),
+                                    signal = ?signal_type, stage = "preparation"
+                                );
                                 // Encoding failed because the structured batch is invalid.
                                 let mut nack = NackMsg::new(
                                     error.to_string(),
@@ -738,6 +745,11 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                                     .record(completed)
                                     .expect_err("compression attempt must fail");
                                 self.metrics.record_failure(signal_type, error_type);
+                                otel_arrow_dfe_telemetry::otel_export_diagnostic!(
+                                    target: "otel.exporter.otlp_http",
+                                    self.metrics.preparation.signal(signal_type).failure(Instant::now(), error_type, || &error),
+                                    signal = ?signal_type, stage = "preparation"
+                                );
                                 let mut nack = NackMsg::new(
                                     error.to_string(),
                                     OtapPdata::new(context, saved_payload),
@@ -787,6 +799,7 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
 
                     let client = client_pool.get_client();
                     inflight_exports.push(async move {
+                        let diagnostic_started_at = Instant::now();
                         let attempt = attempt
                             .run(async |attempt| {
                                 attempt.set_payload_size_with(|| payload_size);
@@ -841,6 +854,7 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                             })
                             .await;
                         CompletedExport {
+                            diagnostic_started_at,
                             attempt,
                             context,
                             saved_payload,
@@ -1160,6 +1174,7 @@ async fn finalize_completed_export(
     metrics: &mut OtlpHttpExporterMetrics,
 ) -> Option<RequestAuth> {
     let CompletedExport {
+        diagnostic_started_at,
         attempt,
         context,
         saved_payload,
@@ -1168,6 +1183,22 @@ async fn finalize_completed_export(
     } = completed;
     let result = metrics.boundary.record(attempt);
     let pdata = OtapPdata::new(context, saved_payload);
+    let now = Instant::now();
+    let report = match &result {
+        Ok(()) => metrics
+            .diagnostics
+            .signal(signal_type)
+            .success(diagnostic_started_at, now),
+        Err(error) => {
+            metrics
+                .diagnostics
+                .signal(signal_type)
+                .failure(now, error.error_type(), || error)
+        }
+    };
+    otel_arrow_dfe_telemetry::otel_export_diagnostic!(
+        target: "otel.exporter.otlp_http", report, signal = ?signal_type, stage = "delivery"
+    );
 
     // Set to the request identity when the server rejects its credential (401),
     // so the caller can invalidate exactly that generation before retry.
@@ -1194,27 +1225,31 @@ async fn finalize_completed_export(
     match err {
         None => {
             if let Err(error) = effect_handler.notify_ack(AckMsg::new(pdata)).await {
-                otel_warn!(
-                    "otlp.exporter.http.notification_error",
-                    message = "Failed to route the terminal OTLP HTTP Ack notification",
-                    error = %error
+                otel_arrow_dfe_telemetry::otel_export_diagnostic!(
+                    target: "otel.exporter.otlp_http",
+                    metrics.notifications.signal(signal_type).failure(
+                        Instant::now(),
+                        ExportErrorKind::Notification,
+                        || &error,
+                    ),
+                    signal = ?signal_type, stage = "notification"
                 );
             }
         }
         Some((message, retryable, error_type)) => {
             metrics.record_failure(signal_type, error_type);
-            otel_warn!(
-                "otlp.exporter.http.export_error",
-                message = message.as_str(),
-                retryable = retryable
-            );
+
             let mut nack = NackMsg::new(&message, pdata);
             nack.permanent = !retryable;
             if let Err(error) = effect_handler.notify_nack(nack).await {
-                otel_warn!(
-                    "otlp.exporter.http.notification_error",
-                    message = "Failed to route the terminal OTLP HTTP Nack notification",
-                    error = %error
+                otel_arrow_dfe_telemetry::otel_export_diagnostic!(
+                    target: "otel.exporter.otlp_http",
+                    metrics.notifications.signal(signal_type).failure(
+                        Instant::now(),
+                        ExportErrorKind::Notification,
+                        || &error,
+                    ),
+                    signal = ?signal_type, stage = "notification"
                 );
             }
         }
@@ -3970,6 +4005,7 @@ mod test {
             },
         ));
         let completed = CompletedExport {
+            diagnostic_started_at: Instant::now(),
             attempt,
             context: Context::default(),
             saved_payload: OtlpProtoBytes::ExportLogsRequest(Bytes::new()).into(),
@@ -4041,6 +4077,7 @@ mod test {
             },
         ));
         let completed = CompletedExport {
+            diagnostic_started_at: Instant::now(),
             attempt,
             context,
             saved_payload,
@@ -4088,8 +4125,93 @@ mod test {
         }));
     }
 
+    /// Scenario: Repeated partial rejections are suppressed by delivery diagnostics.
+    /// Guarantees: Suppression works without metric interests and preserves every permanent Nack and enabled metric.
+    #[test]
+    fn suppressed_failures_preserve_metrics_and_nacks() {
+        for interests in [Interests::empty(), Interests::NODE_INPUT_METRICS] {
+            let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(interests);
+            let mut metrics = OtlpHttpExporterMetrics::register(&pipeline_ctx);
+            let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+            let mut effect_handler = EffectHandler::new(
+                test_node("test-exporter"),
+                metrics_reporter,
+                otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+            );
+            let (completion_tx, mut completion_rx) =
+                otel_arrow_dfe_engine::control::pipeline_completion_msg_channel(1);
+            effect_handler.set_pipeline_completion_msg_sender(completion_tx);
+            let runtime = Runtime::new().unwrap();
+            runtime.block_on(async {
+                for _ in 0..1000 {
+                    let pdata = OtapPdata::new_default(
+                        OtlpProtoBytes::ExportLogsRequest(Bytes::new()).into(),
+                    )
+                    .test_subscribe_to(
+                        Interests::NACKS,
+                        TestCallData::default().into(),
+                        123,
+                    );
+                    let (context, saved_payload) = pdata.into_parts();
+                    let diagnostic_started_at = Instant::now();
+                    let attempt = metrics
+                        .boundary
+                        .attempt(SignalType::Logs)
+                        .run(async |attempt| {
+                            Err(attempt.refused(ServiceRequestError::PartialRejection {
+                                rejected: 1,
+                                error_message: "refused record".to_owned(),
+                            }))
+                        })
+                        .await;
+                    let completed = CompletedExport {
+                        diagnostic_started_at,
+                        attempt,
+                        context,
+                        saved_payload,
+                        signal_type: SignalType::Logs,
+                        request_auth: RequestAuth::None,
+                    };
+                    let _ =
+                        finalize_completed_export(completed, &effect_handler, &mut metrics).await;
+                    match completion_rx.recv().await.unwrap() {
+                        PipelineCompletionMsg::DeliverNack { nack } => {
+                            assert!(nack.permanent);
+                            assert!(nack.reason.contains("refused record"));
+                        }
+                        _ => panic!("every rejected attempt must route a Nack"),
+                    }
+                }
+            });
+            let report = metrics
+                .diagnostics
+                .signal(SignalType::Logs)
+                .failure(
+                    Instant::now() + Duration::from_secs(60),
+                    OtlpHttpExporterErrorType::PartialRejection,
+                    || "test summary",
+                )
+                .unwrap();
+            assert_eq!(report.total.failures, 1001);
+            assert_eq!(report.total.suppressed, 999);
+            let snapshots = metrics.terminal_snapshots();
+            assert!(snapshots.iter().any(|snapshot| {
+                snapshot.descriptor().name == "exporter.otlp_http.failures"
+                    && snapshot.measurement_attribute_value("error.type")
+                        == Some("partial_rejection")
+                    && snapshot.get_metrics()[0].to_u64_lossy() == 1000
+            }));
+            assert_eq!(
+                snapshots
+                    .iter()
+                    .any(|snapshot| snapshot.descriptor().name == "exporter.attempted"),
+                interests.contains(Interests::NODE_INPUT_METRICS)
+            );
+        }
+    }
+
     /// Scenario: A successful backend export cannot deliver its upstream Ack notification.
-    /// Guarantees: The backend success is recorded once without a failure classification.
+    /// Guarantees: Delivery stays successful while notification diagnostics track the separate failure.
     #[test]
     fn successful_export_is_recorded_when_ack_notification_fails() {
         let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(Interests::NODE_INPUT_METRICS);
@@ -4116,6 +4238,7 @@ mod test {
                 .run(async |_| Ok::<_, ErrorWithOutcome<ServiceRequestError>>(())),
         );
         let completed = CompletedExport {
+            diagnostic_started_at: Instant::now(),
             attempt,
             context,
             saved_payload,
@@ -4151,6 +4274,24 @@ mod test {
                 .iter()
                 .all(|snapshot| snapshot.descriptor().name != "exporter.otlp_http.failures")
         );
+        let later = Instant::now() + Duration::from_secs(60);
+        assert!(
+            metrics
+                .diagnostics
+                .signal(SignalType::Logs)
+                .success(later, later)
+                .is_none()
+        );
+        let report = metrics
+            .notifications
+            .signal(SignalType::Logs)
+            .failure(later, ExportErrorKind::Notification, || "still closed")
+            .unwrap();
+        assert_eq!(
+            report.kind,
+            otel_arrow_dfe_telemetry::export_diagnostics::ReportKind::Summary
+        );
+        assert_eq!(report.total.failures, 2);
     }
 
     #[test]

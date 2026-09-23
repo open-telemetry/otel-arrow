@@ -8,6 +8,7 @@ use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_engine::context::PipelineContext;
 use otel_arrow_dfe_otap::metrics::ExporterMetrics;
 use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
+use otel_arrow_dfe_telemetry::export_diagnostics::{ExportDiagnostics, ExportErrorKind};
 use otel_arrow_dfe_telemetry::instrument::Counter;
 use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSetSnapshot};
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
@@ -124,6 +125,9 @@ struct OtlpHttpExporterAuthMetrics {
 
 /// Terminal outcome and failure metrics emitted by an OTLP HTTP exporter.
 pub(super) struct OtlpHttpExporterMetrics {
+    pub(super) diagnostics: ExportDiagnostics<OtlpHttpExporterErrorType>,
+    pub(super) preparation: ExportDiagnostics<OtlpHttpExporterErrorType>,
+    pub(super) notifications: ExportDiagnostics<ExportErrorKind>,
     pub(super) boundary: ExporterMetrics,
     failures: MeasurementMetricSet<OtlpHttpExporterFailureMetrics>,
     auth: MeasurementMetricSet<OtlpHttpExporterAuthMetrics>,
@@ -134,6 +138,9 @@ impl OtlpHttpExporterMetrics {
     #[must_use]
     pub(super) fn register(pipeline_ctx: &PipelineContext) -> Self {
         Self {
+            diagnostics: ExportDiagnostics::default(),
+            preparation: ExportDiagnostics::default(),
+            notifications: ExportDiagnostics::default(),
             boundary: ExporterMetrics::register(pipeline_ctx),
             failures: OtlpHttpExporterFailureMetrics::register(pipeline_ctx),
             auth: OtlpHttpExporterAuthMetrics::register(pipeline_ctx),

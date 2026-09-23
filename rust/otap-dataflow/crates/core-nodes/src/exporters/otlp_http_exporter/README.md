@@ -263,7 +263,9 @@ Authentication `error.type` is one of `credential_unavailable`,
 | `otlp.exporter.http.receive` | `debug` | A pdata batch was received by the exporter loop. |
 | `otlp.exporter.http.shutdown` | `info` | Exporter shutdown and terminal reason. |
 | `otlp.exporter.http.zero_partial_rejected` | `debug` | A zero-length partial-success response was rejected. |
-| `otlp.exporter.http.export_error` | `warn` | An HTTP export request failed; non-success responses include bounded backend error details when available. |
+| `otelcol.node.export.degrade` | `warn` | First observed failure. |
+| `otelcol.node.export.report` | `warn` | At most one failure summary per 60 seconds. |
+| `otelcol.node.export.resume` | `info` | Confirmed recovery after 30 failure-free seconds and fresh success. |
 | `otlp.exporter.http.invalid_bearer_token` | `warn` | A bearer token from the provider could not be turned into a valid `Authorization` header. |
 | `otlp.exporter.http.token_stream_closed` | `warn` | The bearer token provider closed its refresh stream; the last token (if any) is reused and no longer refreshes. |
 | `otlp.exporter.http.agent_fed_credential_unavailable` | `warn` | An agent-fed credential check failed; repeated failures are sampled at powers of two. |
@@ -279,3 +281,6 @@ Authentication `error.type` is one of `credential_unavailable`,
 - [Configuration model](../../../../../docs/configuration-model.md)
 - [Proxy support](../../../../../docs/proxy-support.md)
 - [Core node catalog](../../../README.md)
+
+See the [shared exporter diagnostic policy](../../../../../docs/telemetry/events-guide.md#repeated-exporter-failures)
+for report fields, scope, operation stages, and recovery semantics.

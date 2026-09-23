@@ -262,13 +262,9 @@ the actual console export result.
 
 | Event | Severity | Description |
 | --- | --- | --- |
-| `console.logs_view.otlp_create_failed` | `error` | Failed to create an OTLP logs view for console output. |
-| `console.logs_view.otap_create_failed` | `error` | Failed to create an OTAP logs view for console output. |
-| `console.metrics_view.otlp_create_failed` | `warn` | Failed to create an OTLP metrics view for pretty console output. |
-| `console.metrics_view.otap_create_failed` | `warn` | Failed to create an OTAP metrics view for pretty console output. |
-| `console.message.unsupported_signal` | `warn` | The selected format does not support the signal. Traces are always unsupported; metrics are unsupported by `record_json`. |
-| `console.format_failed` | `error` | Failed to format a payload for console output. |
-| `console.write_failed` | `error` | Failed to write rendered output to stdout. |
+| `otelcol.node.export.degrade` | `warn` | First observed write or preparation failure. |
+| `otelcol.node.export.report` | `warn` | At most one failure summary per 60 seconds per signal and stage. |
+| `otelcol.node.export.resume` | `info` | Fresh nonempty stdout write after 30 failure-free seconds. |
 
 ## Limits
 
@@ -292,3 +288,6 @@ the actual console export result.
 
 - [Configuration model](../../../../../docs/configuration-model.md)
 - [Core node catalog](../../../README.md)
+
+See the [shared exporter diagnostic policy](../../../../../docs/telemetry/events-guide.md#repeated-exporter-failures)
+for report fields, scope, operation stages, and recovery semantics.

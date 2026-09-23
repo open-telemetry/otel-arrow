@@ -130,10 +130,9 @@ unbounded telemetry state. Duration measurements are reported in seconds.
 | --- | --- | --- |
 | `otap_exporter.start` | `info` | Exporter startup with the configured OTAP endpoint. |
 | `otap_exporter.shutdown` | `info` | Exporter shutdown and terminal reason. |
-| `otap_exporter.request_failed` | `error` | An OTAP export request failed before a batch status could be handled. |
-| `otap_exporter.batch_status_failed` | `warn` | A returned OTAP batch status indicated failure. |
-| `otap_exporter.batch_status_unmatched` | `warn` | A returned OTAP batch status could not be matched to an in-flight batch. |
-| `otap_exporter.response_stream_failed` | `warn` | The OTAP response stream failed after connection. |
+| `otelcol.node.export.degrade` | `warn` | First observed failure. |
+| `otelcol.node.export.report` | `warn` | At most one failure summary per 60 seconds. |
+| `otelcol.node.export.resume` | `info` | Confirmed recovery after 30 failure-free seconds and fresh success. |
 
 ## Limits
 
@@ -159,3 +158,6 @@ unbounded telemetry state. Duration measurements are reported in seconds.
 - [Proxy support](../../../../../docs/proxy-support.md)
 - [Transport headers](../../../../../docs/transport-headers.md)
 - [Core node catalog](../../../README.md)
+
+See the [shared exporter diagnostic policy](../../../../../docs/telemetry/events-guide.md#repeated-exporter-failures)
+for report fields, scope, operation stages, and recovery semantics.

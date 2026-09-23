@@ -7,6 +7,7 @@ use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_engine::context::PipelineContext;
 use otel_arrow_dfe_otap::metrics::ExporterMetrics;
 use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
+use otel_arrow_dfe_telemetry::export_diagnostics::{ExportDiagnostics, ExportErrorKind};
 use otel_arrow_dfe_telemetry::instrument::Counter;
 use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSetSnapshot};
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
@@ -95,6 +96,9 @@ struct OtlpGrpcExporterFailureMetrics {
 
 /// Terminal outcome and failure metrics emitted by an OTLP gRPC exporter.
 pub(super) struct OtlpGrpcExporterMetrics {
+    pub(super) diagnostics: ExportDiagnostics<OtlpGrpcExporterErrorType>,
+    pub(super) preparation: ExportDiagnostics<OtlpGrpcExporterErrorType>,
+    pub(super) notifications: ExportDiagnostics<ExportErrorKind>,
     pub(super) boundary: ExporterMetrics,
     failures: MeasurementMetricSet<OtlpGrpcExporterFailureMetrics>,
 }
@@ -104,6 +108,9 @@ impl OtlpGrpcExporterMetrics {
     #[must_use]
     pub(super) fn register(pipeline_ctx: &PipelineContext) -> Self {
         Self {
+            diagnostics: ExportDiagnostics::default(),
+            preparation: ExportDiagnostics::default(),
+            notifications: ExportDiagnostics::default(),
             boundary: ExporterMetrics::register(pipeline_ctx),
             failures: OtlpGrpcExporterFailureMetrics::register(pipeline_ctx),
         }

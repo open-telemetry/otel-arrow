@@ -3,6 +3,7 @@
 
 //! Metrics for the Azure Monitor Exporter node.
 
+use otel_arrow_dfe_telemetry::export_diagnostics::{DiagnosticTracker, ExportErrorKind};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -122,6 +123,8 @@ pub struct AzureMonitorExporterHeartbeatMetrics {
 
 /// Full metrics tracker for the Azure Monitor exporter.
 pub struct AzureMonitorExporterMetricsTracker {
+    pub(super) preparation: DiagnosticTracker<ExportErrorKind>,
+    pub(super) diagnostics: DiagnosticTracker<ExportErrorKind>,
     pub(super) boundary: ExporterMetrics,
     operational_metrics: MetricSet<AzureMonitorExporterOperationalMetrics>,
     batch_metrics: MeasurementMetricSet<AzureMonitorExporterBatchMetrics>,
@@ -142,6 +145,8 @@ impl AzureMonitorExporterMetricsTracker {
     #[must_use]
     pub(super) fn register(pipeline_ctx: &PipelineContext) -> Self {
         Self {
+            diagnostics: Default::default(),
+            preparation: Default::default(),
             boundary: ExporterMetrics::register(pipeline_ctx),
             operational_metrics: AzureMonitorExporterOperationalMetrics::register(pipeline_ctx),
             batch_metrics: AzureMonitorExporterBatchMetrics::register(

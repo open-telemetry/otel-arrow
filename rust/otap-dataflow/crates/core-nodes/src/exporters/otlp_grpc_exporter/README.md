@@ -195,7 +195,9 @@ this metric.
 | `otlp.exporter.grpc.channels` | `info` | gRPC channel pool creation with connection count and endpoint. |
 | `otlp.exporter.grpc.receive` | `debug` | A pdata batch was received by the exporter loop. |
 | `otlp.exporter.grpc.shutdown` | `info` | Exporter shutdown. |
-| `otlp.exporter.grpc.export_error` | `warn` | A gRPC export request did not complete successfully. |
+| `otelcol.node.export.degrade` | `warn` | First observed failure. |
+| `otelcol.node.export.report` | `warn` | At most one failure summary per 60 seconds. |
+| `otelcol.node.export.resume` | `info` | Confirmed recovery after 30 failure-free seconds and fresh success. |
 | `otlp.exporter.grpc.header_skip` | `debug` | A propagated transport header was skipped while building gRPC metadata. |
 | `otlp.exporter.grpc.invalid_bearer_token` | `warn` | A bearer token from the provider could not be turned into a valid `authorization` header. |
 | `otlp.exporter.grpc.token_stream_closed` | `warn` | The bearer token provider closed its refresh stream; the last token (if any) is reused and no longer refreshes. |
@@ -215,3 +217,6 @@ this metric.
 - [Proxy support](../../../../../docs/proxy-support.md)
 - [Transport headers](../../../../../docs/transport-headers.md)
 - [Core node catalog](../../../README.md)
+
+See the [shared exporter diagnostic policy](../../../../../docs/telemetry/events-guide.md#repeated-exporter-failures)
+for report fields, scope, operation stages, and recovery semantics.

@@ -329,3 +329,77 @@ termination verb `cancel`, and one internal safety verb `abort`.
   distinguishing attribute (see [Consolidating events](#consolidating-events)).
 - The number of new callsites is minimized; each callsite adds static memory
   overhead.
+
+## Repeated exporter failures
+
+Exporters use the shared `export_diagnostics` helper to report observed export
+behavior before events reach ITS, console providers, or the retained log tap.
+This policy is independent of metric collection and does not change retries,
+Ack/Nack routing, backpressure, or readiness.
+
+- `otelcol.node.export.degrade` (WARN): the first failure of an episode.
+- `otelcol.node.export.report` (WARN): a summary at most once every 60 seconds
+  while further failures are observed.
+- `otelcol.node.export.resume` (INFO): an actual successful operation after
+  30 seconds without an observed failure. The successful operation must have
+  started after the most recent failure; old in-flight successes cannot clear
+  a newer failure.
+
+Successful operation before the first failure is silent. Reports are evaluated
+on completions, without probes or timers. Idle periods produce no new reports
+and do not establish recovery. A success can trigger a summary only when there
+are unreported failures and recovery has not been confirmed. Changing error
+categories does not restart an episode or bypass the summary interval.
+
+### Scope and boundaries
+
+State is local to an exporter instance/core, signal, and configured destination.
+OTAP stream workers for the same signal share local diagnostic state. Dynamic
+Kafka topics and Geneva routes use an aggregate signal scope rather than
+unbounded per-topic or per-tenant maps. A recovery report describes recent
+success in this aggregate scope; it does not assert health of every route.
+
+The `stage` attribute distinguishes delivery, preparation, notification,
+protocol, and admission observations. Preparation and notification errors use
+independent failure summaries and cannot mark a destination recovered. Topic
+exporter events describe admission to the topic queue, not downstream delivery.
+File exporter recovery requires an actual successful write, not opening a file
+or accepting an empty message. OTAP counts failed correlated batches on stream
+failure and confirms success only on a matching successful batch response.
+Azure Monitor counts each HTTP attempt, including internal retries. Geneva
+counts individual uploads, including fan-out from a single input message.
+
+Delivery reporting is integrated with OTLP gRPC/HTTP, OTAP, Kafka, ClickHouse,
+Azure Monitor, Geneva, file, and console exporters. Topic admission failures use
+the same policy. Fatal failures, including Parquet write failures that terminate
+the exporter, retain their existing behavior.
+
+### Report fields
+
+All events keep the component's instrumentation target and pipeline/node
+context. The fields describe observations, not unique batches or data loss:
+
+| Field | Meaning |
+| --- | --- |
+| `signal`, `stage` | Signal and observed operation boundary |
+| `episode_seconds` | Time since the initial observed failure |
+| `interval_seconds` | Time since the previous report |
+| `successful_attempts`, `failed_attempts` | Counts since the previous report |
+| `suppressed_diagnostics` | Failures not individually logged in that interval |
+| `total_successful_attempts`, `total_failed_attempts` | Counts for the episode |
+| `total_suppressed_diagnostics` | Suppressed failures for the episode |
+| `error_counts`, `total_error_counts` | Bounded `category=count` lists |
+| `error`, `error_sample_age_seconds` | Representative error and its age |
+
+The first report includes its triggering failure. Later reports include the
+current observation and exclude observations already covered by earlier
+reports. Error text is formatted only when a failure report is selected,
+escaped for single-line display, and retained up to 1024 UTF-8 bytes.
+Success-triggered reports reuse the previous representative error with its age.
+Callers must still redact sensitive data before supplying diagnostic text.
+
+These events replace per-request failure events in the adopted paths. Update
+log-based alerts to use the new event names and `stage`; use existing attempt
+and failure metrics for rates and impact. The exporter-owned error categories,
+metric counts, and retry/permanent decisions remain unchanged. One process may
+emit several reports for an outage because cores and signals are independent.

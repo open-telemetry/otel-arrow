@@ -49,7 +49,9 @@ corresponding per-node telemetry policy.
 | --- | --- | --- | --- |
 | `azure_monitor_exporter.start` | `info` | Exporter startup with endpoint/stream/DCR context. | `crates/contrib-nodes/src/exporters/azure_monitor_exporter/exporter.rs` |
 | `azure_monitor_exporter.export.success` | `debug` | Export completed successfully for a batch. | `crates/contrib-nodes/src/exporters/azure_monitor_exporter/exporter.rs` |
-| `azure_monitor_exporter.export.failed` | `error` | Export failed for a batch and messages are nacked. | `crates/contrib-nodes/src/exporters/azure_monitor_exporter/exporter.rs` |
+| `otelcol.node.export.degrade` | `warn` | First observed failure. | Shared exporter diagnostics |
+| `otelcol.node.export.report` | `warn` | At most one failure summary per 60 seconds. | Shared exporter diagnostics |
+| `otelcol.node.export.resume` | `info` | Confirmed recovery after 30 failure-free seconds and fresh success. | Shared exporter diagnostics |
 | `azure_monitor_exporter.export.periodic_flush` | `debug` | Periodic flush triggered for pending batch data. | `crates/contrib-nodes/src/exporters/azure_monitor_exporter/exporter.rs` |
 | `azure_monitor_exporter.export.retry_delay` | `warn` | Retry/backoff delay selected after retryable export failure. | `crates/contrib-nodes/src/exporters/azure_monitor_exporter/client.rs` |
 | `azure_monitor_exporter.client.error` | `warn` | Non-success HTTP response from Azure ingestion endpoint. | `crates/contrib-nodes/src/exporters/azure_monitor_exporter/client.rs` |
@@ -93,3 +95,6 @@ When adding or changing telemetry in this crate:
 3. **Quick review checklist**
    - Search metric sets: `#[metric_set(` in `crates/contrib-nodes/src/exporters/azure_monitor_exporter/*.rs`.
    - Search log events: `otel_(trace|debug|info|warn|error)!(` in `crates/contrib-nodes/src/exporters/azure_monitor_exporter/*.rs`.
+
+See the [shared exporter diagnostic policy](../../../../../docs/telemetry/events-guide.md#repeated-exporter-failures)
+for report fields, scope, operation stages, and recovery semantics.

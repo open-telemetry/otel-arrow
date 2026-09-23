@@ -3,6 +3,7 @@
 
 use http::StatusCode;
 use http::header::InvalidHeaderValue;
+use otel_arrow_dfe_telemetry::export_diagnostics::ExportErrorKind;
 
 /// Error definitions for azure monitor exporter.
 #[derive(thiserror::Error, Debug)]
@@ -186,6 +187,30 @@ impl std::fmt::Display for NetworkErrorKind {
 }
 
 impl Error {
+    /// Bounded diagnosis independent of retry and refusal decisions.
+    pub(super) fn diagnostic_type(&self) -> ExportErrorKind {
+        match self {
+            Self::Auth {
+                kind: AuthErrorKind::Unauthorized,
+                ..
+            }
+            | Self::NoBearerToken { .. } => ExportErrorKind::Authentication,
+            Self::Auth {
+                kind: AuthErrorKind::Forbidden,
+                ..
+            } => ExportErrorKind::Authorization,
+            Self::Network {
+                kind: NetworkErrorKind::Timeout,
+                ..
+            } => ExportErrorKind::Timeout,
+            Self::Network { .. } => ExportErrorKind::Transport,
+            Self::RateLimited { .. } => ExportErrorKind::Throttled,
+            Self::ServerError { .. } => ExportErrorKind::ServerError,
+            Self::PayloadTooLarge | Self::UnexpectedStatus { .. } => ExportErrorKind::Rejected,
+            _ => ExportErrorKind::Other,
+        }
+    }
+
     /// Returns true if this error is retryable.
     #[must_use]
     pub fn is_retryable(&self) -> bool {
