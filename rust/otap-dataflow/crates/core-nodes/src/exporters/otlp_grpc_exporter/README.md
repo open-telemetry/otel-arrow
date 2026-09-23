@@ -193,7 +193,8 @@ this metric.
 | --- | --- | --- | --- |
 | `exporter.otlp_grpc.authentication.failures` | `{attempt}` | `source` | Auth credential polls that did not produce a usable credential, including failures before a signal batch is admitted. |
 
-Authentication `source` is the registered provider name.
+Authentication `source` is the name of the HTTP client auth implementation (ex:
+`BearerAuth`) selected based on the auth capability configured.
 
 ### Events
 
