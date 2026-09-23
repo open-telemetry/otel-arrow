@@ -9,6 +9,13 @@ use crate::engine::{
 };
 use crate::error::Error;
 
+/// Validates that context entries declared at the innermost scope (such as at pipeline or group
+/// level) do not shadow entries already declared at a broader scope (such as group or engine).
+///
+/// `layers` must be ordered from broadest to narrowest scope (engine -> group -> pipeline). 
+/// The last element is treated as the "current" scope whose entries are checked against all
+/// preceding ancestors. If any entry name in the current scope also appears in an ancestor,
+/// a validation error is emitted referencing both config paths.
 fn validate_context_entry_shadowing(layers: &[ContextPolicyLayer<'_>], errors: &mut Vec<Error>) {
     let Some((current, ancestors)) = layers.split_last() else {
         return;

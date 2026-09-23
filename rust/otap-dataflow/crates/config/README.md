@@ -326,7 +326,7 @@ Topic declaration precedence (for a pipeline in a given group):
 ## Context Entries
 
 Context entries are stored with original source-type information to
-encoding the origin of transport headers, authorized data fields, and
+encode the origin of transport headers, authorized data fields, and
 more. Simple context entries are created using a single name entered
 in configuration of the appropriate type, for example a transport
 headers `header_capture` rule with a `store_as` clause creates a named
