@@ -69,7 +69,7 @@ impl TerminalMetricsDeadline {
             if let Some(deadline) = deadline {
                 tokio::select! {
                     biased;
-                    _ = tokio::time::sleep_until(deadline.into()) => return,
+                    _ = crate::clock::sleep_until(deadline) => return,
                     _ = updates.changed() => {}
                 }
             } else {
