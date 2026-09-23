@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 pub(crate) const ATTRIBUTES_FIELD_NAME: &str = "attributes";
+pub(crate) const DATA_POINTS_FIELD_NAME: &str = "data_points";
 pub(crate) const BODY_FIELD_NAME: &str = "body";
 pub(crate) const RESOURCES_FIELD_NAME: &str = "resource";
 pub(crate) const SCOPE_FIELD_NAME: &str = "instrumentation_scope";
