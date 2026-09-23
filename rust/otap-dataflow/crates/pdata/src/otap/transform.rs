@@ -41,6 +41,7 @@ use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use crate::schema::consts::{self, metadata};
 use crate::schema::{get_field_metadata, update_field_metadata};
 
+pub mod cardinality;
 pub mod concatenate;
 pub mod reindex;
 pub mod sanitize;

@@ -73,3 +73,8 @@ required-features = ["testing"]
 name = "sanitize"
 harness = false
 required-features = ["bench"]
+
+[[bench]]
+name = "schema_unify"
+harness = false
+required-features = ["testing", "bench"]

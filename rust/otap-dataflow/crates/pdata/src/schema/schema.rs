@@ -273,6 +273,14 @@ impl Schema {
         Some(&self.fields[i])
     }
 
+    /// Look up the declaration-order slot of a field by name. Returns `None` if
+    /// the field is not part of this schema. The slot is a stable index into
+    /// [`Schema::fields`].
+    #[must_use]
+    pub fn slot_of(&self, name: &str) -> Option<usize> {
+        (self.idx)(name)
+    }
+
     /// Returns the names of all required fields.
     pub fn required_field_names(&self) -> impl Iterator<Item = &'static str> + '_ {
         self.fields.iter().filter(|f| f.required).map(|f| f.name)
