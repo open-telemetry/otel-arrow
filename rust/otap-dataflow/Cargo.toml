@@ -160,14 +160,14 @@ openssl = "0.10"
 # this dependency, as it means moving the derive macros used in our
 # tests upstream. This is currently used by experimental logs
 # exporters, hence the "logs" feature.
-opentelemetry-proto = { version = "0.32", default-features = false, features = ["gen-tonic-messages", "logs", "trace"]}
+opentelemetry-proto = { version = "0.33", default-features = false, features = ["gen-tonic-messages", "logs", "trace"]}
 
 # Detector-only use: opentelemetry_sdk provides the `Resource` type and `ResourceDetector` trait;
 # opentelemetry provides the `Key`/`Value` types those resources hold. These dependencies use
 # `default-features = false` to drop trace/metrics/logs. opentelemetry_sdk 0.32.1 predates the
 # slimming in opentelemetry-rust #3593 (unreleased).
-opentelemetry = { version = "0.32.0", default-features = false }
-opentelemetry_sdk = { version = "0.32.1", default-features = false }
+opentelemetry = { version = "0.33.0", default-features = false }
+opentelemetry_sdk = { version = "0.33.0", default-features = false }
 
 parking_lot = "0.12.5"
 paste = "1"
@@ -295,8 +295,8 @@ tracepoint_decode = "0.5.0"
 tracelogging = "1.2.4"
 tracelogging_dynamic = "1.2.4"
 urlencoding = "2"
-geneva-uploader = { version = "0.7.1", default-features = false, features = ["tls-rustls"] }
-opentelemetry-resource-detectors = "0.12.0"
+geneva-uploader = { version = "0.8.0", default-features = false, features = ["tls-rustls"] }
+opentelemetry-resource-detectors = "0.13.0"
 
 [patch.crates-io]
 otel-arrow-dfe-pdata-views = { path = "crates/pdata-views" }
