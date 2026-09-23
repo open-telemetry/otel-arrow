@@ -217,7 +217,7 @@ fn query_with_polling(
             interval,
             catch_up: budget_override.unwrap_or_default(),
             timeout: Duration::from_secs(1),
-            fetch_size: 10,
+            fetch_size_rows: 10,
             max_rows_per_poll: 10,
             max_batch_bytes: 1024 * 1024,
         },

@@ -109,7 +109,7 @@ The minimal shared polling block is:
 interval: 5m
 timeout: 2m
 max_rows_per_poll: 10000
-fetch_size: 1000
+fetch_size_rows: 1000
 max_batch_bytes: 10485760
 ```
 
@@ -151,7 +151,7 @@ use `CompiledQuery::compile`, which validates all four configuration inputs.
 | `interval` | duration string | **required** | Between `1ms` and `24h`, inclusive. Delay after a cycle ends, not between its pages; unresolved downstream feedback blocks the next page. |
 | `timeout` | duration string | **required** | Must be greater than zero. The contract exposes a native-call timeout, not a guaranteed whole-poll deadline. |
 | `max_rows_per_poll` | integer | **required** | Between `1` and `10000`. Hard row ceiling the adapter must enforce while building its returned page. |
-| `fetch_size` | integer | **required** | Between `1` and `10000`, and no larger than `max_rows_per_poll`. Target native fetch size. |
+| `fetch_size_rows` | integer rows | **required** | Between `1` and `10000`, and no larger than `max_rows_per_poll`. Target rows per native fetch, not bytes. |
 | `max_batch_bytes` | integer bytes | **required** | Between `1` and `268435456` (256 MiB). Applied separately to accounted normalized-row storage and the exact serialized OTLP payload; not a combined memory ceiling. |
 | `catch_up` | object | Default budgets below | Optional budget overrides for normal bounded paging. Omitted fields use defaults; null and unknown fields are rejected. |
 | `catch_up.max_pages` | integer | `32` | Between `1` and `1024`, inclusive. Maximum page fetches per cycle, including empty probes. Set to `1` for single-page cycles. |
@@ -165,7 +165,7 @@ introducing another receiver URN or changing the per-page limits:
 interval: 5m
 timeout: 2m
 max_rows_per_poll: 10000
-fetch_size: 1000
+fetch_size_rows: 1000
 max_batch_bytes: 10485760
 catch_up:
   max_pages: 32
@@ -183,6 +183,10 @@ page, not the whole cycle. The cycle's maximum row work is
 serialized-payload budgets are each at most
 `catch_up.max_pages * max_batch_bytes`, separately. These are work bounds, not
 an RSS ceiling or a promise to retain all those pages concurrently.
+
+Earlier pre-release configurations must rename `fetch_size` to
+`fetch_size_rows`; the old name is not accepted as an alias. The row-count
+meaning and bounds are unchanged.
 
 ### Watermark Configuration
 

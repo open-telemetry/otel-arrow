@@ -33,7 +33,7 @@ pub struct CompiledQuery {
     sql: String,
     interval: Duration,
     timeout: Duration,
-    fetch_size: usize,
+    fetch_size_rows: usize,
     max_rows: usize,
     max_batch_bytes: u64,
     catch_up: CatchUpConfig,
@@ -73,7 +73,7 @@ impl CompiledQuery {
             sql,
             interval: config.interval,
             timeout: config.timeout,
-            fetch_size: config.fetch_size,
+            fetch_size_rows: config.fetch_size_rows,
             max_rows: config.max_rows_per_poll,
             max_batch_bytes: config.max_batch_bytes,
             catch_up: config.catch_up,
@@ -112,10 +112,10 @@ impl CompiledQuery {
         self.max_rows
     }
 
-    /// Returns the target native driver fetch size.
+    /// Returns the target number of rows per native driver fetch, not bytes.
     #[must_use]
-    pub const fn fetch_size(&self) -> usize {
-        self.fetch_size
+    pub const fn fetch_size_rows(&self) -> usize {
+        self.fetch_size_rows
     }
 
     /// Returns the exact serialized OTLP ceiling for one emitted page.
@@ -159,7 +159,7 @@ impl fmt::Debug for CompiledQuery {
             .field("sql", &"<redacted>")
             .field("interval", &self.interval)
             .field("timeout", &self.timeout)
-            .field("fetch_size", &self.fetch_size)
+            .field("fetch_size_rows", &self.fetch_size_rows)
             .field("max_rows", &self.max_rows)
             .field("max_batch_bytes", &self.max_batch_bytes)
             .field("catch_up", &self.catch_up)

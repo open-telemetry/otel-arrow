@@ -9,7 +9,7 @@ fn polling() -> PollingConfig {
     PollingConfig {
         interval: Duration::from_secs(1),
         timeout: Duration::from_secs(1),
-        fetch_size: 100,
+        fetch_size_rows: 100,
         max_rows_per_poll: 100,
         max_batch_bytes: 10 * 1024 * 1024,
         catch_up: CatchUpConfig::default(),
@@ -45,7 +45,7 @@ fn polling_json() -> serde_json::Value {
     serde_json::json!({
         "interval": "1s",
         "timeout": "1s",
-        "fetch_size": 100,
+        "fetch_size_rows": 100,
         "max_rows_per_poll": 100,
         "max_batch_bytes": 10485760
     })
@@ -274,7 +274,7 @@ fn rejects_invalid_polling_bounds() {
             ..polling()
         },
         PollingConfig {
-            fetch_size: 0,
+            fetch_size_rows: 0,
             ..polling()
         },
         PollingConfig {
@@ -290,11 +290,11 @@ fn rejects_invalid_polling_bounds() {
             ..polling()
         },
         PollingConfig {
-            fetch_size: 10_001,
+            fetch_size_rows: 10_001,
             ..polling()
         },
         PollingConfig {
-            fetch_size: 101,
+            fetch_size_rows: 101,
             ..polling()
         },
     ] {
@@ -393,14 +393,14 @@ fn rejects_unsupported_checkpoint_policy_and_bounds() {
     }
 }
 
-/// Scenario: The original polling configuration supplies only max_batch_bytes as its byte limit.
+/// Scenario: A polling configuration supplies only max_batch_bytes as its byte limit.
 /// Guarantees: It deserializes without another setting, bounds both representations, and keeps SQL redacted.
 #[test]
 fn compiles_a_composite_query_plan() {
     let config: PollingConfig = serde_json::from_value(serde_json::json!({
         "interval": "1s",
         "timeout": "1s",
-        "fetch_size": 100,
+        "fetch_size_rows": 100,
         "max_rows_per_poll": 100,
         "max_batch_bytes": 10 * 1024 * 1024
     }))
@@ -417,11 +417,30 @@ fn compiles_a_composite_query_plan() {
     assert_eq!(query.watermark().timestamp_bind, "last_timestamp");
     assert_eq!(query.watermark().tie_breaker_bind, "last_tie_breaker");
     assert_eq!(query.watermark().initial.tie_breaker, 0);
-    assert_eq!(query.fetch_size(), 100);
+    assert_eq!(query.fetch_size_rows(), 100);
+    assert!(format!("{query:?}").contains("fetch_size_rows: 100"));
     assert_eq!(query.max_batch_bytes(), 10 * 1024 * 1024);
     assert_eq!(query.max_normalized_bytes(), query.max_batch_bytes());
     assert!(format!("{query:?}").contains("<redacted>"));
     assert!(!format!("{query:?}").contains("EVENT_TS ASC"));
+}
+
+/// Scenario: A polling block supplies the old fetch_size spelling instead of, or alongside, fetch_size_rows.
+/// Guarantees: Unknown legacy fields are rejected rather than ignored or interpreted as a second limit.
+#[test]
+fn rejects_legacy_fetch_size_name() {
+    for include_new_name in [false, true] {
+        let mut value = polling_json();
+        value["fetch_size"] = serde_json::json!(50);
+        if !include_new_name {
+            _ = value
+                .as_object_mut()
+                .expect("polling object")
+                .remove("fetch_size_rows");
+        }
+        let error = serde_json::from_value::<PollingConfig>(value).expect_err("legacy field");
+        assert!(error.to_string().contains("unknown field `fetch_size`"));
+    }
 }
 
 /// Scenario: A result contains many NULL values with no dynamic payload bytes.
