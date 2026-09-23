@@ -14,5 +14,9 @@ use otel_arrow_dfe_core_nodes::receivers::filelog_receiver::decoder::{
 
 mod cases;
 
+fn new_decoder(encoding: Encoding, policy: OnDecodeError) -> decoder::StreamDecoder {
+    decoder::StreamDecoder::new(encoding, policy, decoder::DecodeStart::NewStream)
+}
+
 criterion_group!(benches, cases::bench_decoder);
 criterion_main!(benches);

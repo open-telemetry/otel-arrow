@@ -171,6 +171,15 @@ pub use decoder::{Encoding, OnDecodeError};
         """use criterion::{criterion_group, criterion_main};
 use filelog_decode_measure::{Encoding, OnDecodeError, decoder};
 mod cases;
+
+// Keep constructor differences outside the shared consumer and pinned prototype.
+fn new_decoder(encoding: Encoding, policy: OnDecodeError) -> decoder::StreamDecoder {
+    #[cfg(feature = "candidate")]
+    { decoder::StreamDecoder::new(encoding, policy, decoder::DecodeStart::NewStream) }
+    #[cfg(not(feature = "candidate"))]
+    { decoder::StreamDecoder::new(encoding, policy, 0, true) }
+}
+
 criterion_group!(benches, cases::bench_decoder);
 criterion_main!(benches);
 """,
