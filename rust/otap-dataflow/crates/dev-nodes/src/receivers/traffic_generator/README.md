@@ -146,9 +146,9 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 | `receiver.traffic_generator.smooth.late_remaining_items` | `{item}` | | Number of signal items remaining when smooth mode detects that a run is late. |
 | `receiver.traffic_generator.smooth.run_batches` | `{batch}` | | Smooth-mode configured batches per one-second run. |
 | `receiver.traffic_generator.smooth.batch_interval` | `ns` | | Smooth-mode configured interval between batches. |
-| `receiver.traffic_generator.smooth.batch_tick_lateness_duration` | `ns` | | Lateness of smooth-mode batch ticks relative to their scheduled instant. |
-| `receiver.traffic_generator.smooth.payload_generate_duration` | `ns` | | Wall-clock time spent generating or cloning one smooth-mode payload. |
-| `receiver.traffic_generator.smooth.payload_send_duration` | `ns` | | Wall-clock time spent sending one smooth-mode payload into the downstream channel. |
+| `receiver.traffic_generator.smooth.batch_tick_lateness_duration` | `s` | | Lateness of smooth-mode batch ticks relative to their scheduled instant. |
+| `receiver.traffic_generator.smooth.payload_generate_duration` | `s` | | Wall-clock time spent generating or cloning one smooth-mode payload. |
+| `receiver.traffic_generator.smooth.payload_send_duration` | `s` | | Wall-clock time spent sending one smooth-mode payload into the downstream channel. |
 
 ### Events
 

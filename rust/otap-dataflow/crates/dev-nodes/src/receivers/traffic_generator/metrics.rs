@@ -108,14 +108,14 @@ pub struct TrafficGeneratorOtherMetrics {
     #[metric(name = "smooth.batch_interval", unit = "ns")]
     pub smooth_batch_interval_ns: Gauge<u64>,
     /// Lateness of smooth-mode batch ticks relative to their scheduled instant.
-    #[metric(name = "smooth.batch_tick_lateness_duration", unit = "ns")]
-    pub smooth_batch_tick_lateness_duration_ns: Mmsc,
+    #[metric(name = "smooth.batch_tick_lateness_duration", unit = "s")]
+    pub smooth_batch_tick_lateness_duration_s: Mmsc,
     /// Wall-clock time spent generating or cloning one smooth-mode payload.
-    #[metric(name = "smooth.payload_generate_duration", unit = "ns")]
-    pub smooth_payload_generate_duration_ns: HistogramNormal,
+    #[metric(name = "smooth.payload_generate_duration", unit = "s")]
+    pub smooth_payload_generate_duration_s: HistogramNormal,
     /// Wall-clock time spent sending one smooth-mode payload into the downstream channel.
-    #[metric(name = "smooth.payload_send_duration", unit = "ns")]
-    pub smooth_payload_send_duration_ns: HistogramNormal,
+    #[metric(name = "smooth.payload_send_duration", unit = "s")]
+    pub smooth_payload_send_duration_s: HistogramNormal,
 }
 
 // -- Top-level wrapper ---------------------------------------------------------

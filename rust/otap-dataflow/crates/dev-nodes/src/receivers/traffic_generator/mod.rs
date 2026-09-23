@@ -94,12 +94,12 @@ fn smooth_batch_interval(run_len: usize) -> Option<Duration> {
     u64::try_from(nanos).ok().map(Duration::from_nanos)
 }
 
-fn duration_nanos(duration: Duration) -> f64 {
-    duration.as_secs_f64() * 1e9
+fn duration_secs(duration: Duration) -> f64 {
+    duration.as_secs_f64()
 }
 
-fn elapsed_nanos(start: StdInstant) -> f64 {
-    duration_nanos(start.elapsed())
+fn elapsed_secs(start: StdInstant) -> f64 {
+    duration_secs(start.elapsed())
 }
 
 /// Declares the traffic generator as a local receiver factory
@@ -272,8 +272,8 @@ impl TrafficGeneratorReceiver {
                             .saturating_duration_since(scheduled);
                         self.metrics
                             .other
-                            .smooth_batch_tick_lateness_duration_ns
-                            .record(duration_nanos(tick_lateness));
+                            .smooth_batch_tick_lateness_duration_s
+                            .record(duration_secs(tick_lateness));
 
                         let (channel_result, attempt_kind) = match next_pdata.take() {
                             Some(pdata) => {
@@ -281,8 +281,8 @@ impl TrafficGeneratorReceiver {
                                 let result = self.export_pdata(handler, pdata)?;
                                 self.metrics
                                     .other
-                                    .smooth_payload_send_duration_ns
-                                    .record(elapsed_nanos(send_start));
+                                    .smooth_payload_send_duration_s
+                                    .record(elapsed_secs(send_start));
                                 (result, AttemptKind::Retry)
                             }
                             None => {
@@ -304,15 +304,15 @@ impl TrafficGeneratorReceiver {
                                 };
                                 self.metrics
                                     .other
-                                    .smooth_payload_generate_duration_ns
-                                    .record(elapsed_nanos(generate_start));
+                                    .smooth_payload_generate_duration_s
+                                    .record(elapsed_secs(generate_start));
 
                                 let send_start = StdInstant::now();
                                 let result = self.handle_payload(handler, payload, &transport_headers)?;
                                 self.metrics
                                     .other
-                                    .smooth_payload_send_duration_ns
-                                    .record(elapsed_nanos(send_start));
+                                    .smooth_payload_send_duration_s
+                                    .record(elapsed_secs(send_start));
                                 (result, AttemptKind::Initial)
                             }
                         };
