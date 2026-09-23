@@ -34,7 +34,7 @@ use otel_arrow_dfe_pdata::schema::consts;
 use otel_arrow_dfe_pdata::testing::fixtures::{DataGenerator, LogsConfig, TracesConfig};
 use otel_arrow_dfe_pdata::testing::round_trip::otlp_to_otap;
 
-const BATCH_COUNTS: &[usize] = &[2, 8, 32, 128];
+const BATCH_COUNTS: &[usize] = &[8];
 const ROWS_PER_BATCH: usize = 256;
 
 criterion_group!(benches, bench_all);
