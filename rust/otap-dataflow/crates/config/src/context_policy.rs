@@ -114,7 +114,7 @@ impl ContextEntryDefinition {
                     };
                     if !conditions.insert((name, value)) {
                         errors.push(format!(
-                            "{path_prefix}[{index}] repeats transport-header condition `{name}` = `{value}`"
+                            "{path_prefix}[{index}] repeats transport-header condition for `{name}`"
                         ));
                     }
                 }
@@ -377,7 +377,10 @@ entries:
         let yaml = "entries: {tenant: [{type: transport_header, name: id}, {type: transport_header_match, name: environment, value: prod}, {type: transport_header_match, name: environment, value: prod}]}";
         let policy = serde_yaml::from_str::<ContextPolicy>(yaml).expect("valid syntax");
 
-        assert!(!policy.validation_errors("context").is_empty());
+        assert_eq!(
+            policy.validation_errors("context"),
+            ["context.entries.tenant[2] repeats transport-header condition for `environment`"]
+        );
     }
 
     /// Scenario: a composite contains conditions but exposes no value-bearing member.

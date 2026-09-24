@@ -203,7 +203,7 @@ header_propagation:
 | --- | --- |
 | `all_captured` | Propagate all captured headers. |
 | `none` | Propagate nothing by default (default). |
-| `named` | Propagate headers named in the `named` list. |
+| `named` | Unqualified entries select captured headers by stored name. Qualified `composite:member` entries select the member's primitive transport header and apply its conditions. |
 
 When `none` is used, only headers explicitly matched by an override
 with `action: propagate` are included on egress.
@@ -244,6 +244,7 @@ policies:
         selector:
           type: named
           named: [product_user:workspace_id]
+        name: stored_name
 ```
 
 The composite header binding is active when the selected transport-header
@@ -270,11 +271,13 @@ the primitive `workspace` header can propagate it independently even when
 | Value | Behavior |
 | --- | --- |
 | `preserve` | Use original wire name (default). |
-| `stored_name` | Use the stored name with its configured spelling. |
+| `stored_name` | Use the stored header name for unqualified selectors or the selected composite member name for qualified selectors. |
 
 For example, if a header was captured from `X-Tenant-Id` and stored
 as `tenant_id`, then `preserve` emits `X-Tenant-Id` on egress while
-`stored_name` emits `tenant_id`.
+`stored_name` emits `tenant_id`. In the conditional composite example above,
+the primitive `workspace` header is emitted as the selected member name
+`workspace_id`; using `preserve` instead would retain its original wire name.
 
 ### Overrides
 

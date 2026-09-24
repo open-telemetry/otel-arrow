@@ -680,14 +680,17 @@ Common validation checks include:
 - Node types must be registered in the `df_engine` binary.
 - Node-level `header_capture` is receiver-only.
 - Node-level `header_propagation` is exporter-only.
-- Qualified propagation selectors must resolve to supported transport-header
-  members with distinct primitive sources.
 
 Use `--validate-and-exit` while editing:
 
 ```bash
 cargo run -- --config path/to/config.yaml --validate-and-exit
 ```
+
+Qualified propagation selectors are resolved when the engine compiles exporter
+bindings at startup. `--validate-and-exit` currently performs static validation
+only and does not resolve composite members or detect primitive-source
+collisions.
 
 If validation fails inside a node config, open that node's README from the
 [core-node catalog](../crates/core-nodes/README.md) or
