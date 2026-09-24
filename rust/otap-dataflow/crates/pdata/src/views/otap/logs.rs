@@ -660,6 +660,10 @@ fn get_body_from_struct<'a>(
     cols: &'a LogBodyArrays<'a>,
     row_idx: usize,
 ) -> Option<OtapAnyValueView<'a>> {
+    if !cols.is_valid(row_idx) {
+        return None;
+    }
+
     let anyval = &cols.anyval_arrays;
     let type_array = &anyval.attr_type;
 
@@ -719,10 +723,15 @@ fn get_body_from_struct<'a>(
                 .map(OtapAnyValueView::Bytes)
                 .unwrap_or(OtapAnyValueView::Empty),
         ),
-        _ => {
-            // For other types (Map, Slice), return empty for now
-            Some(OtapAnyValueView::Empty)
-        }
+        AttributeValueType::Map | AttributeValueType::Slice => Some(
+            anyval
+                .attr_ser
+                .as_ref()
+                .and_then(|accessor| accessor.slice_at(row_idx))
+                .map(OtapAnyValueView::Serialized)
+                .unwrap_or(OtapAnyValueView::Empty),
+        ),
+        _ => Some(OtapAnyValueView::Empty),
     }
 }
 
@@ -739,12 +748,19 @@ fn get_log_id(id_array: Option<&UInt16Array>, row_idx: usize) -> Option<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{
-        ArrayRef, DictionaryArray, Int32Array, Int64Array, StringArray, StructArray, UInt8Array,
-        UInt16Array,
+    use crate::proto::opentelemetry::common::v1::{
+        AnyValue, ArrayValue, KeyValue, KeyValueList, any_value,
     };
-    use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
-    use otel_arrow_dfe_pdata_views::views::common::{AnyValueView, AttributeView};
+    use crate::proto::opentelemetry::logs::v1::LogRecord;
+    use crate::schema::consts;
+    use crate::testing::round_trip::to_otap_logs;
+    use arrow::array::{
+        ArrayRef, BinaryArray, DictionaryArray, Int32Array, Int64Array, StringArray, StructArray,
+        UInt8Array, UInt16Array,
+    };
+    use arrow::buffer::NullBuffer;
+    use arrow::datatypes::{DataType, Field, Fields, Schema, TimeUnit};
+    use otel_arrow_dfe_pdata_views::views::common::{AnyValueView, AttributeView, ValueType};
     use std::sync::Arc;
 
     /// Helper to create a logs batch with optional ID column
@@ -1090,6 +1106,105 @@ mod tests {
         }
 
         assert_eq!(log_count, 3, "Expected 3 logs through view");
+    }
+
+    /// Scenario: A log record whose body is a KeyValueList, encoded through the real OTAP path.
+    /// Guarantees: the body decodes as a KeyValueList the view can iterate, not Empty.
+    #[test]
+    fn test_map_body_decodes_from_serialized_column() {
+        let log = LogRecord {
+            body: Some(AnyValue {
+                value: Some(any_value::Value::KvlistValue(KeyValueList {
+                    values: vec![KeyValue {
+                        key: "k".to_string(),
+                        value: Some(AnyValue {
+                            value: Some(any_value::Value::StringValue("v".to_string())),
+                        }),
+                    }],
+                })),
+            }),
+            ..Default::default()
+        };
+        let otap = to_otap_logs(vec![log]);
+        let view = OtapLogsView::try_from(&otap).expect("logs view");
+
+        let mut checked = 0;
+        for resource_logs in view.resources() {
+            for scope_logs in resource_logs.scopes() {
+                for log_record in scope_logs.log_records() {
+                    let body = log_record.body().expect("body");
+                    assert_eq!(body.value_type(), ValueType::KeyValueList);
+                    let entries: Vec<_> = body.as_kvlist().expect("kvlist").collect();
+                    assert_eq!(entries.len(), 1);
+                    assert_eq!(entries[0].key(), b"k".as_slice());
+                    let entry_value = entries[0].value().expect("entry value");
+                    assert_eq!(entry_value.as_string(), Some(b"v".as_slice()));
+                    checked += 1;
+                }
+            }
+        }
+        assert_eq!(checked, 1);
+    }
+
+    /// Scenario: A log record whose body is an array, encoded through the real OTAP path.
+    /// Guarantees: the body decodes as an Array the view can iterate, not Empty.
+    #[test]
+    fn test_slice_body_decodes_from_serialized_column() {
+        let log = LogRecord {
+            body: Some(AnyValue {
+                value: Some(any_value::Value::ArrayValue(ArrayValue {
+                    values: vec![
+                        AnyValue {
+                            value: Some(any_value::Value::StringValue("a".to_string())),
+                        },
+                        AnyValue {
+                            value: Some(any_value::Value::IntValue(1)),
+                        },
+                    ],
+                })),
+            }),
+            ..Default::default()
+        };
+        let otap = to_otap_logs(vec![log]);
+        let view = OtapLogsView::try_from(&otap).expect("logs view");
+
+        let mut checked = 0;
+        for resource_logs in view.resources() {
+            for scope_logs in resource_logs.scopes() {
+                for log_record in scope_logs.log_records() {
+                    let body = log_record.body().expect("body");
+                    assert_eq!(body.value_type(), ValueType::Array);
+                    let items: Vec<_> = body.as_array().expect("array").collect();
+                    assert_eq!(items.len(), 2);
+                    assert_eq!(items[0].as_string(), Some(b"a".as_slice()));
+                    assert_eq!(items[1].as_int64(), Some(1));
+                    checked += 1;
+                }
+            }
+        }
+        assert_eq!(checked, 1);
+    }
+
+    /// Scenario: The body struct cell is null while its Map type and ser children still hold values.
+    /// Guarantees: get_body_from_struct honors the parent validity and returns None, not the child bytes.
+    #[test]
+    fn test_map_body_under_null_parent_is_none() {
+        // {"k":"v"} as indefinite CBOR, the kind of value a Map body would carry.
+        let cbor: &[u8] = &[0xbf, 0x61, b'k', 0x61, b'v', 0xff];
+        let body_struct = StructArray::new(
+            Fields::from(vec![
+                Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+                Field::new(consts::ATTRIBUTE_SER, DataType::Binary, true),
+            ]),
+            vec![
+                Arc::new(UInt8Array::from(vec![AttributeValueType::Map as u8])) as ArrayRef,
+                Arc::new(BinaryArray::from_iter_values([cbor])) as ArrayRef,
+            ],
+            Some(NullBuffer::from_iter(vec![false])),
+        );
+
+        let body = LogBodyArrays::try_from(&body_struct).expect("body arrays");
+        assert!(get_body_from_struct(&body, 0).is_none());
     }
 
     #[test]
@@ -1543,5 +1658,75 @@ mod tests {
         }
 
         assert_eq!(log_count, 3, "Should still iterate through all 3 logs");
+    }
+
+    /// Scenario: A log record attribute holds a nested array of an int, bytes, and a kvlist, encoded through the real OTAP path.
+    /// Guarantees: OtapLogsView decodes the composite attribute value from its CBOR column, matching the source structure.
+    #[test]
+    fn test_nested_attribute_decodes_from_serialized_column() {
+        use crate::proto::opentelemetry::common::v1::{
+            AnyValue, ArrayValue, KeyValue, KeyValueList, any_value,
+        };
+        use crate::proto::opentelemetry::logs::v1::LogRecord;
+        use crate::testing::round_trip::to_otap_logs;
+        use otel_arrow_dfe_pdata_views::views::common::ValueType;
+
+        let log = LogRecord {
+            attributes: vec![KeyValue {
+                key: "attr".to_string(),
+                value: Some(AnyValue {
+                    value: Some(any_value::Value::ArrayValue(ArrayValue {
+                        values: vec![
+                            AnyValue {
+                                value: Some(any_value::Value::IntValue(-7)),
+                            },
+                            AnyValue {
+                                value: Some(any_value::Value::BytesValue(vec![0, 255])),
+                            },
+                            AnyValue {
+                                value: Some(any_value::Value::KvlistValue(KeyValueList {
+                                    values: vec![KeyValue {
+                                        key: "ready".to_string(),
+                                        value: Some(AnyValue {
+                                            value: Some(any_value::Value::BoolValue(true)),
+                                        }),
+                                    }],
+                                })),
+                            },
+                        ],
+                    })),
+                }),
+            }],
+            ..Default::default()
+        };
+        let otap = to_otap_logs(vec![log]);
+        let view = OtapLogsView::try_from(&otap).expect("logs view");
+
+        let mut checked = 0;
+        for resource_logs in view.resources() {
+            for scope_logs in resource_logs.scopes() {
+                for log_record in scope_logs.log_records() {
+                    let attrs: Vec<_> = log_record.attributes().collect();
+                    assert_eq!(attrs.len(), 1);
+                    assert_eq!(attrs[0].key(), b"attr".as_slice());
+                    let value = attrs[0].value().expect("attr value");
+                    assert_eq!(value.value_type(), ValueType::Array);
+                    let items: Vec<_> = value.as_array().expect("array").collect();
+                    assert_eq!(items.len(), 3);
+                    assert_eq!(items[0].as_int64(), Some(-7));
+                    assert_eq!(items[1].as_bytes(), Some([0u8, 255u8].as_slice()));
+                    assert_eq!(items[2].value_type(), ValueType::KeyValueList);
+                    let entries: Vec<_> = items[2].as_kvlist().expect("kvlist").collect();
+                    assert_eq!(entries.len(), 1);
+                    assert_eq!(entries[0].key(), b"ready".as_slice());
+                    assert_eq!(
+                        entries[0].value().expect("entry value").as_bool(),
+                        Some(true)
+                    );
+                    checked += 1;
+                }
+            }
+        }
+        assert_eq!(checked, 1);
     }
 }
