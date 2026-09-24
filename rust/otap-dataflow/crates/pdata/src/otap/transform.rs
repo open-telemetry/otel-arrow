@@ -370,10 +370,10 @@ where
     // than rebuilding it from scratch using a PrimitiveBuilder because we only need to rewrite
     // the delta encoded segments
     let parent_id_arr_ref = get_required_array(record_batch, consts::PARENT_ID)?;
-    // The parent_id column may arrive dictionary encoded, for example u32 IDs on metrics and
-    // traces attributes, so cast it to a plain primitive to materialize the absolute IDs.
-    // `replace_materialized_parent_id_column` then re-encodes the decoded IDs as a dictionary
-    // sized to their cardinality, or a plain column when they would overflow a u16 key.
+    // TODO - currently we're casting to a primitive array, then casting back to the original
+    // array type when we replace the column. This is fine for u16 IDs, but our u32 IDs may be
+    // dictionary encoded, so we should revisit this for metrics/traces which have attributes
+    // that use this kind of ID
     let parent_id_arr = cast(&parent_id_arr_ref, &T::ArrayType::DATA_TYPE).map_err(|e| {
         Error::UnexpectedRecordBatchState {
             reason: format!("Failed to cast parent_id column: {}", e),
@@ -559,9 +559,9 @@ where
 
     let encoded_parent_ids = T::get_parent_id_column(record_batch)?;
 
-    // Build a plain primitive array of the absolute materialized parent IDs.
-    // `replace_materialized_parent_id_column` re-encodes it as a dictionary sized to its
-    // cardinality when the incoming column was one, or a plain column when a u16 key would overflow.
+    // TODO: It would be more efficient here to figure out if the original type was a
+    // dictionary and map the keys. Instead, we build up this primitive array and cast
+    // back to the original type in `replace_materialized_parent_id_column`
     let mut materialized_parent_ids =
         PrimitiveBuilder::<T::ArrayType>::with_capacity(record_batch.num_rows());
 
@@ -617,7 +617,7 @@ where
 
 /// Returns a new record batch with the parent_id column replaced by `materialized_parent_ids`.
 /// When the incoming column was dictionary encoded, the decoded IDs are re-encoded as a dictionary
-/// whose key is sized to their cardinality, falling back to a plain primitive column when they
+/// whose key is sized to their cardinality, falling back to a primitive column when they
 /// would overflow a u16 key. The parent_id field's encoding metadata is set to `encoding`. The
 /// record batch must contain a parent_id column and `materialized_parent_ids` must have the same
 /// row count.
@@ -634,7 +634,7 @@ fn replace_materialized_parent_id_column(
 
     // Keep the parent_id dictionary encoded when it arrived that way and the decoded cardinality
     // still fits a u8 or u16 key, sizing the key to the cardinality so high-cardinality IDs do not
-    // overflow a small key. Fall back to the plain primitive when even a u16 key would overflow.
+    // overflow a small key. Fall back to a primitive column when even a u16 key would overflow.
     let parent_id_column = if matches!(old_field.data_type(), DataType::Dictionary(_, _)) {
         let field_info = concatenate::FieldInfo::new_from_array(&materialized_parent_ids);
         let key_type = match concatenate::estimate_cardinality(&field_info) {
@@ -4364,8 +4364,8 @@ mod test {
         run_test_with_dict_key_type::<UInt16Type>();
     }
 
-    /// Scenario: a dictionary encoded parent_id whose decoded IDs exceed the dictionary key width.
-    /// Guarantees: the decoded parent_id is materialized as a plain column, not re-encoded into the small key.
+    /// Scenario: a dictionary encoded parent_id whose decoded IDs overflow the incoming dictionary key width.
+    /// Guarantees: the decoded parent_id is re-encoded with a dictionary key widened to hold the IDs (here UInt16), not overflowing the original UInt8 key.
     #[test]
     fn test_materialize_parent_id_for_attributes_dict_encoded_parent_id() {
         // 300 rows share the same key, type and value, so every parent_id is delta encoded.
@@ -4404,7 +4404,7 @@ mod test {
         let result_batch = materialize_parent_id_for_attributes::<u16>(&record_batch).unwrap();
 
         // The 300 absolute IDs overflow a UInt8 key, so the decoded parent_id keeps a dictionary
-        // with the key upgraded to UInt16 instead of falling back to a plain column.
+        // with the key upgraded to UInt16 instead of falling back to a primitive column.
         let out_schema = result_batch.schema();
         let parent_id_field = out_schema.field_with_name(consts::PARENT_ID).unwrap();
         assert_eq!(
