@@ -7302,6 +7302,7 @@ name = "otel-arrow-dfe-config"
 version = "0.57.0"
 dependencies = [
  "byte-unit",
+ "criterion",
  "hashbrown 0.17.1",
  "http 1.5.0",
  "humantime-serde",

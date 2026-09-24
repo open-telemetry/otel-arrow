@@ -31,6 +31,7 @@ reqwest = { workspace = true, features = ["blocking"] }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [dev-dependencies]
+criterion = { workspace = true }
 k8s-openapi = { workspace = true }
 kube = { workspace = true }
 schemars = { workspace = true }
@@ -38,3 +39,7 @@ tempfile = { workspace = true }
 wiremock = { workspace = true }
 tokio = { workspace = true }
 rustls = { workspace = true, features = ["ring"] }
+
+[[bench]]
+name = "header_propagation"
+harness = false
