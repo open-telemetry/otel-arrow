@@ -8,7 +8,8 @@ change_type: enhancement
 component: pkg/arrow
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
-note: Reading an OTAP timestamp column now fails if it uses a time zone other than UTC or a unit other than nanoseconds.
+note: OTAP timestamp columns are now required to be in nanoseconds with a time zone
+set to either "UTC", "+00:00", or no timezone. In the future no timezone will also be rejected.
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
 issues: [2369]
