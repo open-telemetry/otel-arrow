@@ -9,7 +9,9 @@ mod validate;
 
 use crate::ExtensionId;
 use crate::PipelineGroupId;
+use crate::PipelineId;
 use crate::TopicName;
+use crate::context_policy::{ContextPolicy, ContextScope};
 use crate::extension::ExtensionUserConfig;
 use crate::health::HealthPolicy;
 use crate::observed_state::ObservedStateSettings;
@@ -78,6 +80,65 @@ impl OtelDataflowSpec {
         }
         redacted
     }
+
+    /// Returns layers ordered broadest-to-narrowest: engine, then group, then pipeline.
+    /// When`pipeline_id` is `None`, only engine and group layers are returned
+    fn context_policy_layers<'a>(
+        &'a self,
+        pipeline_group_id: &PipelineGroupId,
+        pipeline_id: Option<&PipelineId>,
+    ) -> Vec<ContextPolicyLayer<'a>> {
+        let pipeline_group = self
+            .groups
+            .get(pipeline_group_id)
+            .expect("requested context policy group must exist");
+        let mut layers = vec![ContextPolicyLayer {
+            scope: ContextScope::Engine,
+            path: "policies".to_owned(),
+            context: self.policies.context.as_ref(),
+        }];
+        layers.push(ContextPolicyLayer {
+            scope: ContextScope::Group(pipeline_group_id.clone()),
+            path: format!("groups.{pipeline_group_id}.policies"),
+            context: pipeline_group
+                .policies
+                .as_ref()
+                .and_then(|policies| policies.context.as_ref()),
+        });
+        if let Some(pipeline_id) = pipeline_id {
+            let pipeline = pipeline_group
+                .pipelines
+                .get(pipeline_id)
+                .expect("requested context policy pipeline must exist");
+            layers.push(ContextPolicyLayer {
+                scope: ContextScope::Pipeline(pipeline_group_id.clone(), pipeline_id.clone()),
+                path: format!("groups.{pipeline_group_id}.pipelines.{pipeline_id}.policies"),
+                context: pipeline
+                    .policies()
+                    .and_then(|policies| policies.context.as_ref()),
+            });
+        }
+        layers
+    }
+}
+
+/// A single tier in the context-policy inheritance chain.
+///
+/// Context policies are declared at three nesting levels in the config:
+/// - engine-wide (`policies.context`)
+/// - per-group (`groups.<id>.policies.context`)
+/// - per-pipeline (`groups.<id>.pipelines.<id>.policies.context`).
+///
+/// This captures one of these levels together with its [`ContextScope`] and the
+/// config `path`
+struct ContextPolicyLayer<'a> {
+    scope: ContextScope,
+
+    /// Dot-delimited path to this layer's policy section in the user config
+    /// (e.g. `"groups.default.policies"`), included in validation error messages to identify the
+    /// declaration site.
+    path: String,
+    context: Option<&'a ContextPolicy>,
 }
 
 /// Top-level engine configuration section.
@@ -447,6 +508,7 @@ impl EngineObservabilityPolicies {
             runtime_recovery: None,
             transport_headers: None,
             authorized_identity: None,
+            context: None,
         }
     }
 
@@ -481,6 +543,7 @@ fn default_bind_address() -> String {
 mod tests {
     use super::*;
     use kube::{CustomResource, CustomResourceExt};
+    use std::fmt::Write;
     use std::fs;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -509,6 +572,42 @@ groups:
             to: exporter
 "#
         )
+    }
+
+    fn context_engine_yaml(
+        engine_entries: Option<&str>,
+        group_entries: Option<&str>,
+        pipeline_entries: Option<&str>,
+    ) -> String {
+        let mut yaml = format!("version: {ENGINE_CONFIG_VERSION_V1}\n");
+        if let Some(entries) = engine_entries {
+            writeln!(yaml, "policies:\n  context:\n    entries: {entries}")
+                .expect("writing to a String cannot fail");
+        }
+        yaml.push_str("engine: {}\ngroups:\n  default:\n");
+        if let Some(entries) = group_entries {
+            writeln!(
+                yaml,
+                "    policies:\n      context:\n        entries: {entries}"
+            )
+            .expect("writing to a String cannot fail");
+        }
+        yaml.push_str("    pipelines:\n      main:\n");
+        if let Some(entries) = pipeline_entries {
+            writeln!(
+                yaml,
+                "        policies:\n          context:\n            entries: {entries}"
+            )
+            .expect("writing to a String cannot fail");
+        }
+        yaml.push_str(
+            r#"        nodes:
+          receiver: {type: "urn:test:receiver:example", config: null}
+          exporter: {type: "urn:test:exporter:example", config: null}
+        connections: [{from: receiver, to: exporter}]
+"#,
+        );
+        yaml
     }
 
     #[test]
@@ -2993,7 +3092,7 @@ groups:
             pipeline.policies.rate_limiter_scope,
             Some(crate::policy::RateLimiterDeclarationScope::Pipeline(
                 PipelineGroupId::from("default"),
-                crate::PipelineId::from("main"),
+                PipelineId::from("main"),
             ))
         );
     }
@@ -3069,6 +3168,243 @@ groups:
             !main.policies.rate_limiters.is_empty(),
             "regular pipelines should inherit the engine-level rate limiter"
         );
+    }
+
+    /// Scenario: engine, group, and pipeline scopes each declare context entries.
+    /// Guarantees: resolution retains declaring scope and orders entries by scope then name.
+    #[test]
+    fn resolves_context_entries_deterministically_across_scopes() {
+        let yaml = context_engine_yaml(
+            Some(
+                "{z_engine: [{type: transport_header, name: z}], a_engine: [{type: transport_header, name: a}]}",
+            ),
+            Some("{group_entry: [{type: authorized_identity, name: customer_id}]}"),
+            Some("{pipeline_entry: [{type: transport_header, name: request_id}]}"),
+        );
+        let config: OtelDataflowSpec =
+            serde_yaml::from_str(&yaml).expect("context declarations deserialize");
+        let resolved = config.resolve();
+        let main = resolved
+            .pipelines
+            .iter()
+            .find(|pipeline| pipeline.role == ResolvedPipelineRole::Regular)
+            .expect("regular pipeline is resolved");
+        let names = main
+            .policies
+            .context
+            .iter()
+            .map(|declaration| declaration.name.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            names,
+            ["a_engine", "z_engine", "group_entry", "pipeline_entry"]
+        );
+        assert!(matches!(
+            main.policies.context[0].scope,
+            ContextScope::Engine
+        ));
+        assert!(matches!(
+            &main.policies.context[2].scope,
+            ContextScope::Group(group) if group.as_ref() == "default"
+        ));
+        assert!(matches!(
+            &main.policies.context[3].scope,
+            ContextScope::Pipeline(group, pipeline)
+                if group.as_ref() == "default" && pipeline.as_ref() == "main"
+        ));
+
+        let observability = resolved
+            .pipelines
+            .iter()
+            .find(|pipeline| pipeline.role == ResolvedPipelineRole::ObservabilityInternal)
+            .expect("observability pipeline is resolved");
+        assert!(observability.policies.context.is_empty());
+    }
+
+    /// Scenario: sibling pipeline groups reuse a context entry name.
+    /// Guarantees: declarations that are never jointly visible do not conflict.
+    #[test]
+    fn accepts_context_entry_name_reuse_in_sibling_groups() {
+        let yaml = r#"
+version: otel_dataflow/v1
+engine: {}
+groups:
+  first:
+    policies:
+      context:
+        entries:
+          tenant: [{type: transport_header, name: first_tenant}]
+    pipelines: {}
+  second:
+    policies:
+      context:
+        entries:
+          tenant: [{type: transport_header, name: second_tenant}]
+    pipelines: {}
+"#;
+
+        let _config =
+            OtelDataflowSpec::from_yaml(yaml).expect("sibling declarations are independent");
+    }
+
+    /// Scenario: a group shadows an engine context entry visible to the same pipeline.
+    /// Guarantees: validation rejects ambiguous names rather than selecting a nearest scope.
+    #[test]
+    fn rejects_context_entry_shadowing_across_visible_scopes() {
+        let yaml = context_engine_yaml(
+            Some("{tenant: [{type: transport_header, name: engine_tenant}]}"),
+            Some("{tenant: [{type: transport_header, name: group_tenant}]}"),
+            None,
+        );
+        let error = OtelDataflowSpec::from_yaml(&yaml).expect_err("shadowing must fail");
+
+        assert!(error.to_string().contains("cannot shadow one another"));
+        assert!(
+            error
+                .to_string()
+                .contains("policies.context.entries.tenant")
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("groups.default.policies.context.entries.tenant")
+        );
+    }
+
+    /// Scenario: a pipeline shadows a context entry visible from its group.
+    /// Guarantees: validation reports the exact conflicting pipeline and group paths.
+    #[test]
+    fn rejects_pipeline_context_entry_shadowing() {
+        let yaml = context_engine_yaml(
+            None,
+            Some("{tenant: [{type: transport_header, name: group_tenant}]}"),
+            Some("{tenant: [{type: transport_header, name: pipeline_tenant}]}"),
+        );
+        let error = OtelDataflowSpec::from_yaml(&yaml).expect_err("shadowing must fail");
+        let message = error.to_string();
+
+        assert!(
+            message.contains("groups.default.policies.context.entries.tenant"),
+            "{message}"
+        );
+        assert!(
+            message.contains("groups.default.pipelines.main.policies.context.entries.tenant"),
+            "{message}"
+        );
+    }
+
+    /// Scenario: a pipeline group without pipelines shadows an engine context entry.
+    /// Guarantees: group-scope validation rejects shadowing independently of pipeline count.
+    #[test]
+    fn rejects_context_entry_shadowing_in_empty_group() {
+        let yaml = r#"
+version: otel_dataflow/v1
+policies:
+  context:
+    entries:
+      tenant: [{type: transport_header, name: engine_tenant}]
+engine: {}
+groups:
+  default:
+    policies:
+      context:
+        entries:
+          tenant: [{type: transport_header, name: group_tenant}]
+    pipelines: {}
+"#;
+
+        let error = OtelDataflowSpec::from_yaml(yaml).expect_err("shadowing must fail");
+
+        assert!(error.to_string().contains("cannot shadow one another"));
+        assert!(
+            error
+                .to_string()
+                .contains("groups.default.policies.context.entries.tenant")
+        );
+    }
+
+    /// Scenario: an unused context declaration moves from engine to group scope.
+    /// Guarantees: resolution retains its scope while runtime comparisons ignore the move.
+    #[test]
+    fn resolved_policy_equality_ignores_unused_context_scope() {
+        let entries = "{tenant: [{type: transport_header, name: tenant_id}]}";
+        let engine = serde_yaml::from_str::<OtelDataflowSpec>(&context_engine_yaml(
+            Some(entries),
+            None,
+            None,
+        ))
+        .expect("engine declaration deserializes")
+        .resolve()
+        .pipelines
+        .into_iter()
+        .find(|pipeline| pipeline.role == ResolvedPipelineRole::Regular)
+        .expect("engine-scoped pipeline");
+        let group = serde_yaml::from_str::<OtelDataflowSpec>(&context_engine_yaml(
+            None,
+            Some(entries),
+            None,
+        ))
+        .expect("group declaration deserializes")
+        .resolve()
+        .pipelines
+        .into_iter()
+        .find(|pipeline| pipeline.role == ResolvedPipelineRole::Regular)
+        .expect("group-scoped pipeline");
+
+        assert!(matches!(
+            engine.policies.context[0].scope,
+            ContextScope::Engine
+        ));
+        assert!(matches!(
+            &group.policies.context[0].scope,
+            ContextScope::Group(group) if group.as_ref() == "default"
+        ));
+        assert!(engine.runtime_matches(&group));
+        assert!(engine.runtime_shape_matches_ignoring_resources(&group));
+    }
+
+    /// Scenario: a regular pipeline resolves a declared context entry with no runtime consumer.
+    /// Guarantees: declaration-only context policy is retained without invalidating the pipeline.
+    #[test]
+    fn accepts_unused_context_entries_in_runtime_pipelines() {
+        let yaml = context_engine_yaml(
+            Some("{tenant: [{type: transport_header, name: tenant_id}]}"),
+            None,
+            None,
+        );
+        let config = OtelDataflowSpec::from_yaml(&yaml).expect("unused declarations remain valid");
+        let regular = config
+            .resolve()
+            .pipelines
+            .into_iter()
+            .find(|pipeline| pipeline.role == ResolvedPipelineRole::Regular)
+            .expect("regular pipeline is resolved");
+
+        assert_eq!(regular.policies.context.len(), 1);
+        assert_eq!(regular.policies.context[0].name.as_str(), "tenant");
+    }
+
+    /// Scenario: context declarations are configured on the internal observability pipeline.
+    /// Guarantees: the restricted observability policy schema rejects the unsupported family.
+    #[test]
+    fn rejects_context_policy_on_observability_pipeline() {
+        let yaml = r#"
+version: otel_dataflow/v1
+engine:
+  observability:
+    pipeline:
+      policies:
+        context:
+          entries:
+            tenant: [{type: transport_header, name: tenant_id}]
+groups: {}
+"#;
+
+        let error =
+            OtelDataflowSpec::from_yaml(yaml).expect_err("observability context is unsupported");
+
+        assert!(error.to_string().contains("context"));
     }
 
     #[test]
