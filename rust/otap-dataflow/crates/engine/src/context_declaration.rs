@@ -848,10 +848,19 @@ mod tests {
             &mut headers,
         );
 
-        assert_eq!(headers.as_slice()[0].wire_name(), "X-First");
-        assert_eq!(headers.as_slice()[1].wire_name(), "x-second");
-        assert_eq!(headers.as_slice()[2].wire_name(), "X-Alias-A");
-        assert_eq!(headers.as_slice()[3].wire_name(), "X-Alias-B");
+        assert_eq!(headers.get(0).expect("first header").wire_name(), "X-First");
+        assert_eq!(
+            headers.get(1).expect("second header").wire_name(),
+            "x-second"
+        );
+        assert_eq!(
+            headers.get(2).expect("first alias").wire_name(),
+            "X-Alias-A"
+        );
+        assert_eq!(
+            headers.get(3).expect("second alias").wire_name(),
+            "X-Alias-B"
+        );
     }
 
     /// Scenario: consumers request different name representations.
