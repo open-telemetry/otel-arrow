@@ -66,59 +66,21 @@ fn create_metrics_data(record_count: usize) -> MetricsData {
         .attributes(kvs.clone())
         .value_int(1i64)
         .finish();
-    let histogram_data_point = HistogramDataPoint::build()
-        .time_unix_nano(2_000_000_000u64)
-        .attributes(kvs.clone())
-        .count(1u64)
-        .sum(1.0)
-        .bucket_counts(vec![0, 1])
-        .explicit_bounds(vec![0.5])
-        .finish();
-    let exponential_histogram_data_point = ExponentialHistogramDataPoint::build()
-        .time_unix_nano(2_000_000_000u64)
-        .attributes(kvs.clone())
-        .count(1u64)
-        .sum(1.0)
-        .scale(0)
-        .positive(exponential_histogram_data_point::Buckets::new(0, vec![1]))
-        .finish();
-    let summary_data_point = SummaryDataPoint::build()
-        .time_unix_nano(2_000_000_000u64)
-        .attributes(kvs)
-        .count(1u64)
-        .sum(1.0)
-        .quantile_values(vec![summary_data_point::ValueAtQuantile::new(0.5, 1.0)])
-        .finish();
     let metrics = vec![
         Metric::build()
             .name("gauge1")
-            .data_gauge(Gauge::new(vec![number_data_point.clone(); record_count]))
+            .data_gauge(Gauge::new(vec![
+                number_data_point.clone();
+                record_count / 2
+            ]))
             .finish(),
         Metric::build()
             .name("sum1")
             .data_sum(Sum::new(
                 AggregationTemporality::Cumulative,
                 true,
-                vec![number_data_point; record_count],
+                vec![number_data_point.clone(); record_count - record_count / 2],
             ))
-            .finish(),
-        Metric::build()
-            .name("histogram1")
-            .data_histogram(Histogram::new(
-                AggregationTemporality::Cumulative,
-                vec![histogram_data_point; record_count],
-            ))
-            .finish(),
-        Metric::build()
-            .name("exponential_histogram1")
-            .data_exponential_histogram(ExponentialHistogram::new(
-                AggregationTemporality::Cumulative,
-                vec![exponential_histogram_data_point; record_count],
-            ))
-            .finish(),
-        Metric::build()
-            .name("summary1")
-            .data_summary(Summary::new(vec![summary_data_point; record_count]))
             .finish(),
     ];
     let scope_metrics =
