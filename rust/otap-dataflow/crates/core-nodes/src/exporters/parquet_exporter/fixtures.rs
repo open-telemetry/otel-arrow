@@ -18,6 +18,7 @@ use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::{ArrowPayload, ArrowP
 use otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
 use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::KeyValue;
 use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
+use otel_arrow_dfe_pdata::schema::TIMESTAMP_TIME_ZONE;
 use otel_arrow_dfe_pdata::schema::consts::{self, metadata};
 use prost::Message;
 use std::collections::HashMap;
@@ -495,9 +496,12 @@ where
 }
 
 pub fn create_timestamp_ns_array(options: &SimpleDataGenOptions) -> Arc<TimestampNanosecondArray> {
-    Arc::new(TimestampNanosecondArray::from_iter_values(
-        (0..options.num_rows).map(|_| 1748297321 * 1_000_000_000),
-    ))
+    Arc::new(
+        TimestampNanosecondArray::from_iter_values(
+            (0..options.num_rows).map(|_| 1748297321 * 1_000_000_000),
+        )
+        .with_timezone(TIMESTAMP_TIME_ZONE),
+    )
 }
 
 pub fn create_main_record_batch(
@@ -514,7 +518,7 @@ pub fn create_main_record_batch(
     if include_time_unix_nano {
         fields.push(Field::new(
             consts::TIME_UNIX_NANO,
-            DataType::Timestamp(TimeUnit::Nanosecond, None),
+            DataType::Timestamp(TimeUnit::Nanosecond, Some(TIMESTAMP_TIME_ZONE.into())),
             true,
         ));
         columns.push(create_timestamp_ns_array(options));
@@ -567,7 +571,7 @@ pub fn create_metrics_data_point_record_batch(
         Field::new(consts::PARENT_ID, DataType::UInt16, false),
         Field::new(
             consts::START_TIME_UNIX_NANO,
-            DataType::Timestamp(TimeUnit::Nanosecond, None),
+            DataType::Timestamp(TimeUnit::Nanosecond, Some(TIMESTAMP_TIME_ZONE.into())),
             true,
         ),
     ]));
