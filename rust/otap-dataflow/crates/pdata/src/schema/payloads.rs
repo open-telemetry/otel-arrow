@@ -1362,8 +1362,11 @@ mod tests {
                     )
                 }
                 TimestampNanosecond => (
-                    ArrowDT::Timestamp(TimeUnit::Nanosecond, None),
-                    Arc::new(TimestampNanosecondArray::from(vec![0i64])),
+                    TimestampNanosecond.to_arrow(),
+                    Arc::new(
+                        TimestampNanosecondArray::from(vec![0i64])
+                            .with_timezone(crate::schema::TIMESTAMP_TIME_ZONE),
+                    ),
                 ),
                 DurationNanosecond => (
                     ArrowDT::Duration(TimeUnit::Nanosecond),
@@ -1511,8 +1514,11 @@ mod tests {
                             )
                         }
                         TimestampNanosecond => (
-                            ArrowDT::Timestamp(TimeUnit::Nanosecond, None),
-                            Arc::new(TimestampNanosecondArray::from(vec![None as Option<i64>])),
+                            TimestampNanosecond.to_arrow(),
+                            Arc::new(
+                                TimestampNanosecondArray::from(vec![None as Option<i64>])
+                                    .with_timezone(crate::schema::TIMESTAMP_TIME_ZONE),
+                            ),
                         ),
                         DurationNanosecond => (
                             ArrowDT::Duration(TimeUnit::Nanosecond),
