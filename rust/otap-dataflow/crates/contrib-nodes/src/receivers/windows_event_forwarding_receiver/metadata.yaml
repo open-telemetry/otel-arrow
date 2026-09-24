@@ -1,0 +1,6 @@
+type: windows_event_forwarding
+status:
+  class: receiver
+  codeowners:
+    active:
+      - andborja

@@ -41,6 +41,15 @@ tracing.workspace = true
 base64 = { workspace = true, optional = true }
 chrono = { workspace = true, optional = true }
 humantime-serde = { workspace = true, optional = true }
+x509-parser = { workspace = true, optional = true, features = ["verify"] }
+sha1 = { workspace = true, optional = true }
+rustls = { workspace = true, optional = true }
+quick-xml = { workspace = true, optional = true }
+hyper = { workspace = true, optional = true }
+hyper-util = { workspace = true, optional = true, features = ["tokio"] }
+http-body-util = { workspace = true, optional = true }
+mime = { workspace = true, optional = true }
+tokio-rustls = { workspace = true, optional = true }
 itoa = { workspace = true, optional = true }
 geneva-uploader = { workspace = true, optional = true }
 opentelemetry-proto = { workspace = true, optional = true }
@@ -101,6 +110,7 @@ contrib-receivers = [
     "etw",
     "kafka",
     "user-events",
+    "windows-event-forwarding",
 ]
 contrib-processors = [
     "condense-attributes",
@@ -132,6 +142,25 @@ kafka = [
 
 # Receivers.
 etw = ["dep:one_collect", "dep:humantime-serde"]
+windows-event-forwarding = [
+    "dep:chrono",
+    "dep:serde_cbor",
+    "dep:humantime-serde",
+    "dep:uuid",
+    "uuid/v5",
+    "uuid/v4",
+    "dep:x509-parser",
+    "dep:sha1",
+    "dep:rustls",
+    "dep:tokio-rustls",
+    "dep:tokio-util",
+    "dep:quick-xml",
+    "dep:hyper",
+    "dep:hyper-util",
+    "dep:http-body-util",
+    "dep:mime",
+    "dep:url",
+]
 user-events = [
     "dep:base64",
     "dep:chrono",
@@ -217,6 +246,10 @@ otel-arrow-dfe-core-nodes = { workspace = true, features = ["core-nodes"] }
 otel-arrow-dfe-pdata = { workspace = true, features = ["testing"] }
 otel-arrow-dfe-state.workspace = true
 pretty_assertions.workspace = true
+rcgen.workspace = true
+rustls = { workspace = true, features = ["ring"] }
+otel-arrow-dfe-test-tls-certs.workspace = true
+tempfile.workspace = true
 rand.workspace = true
 serde_yaml.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
