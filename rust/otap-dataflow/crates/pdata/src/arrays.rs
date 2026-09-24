@@ -176,7 +176,10 @@ impl_downcast!(binary, Binary, BinaryArray);
 
 impl_downcast!(
     timestamp_nanosecond,
-    Timestamp(TimeUnit::Nanosecond, None),
+    Timestamp(
+        TimeUnit::Nanosecond,
+        Some(crate::schema::TIMESTAMP_TIME_ZONE.into())
+    ),
     TimestampNanosecondArray
 );
 

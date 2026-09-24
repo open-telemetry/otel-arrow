@@ -24,8 +24,7 @@ use arrow::array::{
 };
 use arrow::datatypes::{
     ArrowDictionaryKeyType, DataType, DurationNanosecondType, Float32Type, Float64Type, Int8Type,
-    Int16Type, Int32Type, Int64Type, TimestampNanosecondType, UInt8Type, UInt16Type, UInt32Type,
-    UInt64Type,
+    Int16Type, Int32Type, Int64Type, UInt8Type, UInt16Type, UInt32Type, UInt64Type,
 };
 use arrow::error::ArrowError;
 use paste::paste;
@@ -36,6 +35,9 @@ use crate::encode::record::array::dictionary::{
     DictionaryBuilder,
 };
 use crate::encode::record::array::prefix::ArrayPrefixBuilder;
+use crate::encode::record::array::primitive::{
+    TimestampNanosecondBuilder, TimestampNanosecondDictionaryBuilder,
+};
 
 use dictionary::{
     AdaptiveDictionaryBuilder, CheckedDictionaryArrayAppend, ConvertToNativeHelper,
@@ -738,7 +740,18 @@ pub type Int8ArrayBuilder = PrimitiveArrayBuilder<Int8Type>;
 pub type Int16ArrayBuilder = PrimitiveArrayBuilder<Int16Type>;
 pub type Int32ArrayBuilder = PrimitiveArrayBuilder<Int32Type>;
 pub type Int64ArrayBuilder = PrimitiveArrayBuilder<Int64Type>;
-pub type TimestampNanosecondArrayBuilder = PrimitiveArrayBuilder<TimestampNanosecondType>;
+/// Adaptive builder for OTAP timestamp columns.
+///
+/// The native variant is [`TimestampNanosecondBuilder`] rather than a plain
+/// `PrimitiveBuilder<TimestampNanosecondType>` so that finished arrays carry
+/// the UTC time zone required by section 5.5.2 of the OTAP spec.
+pub type TimestampNanosecondArrayBuilder = AdaptiveArrayBuilder<
+    i64,
+    NoArgs,
+    TimestampNanosecondBuilder,
+    TimestampNanosecondDictionaryBuilder<UInt8Type>,
+    TimestampNanosecondDictionaryBuilder<UInt16Type>,
+>;
 pub type DurationNanosecondArrayBuilder = PrimitiveArrayBuilder<DurationNanosecondType>;
 
 /// Convert an array containing binary data to one which contains UTF-8 Data. This will handle
@@ -1115,7 +1128,10 @@ pub mod test {
         test_array_append_generic(
             TimestampNanosecondArrayBuilder::new,
             vec![2, 1],
-            DataType::Timestamp(TimeUnit::Nanosecond, None),
+            DataType::Timestamp(
+                TimeUnit::Nanosecond,
+                Some(crate::schema::TIMESTAMP_TIME_ZONE.into()),
+            ),
         );
         test_array_append_generic(
             DurationNanosecondArrayBuilder::new,
@@ -1181,6 +1197,48 @@ pub mod test {
         assert_eq!(fixed.value(0), b"\0");
         assert_eq!(fixed.value(1), b"\0");
         assert_eq!(fixed.value(2), b"a");
+    }
+
+    /// Scenario: A timestamp column is built through the adaptive builder's
+    /// native path and through its dictionary path, including the overflow
+    /// upgrade from u8 to u16 keys.
+    /// Guarantees: Every finished timestamp array is tagged with the UTC time
+    /// zone required of OTAP producers, so encoder output validates against the
+    /// OTAP schema regardless of which internal builder variant was used.
+    #[test]
+    fn test_timestamp_builder_always_emits_utc() {
+        let utc = Some(crate::schema::TIMESTAMP_TIME_ZONE.into());
+        let expected_native = DataType::Timestamp(TimeUnit::Nanosecond, utc.clone());
+
+        // Native path.
+        let mut native = TimestampNanosecondArrayBuilder::new(ArrayOptions {
+            optional: false,
+            dictionary_options: None,
+            ..Default::default()
+        });
+        native.append_value(&1);
+        native.append_null();
+        let array = native.finish().expect("native array");
+        assert_eq!(array.data_type(), &expected_native);
+
+        // Dictionary path, including the u8 -> u16 key upgrade on overflow.
+        let mut dict = TimestampNanosecondArrayBuilder::new(ArrayOptions {
+            optional: false,
+            dictionary_options: Some(DictionaryOptions {
+                max_cardinality: u16::MAX,
+                min_cardinality: 2,
+            }),
+            ..Default::default()
+        });
+        for i in 0..(u8::MAX as i64 + 10) {
+            dict.append_value(&i);
+        }
+        let array = dict.finish().expect("dictionary array");
+        let DataType::Dictionary(key_type, value_type) = array.data_type() else {
+            panic!("expected a dictionary array, got {}", array.data_type());
+        };
+        assert_eq!(key_type.as_ref(), &DataType::UInt16);
+        assert_eq!(value_type.as_ref(), &expected_native);
     }
 
     /// Scenario: Adaptive builders receive a bulk append request with a zero count.

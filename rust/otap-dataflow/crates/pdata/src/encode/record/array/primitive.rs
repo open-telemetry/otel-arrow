@@ -5,12 +5,13 @@ use arrow::array::{
     ArrowPrimitiveType, DictionaryArray, PrimitiveArray, PrimitiveBuilder,
     PrimitiveDictionaryBuilder,
 };
-use arrow::datatypes::{ArrowDictionaryKeyType, UInt8Type, UInt16Type};
+use arrow::datatypes::{ArrowDictionaryKeyType, TimestampNanosecondType, UInt8Type, UInt16Type};
 use arrow::error::ArrowError;
 use std::sync::Arc;
 
 use crate::encode::record::array::dictionary::{DictionaryBuilder, UpdateDictionaryIndexInto};
 use crate::encode::record::array::{ArrayAppendNulls, DefaultValueProvider, NoArgs};
+use crate::schema::TIMESTAMP_TIME_ZONE;
 
 use super::dictionary::{self, ConvertToNativeHelper, DictionaryArrayAppend};
 use super::{ArrayAppend, ArrayBuilder, ArrayBuilderConstructor, ArrayLen, ArrayRef};
@@ -185,6 +186,182 @@ where
         // are negative keys, or if going from a bigger type to smaller and some keys would not fit
         // int the smaller type. This won't happen going u8 to u16
         PrimitiveDictionaryBuilder::try_new_from_builder(self).expect("can upgrade u8 to u16")
+    }
+}
+
+/// Builder for OTAP timestamp columns.
+///
+/// `TimestampNanosecondType::DATA_TYPE` is `Timestamp(Nanosecond, None)`, but
+/// the OTAP spec requires producers to tag every timestamp column with the UTC
+/// time zone. This wrapper overrides the data type of the underlying builder
+/// so the finished array carries `Some("UTC")`.
+pub struct TimestampNanosecondBuilder {
+    inner: PrimitiveBuilder<TimestampNanosecondType>,
+}
+
+impl TimestampNanosecondBuilder {
+    /// Creates a builder whose finished array is tagged with the UTC time zone.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            inner: PrimitiveBuilder::<TimestampNanosecondType>::new()
+                .with_timezone(TIMESTAMP_TIME_ZONE),
+        }
+    }
+}
+
+impl Default for TimestampNanosecondBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ArrayBuilderConstructor for TimestampNanosecondBuilder {
+    type Args = NoArgs;
+
+    fn new(_args: Self::Args) -> Self {
+        Self::new()
+    }
+}
+
+impl ArrayAppend for TimestampNanosecondBuilder {
+    type Native = i64;
+
+    fn append_value(&mut self, value: &Self::Native) {
+        self.inner.append_value(*value);
+    }
+
+    fn append_value_n(&mut self, value: &Self::Native, n: usize) {
+        self.inner.append_value_n(*value, n);
+    }
+}
+
+impl ArrayAppendNulls for TimestampNanosecondBuilder {
+    fn append_null(&mut self) {
+        self.inner.append_null();
+    }
+
+    fn append_nulls(&mut self, n: usize) {
+        self.inner.append_nulls(n);
+    }
+}
+
+impl DefaultValueProvider<i64, NoArgs> for TimestampNanosecondBuilder {
+    fn default_value(_args: NoArgs) -> i64 {
+        i64::default()
+    }
+}
+
+impl ArrayBuilder for TimestampNanosecondBuilder {
+    fn finish(&mut self) -> ArrayRef {
+        Arc::new(self.inner.finish())
+    }
+}
+
+impl ArrayLen for TimestampNanosecondBuilder {
+    fn len(&self) -> usize {
+        arrow::array::ArrayBuilder::len(&self.inner)
+    }
+}
+
+/// Dictionary builder for OTAP timestamp columns.
+///
+/// Like [`TimestampNanosecondBuilder`], this overrides the values builder's
+/// data type so the dictionary's value type carries the UTC time zone required
+/// by section 5.5.2 of the OTAP spec.
+///
+/// OTAP does not currently permit dictionary-encoded timestamp columns, but the
+/// adaptive builder is generic over a dictionary variant, so this keeps the
+/// time zone correct on every code path.
+pub struct TimestampNanosecondDictionaryBuilder<K: ArrowDictionaryKeyType> {
+    inner: PrimitiveDictionaryBuilder<K, TimestampNanosecondType>,
+}
+
+impl<K: ArrowDictionaryKeyType> TimestampNanosecondDictionaryBuilder<K> {
+    /// Creates a dictionary builder whose values carry the UTC time zone.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            inner: PrimitiveDictionaryBuilder::new_from_empty_builders(
+                PrimitiveBuilder::<K>::new(),
+                PrimitiveBuilder::<TimestampNanosecondType>::new()
+                    .with_timezone(TIMESTAMP_TIME_ZONE),
+            ),
+        }
+    }
+}
+
+impl<K: ArrowDictionaryKeyType> Default for TimestampNanosecondDictionaryBuilder<K> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<K: ArrowDictionaryKeyType> ArrayBuilderConstructor
+    for TimestampNanosecondDictionaryBuilder<K>
+{
+    type Args = NoArgs;
+
+    fn new(_args: Self::Args) -> Self {
+        Self::new()
+    }
+}
+
+impl<K> DictionaryArrayAppend for TimestampNanosecondDictionaryBuilder<K>
+where
+    K: ArrowDictionaryKeyType,
+    <K as ArrowPrimitiveType>::Native: Into<usize>,
+{
+    type Native = i64;
+
+    fn append_value(&mut self, value: &Self::Native) -> dictionary::Result<usize> {
+        DictionaryArrayAppend::append_value(&mut self.inner, value)
+    }
+
+    fn append_values(&mut self, value: &Self::Native, n: usize) -> dictionary::Result<usize> {
+        DictionaryArrayAppend::append_values(&mut self.inner, value, n)
+    }
+}
+
+impl<K: ArrowDictionaryKeyType> ArrayAppendNulls for TimestampNanosecondDictionaryBuilder<K> {
+    fn append_null(&mut self) {
+        self.inner.append_null();
+    }
+
+    fn append_nulls(&mut self, n: usize) {
+        self.inner.append_nulls(n);
+    }
+}
+
+impl<K: ArrowDictionaryKeyType> ArrayLen for TimestampNanosecondDictionaryBuilder<K> {
+    fn len(&self) -> usize {
+        arrow::array::ArrayBuilder::len(&self.inner)
+    }
+}
+
+impl<K> DictionaryBuilder<K> for TimestampNanosecondDictionaryBuilder<K>
+where
+    K: ArrowDictionaryKeyType,
+    <K as ArrowPrimitiveType>::Native: Into<usize>,
+{
+    fn finish(&mut self) -> DictionaryArray<K> {
+        DictionaryBuilder::finish(&mut self.inner)
+    }
+}
+
+impl<K: ArrowDictionaryKeyType> ConvertToNativeHelper for TimestampNanosecondDictionaryBuilder<K> {
+    type Accessor = PrimitiveArray<TimestampNanosecondType>;
+}
+
+impl UpdateDictionaryIndexInto<TimestampNanosecondDictionaryBuilder<UInt16Type>>
+    for TimestampNanosecondDictionaryBuilder<UInt8Type>
+{
+    fn upgrade_into(self) -> TimestampNanosecondDictionaryBuilder<UInt16Type> {
+        TimestampNanosecondDictionaryBuilder {
+            // safety: upgrading u8 keys to u16 keys always fits
+            inner: PrimitiveDictionaryBuilder::try_new_from_builder(self.inner)
+                .expect("can upgrade u8 to u16"),
+        }
     }
 }
 
