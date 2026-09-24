@@ -137,18 +137,14 @@ examples.
 ### OTAP Dataflow Engine example
 
 **We are not at this time providing pre-built OTAP Dataflow Engine
-releases.** Developers can build the OTAP Dataflow Engine in a minimal
-configuration with the following:
+releases.** Developers can build the OTAP Dataflow Engine with the
+following:
 
 ```bash
 git clone https://github.com/open-telemetry/otel-arrow.git
 cd otel-arrow/rust/otap-dataflow
-cargo build --bin df_engine --no-default-features --features crypto-ring
+cargo build --bin df_engine
 ```
-
-Minimal builds using `--no-default-features` should enable exactly one
-`crypto-*` provider feature. `crypto-ring` is the default-compatible
-provider used by the standard feature set.
 
 A [directory of example configurations][EXAMPLE-CONFIGS] provides a
 number of examples (e.g.,
@@ -210,7 +206,9 @@ participate!
 
 - [Contribution guidelines](CONTRIBUTING.md)
 - [Meeting notes](https://docs.google.com/document/d/1z8_Ra-ALDaYNa88mMj1gOZtOpLZLRk0-dZEmDjPmcUs)
-- [CNCF Slack `#otel-arrow`](https://cloud-native.slack.com/archives/C07S4Q67LTF)
+- CNCF Slack:
+  [`#otel-arrow`](https://cloud-native.slack.com/archives/C07S4Q67LTF).
+  New users can [create an account](https://slack.cncf.io/).
 
 ### Maintainers
 
