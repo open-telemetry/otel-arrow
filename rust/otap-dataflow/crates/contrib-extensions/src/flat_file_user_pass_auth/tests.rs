@@ -415,18 +415,77 @@ async fn get_credential_file_rejects_invalid_password_content() {
     }
 }
 
-/// Scenario: Credential acquisition references an unreadable password secret file.
-/// Guarantees: Acquisition returns an error instead of a credential.
+/// Scenario: A password secret file exceeds the collector's shared four-megabyte size limit.
+/// Guarantees: Acquisition rejects the file instead of loading oversized credential data.
 #[tokio::test]
-async fn get_credential_file_failure() {
-    let ext = make_extension_with_config(Config {
+async fn get_credential_file_rejects_oversized_content() {
+    let dir = tempfile::tempdir().expect("tempdir created");
+    let password_path = dir.path().join("password");
+    std::fs::write(&password_path, vec![b'x'; 5 * 1024 * 1024])
+        .expect("oversized password written");
+    let source = FlatFileUserPassAuth::new(Config {
         username: "test_user".into(),
         password_secret: None,
-        password_secret_file: Some("/ext/invalid_file_secret".into()),
-        password_secret_file_refresh: Duration::from_secs(10),
+        password_secret_file: Some(password_path),
+        password_secret_file_refresh: Duration::from_secs(300),
     });
 
-    assert!(ext.get_credential().await.is_err())
+    let err = source
+        .fetch()
+        .await
+        .expect_err("oversized credential files must be rejected");
+    assert!(
+        err.to_string().contains("too large"),
+        "unexpected error: {err}"
+    );
+}
+
+/// Scenario: An unreadable password file and a valid inline password are both configured.
+/// Guarantees: Acquisition reports the file failure instead of falling back to the inline value.
+#[tokio::test]
+async fn password_file_failure_does_not_fallback_to_inline_secret() {
+    let dir = tempfile::tempdir().expect("tempdir created");
+    let missing_path = dir.path().join("missing-password");
+    let source = FlatFileUserPassAuth::new(Config {
+        username: "test_user".into(),
+        password_secret: Some("inline_pass".into()),
+        password_secret_file: Some(missing_path.clone()),
+        password_secret_file_refresh: Duration::from_secs(300),
+    });
+
+    let err = source
+        .fetch()
+        .await
+        .expect_err("an unreadable preferred file must fail acquisition");
+    assert!(
+        err.to_string()
+            .contains(&missing_path.to_string_lossy().to_string()),
+        "error must name the preferred file, got: {err}"
+    );
+}
+
+/// Scenario: Credential acquisition references an unreadable password secret file.
+/// Guarantees: Acquisition returns an error that names the offending path.
+#[tokio::test]
+async fn get_credential_file_failure() {
+    let dir = tempfile::tempdir().expect("tempdir created");
+    let missing_path = dir.path().join("missing-password");
+    let source = FlatFileUserPassAuth::new(Config {
+        username: "test_user".into(),
+        password_secret: None,
+        password_secret_file: Some(missing_path.clone()),
+        password_secret_file_refresh: Duration::from_secs(300),
+    });
+
+    let err = source
+        .fetch()
+        .await
+        .expect_err("an unreadable credential file must fail acquisition");
+    assert!(
+        err.to_string()
+            .contains(&missing_path.to_string_lossy().to_string()),
+        "error must name the offending path, got: {err}"
+    );
 }
 
 /// Scenario: A credential is requested directly and then through the credential stream.
