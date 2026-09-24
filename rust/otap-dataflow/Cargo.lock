@@ -7390,11 +7390,15 @@ dependencies = [
  "geneva-uploader",
  "hex",
  "http 1.5.0",
+ "http-body-util",
  "humantime",
  "humantime-serde",
+ "hyper",
+ "hyper-util",
  "insta",
  "itoa",
  "linkme",
+ "mime",
  "one_collect",
  "opentelemetry-proto",
  "otel-arrow-contrib-data-engine-expressions",
@@ -7410,13 +7414,17 @@ dependencies = [
  "otel-arrow-dfe-state",
  "otel-arrow-dfe-telemetry",
  "otel-arrow-dfe-telemetry-macros",
+ "otel-arrow-dfe-test-tls-certs",
  "paste",
  "pretty_assertions",
  "prost 0.14.4",
+ "quick-xml",
  "rand 0.10.3",
+ "rcgen",
  "rdkafka",
  "regex",
  "reqwest 0.13.5",
+ "rustls",
  "ryu",
  "secrecy",
  "serde",
@@ -7424,10 +7432,13 @@ dependencies = [
  "serde_cbor",
  "serde_json",
  "serde_yaml",
+ "sha1 0.11.0",
  "smallvec",
  "sysinfo",
+ "tempfile",
  "thiserror 2.0.20",
  "tokio",
+ "tokio-rustls",
  "tokio-util",
  "tracelogging",
  "tracelogging_dynamic",
@@ -7439,6 +7450,7 @@ dependencies = [
  "urlencoding",
  "uuid",
  "wiremock",
+ "x509-parser",
  "xxhash-rust",
 ]
 
@@ -10048,6 +10060,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "sha1_smol"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbfa15b3dddfee50a0fff136974b3e1bde555604ba463834a7eb7deb6417705d"
+
+[[package]]
 name = "sha2"
 version = "0.10.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11575,6 +11593,7 @@ dependencies = [
  "atomic",
  "getrandom 0.4.3",
  "js-sys",
+ "sha1_smol",
  "wasm-bindgen",
 ]
 

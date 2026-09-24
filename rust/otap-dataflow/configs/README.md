@@ -13,6 +13,27 @@ future.
 
 ## Available Configurations
 
+### `windows-event-forwarding-console.yaml`
+
+Receives source-initiated Windows Event Forwarding over HTTPS with mandatory mTLS
+and writes Application events to the console. This experimental receiver requires
+one pipeline core and the `windows-event-forwarding` feature.
+
+Set the certificate paths, `public_endpoint`, and exact client certificate DNS SAN
+in `auth.allowed_sources` before running. The example binds to loopback; for a
+remote Windows source, select a reachable local interface in `endpoint` and limit
+inbound access to intended sources. Configure the Windows SubscriptionManager
+policy and certificates as described in the
+[receiver guide](../crates/contrib-nodes/src/receivers/windows_event_forwarding_receiver/README.md).
+
+```bash
+cargo run --bin df_engine --features windows-event-forwarding -- \
+  --config configs/windows-event-forwarding-console.yaml
+```
+
+Bookmarks are memory-only and reset on restart. Compression and robust replay are
+not supported in this initial version.
+
 ### `trafficgen-file.yaml`
 
 Generates logs, metrics, and traces and writes each signal to an exclusive OTLP
