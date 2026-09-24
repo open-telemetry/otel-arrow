@@ -9,7 +9,7 @@ use datafusion::common::exec_err;
 use datafusion::error::Result;
 use datafusion::logical_expr::{ColumnarValue, ScalarUDFImpl, Signature, Volatility};
 use datafusion::scalar::ScalarValue;
-use otel_arrow_dfe_pdata::schema::TIMESTAMP_TIME_ZONE;
+use otel_arrow_dfe_pdata::schema::UTC_TIME_ZONE;
 
 /// Scalar UDF implementation that evaluates to the current time.
 ///
@@ -52,7 +52,7 @@ impl ScalarUDFImpl for NowFunc {
     fn return_type(&self, _arg_types: &[DataType]) -> Result<DataType> {
         Ok(DataType::Timestamp(
             TimeUnit::Nanosecond,
-            Some(TIMESTAMP_TIME_ZONE.into()),
+            Some(UTC_TIME_ZONE.into()),
         ))
     }
 
@@ -74,7 +74,7 @@ impl ScalarUDFImpl for NowFunc {
 
         Ok(ColumnarValue::Scalar(ScalarValue::TimestampNanosecond(
             i64::try_from(now.as_nanos()).ok(),
-            Some(TIMESTAMP_TIME_ZONE.into()),
+            Some(UTC_TIME_ZONE.into()),
         )))
     }
 }

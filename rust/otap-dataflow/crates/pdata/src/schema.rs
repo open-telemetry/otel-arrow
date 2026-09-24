@@ -17,8 +17,7 @@ pub mod payloads;
 pub mod schema;
 
 pub use schema::{
-    DictKeySize, SimpleType, TIMESTAMP_TIME_ZONE, TIMESTAMP_TIME_ZONE_OFFSET,
-    is_valid_timestamp_time_zone,
+    DictKeySize, SimpleType, UTC_TIME_ZONE, UTC_TIME_ZONE_OFFSET, is_valid_timestamp_time_zone,
 };
 
 /// The Arrow data type that OTAP producers must use for timestamp columns:

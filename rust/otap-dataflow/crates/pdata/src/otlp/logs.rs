@@ -496,7 +496,7 @@ impl LogsProtoBytesEncoder {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::schema::TIMESTAMP_TIME_ZONE;
+    use crate::schema::UTC_TIME_ZONE;
 
     use arrow::array::{
         RecordBatch, StringArray, StructArray, TimestampNanosecondArray, UInt8Array, UInt16Array,
@@ -547,7 +547,7 @@ mod test {
                 Field::new(consts::ID, DataType::UInt16, true).with_plain_encoding(),
                 Field::new(
                     consts::TIME_UNIX_NANO,
-                    DataType::Timestamp(TimeUnit::Nanosecond, Some(TIMESTAMP_TIME_ZONE.into())),
+                    DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                     false,
                 ),
                 Field::new(consts::SEVERITY_TEXT, DataType::Utf8, true),
@@ -576,7 +576,7 @@ mod test {
                 Arc::new(UInt16Array::from_iter_values(vec![0, 1, 2])),
                 Arc::new(
                     TimestampNanosecondArray::from_iter_values([1, 2, 3])
-                        .with_timezone(TIMESTAMP_TIME_ZONE),
+                        .with_timezone(UTC_TIME_ZONE),
                 ),
                 Arc::new(StringArray::from_iter_values(vec![
                     "ERROR", "INFO", "DEBUG",
@@ -790,7 +790,7 @@ mod test {
                 ),
                 Field::new(
                     consts::TIME_UNIX_NANO,
-                    DataType::Timestamp(TimeUnit::Nanosecond, Some(TIMESTAMP_TIME_ZONE.into())),
+                    DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                     false,
                 ),
                 Field::new(consts::SEVERITY_TEXT, DataType::Utf8, true),
@@ -819,7 +819,7 @@ mod test {
                 )),
                 Arc::new(
                     TimestampNanosecondArray::from_iter_values([100, 200])
-                        .with_timezone(TIMESTAMP_TIME_ZONE),
+                        .with_timezone(UTC_TIME_ZONE),
                 ),
                 Arc::new(StringArray::from_iter_values(vec!["ERROR", "INFO"])),
                 Arc::new(StructArray::new(
@@ -992,7 +992,7 @@ mod test {
                 Field::new(consts::ID, DataType::UInt16, true).with_plain_encoding(),
                 Field::new(
                     consts::TIME_UNIX_NANO,
-                    DataType::Timestamp(TimeUnit::Nanosecond, Some(TIMESTAMP_TIME_ZONE.into())),
+                    DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                     false,
                 ),
                 Field::new(consts::SEVERITY_TEXT, DataType::Utf8, true),
@@ -1021,7 +1021,7 @@ mod test {
                 Arc::new(UInt16Array::from_iter_values(vec![0, 1, 2])),
                 Arc::new(
                     TimestampNanosecondArray::from_iter_values([1, 2, 3])
-                        .with_timezone(TIMESTAMP_TIME_ZONE),
+                        .with_timezone(UTC_TIME_ZONE),
                 ),
                 Arc::new(StringArray::from_iter_values(vec![
                     "ERROR", "INFO", "DEBUG",

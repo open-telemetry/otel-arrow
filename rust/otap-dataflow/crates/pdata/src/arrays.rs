@@ -178,7 +178,7 @@ impl_downcast!(
     timestamp_nanosecond,
     Timestamp(
         TimeUnit::Nanosecond,
-        Some(crate::schema::TIMESTAMP_TIME_ZONE.into())
+        Some(crate::schema::UTC_TIME_ZONE.into())
     ),
     TimestampNanosecondArray
 );

@@ -10,17 +10,17 @@ use crate::schema::error::Error;
 
 /// The time zone that OTAP producers MUST attach to every `Timestamp(Nanosecond)`
 /// column. See section 5.5.2 of the OTAP specification.
-pub const TIMESTAMP_TIME_ZONE: &str = "UTC";
+pub const UTC_TIME_ZONE: &str = "UTC";
 
-/// The equivalent fixed-offset spelling of [`TIMESTAMP_TIME_ZONE`]. Producers
-/// emit [`TIMESTAMP_TIME_ZONE`], but consumers MUST also accept this form.
-pub const TIMESTAMP_TIME_ZONE_OFFSET: &str = "+00:00";
+/// The equivalent fixed-offset spelling of [`UTC_TIME_ZONE`]. Producers
+/// emit [`UTC_TIME_ZONE`], but consumers MUST also accept this form.
+pub const UTC_TIME_ZONE_OFFSET: &str = "+00:00";
 
 /// Returns true if `time_zone` is an OTAP-conformant time zone for a
 /// `Timestamp(Nanosecond)` column.
 ///
 /// Per section 5.5.2 of the OTAP specification, producers MUST emit
-/// [`TIMESTAMP_TIME_ZONE`]. Consumers accept `UTC` and `+00:00`, and, as a
+/// [`UTC_TIME_ZONE`]. Consumers accept `UTC` and `+00:00`, and, as a
 /// transitional allowance, a missing time zone which is interpreted as UTC.
 ///
 /// TODO: Remove the `None` allowance once producers have had time to upgrade.
@@ -28,7 +28,7 @@ pub const TIMESTAMP_TIME_ZONE_OFFSET: &str = "+00:00";
 #[must_use]
 pub fn is_valid_timestamp_time_zone(time_zone: Option<&str>) -> bool {
     match time_zone {
-        Some(tz) => tz == TIMESTAMP_TIME_ZONE || tz == TIMESTAMP_TIME_ZONE_OFFSET,
+        Some(tz) => tz == UTC_TIME_ZONE || tz == UTC_TIME_ZONE_OFFSET,
         // Transitional: a missing time zone is interpreted as UTC.
         None => true,
     }
@@ -74,7 +74,7 @@ impl SimpleType {
             Self::Binary => ArrowDT::Binary,
             Self::FixedSizeBinary(n) => ArrowDT::FixedSizeBinary(*n),
             Self::TimestampNanosecond => {
-                ArrowDT::Timestamp(TimeUnit::Nanosecond, Some(TIMESTAMP_TIME_ZONE.into()))
+                ArrowDT::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into()))
             }
             Self::DurationNanosecond => ArrowDT::Duration(TimeUnit::Nanosecond),
         }
@@ -372,7 +372,7 @@ mod tests {
             ),
             (
                 SimpleType::TimestampNanosecond,
-                ArrowDT::Timestamp(TimeUnit::Nanosecond, Some(TIMESTAMP_TIME_ZONE.into())),
+                ArrowDT::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
             ),
             (
                 SimpleType::DurationNanosecond,
@@ -392,11 +392,7 @@ mod tests {
     /// upgraded to emitting "UTC" is still interoperable during the rollout.
     #[test]
     fn timestamp_accepts_utc_equivalent_time_zones() {
-        let accepted = [
-            Some(TIMESTAMP_TIME_ZONE),
-            Some(TIMESTAMP_TIME_ZONE_OFFSET),
-            None,
-        ];
+        let accepted = [Some(UTC_TIME_ZONE), Some(UTC_TIME_ZONE_OFFSET), None];
 
         for time_zone in accepted {
             assert!(
@@ -440,7 +436,7 @@ mod tests {
             TimeUnit::Millisecond,
             TimeUnit::Microsecond,
         ] {
-            let dt = ArrowDT::Timestamp(unit, Some(TIMESTAMP_TIME_ZONE.into()));
+            let dt = ArrowDT::Timestamp(unit, Some(UTC_TIME_ZONE.into()));
             assert!(
                 !SimpleType::TimestampNanosecond.matches(&dt),
                 "{dt} should not match TimestampNanosecond"
@@ -459,7 +455,7 @@ mod tests {
         let dt = SimpleType::TimestampNanosecond.to_arrow();
         assert_eq!(
             dt,
-            ArrowDT::Timestamp(TimeUnit::Nanosecond, Some(TIMESTAMP_TIME_ZONE.into()))
+            ArrowDT::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into()))
         );
         assert!(SimpleType::TimestampNanosecond.matches(&dt));
     }

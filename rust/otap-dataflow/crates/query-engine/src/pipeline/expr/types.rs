@@ -7,7 +7,7 @@ use crate::pipeline::expr::VALUE_COLUMN_NAME;
 use arrow::datatypes::{DataType, TimeUnit};
 use datafusion::logical_expr::{Expr, cast};
 use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-use otel_arrow_dfe_pdata::schema::{TIMESTAMP_TIME_ZONE, consts};
+use otel_arrow_dfe_pdata::schema::{UTC_TIME_ZONE, consts};
 
 /// Identifier of the logical type of some expression/column.
 ///
@@ -84,7 +84,7 @@ impl ExprLogicalType {
             Self::Int64 => DataType::Int64,
             Self::String => DataType::Utf8,
             Self::TimestampNanosecond => {
-                DataType::Timestamp(TimeUnit::Nanosecond, Some(TIMESTAMP_TIME_ZONE.into()))
+                DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into()))
             }
             Self::DurationNanoSecond => DataType::Duration(TimeUnit::Nanosecond),
             Self::UInt32 => DataType::UInt32,

@@ -1365,7 +1365,7 @@ mod tests {
                     TimestampNanosecond.to_arrow(),
                     Arc::new(
                         TimestampNanosecondArray::from(vec![0i64])
-                            .with_timezone(crate::schema::TIMESTAMP_TIME_ZONE),
+                            .with_timezone(crate::schema::UTC_TIME_ZONE),
                     ),
                 ),
                 DurationNanosecond => (
@@ -1517,7 +1517,7 @@ mod tests {
                             TimestampNanosecond.to_arrow(),
                             Arc::new(
                                 TimestampNanosecondArray::from(vec![None as Option<i64>])
-                                    .with_timezone(crate::schema::TIMESTAMP_TIME_ZONE),
+                                    .with_timezone(crate::schema::UTC_TIME_ZONE),
                             ),
                         ),
                         DurationNanosecond => (

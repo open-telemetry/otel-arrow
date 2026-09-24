@@ -1017,7 +1017,7 @@ where
 
 #[cfg(test)]
 mod test {
-    use crate::schema::TIMESTAMP_TIME_ZONE;
+    use crate::schema::UTC_TIME_ZONE;
     use std::sync::Arc;
 
     use super::*;
@@ -1569,12 +1569,12 @@ mod test {
                 Field::new("parent_id", DataType::UInt16, false).with_plain_encoding(),
                 Field::new(
                     "start_time_unix_nano",
-                    DataType::Timestamp(TimeUnit::Nanosecond, Some(TIMESTAMP_TIME_ZONE.into())),
+                    DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                     true,
                 ),
                 Field::new(
                     "time_unix_nano",
-                    DataType::Timestamp(TimeUnit::Nanosecond, Some(TIMESTAMP_TIME_ZONE.into())),
+                    DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                     false,
                 ),
                 Field::new("int_value", DataType::Int64, true),
@@ -1589,12 +1589,11 @@ mod test {
                 // start_time_unix_nano
                 Arc::new(
                     TimestampNanosecondArray::from(vec![Some(456), Some(0)])
-                        .with_timezone(TIMESTAMP_TIME_ZONE),
+                        .with_timezone(UTC_TIME_ZONE),
                 ),
                 // time_unix_nano
                 Arc::new(
-                    TimestampNanosecondArray::from(vec![123, 34])
-                        .with_timezone(TIMESTAMP_TIME_ZONE),
+                    TimestampNanosecondArray::from(vec![123, 34]).with_timezone(UTC_TIME_ZONE),
                 ),
                 // int_value
                 Arc::new(Int64Array::from_iter(vec![None, Some(47)])),
@@ -1665,7 +1664,7 @@ mod test {
                 Field::new("parent_id", DataType::UInt32, false).with_plain_encoding(),
                 Field::new(
                     "time_unix_nano",
-                    DataType::Timestamp(TimeUnit::Nanosecond, Some(TIMESTAMP_TIME_ZONE.into())),
+                    DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                     false,
                 ),
                 Field::new("int_value", DataType::Int64, true),
@@ -1694,8 +1693,7 @@ mod test {
                 Arc::new(UInt32Array::from_iter(vec![0, 1])),
                 // time_unix_nano
                 Arc::new(
-                    TimestampNanosecondArray::from(vec![678, 11])
-                        .with_timezone(TIMESTAMP_TIME_ZONE),
+                    TimestampNanosecondArray::from(vec![678, 11]).with_timezone(UTC_TIME_ZONE),
                 ),
                 // int_value
                 Arc::new(Int64Array::from_iter(vec![Some(234), None])),
@@ -1787,12 +1785,12 @@ mod test {
                 Field::new("parent_id", DataType::UInt16, false).with_plain_encoding(),
                 Field::new(
                     "start_time_unix_nano",
-                    DataType::Timestamp(TimeUnit::Nanosecond, Some(TIMESTAMP_TIME_ZONE.into())),
+                    DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                     false,
                 ),
                 Field::new(
                     "time_unix_nano",
-                    DataType::Timestamp(TimeUnit::Nanosecond, Some(TIMESTAMP_TIME_ZONE.into())),
+                    DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                     false,
                 ),
                 Field::new("count", DataType::UInt64, false),
@@ -1817,13 +1815,9 @@ mod test {
                 // parent_id
                 Arc::new(UInt16Array::from_iter(vec![2])),
                 // start_time_unix_nano
-                Arc::new(
-                    TimestampNanosecondArray::from(vec![543]).with_timezone(TIMESTAMP_TIME_ZONE),
-                ),
+                Arc::new(TimestampNanosecondArray::from(vec![543]).with_timezone(UTC_TIME_ZONE)),
                 // time_unix_nano
-                Arc::new(
-                    TimestampNanosecondArray::from(vec![765]).with_timezone(TIMESTAMP_TIME_ZONE),
-                ),
+                Arc::new(TimestampNanosecondArray::from(vec![765]).with_timezone(UTC_TIME_ZONE)),
                 // count
                 Arc::new(UInt64Array::from_iter(vec![23])),
                 // sum
@@ -1894,12 +1888,12 @@ mod test {
                 Field::new("parent_id", DataType::UInt16, false).with_plain_encoding(),
                 Field::new(
                     "start_time_unix_nano",
-                    DataType::Timestamp(TimeUnit::Nanosecond, Some(TIMESTAMP_TIME_ZONE.into())),
+                    DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                     false,
                 ),
                 Field::new(
                     "time_unix_nano",
-                    DataType::Timestamp(TimeUnit::Nanosecond, Some(TIMESTAMP_TIME_ZONE.into())),
+                    DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                     false,
                 ),
                 Field::new("count", DataType::UInt64, false),
@@ -1924,13 +1918,9 @@ mod test {
                 // parent_id
                 Arc::new(UInt16Array::from_iter(vec![3])),
                 // start_time_unix_nano
-                Arc::new(
-                    TimestampNanosecondArray::from(vec![23]).with_timezone(TIMESTAMP_TIME_ZONE),
-                ),
+                Arc::new(TimestampNanosecondArray::from(vec![23]).with_timezone(UTC_TIME_ZONE)),
                 // time_unix_nano
-                Arc::new(
-                    TimestampNanosecondArray::from(vec![567]).with_timezone(TIMESTAMP_TIME_ZONE),
-                ),
+                Arc::new(TimestampNanosecondArray::from(vec![567]).with_timezone(UTC_TIME_ZONE)),
                 // count
                 Arc::new(UInt64Array::from_iter(vec![9])),
                 // bucket_counts
@@ -2007,7 +1997,7 @@ mod test {
                 Field::new("parent_id", DataType::UInt32, false).with_plain_encoding(),
                 Field::new(
                     "time_unix_nano",
-                    DataType::Timestamp(TimeUnit::Nanosecond, Some(TIMESTAMP_TIME_ZONE.into())),
+                    DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                     false,
                 ),
                 Field::new("int_value", DataType::Int64, true),
@@ -2036,8 +2026,7 @@ mod test {
                 Arc::new(UInt32Array::from_iter(vec![0, 0])),
                 // time_unix_nano
                 Arc::new(
-                    TimestampNanosecondArray::from(vec![678, 678])
-                        .with_timezone(TIMESTAMP_TIME_ZONE),
+                    TimestampNanosecondArray::from(vec![678, 678]).with_timezone(UTC_TIME_ZONE),
                 ),
                 // int_value
                 Arc::new(Int64Array::from_iter(vec![Some(235), None])),
@@ -2123,12 +2112,12 @@ mod test {
                 Field::new("parent_id", DataType::UInt16, false).with_plain_encoding(),
                 Field::new(
                     "start_time_unix_nano",
-                    DataType::Timestamp(TimeUnit::Nanosecond, Some(TIMESTAMP_TIME_ZONE.into())),
+                    DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                     false,
                 ),
                 Field::new(
                     "time_unix_nano",
-                    DataType::Timestamp(TimeUnit::Nanosecond, Some(TIMESTAMP_TIME_ZONE.into())),
+                    DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                     false,
                 ),
                 Field::new("count", DataType::UInt64, false),
@@ -2170,13 +2159,9 @@ mod test {
                 // parent_id
                 Arc::new(UInt16Array::from_iter(vec![4])),
                 // start_time_unix_nano
-                Arc::new(
-                    TimestampNanosecondArray::from(vec![234]).with_timezone(TIMESTAMP_TIME_ZONE),
-                ),
+                Arc::new(TimestampNanosecondArray::from(vec![234]).with_timezone(UTC_TIME_ZONE)),
                 // time_unix_nano
-                Arc::new(
-                    TimestampNanosecondArray::from(vec![345]).with_timezone(TIMESTAMP_TIME_ZONE),
-                ),
+                Arc::new(TimestampNanosecondArray::from(vec![345]).with_timezone(UTC_TIME_ZONE)),
                 // count
                 Arc::new(UInt64Array::from_iter(vec![9999])),
                 // sum
@@ -2261,7 +2246,7 @@ mod test {
                 Field::new("parent_id", DataType::UInt32, false).with_plain_encoding(),
                 Field::new(
                     "time_unix_nano",
-                    DataType::Timestamp(TimeUnit::Nanosecond, Some(TIMESTAMP_TIME_ZONE.into())),
+                    DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                     false,
                 ),
                 Field::new("int_value", DataType::Int64, true),
@@ -2290,8 +2275,7 @@ mod test {
                 Arc::new(UInt32Array::from_iter(vec![0, 0])),
                 // time_unix_nano
                 Arc::new(
-                    TimestampNanosecondArray::from(vec![678, 678])
-                        .with_timezone(TIMESTAMP_TIME_ZONE),
+                    TimestampNanosecondArray::from(vec![678, 678]).with_timezone(UTC_TIME_ZONE),
                 ),
                 // int_value
                 Arc::new(Int64Array::from_iter(vec![Some(235), None])),
@@ -2555,12 +2539,12 @@ mod test {
                 ),
                 Field::new(
                     "time_unix_nano",
-                    DataType::Timestamp(TimeUnit::Nanosecond, Some(TIMESTAMP_TIME_ZONE.into())),
+                    DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                     false,
                 ),
                 Field::new(
                     "observed_time_unix_nano",
-                    DataType::Timestamp(TimeUnit::Nanosecond, Some(TIMESTAMP_TIME_ZONE.into())),
+                    DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                     false,
                 ),
                 Field::new(
@@ -2709,12 +2693,12 @@ mod test {
                 // timestamps
                 Arc::new(
                     TimestampNanosecondArray::from(vec![2_000_000_000])
-                        .with_timezone(TIMESTAMP_TIME_ZONE),
+                        .with_timezone(UTC_TIME_ZONE),
                 ),
                 // observed_time_unix_nano
                 Arc::new(
                     TimestampNanosecondArray::from(vec![3_000_000_000i64])
-                        .with_timezone(TIMESTAMP_TIME_ZONE),
+                        .with_timezone(UTC_TIME_ZONE),
                 ) as ArrayRef,
                 // trace_id
                 Arc::new(DictionaryArray::<UInt8Type>::new(
@@ -3608,12 +3592,12 @@ mod test {
                 ),
                 Field::new(
                     consts::TIME_UNIX_NANO,
-                    DataType::Timestamp(TimeUnit::Nanosecond, Some(TIMESTAMP_TIME_ZONE.into())),
+                    DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                     false,
                 ),
                 Field::new(
                     consts::OBSERVED_TIME_UNIX_NANO,
-                    DataType::Timestamp(TimeUnit::Nanosecond, Some(TIMESTAMP_TIME_ZONE.into())),
+                    DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                     false,
                 ),
             ])),
@@ -3632,11 +3616,11 @@ mod test {
                 )),
                 Arc::new(
                     TimestampNanosecondArray::from_iter_values(vec![0])
-                        .with_timezone(TIMESTAMP_TIME_ZONE),
+                        .with_timezone(UTC_TIME_ZONE),
                 ),
                 Arc::new(
                     TimestampNanosecondArray::from_iter_values(vec![0])
-                        .with_timezone(TIMESTAMP_TIME_ZONE),
+                        .with_timezone(UTC_TIME_ZONE),
                 ),
             ],
         )
@@ -3727,12 +3711,12 @@ mod test {
                 ),
                 Field::new(
                     "time_unix_nano",
-                    DataType::Timestamp(TimeUnit::Nanosecond, Some(TIMESTAMP_TIME_ZONE.into())),
+                    DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                     false,
                 ),
                 Field::new(
                     "observed_time_unix_nano",
-                    DataType::Timestamp(TimeUnit::Nanosecond, Some(TIMESTAMP_TIME_ZONE.into())),
+                    DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                     false,
                 ),
                 Field::new(
@@ -3796,12 +3780,11 @@ mod test {
                 // timestamps
                 Arc::new(
                     TimestampNanosecondArray::from(vec![2_000_000_000])
-                        .with_timezone(TIMESTAMP_TIME_ZONE),
+                        .with_timezone(UTC_TIME_ZONE),
                 ),
                 // observed_time_unix_nano
-                Arc::new(
-                    TimestampNanosecondArray::from(vec![0i64]).with_timezone(TIMESTAMP_TIME_ZONE),
-                ) as ArrayRef,
+                Arc::new(TimestampNanosecondArray::from(vec![0i64]).with_timezone(UTC_TIME_ZONE))
+                    as ArrayRef,
                 // severity_number
                 Arc::new(DictionaryArray::<UInt8Type>::new(
                     UInt8Array::from(vec![0]),
@@ -3939,12 +3922,12 @@ mod test {
                 ),
                 Field::new(
                     "time_unix_nano",
-                    DataType::Timestamp(TimeUnit::Nanosecond, Some(TIMESTAMP_TIME_ZONE.into())),
+                    DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                     false,
                 ),
                 Field::new(
                     "observed_time_unix_nano",
-                    DataType::Timestamp(TimeUnit::Nanosecond, Some(TIMESTAMP_TIME_ZONE.into())),
+                    DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                     false,
                 ),
                 Field::new(
@@ -4010,13 +3993,11 @@ mod test {
                 ])),
                 // timestamps
                 Arc::new(
-                    TimestampNanosecondArray::from(vec![0, 0, 0])
-                        .with_timezone(TIMESTAMP_TIME_ZONE),
+                    TimestampNanosecondArray::from(vec![0, 0, 0]).with_timezone(UTC_TIME_ZONE),
                 ),
                 // observed_time_unix_nano
                 Arc::new(
-                    TimestampNanosecondArray::from(vec![0i64, 0, 0])
-                        .with_timezone(TIMESTAMP_TIME_ZONE),
+                    TimestampNanosecondArray::from(vec![0i64, 0, 0]).with_timezone(UTC_TIME_ZONE),
                 ) as ArrayRef,
                 // severity_number
                 Arc::new(DictionaryArray::<UInt8Type>::new(
@@ -4753,7 +4734,7 @@ mod test {
                 ),
                 Field::new(
                     "start_time_unix_nano",
-                    DataType::Timestamp(TimeUnit::Nanosecond, Some(TIMESTAMP_TIME_ZONE.into())),
+                    DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                     false,
                 ),
                 Field::new(
@@ -4904,9 +4885,7 @@ mod test {
                     ])),
                 )) as ArrayRef,
                 // timestamps
-                Arc::new(
-                    TimestampNanosecondArray::from(vec![999]).with_timezone(TIMESTAMP_TIME_ZONE),
-                ),
+                Arc::new(TimestampNanosecondArray::from(vec![999]).with_timezone(UTC_TIME_ZONE)),
                 Arc::new(DictionaryArray::<UInt8Type>::new(
                     UInt8Array::from(vec![0]),
                     Arc::new(DurationNanosecondArray::from(vec![1000])),
@@ -4997,7 +4976,7 @@ mod test {
                 Field::new("parent_id", DataType::UInt16, false).with_plain_encoding(),
                 Field::new(
                     "time_unix_nano",
-                    DataType::Timestamp(TimeUnit::Nanosecond, Some(TIMESTAMP_TIME_ZONE.into())),
+                    DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                     true,
                 ),
                 Field::new(
@@ -5013,9 +4992,7 @@ mod test {
                 // parent_id
                 Arc::new(UInt16Array::from_iter(vec![0])),
                 // time_unix_nano
-                Arc::new(
-                    TimestampNanosecondArray::from(vec![456]).with_timezone(TIMESTAMP_TIME_ZONE),
-                ),
+                Arc::new(TimestampNanosecondArray::from(vec![456]).with_timezone(UTC_TIME_ZONE)),
                 // name
                 Arc::new(DictionaryArray::<UInt8Type>::new(
                     UInt8Array::from(vec![0]),
@@ -5259,8 +5236,7 @@ mod test {
         /// Asserts every timestamp column in the batch carries UTC, and returns
         /// how many timestamp columns were checked.
         fn check(records: &OtapArrowRecords, label: &str) -> usize {
-            let expected =
-                DataType::Timestamp(TimeUnit::Nanosecond, Some(TIMESTAMP_TIME_ZONE.into()));
+            let expected = DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into()));
 
             let mut checked = 0;
             for payload_type in records.allowed_payload_types() {

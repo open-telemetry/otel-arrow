@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use crate::encode::record::array::dictionary::{DictionaryBuilder, UpdateDictionaryIndexInto};
 use crate::encode::record::array::{ArrayAppendNulls, DefaultValueProvider, NoArgs};
-use crate::schema::TIMESTAMP_TIME_ZONE;
+use crate::schema::UTC_TIME_ZONE;
 
 use super::dictionary::{self, ConvertToNativeHelper, DictionaryArrayAppend};
 use super::{ArrayAppend, ArrayBuilder, ArrayBuilderConstructor, ArrayLen, ArrayRef};
@@ -204,8 +204,7 @@ impl TimestampNanosecondBuilder {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            inner: PrimitiveBuilder::<TimestampNanosecondType>::new()
-                .with_timezone(TIMESTAMP_TIME_ZONE),
+            inner: PrimitiveBuilder::<TimestampNanosecondType>::new().with_timezone(UTC_TIME_ZONE),
         }
     }
 }
@@ -284,8 +283,7 @@ impl<K: ArrowDictionaryKeyType> TimestampNanosecondDictionaryBuilder<K> {
         Self {
             inner: PrimitiveDictionaryBuilder::new_from_empty_builders(
                 PrimitiveBuilder::<K>::new(),
-                PrimitiveBuilder::<TimestampNanosecondType>::new()
-                    .with_timezone(TIMESTAMP_TIME_ZONE),
+                PrimitiveBuilder::<TimestampNanosecondType>::new().with_timezone(UTC_TIME_ZONE),
             ),
         }
     }

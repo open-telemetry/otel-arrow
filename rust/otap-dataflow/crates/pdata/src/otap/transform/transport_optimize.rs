@@ -1248,7 +1248,7 @@ where
 
 #[cfg(test)]
 mod test {
-    use crate::schema::TIMESTAMP_TIME_ZONE;
+    use crate::schema::UTC_TIME_ZONE;
     use std::vec;
 
     use arrow::{
@@ -1444,7 +1444,7 @@ mod test {
             Field::new(consts::ID, DataType::UInt8, true),
             Field::new(
                 consts::TIME_UNIX_NANO,
-                DataType::Timestamp(TimeUnit::Nanosecond, Some(TIMESTAMP_TIME_ZONE.into())),
+                DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                 false,
             ),
         ]));
@@ -1455,7 +1455,7 @@ mod test {
                 Arc::new(UInt8Array::from_iter_values(vec![4, 1, 8])),
                 Arc::new(
                     TimestampNanosecondArray::from_iter_values(vec![5, 1, 4])
-                        .with_timezone(TIMESTAMP_TIME_ZONE),
+                        .with_timezone(UTC_TIME_ZONE),
                 ),
             ],
         )

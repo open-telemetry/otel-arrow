@@ -35,7 +35,7 @@ use otel_arrow_contrib_data_engine_expressions::{
 };
 use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_pdata::otlp::metrics::MetricType;
-use otel_arrow_dfe_pdata::schema::{TIMESTAMP_TIME_ZONE, consts};
+use otel_arrow_dfe_pdata::schema::{UTC_TIME_ZONE, consts};
 
 #[cfg(feature = "sha1-hash")]
 use crate::consts::SHA1_FUNC_NAME;
@@ -217,7 +217,7 @@ impl ExprPlanner {
                         (
                             lit(ScalarValue::TimestampNanosecond(
                                 Some(val),
-                                Some(TIMESTAMP_TIME_ZONE.into()),
+                                Some(UTC_TIME_ZONE.into()),
                             )),
                             ExprLogicalType::TimestampNanosecond,
                         )

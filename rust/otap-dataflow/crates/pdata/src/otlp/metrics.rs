@@ -857,7 +857,7 @@ impl MetricsProtoBytesEncoder {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::schema::TIMESTAMP_TIME_ZONE;
+    use crate::schema::UTC_TIME_ZONE;
 
     use arrow::array::{
         ArrayRef, FixedSizeBinaryArray, Float64Array, Int32Array, Int64Array, ListArray,
@@ -999,7 +999,7 @@ mod test {
             Field::new(consts::PARENT_ID, DataType::UInt32, false).with_plain_encoding(),
             Field::new(
                 consts::TIME_UNIX_NANO,
-                DataType::Timestamp(TimeUnit::Nanosecond, Some(TIMESTAMP_TIME_ZONE.into())),
+                DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                 false,
             ),
             Field::new(consts::INT_VALUE, DataType::Int64, true),
@@ -1043,12 +1043,12 @@ mod test {
                 Field::new(consts::PARENT_ID, DataType::UInt16, true).with_plain_encoding(),
                 Field::new(
                     consts::START_TIME_UNIX_NANO,
-                    DataType::Timestamp(TimeUnit::Nanosecond, Some(TIMESTAMP_TIME_ZONE.into())),
+                    DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                     true,
                 ),
                 Field::new(
                     consts::TIME_UNIX_NANO,
-                    DataType::Timestamp(TimeUnit::Nanosecond, Some(TIMESTAMP_TIME_ZONE.into())),
+                    DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                     true,
                 ),
                 Field::new(consts::INT_VALUE, DataType::Int64, true),
@@ -1060,11 +1060,11 @@ mod test {
                 Arc::new(UInt16Array::from_iter_values([0, 0, 1, 1])),
                 Arc::new(
                     TimestampNanosecondArray::from_iter_values([1i64, 2, 3, 4])
-                        .with_timezone(TIMESTAMP_TIME_ZONE),
+                        .with_timezone(UTC_TIME_ZONE),
                 ),
                 Arc::new(
                     TimestampNanosecondArray::from_iter_values([5i64, 6, 7, 8])
-                        .with_timezone(TIMESTAMP_TIME_ZONE),
+                        .with_timezone(UTC_TIME_ZONE),
                 ),
                 Arc::new(Int64Array::from_iter([None, Some(2), None, None])),
                 Arc::new(Float64Array::from_iter([Some(1.0), None, Some(3.0), None])),
@@ -1093,7 +1093,7 @@ mod test {
                 Arc::new(UInt32Array::from_iter_values([1])),
                 Arc::new(
                     TimestampNanosecondArray::from_iter_values([101i64])
-                        .with_timezone(TIMESTAMP_TIME_ZONE),
+                        .with_timezone(UTC_TIME_ZONE),
                 ),
                 Arc::new(Int64Array::from_iter([None])),
                 Arc::new(Float64Array::from_iter([None])),
@@ -1135,12 +1135,12 @@ mod test {
                 Field::new(consts::PARENT_ID, DataType::UInt16, true).with_plain_encoding(),
                 Field::new(
                     consts::START_TIME_UNIX_NANO,
-                    DataType::Timestamp(TimeUnit::Nanosecond, Some(TIMESTAMP_TIME_ZONE.into())),
+                    DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                     true,
                 ),
                 Field::new(
                     consts::TIME_UNIX_NANO,
-                    DataType::Timestamp(TimeUnit::Nanosecond, Some(TIMESTAMP_TIME_ZONE.into())),
+                    DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                     true,
                 ),
                 Field::new(consts::SUMMARY_COUNT, DataType::UInt64, true),
@@ -1156,11 +1156,11 @@ mod test {
                 Arc::new(UInt16Array::from_iter_values([2, 2])),
                 Arc::new(
                     TimestampNanosecondArray::from_iter_values([11i64, 12])
-                        .with_timezone(TIMESTAMP_TIME_ZONE),
+                        .with_timezone(UTC_TIME_ZONE),
                 ),
                 Arc::new(
                     TimestampNanosecondArray::from_iter_values([15i64, 16])
-                        .with_timezone(TIMESTAMP_TIME_ZONE),
+                        .with_timezone(UTC_TIME_ZONE),
                 ),
                 Arc::new(UInt64Array::from_iter([None, Some(42)])),
                 Arc::new(Float64Array::from_iter([None, Some(123.456)])),
@@ -1204,12 +1204,12 @@ mod test {
                 Field::new(consts::PARENT_ID, DataType::UInt16, true).with_plain_encoding(),
                 Field::new(
                     consts::START_TIME_UNIX_NANO,
-                    DataType::Timestamp(TimeUnit::Nanosecond, Some(TIMESTAMP_TIME_ZONE.into())),
+                    DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                     true,
                 ),
                 Field::new(
                     consts::TIME_UNIX_NANO,
-                    DataType::Timestamp(TimeUnit::Nanosecond, Some(TIMESTAMP_TIME_ZONE.into())),
+                    DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                     true,
                 ),
                 Field::new(consts::HISTOGRAM_COUNT, DataType::UInt64, true),
@@ -1233,11 +1233,11 @@ mod test {
                 Arc::new(UInt16Array::from_iter_values([3])),
                 Arc::new(
                     TimestampNanosecondArray::from_iter_values([21i64])
-                        .with_timezone(TIMESTAMP_TIME_ZONE),
+                        .with_timezone(UTC_TIME_ZONE),
                 ),
                 Arc::new(
                     TimestampNanosecondArray::from_iter_values([25i64])
-                        .with_timezone(TIMESTAMP_TIME_ZONE),
+                        .with_timezone(UTC_TIME_ZONE),
                 ),
                 Arc::new(UInt64Array::from_iter([Some(10)])),
                 Arc::new(Float64Array::from_iter([Some(55.5)])),
@@ -1289,7 +1289,7 @@ mod test {
                 Arc::new(UInt32Array::from_iter_values([0, 0])),
                 Arc::new(
                     TimestampNanosecondArray::from_iter_values([26i64, 27])
-                        .with_timezone(TIMESTAMP_TIME_ZONE),
+                        .with_timezone(UTC_TIME_ZONE),
                 ),
                 Arc::new(Int64Array::from_iter([Some(123), None])),
                 Arc::new(Float64Array::from_iter([None, Some(456.789)])),
@@ -1330,12 +1330,12 @@ mod test {
                 Field::new(consts::PARENT_ID, DataType::UInt16, true).with_plain_encoding(),
                 Field::new(
                     consts::START_TIME_UNIX_NANO,
-                    DataType::Timestamp(TimeUnit::Nanosecond, Some(TIMESTAMP_TIME_ZONE.into())),
+                    DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                     true,
                 ),
                 Field::new(
                     consts::TIME_UNIX_NANO,
-                    DataType::Timestamp(TimeUnit::Nanosecond, Some(TIMESTAMP_TIME_ZONE.into())),
+                    DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                     true,
                 ),
                 Field::new(consts::HISTOGRAM_COUNT, DataType::UInt64, true),
@@ -1366,11 +1366,11 @@ mod test {
                 Arc::new(UInt16Array::from_iter_values([4])),
                 Arc::new(
                     TimestampNanosecondArray::from_iter_values([31i64])
-                        .with_timezone(TIMESTAMP_TIME_ZONE),
+                        .with_timezone(UTC_TIME_ZONE),
                 ),
                 Arc::new(
                     TimestampNanosecondArray::from_iter_values([35i64])
-                        .with_timezone(TIMESTAMP_TIME_ZONE),
+                        .with_timezone(UTC_TIME_ZONE),
                 ),
                 Arc::new(UInt64Array::from_iter([Some(20)])),
                 Arc::new(Float64Array::from_iter([Some(155.5)])),
@@ -1433,8 +1433,7 @@ mod test {
                 Arc::new(UInt32Array::from_iter_values([0])),
                 Arc::new(UInt32Array::from_iter_values([0])),
                 Arc::new(
-                    TimestampNanosecondArray::from_iter_values([1])
-                        .with_timezone(TIMESTAMP_TIME_ZONE),
+                    TimestampNanosecondArray::from_iter_values([1]).with_timezone(UTC_TIME_ZONE),
                 ),
                 Arc::new(Int64Array::from_iter([1])),
                 Arc::new(Float64Array::from_iter([1.0])),

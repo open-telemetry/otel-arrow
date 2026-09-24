@@ -29,7 +29,7 @@ use arrow::array::{
 use arrow::buffer::{NullBuffer, OffsetBuffer};
 use arrow::datatypes::{DataType, Field, Fields, Schema, TimeUnit};
 use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-use otel_arrow_dfe_pdata::schema::{FieldExt, TIMESTAMP_TIME_ZONE, consts};
+use otel_arrow_dfe_pdata::schema::{FieldExt, UTC_TIME_ZONE, consts};
 
 use super::error::ParquetExporterError;
 use super::records::OtapParquetRecords;
@@ -365,12 +365,12 @@ static LOGS_TEMPLATE_SCHEMA: LazyLock<Schema> = LazyLock::new(|| {
         Field::new(consts::SCHEMA_URL, DataType::Utf8, false),
         Field::new(
             consts::TIME_UNIX_NANO,
-            DataType::Timestamp(TimeUnit::Nanosecond, Some(TIMESTAMP_TIME_ZONE.into())),
+            DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
             false,
         ),
         Field::new(
             consts::OBSERVED_TIME_UNIX_NANO,
-            DataType::Timestamp(TimeUnit::Nanosecond, Some(TIMESTAMP_TIME_ZONE.into())),
+            DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
             false,
         ),
         Field::new(consts::TRACE_ID, DataType::FixedSizeBinary(16), true),
@@ -429,12 +429,12 @@ static NUMBERS_DP_TEMPLATE_SCHEMA: LazyLock<Schema> = LazyLock::new(|| {
         Field::new(consts::PARENT_ID, DataType::UInt16, false),
         Field::new(
             consts::START_TIME_UNIX_NANO,
-            DataType::Timestamp(TimeUnit::Nanosecond, Some(TIMESTAMP_TIME_ZONE.into())),
+            DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
             true,
         ),
         Field::new(
             consts::TIME_UNIX_NANO,
-            DataType::Timestamp(TimeUnit::Nanosecond, Some(TIMESTAMP_TIME_ZONE.into())),
+            DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
             true,
         ),
         Field::new(consts::INT_VALUE, DataType::Int64, true),
@@ -449,12 +449,12 @@ static SUMMARY_DP_TEMPLATE_SCHEMA: LazyLock<Schema> = LazyLock::new(|| {
         Field::new(consts::PARENT_ID, DataType::UInt16, false),
         Field::new(
             consts::START_TIME_UNIX_NANO,
-            DataType::Timestamp(TimeUnit::Nanosecond, Some(TIMESTAMP_TIME_ZONE.into())),
+            DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
             false,
         ),
         Field::new(
             consts::TIME_UNIX_NANO,
-            DataType::Timestamp(TimeUnit::Nanosecond, Some(TIMESTAMP_TIME_ZONE.into())),
+            DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
             false,
         ),
         Field::new(consts::SUMMARY_COUNT, DataType::UInt64, false),
@@ -481,12 +481,12 @@ static HISTOGRAM_DP_TEMPLATE_SCHEMA: LazyLock<Schema> = LazyLock::new(|| {
         Field::new(consts::PARENT_ID, DataType::UInt16, false),
         Field::new(
             consts::START_TIME_UNIX_NANO,
-            DataType::Timestamp(TimeUnit::Nanosecond, Some(TIMESTAMP_TIME_ZONE.into())),
+            DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
             false,
         ),
         Field::new(
             consts::TIME_UNIX_NANO,
-            DataType::Timestamp(TimeUnit::Nanosecond, Some(TIMESTAMP_TIME_ZONE.into())),
+            DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
             false,
         ),
         Field::new(consts::HISTOGRAM_COUNT, DataType::UInt64, false),
@@ -513,12 +513,12 @@ static EXP_HISTOGRAM_DP_TEMPLATE_SCHEMA: LazyLock<Schema> = LazyLock::new(|| {
         Field::new(consts::PARENT_ID, DataType::UInt16, false),
         Field::new(
             consts::START_TIME_UNIX_NANO,
-            DataType::Timestamp(TimeUnit::Nanosecond, Some(TIMESTAMP_TIME_ZONE.into())),
+            DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
             false,
         ),
         Field::new(
             consts::TIME_UNIX_NANO,
-            DataType::Timestamp(TimeUnit::Nanosecond, Some(TIMESTAMP_TIME_ZONE.into())),
+            DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
             false,
         ),
         Field::new(consts::HISTOGRAM_COUNT, DataType::UInt64, false),
@@ -561,7 +561,7 @@ static EXEMPLAR_TEMPLATE_SCHEMA: LazyLock<Schema> = LazyLock::new(|| {
         Field::new(consts::PARENT_ID, DataType::UInt32, false),
         Field::new(
             consts::TIME_UNIX_NANO,
-            DataType::Timestamp(TimeUnit::Nanosecond, Some(TIMESTAMP_TIME_ZONE.into())),
+            DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
             false,
         ),
         Field::new(consts::INT_VALUE, DataType::Int64, false),
@@ -587,7 +587,7 @@ static SPANS_TEMPLATE_SCHEMA: LazyLock<Schema> = LazyLock::new(|| {
         Field::new(consts::SCHEMA_URL, DataType::Utf8, false),
         Field::new(
             consts::START_TIME_UNIX_NANO,
-            DataType::Timestamp(TimeUnit::Nanosecond, Some(TIMESTAMP_TIME_ZONE.into())),
+            DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
             false,
         ),
         Field::new(
@@ -621,7 +621,7 @@ static SPAN_EVENTS_TEMPLATE_SCHEMA: LazyLock<Schema> = LazyLock::new(|| {
         Field::new(consts::PARENT_ID, DataType::UInt16, false),
         Field::new(
             consts::TIME_UNIX_NANO,
-            DataType::Timestamp(TimeUnit::Nanosecond, Some(TIMESTAMP_TIME_ZONE.into())),
+            DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
             true,
         ),
         Field::new(consts::NAME, DataType::Utf8, false),
@@ -754,12 +754,12 @@ mod test {
                 Field::new(consts::SCHEMA_URL, DataType::Utf8, false),
                 Field::new(
                     consts::TIME_UNIX_NANO,
-                    DataType::Timestamp(TimeUnit::Nanosecond, Some(TIMESTAMP_TIME_ZONE.into())),
+                    DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                     false,
                 ),
                 Field::new(
                     consts::OBSERVED_TIME_UNIX_NANO,
-                    DataType::Timestamp(TimeUnit::Nanosecond, Some(TIMESTAMP_TIME_ZONE.into())),
+                    DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                     false,
                 ),
                 Field::new(consts::TRACE_ID, DataType::FixedSizeBinary(16), true),
@@ -802,11 +802,11 @@ mod test {
                 Arc::new(StringArray::from_iter_values(repeat_n("", 3))),
                 Arc::new(
                     TimestampNanosecondArray::from_iter_values(repeat_n(0, 3))
-                        .with_timezone(TIMESTAMP_TIME_ZONE),
+                        .with_timezone(UTC_TIME_ZONE),
                 ),
                 Arc::new(
                     TimestampNanosecondArray::from_iter_values(repeat_n(0, 3))
-                        .with_timezone(TIMESTAMP_TIME_ZONE),
+                        .with_timezone(UTC_TIME_ZONE),
                 ),
                 Arc::new(FixedSizeBinaryArray::new_null(16, 3)),
                 Arc::new(FixedSizeBinaryArray::new_null(8, 3)),

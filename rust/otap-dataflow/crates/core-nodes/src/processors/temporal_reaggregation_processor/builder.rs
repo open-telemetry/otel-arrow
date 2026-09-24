@@ -40,7 +40,7 @@ use otel_arrow_dfe_pdata::encode::record::metrics::{
 use otel_arrow_dfe_pdata::otap::{Metrics, OtapArrowRecords};
 use otel_arrow_dfe_pdata::otlp::attributes::parent_id::ParentId;
 use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-use otel_arrow_dfe_pdata::schema::{FieldExt, TIMESTAMP_TIME_ZONE, consts};
+use otel_arrow_dfe_pdata::schema::{FieldExt, UTC_TIME_ZONE, consts};
 use otel_arrow_dfe_pdata_views::views::common::{AttributeView, InstrumentationScopeView};
 use otel_arrow_dfe_pdata_views::views::metrics::{
     AggregationTemporality, BucketsView, ExemplarView, ExponentialHistogramDataPointView,
@@ -719,11 +719,11 @@ impl NumberDataPointBuilder {
                 Arc::new(UInt16Array::from(std::mem::take(&mut self.parent_id))),
                 Arc::new(
                     TimestampNanosecondArray::from(std::mem::take(&mut self.start_time_unix_nano))
-                        .with_timezone(TIMESTAMP_TIME_ZONE),
+                        .with_timezone(UTC_TIME_ZONE),
                 ),
                 Arc::new(
                     TimestampNanosecondArray::from(std::mem::take(&mut self.time_unix_nano))
-                        .with_timezone(TIMESTAMP_TIME_ZONE),
+                        .with_timezone(UTC_TIME_ZONE),
                 ),
                 Arc::new(self.int_value.finish()),
                 Arc::new(self.double_value.finish()),
@@ -750,12 +750,12 @@ static NUMBER_DP_SCHEMA: LazyLock<Arc<Schema>> = LazyLock::new(|| {
         Field::new(consts::PARENT_ID, DataType::UInt16, false).with_plain_encoding(),
         Field::new(
             consts::START_TIME_UNIX_NANO,
-            DataType::Timestamp(TimeUnit::Nanosecond, Some(TIMESTAMP_TIME_ZONE.into())),
+            DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
             false,
         ),
         Field::new(
             consts::TIME_UNIX_NANO,
-            DataType::Timestamp(TimeUnit::Nanosecond, Some(TIMESTAMP_TIME_ZONE.into())),
+            DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
             false,
         ),
         Field::new(consts::INT_VALUE, DataType::Int64, true),
@@ -839,11 +839,11 @@ impl HistogramDataPointBuilder {
                 Arc::new(UInt16Array::from(std::mem::take(&mut self.parent_id))),
                 Arc::new(
                     TimestampNanosecondArray::from(std::mem::take(&mut self.start_time_unix_nano))
-                        .with_timezone(TIMESTAMP_TIME_ZONE),
+                        .with_timezone(UTC_TIME_ZONE),
                 ),
                 Arc::new(
                     TimestampNanosecondArray::from(std::mem::take(&mut self.time_unix_nano))
-                        .with_timezone(TIMESTAMP_TIME_ZONE),
+                        .with_timezone(UTC_TIME_ZONE),
                 ),
                 Arc::new(UInt64Array::from(std::mem::take(&mut self.count))),
                 Arc::new(build_list_u64(&self.bucket_counts, "item")),
@@ -877,12 +877,12 @@ static HISTOGRAM_DP_SCHEMA: LazyLock<Arc<Schema>> = LazyLock::new(|| {
         Field::new(consts::PARENT_ID, DataType::UInt16, false).with_plain_encoding(),
         Field::new(
             consts::START_TIME_UNIX_NANO,
-            DataType::Timestamp(TimeUnit::Nanosecond, Some(TIMESTAMP_TIME_ZONE.into())),
+            DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
             false,
         ),
         Field::new(
             consts::TIME_UNIX_NANO,
-            DataType::Timestamp(TimeUnit::Nanosecond, Some(TIMESTAMP_TIME_ZONE.into())),
+            DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
             false,
         ),
         Field::new(consts::HISTOGRAM_COUNT, DataType::UInt64, false),
@@ -1029,11 +1029,11 @@ impl ExpHistogramDataPointBuilder {
                 Arc::new(UInt16Array::from(std::mem::take(&mut self.parent_id))),
                 Arc::new(
                     TimestampNanosecondArray::from(std::mem::take(&mut self.start_time_unix_nano))
-                        .with_timezone(TIMESTAMP_TIME_ZONE),
+                        .with_timezone(UTC_TIME_ZONE),
                 ),
                 Arc::new(
                     TimestampNanosecondArray::from(std::mem::take(&mut self.time_unix_nano))
-                        .with_timezone(TIMESTAMP_TIME_ZONE),
+                        .with_timezone(UTC_TIME_ZONE),
                 ),
                 Arc::new(UInt64Array::from(std::mem::take(&mut self.count))),
                 Arc::new(self.sum.finish()),
@@ -1098,12 +1098,12 @@ static EXP_HISTOGRAM_DP_SCHEMA: LazyLock<Arc<Schema>> = LazyLock::new(|| {
         Field::new(consts::PARENT_ID, DataType::UInt16, false).with_plain_encoding(),
         Field::new(
             consts::START_TIME_UNIX_NANO,
-            DataType::Timestamp(TimeUnit::Nanosecond, Some(TIMESTAMP_TIME_ZONE.into())),
+            DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
             false,
         ),
         Field::new(
             consts::TIME_UNIX_NANO,
-            DataType::Timestamp(TimeUnit::Nanosecond, Some(TIMESTAMP_TIME_ZONE.into())),
+            DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
             false,
         ),
         Field::new(consts::HISTOGRAM_COUNT, DataType::UInt64, false),
@@ -1229,11 +1229,11 @@ impl SummaryDataPointBuilder {
                 Arc::new(UInt16Array::from(std::mem::take(&mut self.parent_id))),
                 Arc::new(
                     TimestampNanosecondArray::from(std::mem::take(&mut self.start_time_unix_nano))
-                        .with_timezone(TIMESTAMP_TIME_ZONE),
+                        .with_timezone(UTC_TIME_ZONE),
                 ),
                 Arc::new(
                     TimestampNanosecondArray::from(std::mem::take(&mut self.time_unix_nano))
-                        .with_timezone(TIMESTAMP_TIME_ZONE),
+                        .with_timezone(UTC_TIME_ZONE),
                 ),
                 Arc::new(UInt64Array::from(std::mem::take(&mut self.count))),
                 Arc::new(Float64Array::from(std::mem::take(&mut self.sum))),
@@ -1287,12 +1287,12 @@ static SUMMARY_DP_SCHEMA: LazyLock<Arc<Schema>> = LazyLock::new(|| {
         Field::new(consts::PARENT_ID, DataType::UInt16, false).with_plain_encoding(),
         Field::new(
             consts::START_TIME_UNIX_NANO,
-            DataType::Timestamp(TimeUnit::Nanosecond, Some(TIMESTAMP_TIME_ZONE.into())),
+            DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
             false,
         ),
         Field::new(
             consts::TIME_UNIX_NANO,
-            DataType::Timestamp(TimeUnit::Nanosecond, Some(TIMESTAMP_TIME_ZONE.into())),
+            DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
             false,
         ),
         Field::new(consts::SUMMARY_COUNT, DataType::UInt64, false),

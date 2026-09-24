@@ -1130,7 +1130,7 @@ pub mod test {
             vec![2, 1],
             DataType::Timestamp(
                 TimeUnit::Nanosecond,
-                Some(crate::schema::TIMESTAMP_TIME_ZONE.into()),
+                Some(crate::schema::UTC_TIME_ZONE.into()),
             ),
         );
         test_array_append_generic(
@@ -1207,7 +1207,7 @@ pub mod test {
     /// OTAP schema regardless of which internal builder variant was used.
     #[test]
     fn test_timestamp_builder_always_emits_utc() {
-        let utc = Some(crate::schema::TIMESTAMP_TIME_ZONE.into());
+        let utc = Some(crate::schema::UTC_TIME_ZONE.into());
         let expected_native = DataType::Timestamp(TimeUnit::Nanosecond, utc.clone());
 
         // Native path.
