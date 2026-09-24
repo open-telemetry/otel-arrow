@@ -12,7 +12,7 @@ releases.
 - Receiver type: None. This crate does not register a receiver URN.
 - Feature gate: No crate-local vendor feature. Database drivers belong to independently gated vendor receivers, not this crate.
 - Status: In development; not the complete database receiver RFC or a production-readiness claim.
-- Documentation scope: Common database contracts, checkpoint storage, and source ownership (this PR); planned polling, mapping, and delivery integration (part 3).
+- Documentation scope: Common database contracts, checkpoint storage, source ownership, polling, mapping, and delivery integration.
 
 ## Overview
 
@@ -20,16 +20,15 @@ The shared scraper is the database-neutral foundation for query-polling
 receivers in OTAP Dataflow. It defines common configuration, validated query
 plans, cursor and row types, and the interface that database-specific adapters
 implement. `CheckpointStore` and `SourceLease` provide concrete persistence
-and checkpoint-identity ownership. Part 3 will add the polling component
-`DatabaseReceiver` to integrate these primitives with OTLP mapping and
-downstream feedback. A later concrete receiver will supply the adapter and
-register the node. This PR does not schedule polls or emit records.
+and checkpoint-identity ownership. The polling component `DatabaseReceiver`
+integrates these primitives with OTLP mapping and downstream feedback.
+A concrete vendor receiver supplies the adapter and registers the node.
 
 | Component | Responsibility |
 | --- | --- |
 | Database contracts | Configuration validation, query plans, adapter interfaces, row/cursor/page types, and size-accounting helpers |
 | Checkpointing | Atomic file storage with platform-dependent durability and exclusive ownership of a checkpoint identity |
-| Polling (part 3) | Scheduling, OTLP mapping, backpressure, ACK/NACK handling, checkpoint integration, lifecycle, and telemetry |
+| Polling | Scheduling, OTLP mapping, backpressure, ACK/NACK handling, checkpoint integration, lifecycle, and telemetry |
 | Vendor receiver | Native driver, connection/authentication settings, SQL validation, type conversion, and node registration |
 
 The goal is to share polling, delivery, checkpointing, and resource-management
@@ -56,7 +55,7 @@ Existing Dataflow host
   |     `-- Shared scraper
   |           +-- Database-neutral contracts
   |           +-- Checkpoint storage and ownership
-  |           `-- Polling, mapping, and delivery (planned for part 3)
+  |           `-- Polling, mapping, and delivery
   |
   `-- Existing processors and exporters
 ```
@@ -224,15 +223,13 @@ within that timestamp group. The adapter must return a consistent timestamp
 representation and deterministic ordering.
 `CompositeCursor` deliberately has no `Ord` or `PartialOrd` implementation:
 timestamp strings with different offsets or fractional precision cannot be
-ordered safely as text. Part 3's polling controller will compare validated UTC
-instants.
+ordered safely as text. The polling controller compares validated UTC instants.
 
 ### Checkpoint Configuration
 
 This block validates a persistence and replay policy. Constructing configuration
-alone does not perform I/O. Future receiver construction will create a
-`CheckpointStore` and acquire a `SourceLease`; part 3's polling controller
-will manage when they are used.
+alone does not perform I/O. Receiver construction creates a `CheckpointStore`
+and acquires a `SourceLease`; the polling controller manages when they are used.
 
 | Field | Type | Default | Validation / meaning |
 | --- | --- | --- | --- |
@@ -259,7 +256,7 @@ max_consecutive_failures: 5
 | `timestamp_column` | `None` | Optional non-empty result-column name for event-time mapping |
 | `validation_columns` | Empty list | Non-empty column names that must exist during live metadata validation |
 
-The planned OTLP mapper will use a structured key-value body for selected columns.
+The OTLP mapper uses a structured key-value body for selected columns.
 It does not automatically promote every column to a LogRecord attribute, or
 infer OTLP fields from matching column names. Richer mapping is future work.
 
@@ -437,11 +434,9 @@ or other sensitive inputs.
 
 ## Polling and Delivery Semantics
 
-This section describes the planned part 3 polling-controller integration,
-not behavior shipped in this PR. The controller will permit one pending page
-per source and be a reusable receiver core, not a vendor-registered node by
-itself. Checkpoint storage and leases alone do not schedule queries, send
-data, or process acknowledgements.
+The controller permits one pending page per source and is a reusable receiver
+core, not a vendor-registered node by itself. Checkpoint storage and leases
+alone do not schedule queries, send data, or process acknowledgements.
 
 ```text
 Acquire source ownership and load committed position
@@ -462,7 +457,7 @@ Acquire source ownership and load committed position
 | Invalid or incompatible checkpoint | Fail explicitly rather than silently assume a fresh position. |
 | Shutdown/cancellation | Stop admitting work and coordinate native cleanup before permitting a competing source owner. |
 
-The planned initial runtime will keep one page pending per source. Multiple
+The runtime keeps one page pending per source. Multiple
 in-flight batches would additionally require a contiguous acknowledgement
 frontier; a later ACK must never skip an earlier unresolved batch.
 
@@ -529,13 +524,9 @@ end in `.checkpoint`. This keeps `Orders` and `orders` separate even on
 case-insensitive filesystems. The checkpoint payload still verifies the exact
 source ID and configuration fingerprint.
 
-If no versioned checkpoint exists, startup also reads the earlier unversioned
-names, including both the readable and digest-based names for long source IDs.
-If only a case-different old name or directory exists, recovery rejects the
-ambiguous path rather than treating it as missing or adopting another source.
-The next successful write uses the versioned path; older files are not removed
-by that write. Stop old writers before upgrading: they do not share this
-namespace or its lease and must not write concurrently with the new version.
+Only the `@v1` layout is supported. Checkpoints from earlier development
+layouts are not read or migrated. Without a checkpoint in the supported layout,
+collection starts from the configured initial cursor.
 
 ### Source Correctness and Ownership
 
@@ -629,9 +620,9 @@ the old lease. Coordinated replacement/readiness is separate work tracked in
 
 ### Metric Sets
 
-Part 3 will define `DatabaseReceiverMetrics`, the polling controller's
-`receiver.database` metric set. Concrete receiver construction will register
-the set and supply its handle to the controller. Configuration validation,
+`DatabaseReceiverMetrics` defines the polling controller's `receiver.database`
+metric set. Concrete receiver construction registers the set and supplies its
+handle to the controller. Configuration validation,
 checkpoint storage, and leases do not emit these runtime metrics by themselves.
 
 | Counter fields | Purpose |
