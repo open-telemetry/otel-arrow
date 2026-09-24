@@ -23,6 +23,8 @@ fn config_from_json(value: serde_json::Value) -> Result<Config, ConfigError> {
     parse_config(&value)
 }
 
+/// Scenario: A valid config omits the optional file refresh interval.
+/// Guarantees: Config parsing preserves supplied values and applies the default refresh interval.
 #[test]
 fn config_defaults_apply() {
     let cfg = config_from_json(serde_json::json!({
@@ -51,6 +53,8 @@ fn config_defaults_apply() {
     );
 }
 
+/// Scenario: Config parsing receives missing, empty, or invalid usernames.
+/// Guarantees: Every invalid username configuration is rejected.
 #[test]
 fn config_username_required_and_valid() {
     assert!(
@@ -83,6 +87,8 @@ fn config_username_required_and_valid() {
     );
 }
 
+/// Scenario: Config parsing receives a missing, empty, or invalid password secret.
+/// Guarantees: Every invalid password secret configuration is rejected.
 #[test]
 fn config_secret_required_and_valid() {
     assert!(
@@ -109,6 +115,8 @@ fn config_secret_required_and_valid() {
     );
 }
 
+/// Scenario: Config parsing receives an unsupported password file refresh interval.
+/// Guarantees: The invalid refresh interval is rejected.
 #[test]
 fn config_password_secret_file_refresh_rejects_invalid() {
     assert!(
@@ -123,6 +131,8 @@ fn config_password_secret_file_refresh_rejects_invalid() {
 
 // -- Factory tests ------------------------------------------
 
+/// Scenario: The flat-file authentication factory is registered.
+/// Guarantees: Its URN and shared basic authentication capability are advertised.
 #[test]
 fn factory_is_registered_with_capability() {
     assert_eq!(
@@ -152,8 +162,8 @@ fn create_bundle(config: serde_json::Value) -> Result<ExtensionBundle, ConfigErr
     create(&ext_ctx, name, user_config, &extension_config)
 }
 
-// Scenario: The factory's `create` hook runs against a valid config.
-// Guarantees: Wiring succeeds and yields a shared, active extension bundle usable by the engine.
+/// Scenario: The factory's `create` hook runs against a valid config.
+/// Guarantees: Wiring succeeds and yields a shared, active extension bundle usable by the engine.
 #[test]
 fn create_builds_a_shared_active_bundle() {
     otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
@@ -173,8 +183,8 @@ fn create_builds_a_shared_active_bundle() {
     );
 }
 
-// Scenario: The factory's `create` hook runs against a config that fails validation.
-// Guarantees: Wiring fails fast with InvalidUserConfig instead of building a broken extension.
+/// Scenario: The factory's `create` hook runs against a config that fails validation.
+/// Guarantees: Wiring fails fast with InvalidUserConfig instead of building a broken extension.
 #[test]
 fn create_rejects_an_invalid_config() {
     let Err(err) = create_bundle(serde_json::json!({})) else {
@@ -219,6 +229,8 @@ fn make_tracker() -> BackgroundProviderMetricsTracker<FlatFileUserPassAuthMetric
     BackgroundProviderMetricsTracker::new(metric_set)
 }
 
+/// Scenario: Credentials are acquired from an inline password secret.
+/// Guarantees: The configured username and password are returned without expiration.
 #[tokio::test]
 async fn get_credential() {
     let ext = make_extension();
@@ -229,6 +241,8 @@ async fn get_credential() {
     assert!(credential.expires_on().is_none());
 }
 
+/// Scenario: Credentials are acquired from a readable password secret file.
+/// Guarantees: The file password is trimmed only at line endings and receives an expiration.
 #[tokio::test]
 async fn get_credential_file_success() {
     let mut named_file = NamedTempFile::new().expect("file created");
@@ -251,6 +265,8 @@ async fn get_credential_file_success() {
     assert!(credential.expires_on().is_some());
 }
 
+/// Scenario: Credential acquisition references an unreadable password secret file.
+/// Guarantees: Acquisition returns an error instead of a credential.
 #[tokio::test]
 async fn get_credential_file_failure() {
     let ext = make_extension_with_config(Config {
@@ -263,6 +279,8 @@ async fn get_credential_file_failure() {
     assert!(ext.get_credential().await.is_err())
 }
 
+/// Scenario: A credential is requested directly and then through the credential stream.
+/// Guarantees: Both paths return the configured username and inline password.
 #[tokio::test]
 async fn credential_stream() {
     let ext = make_extension();
