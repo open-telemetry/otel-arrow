@@ -602,9 +602,13 @@ impl HeaderPropagationPolicy {
         &'a self,
         headers: &'a TransportHeaders,
     ) -> impl Iterator<Item = PropagatedHeader<'a>> {
+        let mut compiled_matches: SmallVec<[(usize, bool); 4]> = SmallVec::new();
         headers.iter().filter_map(move |header| {
-            let (action, name_strategy, selected_name) =
-                self.resolve_action_for_header(headers, header.name.as_str());
+            let (action, name_strategy, selected_name) = self.resolve_action_for_header(
+                headers,
+                header.name.as_str(),
+                &mut compiled_matches,
+            );
             if action == PropagationAction::Drop {
                 return None;
             }
@@ -655,6 +659,7 @@ impl HeaderPropagationPolicy {
         &'a self,
         headers: &'a TransportHeaders,
         name: &str,
+        compiled_matches: &mut SmallVec<[(usize, bool); 4]>,
     ) -> (PropagationAction, NameStrategy, Option<&'a str>) {
         for ov in &self.overrides {
             if ov
@@ -671,14 +676,25 @@ impl HeaderPropagationPolicy {
         if self.default.selector.selects_unqualified_str(name) {
             return (self.default.action, self.default.name, None);
         }
-        if let Some(binding) = self.compiled_named.iter().find(|binding| {
-            name.eq_ignore_ascii_case(binding.source_name.as_str()) && binding.matches(headers)
-        }) {
-            return (
-                self.default.action,
-                self.default.name,
-                Some(binding.output_name.as_str()),
-            );
+        for (index, binding) in self.compiled_named.iter().enumerate() {
+            if !name.eq_ignore_ascii_case(binding.source_name.as_str()) {
+                continue;
+            }
+            let matches = compiled_matches
+                .iter()
+                .find_map(|(cached_index, matches)| (*cached_index == index).then_some(*matches))
+                .unwrap_or_else(|| {
+                    let matches = binding.matches(headers);
+                    compiled_matches.push((index, matches));
+                    matches
+                });
+            if matches {
+                return (
+                    self.default.action,
+                    self.default.name,
+                    Some(binding.output_name.as_str()),
+                );
+            }
         }
         (PropagationAction::Drop, self.default.name, None)
     }
@@ -1407,6 +1423,55 @@ default:
         ));
 
         assert_eq!(policy.propagate(&headers).count(), 0);
+    }
+
+    /// Scenario: duplicate selected-source values are propagated across repeated calls.
+    /// Guarantees: one activation result applies to every source value and is not retained
+    /// after the propagation iterator is discarded.
+    #[test]
+    fn composite_transport_header_propagation_shares_activation_per_call() {
+        let policy: HeaderPropagationPolicy = serde_yaml::from_str(
+            r#"
+default:
+  selector:
+    type: named
+    named: [product_user:workspace_id]
+  name: stored_name
+"#,
+        )
+        .expect("valid propagation policy");
+        let policy = policy
+            .compile_context(&[conditional_product_user_declaration()])
+            .expect("composite selector compiles");
+        let mut headers = TransportHeaders::new();
+        headers.push(crate::transport_headers::TransportHeader::text(
+            context_name("workspace"),
+            b"acme",
+        ));
+        headers.push(crate::transport_headers::TransportHeader::text(
+            context_name("workspace"),
+            b"beta",
+        ));
+        headers.push(crate::transport_headers::TransportHeader::text(
+            context_name("environment"),
+            b"production",
+        ));
+
+        assert_eq!(policy.propagate(&headers).count(), 0);
+
+        headers.push(crate::transport_headers::TransportHeader::text(
+            context_name("region"),
+            b"us-east",
+        ));
+        let propagated = policy.propagate(&headers).collect::<Vec<_>>();
+        assert_eq!(propagated.len(), 2);
+        assert!(
+            propagated
+                .iter()
+                .all(|header| header.header_name == "workspace_id")
+        );
+        assert_eq!(propagated[0].value, b"acme");
+        assert_eq!(propagated[1].value, b"beta");
     }
 
     /// Scenario: an override selects a primitive source whose composite conditions are absent.

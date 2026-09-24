@@ -21,6 +21,8 @@ use std::hint::black_box;
 const HEADER_COUNTS: [usize; 4] = [1, 4, 16, 32];
 const CONDITION_COUNTS: [usize; 4] = [1, 2, 3, 4];
 const CONDITION_NAME_VARIANTS: [&str; 4] = ["header", "HEADER", "Header", "hEaDeR"];
+const DUPLICATE_SOURCE_COUNTS: [usize; 4] = [1, 4, 16, 28];
+const DUPLICATE_TOTAL_HEADERS: usize = 32;
 
 fn bench_header_propagation(c: &mut Criterion) {
     let mut group = c.benchmark_group("header_propagation");
@@ -58,6 +60,29 @@ fn bench_header_propagation(c: &mut Criterion) {
                     },
                 );
             }
+        }
+    }
+
+    let _ = group.throughput(Throughput::Elements(DUPLICATE_TOTAL_HEADERS as u64));
+    for source_count in DUPLICATE_SOURCE_COUNTS {
+        let headers = duplicate_source_headers(source_count);
+        for matches in [true, false] {
+            let conditional = duplicate_source_policy(matches);
+            assert_eq!(
+                conditional.propagate(&headers).count(),
+                if matches { source_count } else { 0 }
+            );
+            let case = if matches { "match" } else { "miss" };
+            let _ = group.bench_with_input(
+                BenchmarkId::new(
+                    format!("conditional_duplicate_{case}_4_conditions"),
+                    format!("{source_count}_sources_32_headers"),
+                ),
+                &headers,
+                |b, headers| {
+                    b.iter(|| black_box(conditional.propagate(black_box(headers)).count()));
+                },
+            );
         }
     }
 
@@ -151,6 +176,62 @@ fn conditional_declaration(
             .is_empty()
     );
     declaration
+}
+
+fn duplicate_source_headers(source_count: usize) -> TransportHeaders {
+    let mut headers = TransportHeaders::with_capacity(DUPLICATE_TOTAL_HEADERS);
+    for _ in 0..source_count {
+        headers.push(TransportHeader::text(
+            context_name("selected_source"),
+            "selected",
+        ));
+    }
+    for index in source_count..DUPLICATE_TOTAL_HEADERS - CONDITION_COUNTS.len() {
+        headers.push(TransportHeader::text(
+            context_name(&format!("filler_{index}")),
+            "filler",
+        ));
+    }
+    for index in 0..CONDITION_COUNTS.len() {
+        headers.push(TransportHeader::text(
+            context_name(&format!("condition_{index}")),
+            format!("value_{index}"),
+        ));
+    }
+    headers
+}
+
+fn duplicate_source_policy(matches: bool) -> HeaderPropagationPolicy {
+    let policy: HeaderPropagationPolicy = serde_yaml::from_str(
+        r#"
+default:
+  selector:
+    type: named
+    named: [composite:selected]
+"#,
+    )
+    .expect("valid duplicate-source propagation policy");
+    let mut parts = vec![ContextEntryPart::TransportHeader {
+        name: context_ref("selected_source"),
+        store_as: Some(context_name("selected")),
+    }];
+    for index in 0..CONDITION_COUNTS.len() {
+        parts.push(ContextEntryPart::TransportHeaderMatch {
+            name: context_ref(&format!("condition_{index}")),
+            value: if matches || index + 1 < CONDITION_COUNTS.len() {
+                format!("value_{index}")
+            } else {
+                "missing".to_owned()
+            },
+        });
+    }
+    policy
+        .compile_context(&[ContextEntryDeclaration {
+            scope: ContextScope::Engine,
+            name: context_name("composite"),
+            definition: ContextEntryDefinition(parts),
+        }])
+        .expect("duplicate-source propagation policy compiles")
 }
 
 fn context_name(raw: &str) -> ContextEntryName {
