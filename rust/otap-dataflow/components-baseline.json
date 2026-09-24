@@ -288,6 +288,12 @@
     "attributes": {}
   },
   {
+    "id": "urn:otel:receiver:windows_event_forwarding",
+    "category": "Receiver",
+    "description": null,
+    "attributes": {}
+  },
+  {
     "id": "urn:otel:safety:memory_limiter",
     "category": "Safety",
     "description": "Engine memory pressure monitor and shedding controller",
