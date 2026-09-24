@@ -1647,7 +1647,12 @@ async fn revoke_with_failed_commit_redelivers_uncommitted_records_to_new_owner_a
             // Step 2: the rejected commits must leave the broker with no
             // committed progress for either partition (acked offsets were never
             // durably committed). Wait past A's safety-net interval so its
-            // (rejected) commit attempts have fired.
+            // (rejected) commit attempts have fired. This broker committed-offset
+            // check is the authoritative, end-to-end verification that the
+            // commit failed: the `offset_commits{outcome="failure"}` metric is
+            // not observable here because rust-rdkafka 0.38 never fires
+            // `commit_callback` for an async commit (see the note in this test's
+            // doc comment and `async_commit_outcome_not_delivered_by_callback_documents_gap`).
             tokio::time::sleep(Duration::from_secs(1)).await;
             for partition in 0..REBALANCE_TEST_PARTITIONS {
                 let committed = committed_offset(&brokers, group, TOPIC, partition)
