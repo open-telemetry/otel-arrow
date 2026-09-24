@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 //! WEF protocol diagnostics alongside the shared receiver boundary metrics.
 //!
 //! # Measurement boundaries

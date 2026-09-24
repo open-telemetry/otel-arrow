@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 //! Build and serialize the subscription advertised during WEF enumeration.
 //!
 //! An advertisement is an `m:Subscription` item containing a version and a nested

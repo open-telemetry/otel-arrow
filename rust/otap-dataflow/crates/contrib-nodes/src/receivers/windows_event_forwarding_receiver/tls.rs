@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 use super::{config::Config, identity::SourceIdentity};
 use otel_arrow_dfe_config::tls::{TlsConfig, TlsServerConfig};
 use otel_arrow_dfe_otap::tls_utils::{

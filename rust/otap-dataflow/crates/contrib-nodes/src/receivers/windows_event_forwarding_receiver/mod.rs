@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 /// Bounded in-memory delivery progress for a single subscription.
 pub mod bookmark;
 

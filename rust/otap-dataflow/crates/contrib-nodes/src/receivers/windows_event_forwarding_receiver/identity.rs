@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 use super::config::{AuthConfig, normalize_source};
 use x509_parser::{extensions::GeneralName, prelude::*};
 
