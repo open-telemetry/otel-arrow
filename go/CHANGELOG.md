@@ -11,6 +11,14 @@ changes. See [`RELEASING.md`](../RELEASING.md) for the versioning policy.
 
 <!-- next version -->
 
+## v0.57.0
+
+### :bulb: Enhancements :bulb:
+
+- `dependencies`: Upgrade various Go dependencies. ([#4119](https://github.com/open-telemetry/otel-arrow/issues/4119))
+
+<!-- previous-version -->
+
 ## v0.56.0
 
 No changes. This release maintains version parity across the repository.
