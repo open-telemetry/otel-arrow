@@ -4,6 +4,7 @@
 //! Unit tests for the flat file user pass extension.
 
 use std::io::Write;
+use std::time::Instant;
 
 use futures::StreamExt;
 use otel_arrow_dfe_config::error::Error as ConfigError;
@@ -128,6 +129,37 @@ fn config_password_secret_file_refresh_rejects_invalid() {
         "password_secret_file_refresh": "4m" }))
         .is_err()
     )
+}
+
+/// Scenario: Config parsing receives the minimum supported password file refresh interval.
+/// Guarantees: The inclusive five-minute boundary is accepted.
+#[test]
+fn config_password_secret_file_refresh_accepts_minimum() {
+    let cfg = config_from_json(serde_json::json!({
+        "username": "test",
+        "password_secret_file": "<test_secret_path>",
+        "password_secret_file_refresh": "5m"
+    }))
+    .expect("minimum refresh interval is valid");
+
+    assert_eq!(
+        cfg.password_secret_file_refresh,
+        MINIMUM_BASIC_AUTH_CREDENTIAL_REFRESH_INTERVAL
+    );
+}
+
+/// Scenario: Config parsing receives an unrecognized field.
+/// Guarantees: Unknown fields are rejected instead of being silently ignored.
+#[test]
+fn config_rejects_unknown_fields() {
+    assert!(
+        config_from_json(serde_json::json!({
+            "username": "test",
+            "password_secret": "test_pass",
+            "unexpected": true
+        }))
+        .is_err()
+    );
 }
 
 // -- Factory tests ------------------------------------------
@@ -266,6 +298,69 @@ async fn get_credential_file_success() {
     assert!(credential.expires_on().is_some());
 }
 
+/// Scenario: Both inline and file password forms are configured.
+/// Guarantees: The file password takes precedence over the inline password.
+#[tokio::test]
+async fn password_file_takes_precedence_over_inline_secret() {
+    let mut named_file = NamedTempFile::new().expect("file created");
+    named_file.write_all(b"file_pass").expect("content written");
+
+    let source = FlatFileUserPassAuth::new(Config {
+        username: "test_user".into(),
+        password_secret: Some("inline_pass".into()),
+        password_secret_file: Some(named_file.path().into()),
+        password_secret_file_refresh: Duration::from_secs(300),
+    });
+
+    let credential = source.fetch().await.expect("credential acquired");
+    assert_eq!(credential.expose_password(), "file_pass");
+}
+
+/// Scenario: A password file is rewritten between two credential acquisitions.
+/// Guarantees: Each acquisition re-reads the file and observes the rotated password.
+#[tokio::test]
+async fn password_file_rotation_takes_effect() {
+    let dir = tempfile::tempdir().expect("tempdir created");
+    let password_path = dir.path().join("password");
+    std::fs::write(&password_path, "password-1").expect("initial password written");
+    let source = FlatFileUserPassAuth::new(Config {
+        username: "test_user".into(),
+        password_secret: None,
+        password_secret_file: Some(password_path.clone()),
+        password_secret_file_refresh: Duration::from_secs(300),
+    });
+
+    let first = source.fetch().await.expect("first credential acquired");
+    std::fs::write(&password_path, "password-2").expect("rotated password written");
+    let second = source.fetch().await.expect("second credential acquired");
+
+    assert_eq!(first.expose_password(), "password-1");
+    assert_eq!(second.expose_password(), "password-2");
+}
+
+/// Scenario: A credential is acquired from a password file with a configured refresh interval.
+/// Guarantees: Its expiry is set to approximately one refresh interval after acquisition.
+#[tokio::test]
+async fn file_credential_expiry_matches_refresh_interval() {
+    let mut named_file = NamedTempFile::new().expect("file created");
+    named_file.write_all(b"test_pass").expect("content written");
+    let refresh_interval = Duration::from_secs(300);
+    let source = FlatFileUserPassAuth::new(Config {
+        username: "test_user".into(),
+        password_secret: None,
+        password_secret_file: Some(named_file.path().into()),
+        password_secret_file_refresh: refresh_interval,
+    });
+
+    let before = Instant::now();
+    let credential = source.fetch().await.expect("credential acquired");
+    let after = Instant::now();
+    let expires_on = credential.expires_on().expect("file credential expires");
+
+    assert!(expires_on >= before + refresh_interval);
+    assert!(expires_on <= after + refresh_interval);
+}
+
 /// Scenario: A password secret file contains bytes that are not valid UTF-8.
 /// Guarantees: Acquisition fails with an explicit encoding error instead of using mangled bytes.
 #[tokio::test]
@@ -351,4 +446,18 @@ async fn credential_stream() {
         .expect("second acquisition");
     assert_eq!(credential_second.expose_username(), "test_user");
     assert_eq!(credential_second.expose_password(), "test_pass");
+}
+
+/// Scenario: A credential stream subscribes before the first credential acquisition.
+/// Guarantees: A later acquisition is published to the waiting stream subscriber.
+#[tokio::test]
+async fn credential_stream_receives_later_acquisition() {
+    let ext = make_extension();
+    let mut stream = ext.credential_stream();
+
+    let acquired = ext.get_value().await.expect("credential acquired");
+    let streamed = stream.next().await.expect("credential published");
+
+    assert_eq!(streamed.expose_username(), acquired.expose_username());
+    assert_eq!(streamed.expose_password(), acquired.expose_password());
 }
