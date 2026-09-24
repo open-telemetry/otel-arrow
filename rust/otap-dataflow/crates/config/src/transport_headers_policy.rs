@@ -12,18 +12,23 @@
 //! TODO: Implement the sensitive capability for headers
 
 use crate::context::ContextEntryName;
-use crate::transport_headers::{TransportHeader, TransportHeaders, ValueKind};
+use crate::transport_headers::{CapturedTransportHeader, TransportHeaders, ValueKind};
 use hashbrown::{Equivalent, HashMap};
+use http::{HeaderMap, HeaderName};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use smallvec::SmallVec;
 use std::borrow::Cow;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 
 // -- Stats types --------------------------------------------------------------
 
-/// Counts headers skipped by capture limits.
-/// Reported by [`CompiledHeaderCapturePolicy::capture_from_pairs`].
+/// Counts matching headers skipped by capture limits.
+///
+/// Returned by the generic and native HTTP capture paths. Capture continues
+/// after a limit violation so callers can retain accepted headers and decide
+/// separately how to observe the skipped entries.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CaptureStats {
     /// Matching headers skipped because `max_entries` was already reached.
@@ -52,7 +57,7 @@ pub struct PropagatedHeader<'a> {
     /// The name to use on the outbound request.
     pub header_name: &'a str,
     /// Whether the value is text or binary.
-    pub value_kind: &'a ValueKind,
+    pub value_kind: ValueKind,
     /// Raw value bytes.
     pub value: &'a [u8],
 }
@@ -93,6 +98,7 @@ pub struct HeaderCapturePolicy {
 pub struct CompiledHeaderCapturePolicy {
     defaults: CaptureDefaults,
     captures: HashMap<CaptureKey, CompiledCapture>,
+    http_captures: HashMap<HeaderName, CompiledCapture>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -155,6 +161,10 @@ impl HeaderCapturePolicy {
     }
 
     /// Indexes capture rules and resolves original-name retention.
+    ///
+    /// Match names that are not valid HTTP header-name tokens remain available
+    /// to generic transports but are omitted from the native HTTP index because
+    /// they cannot occur in an [`HeaderMap`].
     #[must_use]
     pub fn compile(
         self,
@@ -163,6 +173,7 @@ impl HeaderCapturePolicy {
         let HeaderCapturePolicy { defaults, headers } = self;
         let match_count = headers.iter().map(|rule| rule.match_names.len()).sum();
         let mut captures = HashMap::with_capacity(match_count);
+        let mut http_captures = HashMap::with_capacity(match_count);
 
         for rule in headers {
             for match_name in rule.match_names {
@@ -170,17 +181,25 @@ impl HeaderCapturePolicy {
                     .store_as
                     .clone()
                     .unwrap_or_else(|| match_name.to_ascii_lowercase());
-                _ = captures
-                    .entry(CaptureKey(match_name))
-                    .or_insert_with(|| CompiledCapture {
-                        preserve_original_name: consumes_original_name(&stored_name),
-                        stored_name,
-                        value_kind: rule.value_kind,
-                    });
+                let capture = CompiledCapture {
+                    preserve_original_name: consumes_original_name(&stored_name),
+                    stored_name,
+                    value_kind: rule.value_kind,
+                };
+                if let Ok(http_name) = HeaderName::from_bytes(match_name.as_str().as_bytes()) {
+                    _ = http_captures
+                        .entry(http_name)
+                        .or_insert_with(|| capture.clone());
+                }
+                _ = captures.entry(CaptureKey(match_name)).or_insert(capture);
             }
         }
 
-        CompiledHeaderCapturePolicy { defaults, captures }
+        CompiledHeaderCapturePolicy {
+            defaults,
+            captures,
+            http_captures,
+        }
     }
 }
 
@@ -203,61 +222,106 @@ impl CompiledHeaderCapturePolicy {
         V: Into<Cow<'a, [u8]>>,
     {
         if self.captures.is_empty() {
-            let _ = result.clear_and_reserve(0);
+            result.replace(Vec::new());
             return None;
         }
 
+        self.capture_matches(
+            pairs.filter_map(|(wire_name, value)| {
+                self.find_capture(wire_name)
+                    .map(|capture| (wire_name, capture, value))
+            }),
+            result,
+        )
+    }
+
+    /// Captures directly from HTTP headers using compiler-prepared native keys.
+    ///
+    /// This avoids string conversion, repeated validation, and case
+    /// normalization on the per-request path. Repeated values are retained in
+    /// the order exposed by [`HeaderMap`], and the `result` collection is
+    /// cleared before populating.
+    ///
+    /// Returns `None` when all matching headers were captured successfully,
+    /// or `Some(CaptureStats)` when one or more matching headers were skipped
+    /// due to policy limits.
+    pub fn capture_from_http_headers(
+        &self,
+        headers: &HeaderMap,
+        result: &mut TransportHeaders,
+    ) -> Option<CaptureStats> {
+        if self.http_captures.is_empty() {
+            result.replace(Vec::new());
+            return None;
+        }
+
+        self.capture_matches(
+            headers.iter().filter_map(|(wire_name, value)| {
+                self.find_http_capture(wire_name)
+                    .map(|capture| (wire_name.as_str(), capture, value.as_bytes()))
+            }),
+            result,
+        )
+    }
+
+    fn capture_matches<'name, 'policy, V>(
+        &self,
+        matches: impl Iterator<Item = (&'name str, &'policy CompiledCapture, V)>,
+        result: &mut TransportHeaders,
+    ) -> Option<CaptureStats>
+    where
+        V: Into<Cow<'name, [u8]>>,
+    {
         let defaults = &self.defaults;
-        let pairs = pairs;
-        let (lower, upper) = pairs.size_hint();
-        let capacity = upper.unwrap_or(lower).min(defaults.max_entries);
-        let result = result.clear_and_reserve(capacity);
+        // Unmatched inbound headers should not force small captures onto the heap.
+        let mut captured: SmallVec<[CapturedTransportHeader<'_, '_>; 4]> = SmallVec::new();
         let mut skipped_max_entries: usize = 0;
         let mut skipped_name_too_long: usize = 0;
         let mut skipped_value_too_long: usize = 0;
 
-        for (wire_name, value) in pairs {
-            let value: Cow<'a, [u8]> = value.into();
-            if let Some(capture) = self.find_capture(wire_name) {
-                // Enforce entry count limit.
-                if result.len() >= defaults.max_entries {
-                    skipped_max_entries += 1;
-                    continue;
-                }
-
-                // Enforce name length limit -- drop oversized names.
-                if wire_name.len() > defaults.max_name_bytes {
-                    skipped_name_too_long += 1;
-                    continue;
-                }
-
-                // Enforce value length limit -- drop oversized values.
-                if value.len() > defaults.max_value_bytes {
-                    skipped_value_too_long += 1;
-                    continue;
-                }
-
-                let value_kind = match capture.value_kind {
-                    Some(ValueKindConfig::Text) => ValueKind::Text,
-                    Some(ValueKindConfig::Binary) => ValueKind::Binary,
-                    None => {
-                        if wire_name.ends_with("-bin") {
-                            ValueKind::Binary
-                        } else {
-                            ValueKind::Text
-                        }
-                    }
-                };
-
-                result.push(TransportHeader::captured(
-                    capture.stored_name.clone(),
-                    wire_name,
-                    capture.preserve_original_name,
-                    value_kind,
-                    value,
-                ));
+        for (wire_name, capture, value) in matches {
+            let value: Cow<'name, [u8]> = value.into();
+            // Enforce entry count limit.
+            if captured.len() >= defaults.max_entries {
+                skipped_max_entries += 1;
+                continue;
             }
+
+            // Enforce name length limit -- drop oversized names.
+            if wire_name.len() > defaults.max_name_bytes {
+                skipped_name_too_long += 1;
+                continue;
+            }
+
+            // Enforce value length limit -- drop oversized values.
+            if value.len() > defaults.max_value_bytes {
+                skipped_value_too_long += 1;
+                continue;
+            }
+
+            let value_kind = match capture.value_kind {
+                Some(ValueKindConfig::Text) => ValueKind::Text,
+                Some(ValueKindConfig::Binary) => ValueKind::Binary,
+                None => {
+                    if wire_name.ends_with("-bin") {
+                        ValueKind::Binary
+                    } else {
+                        ValueKind::Text
+                    }
+                }
+            };
+
+            let original_name = (capture.preserve_original_name
+                && capture.stored_name.as_str() != wire_name)
+                .then_some(wire_name);
+            captured.push(CapturedTransportHeader {
+                name: &capture.stored_name,
+                original_name,
+                value_kind,
+                value,
+            });
         }
+        result.replace_captured(&captured);
 
         if skipped_max_entries > 0 || skipped_name_too_long > 0 || skipped_value_too_long > 0 {
             Some(CaptureStats {
@@ -279,6 +343,14 @@ impl CompiledHeaderCapturePolicy {
                 .then_some(capture);
         }
         self.captures.get(&WireName(wire_name))
+    }
+
+    fn find_http_capture(&self, wire_name: &HeaderName) -> Option<&CompiledCapture> {
+        if self.http_captures.len() == 1 {
+            let (key, capture) = self.http_captures.iter().next()?;
+            return (wire_name == key).then_some(capture);
+        }
+        self.http_captures.get(wire_name)
     }
 }
 
@@ -436,7 +508,7 @@ impl HeaderPropagationPolicy {
         headers: &'a TransportHeaders,
     ) -> impl Iterator<Item = PropagatedHeader<'a>> {
         headers.iter().filter_map(move |header| {
-            let (action, name_strategy) = self.resolve_action(header);
+            let (action, name_strategy) = self.resolve_action_for_name(header.name.as_str());
             if action == PropagationAction::Drop {
                 return None;
             }
@@ -446,29 +518,20 @@ impl HeaderPropagationPolicy {
             };
             Some(PropagatedHeader {
                 header_name,
-                value_kind: &header.value.value_kind,
-                value: &header.value.bytes,
+                value_kind: header.value.value_kind,
+                value: header.value.bytes,
             })
         })
     }
 
-    /// Determine the action and name strategy for a single header by
-    /// checking overrides first, then falling back to the default.
-    fn resolve_action(&self, header: &TransportHeader) -> (PropagationAction, NameStrategy) {
-        self.resolve_action_for_name(&header.name)
-    }
-
-    fn resolve_action_for_name(
-        &self,
-        name: &ContextEntryName,
-    ) -> (PropagationAction, NameStrategy) {
+    fn resolve_action_for_name(&self, name: &str) -> (PropagationAction, NameStrategy) {
         // Check overrides first.
         for ov in &self.overrides {
             if ov
                 .match_rule
                 .stored_names
                 .iter()
-                .any(|stored| name.as_str().eq_ignore_ascii_case(stored.as_str()))
+                .any(|stored| name.eq_ignore_ascii_case(stored.as_str()))
             {
                 let name_strategy = ov.name.unwrap_or(self.default.name);
                 return (ov.action, name_strategy);
@@ -476,7 +539,7 @@ impl HeaderPropagationPolicy {
         }
 
         // Check whether the header passes the default selector.
-        let selected = self.default.selector.selects(name);
+        let selected = self.default.selector.selects_str(name);
 
         if selected {
             (self.default.action, self.default.name)
@@ -560,6 +623,10 @@ impl PropagationSelector {
     /// Returns true if the given header name is selected for propagation.
     #[must_use]
     pub fn selects(&self, header_name: &ContextEntryName) -> bool {
+        self.selects_str(header_name.as_str())
+    }
+
+    fn selects_str(&self, header_name: &str) -> bool {
         match &self.selector_type {
             PropagationSelectorType::AllCaptured => true,
             PropagationSelectorType::None => false,
@@ -569,7 +636,7 @@ impl PropagationSelector {
                 .map(|names| {
                     names
                         .iter()
-                        .any(|name| header_name.as_str().eq_ignore_ascii_case(name.as_str()))
+                        .any(|name| header_name.eq_ignore_ascii_case(name.as_str()))
                 })
                 .unwrap_or(false),
         }
@@ -728,7 +795,7 @@ mod tests {
                 )
                 .is_none()
         );
-        assert_eq!(headers.as_slice()[0].name, "first");
+        assert_eq!(headers.get(0).expect("captured header").name, "first");
     }
 
     /// Scenario: a propagation policy uses defaults.
@@ -803,8 +870,170 @@ mod tests {
         let _ =
             policy.capture_from_pairs([("X-Tenant", b"acme".as_slice())].into_iter(), &mut headers);
 
-        assert_eq!(headers.as_slice()[0].name, "Tenant");
-        assert_eq!(headers.as_slice()[0].wire_name(), "Tenant");
+        assert_eq!(headers.get(0).expect("captured header").name, "Tenant");
+        assert_eq!(
+            headers.get(0).expect("captured header").wire_name(),
+            "Tenant"
+        );
+    }
+
+    /// Scenario: an HTTP request repeats a header that is captured under a renamed entry.
+    /// Guarantees: native lookup preserves value order, the stored name, and normalized wire name.
+    #[test]
+    fn capture_from_http_headers_preserves_repeated_values_and_names() {
+        let policy = HeaderCapturePolicy::new(
+            CaptureDefaults::default(),
+            vec![CaptureRule {
+                match_names: vec![context_name("X-Tenant")],
+                store_as: Some(context_name("TenantID")),
+                sensitive: false,
+                value_kind: None,
+            }],
+        )
+        .compile(|_| true);
+        let mut headers = HeaderMap::new();
+        _ = headers.append(
+            HeaderName::from_static("x-tenant"),
+            http::HeaderValue::from_static("acme"),
+        );
+        _ = headers.append(
+            HeaderName::from_static("x-tenant"),
+            http::HeaderValue::from_static("globex"),
+        );
+        let mut captured = TransportHeaders::new();
+
+        let stats = policy.capture_from_http_headers(&headers, &mut captured);
+
+        assert!(stats.is_none());
+        let captured: Vec<_> = captured.iter().collect();
+        assert_eq!(captured.len(), 2);
+        assert_eq!(captured[0].name, "TenantID");
+        assert_eq!(captured[0].wire_name(), "x-tenant");
+        assert_eq!(captured[0].value.bytes, b"acme");
+        assert_eq!(captured[1].name, "TenantID");
+        assert_eq!(captured[1].wire_name(), "x-tenant");
+        assert_eq!(captured[1].value.bytes, b"globex");
+    }
+
+    /// Scenario: generic and HTTP capture retain zero to sixteen repeated values among ignored headers.
+    /// Guarantees: empty, inline-sized, and spilled captures preserve order, names, kinds, and bytes.
+    #[test]
+    fn capture_preserves_values_across_inline_capacity() {
+        let policy = HeaderCapturePolicy::new(
+            CaptureDefaults::default(),
+            vec![CaptureRule {
+                match_names: vec![context_name("x-tenant")],
+                store_as: Some(context_name("TenantID")),
+                sensitive: false,
+                value_kind: None,
+            }],
+        )
+        .compile(|_| true);
+
+        for count in [0, 1, 4, 5, 16] {
+            let values: Vec<_> = (0..count).map(|index| format!("tenant-{index}")).collect();
+            let mut headers = HeaderMap::new();
+            for value in &values {
+                _ = headers.append(
+                    HeaderName::from_static("x-tenant"),
+                    http::HeaderValue::from_str(value).expect("valid tenant value"),
+                );
+            }
+            for name in ["x-ignored-a", "x-ignored-b", "x-ignored-c", "x-ignored-d"] {
+                _ = headers.append(
+                    HeaderName::from_static(name),
+                    http::HeaderValue::from_static("ignored"),
+                );
+            }
+
+            for native in [false, true] {
+                let mut captured = TransportHeaders::new();
+                let stats = if native {
+                    policy.capture_from_http_headers(&headers, &mut captured)
+                } else {
+                    policy.capture_from_pairs(
+                        headers
+                            .iter()
+                            .map(|(name, value)| (name.as_str(), value.as_bytes())),
+                        &mut captured,
+                    )
+                };
+
+                assert!(stats.is_none());
+                assert_eq!(captured.len(), count);
+                for (header, value) in captured.iter().zip(&values) {
+                    assert_eq!(header.name, "TenantID");
+                    assert_eq!(header.wire_name(), "x-tenant");
+                    assert_eq!(header.value.value_kind, ValueKind::Text);
+                    assert_eq!(header.value.bytes, value.as_bytes());
+                }
+            }
+        }
+    }
+
+    /// Scenario: repeated HTTP values cross both value-size and entry-count limits.
+    /// Guarantees: accepted values remain captured and each skipped category is counted.
+    #[test]
+    fn capture_from_http_headers_reports_limit_stats() {
+        let policy = HeaderCapturePolicy::new(
+            CaptureDefaults {
+                max_entries: 1,
+                max_value_bytes: 3,
+                ..CaptureDefaults::default()
+            },
+            vec![CaptureRule {
+                match_names: vec![context_name("x-tenant")],
+                store_as: None,
+                sensitive: false,
+                value_kind: None,
+            }],
+        )
+        .compile(|_| false);
+        let mut headers = HeaderMap::new();
+        for value in ["oversized", "ok", "end"] {
+            _ = headers.append(
+                HeaderName::from_static("x-tenant"),
+                http::HeaderValue::from_static(value),
+            );
+        }
+        let mut captured = TransportHeaders::new();
+
+        let stats = policy
+            .capture_from_http_headers(&headers, &mut captured)
+            .expect("capture limits exceeded");
+
+        assert_eq!(captured.len(), 1);
+        assert_eq!(captured.get(0).expect("accepted value").value.bytes, b"ok");
+        assert_eq!(stats.skipped_max_entries, 1);
+        assert_eq!(stats.skipped_name_too_long, 0);
+        assert_eq!(stats.skipped_value_too_long, 1);
+    }
+
+    /// Scenario: a generic capture rule uses a name that is not a valid HTTP token.
+    /// Guarantees: generic transports retain the rule while the native HTTP index omits it.
+    #[test]
+    fn capture_policy_omits_non_http_names_only_from_native_index() {
+        let policy = HeaderCapturePolicy::new(
+            CaptureDefaults::default(),
+            vec![CaptureRule {
+                match_names: vec![context_name("x@tenant")],
+                store_as: None,
+                sensitive: false,
+                value_kind: None,
+            }],
+        )
+        .compile(|_| false);
+        let mut captured = TransportHeaders::new();
+
+        let stats = policy.capture_from_pairs(
+            [("X@Tenant", b"acme".as_slice())].into_iter(),
+            &mut captured,
+        );
+
+        assert!(stats.is_none());
+        assert_eq!(captured.len(), 1);
+        assert_eq!(captured.get(0).expect("generic capture").name, "x@tenant");
+        assert!(policy.http_captures.is_empty());
     }
 
     /// Scenario: YAML sets capture limits, renaming, and sensitive headers.

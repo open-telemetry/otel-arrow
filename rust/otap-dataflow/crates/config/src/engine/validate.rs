@@ -4,10 +4,42 @@
 //! Validation phase for [`OtelDataflowSpec`].
 
 use crate::engine::{
-    ENGINE_CONFIG_VERSION_V1, INTERNAL_TELEMETRY_RECEIVER_URN, OtelDataflowSpec,
-    SYSTEM_OBSERVABILITY_PIPELINE_ID, SYSTEM_PIPELINE_GROUP_ID,
+    ContextPolicyLayer, ENGINE_CONFIG_VERSION_V1, INTERNAL_TELEMETRY_RECEIVER_URN,
+    OtelDataflowSpec, SYSTEM_OBSERVABILITY_PIPELINE_ID, SYSTEM_PIPELINE_GROUP_ID,
 };
 use crate::error::Error;
+
+/// Validates that context entries declared at the innermost scope (such as at pipeline or group
+/// level) do not shadow entries already declared at a broader scope (such as group or engine).
+///
+/// `layers` must be ordered from broadest to narrowest scope (engine -> group -> pipeline).
+/// The last element is treated as the "current" scope whose entries are checked against all
+/// preceding ancestors. If any entry name in the current scope also appears in an ancestor,
+/// a validation error is emitted referencing both config paths.
+fn validate_context_entry_shadowing(layers: &[ContextPolicyLayer<'_>], errors: &mut Vec<Error>) {
+    let Some((current, ancestors)) = layers.split_last() else {
+        return;
+    };
+    let Some(context) = current.context else {
+        return;
+    };
+    for name in context.entries.keys() {
+        let previous_path = ancestors.iter().rev().find_map(|layer| {
+            layer
+                .context
+                .is_some_and(|context| context.entries.contains_key(name))
+                .then_some(layer.path.as_str())
+        });
+        if let Some(previous_path) = previous_path {
+            errors.push(Error::InvalidUserConfig {
+                error: format!(
+                    "{}.context.entries.{name} conflicts with visible declaration {previous_path}.context.entries.{name}; context entries cannot shadow one another",
+                    current.path
+                ),
+            });
+        }
+    }
+}
 
 impl OtelDataflowSpec {
     /// Validates the engine configuration and returns a [`Error::InvalidConfiguration`] error
@@ -172,7 +204,15 @@ impl OtelDataflowSpec {
                     ),
                 });
             }
+            validate_context_entry_shadowing(
+                &self.context_policy_layers(pipeline_group_id, None),
+                &mut errors,
+            );
             for (pipeline_id, pipeline) in &pipeline_group.pipelines {
+                validate_context_entry_shadowing(
+                    &self.context_policy_layers(pipeline_group_id, Some(pipeline_id)),
+                    &mut errors,
+                );
                 if pipeline
                     .policies()
                     .and_then(|policies| policies.resources.as_ref())
