@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 //! Engine registration and lifecycle orchestration for the WEF receiver.
 //!
 //! This module connects the HTTPS manager to the local dataflow receiver task.

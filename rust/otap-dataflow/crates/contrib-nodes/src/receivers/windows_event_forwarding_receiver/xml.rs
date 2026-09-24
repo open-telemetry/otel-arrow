@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 //! Receiver-local XML document view backed by quick-xml's namespace-aware reader.
 //!
 //! Provides the read-only traversal needed by SOAP, event, query, and bookmark

@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 //! HTTPS transport and request dispatch for source-initiated Windows forwarding.
 //!
 //! # Trust and routing

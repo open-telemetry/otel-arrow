@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 //! Bounded handoff from HTTP event delivery to the receiver's pipeline task.
 //!
 //! [`DeliveryBridge::prepare`] checks framework admission before decoding, then

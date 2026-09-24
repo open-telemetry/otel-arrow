@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 //! Extract rendered event documents and an optional bookmark from an Events request.
 //!
 //! This is the protocol extraction step, not Windows event decoding or delivery

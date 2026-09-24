@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 //! Convert forwarded Windows event XML into an atomic OTAP log batch.
 //!
 //! # Severity and event codes
