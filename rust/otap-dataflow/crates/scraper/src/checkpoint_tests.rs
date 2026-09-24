@@ -285,6 +285,33 @@ fn checksum_mismatch_fails_closed() {
     ));
 }
 
+/// Scenario: checkpoint source identity or configuration fingerprint is damaged without
+/// updating the checksum.
+/// Guarantees: both corruptions report checksum failure before identity mismatch, so
+/// operators are not directed to change a valid source or configuration.
+#[test]
+fn damaged_identity_fields_report_checksum_mismatch() {
+    for field in ["source_id", "config_fingerprint"] {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let store = store(directory.path(), "fingerprint");
+        let (state, _) = store
+            .write(0, &cursor("2026-01-01 00:00:00", 1))
+            .expect("commit");
+        let path = revision_path(&store.prefix, state.revision);
+        let bytes = std::fs::read(&path).expect("read revision");
+        let mut envelope: serde_json::Value =
+            serde_json::from_slice(&bytes).expect("revision should be JSON");
+        envelope["payload"][field] = serde_json::json!("damaged");
+        std::fs::write(&path, serde_json::to_vec(&envelope).expect("encode"))
+            .expect("damage checkpoint");
+
+        assert!(
+            matches!(store.read(), Err(CheckpointError::ChecksumMismatch { .. })),
+            "corrupt {field} should fail checksum verification first"
+        );
+    }
+}
+
 /// Scenario: a checkpoint was written by a semantically different query or cursor definition.
 /// Guarantees: a configuration fingerprint mismatch fails before polling, so a reused directory
 /// cannot resume an unrelated stream's position.

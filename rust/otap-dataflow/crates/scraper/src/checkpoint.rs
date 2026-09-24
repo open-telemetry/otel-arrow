@@ -536,6 +536,11 @@ impl CheckpointStore {
                 version: envelope.payload.version,
             });
         }
+        if envelope.checksum != checksum(&envelope.payload)? {
+            return Err(CheckpointError::ChecksumMismatch {
+                path: path.to_path_buf(),
+            });
+        }
         if envelope.payload.revision != filename_revision {
             return Err(CheckpointError::RevisionMismatch {
                 path: path.to_path_buf(),
@@ -548,11 +553,6 @@ impl CheckpointStore {
         }
         if envelope.payload.config_fingerprint != self.config_fingerprint {
             return Err(CheckpointError::FingerprintMismatch {
-                path: path.to_path_buf(),
-            });
-        }
-        if envelope.checksum != checksum(&envelope.payload)? {
-            return Err(CheckpointError::ChecksumMismatch {
                 path: path.to_path_buf(),
             });
         }

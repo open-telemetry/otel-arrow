@@ -12,7 +12,7 @@ releases.
 - Receiver type: None. This crate does not register a receiver URN.
 - Feature gate: No crate-local vendor feature. Database drivers belong to independently gated vendor receivers, not this crate.
 - Status: In development; not the complete database receiver RFC or a production-readiness claim.
-- Documentation scope: Common database contracts, checkpoint storage, source ownership, and their integration with polling, mapping, and delivery.
+- Documentation scope: Common database contracts, checkpoint storage, and source ownership (this PR); planned polling, mapping, and delivery integration (part 3).
 
 ## Overview
 
@@ -20,15 +20,16 @@ The shared scraper is the database-neutral foundation for query-polling
 receivers in OTAP Dataflow. It defines common configuration, validated query
 plans, cursor and row types, and the interface that database-specific adapters
 implement. `CheckpointStore` and `SourceLease` provide concrete persistence
-and checkpoint-identity ownership. The polling component, `DatabaseReceiver`,
-integrates these primitives with OTLP mapping and downstream feedback.
-A concrete receiver supplies the adapter and registers the node.
+and checkpoint-identity ownership. Part 3 will add the polling component
+`DatabaseReceiver` to integrate these primitives with OTLP mapping and
+downstream feedback. A later concrete receiver will supply the adapter and
+register the node. This PR does not schedule polls or emit records.
 
 | Component | Responsibility |
 | --- | --- |
 | Database contracts | Configuration validation, query plans, adapter interfaces, row/cursor/page types, and size-accounting helpers |
 | Checkpointing | Atomic file storage with platform-dependent durability and exclusive ownership of a checkpoint identity |
-| Polling | Scheduling, OTLP mapping, backpressure, ACK/NACK handling, checkpoint integration, lifecycle, and telemetry |
+| Polling (part 3) | Scheduling, OTLP mapping, backpressure, ACK/NACK handling, checkpoint integration, lifecycle, and telemetry |
 | Vendor receiver | Native driver, connection/authentication settings, SQL validation, type conversion, and node registration |
 
 The goal is to share polling, delivery, checkpointing, and resource-management
@@ -55,7 +56,7 @@ Existing Dataflow host
   |     `-- Shared scraper
   |           +-- Database-neutral contracts
   |           +-- Checkpoint storage and ownership
-  |           `-- Polling, mapping, and delivery
+  |           `-- Polling, mapping, and delivery (planned for part 3)
   |
   `-- Existing processors and exporters
 ```
@@ -187,13 +188,15 @@ within that timestamp group. The adapter must return a consistent timestamp
 representation and deterministic ordering.
 `CompositeCursor` deliberately has no `Ord` or `PartialOrd` implementation:
 timestamp strings with different offsets or fractional precision cannot be
-ordered safely as text. The polling controller compares validated UTC instants.
+ordered safely as text. Part 3's polling controller will compare validated UTC
+instants.
 
 ### Checkpoint Configuration
 
 This block validates a persistence and replay policy. Constructing configuration
-alone does not perform I/O. Receiver construction creates a `CheckpointStore`
-and acquires a `SourceLease`; the polling controller manages when they are used.
+alone does not perform I/O. Future receiver construction will create a
+`CheckpointStore` and acquire a `SourceLease`; part 3's polling controller
+will manage when they are used.
 
 | Field | Type | Default | Validation / meaning |
 | --- | --- | --- | --- |
@@ -220,7 +223,7 @@ max_consecutive_failures: 5
 | `timestamp_column` | `None` | Optional non-empty result-column name for event-time mapping |
 | `validation_columns` | Empty list | Non-empty column names that must exist during live metadata validation |
 
-The OTLP mapper uses a structured key-value body for selected columns.
+The planned OTLP mapper will use a structured key-value body for selected columns.
 It does not automatically promote every column to a LogRecord attribute, or
 infer OTLP fields from matching column names. Richer mapping is future work.
 
@@ -331,10 +334,11 @@ or other sensitive inputs.
 
 ## Polling and Delivery Semantics
 
-This section describes polling-controller integration. The controller permits
-one pending page per source and is a reusable receiver core, not a
-vendor-registered node by itself. Checkpoint storage and leases alone do not
-schedule queries, send data, or process acknowledgements.
+This section describes the planned part 3 polling-controller integration,
+not behavior shipped in this PR. The controller will permit one pending page
+per source and be a reusable receiver core, not a vendor-registered node by
+itself. Checkpoint storage and leases alone do not schedule queries, send
+data, or process acknowledgements.
 
 ```text
 Acquire source ownership and load committed position
@@ -355,7 +359,7 @@ Acquire source ownership and load committed position
 | Invalid or incompatible checkpoint | Fail explicitly rather than silently assume a fresh position. |
 | Shutdown/cancellation | Stop admitting work and coordinate native cleanup before permitting a competing source owner. |
 
-The initial runtime keeps one page pending per source. Multiple
+The planned initial runtime will keep one page pending per source. Multiple
 in-flight batches would additionally require a contiguous acknowledgement
 frontier; a later ACK must never skip an earlier unresolved batch.
 
@@ -437,12 +441,12 @@ it is not a database-source ownership key.
 
 ### Shutdown and Live Configuration Changes
 
-The polling controller offloads encoding and checkpoint I/O while handling control
-messages. Checkpoint retries honor an already-active drain deadline. Worker-stop
-waits respect the earlier supplied deadline and the five-second stop cap.
-Unconfirmed cleanup retains ownership until process exit rather than allowing
-overlapping source work; uninterruptible native work can require a supervisor
-to terminate the process.
+The planned polling controller will offload encoding and checkpoint I/O while
+handling control messages. Checkpoint retries will honor an already-active
+drain deadline. Worker-stop waits will respect the earlier supplied deadline
+and the five-second stop cap. Unconfirmed cleanup will retain ownership until
+process exit rather than allowing overlapping source work; uninterruptible
+native work can require a supervisor to terminate the process.
 
 Stop the existing pipeline before starting it with changed configuration,
 including interval-only changes. A replacement started first can conflict with
@@ -453,10 +457,10 @@ the old lease. Coordinated replacement/readiness is separate work tracked in
 
 ### Metric Sets
 
-`DatabaseReceiverMetrics` defines the polling controller's `receiver.database`
-metric set. Concrete receiver construction registers the set and supplies its
-handle to the controller. Configuration validation, checkpoint storage, and
-leases do not emit these runtime metrics by themselves.
+Part 3 will define `DatabaseReceiverMetrics`, the polling controller's
+`receiver.database` metric set. Concrete receiver construction will register
+the set and supply its handle to the controller. Configuration validation,
+checkpoint storage, and leases do not emit these runtime metrics by themselves.
 
 | Counter fields | Purpose |
 | --- | --- |
@@ -475,9 +479,9 @@ error messages must not become metric dimensions.
 ## Limits
 
 - This is not a runnable generic receiver, SQL Agent binary, installer, or exporter.
-- Only composite cursor configuration and `on_nack: rewind` are accepted; the polling controller implements the corresponding delivery behavior.
+- Only composite cursor configuration and `on_nack: rewind` are accepted; part 3's polling controller will implement the corresponding delivery behavior.
 - File checkpoints and leases are library primitives. Scheduling, mapping, and feedback require polling-controller integration; database I/O and node registration remain vendor responsibilities.
-- Multiple named queries, jitter, snapshot/scalar polling, richer output mapping, collection of database metrics as an output signal, and CDC are not implemented. Internal runtime counters are implemented.
+- Multiple named queries, jitter, snapshot/scalar polling, richer output mapping, collection of database metrics as an output signal, and CDC are not implemented. Runtime counters are planned for part 3.
 - Byte-limit validation does not enforce process-wide memory pressure, native allocations, or end-to-end execution deadlines.
 - Authentication capabilities, credential rotation, TLS configuration, distributed ownership, and automatic source partitioning require separate work.
 - Whole-poll and normal-operation ACK deadlines and immediate backlog catch-up are not implemented.
