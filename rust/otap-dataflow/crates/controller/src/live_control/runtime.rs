@@ -13,7 +13,6 @@
 
 use super::*;
 
-
 enum RecoveryReadyError {
     Cancelled,
     Failed(String),
@@ -128,7 +127,6 @@ impl<
             thread_id,
             None,
         )?;
-
 
         self.register_launched_instance(launched);
         Ok(deployed_key)
