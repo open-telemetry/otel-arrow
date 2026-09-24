@@ -61,7 +61,7 @@ impl CompiledQuery {
                 maximum: MAX_QUERY_BYTES,
             });
         }
-        if !starts_with_select(&sql) {
+        if !is_read_only(&sql) {
             return Err(QueryError::NotReadOnly);
         }
         let timestamp = watermark.timestamp();
@@ -158,7 +158,7 @@ impl fmt::Debug for CompiledQuery {
     }
 }
 
-fn starts_with_select(sql: &str) -> bool {
+fn is_read_only(sql: &str) -> bool {
     // This is only a prefix check. DriverAdapter::validate_query must enforce
     // single-statement, read-only SQL and cursor semantics before execution.
     sql.split_whitespace()

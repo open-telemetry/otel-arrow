@@ -804,10 +804,10 @@ fn nested_state_path_lease_checkpoint_and_restart() {
     assert_eq!(store.read().expect("resume from disk"), Some(committed));
 }
 
-/// Scenario: Two Unix state roots have different non-UTF-8 bytes that both display as U+FFFD.
+/// Scenario: Two Linux state roots have different non-UTF-8 bytes that both display as U+FFFD.
 /// Guarantees: The leases, generation markers, and checkpoints remain in their respective
 /// directories, and neither source identity is lost through string conversion.
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[test]
 fn non_utf8_state_roots_keep_lease_and_checkpoint_together() {
     use std::os::unix::ffi::OsStringExt;
