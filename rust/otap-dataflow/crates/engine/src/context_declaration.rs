@@ -787,6 +787,134 @@ mod tests {
         name.try_into().expect("valid test context entry name")
     }
 
+    fn unused_test_receiver(
+        _: crate::context::PipelineContext,
+        _: crate::node::NodeId,
+        _: Arc<NodeUserConfig>,
+        _: &crate::config::ReceiverConfig,
+        _: &crate::capability::registry::Capabilities,
+    ) -> Result<crate::receiver::ReceiverWrapper<()>, Error> {
+        unreachable!("context compilation does not construct test nodes")
+    }
+
+    fn unused_test_exporter(
+        _: crate::context::PipelineContext,
+        _: crate::node::NodeId,
+        _: Arc<NodeUserConfig>,
+        _: &crate::config::ExporterConfig,
+        _: &crate::capability::registry::Capabilities,
+    ) -> Result<crate::exporter::ExporterWrapper<()>, Error> {
+        unreachable!("context compilation does not construct test nodes")
+    }
+
+    fn unused_test_processor(
+        _: crate::context::PipelineContext,
+        _: crate::node::NodeId,
+        _: Arc<NodeUserConfig>,
+        _: &crate::config::ProcessorConfig,
+        _: &crate::capability::registry::Capabilities,
+    ) -> Result<crate::processor::ProcessorWrapper<()>, Error> {
+        unreachable!("context compilation does not construct test nodes")
+    }
+
+    fn accept_test_config(_: &serde_json::Value) -> Result<(), Error> {
+        Ok(())
+    }
+
+    static TEST_RECEIVERS: [crate::ReceiverFactory<()>; 2] = [
+        crate::ReceiverFactory {
+            name: "urn:test:receiver:example",
+            create: unused_test_receiver,
+            context_declarations: None,
+            wiring_contract: crate::wiring_contract::WiringContract::UNRESTRICTED,
+            validate_config: otel_arrow_dfe_config::validation::no_config,
+        },
+        crate::ReceiverFactory {
+            name: "urn:otel:receiver:internal_telemetry",
+            create: unused_test_receiver,
+            context_declarations: None,
+            wiring_contract: crate::wiring_contract::WiringContract::UNRESTRICTED,
+            validate_config: accept_test_config,
+        },
+    ];
+
+    static TEST_EXPORTERS: [crate::ExporterFactory<()>; 3] = [
+        crate::ExporterFactory {
+            name: "urn:test:exporter:example",
+            create: unused_test_exporter,
+            context_declarations: None,
+            wiring_contract: crate::wiring_contract::WiringContract::UNRESTRICTED,
+            validate_config: otel_arrow_dfe_config::validation::no_config,
+        },
+        crate::ExporterFactory {
+            name: "urn:otel:exporter:noop",
+            create: unused_test_exporter,
+            context_declarations: None,
+            wiring_contract: crate::wiring_contract::WiringContract::UNRESTRICTED,
+            validate_config: otel_arrow_dfe_config::validation::no_config,
+        },
+        crate::ExporterFactory {
+            name: "urn:otel:exporter:console",
+            create: unused_test_exporter,
+            context_declarations: None,
+            wiring_contract: crate::wiring_contract::WiringContract::UNRESTRICTED,
+            validate_config: otel_arrow_dfe_config::validation::no_config,
+        },
+    ];
+
+    static TEST_PROCESSORS: [crate::ProcessorFactory<()>; 1] = [crate::ProcessorFactory {
+        name: "urn:otel:processor:type_router",
+        create: unused_test_processor,
+        context_declarations: None,
+        wiring_contract: crate::wiring_contract::WiringContract::UNRESTRICTED,
+        validate_config: accept_test_config,
+    }];
+
+    fn test_pipeline_factory() -> PipelineFactory<()> {
+        PipelineFactory::new(&TEST_RECEIVERS, &TEST_PROCESSORS, &TEST_EXPORTERS, &[])
+    }
+
+    fn conditional_pipeline_yaml(composite: &str, selector: &str) -> String {
+        format!(
+            r#"
+version: otel_dataflow/v1
+policies:
+  context:
+    entries:
+      tenant: {composite}
+engine: {{}}
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: {{}}
+          exporter:
+            type: "urn:test:exporter:example"
+            header_propagation:
+              default:
+                selector:
+                  type: named
+                  named: [{selector}]
+                name: stored_name
+            config: {{}}
+        connections:
+          - from: receiver
+            to: exporter
+"#
+        )
+    }
+
+    fn resolve_conditional_pipeline(composite: &str, selector: &str) -> ResolvedOtelDataflowSpec {
+        otel_arrow_dfe_config::engine::OtelDataflowSpec::from_yaml(&conditional_pipeline_yaml(
+            composite, selector,
+        ))
+        .expect("conditional pipeline YAML is valid")
+        .resolve()
+    }
+
     fn declarations_by_pipeline(
         effective: NodeContextDeclarations,
     ) -> ContextDeclarationsByPipeline {
@@ -1221,6 +1349,93 @@ default:
         assert_eq!(propagated.len(), 1);
         assert_eq!(propagated[0].header_name, "workspace_id");
         assert_eq!(propagated[0].value, b"acme");
+    }
+
+    /// Scenario: complete YAML changes a composite condition or selected member during a live update.
+    /// Guarantees: resolution compiles an effective exporter binding and reconciliation detects both changes.
+    #[test]
+    fn full_yaml_compilation_tracks_conditional_composite_changes() {
+        let current_composite = "[{type: transport_header, name: workspace, store_as: workspace_id}, \
+            {type: transport_header, name: account, store_as: account_id}, \
+            {type: transport_header_match, name: environment, value: production}]";
+        let factory = test_pipeline_factory();
+        let current = resolve_conditional_pipeline(current_composite, "tenant:workspace_id");
+        let installed = factory
+            .compile_initial_context(&current)
+            .expect("initial context compiles");
+        let pipeline = pipeline("default", "main");
+        let exporter = ConfigNodeId::from("exporter");
+        let policy = installed
+            .bindings
+            .header_propagation_policy(&pipeline, &exporter)
+            .expect("compiled exporter propagation policy");
+        let mut headers = TransportHeaders::new();
+        headers.push(TransportHeader::text(context_name("workspace"), b"acme"));
+        headers.push(TransportHeader::text(
+            context_name("environment"),
+            b"production",
+        ));
+        let propagated = policy.propagate(&headers).collect::<Vec<_>>();
+        assert_eq!(propagated.len(), 1);
+        assert_eq!(propagated[0].header_name, "workspace_id");
+
+        let changed_condition = resolve_conditional_pipeline(
+            "[{type: transport_header, name: workspace, store_as: workspace_id}, \
+             {type: transport_header, name: account, store_as: account_id}, \
+             {type: transport_header_match, name: environment, value: staging}]",
+            "tenant:workspace_id",
+        );
+        let condition_candidate = factory
+            .compile_candidate_context(&changed_condition, &installed.runtime_requirements)
+            .expect("condition candidate compiles");
+        assert!(
+            !installed
+                .bindings
+                .pipeline_bindings_match(&condition_candidate.bindings, &pipeline)
+        );
+
+        let changed_member = resolve_conditional_pipeline(current_composite, "tenant:account_id");
+        let member_candidate = factory
+            .compile_candidate_context(&changed_member, &installed.runtime_requirements)
+            .expect("member candidate compiles");
+        assert!(
+            !installed
+                .bindings
+                .pipeline_bindings_match(&member_candidate.bindings, &pipeline)
+        );
+    }
+
+    /// Scenario: complete YAML contains an invalid qualified propagation selector.
+    /// Guarantees: startup reports the unknown composite, unknown member, or unsupported type.
+    #[test]
+    fn full_yaml_compilation_reports_actionable_composite_selector_errors() {
+        let cases = [
+            (
+                "[{type: transport_header, name: workspace, store_as: workspace_id}]",
+                "missing:workspace_id",
+                "unknown composite context entry `missing`",
+            ),
+            (
+                "[{type: transport_header, name: workspace, store_as: workspace_id}]",
+                "tenant:missing",
+                "context entry reference `tenant:missing` does not select a transport-header member",
+            ),
+            (
+                "[{type: authorized_identity, name: customer_id}]",
+                "tenant:customer_id",
+                "context entry reference `tenant:customer_id` selects authorized-identity member `customer_id`, which cannot be propagated as a transport header",
+            ),
+        ];
+        let factory = test_pipeline_factory();
+
+        for (composite, selector, expected) in cases {
+            let resolved = resolve_conditional_pipeline(composite, selector);
+            let error = factory
+                .compile_initial_context(&resolved)
+                .expect_err("invalid selector must fail startup");
+            let message = error.to_string();
+            assert!(message.contains(expected), "{message}");
+        }
     }
 
     /// Scenario: a receiver has an absent or explicitly empty authorized identity policy.
