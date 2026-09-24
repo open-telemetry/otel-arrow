@@ -357,6 +357,7 @@ policies:
 > Named transport-header propagation can refer to a composite member with
 > `product_user:othername_id`. The header is propagated only when every
 > `transport_header_match` condition has an exact matching captured value.
+> Named selectors must resolve to distinct primitive transport-header entries.
 > Other composite consumers are not yet wired at runtime.
 
 ## Engine Observability Pipeline

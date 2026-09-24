@@ -492,9 +492,11 @@ impl HeaderPropagationPolicy {
         let Some(references) = self.default.selector.named.as_ref() else {
             return Ok(self);
         };
+        let mut selected_sources = HashMap::<Box<str>, ContextEntryRef>::new();
 
         for reference in references {
             let Some(composite_name) = reference.scope() else {
+                register_named_source(&mut selected_sources, reference.name(), reference)?;
                 continue;
             };
             let declaration = declarations
@@ -539,6 +541,7 @@ impl HeaderPropagationPolicy {
                     "context entry reference `{reference}` does not select a transport-header member"
                 )
             })?;
+            register_named_source(&mut selected_sources, &source_name, reference)?;
             self.compiled_named.push(CompiledNamedPropagation {
                 source_name,
                 output_name: reference.name().clone(),
@@ -679,6 +682,20 @@ impl HeaderPropagationPolicy {
         }
         (PropagationAction::Drop, self.default.name, None)
     }
+}
+
+fn register_named_source(
+    selected_sources: &mut HashMap<Box<str>, ContextEntryRef>,
+    source_name: &ContextEntryName,
+    reference: &ContextEntryRef,
+) -> Result<(), String> {
+    let key: Box<str> = source_name.as_str().to_ascii_lowercase().into();
+    if let Some(previous) = selected_sources.insert(key, reference.clone()) {
+        return Err(format!(
+            "named context entry references `{previous}` and `{reference}` resolve to the same transport-header entry `{source_name}`"
+        ));
+    }
+    Ok(())
 }
 
 impl CompiledNamedPropagation {
@@ -1392,6 +1409,86 @@ default:
             .compile_context(&[])
             .expect_err("unknown composite must fail");
         assert!(error.contains("unknown composite context entry `missing`"));
+    }
+
+    /// Scenario: named selectors use an unqualified entry and a composite alias for its source.
+    /// Guarantees: startup rejects the ambiguous duplicate source instead of bypassing conditions.
+    #[test]
+    fn composite_transport_header_propagation_rejects_mixed_duplicate_source() {
+        let declaration = composite_declarations_for_duplicate_source()
+            .into_iter()
+            .next()
+            .expect("tenant_a declaration");
+        let policy: HeaderPropagationPolicy = serde_yaml::from_str(
+            r#"
+default:
+  selector:
+    type: named
+    named: [workspace, tenant_a:workspace_id]
+"#,
+        )
+        .expect("valid propagation policy");
+
+        let error = policy
+            .compile_context(&[declaration])
+            .expect_err("duplicate source must fail");
+        assert!(error.contains("`workspace` and `tenant_a:workspace_id`"));
+        assert!(error.contains("same transport-header entry `workspace`"));
+    }
+
+    /// Scenario: two qualified selectors resolve to the same primitive header with varied case.
+    /// Guarantees: startup detects the collision using transport-header name semantics.
+    #[test]
+    fn composite_transport_header_propagation_rejects_qualified_duplicate_source() {
+        let declarations = composite_declarations_for_duplicate_source();
+        let policy: HeaderPropagationPolicy = serde_yaml::from_str(
+            r#"
+default:
+  selector:
+    type: named
+    named: [tenant_a:workspace_id, tenant_b:workspace_id]
+"#,
+        )
+        .expect("valid propagation policy");
+
+        let error = policy
+            .compile_context(&declarations)
+            .expect_err("duplicate source must fail");
+        assert!(error.contains("`tenant_a:workspace_id` and `tenant_b:workspace_id`"));
+        assert!(error.contains("same transport-header entry `WORKSPACE`"));
+    }
+
+    fn composite_declarations_for_duplicate_source() -> Vec<ContextEntryDeclaration> {
+        let context: crate::context_policy::ContextPolicy = serde_yaml::from_str(
+            r#"
+entries:
+  tenant_a:
+    - type: transport_header
+      name: workspace
+      store_as: workspace_id
+    - type: transport_header_match
+      name: environment
+      value: production
+  tenant_b:
+    - type: transport_header
+      name: WORKSPACE
+      store_as: workspace_id
+    - type: transport_header_match
+      name: region
+      value: us-east
+"#,
+        )
+        .expect("valid context policy");
+
+        context
+            .entries
+            .into_iter()
+            .map(|(name, definition)| ContextEntryDeclaration {
+                scope: crate::context_policy::ContextScope::Engine,
+                name,
+                definition,
+            })
+            .collect()
     }
 
     /// Scenario: an `all_captured` selector has no name list.
