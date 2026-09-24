@@ -118,6 +118,7 @@ datafusion = { version = "53.0.0", default-features = false }
 dhat = "0.3.3"
 fluke-hpack = "0.3.1"
 flume = { version = "0.12.0", default-features = false, features = ["async"] }
+fs2 = "0.4.3"
 futures = "0.3.32"
 futures-core = "0.3.32"
 futures-channel = "0.3.32"
