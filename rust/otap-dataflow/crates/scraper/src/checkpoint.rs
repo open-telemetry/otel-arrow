@@ -30,7 +30,6 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 const ENVELOPE_VERSION: u8 = 1;
 const MAX_CHECKPOINT_BYTES: u64 = 16 * 1024;
-const MAX_READABLE_SOURCE_SEGMENT_BYTES: usize = 128;
 const MAX_HEX_ID_BYTES: usize = 64;
 const RETAINED_REVISIONS: usize = 2;
 const TEMP_FILE_ATTEMPTS: usize = 16;
@@ -89,10 +88,6 @@ pub(crate) struct WriteControl {
 #[derive(Clone, Debug)]
 pub struct CheckpointStore {
     prefix: PathBuf,
-    legacy_root: PathBuf,
-    legacy_segments: [String; 3],
-    legacy_prefix: PathBuf,
-    older_legacy_prefix: Option<PathBuf>,
     source_id: String,
     config_fingerprint: String,
     // Clones move into successive blocking writers. Remember that mkdir
@@ -191,12 +186,6 @@ pub enum CheckpointError {
     #[error("checkpoint source identity mismatch in {path}")]
     SourceMismatch {
         /// Checkpoint revision file.
-        path: PathBuf,
-    },
-    /// An old, case-sensitive filename is ambiguous on case-insensitive filesystems.
-    #[error("legacy checkpoint namespace differs only in case at {path}")]
-    LegacyNamespaceCollision {
-        /// Colliding legacy directory or revision file.
         path: PathBuf,
     },
     /// A checkpoint file belongs to a semantically different configuration.
@@ -331,19 +320,7 @@ impl CheckpointStore {
         source_id: &str,
         config_fingerprint: String,
     ) -> Self {
-        let legacy_root = expand_state_dir(root);
-        let legacy_segments = [
-            encode_path_segment(pipeline_group_id),
-            encode_path_segment(pipeline_id),
-            encode_path_segment(receiver_name),
-        ];
-        let legacy_parent = legacy_segments
-            .iter()
-            .fold(legacy_root.clone(), |path, segment| path.join(segment));
-        let (legacy_name, older_legacy_name) = source_checkpoint_names(source_id);
-        let legacy_prefix = legacy_parent.join(legacy_name);
-        let older_legacy_prefix = older_legacy_name.map(|name| legacy_parent.join(name));
-        let prefix = legacy_root
+        let prefix = expand_state_dir(root)
             .join("@v1")
             .join(encode_identity_segment(pipeline_group_id))
             .join(encode_identity_segment(pipeline_id))
@@ -351,10 +328,6 @@ impl CheckpointStore {
             .join(format!("{}.checkpoint", encode_identity_segment(source_id)));
         Self {
             prefix,
-            legacy_root,
-            legacy_segments,
-            legacy_prefix,
-            older_legacy_prefix,
             source_id: source_id.to_owned(),
             config_fingerprint,
             directory_ready: Arc::new(AtomicBool::new(false)),
@@ -379,67 +352,7 @@ impl CheckpointStore {
 
     /// Reads the newest installed revision, or `None` when no state exists.
     pub fn read(&self) -> Result<Option<CheckpointState>, CheckpointError> {
-        if let Some(checkpoint) = self.read_from_prefix(&self.prefix, false)? {
-            return Ok(Some(checkpoint));
-        }
-        if !self.legacy_directory_exists()? {
-            return Ok(None);
-        }
-        if let Some(checkpoint) = self.read_from_prefix(&self.legacy_prefix, true)? {
-            return Ok(Some(checkpoint));
-        }
-        if let Some(prefix) = self.older_legacy_prefix.as_ref() {
-            return self.read_from_prefix(prefix, true);
-        }
-        Ok(None)
-    }
-
-    fn legacy_directory_exists(&self) -> Result<bool, CheckpointError> {
-        let mut parent = self.legacy_root.clone();
-        for segment in &self.legacy_segments {
-            let entries = match std::fs::read_dir(&parent) {
-                Ok(entries) => entries,
-                Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
-                Err(source) => {
-                    return Err(CheckpointError::Inspect {
-                        path: parent,
-                        source,
-                    });
-                }
-            };
-            let mut exact = false;
-            let mut case_variant = None;
-            for entry in entries {
-                let entry = entry.map_err(|source| CheckpointError::Inspect {
-                    path: parent.clone(),
-                    source,
-                })?;
-                let name = entry.file_name();
-                if name == OsStr::new(segment) {
-                    exact = true;
-                } else if name
-                    .to_str()
-                    .is_some_and(|name| name.eq_ignore_ascii_case(segment))
-                {
-                    case_variant = Some(entry.path());
-                }
-            }
-            if !exact {
-                if let Some(path) = case_variant {
-                    return Err(CheckpointError::LegacyNamespaceCollision { path });
-                }
-                return Ok(false);
-            }
-            parent.push(segment);
-        }
-        Ok(true)
-    }
-
-    fn read_from_prefix(
-        &self,
-        prefix: &Path,
-        legacy: bool,
-    ) -> Result<Option<CheckpointState>, CheckpointError> {
+        let prefix = &self.prefix;
         let Some(parent) = prefix.parent() else {
             return Err(CheckpointError::NoParent {
                 path: prefix.to_path_buf(),
@@ -461,7 +374,6 @@ impl CheckpointStore {
             });
         };
         let mut newest = None;
-        let mut case_variant = None;
         for entry in entries {
             let entry = entry.map_err(|source| CheckpointError::Inspect {
                 path: parent.to_path_buf(),
@@ -471,17 +383,6 @@ impl CheckpointStore {
             let Some(name) = name.to_str() else {
                 continue;
             };
-            if legacy
-                && revision_suffix(
-                    &prefix_name.to_ascii_lowercase(),
-                    &name.to_ascii_lowercase(),
-                )
-                .is_some()
-                && revision_suffix(prefix_name, name).is_none()
-            {
-                case_variant = Some(entry.path());
-                continue;
-            }
             if let Some(revision) = parse_revision(prefix_name, name) {
                 if newest
                     .as_ref()
@@ -494,9 +395,6 @@ impl CheckpointStore {
             }
         }
         let Some((filename_revision, path)) = newest else {
-            if let Some(path) = case_variant {
-                return Err(CheckpointError::LegacyNamespaceCollision { path });
-            }
             return Ok(None);
         };
         self.read_revision(&path, filename_revision).map(Some)
@@ -817,16 +715,6 @@ fn encode_identity_segment(value: &str) -> String {
     encoded
 }
 
-fn source_checkpoint_names(source_id: &str) -> (String, Option<String>) {
-    let encoded = encode_path_segment(source_id);
-    let legacy = format!("{encoded}.checkpoint");
-    if encoded.len() <= MAX_READABLE_SOURCE_SEGMENT_BYTES {
-        return (legacy, None);
-    }
-    let digest = blake3::hash(source_id.as_bytes()).to_hex();
-    (format!("source-{digest}.checkpoint"), Some(legacy))
-}
-
 const fn hex_digit_lower(value: u8) -> u8 {
     match value {
         0..=9 => b'0' + value,
@@ -858,36 +746,6 @@ fn expand_state_dir(root: &Path) -> PathBuf {
         return base.join(rest);
     }
     root.to_path_buf()
-}
-
-fn encode_path_segment(value: &str) -> String {
-    if value.is_empty() {
-        return "%".to_owned();
-    }
-    let encode_all = matches!(value, "." | "..");
-    let mut encoded = String::with_capacity(value.len());
-    for byte in value.bytes() {
-        if !encode_all && is_safe_byte(byte) {
-            encoded.push(char::from(byte));
-        } else {
-            encoded.push('%');
-            encoded.push(char::from(hex_digit(byte >> 4)));
-            encoded.push(char::from(hex_digit(byte & 0x0f)));
-        }
-    }
-    encoded
-}
-
-const fn is_safe_byte(byte: u8) -> bool {
-    byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.')
-}
-
-const fn hex_digit(value: u8) -> u8 {
-    match value {
-        0..=9 => b'0' + value,
-        10..=15 => b'A' + (value - 10),
-        _ => unreachable!(),
-    }
 }
 
 #[cfg(unix)]

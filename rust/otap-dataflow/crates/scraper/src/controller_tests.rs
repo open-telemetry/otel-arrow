@@ -106,7 +106,7 @@ impl DriverCancellation for TestCancellation {
 
 struct FakeAdapter {
     shutdown_joined: Rc<Cell<bool>>,
-    lease_key: String,
+    lease_key: std::path::PathBuf,
 }
 
 fn fake_columns() -> Vec<ColumnMetadata> {
@@ -458,12 +458,12 @@ fn matching_acks_reuse_encoder_and_commit_pages_through_the_receiver_loop() {
         "fake-source",
         "fingerprint".to_owned(),
     );
-    let lease = SourceLease::acquire(&store.lease_key()).expect("source lease");
+    let lease = SourceLease::acquire(store.lease_key()).expect("source lease");
     let shutdown_joined = Rc::new(Cell::new(false));
     let receiver = DatabaseReceiver::new(
         FakeAdapter {
             shutdown_joined: Rc::clone(&shutdown_joined),
-            lease_key: store.lease_key(),
+            lease_key: store.lease_key().to_path_buf(),
         },
         fake_query(&checkpoint),
         store.clone(),
@@ -514,7 +514,7 @@ fn matching_acks_reuse_encoder_and_commit_pages_through_the_receiver_loop() {
     assert_eq!(committed.revision, 2);
     assert_eq!(committed.cursor.tie_breaker, 2);
     assert!(shutdown_joined.get());
-    drop(SourceLease::acquire(&store.lease_key()).expect("lease released after receiver shutdown"));
+    drop(SourceLease::acquire(store.lease_key()).expect("lease released after receiver shutdown"));
 }
 
 struct StartupFailureProbe<A: DriverAdapter>(DatabaseReceiver<A>);
@@ -580,7 +580,7 @@ fn closed_control_channel_releases_lease_after_confirmed_cleanup() {
         "source",
         "fingerprint".to_owned(),
     );
-    let lease = SourceLease::acquire(&store.lease_key()).expect("initial lease");
+    let lease = SourceLease::acquire(store.lease_key()).expect("initial lease");
     let (previous, _) = store
         .write(0, &checkpoint(0, 41).cursor)
         .expect("previous acknowledged progress");
@@ -595,7 +595,7 @@ fn closed_control_channel_releases_lease_after_confirmed_cleanup() {
     let receiver = DatabaseReceiver::new(
         FakeAdapter {
             shutdown_joined: Rc::clone(&shutdown_joined),
-            lease_key: store.lease_key(),
+            lease_key: store.lease_key().to_path_buf(),
         },
         fake_query(&config),
         store.clone(),
@@ -634,7 +634,7 @@ fn closed_control_channel_releases_lease_after_confirmed_cleanup() {
         });
     assert!(shutdown_joined.get(), "adapter cleanup was confirmed");
     assert_eq!(store.read().expect("checkpoint read"), Some(previous));
-    drop(SourceLease::acquire(&store.lease_key()).expect("same source can restart in-process"));
+    drop(SourceLease::acquire(store.lease_key()).expect("same source can restart in-process"));
 }
 
 #[async_trait(?Send)]
@@ -686,12 +686,12 @@ fn checkpoint_read_failure_still_cleans_up_adapter_and_worker() {
         .write(0, &checkpoint(0, 1).cursor)
         .expect("prior configuration checkpoint");
     let store = make_store("new");
-    let lease = SourceLease::acquire(&store.lease_key()).expect("source lease");
+    let lease = SourceLease::acquire(store.lease_key()).expect("source lease");
     let shutdown_joined = Rc::new(Cell::new(false));
     let receiver = StartupFailureProbe(DatabaseReceiver::new(
         FakeAdapter {
             shutdown_joined: Rc::clone(&shutdown_joined),
-            lease_key: store.lease_key(),
+            lease_key: store.lease_key().to_path_buf(),
         },
         fake_query(&config),
         store.clone(),
@@ -719,7 +719,7 @@ fn checkpoint_read_failure_still_cleans_up_adapter_and_worker() {
         shutdown_joined.get(),
         "read failure must still attempt adapter cleanup"
     );
-    drop(SourceLease::acquire(&store.lease_key()).expect("startup cleanup releases lease"));
+    drop(SourceLease::acquire(store.lease_key()).expect("startup cleanup releases lease"));
 }
 
 struct EmptyMetadataAdapter {
@@ -802,14 +802,14 @@ fn invalid_empty_execution_metadata_fails_and_releases_lease() {
             case,
             "fingerprint".to_owned(),
         );
-        let lease = SourceLease::acquire(&store.lease_key()).expect("source lease");
+        let lease = SourceLease::acquire(store.lease_key()).expect("source lease");
         let shutdown_joined = Rc::new(Cell::new(false));
         let executions = Rc::new(Cell::new(0));
         let receiver = StartupFailureProbe(DatabaseReceiver::new(
             EmptyMetadataAdapter {
                 inner: FakeAdapter {
                     shutdown_joined: Rc::clone(&shutdown_joined),
-                    lease_key: store.lease_key(),
+                    lease_key: store.lease_key().to_path_buf(),
                 },
                 columns,
                 executions: Rc::clone(&executions),
@@ -854,7 +854,7 @@ fn invalid_empty_execution_metadata_fails_and_releases_lease() {
             "{case}"
         );
         assert!(shutdown_joined.get(), "{case}: adapter cleanup must join");
-        drop(SourceLease::acquire(&store.lease_key()).expect("cleanup releases real lease"));
+        drop(SourceLease::acquire(store.lease_key()).expect("cleanup releases real lease"));
     }
 }
 
@@ -888,7 +888,6 @@ fn scraper_worker_deadline_does_not_hold_runtime_or_release_lease() {
     const CHILD: &str = "OTEL_SCRAPER_WORKER_RUNTIME_CHILD";
     if let Some(directory) = std::env::var_os(CHILD) {
         let key = std::path::PathBuf::from(directory).join("blocked-source");
-        let key = key.to_string_lossy().into_owned();
         let ownership = HeldOwnership {
             lease: Some(SourceLease::acquire(&key).expect("source lease")),
             abandoned: Cell::new(false),
@@ -979,7 +978,7 @@ fn scraper_worker_deadline_does_not_hold_runtime_or_release_lease() {
         std::thread::sleep(Duration::from_millis(10));
     }
     let key = directory.path().join("blocked-source");
-    drop(SourceLease::acquire(&key.to_string_lossy()).expect("process exit releases quarantine"));
+    drop(SourceLease::acquire(&key).expect("process exit releases quarantine"));
 }
 
 /// Scenario: One dedicated worker job is blocked and a second job fills its only queue slot.
@@ -1048,11 +1047,7 @@ fn scraper_worker_disconnected_submission_fails() {
 #[test]
 fn scraper_worker_confirmed_cleanup_releases_real_lease() {
     let directory = tempfile::tempdir_in(".").expect("worker lease directory");
-    let key = directory
-        .path()
-        .join("completed-source")
-        .to_string_lossy()
-        .into_owned();
+    let key = directory.path().join("completed-source");
     let ownership = HeldOwnership {
         lease: Some(SourceLease::acquire(&key).expect("source lease")),
         abandoned: Cell::new(false),
@@ -1402,8 +1397,8 @@ fn run_checkpoint_probe(case: CheckpointStopCase) {
         "source",
         "fingerprint".to_owned(),
     );
-    let lease = SourceLease::acquire(&store.lease_key()).expect("source lease");
-    let lease_key = store.lease_key();
+    let lease = SourceLease::acquire(store.lease_key()).expect("source lease");
+    let lease_key = store.lease_key().to_path_buf();
     store.write_control = Some(Arc::clone(&control));
     let started = Arc::clone(&control);
     let stop_deadline = Rc::new(Cell::new(None));
@@ -1944,7 +1939,7 @@ fn run_catch_up_loop(case: LoopCase) {
         "source",
         "fingerprint".to_owned(),
     );
-    let lease = SourceLease::acquire(&store.lease_key()).expect("source lease");
+    let lease = SourceLease::acquire(store.lease_key()).expect("source lease");
     let fetched = Rc::new(RefCell::new(Vec::new()));
     let shutdown_joined = Rc::new(Cell::new(false));
     let process = MemoryPressureState::default();
@@ -1967,7 +1962,7 @@ fn run_catch_up_loop(case: LoopCase) {
         BacklogAdapter {
             inner: FakeAdapter {
                 shutdown_joined: Rc::clone(&shutdown_joined),
-                lease_key: store.lease_key(),
+                lease_key: store.lease_key().to_path_buf(),
             },
             fetched: Rc::clone(&fetched),
             delay: if case == LoopCase::SlowPage {
@@ -2180,7 +2175,7 @@ fn run_catch_up_loop(case: LoopCase) {
         "{case:?}"
     );
     assert!(shutdown_joined.get());
-    drop(SourceLease::acquire(&store.lease_key()).expect("lease released after cleanup"));
+    drop(SourceLease::acquire(store.lease_key()).expect("lease released after cleanup"));
 }
 
 /// Scenario: Bounded catch-up drains short pages, exhausts budgets, replays NACKs, and encounters memory pressure.
@@ -2376,7 +2371,7 @@ fn checkpoint_write_and_retry_wait_apply_pressure() {
             "source",
             "fingerprint".to_owned(),
         );
-        let lease = SourceLease::acquire(&store.lease_key()).expect("source lease");
+        let lease = SourceLease::acquire(store.lease_key()).expect("source lease");
         store.write_control = Some(Arc::clone(&write));
         let admission = Rc::new(poll_admission());
         let runtime = TestRuntime::<OtapPdata>::new();
