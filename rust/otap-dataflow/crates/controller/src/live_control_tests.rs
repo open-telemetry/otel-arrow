@@ -7879,7 +7879,7 @@ fn request_shutdown_all_waits_for_late_registered_instance_before_stopping_obser
         RuntimeInstanceLifecycle::Active,
     );
 
-    // Start global shutdown — dispatches to the one known producer.
+    // Start global shutdown - dispatches to the one known producer.
     let shutdown_runtime = Arc::clone(&runtime);
     let (shutdown_result_tx, shutdown_result_rx) = std::sync::mpsc::channel();
     let shutdown_thread = thread::spawn(move || {
@@ -7928,7 +7928,7 @@ fn request_shutdown_all_waits_for_late_registered_instance_before_stopping_obser
         );
     }
 
-    // Exit the original producer — observability should still wait because the
+    // Exit the original producer - observability should still wait because the
     // late-registered instance is still active.
     runtime.note_instance_exit(regular_key, RuntimeInstanceExit::Success);
 
