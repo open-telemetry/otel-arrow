@@ -706,11 +706,15 @@ fn register_named_source(
     reference: &ContextEntryRef,
 ) -> Result<(), String> {
     let key: Box<str> = source_name.as_str().to_ascii_lowercase().into();
-    if let Some(previous) = selected_sources.insert(key, reference.clone()) {
+    if let Some(previous) = selected_sources.get(&key) {
+        if previous.scope().is_none() && reference.scope().is_none() {
+            return Ok(());
+        }
         return Err(format!(
             "named context entry references `{previous}` and `{reference}` resolve to the same transport-header entry `{source_name}`"
         ));
     }
+    let _ = selected_sources.insert(key, reference.clone());
     Ok(())
 }
 
@@ -1553,6 +1557,25 @@ default:
             .compile_context(&[])
             .expect_err("unknown composite must fail");
         assert!(error.contains("unknown composite context entry `missing`"));
+    }
+
+    /// Scenario: a named selector repeats an unqualified header using identical and varied case.
+    /// Guarantees: equivalent unconditional selections remain accepted for compatibility.
+    #[test]
+    fn transport_header_propagation_accepts_unqualified_duplicate_sources() {
+        let policy: HeaderPropagationPolicy = serde_yaml::from_str(
+            r#"
+default:
+  selector:
+    type: named
+    named: [workspace, WORKSPACE, workspace]
+"#,
+        )
+        .expect("valid propagation policy");
+
+        let _compiled = policy
+            .compile_context(&[])
+            .expect("equivalent unqualified duplicates must remain valid");
     }
 
     /// Scenario: named selectors use an unqualified entry and a composite alias for its source.
