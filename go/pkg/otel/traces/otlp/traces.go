@@ -178,6 +178,9 @@ func TracesFrom(record arrow.Record, relatedData *RelatedData) (ptrace.Traces, e
 		if err != nil {
 			return traces, werror.Wrap(err)
 		}
+		// TimestampFromRecord has already verified that the column uses
+		// nanosecond precision and the UTC time zone, so interpreting the value
+		// as Unix nanoseconds here is safe.
 		endTimeUnixNano := startTimeUnixNano.ToTime(arrow.Nanosecond).Add(time.Duration(durationNano))
 		droppedAttributesCount, err := arrowutils.U32FromRecord(record, traceIDs.DropAttributesCount, row)
 		if err != nil {

@@ -1,0 +1,24 @@
+# Use this changelog template to create an entry for release notes.
+
+# One of 'breaking', 'deprecation', 'new_component', 'enhancement', 'bug_fix'
+change_type: enhancement
+
+# The name of the component, or a single word describing the area of concern, (e.g. pkg/otel/arrow).
+# Must be one of the components listed in go/.chloggen/config.yaml.
+component: pkg/arrow
+
+# A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
+note: Reading an OTAP timestamp column now fails if it uses a time zone other than UTC or a unit other than nanoseconds.
+
+# Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
+issues: [2369]
+
+# (Optional) One or more lines of additional information to render under the primary note.
+# These lines will be padded with 2 spaces and then inserted directly into the document.
+# Use pipe (|) for multiline entries. Breaking entries must include a `Migration:`
+# section with the specific action consumers must take. Keep notes to 200
+# characters and subtext to 300 characters.
+subtext: |
+  Data produced by this library already used UTC nanosecond timestamps, so no
+  action is needed. Received data that omits the time zone is still accepted and
+  read as UTC, so upgrading senders and receivers in any order is safe.
