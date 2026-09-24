@@ -689,8 +689,8 @@ ambiguous, so OTAP constrains the time zone of every timestamp column:
 
 - Producers MUST set the time zone of every `Timestamp(Nanosecond)` column to
   `UTC` (equivalently `+00:00`).
-- Consumers MUST reject a `Timestamp(Nanosecond)` column whose time zone is set
-  to any value other than `UTC` or `+00:00`.
+- Consumers MAY reject a `Timestamp(Nanosecond)` column whose time zone is set
+  to any value other than `UTC` or `+00:00` as ambiguous.
 
 A `Timestamp(Nanosecond)` column that omits the time zone is ambiguous and is
 therefore invalid.
