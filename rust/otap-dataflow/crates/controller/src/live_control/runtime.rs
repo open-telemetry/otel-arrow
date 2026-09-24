@@ -13,6 +13,7 @@
 
 use super::*;
 
+
 enum RecoveryReadyError {
     Cancelled,
     Failed(String),
@@ -127,6 +128,8 @@ impl<
             thread_id,
             None,
         )?;
+
+
         self.register_launched_instance(launched);
         Ok(deployed_key)
     }
@@ -1705,13 +1708,50 @@ impl<
     ) {
         let mut wait_failures = Vec::new();
         let producer_completion_deadline = pipeline_shutdown_completion_deadline(producer_deadline);
+        let mut waited_keys = HashSet::new();
         for deployed_key in &producer_keys {
+            _ = waited_keys.insert(deployed_key.clone());
             if let Err(error) =
                 self.wait_for_global_shutdown_exit(deployed_key, producer_completion_deadline)
             {
                 wait_failures.push(error);
             }
         }
+
+        loop {
+            let late_keys = {
+                let state = self
+                    .state
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                let mut keys = Vec::new();
+                for (key, instance) in &state.runtime_instances {
+                    if !waited_keys.contains(key)
+                        && matches!(instance.lifecycle, RuntimeInstanceLifecycle::Active)
+                    {
+                        let is_observability = key.pipeline_group_id.as_ref()
+                            == SYSTEM_PIPELINE_GROUP_ID
+                            && key.pipeline_id.as_ref() == SYSTEM_OBSERVABILITY_PIPELINE_ID;
+                        if !is_observability {
+                            keys.push(key.clone());
+                        }
+                    }
+                }
+                keys
+            };
+            if late_keys.is_empty() {
+                break;
+            }
+            for deployed_key in late_keys {
+                _ = waited_keys.insert(deployed_key.clone());
+                if let Err(error) =
+                    self.wait_for_global_shutdown_exit(&deployed_key, producer_completion_deadline)
+                {
+                    wait_failures.push(error);
+                }
+            }
+        }
+
         if !wait_failures.is_empty() {
             self.record_async_global_shutdown_failure(format!(
                 "producer shutdown failed before system observability shutdown: {}",
@@ -1724,18 +1764,15 @@ impl<
                 .state
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            producer_keys
+            state
+                .runtime_instances
                 .iter()
-                .filter(|deployed_key| {
-                    matches!(
-                        state.runtime_instances.get(*deployed_key),
-                        Some(RuntimeInstanceRecord {
-                            lifecycle: RuntimeInstanceLifecycle::Active,
-                            ..
-                        })
-                    )
+                .filter(|(key, instance)| {
+                    matches!(instance.lifecycle, RuntimeInstanceLifecycle::Active)
+                        && !(key.pipeline_group_id.as_ref() == SYSTEM_PIPELINE_GROUP_ID
+                            && key.pipeline_id.as_ref() == SYSTEM_OBSERVABILITY_PIPELINE_ID)
                 })
-                .map(deployed_instance_label)
+                .map(|(key, _)| deployed_instance_label(key))
                 .collect::<Vec<_>>()
         };
         if !active_producers.is_empty() {

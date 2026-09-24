@@ -7850,3 +7850,110 @@ fn rollout_planning_cancels_scheduled_runtime_recovery() {
     assert_eq!(state.active_instances, 0);
     assert!(state.first_error.is_none());
 }
+/// Scenario: a pipeline instance registers with the controller *after* `request_shutdown_all`
+/// has already dispatched shutdown to all known instances and the original producer exits.
+/// Guarantees: the observability coordinator waits for the late-registered instance to exit
+/// before shutting down observability, preventing lost terminal telemetry.
+#[test]
+fn request_shutdown_all_waits_for_late_registered_instance_before_stopping_observability() {
+    let runtime = test_runtime(&engine_config_with_pipeline(simple_pipeline_yaml()));
+    let regular_key = deployed_key("g1", "p1", 0, 0);
+    let observability_key = deployed_key(
+        SYSTEM_PIPELINE_GROUP_ID,
+        SYSTEM_OBSERVABILITY_PIPELINE_ID,
+        2,
+        0,
+    );
+    let (regular_sender, regular_notifications) = notifying_admin_sender();
+    let (observability_sender, observability_notifications) = deadline_notifying_admin_sender();
+    register_runtime_instance_with_sender(
+        &runtime,
+        regular_key.clone(),
+        regular_sender,
+        RuntimeInstanceLifecycle::Active,
+    );
+    register_runtime_instance_with_sender(
+        &runtime,
+        observability_key.clone(),
+        observability_sender,
+        RuntimeInstanceLifecycle::Active,
+    );
+
+    // Start global shutdown — dispatches to the one known producer.
+    let shutdown_runtime = Arc::clone(&runtime);
+    let (shutdown_result_tx, shutdown_result_rx) = std::sync::mpsc::channel();
+    let shutdown_thread = thread::spawn(move || {
+        shutdown_result_tx
+            .send(shutdown_runtime.request_shutdown_all(5))
+            .expect("shutdown result receiver should remain open");
+    });
+
+    assert_eq!(
+        regular_notifications
+            .recv_timeout(Duration::from_secs(1))
+            .expect("regular instance should receive shutdown"),
+        "global shutdown"
+    );
+    shutdown_result_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("shutdown dispatch should return")
+        .expect("initial shutdown dispatch should succeed");
+    _ = shutdown_thread.join();
+
+    // Observability must not have received shutdown yet (original producer still active).
+    assert!(
+        observability_notifications.try_recv().is_err(),
+        "observability must remain active while regular instances drain"
+    );
+
+    // Simulate a late registration: a new instance registers after shutdown was dispatched.
+    // This mimics a pipeline thread that was still starting when shutdown was requested.
+    let late_key = deployed_key("g1", "p1", 1, 0);
+    let (late_sender, _late_notifications) = notifying_admin_sender();
+    register_runtime_instance_with_sender(
+        &runtime,
+        late_key.clone(),
+        late_sender,
+        RuntimeInstanceLifecycle::Active,
+    );
+
+    {
+        let state = runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert!(
+            state.global_shutdown_requested,
+            "global shutdown should already be flagged"
+        );
+    }
+
+    // Exit the original producer — observability should still wait because the
+    // late-registered instance is still active.
+    runtime.note_instance_exit(regular_key, RuntimeInstanceExit::Success);
+
+    // Give the coordinator thread a moment to check for late registrations.
+    thread::sleep(Duration::from_millis(100));
+
+    assert!(
+        observability_notifications.try_recv().is_err(),
+        "observability must remain active while the late-registered instance is still running"
+    );
+
+    // Now exit the late-registered instance.
+    runtime.note_instance_exit(late_key, RuntimeInstanceExit::Success);
+
+    // Observability should now receive its shutdown.
+    let (reason, _deadline) = observability_notifications
+        .recv_timeout(Duration::from_secs(2))
+        .expect("observability should receive shutdown after all producers (including late) exit");
+    assert_eq!(reason, "global shutdown");
+
+    // Clean up: exit observability and wait for coordinator completion.
+    runtime.note_instance_exit(observability_key, RuntimeInstanceExit::Success);
+    assert!(
+        runtime.wait_for_global_shutdown_completion(),
+        "the phased shutdown coordinator should complete after observability exits"
+    );
+    assert!(runtime.all_instances_exited());
+}
