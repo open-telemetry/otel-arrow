@@ -698,6 +698,43 @@ groups:
     .expect("engine config should parse")
 }
 
+fn engine_config_with_context_entries(
+    engine_entries: Option<&str>,
+    group_entries: Option<&str>,
+) -> OtelDataflowSpec {
+    let mut yaml = "version: otel_dataflow/v1\n".to_owned();
+    if let Some(entries) = engine_entries {
+        yaml.push_str(&format!("policies:\n  context:\n    entries: {entries}\n"));
+    }
+    yaml.push_str("groups:\n  g1:\n");
+    if let Some(entries) = group_entries {
+        yaml.push_str(&format!(
+            "    policies:\n      context:\n        entries: {entries}\n"
+        ));
+    }
+    yaml.push_str(
+        r#"    pipelines:
+      p1:
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 1
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#,
+    );
+    OtelDataflowSpec::from_yaml(&yaml).expect("context engine config should parse")
+}
+
 fn empty_engine_config() -> OtelDataflowSpec {
     OtelDataflowSpec::from_yaml("version: otel_dataflow/v1\n")
         .expect("empty engine config should parse")
@@ -4673,6 +4710,40 @@ fn reconcile_engine_config_reports_noop_for_matching_live_config() {
             .groups
             .contains_key(&PipelineGroupId::from("g1"))
     );
+}
+
+/// Scenario: full-config reconciliation adds, edits, and moves an unused context declaration.
+/// Guarantees: every declaration-only change is a no-op that preserves the active generation.
+#[test]
+fn reconcile_engine_config_preserves_generation_for_context_declaration_changes() {
+    let config = engine_config_with_context_entries(None, None);
+    let runtime = test_runtime(&config);
+    register_existing_pipeline(&runtime, &config);
+    let _rx =
+        register_runtime_instance(&runtime, "g1", "p1", 0, 0, RuntimeInstanceLifecycle::Active);
+    let first = "{tenant: [{type: transport_header, name: tenant_id}]}";
+    let edited = "{tenant: [{type: transport_header, name: customer_id}]}";
+
+    for desired in [
+        engine_config_with_context_entries(Some(first), None),
+        engine_config_with_context_entries(Some(edited), None),
+        engine_config_with_context_entries(None, Some(edited)),
+    ] {
+        let status = runtime
+            .reconcile_engine_config(reconcile_request(desired, true))
+            .expect("declaration-only change should reconcile");
+
+        assert_eq!(status.state, EngineConfigReconcileState::Succeeded);
+        assert_eq!(status.changes.len(), 1);
+        assert_eq!(status.changes[0].action, ConfigChangeAction::Noop);
+        let state = runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let pipeline_key = PipelineKey::new("g1".into(), "p1".into());
+        assert_eq!(state.logical_pipelines[&pipeline_key].active_generation, 0);
+        assert_eq!(state.generation_counters[&pipeline_key], 1);
+    }
 }
 
 /// Scenario: successful full-config reconciliation changes the configured log level.
