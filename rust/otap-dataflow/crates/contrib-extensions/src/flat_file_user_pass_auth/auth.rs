@@ -54,14 +54,18 @@ async fn read_credential(
                     path: path.clone(),
                     source,
                 })?;
-        let mut contents_str =
-            String::from_utf8(contents).map_err(|_| Error::CredentialAcquisition {
+        let mut contents_str = String::from_utf8(contents).map_err(|e| {
+            // Note: Clear out password bytes from memory
+            e.into_bytes().zeroize();
+            Error::CredentialAcquisition {
                 message: format!("`{field}_file` does not contain valid UTF-8"),
-            })?;
+            }
+        })?;
         let password: SecretString = contents_str
             .trim_end_matches(&['\r', '\n'][..])
             .to_string()
             .into();
+        // Note: Clear out first password string from memory
         contents_str.zeroize();
         // Note: `file_refresh` is used as expiry. We don't know true expiry of
         // the password we use the setting to trigger an automatic refresh. Goal
