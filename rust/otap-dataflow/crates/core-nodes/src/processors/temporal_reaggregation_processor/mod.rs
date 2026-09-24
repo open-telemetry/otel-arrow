@@ -39,7 +39,9 @@ use otel_arrow_dfe_otap::OTAP_PROCESSOR_FACTORIES;
 use otel_arrow_dfe_otap::accessory::slots::{Key as SlotKey, State as SlotState};
 use otel_arrow_dfe_otap::pdata::{Context, OtapPdata, PeerAddrMerger};
 use otel_arrow_dfe_pdata::otap::OtapArrowRecords;
-use otel_arrow_dfe_pdata::views::otap::OtapMetricsView;
+use otel_arrow_dfe_pdata::views::otap::{
+    DecodedOtapArrowRecords, otap_metrics_have_aggregatable_metrics,
+};
 use otel_arrow_dfe_pdata::views::otlp::bytes::metrics::RawMetricsData;
 use otel_arrow_dfe_pdata::{OtapPayload, OtapPayloadHelpers, PayloadData};
 use otel_arrow_dfe_pdata_views::views::common::InstrumentationScopeView;
@@ -627,20 +629,55 @@ impl TemporalReaggregationProcessor {
         pdata: OtapPdata,
     ) -> Result<(), Error> {
         let result = match pdata.payload_ref().data() {
-            PayloadData::OtapArrowRecords(records) => match OtapMetricsView::try_from(records) {
-                Ok(view) => self.process_view(effect_handler, &view).await,
-                Err(e) => {
-                    otel_warn!(telemetry::VIEW_CREATION_FAILED_EVENT, error = %e);
-                    // local failure, not a downstream refusal
-                    self.metrics.record_failure(ErrorType::ViewCreation);
-                    let msg = format!("Failed to create view: {:#}", e);
-                    effect_handler
-                        .notify_nack(NackMsg::new_permanent(msg, pdata))
-                        .await?;
+            PayloadData::OtapArrowRecords(records) => {
+                let has_aggregatable_metrics = match otap_metrics_have_aggregatable_metrics(records)
+                {
+                    Ok(has_aggregatable_metrics) => has_aggregatable_metrics,
+                    Err(e) => {
+                        otel_warn!(telemetry::VIEW_CREATION_FAILED_EVENT, error = %e);
+                        self.metrics.record_failure(ErrorType::ViewCreation);
+                        let msg = format!("Failed to create view: {:#}", e);
+                        effect_handler
+                            .notify_nack(NackMsg::new_permanent(msg, pdata))
+                            .await?;
 
-                    return Ok(());
+                        return Ok(());
+                    }
+                };
+
+                if !has_aggregatable_metrics {
+                    return self
+                        .try_send_message_with_metrics(effect_handler, pdata)
+                        .await;
                 }
-            },
+
+                let decoded = match DecodedOtapArrowRecords::clone_and_decode(records) {
+                    Ok(decoded) => decoded,
+                    Err(e) => {
+                        otel_warn!(telemetry::VIEW_CREATION_FAILED_EVENT, error = %e);
+                        self.metrics.record_failure(ErrorType::ViewCreation);
+                        let msg = format!("Failed to create view: {:#}", e);
+                        effect_handler
+                            .notify_nack(NackMsg::new_permanent(msg, pdata))
+                            .await?;
+
+                        return Ok(());
+                    }
+                };
+                match decoded.metrics_view() {
+                    Ok(view) => self.process_view(effect_handler, &view).await,
+                    Err(e) => {
+                        otel_warn!(telemetry::VIEW_CREATION_FAILED_EVENT, error = %e);
+                        self.metrics.record_failure(ErrorType::ViewCreation);
+                        let msg = format!("Failed to create view: {:#}", e);
+                        effect_handler
+                            .notify_nack(NackMsg::new_permanent(msg, pdata))
+                            .await?;
+
+                        return Ok(());
+                    }
+                }
+            }
             PayloadData::OtlpBytes(otlp) => {
                 let view = RawMetricsData::new(otlp.as_bytes());
                 self.process_view(effect_handler, &view).await
@@ -2773,6 +2810,47 @@ mod tests {
             );
             assert_eq!(metric_count(&snaps, "failures", None, None, None), 0);
         });
+    }
+
+    /// Scenario: A delta Sum would pass preflight classification but its root schema is malformed.
+    /// Guarantees: The processor emits no payload and permanently NACKs the original input.
+    #[test]
+    fn test_passthrough_preflight_nacks_malformed_otap_schema() {
+        let records: OtapArrowRecords = metrics!(
+            (
+                UnivariateMetrics,
+                ("id", UInt16, vec![1u16]),
+                ("resource.id", UInt16, vec![1u16]),
+                ("scope.id", UInt16, vec![1u16]),
+                ("name", UInt16, vec![1u16]),
+                ("metric_type", UInt8, vec![MetricType::Sum as u8]),
+                (
+                    "aggregation_temporality",
+                    Int32,
+                    vec![AggregationTemporality::Delta as i32]
+                ),
+                ("is_monotonic", Boolean, vec![true])
+            ),
+            (
+                NumberDataPoints,
+                ("id", UInt32, vec![1u32]),
+                ("parent_id", UInt16, vec![1u16])
+            ),
+        )
+        .into();
+
+        run_test(
+            json!({}),
+            vec![
+                Action::SendPdata {
+                    interests: Interests::ACKS | Interests::NACKS,
+                    payload: OtapPayload::from(records),
+                },
+                Action::AssertNoPdata,
+                Action::AssertUpstream(UpstreamExpectation::AckCount(0)),
+                Action::AssertUpstream(UpstreamExpectation::NackCount(1)),
+            ],
+        );
     }
 
     #[test]

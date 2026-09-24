@@ -70,7 +70,9 @@ use otel_arrow_dfe_pdata::TryFromWithOptions;
 #[cfg(test)]
 use otel_arrow_dfe_pdata::TryIntoWithOptions;
 use otel_arrow_dfe_pdata::otlp::OtlpProtoBytes;
-use otel_arrow_dfe_pdata::views::otap::OtapLogsView;
+#[cfg(test)]
+use otel_arrow_dfe_pdata::views::otap::DecodedOtapArrowRecords;
+use otel_arrow_dfe_pdata::views::otap::DecodedOtapLogsResources;
 use otel_arrow_dfe_pdata::views::otlp::bytes::logs::RawLogsData;
 use otel_arrow_dfe_pdata::views::otlp::bytes::metrics::RawMetricsData;
 use otel_arrow_dfe_pdata::views::otlp::bytes::traces::RawTraceData;
@@ -390,19 +392,22 @@ impl ResourceValidatorProcessor {
         arrow_records: &OtapArrowRecords,
         allowed_values: &HashSet<String>,
     ) -> Result<(), (ValidationFailure, String)> {
-        let logs_view = OtapLogsView::try_from(arrow_records).map_err(|_| {
+        let decoded = DecodedOtapLogsResources::clone_and_decode_keyed(
+            arrow_records,
+            self.required_attribute_key.as_bytes(),
+        )
+        .map_err(|_| {
+            let failure = ValidationFailure::ConversionError;
+            (failure, self.format_error_message(failure))
+        })?;
+        let logs_view = decoded.resources_view().map_err(|_| {
             let failure = ValidationFailure::ConversionError;
             (failure, self.format_error_message(failure))
         })?;
 
         for resource_logs in logs_view.resources() {
-            if let Some(resource) = resource_logs.resource() {
-                if let Err(failure) = self.validate_resource_with_allowed(&resource, allowed_values)
-                {
-                    return Err((failure, self.format_error_message(failure)));
-                }
-            } else {
-                let failure = ValidationFailure::MissingAttribute;
+            let resource = resource_logs.resource();
+            if let Err(failure) = self.validate_resource_with_allowed(&resource, allowed_values) {
                 return Err((failure, self.format_error_message(failure)));
             }
         }
@@ -657,7 +662,12 @@ mod tests {
             &self,
             arrow_records: &OtapArrowRecords,
         ) -> Result<(), (ValidationFailure, String)> {
-            let logs_view = OtapLogsView::try_from(arrow_records).map_err(|_| {
+            let decoded =
+                DecodedOtapArrowRecords::clone_and_decode(arrow_records).map_err(|_| {
+                    let failure = ValidationFailure::ConversionError;
+                    (failure, self.format_error_message(failure))
+                })?;
+            let logs_view = decoded.logs_view().map_err(|_| {
                 let failure = ValidationFailure::ConversionError;
                 (failure, self.format_error_message(failure))
             })?;

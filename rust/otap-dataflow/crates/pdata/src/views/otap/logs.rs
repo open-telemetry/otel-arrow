@@ -23,13 +23,17 @@ use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use crate::schema::{SpanId, TraceId};
 use crate::views::otap::common::{
     OtapAnyValueView, OtapAttributeIter, OtapAttributeView, RowGroup, RowGroupIter,
-    build_attribute_index, group_by_resource_id, group_by_scope_id,
+    build_attribute_index, ensure_transport_ids_decoded, group_by_resource_id, group_by_scope_id,
 };
 use otel_arrow_dfe_pdata_views::views::common::{InstrumentationScopeView, Str};
 use otel_arrow_dfe_pdata_views::views::logs::{
     LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView,
 };
 use otel_arrow_dfe_pdata_views::views::resource::ResourceView;
+
+mod resources;
+
+pub use resources::{DecodedOtapLogsResources, OtapLogsResourcesView};
 
 /// Zero-copy view over OTAP logs Arrow RecordBatches
 pub struct OtapLogsView<'a> {
@@ -95,6 +99,11 @@ impl<'a> OtapLogsView<'a> {
         scope_attrs: Option<&'a RecordBatch>,
         log_attrs: Option<&'a RecordBatch>,
     ) -> Result<Self, Error> {
+        ensure_transport_ids_decoded(ArrowPayloadType::Logs, logs_batch)?;
+        ensure_transport_ids_decoded(ArrowPayloadType::ResourceAttrs, resource_attrs)?;
+        ensure_transport_ids_decoded(ArrowPayloadType::ScopeAttrs, scope_attrs)?;
+        ensure_transport_ids_decoded(ArrowPayloadType::LogAttrs, log_attrs)?;
+
         // 1. Cache root columns for O(1) access.
         let columns = logs_batch.map(LogsArrays::try_from).transpose()?;
         let resource_columns = logs_batch.map(ResourceArrays::try_from).transpose()?;
@@ -739,6 +748,7 @@ fn get_log_id(id_array: Option<&UInt16Array>, row_idx: usize) -> Option<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::otap::transform::transport_optimize::mark_transport_id_columns_plain;
     use arrow::array::{
         ArrayRef, DictionaryArray, Int32Array, Int64Array, StringArray, StructArray, UInt8Array,
         UInt16Array,
@@ -911,7 +921,8 @@ mod tests {
             Arc::new(event_name_array) as ArrayRef,
         ]);
 
-        RecordBatch::try_new(schema, columns).unwrap()
+        let batch = RecordBatch::try_new(schema, columns).unwrap();
+        mark_transport_id_columns_plain(ArrowPayloadType::Logs, &batch)
     }
 
     fn create_test_logs_batch() -> RecordBatch {
@@ -933,7 +944,7 @@ mod tests {
         let types = UInt8Array::from(vec![1, 1]); // Str type
         let str_values = StringArray::from(vec![Some("test-service"), Some("test-host")]);
 
-        RecordBatch::try_new(
+        let batch = RecordBatch::try_new(
             schema,
             vec![
                 Arc::new(parent_id),
@@ -942,7 +953,8 @@ mod tests {
                 Arc::new(str_values),
             ],
         )
-        .unwrap()
+        .unwrap();
+        mark_transport_id_columns_plain(ArrowPayloadType::ResourceAttrs, &batch)
     }
 
     /// Helper to create log attributes batch
@@ -960,7 +972,7 @@ mod tests {
         let types = UInt8Array::from(vec![1, 1, 1]); // All string
         let str_values = StringArray::from(vec![Some("user123"), Some("req-abc"), Some("E500")]);
 
-        RecordBatch::try_new(
+        let batch = RecordBatch::try_new(
             schema,
             vec![
                 Arc::new(parent_id),
@@ -969,7 +981,8 @@ mod tests {
                 Arc::new(str_values),
             ],
         )
-        .unwrap()
+        .unwrap();
+        mark_transport_id_columns_plain(ArrowPayloadType::LogAttrs, &batch)
     }
 
     #[test]
@@ -1234,6 +1247,7 @@ mod tests {
             ],
         )
         .unwrap();
+        let batch = mark_transport_id_columns_plain(ArrowPayloadType::Logs, &batch);
 
         let view = OtapLogsView::new(Some(&batch), None, None, None).unwrap();
 
@@ -1307,6 +1321,7 @@ mod tests {
         let batch =
             RecordBatch::try_new(schema, vec![Arc::new(id_array), Arc::new(resource_struct)])
                 .unwrap();
+        let batch = mark_transport_id_columns_plain(ArrowPayloadType::Logs, &batch);
 
         let logs_view = OtapLogsView::new(Some(&batch), None, None, None).unwrap();
 
@@ -1381,6 +1396,7 @@ mod tests {
             ],
         )
         .unwrap();
+        let logs_batch = mark_transport_id_columns_plain(ArrowPayloadType::Logs, &logs_batch);
 
         // Create log attributes batch with dictionary-encoded keys and values
         // This mimics the OTAP syslog data structure
@@ -1433,6 +1449,8 @@ mod tests {
             ],
         )
         .unwrap();
+        let log_attrs_batch =
+            mark_transport_id_columns_plain(ArrowPayloadType::LogAttrs, &log_attrs_batch);
 
         // Create view with log attributes
         let logs_view =

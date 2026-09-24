@@ -13,7 +13,7 @@ use otel_arrow_dfe_engine::local::exporter::{EffectHandler, Exporter};
 use otel_arrow_dfe_engine::message::{ExporterInbox, Message};
 use otel_arrow_dfe_engine::terminal_state::TerminalState;
 use otel_arrow_dfe_pdata::otlp::OtlpProtoBytes;
-use otel_arrow_dfe_pdata::views::otap::OtapLogsView;
+use otel_arrow_dfe_pdata::views::otap::DecodedOtapArrowRecords;
 use otel_arrow_dfe_pdata::views::otlp::bytes::logs::RawLogsData;
 use otel_arrow_dfe_pdata::{OtapArrowRecords, OtapPayload, PayloadData};
 
@@ -473,7 +473,14 @@ impl AzureMonitorExporter {
                 let log_entries = match payload.data() {
                     PayloadData::OtapArrowRecords(otap_records) => match otap_records {
                         OtapArrowRecords::Logs(_) => {
-                            let logs_view = OtapLogsView::try_from(otap_records).map_err(|e| {
+                            let decoded = DecodedOtapArrowRecords::clone_and_decode(otap_records)
+                                .map_err(|e| {
+                                let error = Error::LogsViewCreationFailed { source: e };
+                                EngineError::InternalError {
+                                    message: error.to_string(),
+                                }
+                            })?;
+                            let logs_view = decoded.logs_view().map_err(|e| {
                                 let error = Error::LogsViewCreationFailed { source: e };
                                 EngineError::InternalError {
                                     message: error.to_string(),

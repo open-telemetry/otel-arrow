@@ -40,7 +40,8 @@ use otel_arrow_dfe_pdata_views::views::trace::{
 
 use crate::views::otap::common::{
     Otap32AttributeIter, OtapAttributeIter, OtapAttributeView, RowGroup, RowGroupIter,
-    build_attribute_index, build_attribute_index_u32, group_by_resource_id, group_by_scope_id,
+    build_attribute_index, build_attribute_index_u32, ensure_transport_ids_decoded,
+    group_by_resource_id, group_by_scope_id,
 };
 
 // ===== Main View =====
@@ -108,6 +109,15 @@ impl<'a> OtapTracesView<'a> {
         links_batch: Option<&'a RecordBatch>,
         link_attrs: Option<&'a RecordBatch>,
     ) -> Result<Self, Error> {
+        ensure_transport_ids_decoded(ArrowPayloadType::Spans, spans_batch)?;
+        ensure_transport_ids_decoded(ArrowPayloadType::ResourceAttrs, resource_attrs)?;
+        ensure_transport_ids_decoded(ArrowPayloadType::ScopeAttrs, scope_attrs)?;
+        ensure_transport_ids_decoded(ArrowPayloadType::SpanAttrs, span_attrs)?;
+        ensure_transport_ids_decoded(ArrowPayloadType::SpanEvents, events_batch)?;
+        ensure_transport_ids_decoded(ArrowPayloadType::SpanEventAttrs, event_attrs)?;
+        ensure_transport_ids_decoded(ArrowPayloadType::SpanLinks, links_batch)?;
+        ensure_transport_ids_decoded(ArrowPayloadType::SpanLinkAttrs, link_attrs)?;
+
         // 1. Cache root columns for O(1) access. A missing root batch is
         //    semantically equivalent to 0 rows.
         let columns = spans_batch.map(SpansArrays::try_from).transpose()?;
@@ -1106,6 +1116,7 @@ impl<'a> InstrumentationScopeView for OtapTraceInstrumentationScopeView<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::otap::transform::transport_optimize::mark_transport_id_columns_plain;
     use arrow::array::{
         ArrayRef, DurationNanosecondArray, FixedSizeBinaryArray, Int32Array, StringArray,
         StructArray, TimestampNanosecondArray, UInt16Array, UInt32Array,
@@ -1190,7 +1201,7 @@ mod tests {
         let dropped_events = UInt32Array::from(vec![0, 0, 0]);
         let dropped_links = UInt32Array::from(vec![0, 0, 0]);
 
-        RecordBatch::try_new(
+        let batch = RecordBatch::try_new(
             schema,
             vec![
                 Arc::new(id_array) as ArrayRef,
@@ -1207,7 +1218,8 @@ mod tests {
                 Arc::new(dropped_links) as ArrayRef,
             ],
         )
-        .unwrap()
+        .unwrap();
+        mark_transport_id_columns_plain(ArrowPayloadType::Spans, &batch)
     }
 
     /// Rebuilds a record batch without the named column, as a producer that omits it sends.
@@ -1372,6 +1384,7 @@ mod tests {
             ],
         )
         .unwrap();
+        let batch = mark_transport_id_columns_plain(ArrowPayloadType::Spans, &batch);
 
         let view =
             OtapTracesView::new(Some(&batch), None, None, None, None, None, None, None).unwrap();
@@ -1431,6 +1444,7 @@ mod tests {
             ],
         )
         .unwrap();
+        let batch = mark_transport_id_columns_plain(ArrowPayloadType::Spans, &batch);
 
         let view =
             OtapTracesView::new(Some(&batch), None, None, None, None, None, None, None).unwrap();
@@ -1485,6 +1499,8 @@ mod tests {
             ],
         )
         .unwrap();
+        let events_batch =
+            mark_transport_id_columns_plain(ArrowPayloadType::SpanEvents, &events_batch);
 
         let view = OtapTracesView::new(
             Some(&spans_batch),
@@ -1539,6 +1555,8 @@ mod tests {
             ],
         )
         .unwrap();
+        let events_batch =
+            mark_transport_id_columns_plain(ArrowPayloadType::SpanEvents, &events_batch);
 
         let links_schema = Arc::new(Schema::new(vec![
             Field::new("parent_id", DataType::UInt16, false),
@@ -1567,6 +1585,8 @@ mod tests {
             ],
         )
         .unwrap();
+        let links_batch =
+            mark_transport_id_columns_plain(ArrowPayloadType::SpanLinks, &links_batch);
 
         let view = OtapTracesView::new(
             Some(&spans_batch),

@@ -94,7 +94,7 @@ use otel_arrow_dfe_otap::pdata::OtapPdata;
 use otel_arrow_dfe_pdata::PayloadData;
 use otel_arrow_dfe_pdata::TryFromWithOptions;
 use otel_arrow_dfe_pdata::otlp::OtlpProtoBytes;
-use otel_arrow_dfe_pdata::views::otap::OtapLogsView;
+use otel_arrow_dfe_pdata::views::otap::DecodedOtapLogsResources;
 use otel_arrow_dfe_pdata::views::otlp::bytes::logs::RawLogsData;
 use otel_arrow_dfe_pdata::views::otlp::bytes::metrics::RawMetricsData;
 use otel_arrow_dfe_pdata::views::otlp::bytes::traces::RawTraceData;
@@ -412,12 +412,16 @@ impl ContentRouter {
         router
     }
 
+    fn resource_attr_key(&self) -> &[u8] {
+        match &self.routing_key {
+            RoutingKeyExpr::ResourceAttribute(key) => key.as_bytes(),
+        }
+    }
+
     /// Extracts the routing key value from a resource's attributes using zero-copy views.
     /// Returns the resolved port name or None if the key is missing/not a route match.
     fn extract_route_from_resource<R: ResourceView>(&self, resource: &R) -> RouteResolution {
-        let key_bytes = match &self.routing_key {
-            RoutingKeyExpr::ResourceAttribute(key) => key.as_bytes(),
-        };
+        let key_bytes = self.resource_attr_key();
 
         for attr in resource.attributes() {
             if attr.key() == key_bytes {
@@ -512,16 +516,21 @@ impl ContentRouter {
         &self,
         arrow_records: &otel_arrow_dfe_pdata::OtapArrowRecords,
     ) -> RouteResolution {
-        let logs_view = match OtapLogsView::try_from(arrow_records) {
+        let decoded = match DecodedOtapLogsResources::clone_and_decode_keyed(
+            arrow_records,
+            self.resource_attr_key(),
+        ) {
+            Ok(decoded) => decoded,
+            Err(_) => return RouteResolution::ConversionError,
+        };
+        let logs_view = match decoded.resources_view() {
             Ok(view) => view,
             Err(_) => return RouteResolution::ConversionError,
         };
         let mut acc: Option<RouteResolution> = None;
         for resource_logs in logs_view.resources() {
-            let res = match resource_logs.resource() {
-                Some(resource) => self.extract_route_from_resource(&resource),
-                None => RouteResolution::MissingKey,
-            };
+            let resource = resource_logs.resource();
+            let res = self.extract_route_from_resource(&resource);
             acc = Some(Self::fold_resolution(acc, res));
             if matches!(acc, Some(RouteResolution::MixedBatch)) {
                 return RouteResolution::MixedBatch;
@@ -1051,14 +1060,40 @@ mod tests {
     use super::*;
     use bytes::Bytes;
     use otel_arrow_dfe_engine::testing::{processor::TestRuntime, test_node};
+    use otel_arrow_dfe_pdata::otap::{OtapArrowRecords, OtapBatchStore};
     use otel_arrow_dfe_pdata::proto::opentelemetry::{
         collector::logs::v1::ExportLogsServiceRequest,
         common::v1::{AnyValue, InstrumentationScope, KeyValue},
         logs::v1::{LogRecord, ResourceLogs, ScopeLogs, SeverityNumber},
         resource::v1::Resource,
     };
+    use otel_arrow_dfe_pdata::{logs, record_batch};
     use prost::Message as ProstMessage;
     use serde_json::json;
+
+    /// Scenario: Native OTAP logs contain a non-struct resource column.
+    /// Guarantees: Route resolution reports conversion failure instead of using a default route.
+    #[test]
+    fn malformed_arrow_resource_is_conversion_error() {
+        let records: OtapArrowRecords = logs!((
+            Logs,
+            ("id", UInt16, vec![1u16]),
+            ("resource", UInt16, vec![1u16])
+        ))
+        .into();
+        let router = ContentRouter::new(ContentRouterConfig {
+            routing_key: RoutingKeyExpr::ResourceAttribute("service.namespace".to_string()),
+            routes: HashMap::from([("production".to_string(), "prod".to_string())]),
+            default_output: Some("fallback".to_string()),
+            case_sensitive: true,
+            admission_policy: SelectedRouteAdmissionPolicy::default(),
+        });
+
+        assert!(matches!(
+            router.resolve_arrow_logs_route(&records),
+            RouteResolution::ConversionError
+        ));
+    }
 
     fn create_logs_with_resource_attr(key: &str, value: &str) -> Bytes {
         let request = ExportLogsServiceRequest::new(vec![ResourceLogs::new(

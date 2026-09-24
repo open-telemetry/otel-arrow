@@ -517,9 +517,10 @@ where
     T: ParentId,
     <<T as ParentId>::ArrayType as ArrowPrimitiveType>::Native: AddAssign,
 {
-    // if the record batch is empty, nothing to decode so return early
+    // Empty batches have no values to materialize, but callers still rely on
+    // decode updating the transport encoding metadata.
     if record_batch.num_rows() == 0 {
-        return Ok(record_batch.clone());
+        return mark_parent_id_plain(record_batch);
     }
 
     // check that the column hasn't already been decoded
@@ -588,6 +589,29 @@ where
         materialized_parent_ids,
         metadata::encodings::PLAIN,
     )
+}
+
+fn mark_parent_id_plain(record_batch: &RecordBatch) -> Result<RecordBatch> {
+    if record_batch
+        .schema_ref()
+        .index_of(consts::PARENT_ID)
+        .is_err()
+    {
+        return Ok(record_batch.clone());
+    }
+
+    let schema = update_field_metadata(
+        record_batch.schema_ref(),
+        consts::PARENT_ID,
+        metadata::COLUMN_ENCODING,
+        metadata::encodings::PLAIN,
+    );
+
+    RecordBatch::try_new(Arc::new(schema), record_batch.columns().to_vec()).map_err(|e| {
+        Error::UnexpectedRecordBatchState {
+            reason: format!("could not mark parent_id as plain encoded: {e}"),
+        }
+    })
 }
 
 /// Decodes the quasi-delta encoded Parent IDs field for a record batch of exemplars.
@@ -4558,14 +4582,20 @@ mod test {
         assert_eq!(&expected, result_ids)
     }
 
+    /// Scenario: An empty quasi-delta parent ID column is materialized by another column.
+    /// Guarantees: The batch remains empty and its parent ID metadata becomes plain.
     #[test]
     fn test_materialize_parent_id_by_column_empty_batch() {
-        // check handling empty batch
         let input = UInt16Array::from_iter_values(vec![]);
         let column = StringArray::from_iter_values(Vec::<String>::new());
         let record_batch = RecordBatch::try_new(
             Arc::new(Schema::new(vec![
-                Field::new(consts::PARENT_ID, DataType::UInt16, false),
+                Field::new(consts::PARENT_ID, DataType::UInt16, false).with_metadata(
+                    HashMap::from_iter([(
+                        metadata::COLUMN_ENCODING.into(),
+                        metadata::encodings::QUASI_DELTA.into(),
+                    )]),
+                ),
                 Field::new(consts::NAME, DataType::Utf8, false),
             ])),
             vec![Arc::new(input), Arc::new(column)],
@@ -4575,7 +4605,15 @@ mod test {
             materialize_parent_ids_by_columns::<u16>(&record_batch, [consts::NAME]).unwrap();
         let result_ids = get_u16_array(&result, consts::PARENT_ID).unwrap();
         let expected = UInt16Array::from_iter_values(vec![]);
-        assert_eq!(&expected, result_ids)
+        assert_eq!(&expected, result_ids);
+        assert_eq!(
+            get_field_metadata(
+                result.schema_ref(),
+                consts::PARENT_ID,
+                metadata::COLUMN_ENCODING,
+            ),
+            Some(metadata::encodings::PLAIN)
+        );
     }
 
     #[test]
