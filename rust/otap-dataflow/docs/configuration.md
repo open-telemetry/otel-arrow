@@ -241,6 +241,44 @@ Policy overrides apply by policy family rather than by deep-merging every
 nested field. The process-wide memory limiter is only supported at top-level
 `policies.resources.memory_limiter`.
 
+### Conditional Transport Header Propagation
+
+Composite context entries can conditionally select a captured transport header
+for exporter propagation:
+
+```yaml
+policies:
+    context:
+        entries:
+            tenant:
+                - type: transport_header
+                  name: workspace
+                  store_as: workspace_id
+                - type: transport_header_match
+                  name: environment
+                  value: production
+    transport_headers:
+        header_propagation:
+            default:
+                selector:
+                    type: named
+                    named: [tenant:workspace_id]
+                name: stored_name
+```
+
+The selected `workspace` header is emitted as `workspace_id` only when it exists
+and at least one captured `environment` value exactly matches `production`.
+Every configured match condition must pass. Header names are ASCII
+case-insensitive; values are exact byte matches. Other composite members are
+not evaluated for this transport-header binding.
+
+Named selectors must resolve to distinct primitive transport headers. Unknown
+composites, unknown members, authorized-identity members, and duplicate source
+bindings are rejected during startup. Exporter overrides retain precedence and
+can independently select the primitive header. See
+[Transport header policies](transport-headers.md#conditional-composite-members)
+for complete matching, naming, and override semantics.
+
 ### Pipeline Core Allocation
 
 Use `policies.resources.core_allocation` to select the worker cores assigned to
@@ -642,6 +680,8 @@ Common validation checks include:
 - Node types must be registered in the `df_engine` binary.
 - Node-level `header_capture` is receiver-only.
 - Node-level `header_propagation` is exporter-only.
+- Qualified propagation selectors must resolve to supported transport-header
+  members with distinct primitive sources.
 
 Use `--validate-and-exit` while editing:
 
