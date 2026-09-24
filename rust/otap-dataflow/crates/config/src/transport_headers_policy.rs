@@ -1324,13 +1324,132 @@ named:
     }
 
     /// Scenario: a named selector references a composite transport-header member with a condition.
-    /// Guarantees: the member propagates under its composite alias only when any condition value matches.
+    /// Guarantees: names ignore ASCII case, values match exactly, all conditions pass, duplicate
+    /// values use any-match semantics, and unrelated value members are not evaluated.
     #[test]
     fn composite_transport_header_propagation_requires_matching_conditions() {
+        let policy: HeaderPropagationPolicy = serde_yaml::from_str(
+            r#"
+default:
+  selector:
+    type: named
+    named: [product_user:workspace_id]
+  action: propagate
+  name: stored_name
+"#,
+        )
+        .expect("valid propagation policy");
+        let policy = policy
+            .compile_context(&[conditional_product_user_declaration()])
+            .expect("composite selector compiles");
+
+        let mut headers = TransportHeaders::new();
+        headers.push(crate::transport_headers::TransportHeader::text(
+            context_name("WORKSPACE"),
+            b"acme",
+        ));
+        headers.push(crate::transport_headers::TransportHeader::text(
+            context_name("Environment"),
+            b"staging",
+        ));
+        headers.push(crate::transport_headers::TransportHeader::text(
+            context_name("environment"),
+            b"Production",
+        ));
+        assert_eq!(policy.propagate(&headers).count(), 0);
+
+        headers.push(crate::transport_headers::TransportHeader::text(
+            context_name("environment"),
+            b"production",
+        ));
+        assert_eq!(policy.propagate(&headers).count(), 0);
+
+        headers.push(crate::transport_headers::TransportHeader::text(
+            context_name("REGION"),
+            b"US-EAST",
+        ));
+        assert_eq!(policy.propagate(&headers).count(), 0);
+
+        headers.push(crate::transport_headers::TransportHeader::text(
+            context_name("region"),
+            b"us-east",
+        ));
+        let propagated = policy.propagate(&headers).collect::<Vec<_>>();
+        assert_eq!(propagated.len(), 1);
+        assert_eq!(propagated[0].header_name, "workspace_id");
+        assert_eq!(propagated[0].value, b"acme");
+    }
+
+    /// Scenario: every condition matches but the selected transport-header member is absent.
+    /// Guarantees: the composite binding remains inactive and emits no header.
+    #[test]
+    fn composite_transport_header_propagation_requires_selected_member() {
+        let policy: HeaderPropagationPolicy = serde_yaml::from_str(
+            r#"
+default:
+  selector:
+    type: named
+    named: [product_user:workspace_id]
+"#,
+        )
+        .expect("valid propagation policy");
+        let policy = policy
+            .compile_context(&[conditional_product_user_declaration()])
+            .expect("composite selector compiles");
+        let mut headers = TransportHeaders::new();
+        headers.push(crate::transport_headers::TransportHeader::text(
+            context_name("environment"),
+            b"production",
+        ));
+        headers.push(crate::transport_headers::TransportHeader::text(
+            context_name("region"),
+            b"us-east",
+        ));
+
+        assert_eq!(policy.propagate(&headers).count(), 0);
+    }
+
+    /// Scenario: an override selects a primitive source whose composite conditions are absent.
+    /// Guarantees: override precedence propagates the primitive header independently.
+    #[test]
+    fn composite_transport_header_conditions_do_not_constrain_overrides() {
+        let policy: HeaderPropagationPolicy = serde_yaml::from_str(
+            r#"
+default:
+  selector:
+    type: named
+    named: [product_user:workspace_id]
+  name: stored_name
+overrides:
+  - match:
+      stored_names: [workspace]
+    action: propagate
+    name: stored_name
+"#,
+        )
+        .expect("valid propagation policy");
+        let policy = policy
+            .compile_context(&[conditional_product_user_declaration()])
+            .expect("composite selector compiles");
+        let mut headers = TransportHeaders::new();
+        headers.push(crate::transport_headers::TransportHeader::text(
+            context_name("workspace"),
+            b"acme",
+        ));
+
+        let propagated = policy.propagate(&headers).collect::<Vec<_>>();
+        assert_eq!(propagated.len(), 1);
+        assert_eq!(propagated[0].header_name, "workspace");
+        assert_eq!(propagated[0].value, b"acme");
+    }
+
+    fn conditional_product_user_declaration() -> ContextEntryDeclaration {
         let context: crate::context_policy::ContextPolicy = serde_yaml::from_str(
             r#"
 entries:
   product_user:
+    - type: authorized_identity
+      name: customer_id
     - type: transport_header
       name: workspace
       store_as: workspace_id
@@ -1344,51 +1463,11 @@ entries:
         )
         .expect("valid context policy");
         let (name, definition) = context.entries.into_iter().next().expect("declaration");
-        let declaration = ContextEntryDeclaration {
+        ContextEntryDeclaration {
             scope: crate::context_policy::ContextScope::Engine,
             name,
             definition,
-        };
-        let policy: HeaderPropagationPolicy = serde_yaml::from_str(
-            r#"
-default:
-  selector:
-    type: named
-    named: [product_user:workspace_id]
-  action: propagate
-  name: stored_name
-"#,
-        )
-        .expect("valid propagation policy");
-        let policy = policy
-            .compile_context(&[declaration])
-            .expect("composite selector compiles");
-
-        let mut headers = TransportHeaders::new();
-        headers.push(crate::transport_headers::TransportHeader::text(
-            context_name("workspace"),
-            b"acme",
-        ));
-        headers.push(crate::transport_headers::TransportHeader::text(
-            context_name("environment"),
-            b"staging",
-        ));
-        assert_eq!(policy.propagate(&headers).count(), 0);
-
-        headers.push(crate::transport_headers::TransportHeader::text(
-            context_name("environment"),
-            b"production",
-        ));
-        assert_eq!(policy.propagate(&headers).count(), 0);
-
-        headers.push(crate::transport_headers::TransportHeader::text(
-            context_name("region"),
-            b"us-east",
-        ));
-        let propagated = policy.propagate(&headers).collect::<Vec<_>>();
-        assert_eq!(propagated.len(), 1);
-        assert_eq!(propagated[0].header_name, "workspace_id");
-        assert_eq!(propagated[0].value, b"acme");
+        }
     }
 
     /// Scenario: a qualified propagation selector names an unknown composite.

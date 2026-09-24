@@ -150,7 +150,11 @@ pub enum ContextEntryPart {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         store_as: Option<ContextEntryName>,
     },
-    /// Requires a transport-header entry to contain an exact text value.
+    /// Requires a transport-header entry to contain an exact configured value.
+    ///
+    /// Header names match using ASCII case-insensitive transport semantics.
+    /// Values compare as exact UTF-8 bytes, and any matching duplicate value
+    /// satisfies this condition.
     TransportHeaderMatch {
         /// Exact source context entry reference.
         name: ContextEntryRef,

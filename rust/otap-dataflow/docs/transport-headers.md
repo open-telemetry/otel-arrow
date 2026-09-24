@@ -220,6 +220,51 @@ header_propagation:
         - x-request-id
 ```
 
+#### Conditional Composite Members
+
+A named selector can refer to a transport-header member of a composite context
+entry using `composite:member` syntax:
+
+```yaml
+policies:
+  context:
+    entries:
+      product_user:
+        - type: authorized_identity
+          name: customer_id
+        - type: transport_header
+          name: workspace
+          store_as: workspace_id
+        - type: transport_header_match
+          name: environment
+          value: production
+  transport_headers:
+    header_propagation:
+      default:
+        selector:
+          type: named
+          named: [product_user:workspace_id]
+```
+
+The composite header binding is active when the selected transport-header
+member exists and every `transport_header_match` condition has at least one
+matching captured value. Other value-bearing members, such as `customer_id`
+above, are not evaluated by transport-header propagation. Whole-composite
+presence and other composite consumers are separate features.
+
+Matching has these semantics:
+
+- Stored header names use ASCII case-insensitive comparison.
+- Configured values are compared exactly as UTF-8 bytes.
+- When a condition header has duplicate values, any exact match satisfies that
+  condition.
+- Every condition must be satisfied.
+- Named selectors must resolve to distinct primitive transport-header entries.
+
+Overrides retain precedence over the default selector. An override that selects
+the primitive `workspace` header can propagate it independently even when
+`product_user` conditions do not match.
+
 ### Name Strategy
 
 | Value | Behavior |
