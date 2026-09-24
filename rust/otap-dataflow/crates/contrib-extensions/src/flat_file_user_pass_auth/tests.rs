@@ -15,6 +15,7 @@ use tempfile::NamedTempFile;
 
 use super::config::Config;
 use super::*;
+use crate::common::background_refresh::BackgroundProviderSource;
 use crate::flat_file_user_pass_auth::config::default_password_secret_file_refresh;
 
 // -- Config tests -------------------------------------------
@@ -263,6 +264,60 @@ async fn get_credential_file_success() {
     assert_eq!(credential.expose_username(), "test_user");
     assert_eq!(credential.expose_password(), "test_pass  ");
     assert!(credential.expires_on().is_some());
+}
+
+/// Scenario: A password secret file contains bytes that are not valid UTF-8.
+/// Guarantees: Acquisition fails with an explicit encoding error instead of using mangled bytes.
+#[tokio::test]
+async fn get_credential_file_rejects_non_utf8_content() {
+    let mut named_file = NamedTempFile::new().expect("file created");
+    named_file
+        .write_all(&[0xff, 0xfe, 0xfd])
+        .expect("content written");
+
+    let source = FlatFileUserPassAuth::new(Config {
+        username: "test_user".into(),
+        password_secret: None,
+        password_secret_file: Some(named_file.path().into()),
+        password_secret_file_refresh: Duration::from_secs(10),
+    });
+
+    let err = source
+        .fetch()
+        .await
+        .expect_err("non-UTF-8 credentials must be rejected");
+    assert!(
+        err.to_string().contains("valid UTF-8"),
+        "unexpected error: {err}"
+    );
+}
+
+/// Scenario: A password secret file contains an empty password or a control character.
+/// Guarantees: Acquisition applies Basic Auth password validation to file-derived values.
+#[tokio::test]
+async fn get_credential_file_rejects_invalid_password_content() {
+    for content in ["", "test\tpass"] {
+        let mut named_file = NamedTempFile::new().expect("file created");
+        named_file
+            .write_all(content.as_bytes())
+            .expect("content written");
+
+        let source = FlatFileUserPassAuth::new(Config {
+            username: "test_user".into(),
+            password_secret: None,
+            password_secret_file: Some(named_file.path().into()),
+            password_secret_file_refresh: Duration::from_secs(10),
+        });
+
+        let err = source
+            .fetch()
+            .await
+            .expect_err("invalid Basic Auth passwords must be rejected");
+        assert!(
+            err.to_string().contains("Password is invalid"),
+            "unexpected error for {content:?}: {err}"
+        );
+    }
 }
 
 /// Scenario: Credential acquisition references an unreadable password secret file.
