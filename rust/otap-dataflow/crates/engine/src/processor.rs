@@ -588,42 +588,6 @@ impl<PData> ProcessorWrapper<PData> {
         }
     }
 
-    /// Start the processor using the services owned by its pipeline runtime.
-    pub async fn start(
-        self,
-        runtime_ctrl_msg_tx: RuntimeCtrlMsgSender<PData>,
-        pipeline_completion_msg_tx: PipelineCompletionMsgSender<PData>,
-        metrics_reporter: MetricsReporter,
-        node_interests: Interests,
-        runtime_services: PipelineRuntimeServices,
-    ) -> Result<(), Error>
-    where
-        PData: ReceivedAtNode + FlowMetricHook,
-    {
-        self.start_with_completion_metrics(
-            runtime_ctrl_msg_tx,
-            pipeline_completion_msg_tx,
-            metrics_reporter,
-            node_interests,
-            None,
-            false,
-            false,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            false,
-            false,
-            TerminalMetricsDeadline::default(),
-            runtime_services,
-        )
-        .await
-    }
-
     pub(crate) async fn start_with_completion_metrics(
         self,
         runtime_ctrl_msg_tx: RuntimeCtrlMsgSender<PData>,
