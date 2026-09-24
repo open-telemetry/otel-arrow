@@ -348,12 +348,16 @@ policies:
         - type: transport_header         # Transport header
           name: workspace_id             # Stored name of header
           store_as: othername_id         # (option) Entry name
+        - type: transport_header_match   # Presence condition
+          name: environment
+          value: production
 ```
 
 > [!NOTE]
-> Context entry declarations are retained in resolved configuration but do not
-> currently construct, capture, propagate, or consume composite entries at
-> runtime. Conditional elements and runtime support will be added separately.
+> Named transport-header propagation can refer to a composite member with
+> `product_user:othername_id`. The header is propagated only when every
+> `transport_header_match` condition has an exact matching captured value.
+> Other composite consumers are not yet wired at runtime.
 
 ## Engine Observability Pipeline
 

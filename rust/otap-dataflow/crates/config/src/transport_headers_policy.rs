@@ -11,7 +11,8 @@
 //!
 //! TODO: Implement the sensitive capability for headers
 
-use crate::context::ContextEntryName;
+use crate::context::{ContextEntryName, ContextEntryRef};
+use crate::context_policy::{ContextEntryDeclaration, ContextEntryPart};
 use crate::transport_headers::{CapturedTransportHeader, TransportHeaders, ValueKind};
 use hashbrown::{Equivalent, HashMap};
 use http::{HeaderMap, HeaderName};
@@ -452,13 +453,99 @@ pub struct HeaderPropagationPolicy {
     /// Per-header overrides applied after the default.
     #[serde(default)]
     pub(crate) overrides: Vec<PropagationOverride>,
+    /// Qualified named selectors compiled from visible composite declarations.
+    #[serde(skip)]
+    #[schemars(skip)]
+    compiled_named: Vec<CompiledNamedPropagation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+struct CompiledNamedPropagation {
+    source_name: ContextEntryName,
+    output_name: ContextEntryName,
+    conditions: Vec<CompiledTransportHeaderMatch>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+struct CompiledTransportHeaderMatch {
+    name: ContextEntryName,
+    value: Box<[u8]>,
 }
 
 impl HeaderPropagationPolicy {
     /// Create a new propagation policy from the given default behavior and overrides.
     #[must_use]
     pub fn new(default: PropagationDefault, overrides: Vec<PropagationOverride>) -> Self {
-        Self { default, overrides }
+        Self {
+            default,
+            overrides,
+            compiled_named: Vec::new(),
+        }
+    }
+
+    /// Compiles qualified named selectors from visible composite declarations.
+    pub fn compile_context(
+        mut self,
+        declarations: &[ContextEntryDeclaration],
+    ) -> Result<Self, String> {
+        self.compiled_named.clear();
+        let Some(references) = self.default.selector.named.as_ref() else {
+            return Ok(self);
+        };
+
+        for reference in references {
+            let Some(composite_name) = reference.scope() else {
+                continue;
+            };
+            let declaration = declarations
+                .iter()
+                .find(|declaration| declaration.name.as_str() == composite_name.as_str())
+                .ok_or_else(|| format!("unknown composite context entry `{composite_name}`"))?;
+
+            let mut source_name = None;
+            let mut conditions = Vec::new();
+            for part in &declaration.definition.0 {
+                match part {
+                    ContextEntryPart::TransportHeader { name, store_as }
+                        if store_as.as_ref().unwrap_or_else(|| name.name()) == reference.name() =>
+                    {
+                        source_name = Some(unqualified_context_name(
+                            name,
+                            "transport-header composite member",
+                        )?);
+                    }
+                    ContextEntryPart::AuthorizedIdentity { name, store_as }
+                        if store_as.as_ref().unwrap_or_else(|| name.name()) == reference.name() =>
+                    {
+                        return Err(format!(
+                            "context entry reference `{reference}` selects authorized-identity member `{name}`, which cannot be propagated as a transport header"
+                        ));
+                    }
+                    ContextEntryPart::TransportHeaderMatch { name, value } => {
+                        conditions.push(CompiledTransportHeaderMatch {
+                            name: unqualified_context_name(
+                                name,
+                                "transport-header match condition",
+                            )?,
+                            value: value.as_bytes().into(),
+                        });
+                    }
+                    _ => {}
+                }
+            }
+
+            let source_name = source_name.ok_or_else(|| {
+                format!(
+                    "context entry reference `{reference}` does not select a transport-header member"
+                )
+            })?;
+            self.compiled_named.push(CompiledNamedPropagation {
+                source_name,
+                output_name: reference.name().clone(),
+                conditions,
+            });
+        }
+        Ok(self)
     }
 
     /// Validate the propagation policy configuration.
@@ -474,7 +561,7 @@ impl HeaderPropagationPolicy {
     /// Returns whether this entry is propagated with its original name.
     #[must_use]
     pub fn propagates_original_name(&self, name: &ContextEntryName) -> bool {
-        let (action, name_strategy) = self.resolve_action_for_name(name);
+        let (action, name_strategy) = self.resolve_static_action_for_name(name);
         action == PropagationAction::Propagate && name_strategy == NameStrategy::Preserve
     }
 
@@ -490,8 +577,13 @@ impl HeaderPropagationPolicy {
     pub fn visit_original_name_requirement_names(&self, mut visit: impl FnMut(&ContextEntryName)) {
         if let Some(names) = &self.default.selector.named {
             for name in names {
-                visit(name);
+                if name.scope().is_none() {
+                    visit(name.name());
+                }
             }
+        }
+        for binding in &self.compiled_named {
+            visit(&binding.source_name);
         }
         for override_policy in &self.overrides {
             for name in &override_policy.match_rule.stored_names {
@@ -508,12 +600,13 @@ impl HeaderPropagationPolicy {
         headers: &'a TransportHeaders,
     ) -> impl Iterator<Item = PropagatedHeader<'a>> {
         headers.iter().filter_map(move |header| {
-            let (action, name_strategy) = self.resolve_action_for_name(header.name.as_str());
+            let (action, name_strategy, selected_name) =
+                self.resolve_action_for_header(headers, header.name.as_str());
             if action == PropagationAction::Drop {
                 return None;
             }
             let header_name = match name_strategy {
-                NameStrategy::StoredName => header.name.as_str(),
+                NameStrategy::StoredName => selected_name.unwrap_or(header.name.as_str()),
                 NameStrategy::Preserve => header.wire_name(),
             };
             Some(PropagatedHeader {
@@ -524,7 +617,11 @@ impl HeaderPropagationPolicy {
         })
     }
 
-    fn resolve_action_for_name(&self, name: &str) -> (PropagationAction, NameStrategy) {
+    fn resolve_static_action_for_name(
+        &self,
+        name: &ContextEntryName,
+    ) -> (PropagationAction, NameStrategy) {
+        let name = name.as_str();
         // Check overrides first.
         for ov in &self.overrides {
             if ov
@@ -538,8 +635,11 @@ impl HeaderPropagationPolicy {
             }
         }
 
-        // Check whether the header passes the default selector.
-        let selected = self.default.selector.selects_str(name);
+        let selected = self.default.selector.selects_unqualified_str(name)
+            || self
+                .compiled_named
+                .iter()
+                .any(|binding| name.eq_ignore_ascii_case(binding.source_name.as_str()));
 
         if selected {
             (self.default.action, self.default.name)
@@ -547,6 +647,64 @@ impl HeaderPropagationPolicy {
             (PropagationAction::Drop, self.default.name)
         }
     }
+
+    fn resolve_action_for_header<'a>(
+        &'a self,
+        headers: &'a TransportHeaders,
+        name: &str,
+    ) -> (PropagationAction, NameStrategy, Option<&'a str>) {
+        for ov in &self.overrides {
+            if ov
+                .match_rule
+                .stored_names
+                .iter()
+                .any(|stored| name.eq_ignore_ascii_case(stored.as_str()))
+            {
+                let name_strategy = ov.name.unwrap_or(self.default.name);
+                return (ov.action, name_strategy, None);
+            }
+        }
+
+        if self.default.selector.selects_unqualified_str(name) {
+            return (self.default.action, self.default.name, None);
+        }
+        if let Some(binding) = self.compiled_named.iter().find(|binding| {
+            name.eq_ignore_ascii_case(binding.source_name.as_str()) && binding.matches(headers)
+        }) {
+            return (
+                self.default.action,
+                self.default.name,
+                Some(binding.output_name.as_str()),
+            );
+        }
+        (PropagationAction::Drop, self.default.name, None)
+    }
+}
+
+impl CompiledNamedPropagation {
+    fn matches(&self, headers: &TransportHeaders) -> bool {
+        self.conditions.iter().all(|condition| {
+            headers.iter().any(|header| {
+                header
+                    .name
+                    .as_str()
+                    .eq_ignore_ascii_case(condition.name.as_str())
+                    && header.value.bytes == condition.value.as_ref()
+            })
+        })
+    }
+}
+
+fn unqualified_context_name(
+    reference: &ContextEntryRef,
+    purpose: &str,
+) -> Result<ContextEntryName, String> {
+    if reference.scope().is_some() {
+        return Err(format!(
+            "{purpose} `{reference}` must reference a primitive context entry"
+        ));
+    }
+    Ok(reference.name().clone())
 }
 
 /// Default propagation behavior.
@@ -601,7 +759,7 @@ pub struct PropagationSelector {
     /// Required names for `named` selectors.
     /// Must be absent for other selector types.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub named: Option<Vec<ContextEntryName>>,
+    pub named: Option<Vec<ContextEntryRef>>,
 }
 
 impl PropagationSelector {
@@ -623,10 +781,10 @@ impl PropagationSelector {
     /// Returns true if the given header name is selected for propagation.
     #[must_use]
     pub fn selects(&self, header_name: &ContextEntryName) -> bool {
-        self.selects_str(header_name.as_str())
+        self.selects_unqualified_str(header_name.as_str())
     }
 
-    fn selects_str(&self, header_name: &str) -> bool {
+    fn selects_unqualified_str(&self, header_name: &str) -> bool {
         match &self.selector_type {
             PropagationSelectorType::AllCaptured => true,
             PropagationSelectorType::None => false,
@@ -634,9 +792,10 @@ impl PropagationSelector {
                 .named
                 .as_ref()
                 .map(|names| {
-                    names
-                        .iter()
-                        .any(|name| header_name.eq_ignore_ascii_case(name.as_str()))
+                    names.iter().any(|name| {
+                        name.scope().is_none()
+                            && header_name.eq_ignore_ascii_case(name.name().as_str())
+                    })
                 })
                 .unwrap_or(false),
         }
@@ -1141,10 +1300,98 @@ named:
             Some(
                 ["tenant_id", "request_id"]
                     .iter()
-                    .map(|x| context_name(x))
+                    .map(|x| ContextEntryRef::from(context_name(x)))
                     .collect()
             )
         );
+    }
+
+    /// Scenario: a named selector references a composite transport-header member with a condition.
+    /// Guarantees: the member propagates under its composite alias only when any condition value matches.
+    #[test]
+    fn composite_transport_header_propagation_requires_matching_conditions() {
+        let context: crate::context_policy::ContextPolicy = serde_yaml::from_str(
+            r#"
+entries:
+  product_user:
+    - type: transport_header
+      name: workspace
+      store_as: workspace_id
+    - type: transport_header_match
+      name: environment
+      value: production
+    - type: transport_header_match
+      name: region
+      value: us-east
+"#,
+        )
+        .expect("valid context policy");
+        let (name, definition) = context.entries.into_iter().next().expect("declaration");
+        let declaration = ContextEntryDeclaration {
+            scope: crate::context_policy::ContextScope::Engine,
+            name,
+            definition,
+        };
+        let policy: HeaderPropagationPolicy = serde_yaml::from_str(
+            r#"
+default:
+  selector:
+    type: named
+    named: [product_user:workspace_id]
+  action: propagate
+  name: stored_name
+"#,
+        )
+        .expect("valid propagation policy");
+        let policy = policy
+            .compile_context(&[declaration])
+            .expect("composite selector compiles");
+
+        let mut headers = TransportHeaders::new();
+        headers.push(crate::transport_headers::TransportHeader::text(
+            context_name("workspace"),
+            b"acme",
+        ));
+        headers.push(crate::transport_headers::TransportHeader::text(
+            context_name("environment"),
+            b"staging",
+        ));
+        assert_eq!(policy.propagate(&headers).count(), 0);
+
+        headers.push(crate::transport_headers::TransportHeader::text(
+            context_name("environment"),
+            b"production",
+        ));
+        assert_eq!(policy.propagate(&headers).count(), 0);
+
+        headers.push(crate::transport_headers::TransportHeader::text(
+            context_name("region"),
+            b"us-east",
+        ));
+        let propagated = policy.propagate(&headers).collect::<Vec<_>>();
+        assert_eq!(propagated.len(), 1);
+        assert_eq!(propagated[0].header_name, "workspace_id");
+        assert_eq!(propagated[0].value, b"acme");
+    }
+
+    /// Scenario: a qualified propagation selector names an unknown composite.
+    /// Guarantees: binding compilation rejects the unresolved reference before runtime.
+    #[test]
+    fn composite_transport_header_propagation_rejects_unknown_composite() {
+        let policy: HeaderPropagationPolicy = serde_yaml::from_str(
+            r#"
+default:
+  selector:
+    type: named
+    named: [missing:workspace]
+"#,
+        )
+        .expect("valid propagation policy");
+
+        let error = policy
+            .compile_context(&[])
+            .expect_err("unknown composite must fail");
+        assert!(error.contains("unknown composite context entry `missing`"));
     }
 
     /// Scenario: an `all_captured` selector has no name list.
@@ -1175,7 +1422,7 @@ named:
     fn selector_validate_named_valid() {
         let selector = PropagationSelector {
             selector_type: PropagationSelectorType::Named,
-            named: Some(vec![context_name("tenant_id")]),
+            named: Some(vec![context_name("tenant_id").into()]),
         };
         assert!(selector.validate().is_ok());
     }
@@ -1210,7 +1457,7 @@ named:
     fn selector_validate_all_captured_with_named_field() {
         let selector = PropagationSelector {
             selector_type: PropagationSelectorType::AllCaptured,
-            named: Some(vec![context_name("tenant_id")]),
+            named: Some(vec![context_name("tenant_id").into()]),
         };
         let err = selector.validate().unwrap_err();
         assert!(err.contains("'named' must not be set"));
@@ -1222,7 +1469,7 @@ named:
     fn selector_validate_none_with_named_field() {
         let selector = PropagationSelector {
             selector_type: PropagationSelectorType::None,
-            named: Some(vec![context_name("tenant_id")]),
+            named: Some(vec![context_name("tenant_id").into()]),
         };
         let err = selector.validate().unwrap_err();
         assert!(err.contains("'named' must not be set"));

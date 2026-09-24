@@ -25,6 +25,7 @@
 use crate::PipelineFactory;
 use crate::error::Error as EngineError;
 use otel_arrow_dfe_config::authorized_identity_policy::AuthorizedIdentityPolicy;
+use otel_arrow_dfe_config::context_policy::ContextEntryDeclaration as ConfigContextEntryDeclaration;
 use otel_arrow_dfe_config::engine::ResolvedOtelDataflowSpec;
 use otel_arrow_dfe_config::error::Error;
 use otel_arrow_dfe_config::node::{NodeKind, NodeUserConfig};
@@ -621,7 +622,8 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
                     node_config,
                     &pipeline.policies.transport_headers,
                     &pipeline.policies.authorized_identity,
-                );
+                    &pipeline.policies.context,
+                )?;
                 let declarations = component_declarations
                     .into_iter()
                     .chain(wrapper_declarations)
@@ -638,8 +640,9 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
         node: &NodeUserConfig,
         pipeline_policy: &Option<TransportHeadersPolicy>,
         authorized_identity: &Option<AuthorizedIdentityPolicy>,
-    ) -> NodeContextDeclarations {
-        match node.kind() {
+        context: &[ConfigContextEntryDeclaration],
+    ) -> Result<NodeContextDeclarations, EngineError> {
+        let declarations = match node.kind() {
             NodeKind::Receiver => node
                 .header_capture
                 .as_ref()
@@ -659,20 +662,31 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
                         .map(|policy| ContextDeclaration::AuthorizedIdentityCapture { policy }),
                 )
                 .collect(),
-            NodeKind::Exporter => node
-                .header_propagation
-                .as_ref()
-                .or_else(|| {
+            NodeKind::Exporter => {
+                let policy = node.header_propagation.as_ref().or_else(|| {
                     pipeline_policy
                         .as_ref()
                         .map(|policy| &policy.header_propagation)
-                })
-                .cloned()
-                .map(|policy| ContextDeclaration::HeaderPropagation { policy })
-                .into_iter()
-                .collect(),
+                });
+                policy
+                    .cloned()
+                    .map(|policy| {
+                        policy
+                            .compile_context(context)
+                            .map(|policy| ContextDeclaration::HeaderPropagation { policy })
+                            .map_err(|error| {
+                                EngineError::ConfigError(Box::new(Error::InvalidUserConfig {
+                                    error,
+                                }))
+                            })
+                    })
+                    .transpose()?
+                    .into_iter()
+                    .collect()
+            }
             NodeKind::Processor => NodeContextDeclarations::default(),
-        }
+        };
+        Ok(declarations)
     }
 
     fn node_context_declarations(
@@ -740,7 +754,7 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otel_arrow_dfe_config::transport_headers::TransportHeaders;
+    use otel_arrow_dfe_config::transport_headers::{TransportHeader, TransportHeaders};
     use otel_arrow_dfe_config::transport_headers_policy::{CaptureDefaults, CaptureRule};
 
     /// Typed component configuration used to exercise declaration validation.
@@ -1075,7 +1089,9 @@ mod tests {
                 &receiver,
                 &Some(pipeline_policy.clone()),
                 &Some(identity_policy.clone()),
-            ),
+                &[],
+            )
+            .expect("wrapper declarations"),
             [
                 ContextDeclaration::HeaderCapture {
                     policy: node_capture,
@@ -1094,7 +1110,9 @@ mod tests {
                 &receiver,
                 &Some(pipeline_policy.clone()),
                 &Some(identity_policy.clone()),
-            ),
+                &[],
+            )
+            .expect("wrapper declarations"),
             [
                 ContextDeclaration::HeaderCapture {
                     policy: pipeline_policy.header_capture.clone(),
@@ -1115,7 +1133,9 @@ mod tests {
                 &exporter,
                 &Some(pipeline_policy.clone()),
                 &Some(identity_policy.clone()),
-            ),
+                &[],
+            )
+            .expect("wrapper declarations"),
             [ContextDeclaration::HeaderPropagation {
                 policy: node_propagation,
             }]
@@ -1129,13 +1149,78 @@ mod tests {
                 &exporter,
                 &Some(pipeline_policy.clone()),
                 &Some(identity_policy),
-            ),
+                &[],
+            )
+            .expect("wrapper declarations"),
             [ContextDeclaration::HeaderPropagation {
                 policy: pipeline_policy.header_propagation,
             }]
             .into_iter()
             .collect(),
         );
+    }
+
+    /// Scenario: an exporter selects a conditional composite transport-header member.
+    /// Guarantees: wrapper compilation resolves the visible declaration before installing policy.
+    #[test]
+    fn wrapper_compiles_conditional_composite_header_propagation() {
+        let context: otel_arrow_dfe_config::context_policy::ContextPolicy = serde_yaml::from_str(
+            r#"
+entries:
+  tenant:
+    - type: transport_header
+      name: workspace
+      store_as: workspace_id
+    - type: transport_header_match
+      name: environment
+      value: production
+"#,
+        )
+        .expect("valid context policy");
+        let (name, definition) = context.entries.into_iter().next().expect("declaration");
+        let declaration = ConfigContextEntryDeclaration {
+            scope: otel_arrow_dfe_config::context_policy::ContextScope::Engine,
+            name,
+            definition,
+        };
+        let mut exporter = NodeUserConfig::new_exporter_config("urn:test:exporter:example");
+        exporter.header_propagation = Some(
+            serde_yaml::from_str(
+                r#"
+default:
+  selector:
+    type: named
+    named: [tenant:workspace_id]
+  name: stored_name
+"#,
+            )
+            .expect("valid propagation policy"),
+        );
+
+        let declarations = PipelineFactory::<()>::wrapper_context_declarations(
+            &exporter,
+            &None,
+            &None,
+            &[declaration],
+        )
+        .expect("wrapper declarations");
+        let ContextDeclaration::HeaderPropagation { policy } =
+            declarations.iter().next().expect("propagation declaration")
+        else {
+            panic!("expected header propagation declaration");
+        };
+        let mut headers = TransportHeaders::new();
+        headers.push(TransportHeader::text(context_name("workspace"), b"acme"));
+        assert_eq!(policy.propagate(&headers).count(), 0);
+        headers.push(TransportHeader::text(
+            context_name("environment"),
+            b"production",
+        ));
+
+        let propagated = policy.propagate(&headers).collect::<Vec<_>>();
+        assert_eq!(propagated.len(), 1);
+        assert_eq!(propagated[0].header_name, "workspace_id");
+        assert_eq!(propagated[0].value, b"acme");
     }
 
     /// Scenario: a receiver has an absent or explicitly empty authorized identity policy.
@@ -1146,7 +1231,8 @@ mod tests {
 
         for policy in [None, Some(AuthorizedIdentityPolicy::default())] {
             let declarations =
-                PipelineFactory::<()>::wrapper_context_declarations(&receiver, &None, &policy);
+                PipelineFactory::<()>::wrapper_context_declarations(&receiver, &None, &policy, &[])
+                    .expect("wrapper declarations");
             assert!(declarations.is_empty());
 
             let compiled = compiled_bindings(declarations);
