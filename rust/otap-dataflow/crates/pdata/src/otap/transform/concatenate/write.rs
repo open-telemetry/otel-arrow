@@ -33,8 +33,9 @@
 //! - TODO(dict-dedupe): [write_dict] appends the whole values array of every
 //!   dictionary input. Skip values arrays already appended (pointer identity)
 //!   and trim unreferenced values for heavily sliced inputs.
-//! - TODO(bytes-gather-capacity): Gathering dictionary values into a native
-//!   Utf8/Binary output grows the data buffer; pre-compute the exact size.
+//! - TODO(bytes-gather-capacity): Byte capacity for dictionary inputs is sized
+//!   from the whole values array, which over-allocates when the column is
+//!   gathered into a native output. Size it from the selected keys instead.
 
 use std::ops::Range;
 use std::sync::Arc;

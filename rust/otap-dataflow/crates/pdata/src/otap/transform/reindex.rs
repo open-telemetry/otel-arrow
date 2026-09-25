@@ -102,8 +102,23 @@ slot cannot overflow.
 
 - TODO(D4): Make compaction faster. Today it sorts the valid values (or their
   indices), builds range mappings, applies them in sorted order, and unsorts.
-  A rank bitmap or a dense lookup table indexed by `id - min` would avoid the
-  sort for dense ranges.
+  Compaction always maps a parent id `v` to `offset + rank(v)`, where
+  `rank(v)` is the number of distinct valid parent ids below `v`, so it can be
+  computed with a dense table over `[min, max]` (min/max are already known
+  from the stats pass):
+  1. Mark present parent ids in a bitmap indexed by `v - min`.
+  2. Prefix-assign `table[v - min] = offset + rank` over the span; the final
+     counter is the next offset.
+  3. Parent replacement: `out[i] = table[values[i] - min]` (0 for nulls).
+  4. Child replacement and violations in one pass: a child value is valid iff
+     it is within `[min, max]` and present; valid values map through the
+     table.
+
+  This is O(n + span) with no sort. Use it when the span is bounded (always
+  for u16; for u32 when `span <= max(4 * len, 65536)`) and keep the current
+  sort path as the fallback for sparse u32 ids. The table and bitmap can be
+  reused across batches of a relation. Compaction only happens for
+  malformed input or when the id budget overflows, so this is low priority.
 - TODO(root-decode-noop): `remove_transport_optimized_encodings` rebuilds the
   schema and record batch for root tables even when every column is already
   plain. It should return the batch untouched in that case.
