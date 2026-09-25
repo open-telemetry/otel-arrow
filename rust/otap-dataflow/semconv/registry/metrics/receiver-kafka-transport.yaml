@@ -1,0 +1,20 @@
+file_format: definition/2
+metrics:
+- name: receiver.kafka.transport.errors
+  brief: Number of non-EOF errors returned by the Kafka consumer.
+  instrument: counter
+  unit: '{error}'
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error.type
+    requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: receiver.kafka.transport

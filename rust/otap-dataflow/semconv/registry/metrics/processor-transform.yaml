@@ -1,0 +1,46 @@
+file_format: definition/2
+metrics:
+- name: processor.transform.failures
+  brief: Number of failed transform operations.
+  instrument: counter
+  unit: '{operation}'
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error.type
+    requirement_level: recommended
+  - ref: language
+    requirement_level: recommended
+  - ref: signal
+    requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: processor.transform
+- name: processor.transform.operations
+  brief: Number of matching input messages whose local transform operation terminated.
+  instrument: counter
+  unit: '{operation}'
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: language
+    requirement_level: recommended
+  - ref: outcome
+    requirement_level: recommended
+  - ref: signal
+    requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: processor.transform

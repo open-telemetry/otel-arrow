@@ -1,0 +1,24 @@
+file_format: definition/2
+metrics:
+- name: exporter.kafka.exports.bytes
+  brief: Encoded Kafka payload bytes for attempts that reached the producer.
+  instrument: histogram
+  unit: By
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: outcome
+    requirement_level: recommended
+  - ref: signal
+    requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: double
+    otap_dataflow:
+      metric_set: exporter.kafka.exports
+      rust:
+        instrument: HistogramNormal

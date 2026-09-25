@@ -1,0 +1,32 @@
+file_format: definition/2
+metrics:
+- name: node.completion_emission.notify_ack.routed
+  brief: Count of successful `notify_ack` routings into the shared completion lane.
+  instrument: counter
+  unit: '{message}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: node.completion_emission
+- name: node.completion_emission.notify_nack.routed
+  brief: Count of successful `notify_nack` routings into the shared completion lane.
+  instrument: counter
+  unit: '{message}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: node.completion_emission

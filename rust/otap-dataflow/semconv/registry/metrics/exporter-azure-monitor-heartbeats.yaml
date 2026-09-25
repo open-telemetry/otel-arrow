@@ -1,0 +1,20 @@
+file_format: definition/2
+metrics:
+- name: exporter.azure_monitor.heartbeats.sends
+  brief: Number of completed heartbeat send attempts.
+  instrument: counter
+  unit: '{heartbeat}'
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: outcome
+    requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: exporter.azure_monitor.heartbeats

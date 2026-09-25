@@ -1,0 +1,285 @@
+file_format: definition/2
+events:
+- name: config.reconcile.requested
+  brief: The config.reconcile.requested internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.engine
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otap-df-admin
+        severity_levels:
+        - info
+        sources:
+        - crates/admin/src/engine_config.rs
+        availability: []
+- name: endpoint.bind_failed
+  brief: The endpoint.bind_failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: bind_address
+    requirement_level: required
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - otap.engine
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otap-df-admin
+        severity_levels:
+        - warn
+        sources:
+        - crates/admin/src/lib.rs
+        availability: []
+- name: endpoint.parse_address_failed
+  brief: The endpoint.parse_address_failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: bind_address
+    requirement_level: required
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - otap.engine
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otap-df-admin
+        severity_levels:
+        - warn
+        sources:
+        - crates/admin/src/lib.rs
+        availability: []
+- name: endpoint.start
+  brief: The endpoint.start internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: bind_address
+    requirement_level: required
+  entity_associations:
+  - otap.engine
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otap-df-admin
+        severity_levels:
+        - info
+        sources:
+        - crates/admin/src/lib.rs
+        availability: []
+- name: group.create.requested
+  brief: The group.create.requested internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: pipeline_group_id
+    requirement_level: required
+  entity_associations:
+  - otap.engine
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otap-df-admin
+        severity_levels:
+        - info
+        sources:
+        - crates/admin/src/pipeline_group.rs
+        availability: []
+- name: group.delete.requested
+  brief: The group.delete.requested internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: pipeline_group_id
+    requirement_level: required
+  - ref: timeout_secs
+    requirement_level: required
+  entity_associations:
+  - otap.engine
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otap-df-admin
+        severity_levels:
+        - info
+        sources:
+        - crates/admin/src/pipeline_group.rs
+        availability: []
+- name: pipeline.delete.requested
+  brief: The pipeline.delete.requested internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: pipeline_group_id
+    requirement_level: required
+  - ref: pipeline_id
+    requirement_level: required
+  - ref: timeout_secs
+    requirement_level: required
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otap-df-admin
+        severity_levels:
+        - info
+        sources:
+        - crates/admin/src/pipeline.rs
+        availability: []
+- name: pipeline.shutdown.requested
+  brief: The pipeline.shutdown.requested internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: pipeline_group_id
+    requirement_level: required
+  - ref: pipeline_id
+    requirement_level: required
+  - ref: timeout_secs
+    requirement_level: required
+  - ref: wait
+    requirement_level: required
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otap-df-admin
+        severity_levels:
+        - info
+        sources:
+        - crates/admin/src/pipeline.rs
+        availability: []
+- name: shutdown.accepted
+  brief: The shutdown.accepted internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: blocking
+    requirement_level: required
+  entity_associations:
+  - otap.engine
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otap-df-admin
+        severity_levels:
+        - info
+        sources:
+        - crates/admin/src/pipeline_group.rs
+        availability: []
+- name: shutdown.blocking_wait
+  brief: The shutdown.blocking_wait internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: timeout_secs
+    requirement_level: required
+  entity_associations:
+  - otap.engine
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otap-df-admin
+        severity_levels:
+        - info
+        sources:
+        - crates/admin/src/pipeline_group.rs
+        availability: []
+- name: shutdown.completed
+  brief: The shutdown.completed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: elapsed_ms
+    requirement_level: required
+  entity_associations:
+  - otap.engine
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otap-df-admin
+        severity_levels:
+        - info
+        sources:
+        - crates/admin/src/pipeline_group.rs
+        availability: []
+- name: shutdown.failed
+  brief: The shutdown.failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - otap.engine
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otap-df-admin
+        severity_levels:
+        - info
+        sources:
+        - crates/admin/src/pipeline_group.rs
+        availability: []
+- name: shutdown.requested
+  brief: The shutdown.requested internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: timeout_secs
+    requirement_level: required
+  - ref: wait
+    requirement_level: required
+  entity_associations:
+  - otap.engine
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otap-df-admin
+        severity_levels:
+        - info
+        sources:
+        - crates/admin/src/pipeline_group.rs
+        availability: []
+- name: shutdown.timeout
+  brief: The shutdown.timeout internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: elapsed_ms
+    requirement_level: required
+  - ref: timeout_secs
+    requirement_level: required
+  entity_associations:
+  - otap.engine
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otap-df-admin
+        severity_levels:
+        - info
+        sources:
+        - crates/admin/src/pipeline_group.rs
+        availability: []

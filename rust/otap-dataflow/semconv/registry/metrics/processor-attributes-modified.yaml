@@ -1,0 +1,22 @@
+file_format: definition/2
+metrics:
+- name: processor.attributes.modified.entries
+  brief: Number of telemetry attribute entries modified by the processor.
+  instrument: counter
+  unit: '{attr}'
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: action
+    requirement_level: recommended
+  - ref: domain
+    requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: processor.attributes.modified
