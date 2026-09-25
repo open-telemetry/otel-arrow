@@ -520,7 +520,7 @@ guarantee that a rename survives a machine crash or power loss. Source
 retention must cover that recovery window; power-loss behavior has not been
 experimentally qualified.
 
-Checkpoint filenames live beneath `directory/@v1/`, with one component for
+Checkpoint files use a dedicated namespace beneath `directory`, with one component for
 each of the pipeline group, pipeline, receiver, and source IDs. IDs up to 64
 UTF-8 bytes use `id-` followed by the lowercase hex encoding of their exact
 bytes; longer IDs use `hash-` followed by their BLAKE3 digest. Source components
@@ -528,9 +528,9 @@ end in `.checkpoint`. This keeps `Orders` and `orders` separate even on
 case-insensitive filesystems. The checkpoint payload still verifies the exact
 source ID and configuration fingerprint.
 
-Only the `@v1` layout is supported. Checkpoints from earlier development
-layouts are not read or migrated. Without a checkpoint in the supported layout,
-collection starts from the configured initial cursor.
+The store reads and writes a single checkpoint layout. Without a checkpoint in
+this store's namespace, collection starts from the configured initial cursor.
+Corrupt or incompatible checkpoints within that namespace fail explicitly.
 
 ### Source Correctness and Ownership
 

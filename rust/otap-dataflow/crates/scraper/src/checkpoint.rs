@@ -3,6 +3,9 @@
 
 //! Revisioned filesystem checkpoints for database receivers.
 //!
+//! Reads and writes use one checkpoint namespace derived from the configured
+//! state directory and source identity.
+//!
 //! A checkpoint records the last cursor whose page was acknowledged
 //! downstream. Reads and writes fail closed: corruption, an unsupported
 //! version, a revision or source mismatch, or a configuration fingerprint
@@ -310,7 +313,7 @@ impl CheckpointError {
 }
 
 impl CheckpointStore {
-    /// Builds a store whose versioned path encodes the exact pipeline and source IDs.
+    /// Builds a store whose path encodes the exact pipeline and source IDs.
     #[must_use]
     pub fn new(
         root: &Path,
@@ -350,7 +353,8 @@ impl CheckpointStore {
         &self.prefix
     }
 
-    /// Reads the newest installed revision, or `None` when no state exists.
+    /// Reads the newest installed revision in this store's checkpoint namespace.
+    /// Returns `None` when that namespace has no checkpoint.
     pub fn read(&self) -> Result<Option<CheckpointState>, CheckpointError> {
         let prefix = &self.prefix;
         let Some(parent) = prefix.parent() else {
