@@ -7944,14 +7944,23 @@ version = "0.57.0"
 dependencies = [
  "async-trait",
  "blake3",
+ "chrono",
  "fs2",
  "humantime-serde",
  "libc",
+ "otel-arrow-dfe-channel",
+ "otel-arrow-dfe-config",
  "otel-arrow-dfe-engine",
+ "otel-arrow-dfe-otap",
+ "otel-arrow-dfe-pdata",
+ "otel-arrow-dfe-telemetry",
+ "otel-arrow-dfe-telemetry-macros",
+ "prost 0.14.4",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.20",
+ "tokio",
 ]
 
 [[package]]

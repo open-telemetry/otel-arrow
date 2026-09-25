@@ -3,7 +3,9 @@
 
 //! Validated, database-neutral query plans.
 
-use super::config::{CheckpointConfig, ConfigError, OutputConfig, PollingConfig, WatermarkConfig};
+use super::config::{
+    CatchUpConfig, CheckpointConfig, ConfigError, OutputConfig, PollingConfig, WatermarkConfig,
+};
 use super::page::CompositeCursor;
 use std::fmt;
 use std::time::Duration;
@@ -31,9 +33,10 @@ pub struct CompiledQuery {
     sql: String,
     interval: Duration,
     timeout: Duration,
-    fetch_size: usize,
+    fetch_size_rows: usize,
     max_rows: usize,
     max_batch_bytes: u64,
+    catch_up: CatchUpConfig,
     watermark: CompositeWatermark,
     output: OutputConfig,
 }
@@ -70,9 +73,10 @@ impl CompiledQuery {
             sql,
             interval: config.interval,
             timeout: config.timeout,
-            fetch_size: config.fetch_size,
+            fetch_size_rows: config.fetch_size_rows,
             max_rows: config.max_rows_per_poll,
             max_batch_bytes: config.max_batch_bytes,
+            catch_up: config.catch_up,
             watermark: CompositeWatermark {
                 timestamp_column: timestamp.column.clone(),
                 timestamp_bind: timestamp.bind.clone(),
@@ -90,7 +94,7 @@ impl CompiledQuery {
         &self.sql
     }
 
-    /// Returns the delay applied after a completed poll.
+    /// Returns the delay applied after a poll cycle ends.
     #[must_use]
     pub const fn interval(&self) -> Duration {
         self.interval
@@ -102,22 +106,28 @@ impl CompiledQuery {
         self.timeout
     }
 
-    /// Returns the hard row ceiling for one poll.
+    /// Returns the hard row ceiling for one fetched page.
     #[must_use]
     pub const fn max_rows(&self) -> usize {
         self.max_rows
     }
 
-    /// Returns the target native driver fetch size.
+    /// Returns the target number of rows per native driver fetch, not bytes.
     #[must_use]
-    pub const fn fetch_size(&self) -> usize {
-        self.fetch_size
+    pub const fn fetch_size_rows(&self) -> usize {
+        self.fetch_size_rows
     }
 
     /// Returns the exact serialized OTLP ceiling for one emitted page.
     #[must_use]
     pub const fn max_batch_bytes(&self) -> u64 {
         self.max_batch_bytes
+    }
+
+    /// Returns the cycle budgets without allocating or cloning the plan.
+    #[must_use]
+    pub const fn catch_up(&self) -> CatchUpConfig {
+        self.catch_up
     }
 
     /// Returns the normalized-row ceiling using the existing batch byte setting.
@@ -149,9 +159,10 @@ impl fmt::Debug for CompiledQuery {
             .field("sql", &"<redacted>")
             .field("interval", &self.interval)
             .field("timeout", &self.timeout)
-            .field("fetch_size", &self.fetch_size)
+            .field("fetch_size_rows", &self.fetch_size_rows)
             .field("max_rows", &self.max_rows)
             .field("max_batch_bytes", &self.max_batch_bytes)
+            .field("catch_up", &self.catch_up)
             .field("watermark", &self.watermark)
             .field("output", &self.output)
             .finish()
