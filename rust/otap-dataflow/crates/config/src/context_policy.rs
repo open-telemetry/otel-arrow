@@ -198,8 +198,10 @@ impl ContextEntryPart {
 // Most config types derive JsonSchema. This enum is manual only because the
 // config crate's test-only kube CRD generation requires a structural schema:
 // kube rejects the derived internally tagged enum when each variant gives the
-// shared `type` property a different singleton value. Keep this schema aligned
-// with serde and the CRD compatibility tests in engine.rs.
+// shared `type` property a different singleton value. Properties stay at the
+// root for structural compatibility, while Kubernetes CEL rules enforce the
+// variant-specific field contract. Keep this schema aligned with serde and the
+// CRD compatibility tests in engine.rs.
 impl JsonSchema for ContextEntryPart {
     fn schema_name() -> std::borrow::Cow<'static, str> {
         "ContextEntryPart".into()
@@ -224,7 +226,17 @@ impl JsonSchema for ContextEntryPart {
                 }
             },
             "required": ["type", "name"],
-            "additionalProperties": false
+            "additionalProperties": false,
+            "x-kubernetes-validations": [
+                {
+                    "rule": "self.type == 'transport_header_match' ? has(self.value) : !has(self.value)",
+                    "message": "`value` is required for transport_header_match and forbidden for value-bearing members"
+                },
+                {
+                    "rule": "self.type != 'transport_header_match' || !has(self.store_as)",
+                    "message": "`store_as` is forbidden for transport_header_match"
+                }
+            ]
         })
     }
 }
@@ -413,7 +425,9 @@ entries:
     fn rejects_unsupported_variants_and_fields() {
         for yaml in [
             "entries: {tenant: [{type: transport_header, name: id, value: prod}]}",
+            "entries: {tenant: [{type: authorized_identity, name: id, value: prod}]}",
             "entries: {tenant: [{type: transport_header, name: id, alias: other}]}",
+            "entries: {tenant: [{type: transport_header_match, name: id}]}",
             "entries: {tenant: [{type: transport_header_match, name: id, store_as: other, value: prod}]}",
             "entries: {tenant: [{type: unsupported, name: id}]}",
             "entries: {tenant: [{type: transport_header, ctx_ref: id}]}",
@@ -438,7 +452,7 @@ entries:
     }
 
     /// Scenario: schema is generated for context entry parts.
-    /// Guarantees: all variants and the strict common field set appear deterministically.
+    /// Guarantees: common fields stay structural and variant-specific fields match serde.
     #[test]
     fn schema_exposes_supported_parts() {
         let schema = serde_json::to_value(schemars::schema_for!(ContextEntryPart))
@@ -458,5 +472,18 @@ entries:
         assert!(schema["properties"].get("store_as").is_some());
         assert!(schema["properties"].get("value").is_some());
         assert!(rendered.contains("additionalProperties"));
+
+        let validations = schema["x-kubernetes-validations"]
+            .as_array()
+            .expect("variant validation");
+        assert_eq!(validations.len(), 2);
+        assert_eq!(
+            validations[0]["rule"],
+            "self.type == 'transport_header_match' ? has(self.value) : !has(self.value)"
+        );
+        assert_eq!(
+            validations[1]["rule"],
+            "self.type != 'transport_header_match' || !has(self.store_as)"
+        );
     }
 }

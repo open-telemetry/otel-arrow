@@ -3505,6 +3505,19 @@ groups: {}
             serde_json::from_value(json).expect("CRD should be valid according to k8s-openapi");
     }
 
+    /// Scenario: context entry variants use CEL rules for their variant-specific fields.
+    /// Guarantees: kube-rs preserves the rules in the generated Kubernetes CRD.
+    #[test]
+    fn context_entry_part_validation_rules_survive_crd_generation() {
+        let rendered =
+            serde_json::to_string(&OtelDataflow::crd()).expect("CRD should serialize to JSON");
+
+        assert!(rendered.contains(
+            "self.type == 'transport_header_match' ? has(self.value) : !has(self.value)"
+        ));
+        assert!(rendered.contains("self.type != 'transport_header_match' || !has(self.store_as)"));
+    }
+
     #[test]
     fn spec_roundtrips_through_crd_serialization() {
         let yaml = valid_engine_yaml(ENGINE_CONFIG_VERSION_V1);
