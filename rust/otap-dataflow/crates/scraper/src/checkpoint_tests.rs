@@ -546,23 +546,16 @@ fn long_source_uses_bounded_checkpoint_filenames() {
     );
 }
 
-/// Scenario: An earlier development layout contains a valid checkpoint for the same source.
-/// Guarantees: Only the supported namespace is read, and fresh progress is written beneath @v1.
+/// Scenario: Two current-layout stores use the same source identity under different state roots.
+/// Guarantees: Each root starts and advances independently without adopting or modifying the other's progress.
 #[test]
-fn unversioned_checkpoint_is_not_adopted() {
+fn checkpoint_roots_have_independent_progress() {
     let directory = tempfile::tempdir().expect("temporary directory");
+    let other_store = store(&directory.path().join("other"), "fingerprint");
     let store = store(directory.path(), "fingerprint");
-    let mut old_store = store.clone();
-    old_store.prefix = directory
-        .path()
-        .join("group")
-        .join("pipeline")
-        .join("oracle-audit")
-        .join("orders.checkpoint");
-    old_store.directory_ready = Arc::new(AtomicBool::new(false));
-    let (old_state, _) = old_store
+    let (other_state, _) = other_store
         .write(0, &cursor("2026-01-01 00:00:00", 42))
-        .expect("old checkpoint");
+        .expect("other root checkpoint");
 
     assert_eq!(store.read().expect("supported namespace"), None);
     let (state, _) = store
@@ -572,8 +565,8 @@ fn unversioned_checkpoint_is_not_adopted() {
     assert!(store.prefix.starts_with(directory.path().join("@v1")));
     assert_eq!(store.read().expect("new checkpoint"), Some(state));
     assert_eq!(
-        old_store.read().expect("old checkpoint unchanged"),
-        Some(old_state)
+        other_store.read().expect("other root checkpoint unchanged"),
+        Some(other_state)
     );
 }
 
