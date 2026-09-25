@@ -217,7 +217,7 @@ fn preparation_and_notification_event_contracts() {
         emit_notification(
             notifications.failure(
                 start,
-                ExportErrorKind::Notification,
+                DiagnosticErrorKind::Notification,
                 || "Ack channel closed",
             ),
             SignalType::Logs,
@@ -232,7 +232,7 @@ fn preparation_and_notification_event_contracts() {
         );
         assert!(
             notifications
-                .failure(start, ExportErrorKind::Notification, || panic!(
+                .failure(start, DiagnosticErrorKind::Notification, || panic!(
                     "suppressed"
                 ))
                 .is_none()
@@ -249,7 +249,7 @@ fn preparation_and_notification_event_contracts() {
         emit_notification(
             notifications.failure(
                 later,
-                ExportErrorKind::Notification,
+                DiagnosticErrorKind::Notification,
                 || "Nack channel closed",
             ),
             SignalType::Logs,

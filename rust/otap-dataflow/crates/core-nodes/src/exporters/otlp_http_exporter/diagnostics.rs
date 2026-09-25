@@ -10,8 +10,8 @@
 
 use super::metrics::OtlpHttpExporterErrorType;
 use otel_arrow_dfe_config::SignalType;
-use otel_arrow_dfe_telemetry::export_diagnostics::{
-    DiagnosticReport, DiagnosticTracker, ExportErrorKind, ReportKind,
+use otel_arrow_dfe_telemetry::diagnostics::{
+    DiagnosticErrorKind, DiagnosticReport, DiagnosticTracker, ReportKind,
 };
 use std::fmt::Display;
 use std::time::Instant;
@@ -106,7 +106,7 @@ impl DeliveryDiagnostic {
     ) {
         let Some(report) = report else { return };
         if report.kind == ReportKind::Recovered {
-            otel_arrow_dfe_telemetry::otel_export_diagnostic!(
+            otel_arrow_dfe_telemetry::otel_diagnostic_report!(
                 target: "otel.exporter.otlp_http", level: otel_info,
                 name: "otlp.exporter.http.export_recovered", report: &report,
                 diagnostic_kind = "recovery", signal = ?signal, stage = "delivery",
@@ -114,7 +114,7 @@ impl DeliveryDiagnostic {
                 error = report.detail.as_str()
             );
         } else {
-            otel_arrow_dfe_telemetry::otel_export_diagnostic!(
+            otel_arrow_dfe_telemetry::otel_diagnostic_report!(
                 target: "otel.exporter.otlp_http", level: otel_warn,
                 name: "otlp.exporter.http.export_error", report: &report,
                 diagnostic_kind = diagnostic_kind(report.kind), signal = ?signal, stage = "delivery",
@@ -143,7 +143,7 @@ pub(super) fn emit_preparation(
     signal: SignalType,
 ) {
     if let Some(report) = report {
-        otel_arrow_dfe_telemetry::otel_export_diagnostic!(
+        otel_arrow_dfe_telemetry::otel_diagnostic_report!(
             target: "otel.exporter.otlp_http", level: otel_warn,
             name: "otlp.exporter.http.preparation_error", report: &report,
             diagnostic_kind = diagnostic_kind(report.kind), signal = ?signal, stage = "preparation",
@@ -167,7 +167,7 @@ pub(super) enum NotificationOperation {
 /// message and bounded `error` field. `None` emits nothing. Notification
 /// reporting does not change the recorded delivery result or its recovery state.
 pub(super) fn emit_notification(
-    report: Option<DiagnosticReport<ExportErrorKind>>,
+    report: Option<DiagnosticReport<DiagnosticErrorKind>>,
     signal: SignalType,
     operation: NotificationOperation,
 ) {
@@ -178,7 +178,7 @@ pub(super) fn emit_notification(
                 "Failed to route the terminal OTLP HTTP Nack notification"
             }
         };
-        otel_arrow_dfe_telemetry::otel_export_diagnostic!(
+        otel_arrow_dfe_telemetry::otel_diagnostic_report!(
             target: "otel.exporter.otlp_http", level: otel_warn,
             name: "otlp.exporter.http.notification_error", report: &report,
             diagnostic_kind = diagnostic_kind(report.kind), signal = ?signal, stage = "notification",

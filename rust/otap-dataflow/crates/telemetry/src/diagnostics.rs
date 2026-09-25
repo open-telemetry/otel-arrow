@@ -1,8 +1,20 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Traffic-independent export diagnostics. Observe external completions before
-//! Ack/Nack routing, using a separate tracker for preparation/notification errors.
+//! Bounded diagnostics for repeated operation failures and confirmed recovery.
+//!
+//! Each tracker observes one operation in a bounded scope local to a node/core.
+//! Call [`DiagnosticTracker::failure`] and [`DiagnosticTracker::success`] when
+//! successful completions provide meaningful recovery evidence for that scope.
+//! Call only `failure` for bounded summaries without recovery, as for payload
+//! rejection or notification errors. These observers retain their episode
+//! totals for the lifetime of the tracker.
+//!
+//! Integrations own event names, error classifications, and observation
+//! boundaries. Keep distinct operations in separate trackers; a successful
+//! enqueue, for example, cannot establish recovery of a failing storage write.
+//! [`SignalDiagnostics`] optionally groups trackers by telemetry signal.
+//!
 //! A tracker has no timers, locks, or metric-interest dependency. Only emitted
 //! reports allocate or format diagnostic text after an episode has started.
 
@@ -14,14 +26,14 @@ use std::time::{Duration, Instant};
 
 /// Minimum spacing between summaries of an ongoing episode.
 pub const SUMMARY_INTERVAL: Duration = Duration::from_secs(60);
-/// Failure-free interval required before fresh delivery evidence clears an episode.
+/// Failure-free interval required before fresh success clears an episode.
 pub const RECOVERY_INTERVAL: Duration = Duration::from_secs(30);
 /// Maximum retained diagnostic text, in UTF-8 bytes.
 const MAX_DETAIL_BYTES: usize = 1024;
 
-/// Common classifications for exporters without a more specific bounded enum.
+/// Common operation failure classifications for callers without a more specific enum.
 #[derive(Clone, Copy, Debug, otel_arrow_dfe_telemetry_macros::AttributeEnum)]
-pub enum ExportErrorKind {
+pub enum DiagnosticErrorKind {
     /// Network or stream failure.
     Transport,
     /// Authentication failed.
@@ -30,13 +42,13 @@ pub enum ExportErrorKind {
     Authorization,
     /// An operation timed out.
     Timeout,
-    /// Destination capacity was exhausted.
+    /// Resource or service capacity was exhausted.
     Throttled,
-    /// Destination reported an internal error.
+    /// A service reported an internal error.
     ServerError,
-    /// Destination rejected a request.
+    /// An operation or its input was rejected.
     Rejected,
-    /// Destination accepted only part of a request.
+    /// An operation accepted only part of its input.
     PartialRejection,
     /// Local encoding or preparation failed.
     Preparation,
@@ -57,7 +69,7 @@ pub enum ReportKind {
     Degraded,
     /// Further observations during an episode.
     Summary,
-    /// Fresh success after the failure-free confirmation interval.
+    /// Fresh operation success after the failure-free confirmation interval.
     Recovered,
 }
 
@@ -116,12 +128,12 @@ impl<E: AttributeEnum> fmt::Display for Counts<E> {
     }
 }
 
-/// Snapshot to emit through `otel_export_diagnostic!` at the component callsite.
+/// Snapshot to emit through `otel_diagnostic_report!` at the component callsite.
 #[derive(Debug)]
 pub struct DiagnosticReport<E> {
     /// Transition or summary.
     pub kind: ReportKind,
-    /// Time since the initial observed failure, not measured destination downtime.
+    /// Time since the initial observed failure, not measured service downtime.
     pub episode_duration: Duration,
     /// Time covered by `interval`.
     pub interval_duration: Duration,
@@ -163,9 +175,12 @@ impl<E: AttributeEnum> Episode<E> {
     }
 }
 
-/// One local operation/destination's observed state. Before any observation it
-/// is unknown, after success it is delivering, and while `episode` is present it
-/// is degraded. Unknown and delivering both emit immediately on a first failure.
+/// One operation's observed failure episode in a caller-defined, bounded scope.
+///
+/// A first failure opens an episode; confirmed recovery clears it. Successful
+/// operation before an episode is silent. Callers without meaningful recovery
+/// evidence can observe failures only, retaining totals until the tracker is
+/// dropped. Keep separate instances for distinct operations and scopes.
 #[derive(Debug)]
 pub struct DiagnosticTracker<E> {
     episode: Option<Episode<E>>,
@@ -215,8 +230,9 @@ impl<E: AttributeEnum> DiagnosticTracker<E> {
         ))
     }
 
-    /// Observe actual delivery success. An in-flight attempt begun before the
-    /// latest observed failure cannot confirm recovery, regardless of its age.
+    /// Observe actual success of the same operation and scope as past failures.
+    /// An in-flight attempt begun before the latest observed failure cannot
+    /// confirm recovery, regardless of its age.
     pub fn success(&mut self, started_at: Instant, now: Instant) -> Option<DiagnosticReport<E>> {
         let episode = self.episode.as_mut()?;
         episode.interval.successes = episode.interval.successes.saturating_add(1);
@@ -239,13 +255,16 @@ impl<E: AttributeEnum> DiagnosticTracker<E> {
     }
 }
 
-/// Fixed, independent signal scopes for one exporter instance/destination.
+/// Optional grouping of independent signal trackers for one operation's scope.
+///
+/// Callers whose operation has no telemetry signal can use [`DiagnosticTracker`]
+/// directly. This wrapper adds a fixed set of scopes without dynamic keys.
 #[derive(Debug)]
-pub struct ExportDiagnostics<E> {
+pub struct SignalDiagnostics<E> {
     signals: [DiagnosticTracker<E>; 3],
 }
 
-impl<E> Default for ExportDiagnostics<E> {
+impl<E> Default for SignalDiagnostics<E> {
     fn default() -> Self {
         Self {
             signals: std::array::from_fn(|_| DiagnosticTracker::default()),
@@ -253,8 +272,8 @@ impl<E> Default for ExportDiagnostics<E> {
     }
 }
 
-impl<E> ExportDiagnostics<E> {
-    /// Select a signal without allocating dynamic destination or error keys.
+impl<E> SignalDiagnostics<E> {
+    /// Select a signal without allocating dynamic scope or error keys.
     pub fn signal(&mut self, signal: SignalType) -> &mut DiagnosticTracker<E> {
         &mut self.signals[match signal {
             SignalType::Logs => 0,
@@ -287,10 +306,10 @@ fn bounded_detail(detail: impl fmt::Display) -> String {
 
 /// Emit common fields for a selected report through the chosen `otel_*` macro.
 /// The caller selects the literal event name, severity macro (`otel_warn` or
-/// `otel_info`), and protocol-specific fields after the tracker selects a report.
+/// `otel_info`), and operation-specific fields after the tracker selects a report.
 /// Pass a report reference so its representative detail can also be used in fields.
 #[macro_export]
-macro_rules! otel_export_diagnostic {
+macro_rules! otel_diagnostic_report {
     (target: $target:expr, level: $level:ident, name: $name:literal, report: $report:expr, $($fields:tt)+) => {{
         let diagnostic_report = $report;
         $crate::$level!(target: $target, $name,
@@ -321,7 +340,7 @@ mod tests {
         let mut tracker = DiagnosticTracker::default();
         let start = Instant::now();
         let first = tracker
-            .failure(start, ExportErrorKind::Transport, || "DNS unavailable")
+            .failure(start, DiagnosticErrorKind::Transport, || "DNS unavailable")
             .unwrap();
         assert_eq!(first.kind, ReportKind::Degraded);
         assert_eq!(first.total.failures, 1);
@@ -330,7 +349,7 @@ mod tests {
                 tracker
                     .failure(
                         start + Duration::from_secs(1),
-                        ExportErrorKind::Transport,
+                        DiagnosticErrorKind::Transport,
                         || -> &'static str {
                             panic!("suppressed diagnostics must not be formatted")
                         }
@@ -341,7 +360,7 @@ mod tests {
         let summary = tracker
             .failure(
                 start + SUMMARY_INTERVAL,
-                ExportErrorKind::Rejected,
+                DiagnosticErrorKind::Rejected,
                 || "503",
             )
             .unwrap();
@@ -363,7 +382,7 @@ mod tests {
         assert!(tracker.success(start, start).is_none());
         assert!(
             tracker
-                .failure(start, ExportErrorKind::Transport, || "offline")
+                .failure(start, DiagnosticErrorKind::Transport, || "offline")
                 .is_some()
         );
         assert!(
@@ -380,7 +399,7 @@ mod tests {
         assert!(tracker.success(fresh, fresh).is_none());
         assert_eq!(
             tracker
-                .failure(fresh, ExportErrorKind::Transport, || "offline again")
+                .failure(fresh, DiagnosticErrorKind::Transport, || "offline again")
                 .unwrap()
                 .kind,
             ReportKind::Degraded
@@ -393,13 +412,13 @@ mod tests {
     fn intermittent_delivery_does_not_flap() {
         let mut tracker = DiagnosticTracker::default();
         let start = Instant::now();
-        let _ = tracker.failure(start, ExportErrorKind::Transport, || "offline");
+        let _ = tracker.failure(start, DiagnosticErrorKind::Transport, || "offline");
         for second in 1..60 {
             let now = start + Duration::from_secs(second);
             assert!(tracker.success(now, now).is_none());
             assert!(
                 tracker
-                    .failure(now, ExportErrorKind::Rejected, || "rejected")
+                    .failure(now, DiagnosticErrorKind::Rejected, || "rejected")
                     .is_none()
             );
         }
@@ -434,14 +453,14 @@ mod tests {
     #[test]
     fn scopes_are_independent() {
         let now = Instant::now();
-        let mut instances: [ExportDiagnostics<ExportErrorKind>; 2] =
-            std::array::from_fn(|_| ExportDiagnostics::default());
+        let mut instances: [SignalDiagnostics<DiagnosticErrorKind>; 2] =
+            std::array::from_fn(|_| SignalDiagnostics::default());
         for instance in &mut instances {
             for signal in [SignalType::Logs, SignalType::Metrics, SignalType::Traces] {
                 assert_eq!(
                     instance
                         .signal(signal)
-                        .failure(now, ExportErrorKind::Rejected, || "denied")
+                        .failure(now, DiagnosticErrorKind::Rejected, || "denied")
                         .unwrap()
                         .kind,
                     ReportKind::Degraded
@@ -460,13 +479,13 @@ mod tests {
         assert!(
             instances[1]
                 .signal(SignalType::Logs)
-                .failure(now, ExportErrorKind::Rejected, || "denied")
+                .failure(now, DiagnosticErrorKind::Rejected, || "denied")
                 .is_none()
         );
         assert!(
             instances[0]
                 .signal(SignalType::Metrics)
-                .failure(now, ExportErrorKind::Rejected, || "denied")
+                .failure(now, DiagnosticErrorKind::Rejected, || "denied")
                 .is_none()
         );
     }
@@ -478,7 +497,7 @@ mod tests {
         let mut tracker = DiagnosticTracker::default();
         let text = format!("line\n\u{1b}[2J{}", "\u{e9}".repeat(2000));
         let report = tracker
-            .failure(Instant::now(), ExportErrorKind::Other, || text)
+            .failure(Instant::now(), DiagnosticErrorKind::Other, || text)
             .unwrap();
         assert!(report.detail.len() <= MAX_DETAIL_BYTES);
         assert!(!report.detail.contains('\n'));
@@ -492,11 +511,11 @@ mod tests {
     fn failure_restarts_recovery_confirmation() {
         let start = Instant::now();
         let mut tracker = DiagnosticTracker::default();
-        let _ = tracker.failure(start, ExportErrorKind::Transport, || "offline");
+        let _ = tracker.failure(start, DiagnosticErrorKind::Transport, || "offline");
         let later = start + RECOVERY_INTERVAL;
         assert!(
             tracker
-                .failure(later, ExportErrorKind::Rejected, || "denied")
+                .failure(later, DiagnosticErrorKind::Rejected, || "denied")
                 .is_none()
         );
         assert!(

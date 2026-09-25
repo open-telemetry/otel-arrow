@@ -295,5 +295,5 @@ failure metrics for rates; existing error-event filters do not need renaming.
 - [Proxy support](../../../../../docs/proxy-support.md)
 - [Core node catalog](../../../README.md)
 
-See the [shared exporter diagnostic policy](../../../../../docs/telemetry/events-guide.md#repeated-exporter-failures)
+See the [shared operation diagnostic policy](../../../../../docs/telemetry/events-guide.md#repeated-operation-failures)
 for report fields, scope, operation stages, and recovery semantics.

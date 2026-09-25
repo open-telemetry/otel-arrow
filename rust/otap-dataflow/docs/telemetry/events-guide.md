@@ -330,16 +330,41 @@ termination verb `cancel`, and one internal safety verb `abort`.
 - The number of new callsites is minimized; each callsite adds static memory
   overhead.
 
-## Repeated exporter failures
+## Repeated operation failures
 
-This shared policy is intended for adoption by all exporters. **Currently, only
-the OTLP HTTP exporter implements it.** Integration with other exporters will
+This shared policy supports recurring operation failures across exporters,
+receivers, and processors. **Currently, only the OTLP HTTP exporter implements
+it.** Adoption by other node types and configurable reporting intervals will
 follow in future PRs.
 
-The protocol-independent `export_diagnostics` helper reports observed export
+The node-independent `diagnostics` helper reports observed operation
 behavior before events reach ITS, console providers, or the retained log tap.
 This policy is independent of metric collection and does not change retries,
 Ack/Nack routing, backpressure, or readiness.
+
+### Choosing the reporting behavior
+
+Each integration owns its event names, bounded error classifications, and
+operation completion boundaries. Choose recovery reporting only when success
+provides meaningful evidence about the operation that failed.
+
+| Operation | Reporting behavior |
+| --- | --- |
+| Receiver scraping, polling, or checkpointing | Failure episodes, summaries, and confirmed recovery |
+| Processor storage writes or calls to external services | Failure episodes, summaries, and confirmed recovery |
+| Payload parsing, validation, or transformation errors | Bounded failure summaries; a valid payload does not establish recovery for other payloads |
+| Ack/Nack notification failures | Independent bounded failure summaries |
+
+`DiagnosticTracker` supports both patterns. Observe successes and failures for
+episodes with recovery; observe only failures when recovery has no useful
+meaning. With failure-only observations, episode totals span the tracker's
+lifetime and successful-attempt counts remain zero. For example, host metrics
+scrapes and journald checkpoint commits could use recovery reporting, while
+repeated payload conversion errors could use summaries alone. These are future
+adoption examples, not current integrations. Startup/configuration failures
+and terminal errors retain immediate diagnostics.
+
+### Current OTLP HTTP integration
 
 The current OTLP HTTP integration emits these events:
 
@@ -365,8 +390,8 @@ categories does not restart an episode or bypass the summary interval.
 ### Delivery episodes
 
 An episode begins with the first failed export and ends with confirmed recovery.
-The diagram shows the shared delivery logic, currently used by OTLP HTTP, for
-one exporter instance/core, signal, and configured destination.
+The diagram illustrates the episode model using OTLP HTTP delivery terminology
+for one exporter instance/core, signal, and configured destination.
 
 ```mermaid
 stateDiagram-v2
@@ -402,9 +427,16 @@ stateDiagram-v2
 
 ### Scope and boundaries
 
-State is local to an OTLP HTTP exporter instance/core, signal, and configured
-destination. Success for one signal cannot clear failures for another signal,
-including when signal-specific endpoints are configured.
+Each tracker observes one operation in a bounded scope local to a node/core.
+Keep distinct operations separate: a successful enqueue cannot clear failing
+storage writes. Signal and configured destination are additional dimensions
+where relevant. Use `DiagnosticTracker` directly for operations without a
+telemetry signal, or `SignalDiagnostics` for a fixed set of signal scopes.
+Never create unbounded state keyed by client, payload, tenant, or error text.
+
+For OTLP HTTP, state is local to an exporter instance/core, signal, and
+configured destination. Success for one signal cannot clear failures for
+another signal, including when signal-specific endpoints are configured.
 
 The `stage` attribute distinguishes delivery, preparation, and notification
 observations. Preparation and notification errors use independent failure
@@ -415,8 +447,11 @@ an upstream notification failure cannot change the observed HTTP outcome.
 
 ### Report fields
 
-All events keep the component's instrumentation target and pipeline/node
-context. The fields describe observations, not unique batches or data loss:
+Selected reports keep the component's instrumentation target and pipeline/node
+context. `otel_diagnostic_report!` emits common interval and episode fields;
+each integration supplies its event names and operation-specific attributes.
+The current HTTP contract is listed below. Counts describe attempts at the
+observed operation boundary, not unique batches or data loss:
 
 | Field | Meaning |
 | --- | --- |
@@ -431,7 +466,7 @@ context. The fields describe observations, not unique batches or data loss:
 | `error_counts`, `total_error_counts` | Bounded `category=count` lists |
 | `error_sample_age_seconds` | Age of the representative failure |
 
-Delivery errors retain the legacy string `message` and boolean `retryable`.
+HTTP delivery errors retain the legacy string `message` and boolean `retryable`.
 Both describe the representative failure, not all failures in the interval;
 retryability uses the same authentication-aware decision as Nack routing.
 Notification errors retain the legacy Ack/Nack-specific `message` and `error`
@@ -451,6 +486,6 @@ Existing HTTP export and notification error event names are preserved, so
 error-event filters do not need renaming. Log frequency intentionally decreases;
 use existing attempt and failure metrics for rates and impact. The shared
 emission helper emits common fields with the event name and severity chosen by
-the exporter. The exporter-owned error categories,
-metric counts, and retry/permanent decisions remain unchanged. One process may
-emit several reports for an outage because cores and signals are independent.
+the integration. Component-owned error categories, metric counts, and
+retry/permanent decisions remain unchanged. One process may emit several
+reports for an incident because operation scopes and cores are independent.

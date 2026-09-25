@@ -1,9 +1,9 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Verify suppression happens before subscribers receive exporter events.
+//! Verify suppression happens before subscribers receive operation diagnostics.
 
-use otel_arrow_dfe_telemetry::export_diagnostics::{DiagnosticTracker, ExportErrorKind};
+use otel_arrow_dfe_telemetry::diagnostics::{DiagnosticErrorKind, DiagnosticTracker};
 use std::cell::Cell;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -40,13 +40,13 @@ fn suppression_precedes_all_subscribers() {
             for _ in 0..100 {
                 if let Some(report) = tracker.failure(
                     start + Duration::from_secs(second),
-                    ExportErrorKind::Transport,
+                    DiagnosticErrorKind::Transport,
                     || {
                         formats.set(formats.get() + 1);
                         "connection refused"
                     },
                 ) {
-                    otel_arrow_dfe_telemetry::otel_export_diagnostic!(
+                    otel_arrow_dfe_telemetry::otel_diagnostic_report!(
                         target: "otel.exporter.test", level: otel_warn,
                         name: "test.export_error", report: &report,
                         stage = "delivery", signal = "logs"
@@ -60,7 +60,7 @@ fn suppression_precedes_all_subscribers() {
                 start + Duration::from_secs(90),
             )
             .expect("fresh success confirms recovery");
-        otel_arrow_dfe_telemetry::otel_export_diagnostic!(
+        otel_arrow_dfe_telemetry::otel_diagnostic_report!(
             target: "otel.exporter.test", level: otel_info,
             name: "test.export_recovered", report: &report,
             stage = "delivery", signal = "logs"

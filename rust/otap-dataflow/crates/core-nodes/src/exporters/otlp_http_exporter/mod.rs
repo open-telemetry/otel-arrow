@@ -15,7 +15,7 @@ otel_arrow_dfe_telemetry::otel_component_scope!(
     target = "otel.exporter.otlp_http",
 );
 
-use otel_arrow_dfe_telemetry::export_diagnostics::ExportErrorKind;
+use otel_arrow_dfe_telemetry::diagnostics::DiagnosticErrorKind;
 use std::num::NonZeroUsize;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -1227,7 +1227,7 @@ async fn finalize_completed_export(
                 emit_notification(
                     metrics.notifications.signal(signal_type).failure(
                         Instant::now(),
-                        ExportErrorKind::Notification,
+                        DiagnosticErrorKind::Notification,
                         || &error,
                     ),
                     signal_type,
@@ -1244,7 +1244,7 @@ async fn finalize_completed_export(
                 emit_notification(
                     metrics.notifications.signal(signal_type).failure(
                         Instant::now(),
-                        ExportErrorKind::Notification,
+                        DiagnosticErrorKind::Notification,
                         || &error,
                     ),
                     signal_type,
@@ -4285,11 +4285,11 @@ mod test {
         let report = metrics
             .notifications
             .signal(SignalType::Logs)
-            .failure(later, ExportErrorKind::Notification, || "still closed")
+            .failure(later, DiagnosticErrorKind::Notification, || "still closed")
             .unwrap();
         assert_eq!(
             report.kind,
-            otel_arrow_dfe_telemetry::export_diagnostics::ReportKind::Summary
+            otel_arrow_dfe_telemetry::diagnostics::ReportKind::Summary
         );
         assert_eq!(report.total.failures, 2);
     }
