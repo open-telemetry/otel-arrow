@@ -401,9 +401,12 @@ impl OTAPExporter {
             PDataMetricsUpdate::IncFailed(signal_type, pdata, export_duration, error_type) => {
                 self.metrics
                     .record_failure(signal_type, error_type, export_duration);
-                effect_handler
-                    .notify_nack(NackMsg::new("export failed", pdata))
-                    .await?;
+                let nack = if error_type.is_permanent() {
+                    NackMsg::new_permanent("export failed", pdata)
+                } else {
+                    NackMsg::new("export failed", pdata)
+                };
+                effect_handler.notify_nack(nack).await?;
             }
             PDataMetricsUpdate::IncExported(signal_type, pdata, export_duration) => {
                 self.metrics.record_success(signal_type, export_duration);
