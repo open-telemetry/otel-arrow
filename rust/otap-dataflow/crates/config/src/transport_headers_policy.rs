@@ -508,20 +508,20 @@ impl HeaderPropagationPolicy {
             let mut conditions = Vec::new();
             for part in &declaration.definition.0 {
                 match part {
-                    ContextEntryPart::TransportHeader { name, store_as }
-                        if store_as.as_ref().unwrap_or_else(|| name.name()) == reference.name() =>
-                    {
-                        source_name = Some(unqualified_context_name(
-                            name,
-                            "transport-header composite member",
-                        )?);
+                    ContextEntryPart::TransportHeader { name, store_as } => {
+                        if store_as.as_ref().unwrap_or_else(|| name.name()) == reference.name() {
+                            source_name = Some(unqualified_context_name(
+                                name,
+                                "transport-header composite member",
+                            )?);
+                        }
                     }
-                    ContextEntryPart::AuthorizedIdentity { name, store_as }
-                        if store_as.as_ref().unwrap_or_else(|| name.name()) == reference.name() =>
-                    {
-                        return Err(format!(
-                            "context entry reference `{reference}` selects authorized-identity member `{name}`, which cannot be propagated as a transport header"
-                        ));
+                    ContextEntryPart::AuthorizedIdentity { name, store_as } => {
+                        if store_as.as_ref().unwrap_or_else(|| name.name()) == reference.name() {
+                            return Err(format!(
+                                "context entry reference `{reference}` selects authorized-identity member `{name}`, which cannot be propagated as a transport header"
+                            ));
+                        }
                     }
                     ContextEntryPart::TransportHeaderMatch { name, value } => {
                         conditions.push(CompiledTransportHeaderMatch {
@@ -532,7 +532,6 @@ impl HeaderPropagationPolicy {
                             value: value.as_bytes().into(),
                         });
                     }
-                    _ => {}
                 }
             }
 

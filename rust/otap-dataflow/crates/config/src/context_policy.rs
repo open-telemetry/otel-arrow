@@ -93,31 +93,38 @@ impl ContextEntryDefinition {
         }
 
         for (index, part) in self.0.iter().enumerate() {
-            match part.value_kind_ref_and_name() {
-                Some((kind, entry, name)) => {
-                    value_member_count += 1;
-                    if !output_names.insert(name) {
-                        errors.push(format!(
-                            "{path_prefix}[{index}] produces duplicate member name `{name}`"
-                        ));
-                    }
-                    if !value_references.insert((kind, entry)) {
-                        errors.push(format!(
-                            "{path_prefix}[{index}] repeats reference `{}`",
-                            entry
-                        ));
-                    }
-                }
-                None => {
-                    let ContextEntryPart::TransportHeaderMatch { name, value } = part else {
-                        unreachable!("all value-bearing variants were handled")
-                    };
+            let (kind, entry, name) = match part {
+                ContextEntryPart::TransportHeader { name, store_as } => (
+                    ContextEntryPartKind::TransportHeader,
+                    name,
+                    store_as.as_ref().unwrap_or_else(|| name.name()),
+                ),
+                ContextEntryPart::AuthorizedIdentity { name, store_as } => (
+                    ContextEntryPartKind::AuthorizedIdentity,
+                    name,
+                    store_as.as_ref().unwrap_or_else(|| name.name()),
+                ),
+                ContextEntryPart::TransportHeaderMatch { name, value } => {
                     if !conditions.insert((name, value)) {
                         errors.push(format!(
                             "{path_prefix}[{index}] repeats transport-header condition for `{name}`"
                         ));
                     }
+                    continue;
                 }
+            };
+
+            value_member_count += 1;
+            if !output_names.insert(name) {
+                errors.push(format!(
+                    "{path_prefix}[{index}] produces duplicate member name `{name}`"
+                ));
+            }
+            if !value_references.insert((kind, entry)) {
+                errors.push(format!(
+                    "{path_prefix}[{index}] repeats reference `{}`",
+                    entry
+                ));
             }
         }
         if value_member_count == 0 {
@@ -167,32 +174,6 @@ pub enum ContextEntryPart {
 enum ContextEntryPartKind {
     TransportHeader,
     AuthorizedIdentity,
-}
-
-impl ContextEntryPart {
-    fn value_kind_ref_and_name(
-        &self,
-    ) -> Option<(
-        ContextEntryPartKind,
-        &'_ ContextEntryRef,
-        &'_ ContextEntryName,
-    )> {
-        let (kind, name, store_as) = match self {
-            Self::TransportHeader { name, store_as } => (
-                ContextEntryPartKind::TransportHeader,
-                name,
-                store_as.as_ref(),
-            ),
-            Self::AuthorizedIdentity { name, store_as } => (
-                ContextEntryPartKind::AuthorizedIdentity,
-                name,
-                store_as.as_ref(),
-            ),
-            Self::TransportHeaderMatch { .. } => return None,
-        };
-        let output_name = store_as.unwrap_or_else(|| name.name());
-        Some((kind, name, output_name))
-    }
 }
 
 // Most config types derive JsonSchema. This enum is manual only because the
