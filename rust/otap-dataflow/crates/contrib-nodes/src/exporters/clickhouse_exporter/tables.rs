@@ -117,11 +117,12 @@ impl CHTableBuilder {
             clauses.push(pk);
         }
         clauses.push(order_by_sql);
-        if let Some(settings) = settings_sql {
-            clauses.push(settings);
-        }
+        // TTL must precede SETTINGS in ClickHouse CREATE TABLE grammar
         if let Some(ttl) = ttl_sql {
             clauses.push(ttl);
+        }
+        if let Some(settings) = settings_sql {
+            clauses.push(settings);
         }
 
         Ok(format!("{}\n;", clauses.join("\n")))
