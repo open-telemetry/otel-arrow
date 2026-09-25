@@ -7631,7 +7631,6 @@ version = "0.57.0"
 dependencies = [
  "async-channel",
  "async-trait",
- "base64 0.23.1",
  "bitflags 2.13.2",
  "bytemuck",
  "cpu-time",

@@ -53,7 +53,6 @@ futures-core = { workspace = true }
 async-channel = { workspace = true }
 uuid = { workspace = true }
 data-encoding = { workspace = true }
-base64 = { workspace = true }
 
 [target.'cfg(not(windows))'.dependencies]
 tikv-jemalloc-ctl = { workspace = true, optional = true }
