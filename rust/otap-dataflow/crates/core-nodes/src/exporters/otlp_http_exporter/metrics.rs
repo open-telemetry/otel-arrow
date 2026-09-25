@@ -209,8 +209,7 @@ mod tests {
     /// counts each failed poll exactly once.
     #[test]
     fn bound_auth_provider_records_authentication_failures() {
-        let (pipeline_ctx, _) =
-            test_pipeline_ctx_with_interests(Interests::NODE_INPUT_METRICS);
+        let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(Interests::NODE_INPUT_METRICS);
         let auth = MockHttpClientAuthProvider::never_publishes();
         let mut metrics = OtlpHttpExporterMetrics::register(&pipeline_ctx, Some(&auth));
 

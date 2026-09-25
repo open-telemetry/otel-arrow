@@ -1696,10 +1696,9 @@ mod test {
     #[test]
     fn unauthorized_generation_recovers_after_provider_refresh() {
         let (runtime, mut metrics, effect_handler, mut auth) = http_rejection_test_context();
-        assert!(runtime.block_on(poll_fn(|cx| auth
-            .as_mut()
-            .unwrap()
-            .poll_refresh(cx, &HTTP_AUTH_EVENTS))));
+        assert!(runtime.block_on(poll_fn(|cx| {
+            auth.as_mut().unwrap().poll_refresh(cx, &HTTP_AUTH_EVENTS)
+        })));
         let rejected_generation = auth.as_ref().unwrap().header().unwrap().2;
 
         let rejected_generation = finalize_unauthorized_generation(
@@ -1711,10 +1710,9 @@ mod test {
         apply_auth_rejection(&mut auth, rejected_generation);
         assert!(!auth.as_ref().unwrap().is_ready());
 
-        assert!(runtime.block_on(poll_fn(|cx| auth
-            .as_mut()
-            .unwrap()
-            .poll_refresh(cx, &HTTP_AUTH_EVENTS))));
+        assert!(runtime.block_on(poll_fn(|cx| {
+            auth.as_mut().unwrap().poll_refresh(cx, &HTTP_AUTH_EVENTS)
+        })));
         let (_, value, generation) = auth.as_ref().unwrap().header().unwrap();
         assert_eq!(value, "Bearer replacement");
         assert_eq!(generation, 2);
@@ -1727,10 +1725,9 @@ mod test {
     #[test]
     fn stale_unauthorized_generation_keeps_newer_auth() {
         let (runtime, mut metrics, effect_handler, mut auth) = http_rejection_test_context();
-        assert!(runtime.block_on(poll_fn(|cx| auth
-            .as_mut()
-            .unwrap()
-            .poll_refresh(cx, &HTTP_AUTH_EVENTS))));
+        assert!(runtime.block_on(poll_fn(|cx| {
+            auth.as_mut().unwrap().poll_refresh(cx, &HTTP_AUTH_EVENTS)
+        })));
         let rejected_generation = auth.as_ref().unwrap().header().unwrap().2;
 
         let rejected_generation = finalize_unauthorized_generation(
@@ -1739,10 +1736,9 @@ mod test {
             &effect_handler,
             rejected_generation,
         );
-        assert!(runtime.block_on(poll_fn(|cx| auth
-            .as_mut()
-            .unwrap()
-            .poll_refresh(cx, &HTTP_AUTH_EVENTS))));
+        assert!(runtime.block_on(poll_fn(|cx| {
+            auth.as_mut().unwrap().poll_refresh(cx, &HTTP_AUTH_EVENTS)
+        })));
         apply_auth_rejection(&mut auth, rejected_generation);
 
         assert!(auth.as_ref().unwrap().is_ready());
