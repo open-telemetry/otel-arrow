@@ -188,13 +188,11 @@ fn convert(
     let mut new_columns: Vec<Option<Arc<dyn Array>>> = vec![None; target_fields.len()];
 
     for (curr_idx, curr_field) in curr_fields.iter().enumerate() {
-        let slot = payload_def.slot_of(curr_field.name()).ok_or_else(|| {
-            Error::ColumnDataTypeMismatch {
+        let slot = payload_def
+            .slot_of(curr_field.name())
+            .ok_or_else(|| Error::ColumnNotFound {
                 name: curr_field.name().clone(),
-                expect: DataType::Null,
-                actual: curr_field.data_type().clone(),
-            }
-        })?;
+            })?;
         let target_idx = slot_to_target[slot];
         debug_assert!(target_idx >= 0, "indexed field must have a target position");
         let target_idx = target_idx as usize;
@@ -204,7 +202,8 @@ fn convert(
             columns[curr_idx].clone()
         } else if let DataType::Struct(target_struct_fields) = target_field.data_type() {
             let sub_def = payload_def
-                .get(curr_field.name())
+                .fields()
+                .get(slot)
                 .and_then(|f| f.data_type.as_struct_schema())
                 .expect("struct field must have a struct sub-schema");
             let sub_map = struct_slot_map(sub_def, target_struct_fields);
@@ -490,14 +489,9 @@ fn index_fields<'a>(
 
     for (field, data) in fields {
         let name = field.name().as_str();
-        let slot = schema
-            .slot_of(name)
-            .ok_or_else(|| Error::ColumnDataTypeMismatch {
-                name: field.name().clone(),
-                // No spec entry for this column name.
-                expect: DataType::Null,
-                actual: field.data_type().clone(),
-            })?;
+        let slot = schema.slot_of(name).ok_or_else(|| Error::ColumnNotFound {
+            name: field.name().clone(),
+        })?;
 
         let (array, value_type, is_dict) = match data.data_type() {
             DataType::Dictionary(_, v) => (get_dictionary_values(data)?, v.as_ref(), true),

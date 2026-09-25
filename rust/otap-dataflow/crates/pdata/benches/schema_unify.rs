@@ -20,10 +20,6 @@
 //! - `index+select+convert`: all three stages.
 //!
 //! The cost of a single stage is the difference between adjacent IDs.
-//!
-//! Scenarios deliberately exercise paths the generator-driven `concatenate`
-//! benchmark does not: differing optional fields, permuted field order, plain
-//! vs. dictionary columns, and dictionary key-width transitions.
 
 use std::hint::black_box;
 use std::sync::Arc;
@@ -50,15 +46,8 @@ criterion_group!(benches, bench_all);
 criterion_main!(benches);
 
 fn bench_all(c: &mut Criterion) {
-    // Scenarios 1 & 2 & 7(structs): real OTAP data via the generator. These use
-    // the actual payload layouts (spans is the widest table, attributes_16 a
-    // narrow one) with identical schemas across batches.
     bench_generated_traces(c);
-    bench_generated_logs(c);
-
-    // Scenarios 3-7: synthetic single-payload-slot batches that let us control
-    // schema variation precisely. These run against the Logs LogAttrs slot,
-    // which maps to attributes_16, so the payload spec is real.
+    bench_generated_log_attrs(c);
     bench_synthetic(c);
 }
 
@@ -94,7 +83,7 @@ fn bench_generated_traces(c: &mut Criterion) {
     group.finish();
 }
 
-fn bench_generated_logs(c: &mut Criterion) {
+fn bench_generated_log_attrs(c: &mut Criterion) {
     // LogAttrs maps to attributes_16 (9 fields, no structs): a narrow table.
     let log_attrs_idx = payload_idx::<Logs>(ArrowPayloadType::LogAttrs);
 
@@ -301,7 +290,7 @@ fn attrs_batch(fields: Vec<Field>, columns: Vec<ArrayRef>) -> RecordBatch {
     RecordBatch::try_new(schema, columns).expect("valid attrs batch")
 }
 
-/// Scenario 3: optional value columns present only in some batches, forcing
+/// Optional value columns present only in some batches, forcing
 /// nullability determination and null padding on convert.
 fn make_optional_subset(num_batches: usize, rows: usize) -> Vec<LogsBatches> {
     (0..num_batches)
@@ -326,7 +315,7 @@ fn make_optional_subset(num_batches: usize, rows: usize) -> Vec<LogsBatches> {
         .collect()
 }
 
-/// Scenario 4: same columns everywhere, but field order permuted so the
+/// Same columns everywhere, but field order permuted so the
 /// convert stage cannot rely on positional identity.
 fn make_permuted_order(num_batches: usize, rows: usize) -> Vec<LogsBatches> {
     (0..num_batches)
@@ -343,7 +332,7 @@ fn make_permuted_order(num_batches: usize, rows: usize) -> Vec<LogsBatches> {
         .collect()
 }
 
-/// Scenario 5: a dict<u8> column whose summed physical cardinality crosses 255
+/// A dict<u8> column whose summed physical cardinality crosses 255
 /// as batches accumulate, forcing a u8 -> u16 key widening in select_schema.
 fn make_dict_cross_u8(num_batches: usize, rows: usize) -> Vec<LogsBatches> {
     (0..num_batches)
@@ -365,7 +354,7 @@ fn make_dict_cross_u8(num_batches: usize, rows: usize) -> Vec<LogsBatches> {
 /// 8 batches this sums to 80,000 physical values, above `u16::MAX`.
 const DICT_CROSS_U16_CARDINALITY: usize = 10_000;
 
-/// Scenario 6: a dict<u16> column whose summed physical cardinality crosses
+/// A dict<u16> column whose summed physical cardinality crosses
 /// 65535, forcing demotion to a plain column in select_schema + convert.
 fn make_dict_cross_u16(num_batches: usize, rows: usize) -> Vec<LogsBatches> {
     let card = DICT_CROSS_U16_CARDINALITY;
@@ -398,7 +387,7 @@ fn make_dict_cross_u16(num_batches: usize, rows: usize) -> Vec<LogsBatches> {
         .collect()
 }
 
-/// Scenario 7: the same optional column is plain in some batches and
+/// The same optional column is plain in some batches and
 /// dictionary-encoded in others, exercising the plain->dict upgrade arm.
 fn make_plain_and_dict(num_batches: usize, rows: usize) -> Vec<LogsBatches> {
     (0..num_batches)
