@@ -27,8 +27,7 @@ use arrow::array::{
 use arrow::buffer::ScalarBuffer;
 use arrow::datatypes::{ArrowPrimitiveType, DataType, UInt16Type, UInt32Type};
 use criterion::{BatchSize, BenchmarkId, Criterion, criterion_group, criterion_main};
-use otel_arrow_dfe_pdata::otap::transform::concatenate::concatenate;
-use otel_arrow_dfe_pdata::otap::transform::reindex::reindex;
+use otel_arrow_dfe_pdata::otap::transform::concatenate::{ConcatOptions, concatenate};
 use otel_arrow_dfe_pdata::otap::transform::split::split;
 use otel_arrow_dfe_pdata::otap::{Logs, Metrics, OtapArrowRecords, OtapBatchStore, Traces};
 use otel_arrow_dfe_pdata::schema::consts::{ID, PARENT_ID};
@@ -138,8 +137,8 @@ fn bench_concatenate<const N: usize>(
         b.iter_batched(
             || data.to_vec(),
             |mut batches| {
-                reindex::<N>(&mut batches).expect("reindex failed");
-                let _ = concatenate::<N>(&mut batches).expect("concat failed");
+                let _ = concatenate::<N>(&mut batches, ConcatOptions::reindex())
+                    .expect("concat failed");
             },
             BatchSize::SmallInput,
         )

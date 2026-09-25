@@ -18,6 +18,9 @@ use itertools::Either;
 use roaring::RoaringBitmap;
 use std::sync::Arc;
 
+#[allow(dead_code)]
+pub(crate) mod plan;
+
 use crate::error::Error;
 use crate::otap::{Logs, Metrics, OtapBatchStore, Result, Traces};
 use crate::schema::consts::metadata::COLUMN_ENCODING;
@@ -35,6 +38,31 @@ use crate::schema::schema::{DictKeySize, Field as SchemaField, Schema as Payload
 ///     - github.com/open-telemetry/otel-arrow/issues/1971
 const MAX_U8_CARDINALITY: usize = 255;
 const MAX_U16_CARDINALITY: usize = 65535;
+
+/// Options controlling [concatenate].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ConcatOptions {
+    /// Rewrite ID / PARENT_ID columns so that IDs from different inputs do not
+    /// collide in the output. This also removes transport optimized encodings.
+    ///
+    /// Callers that concatenate disjoint pieces of the same original batch
+    /// (whose IDs are already unique across pieces) may disable this.
+    pub reindex: bool,
+}
+
+impl ConcatOptions {
+    /// Options for concatenating unrelated batches: reindex enabled.
+    #[must_use]
+    pub const fn reindex() -> Self {
+        Self { reindex: true }
+    }
+
+    /// Options for concatenating pieces with already-disjoint IDs.
+    #[must_use]
+    pub const fn preserve_ids() -> Self {
+        Self { reindex: false }
+    }
+}
 
 /// Concatenate the provided OtapArrowRecords into a single batch.
 ///
@@ -84,6 +112,7 @@ const MAX_U16_CARDINALITY: usize = 65535;
 /// signal's payload schemas.
 pub fn concatenate<const N: usize>(
     items: &mut [[Option<RecordBatch>; N]],
+    opts: ConcatOptions,
 ) -> Result<[Option<RecordBatch>; N]> {
     // Resolve the signal up front so an unsupported width is rejected even on
     // the empty and single-batch fast paths below.
@@ -98,6 +127,10 @@ pub fn concatenate<const N: usize>(
     let mut result = [const { None }; N];
     if items.is_empty() {
         return Ok(result);
+    }
+
+    if opts.reindex {
+        crate::otap::transform::reindex::reindex(items)?;
     }
 
     if items.len() == 1 {
@@ -1037,7 +1070,7 @@ mod batch_width_tests {
     fn unsupported_batch_width_returns_error() {
         for num_batches in 0..=2 {
             let mut items: Vec<[Option<RecordBatch>; 1]> = vec![[None]; num_batches];
-            let err = concatenate::<1>(&mut items).unwrap_err();
+            let err = concatenate::<1>(&mut items, ConcatOptions::preserve_ids()).unwrap_err();
             assert!(
                 matches!(err, Error::UnsupportedBatchStoreType { batch_width: 1 }),
                 "{num_batches} batches: unexpected error: {err:?}"
@@ -1191,7 +1224,8 @@ mod schema_tests {
         a[LOGS_ROOT_IDX] = Some(batch1);
         b[LOGS_ROOT_IDX] = Some(batch2);
         let mut batches = vec![a, b];
-        let result = concatenate::<LOGS_COUNT>(&mut batches).unwrap();
+        let result =
+            concatenate::<LOGS_COUNT>(&mut batches, ConcatOptions::preserve_ids()).unwrap();
         result[LOGS_ROOT_IDX]
             .as_ref()
             .expect("concatenated root logs batch")

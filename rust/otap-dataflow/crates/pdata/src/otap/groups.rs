@@ -16,7 +16,10 @@ use crate::{
 use arrow::array::RecordBatch;
 use otel_arrow_dfe_config::SignalType;
 
-use super::transform::{concatenate::concatenate, split};
+use super::transform::{
+    concatenate::{ConcatOptions, concatenate},
+    split,
+};
 
 /// Represents a sequence of OtapArrowRecords that all share exactly
 /// the same signal.  Invarients:
@@ -269,8 +272,7 @@ fn concatenate_emitter<const N: usize>(
     current: &mut Vec<[Option<RecordBatch>; N]>,
     result: &mut Vec<[Option<RecordBatch>; N]>,
 ) -> Result<()> {
-    super::transform::reindex::reindex(current)?;
-    result.push(concatenate(current)?);
+    result.push(concatenate(current, ConcatOptions::reindex())?);
     assert_all_empty(current);
     current.clear();
     Ok(())
