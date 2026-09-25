@@ -2,8 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::error::KafkaReceiverError;
+use super::receiver::topics::{
+    compile_exclude_regexes, compile_topic_regexes, matches_any_exclude, matches_any_topic,
+};
 use crate::common::kafka::auth::Auth;
-use crate::common::kafka::security::{apply_sasl_config, resolve_security_protocol};
+use crate::common::kafka::security::apply_security;
 use crate::common::kafka::{
     DebugContext, LogLevel, MessageFormat, TlsConfig, debug_list_to_string,
     default_message_format_header, validate_kafka_topic,
@@ -156,6 +159,141 @@ pub(crate) enum EffectiveTransientNackPolicy {
     CommitAndSkip,
     /// A transient NACK starts partition-local Kafka replay.
     Replay(ReplayBackoffConfig),
+}
+
+// DLQ-PHASE-2 (Remove): producer-only bounds; the port channel and downstream
+// exporter provide backpressure, and the DLQ config is redesigned for the port.
+/// Hard cap on outstanding (in-flight) DLQ deliveries. The DLQ is an
+/// error-only, low-volume path, so this is intentionally small and NOT
+/// user-configurable.
+pub(crate) const DLQ_MAX_IN_FLIGHT: usize = 5;
+
+// DLQ-PHASE-2 (Remove): application-level guardrail for the in-receiver
+// producer/re-read; gone once the DLQ becomes an output port.
+/// Fixed application-level bound (milliseconds) on a single DLQ operation: the
+/// producer send-await and the re-read fetch. This is intentionally independent
+/// of librdkafka's own `message.timeout.ms` (which the producer leaves at its
+/// default) so a stalled broker can never hold a source offset uncommitted for
+/// longer than this before the message is counted as `dlq.loss` and advanced.
+pub(crate) const DLQ_OP_TIMEOUT_MS: u64 = 10_000;
+
+/// A failure category that can be dead-lettered.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DlqCapture {
+    /// The payload could not be decoded using the configured signal encoding.
+    Decode,
+    /// The topic did not map to a configured signal.
+    UnknownTopic,
+    /// The message was permanently rejected (permanent NACK) downstream.
+    PermanentNack,
+}
+
+/// Returns the default DLQ capture set: every supported category.
+fn default_dlq_capture() -> Vec<DlqCapture> {
+    vec![
+        DlqCapture::Decode,
+        DlqCapture::UnknownTopic,
+        DlqCapture::PermanentNack,
+    ]
+}
+
+/// Per-signal DLQ topic overrides. Any omitted signal falls back to the global
+/// `topic`.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DlqPerSignalTopics {
+    /// DLQ topic for traces.
+    #[serde(default)]
+    pub traces: Option<String>,
+    /// DLQ topic for metrics.
+    #[serde(default)]
+    pub metrics: Option<String>,
+    /// DLQ topic for logs.
+    #[serde(default)]
+    pub logs: Option<String>,
+}
+
+// DLQ-PHASE-2 (Remove): producer-only; the port's downstream exporter owns the
+// DLQ connection, so this block is dropped when the DLQ config is redesigned.
+/// Connection settings for the DLQ producer / re-read consumer. Any field left
+/// unset defaults to the source consumer's connection.
+#[derive(Clone, Debug, PartialEq, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct DlqConnection {
+    /// DLQ broker list; defaults to the source brokers.
+    #[serde(default)]
+    pub brokers: Option<String>,
+    /// DLQ auth; defaults to the source auth.
+    #[serde(default)]
+    pub auth: Option<Auth>,
+    /// DLQ TLS; defaults to the source TLS.
+    #[serde(default)]
+    pub tls: Option<TlsConfig>,
+}
+
+/// Dead-letter-queue configuration. Presence of this block enables the DLQ;
+/// absence (the default `None`) disables it and preserves today's behavior.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DlqConfig {
+    /// Global DLQ topic applied to all captured signals unless a per-signal
+    /// override is set.
+    #[serde(default)]
+    pub topic: Option<String>,
+    /// Optional per-signal topic overrides.
+    #[serde(default)]
+    pub per_signal: Option<DlqPerSignalTopics>,
+    /// Failure categories to dead-letter. Defaults to all supported categories.
+    #[serde(default = "default_dlq_capture")]
+    pub capture: Vec<DlqCapture>,
+    /// Connection overrides for the DLQ producer. The re-read consumer always
+    /// uses the source connection, not these overrides.
+    #[serde(default)]
+    pub connection: Option<DlqConnection>,
+}
+
+/// Resolved DLQ configuration stored on [`KafkaReceiverConfig`]. Resolves the
+/// per-signal topics and capture set once so the runtime has a single source of
+/// truth.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ResolvedDlqConfig {
+    pub(crate) traces_topic: Option<String>,
+    pub(crate) metrics_topic: Option<String>,
+    pub(crate) logs_topic: Option<String>,
+    pub(crate) capture_decode: bool,
+    pub(crate) capture_unknown_topic: bool,
+    pub(crate) capture_permanent_nack: bool,
+    pub(crate) connection: DlqConnection,
+}
+
+impl ResolvedDlqConfig {
+    /// Resolve the DLQ topic for a given signal, or `None` when that signal is
+    /// not routed to the DLQ.
+    #[must_use]
+    pub(crate) fn topic_for(&self, signal: SignalType) -> Option<&str> {
+        match signal {
+            SignalType::Traces => self.traces_topic.as_deref(),
+            SignalType::Metrics => self.metrics_topic.as_deref(),
+            SignalType::Logs => self.logs_topic.as_deref(),
+        }
+    }
+
+    /// The set of distinct DLQ topics configured across all signals.
+    #[must_use]
+    pub(crate) fn all_topics(&self) -> Vec<&str> {
+        let mut topics: Vec<&str> = [
+            self.traces_topic.as_deref(),
+            self.metrics_topic.as_deref(),
+            self.logs_topic.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        topics.sort_unstable();
+        topics.dedup();
+        topics
+    }
 }
 
 /// Partition assignment strategy for consumer group rebalancing.
@@ -371,6 +509,12 @@ pub struct KafkaReceiverConfigBuilder {
     #[serde(default)]
     transient_nack: Option<TransientNackConfig>,
 
+    /// Optional dead-letter-queue configuration. `None` (the default) = no DLQ;
+    /// failed messages retain today's behavior (counted, logged, offset
+    /// advanced). Presence of the block enables the DLQ.
+    #[serde(default)]
+    dlq: Option<DlqConfig>,
+
     /// Interval, in milliseconds, between consumer-lag refreshes.
     ///
     /// Enables `receiver.kafka.consumer.group.lag` (consumer-group lag measured
@@ -519,6 +663,8 @@ impl IsolationLevel {
 pub struct KafkaReceiverConfig {
     inner: KafkaReceiverConfigBuilder,
     transient_nack_policy: EffectiveTransientNackPolicy,
+    /// Resolved DLQ configuration, or `None` when the DLQ is disabled.
+    dlq: Option<ResolvedDlqConfig>,
 }
 
 impl TryFrom<KafkaReceiverConfigBuilder> for KafkaReceiverConfig {
@@ -754,11 +900,196 @@ impl TryFrom<KafkaReceiverConfigBuilder> for KafkaReceiverConfig {
             });
         }
 
+        // Resolve and validate the DLQ. Consumed off the builder so the
+        // validated config keeps a single source of truth (the effective DLQ).
+        let dlq = builder
+            .dlq
+            .take()
+            .map(|dlq_config| resolve_dlq(&builder, dlq_config))
+            .transpose()?;
+
         Ok(Self {
             inner: builder,
             transient_nack_policy,
+            dlq,
         })
     }
+}
+
+/// Returns `true` when two `bootstrap.servers` strings name the same broker
+/// set, comparing trimmed, non-empty `host:port` entries as unordered sets so
+/// reordered or differently-spaced broker lists still count as one cluster.
+fn same_kafka_cluster(a: &str, b: &str) -> bool {
+    let set = |s: &str| -> HashSet<String> {
+        s.split(',')
+            .map(str::trim)
+            .filter(|e| !e.is_empty())
+            .map(str::to_string)
+            .collect()
+    };
+    set(a) == set(b)
+}
+
+/// Compiled include/exclude matchers for one ingest signal, mirroring the
+/// runtime router so config-time loop prevention respects exclude patterns.
+struct IngestMatcher {
+    topics: Vec<String>,
+    regexes: Vec<Option<Regex>>,
+    excludes: Vec<Regex>,
+}
+
+/// Validate a [`DlqConfig`] against the surrounding receiver config and resolve
+/// it into a [`ResolvedDlqConfig`].
+///
+/// Validation rules:
+/// - manual commit is required (DLQ delivery guarantees depend on the receiver
+///   controlling offset commits);
+/// - a DLQ topic must resolve for every captured signal (either the global
+///   `topic` or a `per_signal` entry);
+/// - every DLQ topic must be a legal Kafka topic name and, when the DLQ reuses
+///   the source cluster, must not be an ingest topic the consumer subscribes to
+///   (loop prevention, mirroring the runtime include/exclude routing);
+/// - `capture` must be non-empty.
+fn resolve_dlq(
+    builder: &KafkaReceiverConfigBuilder,
+    dlq: DlqConfig,
+) -> Result<ResolvedDlqConfig, KafkaReceiverError> {
+    // Manual commit mode required.
+    if matches!(builder.commit.mode, CommitMode::Auto) {
+        return Err(KafkaReceiverError::ConfigDlqRequiresManual);
+    }
+
+    if dlq.capture.is_empty() {
+        return Err(KafkaReceiverError::ConfigDlqEmptyCapture);
+    }
+
+    let capture_decode = dlq.capture.contains(&DlqCapture::Decode);
+    let capture_unknown_topic = dlq.capture.contains(&DlqCapture::UnknownTopic);
+    let capture_permanent_nack = dlq.capture.contains(&DlqCapture::PermanentNack);
+
+    // Resolve a DLQ topic per signal: a per-signal override, else the global
+    // topic. Only signals that actually ingest need a DLQ topic; the
+    // `unknown_topic` category is not signal-scoped, so it uses whichever
+    // topic resolves (validated below to be non-empty when captured).
+    let per_signal = dlq.per_signal.as_ref();
+    let resolve = |override_topic: Option<&String>| -> Option<String> {
+        override_topic
+            .cloned()
+            .or_else(|| dlq.topic.clone())
+            .filter(|t| !t.is_empty())
+    };
+
+    let traces_ingests = !builder.traces.topics.is_empty();
+    let metrics_ingests = !builder.metrics.topics.is_empty();
+    let logs_ingests = !builder.logs.topics.is_empty();
+
+    let traces_topic = resolve(per_signal.and_then(|p| p.traces.as_ref()));
+    let metrics_topic = resolve(per_signal.and_then(|p| p.metrics.as_ref()));
+    let logs_topic = resolve(per_signal.and_then(|p| p.logs.as_ref()));
+
+    // Every ingesting signal must have a resolvable DLQ topic.
+    for (ingests, topic, signal) in [
+        (traces_ingests, &traces_topic, "traces"),
+        (metrics_ingests, &metrics_topic, "metrics"),
+        (logs_ingests, &logs_topic, "logs"),
+    ] {
+        if ingests && topic.is_none() {
+            return Err(KafkaReceiverError::ConfigDlqMissingTopic {
+                signal: signal.to_string(),
+            });
+        }
+    }
+
+    // The DLQ reuses the source cluster when its override brokers (if any)
+    // resolve to the same broker set as the source consumer.
+    let same_cluster = dlq
+        .connection
+        .as_ref()
+        .and_then(|c| c.brokers.as_deref())
+        .is_none_or(|b| same_kafka_cluster(b, &builder.brokers));
+
+    // Loop prevention: on the same cluster a DLQ topic must not be one the
+    // consumer actually subscribes to. Mirror the runtime router exactly --
+    // per-signal include patterns minus exclude patterns -- so an excluded
+    // topic is not a false-positive overlap. Compile each signal's patterns
+    // once, then test every resolved DLQ topic against all three signals.
+    let ingest_matchers = if same_cluster {
+        let compile = |signal: &SignalConfig| -> Result<IngestMatcher, KafkaReceiverError> {
+            let regexes = compile_topic_regexes(&signal.topics).map_err(|e| {
+                KafkaReceiverError::ConfigInvalidDlqTopic {
+                    topic: String::new(),
+                    message: e.to_string(),
+                }
+            })?;
+            let excludes = compile_exclude_regexes(&signal.exclude_topics).map_err(|e| {
+                KafkaReceiverError::ConfigInvalidDlqTopic {
+                    topic: String::new(),
+                    message: e.to_string(),
+                }
+            })?;
+            Ok(IngestMatcher {
+                topics: signal.topics.clone(),
+                regexes,
+                excludes,
+            })
+        };
+        Some([
+            compile(&builder.traces)?,
+            compile(&builder.metrics)?,
+            compile(&builder.logs)?,
+        ])
+    } else {
+        None
+    };
+
+    let is_ingest_topic = |topic: &str| -> bool {
+        ingest_matchers.as_ref().is_some_and(|matchers| {
+            matchers.iter().any(|m| {
+                matches_any_topic(&m.topics, &m.regexes, topic)
+                    && !matches_any_exclude(&m.excludes, topic)
+            })
+        })
+    };
+
+    // Validate every resolved DLQ topic name and enforce loop prevention.
+    for topic in [&traces_topic, &metrics_topic, &logs_topic]
+        .into_iter()
+        .flatten()
+    {
+        validate_kafka_topic(topic).map_err(|message| {
+            KafkaReceiverError::ConfigInvalidDlqTopic {
+                topic: topic.clone(),
+                message,
+            }
+        })?;
+        if is_ingest_topic(topic) {
+            return Err(KafkaReceiverError::ConfigDlqTopicOverlapsIngest {
+                topic: topic.clone(),
+            });
+        }
+    }
+
+    // DLQ-PHASE-2 (Remove): producer-connection validation; the downstream
+    // exporter validates its own connection in port mode.
+    let connection = dlq.connection.unwrap_or_default();
+    if let Some(auth) = &connection.auth {
+        auth.validate()
+            .map_err(|message| KafkaReceiverError::ConfigInvalidDlqConnection { message })?;
+    }
+    if let Some(tls) = &connection.tls {
+        tls.validate()
+            .map_err(|message| KafkaReceiverError::ConfigInvalidDlqConnection { message })?;
+    }
+
+    Ok(ResolvedDlqConfig {
+        traces_topic,
+        metrics_topic,
+        logs_topic,
+        capture_decode,
+        capture_unknown_topic,
+        capture_permanent_nack,
+        connection,
+    })
 }
 
 impl KafkaReceiverConfigBuilder {
@@ -785,6 +1116,7 @@ impl KafkaReceiverConfigBuilder {
             auto_offset_reset: default_auto_offset_reset(),
             commit: CommitConfig::default(),
             transient_nack: None,
+            dlq: None,
             lag_refresh_interval_ms: None,
             session_timeout_ms: default_session_timeout_ms(),
             heartbeat_interval_ms: default_heartbeat_interval_ms(),
@@ -943,6 +1275,13 @@ impl KafkaReceiverConfigBuilder {
     #[must_use]
     pub fn with_transient_nack(mut self, transient_nack: TransientNackConfig) -> Self {
         self.transient_nack = Some(transient_nack);
+        self
+    }
+
+    /// Set the dead-letter-queue configuration.
+    #[must_use]
+    pub fn with_dlq(mut self, dlq: DlqConfig) -> Self {
+        self.dlq = Some(dlq);
         self
     }
 
@@ -1106,14 +1445,7 @@ impl KafkaReceiverConfigBuilder {
         _ = config.set("isolation.level", self.isolation_level.to_kafka_value());
 
         // Security protocol, TLS, and SASL settings (shared with exporter)
-        let protocol = resolve_security_protocol(self.tls.as_ref(), self.auth.as_ref());
-        _ = config.set("security.protocol", protocol);
-
-        if let Some(tls) = &self.tls {
-            tls.apply_to_client_config(&mut config);
-        }
-
-        apply_sasl_config(self.auth.as_ref(), &mut config);
+        apply_security(&mut config, self.tls.as_ref(), self.auth.as_ref());
 
         // Partition assignment strategy (when omitted, librdkafka defaults to range,roundrobin)
         if let Some(strategy) = self.rebalance_strategy {
@@ -1293,6 +1625,79 @@ impl KafkaReceiverConfig {
             self.transient_nack_policy,
             EffectiveTransientNackPolicy::Replay(_)
         )
+    }
+
+    /// Returns the resolved DLQ configuration, or `None` when disabled.
+    #[must_use]
+    pub(crate) fn dlq(&self) -> Option<&ResolvedDlqConfig> {
+        self.dlq.as_ref()
+    }
+
+    /// Build the librdkafka `ClientConfig` for the DLQ producer.
+    ///
+    /// Connection (brokers/auth/tls) defaults to the source consumer's, with
+    /// any `dlq.connection` overrides applied. The `client.id` is auto-derived
+    /// as `{client_id}-dlq`. No producer tuning is set here, so librdkafka's
+    /// own defaults apply (compression `none`, `acks=all`, `message.timeout.ms`
+    /// 300000). The DLQ send is separately bounded by
+    /// [`DLQ_OP_TIMEOUT_MS`](crate::receivers::kafka_receiver::config::DLQ_OP_TIMEOUT_MS).
+    // DLQ-PHASE-2 (Remove): the receiver no longer builds a producer client
+    // config; the downstream exporter owns the DLQ connection.
+    #[must_use]
+    pub(crate) fn build_dlq_producer_config(&self) -> Option<ClientConfig> {
+        let dlq = self.dlq.as_ref()?;
+        let mut config = ClientConfig::new();
+
+        let brokers = dlq
+            .connection
+            .brokers
+            .as_deref()
+            .unwrap_or(&self.inner.brokers);
+        _ = config.set("bootstrap.servers", brokers);
+        _ = config.set("client.id", format!("{}-dlq", self.inner.client_id));
+
+        self.apply_dlq_security(&mut config, dlq);
+        Some(config)
+    }
+
+    /// Build the librdkafka `ClientConfig` for the dedicated DLQ re-read
+    /// consumer used to recover the original bytes of a permanently-nacked
+    /// message. It has no group subscription and manually assigns partitions.
+    // DLQ-PHASE-2 (Change): the re-read consumer is retained in port mode; only
+    // the producer wiring is removed.
+    #[must_use]
+    pub(crate) fn build_dlq_reread_consumer_config(&self) -> Option<ClientConfig> {
+        // Presence of the DLQ enables the re-read consumer.
+        let _dlq = self.dlq.as_ref()?;
+        let mut config = ClientConfig::new();
+
+        // Always re-read from the SOURCE cluster (that is where the original
+        // bytes live). The `dlq.connection` overrides are producer-only and
+        // never apply here.
+        _ = config.set("bootstrap.servers", &self.inner.brokers);
+        _ = config.set("client.id", format!("{}-dlq-reread", self.inner.client_id));
+        // Manual assignment, no auto-commit, no group offset management.
+        _ = config.set("enable.auto.commit", "false");
+        _ = config.set("enable.auto.offset.store", "false");
+        // A group.id is still required by librdkafka even for manual assign.
+        _ = config.set("group.id", format!("{}-dlq-reread", self.inner.group_id));
+
+        // Security uses the SOURCE connection (the re-read consumer reads
+        // source topics), regardless of DLQ producer connection overrides.
+        apply_security(
+            &mut config,
+            self.inner.tls.as_ref(),
+            self.inner.auth.as_ref(),
+        );
+        Some(config)
+    }
+
+    /// Apply DLQ producer security (brokers-scoped auth/tls) to a client config,
+    /// defaulting to the source connection when the DLQ does not override it.
+    fn apply_dlq_security(&self, config: &mut ClientConfig, dlq: &ResolvedDlqConfig) {
+        let tls = dlq.connection.tls.as_ref().or(self.inner.tls.as_ref());
+        let auth = dlq.connection.auth.as_ref().or(self.inner.auth.as_ref());
+        apply_security(config, tls, auth);
     }
 
     /// Get the configured consumer-lag refresh interval in milliseconds.
