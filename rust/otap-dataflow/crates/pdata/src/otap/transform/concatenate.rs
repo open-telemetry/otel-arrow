@@ -462,21 +462,6 @@ fn finalize_nullability(index: &mut FieldIndex<'_>, batch_count: usize) {
 
 /// Index the fields of a single batch (or struct) into `index`.
 ///
-/// Batches that reach concatenation are guaranteed to conform to the payload
-/// spec by the `OtapBatchStore` set-time validation invariant (every batch is
-/// validated via [`PayloadSchema::check_match`] before it can be stored). This
-/// pass therefore does not re-run full validation. It does keep two cheap
-/// guards so that a violated invariant fails as a clean error rather than a
-/// panic deeper in concatenation or silent data loss:
-///
-/// - an unknown field name returns an error instead of being dropped, and
-/// - a field whose value type diverges between batches returns a
-///   `ColumnDataTypeMismatch` instead of later panicking in `cast`/`try_new`.
-///
-/// Both are a single lookup / comparison per field -- far cheaper than a second
-/// full schema walk -- and everything else (dictionary key widths,
-/// required-field nullability) is left to the set-time invariant.
-///
 /// Struct columns are unified recursively: different batches may carry different
 /// subsets of the optional struct children, so each child is indexed into its
 /// own sub-slot and the unified struct type is the union of the children seen
@@ -649,18 +634,6 @@ fn select_dictionary_type(
         Box::new(info.value_type.clone()),
     ))
 }
-
-// ---------------------------------------------------------------------------
-// Cardinality estimation
-//
-// [`FieldInfo`] and [`estimate_cardinality`] estimate the number of distinct
-// values across a set of arrays so a caller can decide whether a column fits
-// within a `u8` or `u16` dictionary key. This is used by the query engine when
-// it materializes evaluation results and needs to choose a dictionary key width.
-// It is intentionally separate from the schema-unification path above, which
-// selects dictionary widths from the summed physical value counts (a cheaper,
-// more conservative bound) and therefore does not need exact estimation.
-// ---------------------------------------------------------------------------
 
 /// Accumulated information about a single field across one or more arrays, used
 /// as input to [`estimate_cardinality`].
