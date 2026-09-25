@@ -63,7 +63,10 @@ pub(super) fn benchmarks(c: &mut Criterion) {
         }
     }
 
-    let _ = group.throughput(Throughput::Elements(DUPLICATE_TOTAL_HEADERS as u64));
+    group.finish();
+
+    let mut duplicate_group = c.benchmark_group("header_propagation_duplicates");
+    let _ = duplicate_group.throughput(Throughput::Elements(DUPLICATE_TOTAL_HEADERS as u64));
     for source_count in DUPLICATE_SOURCE_COUNTS {
         let headers = duplicate_source_headers(source_count);
         for matches in [true, false] {
@@ -73,7 +76,7 @@ pub(super) fn benchmarks(c: &mut Criterion) {
                 if matches { source_count } else { 0 }
             );
             let case = if matches { "match" } else { "miss" };
-            let _ = group.bench_with_input(
+            let _ = duplicate_group.bench_with_input(
                 BenchmarkId::new(
                     format!("conditional_duplicate_{case}_4_conditions"),
                     format!("{source_count}_sources_32_headers"),
@@ -86,7 +89,7 @@ pub(super) fn benchmarks(c: &mut Criterion) {
         }
     }
 
-    group.finish();
+    duplicate_group.finish();
 }
 
 fn headers(header_count: usize) -> TransportHeaders {
