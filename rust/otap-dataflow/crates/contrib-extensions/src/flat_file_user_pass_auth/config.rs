@@ -41,8 +41,8 @@ pub struct Config {
     pub password_secret_file: Option<PathBuf>,
 
     /// Refresh duration for the password secret file (if specified). Accepts
-    /// human-readable durations (e.g. `5m`, `30s`). Must be non-zero. Default
-    /// value: `1h`. Mimimum value: `5m`.
+    /// human-readable durations (e.g. `5m`, `1h`, `1d`). Must be non-zero.
+    /// Default value: `1h`. Mimimum value: `5m`.
     #[serde(
         with = "humantime_serde",
         default = "default_password_secret_file_refresh"
