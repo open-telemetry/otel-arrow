@@ -536,11 +536,6 @@ window. An increasing timestamp or sequence ID alone is insufficient: an older
 transaction can become visible after the checkpoint has advanced. NACK replay
 re-executes SQL and cannot reproduce rows that have changed or been deleted.
 
-The lease protects a checkpoint identity, not the underlying database query.
-Different pipeline/receiver names or state directories can still cause duplicate
-polling. Deployments must enforce one active poller per unpartitioned source
-range. Automatic distributed partitioning and source discovery are not provided.
-
 #### Checkpoint Ownership Is Not Database-Source Ownership
 
 `CheckpointStore::lease_key()` returns the native filesystem path derived from
@@ -557,12 +552,6 @@ not its absolute mount path. Processes mounting the same backing directory at
 different paths therefore share the same storage lock and recovery namespace.
 The in-process registry still uses the canonical full path.
 
-This pre-release lock namespace differs from older path-derived builds. Stop all
-old writers before upgrading; mixed old/new writers do not coordinate, and
-generation continuity across those layouts is not guaranteed. Checkpoint
-revision filenames now use the versioned layout; their JSON payload format is
-unchanged.
-
 For example, two one-core pipelines named `audit-a` and `audit-b` can query
 the same database rows with the same `source_id`. Their different pipeline
 names give them different checkpoint locations and lease keys, so both can
@@ -575,6 +564,7 @@ including during restarts and configuration replacement. Reusing `source_id`
 alone does not enforce this rule across different checkpoint identities.
 The configuration fingerprint checks whether saved progress is compatible;
 it is not a database-source ownership key.
+Automatic distributed partitioning and source discovery are not provided.
 
 ### Shutdown and Live Configuration Changes
 
@@ -622,8 +612,8 @@ the old lease. Coordinated replacement/readiness is separate work tracked in
 
 `DatabaseReceiverMetrics` defines the polling controller's `receiver.database`
 metric set. Concrete receiver construction registers the set and supplies its
-handle to the controller. Configuration validation,
-checkpoint storage, and leases do not emit these runtime metrics by themselves.
+handle to the controller. Configuration validation, checkpoint storage, and
+leases do not emit these runtime metrics by themselves.
 
 | Counter fields | Purpose |
 | --- | --- |
