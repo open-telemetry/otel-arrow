@@ -884,7 +884,9 @@ impl TemporalReaggregationProcessor {
         effect_handler: &mut local::EffectHandler<OtapPdata>,
         view: &V,
     ) -> Result<AggregationResult, ProcessingError> {
-        if !has_aggregatable_metrics(view) {
+        let (has_aggregatable, passthrough_count) = classify_metrics(view);
+        self.metrics.record_passthrough(passthrough_count);
+        if !has_aggregatable {
             return Ok(AggregationResult::NoAggregations);
         }
 
@@ -1479,22 +1481,25 @@ fn is_data_aggregatable<'a, D: DataView<'a>>(data: &D) -> bool {
     }
 }
 
-/// Returns `true` if the view contains at least one aggregatable metric.
-/// This is a preflight check to determine if we can skip processing entirely
-/// and pass the whole batch through unchanged.
-fn has_aggregatable_metrics<V: MetricsView>(view: &V) -> bool {
+/// Check whether aggregation is needed and count non-aggregatable metric records.
+/// Metrics without data are skipped, as in `aggregate_view`.
+fn classify_metrics<V: MetricsView>(view: &V) -> (bool, u64) {
+    let mut has_aggregatable = false;
+    let mut passthrough_count = 0;
     for resource_metrics in view.resources() {
         for scope_metrics in resource_metrics.scopes() {
             for metric in scope_metrics.metrics() {
-                if let Some(data) = metric.data()
-                    && is_data_aggregatable(&data)
-                {
-                    return true;
+                if let Some(data) = metric.data() {
+                    if is_data_aggregatable(&data) {
+                        has_aggregatable = true;
+                    } else {
+                        passthrough_count += 1;
+                    }
                 }
             }
         }
     }
-    false
+    (has_aggregatable, passthrough_count)
 }
 
 #[cfg(test)]
@@ -2729,6 +2734,8 @@ mod tests {
         });
     }
 
+    /// Scenario: An input contains only a non-aggregatable delta sum.
+    /// Guarantees: The record is forwarded unchanged and counted once as pass-through.
     #[test]
     fn test_full_passthrough_delta_sum() {
         // A batch containing only a delta sum (non-aggregatable) should be
@@ -2772,6 +2779,10 @@ mod tests {
                 1
             );
             assert_eq!(metric_count(&snaps, "failures", None, None, None), 0);
+            assert_eq!(
+                metric_count(&snaps, "passthrough.metrics", None, None, None),
+                1
+            );
         });
     }
 
@@ -2851,11 +2862,13 @@ mod tests {
         });
     }
 
+    /// Scenario: An input contains a cumulative monotonic sum and two identical delta sums.
+    /// Guarantees: Both delta records count as pass-through; aggregation is unchanged.
     #[test]
     fn test_mixed_aggregatable_and_passthrough() {
-        // A batch with both a cumulative monotonic sum (aggregatable) and a
-        // delta sum (passthrough) in the same resource and scope. The delta
-        // sum should be passed through immediately while the cumulative sum
+        // A batch with both a cumulative monotonic sum (aggregatable) and
+        // two delta sums (passthrough) in the same resource and scope. The delta
+        // sums should be passed through immediately while the cumulative sum
         // should be buffered.
         run_processor_test(json!({}), |mut ctx| async move {
             let aggregatable = make_sum("requests.total", true, 100, vec![]);
@@ -2865,14 +2878,18 @@ mod tests {
                 Resource::build().finish(),
                 vec![ScopeMetrics::new(
                     InstrumentationScope::build().finish(),
-                    vec![aggregatable.clone(), passthrough.clone()],
+                    vec![
+                        aggregatable.clone(),
+                        passthrough.clone(),
+                        passthrough.clone(),
+                    ],
                 )],
             )]);
 
             let pdata = make_otlp_pdata(input_data);
             ctx.process(Message::PData(pdata)).await.unwrap();
 
-            // The passthrough batch with only the delta sum should arrive
+            // The passthrough batch with only the delta sums should arrive
             // immediately.
             let output = ctx.drain_pdata().await;
             assert_eq!(
@@ -2885,7 +2902,7 @@ mod tests {
                 Resource::build().finish(),
                 vec![ScopeMetrics::new(
                     InstrumentationScope::build().finish(),
-                    vec![passthrough],
+                    vec![passthrough.clone(), passthrough],
                 )],
             )]);
             assert_output_otlp_equivalent(&output[0], expected_passthrough);
@@ -2903,9 +2920,16 @@ mod tests {
                 )],
             )]);
             assert_output_otlp_equivalent(&flushed[0], expected_aggregated);
+            let snaps = collect_telemetry(&mut ctx).await;
+            assert_eq!(
+                metric_count(&snaps, "passthrough.metrics", None, None, None),
+                2
+            );
         });
     }
 
+    /// Scenario: An input contains only an aggregatable gauge.
+    /// Guarantees: No pass-through records are counted and output waits for a flush.
     #[test]
     fn test_passthrough_all_aggregated_no_immediate_output() {
         // When a batch contains only aggregatable metrics, nothing should be
@@ -2929,6 +2953,10 @@ mod tests {
 
             let _ = ctx.fire_wakeup().await.unwrap();
             let snaps = collect_telemetry(&mut ctx).await;
+            assert_eq!(
+                metric_count(&snaps, "passthrough.metrics", None, None, None),
+                0
+            );
             assert_eq!(
                 metric_count(&snaps, "flushes", Some("success"), Some("timer"), None),
                 1
