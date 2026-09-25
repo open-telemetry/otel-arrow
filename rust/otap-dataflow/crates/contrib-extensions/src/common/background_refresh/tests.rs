@@ -19,13 +19,15 @@ use super::provider::{
 /// woken by control messages in the meantime.
 const NON_EXPIRING_REFRESH_SECS: u64 = 365 * 24 * 60 * 60;
 
+/// Scenario: Build expiry-driven policies with buffers below, at, and above the usability margin.
+/// Guarantees: Only a buffer strictly greater than the usability margin is accepted.
 #[tokio::test]
 async fn ctor_validates_expiry_buffer() {
     let usable_margin = Duration::from_secs(1);
     let non_expiring_refresh_interval = Duration::from_secs(10);
 
     assert!(
-        BackgroundProviderRefreshPolicy::new(
+        BackgroundProviderRefreshPolicy::expiry_driven(
             usable_margin,
             non_expiring_refresh_interval,
             Duration::from_secs(0)
@@ -33,7 +35,7 @@ async fn ctor_validates_expiry_buffer() {
         .is_err()
     );
     assert!(
-        BackgroundProviderRefreshPolicy::new(
+        BackgroundProviderRefreshPolicy::expiry_driven(
             usable_margin,
             non_expiring_refresh_interval,
             Duration::from_secs(1)
@@ -41,13 +43,21 @@ async fn ctor_validates_expiry_buffer() {
         .is_err()
     );
     assert!(
-        BackgroundProviderRefreshPolicy::new(
+        BackgroundProviderRefreshPolicy::expiry_driven(
             usable_margin,
             non_expiring_refresh_interval,
             Duration::from_secs(2)
         )
         .is_ok()
     );
+}
+
+/// Scenario: Build periodic policies immediately below and at the scheduler's minimum interval.
+/// Guarantees: Sub-ten-second polling is rejected while the ten-second boundary is accepted.
+#[test]
+fn periodic_validates_minimum_interval() {
+    assert!(BackgroundProviderRefreshPolicy::periodic(Duration::from_secs(9)).is_err());
+    assert!(BackgroundProviderRefreshPolicy::periodic(Duration::from_secs(10)).is_ok());
 }
 
 /// Scenario: Schedule the next refresh for a token expiring in ~1 hour with a 5m buffer.

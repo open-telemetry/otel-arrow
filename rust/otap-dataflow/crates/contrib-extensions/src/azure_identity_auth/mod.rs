@@ -99,7 +99,7 @@ fn create(
     let extension = AzureIdentityAuthExtension::new(
         &name,
         auth,
-        BackgroundProviderRefreshPolicy::new(
+        BackgroundProviderRefreshPolicy::expiry_driven(
             TOKEN_USABLE_MARGIN,
             NON_EXPIRING_TOKEN_REFRESH_INTERVAL,
             Duration::from_secs(TOKEN_EXPIRY_BUFFER_SECS),

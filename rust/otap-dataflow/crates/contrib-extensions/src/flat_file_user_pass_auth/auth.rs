@@ -4,7 +4,7 @@
 //! Flat file user pass extension.
 
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -42,10 +42,9 @@ impl FlatFileUserPassAuth {
 /// be re-read into memory on every refresh.
 async fn read_credential(
     file: Option<&PathBuf>,
-    file_refresh: Duration,
     inline: Option<&SecretString>,
     field: &str,
-) -> Result<(SecretString, Option<Duration>), Error> {
+) -> Result<SecretString, Error> {
     if let Some(path) = file {
         let contents =
             read_file_with_limit_async(path)
@@ -67,17 +66,10 @@ async fn read_credential(
             .into();
         // Note: Clear out first password string from memory
         contents_str.zeroize();
-        // Note: `file_refresh` is used as expiry. We don't know true expiry of
-        // the password we use the setting to trigger an automatic refresh. Goal
-        // being something external may periodically refresh the password file
-        // and we should pick that up. This could be improved by using a file
-        // watcher to trigger refresh but the current auth model is poll-based
-        // so some infra work needs to be in place as well in order to push a
-        // refresh from inside extension.
-        return Ok((password, Some(file_refresh)));
+        return Ok(password);
     }
     if let Some(value) = inline {
-        return Ok((value.clone(), None));
+        return Ok(value.clone());
     }
     Err(Error::CredentialAcquisition {
         message: format!("no `{field}` or `{field}_file` configured"),
@@ -90,27 +82,18 @@ impl BackgroundProviderSource<BasicAuthCredential> for FlatFileUserPassAuth {
 
     /// Fetch a single credential.
     async fn fetch(&self) -> Result<BasicAuthCredential, Error> {
-        let (password, expiry) = read_credential(
+        let password = read_credential(
             self.config.password_secret_file.as_ref(),
-            self.config.password_secret_file_refresh,
             self.config.password_secret.as_ref(),
             "password_secret",
         )
         .await?;
 
-        let mut credential = BasicAuthCredential::new(self.config.username.clone(), password)
-            .map_err(|e| Error::CredentialAcquisition {
+        BasicAuthCredential::new(self.config.username.clone(), password).map_err(|e| {
+            Error::CredentialAcquisition {
                 message: e.to_string(),
-            })?;
-
-        if let Some(expiry) = expiry
-            && let Some(expiry) = Instant::now()
-                .checked_add(expiry.max(super::BASIC_AUTH_CREDENTIAL_EXPIRY_BUFFER_SECS * 2))
-        {
-            credential = credential.with_expiry(expiry);
-        }
-
-        Ok(credential)
+            }
+        })
     }
 
     fn log_refresh_failure(&self, error: &Error) {

@@ -95,7 +95,7 @@ fn create(
     let extension = OAuth2ClientAuthExtension::new(
         &name,
         auth,
-        BackgroundProviderRefreshPolicy::new(
+        BackgroundProviderRefreshPolicy::expiry_driven(
             TOKEN_USABLE_MARGIN,
             NON_EXPIRING_TOKEN_REFRESH_INTERVAL,
             config.expiry_buffer,

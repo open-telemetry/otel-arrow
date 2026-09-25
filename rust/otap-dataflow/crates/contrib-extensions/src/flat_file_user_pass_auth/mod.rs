@@ -24,9 +24,7 @@ use otel_arrow_dfe_config::error::Error as ConfigError;
 use otel_arrow_dfe_config::extension::ExtensionUserConfig;
 use otel_arrow_dfe_engine::ExtensionFactory;
 use otel_arrow_dfe_engine::capability::auth::BasicAuthCredential;
-use otel_arrow_dfe_engine::capability::auth::basic_auth_provider::{
-    BASIC_AUTH_CREDENTIAL_USABLE_MARGIN, BasicAuthProvider,
-};
+use otel_arrow_dfe_engine::capability::auth::basic_auth_provider::BasicAuthProvider;
 use otel_arrow_dfe_engine::config::ExtensionConfig;
 use otel_arrow_dfe_engine::context::ExtensionContext;
 use otel_arrow_dfe_engine::extension::wrapper::ExtensionVariant;
@@ -54,19 +52,11 @@ pub type FlatFileUserPassAuthExtension = BackgroundProviderExtension<
 /// URN under which this extension is registered.
 pub const FLAT_FILE_USER_PASS_AUTH_URN: &str = "urn:otel:extension:flat_file_user_pass_auth";
 
-/// Next-refresh delay used for non-expiring credentials (~1 day). The loop is still
-/// woken by control messages in the meantime.
-const NON_EXPIRING_BASIC_AUTH_CREDENTIAL_REFRESH_INTERVAL: Duration =
-    Duration::from_secs(24 * 60 * 60);
-
 /// Default refresh interval.
 const DEFAULT_BASIC_AUTH_CREDENTIAL_REFRESH_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
 /// Minimum refresh interval.
-const MINIMUM_BASIC_AUTH_CREDENTIAL_REFRESH_INTERVAL: Duration = Duration::from_secs(60 * 5);
-
-/// Refresh this many seconds before `expires_on` (~1 min).
-const BASIC_AUTH_CREDENTIAL_EXPIRY_BUFFER_SECS: Duration = Duration::from_secs(60);
+const MINIMUM_BASIC_AUTH_CREDENTIAL_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 
 /// Deserializes and validates the extension's user configuration.
 fn parse_config(config: &serde_json::Value) -> Result<Config, ConfigError> {
@@ -103,18 +93,20 @@ fn create(
 
     // Empty token cache; the background refresh loop publishes the first token.
     let (tx, _rx) = watch::channel(None);
+    let refresh_policy = if config.password_secret_file.is_some() {
+        BackgroundProviderRefreshPolicy::periodic(config.password_secret_file_refresh).map_err(
+            |e| ConfigError::InvalidUserConfig {
+                error: format!("failed to initialize flat file user pass extension: {e}"),
+            },
+        )?
+    } else {
+        BackgroundProviderRefreshPolicy::once()
+    };
 
     let extension = FlatFileUserPassAuthExtension::new(
         &name,
         FlatFileUserPassAuth::new(config),
-        BackgroundProviderRefreshPolicy::new(
-            BASIC_AUTH_CREDENTIAL_USABLE_MARGIN,
-            NON_EXPIRING_BASIC_AUTH_CREDENTIAL_REFRESH_INTERVAL,
-            BASIC_AUTH_CREDENTIAL_EXPIRY_BUFFER_SECS,
-        )
-        .map_err(|e| ConfigError::InvalidUserConfig {
-            error: format!("failed to initialize flat file user pass extension: {e}"),
-        })?,
+        refresh_policy,
         tx,
         tracker,
     );

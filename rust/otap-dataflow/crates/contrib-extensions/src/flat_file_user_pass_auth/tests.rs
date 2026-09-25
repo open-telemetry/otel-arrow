@@ -4,9 +4,8 @@
 //! Unit tests for the flat file user pass extension.
 
 use std::io::Write;
-use std::time::Instant;
 
-use futures::StreamExt;
+use futures::{FutureExt, StreamExt};
 use otel_arrow_dfe_config::error::Error as ConfigError;
 use otel_arrow_dfe_engine::shared::capability::auth::basic_auth_provider::BasicAuthProvider;
 use otel_arrow_dfe_engine::shared::extension::{ControlChannel, Extension as SharedExtension};
@@ -128,19 +127,19 @@ fn config_password_secret_file_refresh_rejects_invalid() {
         "username": "test",
         "password_secret": "<test_secret>",
         "password_secret_file": "<test_secret_path>",
-        "password_secret_file_refresh": "4m" }))
+        "password_secret_file_refresh": "9s" }))
         .is_err()
     )
 }
 
 /// Scenario: Config parsing receives the minimum supported password file refresh interval.
-/// Guarantees: The inclusive five-minute boundary is accepted.
+/// Guarantees: The inclusive ten-second scheduler boundary is accepted.
 #[test]
 fn config_password_secret_file_refresh_accepts_minimum() {
     let cfg = config_from_json(serde_json::json!({
         "username": "test",
         "password_secret_file": "<test_secret_path>",
-        "password_secret_file_refresh": "5m"
+        "password_secret_file_refresh": "10s"
     }))
     .expect("minimum refresh interval is valid");
 
@@ -261,15 +260,16 @@ fn make_extension() -> FlatFileUserPassAuthExtension {
 
 fn make_extension_with_config(config: Config) -> FlatFileUserPassAuthExtension {
     let (tx, _rx) = watch::channel(None);
+    let refresh_policy = if config.password_secret_file.is_some() {
+        BackgroundProviderRefreshPolicy::periodic(config.password_secret_file_refresh)
+            .expect("valid periodic refresh policy")
+    } else {
+        BackgroundProviderRefreshPolicy::once()
+    };
     FlatFileUserPassAuthExtension::new(
         "test-ext",
         FlatFileUserPassAuth::new(config),
-        BackgroundProviderRefreshPolicy::new(
-            BASIC_AUTH_CREDENTIAL_USABLE_MARGIN,
-            NON_EXPIRING_BASIC_AUTH_CREDENTIAL_REFRESH_INTERVAL,
-            BASIC_AUTH_CREDENTIAL_EXPIRY_BUFFER_SECS,
-        )
-        .expect("valid refresh_policy"),
+        refresh_policy,
         tx,
         make_tracker(),
     )
@@ -294,7 +294,7 @@ async fn get_credential() {
 }
 
 /// Scenario: Credentials are acquired from a readable password secret file.
-/// Guarantees: The file password is trimmed only at line endings and receives an expiration.
+/// Guarantees: The file password is trimmed only at line endings and remains non-expiring.
 #[tokio::test]
 async fn get_credential_file_success() {
     let mut named_file = NamedTempFile::new().expect("file created");
@@ -314,7 +314,7 @@ async fn get_credential_file_success() {
     let credential = ext.get_credential().await.expect("first acquisition");
     assert_eq!(credential.expose_username(), "test_user");
     assert_eq!(credential.expose_password(), "test_pass  ");
-    assert!(credential.expires_on().is_some());
+    assert!(credential.expires_on().is_none());
 }
 
 /// Scenario: Both inline and file password forms are configured.
@@ -383,7 +383,12 @@ async fn background_refresh_publishes_rotated_password() {
     assert_eq!(initial.expose_password(), "password-1");
 
     std::fs::write(&password_path, "password-2").expect("rotated password written");
-    tokio::time::advance(Duration::from_secs(300)).await;
+    tokio::time::advance(Duration::from_secs(299)).await;
+    assert!(
+        stream.next().now_or_never().is_none(),
+        "the file must not be polled before the configured interval"
+    );
+    tokio::time::advance(Duration::from_secs(1)).await;
 
     let rotated = stream.next().await.expect("rotated credential published");
     assert_eq!(rotated.expose_password(), "password-2");
@@ -395,27 +400,21 @@ async fn background_refresh_publishes_rotated_password() {
         .expect("refresh loop exits cleanly");
 }
 
-/// Scenario: A credential is acquired from a password file with a configured refresh interval.
-/// Guarantees: Its expiry is set to approximately one refresh interval after acquisition.
+/// Scenario: A credential is acquired from a password file with periodic polling configured.
+/// Guarantees: The polling interval is not represented as credential expiry.
 #[tokio::test]
-async fn file_credential_expiry_matches_refresh_interval() {
+async fn file_credential_does_not_inherit_polling_interval_as_expiry() {
     let mut named_file = NamedTempFile::new().expect("file created");
     named_file.write_all(b"test_pass").expect("content written");
-    let refresh_interval = Duration::from_secs(300);
     let source = FlatFileUserPassAuth::new(Config {
         username: "test_user".into(),
         password_secret: None,
         password_secret_file: Some(named_file.path().into()),
-        password_secret_file_refresh: refresh_interval,
+        password_secret_file_refresh: Duration::from_secs(300),
     });
 
-    let before = Instant::now();
     let credential = source.fetch().await.expect("credential acquired");
-    let after = Instant::now();
-    let expires_on = credential.expires_on().expect("file credential expires");
-
-    assert!(expires_on >= before + refresh_interval);
-    assert!(expires_on <= after + refresh_interval);
+    assert!(credential.expires_on().is_none());
 }
 
 /// Scenario: A password secret file contains bytes that are not valid UTF-8.
