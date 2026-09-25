@@ -69,6 +69,7 @@ rustls-native-certs.workspace = true
 arc-swap.workspace = true
 rustls.workspace = true
 rustls-pki-types.workspace = true
+rustls-webpki.workspace = true
 tokio-rustls.workspace = true
 notify.workspace = true
 rustls-openssl = { workspace = true, optional = true }

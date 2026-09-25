@@ -7727,6 +7727,7 @@ dependencies = [
  "rustls-openssl",
  "rustls-pki-types",
  "rustls-symcrypt",
+ "rustls-webpki",
  "secrecy",
  "serde",
  "serde_json",
