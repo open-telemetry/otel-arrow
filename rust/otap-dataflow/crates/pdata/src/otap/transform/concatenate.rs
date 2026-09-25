@@ -351,10 +351,15 @@ fn add_field_metadata(field: &mut Field) {
     }
 }
 
-/// The widest OTAP payload schema (`logs`) has 14 top-level fields, and its
-/// widest struct child (`body`) has 7. All schemas fit within this bound; a
-/// compile-time assertion in `schema::payloads` enforces it as schemas evolve.
-pub(crate) const MAX_SLOTS: usize = 32;
+/// Upper bound on the number of fields in any OTAP payload schema, including
+/// nested struct schemas. `FieldIndex` stores one slot per spec field in a
+/// fixed-size array sized by this bound.
+///
+/// The widest schema is `spans`, with 17 top-level fields (`status` is slot 16),
+/// followed by `logs` and `exp_histogram_data_points` with 14 each. The widest
+/// struct child is the logs `body`, with 7. The `spec_index_tests` tests check
+/// that every payload schema fits and that this bound stays tight.
+pub(crate) const MAX_SLOTS: usize = 17;
 
 #[derive(Debug)]
 struct RecordIndex<'a> {
@@ -1007,63 +1012,79 @@ pub mod bench_exports {
 mod spec_index_tests {
     use super::*;
     use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+    use crate::schema::schema::DataType as SpecDataType;
 
-    /// Every payload schema, including its struct children, must fit within
-    /// `MAX_SLOTS` so the flat spec-indexed `FieldIndex` cannot overflow.
-    ///
-    /// Scenario: iterate every payload type's schema and its struct children.
-    /// Guarantees: no schema declares more fields than `MAX_SLOTS`, so a field
-    /// slot is always addressable and the index never silently drops a column.
-    #[test]
-    fn all_payload_schemas_fit_max_slots() {
-        // All payload types referenced by the signal stores.
-        let types = [
-            ArrowPayloadType::Logs,
-            ArrowPayloadType::LogAttrs,
-            ArrowPayloadType::Spans,
-            ArrowPayloadType::SpanAttrs,
-            ArrowPayloadType::SpanEvents,
-            ArrowPayloadType::SpanLinks,
-            ArrowPayloadType::SpanEventAttrs,
-            ArrowPayloadType::SpanLinkAttrs,
-            ArrowPayloadType::UnivariateMetrics,
-            ArrowPayloadType::NumberDataPoints,
-            ArrowPayloadType::SummaryDataPoints,
-            ArrowPayloadType::HistogramDataPoints,
-            ArrowPayloadType::ExpHistogramDataPoints,
-            ArrowPayloadType::NumberDpExemplars,
-            ArrowPayloadType::HistogramDpExemplars,
-            ArrowPayloadType::ExpHistogramDpExemplars,
-            ArrowPayloadType::MetricAttrs,
-            ArrowPayloadType::NumberDpAttrs,
-            ArrowPayloadType::SummaryDpAttrs,
-            ArrowPayloadType::HistogramDpAttrs,
-            ArrowPayloadType::ExpHistogramDpAttrs,
-            ArrowPayloadType::NumberDpExemplarAttrs,
-            ArrowPayloadType::HistogramDpExemplarAttrs,
-            ArrowPayloadType::ExpHistogramDpExemplarAttrs,
-            ArrowPayloadType::ResourceAttrs,
-            ArrowPayloadType::ScopeAttrs,
-        ];
+    /// Every `ArrowPayloadType` variant, discovered by probing the prost
+    /// `TryFrom<i32>` conversion so newly added variants are covered without
+    /// maintaining a hand-written list.
+    fn all_payload_types() -> Vec<ArrowPayloadType> {
+        (0..=i32::from(u8::MAX))
+            .filter_map(|v| ArrowPayloadType::try_from(v).ok())
+            .collect()
+    }
 
-        for pt in types {
-            let schema = payloads::get(pt);
-            assert!(
-                schema.fields().len() <= MAX_SLOTS,
-                "{pt:?} top-level fields {} exceed MAX_SLOTS {MAX_SLOTS}",
-                schema.fields().len()
-            );
-            for field in schema.fields() {
-                if let Some(sub) = field.data_type.as_struct_schema() {
-                    assert!(
-                        sub.fields().len() <= MAX_SLOTS,
-                        "{pt:?} struct field {} sub-fields {} exceed MAX_SLOTS {MAX_SLOTS}",
-                        field.name,
-                        sub.fields().len()
-                    );
-                }
+    /// Visit `schema` and every schema nested beneath it (struct fields and
+    /// lists of structs), calling `visit` with a dotted field path and the
+    /// number of fields declared at that level.
+    fn visit_schemas(path: &str, schema: &PayloadSchema, visit: &mut impl FnMut(&str, usize)) {
+        visit(path, schema.fields().len());
+        for field in schema.fields() {
+            let nested = match &field.data_type {
+                SpecDataType::Struct(sub) => Some(*sub),
+                SpecDataType::List(SpecDataType::Struct(sub)) => Some(*sub),
+                _ => None,
+            };
+            if let Some(sub) = nested {
+                visit_schemas(&format!("{path}.{}", field.name), sub, visit);
             }
         }
+    }
+
+    /// Scenario: enumerate every `ArrowPayloadType` variant (including
+    /// `Unknown` and `MultivariateMetrics`) and walk its payload schema plus all
+    /// nested struct and list-of-struct schemas.
+    /// Guarantees: no schema at any nesting level declares more than
+    /// `MAX_SLOTS` fields, so every spec field has an addressable slot in the
+    /// fixed-size `FieldIndex` and no column is silently dropped.
+    #[test]
+    fn all_payload_schemas_fit_max_slots() {
+        let types = all_payload_types();
+        assert!(
+            types.len() > 20,
+            "expected to discover all payload types, found only {}",
+            types.len()
+        );
+
+        for pt in types {
+            visit_schemas(&format!("{pt:?}"), payloads::get(pt), &mut |path, len| {
+                assert!(
+                    len <= MAX_SLOTS,
+                    "{path} declares {len} fields, exceeding MAX_SLOTS {MAX_SLOTS}"
+                );
+            });
+        }
+    }
+
+    /// Scenario: compute the widest field count across every payload schema
+    /// and all nested schemas.
+    /// Guarantees: `MAX_SLOTS` equals that widest count, so the fixed-size
+    /// `FieldIndex` is not over-allocated; if schemas change, this fails and
+    /// reports the new maximum to set.
+    #[test]
+    fn max_slots_is_tight() {
+        let mut widest = (String::new(), 0usize);
+        for pt in all_payload_types() {
+            visit_schemas(&format!("{pt:?}"), payloads::get(pt), &mut |path, len| {
+                if len > widest.1 {
+                    widest = (path.to_string(), len);
+                }
+            });
+        }
+        assert_eq!(
+            widest.1, MAX_SLOTS,
+            "widest payload schema is {} with {} fields; set MAX_SLOTS to match",
+            widest.0, widest.1
+        );
     }
 }
 
