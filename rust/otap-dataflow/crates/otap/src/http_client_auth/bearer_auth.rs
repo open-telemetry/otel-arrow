@@ -5,18 +5,19 @@
 //!
 //! Centralizes everything an exporter needs to authenticate outgoing requests
 //! with a bearer token, so the exporter itself stays auth-agnostic: it drives
-//! [`BearerAuth::poll_refresh`] in its `select!` loop, asks
-//! [`BearerAuth::is_ready`] before admitting data, and stamps
-//! [`BearerAuth::header`] onto each request. The cached credential is an
-//! `http::HeaderValue`, which both transports accept (tonic's `MetadataMap` is
-//! backed by an `http::HeaderMap`), so core and contrib nodes on either
-//! protocol can share this adapter.
+//! [`HttpClientAuthProvider::poll_refresh`] in its `select!` loop, asks
+//! [`HttpClientAuthProvider::is_ready`] before admitting data, and stamps the
+//! value returned by [`HttpClientAuthProvider::header`] onto each request. The
+//! cached credential is an [`http::HeaderValue`], which both transports accept
+//! (gRPC's `MetadataMap` is backed by an [`http::HeaderMap`]), so core and
+//! contrib nodes on either protocol can share the provider implementation.
 //!
 //! The division of labor mirrors the capability design: the **provider**
 //! (extension) owns credential acquisition, background refresh, and startup
-//! readiness gating; this **adapter** only subscribes to the provider's token
-//! stream, caches the built `Authorization` header, and tracks whether that
-//! cached token is still usable. The exporter is the "dumb caller".
+//! readiness gating; the shared HTTP client auth provider subscribes to the
+//! token stream, caches the built `Authorization` header, and tracks whether
+//! that cached token is still usable. This module supplies the bearer-specific
+//! conversion from a published token to that header.
 
 use std::time::Duration;
 
