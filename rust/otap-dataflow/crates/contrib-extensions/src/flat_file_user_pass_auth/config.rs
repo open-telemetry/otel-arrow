@@ -4,7 +4,7 @@
 //! Configuration for the flat file user pass extension.
 
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use otel_arrow_dfe_engine::capability::auth::BasicAuthCredential;
 use secrecy::SecretString;
@@ -69,6 +69,15 @@ impl Config {
         if self.password_secret_file_refresh < MINIMUM_BASIC_AUTH_CREDENTIAL_REFRESH_INTERVAL {
             return Err(
                 "`password_secret_file_refresh` must be greater than or equal to `5m`".to_string(),
+            );
+        }
+
+        if Instant::now()
+            .checked_add(self.password_secret_file_refresh)
+            .is_none()
+        {
+            return Err(
+                "`password_secret_file_refresh` is too large for this platform".to_string(),
             );
         }
 
