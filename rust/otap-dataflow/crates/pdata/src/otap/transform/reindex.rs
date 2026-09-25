@@ -7,11 +7,11 @@ ID planning for concatenating multiple OTAP batches.
 When unrelated OTAP batches are concatenated, their ID / PARENT_ID columns
 have to be rewritten so IDs from different inputs do not collide. This module
 works out those rewrites **without modifying the inputs**. It produces, for
-every input and payload, an [`InputPlan`] containing:
+every input and payload, an `InputPlan` containing:
 
-- an [`IdRemap`] for each ID column (`id`, `resource.id`, `scope.id`,
+- an `IdRemap` for each ID column (`id`, `resource.id`, `scope.id`,
   `parent_id`), which the concatenate column writers apply while copying, and
-- a [`Selection`] of rows that survive. Child rows whose `parent_id` has no
+- a `Selection` of rows that survive. Child rows whose `parent_id` has no
   matching parent (a referential integrity violation) are dropped while
   writing rather than by filtering the batch up front.
 
@@ -21,7 +21,7 @@ There are two strategies. The first is a naive offset where every ID in an
 input is shifted by a fixed amount so that its range sits after the previous
 input's. For example, if we have batches with IDs [1, 2] and [1, 2, 3], we can
 move the second batch out of the way by adding 2 to all of its IDs. This is
-represented as [`IdRemap::Offset`] and is applied as a single wrapping add
+represented as `IdRemap::Offset` and is applied as a single wrapping add
 during the copy.
 
 The problem with a naive offset is that if the second batch has holes then we
@@ -34,7 +34,7 @@ The second strategy, "compaction", avoids this. It sorts the ID values, groups
 them into contiguous runs with no holes, and remaps each run individually,
 which gives a perfectly compact reindexing. For example, for [1, 3] we would
 move 1 up by 2 and 3 up by 1 to get [3, 4]. The compacted values are
-materialized in source order as [`IdRemap::Replace`].
+materialized in source order as `IdRemap::Replace`.
 
 # Integrity violations
 
@@ -141,7 +141,7 @@ use arrow::datatypes::{
 
 use crate::error::{Error, Result};
 use crate::otap::OtapBatchStore;
-use crate::otap::transform::concatenate::plan::{AnyRemap, IdCol, IdRemap, InputPlan, Selection};
+use crate::otap::transform::concatenate::{AnyRemap, IdCol, IdRemap, InputPlan, Selection};
 use crate::otap::transform::transport_optimize::{
     RESOURCE_ID_COL_PATH, SCOPE_ID_COL_PATH, remove_transport_optimized_encodings,
 };
