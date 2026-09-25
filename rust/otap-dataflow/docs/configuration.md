@@ -258,6 +258,12 @@ policies:
                   name: environment
                   value: production
     transport_headers:
+        header_capture:
+            headers:
+                - match_names: [x-workspace]
+                  store_as: workspace
+                - match_names: [x-environment]
+                  store_as: environment
         header_propagation:
             default:
                 selector:
@@ -270,12 +276,16 @@ The selected `workspace` header is emitted as `workspace_id` only when it exists
 and at least one captured `environment` value exactly matches `production`.
 Every configured match condition must pass. Header names are ASCII
 case-insensitive; values are exact byte matches. Other composite members are
-not evaluated for this transport-header binding.
+not evaluated for this transport-header binding. The selected source and every
+condition header must be captured; the example stores `x-workspace` as
+`workspace` and `x-environment` as `environment`.
 
-Named selectors must resolve to distinct primitive transport headers. Unknown
-composites, unknown members, authorized-identity members, and duplicate source
-bindings are rejected during startup. Exporter overrides retain precedence and
-can independently select the primitive header. See
+Qualified composite selectors cannot share a primitive source with another
+qualified or unqualified entry. Repeated unqualified entries, including ASCII
+case variants, are accepted as equivalent. Unknown composites, unknown members,
+authorized-identity members, and conflicting source bindings are rejected
+during startup. Exporter overrides retain precedence and can independently
+select the primitive header. See
 [Transport header policies](transport-headers.md#conditional-composite-members)
 for complete matching, naming, and override semantics.
 

@@ -348,7 +348,7 @@ policies:
         - type: transport_header         # Transport header
           name: workspace_id             # Stored name of header
           store_as: othername_id         # (option) Entry name
-        - type: transport_header_match   # Presence condition
+        - type: transport_header_match   # Exact value condition
           name: environment
           value: production
 ```
@@ -359,7 +359,9 @@ policies:
 > `transport_header_match` condition must have an exact byte-value match.
 > Header names match case-insensitively, duplicate values use any-match
 > semantics, and unrelated value-bearing members are not evaluated.
-> Named selectors must resolve to distinct primitive transport-header entries.
+> A qualified selector cannot share its primitive source with another
+> qualified or unqualified entry. Repeated unqualified selectors, including
+> ASCII case variants, are accepted as equivalent.
 > Propagation overrides retain precedence over composite conditions.
 > Other composite consumers are not yet wired at runtime.
 

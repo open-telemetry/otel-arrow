@@ -239,6 +239,12 @@ policies:
           name: environment
           value: production
   transport_headers:
+    header_capture:
+      headers:
+        - match_names: [x-workspace]
+          store_as: workspace
+        - match_names: [x-environment]
+          store_as: environment
     header_propagation:
       default:
         selector:
@@ -253,6 +259,10 @@ matching captured value. Other value-bearing members, such as `customer_id`
 above, are not evaluated by transport-header propagation. Whole-composite
 presence and other composite consumers are separate features.
 
+The selected member's primitive source and every condition header must have a
+matching `header_capture` rule. In the example, `x-workspace` is stored as
+`workspace` and `x-environment` is stored as `environment`.
+
 Matching has these semantics:
 
 - Stored header names use ASCII case-insensitive comparison.
@@ -260,7 +270,10 @@ Matching has these semantics:
 - When a condition header has duplicate values, any exact match satisfies that
   condition.
 - Every condition must be satisfied.
-- Named selectors must resolve to distinct primitive transport-header entries.
+- A qualified composite selector must not resolve to a primitive source also
+  selected by another qualified or unqualified entry.
+- Repeated unqualified selectors, including ASCII case variants, are accepted
+  as equivalent.
 
 Overrides retain precedence over the default selector. An override that selects
 the primitive `workspace` header can propagate it independently even when
