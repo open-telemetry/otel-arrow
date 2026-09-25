@@ -56,12 +56,11 @@ impl OtapExporterErrorType {
             Code::PermissionDenied => Self::Authorization,
             Code::Cancelled | Code::DeadlineExceeded => Self::Timeout,
             Code::ResourceExhausted => Self::Throttled,
-            Code::Aborted | Code::Unavailable => Self::Unavailable,
+            Code::Aborted | Code::OutOfRange | Code::Unavailable => Self::Unavailable,
             Code::InvalidArgument
             | Code::NotFound
             | Code::AlreadyExists
             | Code::FailedPrecondition
-            | Code::OutOfRange
             | Code::Unimplemented => Self::Rejected,
             Code::Internal | Code::DataLoss => Self::ServerError,
             Code::Unknown => Self::Transport,
@@ -89,7 +88,11 @@ impl OtapExporterErrorType {
     pub(super) const fn is_permanent(self) -> bool {
         matches!(
             self,
-            Self::Rejected | Self::PayloadConversion | Self::Encoding
+            Self::Rejected
+                | Self::PayloadConversion
+                | Self::Encoding
+                | Self::Authentication
+                | Self::Authorization
         )
     }
 }
@@ -229,6 +232,10 @@ mod tests {
             OtapExporterErrorType::Throttled
         );
         assert_eq!(
+            OtapExporterErrorType::from_grpc_status(&Status::out_of_range("range")),
+            OtapExporterErrorType::Unavailable
+        );
+        assert_eq!(
             OtapExporterErrorType::from_batch_status(i32::MAX),
             OtapExporterErrorType::Other
         );
@@ -242,6 +249,8 @@ mod tests {
             OtapExporterErrorType::Rejected,
             OtapExporterErrorType::PayloadConversion,
             OtapExporterErrorType::Encoding,
+            OtapExporterErrorType::Authentication,
+            OtapExporterErrorType::Authorization,
         ] {
             assert!(
                 error_type.is_permanent(),
@@ -252,8 +261,6 @@ mod tests {
             OtapExporterErrorType::Timeout,
             OtapExporterErrorType::Throttled,
             OtapExporterErrorType::Unavailable,
-            OtapExporterErrorType::Authentication,
-            OtapExporterErrorType::Authorization,
             OtapExporterErrorType::ServerError,
             OtapExporterErrorType::Transport,
             OtapExporterErrorType::Internal,

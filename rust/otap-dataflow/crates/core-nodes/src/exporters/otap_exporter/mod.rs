@@ -747,7 +747,7 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                                     OtapExporterErrorType::PayloadConversion,
                                     export_started_at.elapsed(),
                                 );
-                                effect_handler.notify_nack(NackMsg::new("payload conversion failed", pdata)).await?;
+                                effect_handler.notify_nack(NackMsg::new_permanent("payload conversion failed", pdata)).await?;
                                 return Err(e.into());
                             }
                         };
