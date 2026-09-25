@@ -51,7 +51,9 @@ queries:
           value
         FROM metrics
         CROSS JOIN observation_window
-        WHERE metric_name = 'logs_produced'
+        WHERE metric_name = 'items'
+          AND "metric_attributes.otel_scope_name" = 'node.output'
+          AND "metric_attributes.signal" = 'logs'
           AND "metric_attributes.component_name" = 'load-generator'
           AND timestamp BETWEEN start_ts AND stop_ts
       ),

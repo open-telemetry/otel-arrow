@@ -15,10 +15,8 @@ use otel_arrow_dfe_otap::OTAP_PIPELINE_FACTORY;
 use std::collections::HashMap;
 use tokio::time::{Duration, sleep};
 
-const LOADGEN_METRIC_SET: &str = "receiver.traffic_generator";
-const LOADGEN_METRIC_NAME_LOGS: &str = "logs.produced";
-const LOADGEN_METRIC_NAME_METRICS: &str = "metrics.produced";
-const LOADGEN_TRACE_NAME_SPANS: &str = "spans.produced";
+const LOADGEN_METRIC_SET: &str = "node.output";
+const LOADGEN_METRIC_NAME_ITEMS: &str = "items";
 const VALIDATION_METRIC_SET: &str = "exporter.validation";
 const VALIDATION_METRIC_NAME: &str = "valid";
 const VALIDATION_FINISHED_METRIC_NAME: &str = "finished";
@@ -217,9 +215,7 @@ fn loadgen_reached_limit(
     }
 
     iter.all(|(set, label)| {
-        let loadgen_signals_produced = metric_value(set, LOADGEN_METRIC_NAME_LOGS).unwrap_or(0)
-            + metric_value(set, LOADGEN_METRIC_NAME_METRICS).unwrap_or(0)
-            + metric_value(set, LOADGEN_TRACE_NAME_SPANS).unwrap_or(0);
+        let loadgen_signals_produced = metric_value(set, LOADGEN_METRIC_NAME_ITEMS).unwrap_or(0);
         loadgen_signals_produced >= *expected_per_gen.get(&label).unwrap_or(&0u64)
     })
 }
@@ -320,8 +316,8 @@ mod tests {
         let snap = MetricsSnapshot {
             timestamp: "t".into(),
             metric_sets: vec![
-                set_with_node(LOADGEN_METRIC_SET, LOADGEN_METRIC_NAME_LOGS, 10, "genA"),
-                set_with_node(LOADGEN_METRIC_SET, LOADGEN_METRIC_NAME_LOGS, 4, "genB"),
+                set_with_node(LOADGEN_METRIC_SET, LOADGEN_METRIC_NAME_ITEMS, 10, "genA"),
+                set_with_node(LOADGEN_METRIC_SET, LOADGEN_METRIC_NAME_ITEMS, 4, "genB"),
             ],
         };
         let mut expected = HashMap::new();
@@ -447,7 +443,7 @@ mod tests {
             timestamp: "t".into(),
             metric_sets: vec![set_with_node(
                 LOADGEN_METRIC_SET,
-                LOADGEN_METRIC_NAME_LOGS,
+                LOADGEN_METRIC_NAME_ITEMS,
                 100,
                 "genA",
             )],
@@ -465,7 +461,7 @@ mod tests {
             timestamp: "2026-01-01T00:00:00Z".into(),
             metric_sets: vec![set_with_node(
                 LOADGEN_METRIC_SET,
-                LOADGEN_METRIC_NAME_LOGS,
+                LOADGEN_METRIC_NAME_ITEMS,
                 7,
                 "genA",
             )],
