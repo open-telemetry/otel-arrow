@@ -478,6 +478,8 @@ struct CompiledTransportHeaderMatch {
     value: Box<[u8]>,
 }
 
+type ConditionMatchCache<'a> = SmallVec<[(&'a [CompiledTransportHeaderMatch], bool); 4]>;
+
 impl HeaderPropagationPolicy {
     /// Creates an unresolved propagation policy from the default and overrides.
     ///
@@ -619,12 +621,12 @@ impl HeaderPropagationPolicy {
         &'a self,
         headers: &'a TransportHeaders,
     ) -> impl Iterator<Item = PropagatedHeader<'a>> {
-        let mut compiled_matches: SmallVec<[(usize, bool); 4]> = SmallVec::new();
+        let mut condition_matches = ConditionMatchCache::new();
         headers.iter().filter_map(move |header| {
             let (action, name_strategy, selected_name) = self.resolve_action_for_header(
                 headers,
                 header.name.as_str(),
-                &mut compiled_matches,
+                &mut condition_matches,
             );
             if action == PropagationAction::Drop {
                 return None;
@@ -676,7 +678,7 @@ impl HeaderPropagationPolicy {
         &'a self,
         headers: &'a TransportHeaders,
         name: &str,
-        compiled_matches: &mut SmallVec<[(usize, bool); 4]>,
+        condition_matches: &mut ConditionMatchCache<'a>,
     ) -> (PropagationAction, NameStrategy, Option<&'a str>) {
         for ov in &self.overrides {
             if ov
@@ -693,19 +695,11 @@ impl HeaderPropagationPolicy {
         if self.default.selector.selects_unqualified_str(name) {
             return (self.default.action, self.default.name, None);
         }
-        for (index, binding) in self.compiled_named.iter().enumerate() {
+        for binding in &self.compiled_named {
             if !name.eq_ignore_ascii_case(binding.source_name.as_str()) {
                 continue;
             }
-            let matches = compiled_matches
-                .iter()
-                .find_map(|(cached_index, matches)| (*cached_index == index).then_some(*matches))
-                .unwrap_or_else(|| {
-                    let matches = binding.matches(headers);
-                    compiled_matches.push((index, matches));
-                    matches
-                });
-            if matches {
+            if binding.matches_cached(headers, condition_matches) {
                 return (
                     self.default.action,
                     self.default.name,
@@ -736,6 +730,23 @@ fn register_named_source(
 }
 
 impl CompiledNamedPropagation {
+    fn matches_cached<'a>(
+        &'a self,
+        headers: &TransportHeaders,
+        condition_matches: &mut ConditionMatchCache<'a>,
+    ) -> bool {
+        condition_matches
+            .iter()
+            .find_map(|(conditions, matches)| {
+                (*conditions == self.conditions.as_slice()).then_some(*matches)
+            })
+            .unwrap_or_else(|| {
+                let matches = self.matches(headers);
+                condition_matches.push((self.conditions.as_slice(), matches));
+                matches
+            })
+    }
+
     fn matches(&self, headers: &TransportHeaders) -> bool {
         self.conditions.iter().all(|condition| {
             headers.iter().any(|header| {
@@ -1493,6 +1504,57 @@ default:
         );
         assert_eq!(propagated[0].value, b"acme");
         assert_eq!(propagated[1].value, b"beta");
+    }
+
+    /// Scenario: two selected composite members share the same condition set.
+    /// Guarantees: propagation evaluates and caches that condition set only once per call.
+    #[test]
+    fn composite_transport_header_propagation_shares_conditions_across_bindings() {
+        let policy: HeaderPropagationPolicy = serde_yaml::from_str(
+            r#"
+default:
+  selector:
+    type: named
+    named: [product_user:workspace_id, product_user:account_id]
+"#,
+        )
+        .expect("valid propagation policy");
+        let context: crate::context_policy::ContextPolicy = serde_yaml::from_str(
+            r#"
+entries:
+  product_user:
+    - type: transport_header
+      name: workspace
+      store_as: workspace_id
+    - type: transport_header
+      name: account
+      store_as: account_id
+    - type: transport_header_match
+      name: environment
+      value: production
+"#,
+        )
+        .expect("valid context policy");
+        let (name, definition) = context.entries.into_iter().next().expect("declaration");
+        let policy = policy
+            .compile_context(&[ContextEntryDeclaration {
+                scope: crate::context_policy::ContextScope::Engine,
+                name,
+                definition,
+            }])
+            .expect("composite selectors compile");
+        let mut headers = TransportHeaders::new();
+        headers.push(crate::transport_headers::TransportHeader::text(
+            context_name("environment"),
+            b"production",
+        ));
+        let mut condition_matches = ConditionMatchCache::new();
+
+        assert_eq!(policy.compiled_named.len(), 2);
+        assert!(policy.compiled_named[0].matches_cached(&headers, &mut condition_matches));
+        assert_eq!(condition_matches.len(), 1);
+        assert!(policy.compiled_named[1].matches_cached(&headers, &mut condition_matches));
+        assert_eq!(condition_matches.len(), 1);
     }
 
     /// Scenario: an override selects a primitive source whose composite conditions are absent.
