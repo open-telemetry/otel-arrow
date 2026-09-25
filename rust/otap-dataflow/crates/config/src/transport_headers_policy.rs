@@ -547,6 +547,7 @@ impl HeaderPropagationPolicy {
                     }
                 }
             }
+            conditions.sort_unstable();
 
             let source_name = source_name.ok_or_else(|| {
                 format!(

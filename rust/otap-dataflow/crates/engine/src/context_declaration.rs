@@ -1405,6 +1405,37 @@ default:
         );
     }
 
+    /// Scenario: a live update reorders the conditions of a composite context entry.
+    /// Guarantees: compilation canonicalizes condition order and preserves the installed binding.
+    #[test]
+    fn full_yaml_compilation_ignores_composite_condition_order() {
+        let current = resolve_conditional_pipeline(
+            "[{type: transport_header, name: workspace, store_as: workspace_id}, \
+             {type: transport_header_match, name: environment, value: production}, \
+             {type: transport_header_match, name: region, value: us-east}]",
+            "tenant:workspace_id",
+        );
+        let reordered = resolve_conditional_pipeline(
+            "[{type: transport_header, name: workspace, store_as: workspace_id}, \
+             {type: transport_header_match, name: region, value: us-east}, \
+             {type: transport_header_match, name: environment, value: production}]",
+            "tenant:workspace_id",
+        );
+        let factory = test_pipeline_factory();
+        let installed = factory
+            .compile_initial_context(&current)
+            .expect("initial context compiles");
+        let candidate = factory
+            .compile_candidate_context(&reordered, &installed.runtime_requirements)
+            .expect("reordered context compiles");
+
+        assert!(
+            installed
+                .bindings
+                .pipeline_bindings_match(&candidate.bindings, &pipeline("default", "main"))
+        );
+    }
+
     /// Scenario: complete YAML contains an invalid qualified propagation selector.
     /// Guarantees: startup reports the unknown composite, unknown member, or unsupported type.
     #[test]
