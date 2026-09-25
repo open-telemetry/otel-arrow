@@ -2,264 +2,253 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /*!
-This module tries to reindex the id columns of multiple otap batches so that
-they can be safely concatenated together.
+ID planning for concatenating multiple OTAP batches.
+
+When unrelated OTAP batches are concatenated, their ID / PARENT_ID columns
+have to be rewritten so IDs from different inputs do not collide. This module
+works out those rewrites **without modifying the inputs**. It produces, for
+every input and payload, an [`InputPlan`] containing:
+
+- an [`IdRemap`] for each ID column (`id`, `resource.id`, `scope.id`,
+  `parent_id`), which the concatenate column writers apply while copying, and
+- a [`Selection`] of rows that survive. Child rows whose `parent_id` has no
+  matching parent (a referential integrity violation) are dropped while
+  writing rather than by filtering the batch up front.
 
 # Reindexing strategies
 
-There are two reindexing strategies we can take. The first is a
-naive offset where we just apply some fixed number to the ids to move the
-range out of the way of the previous. For example if we have a batches with
-ids [1, 2] and [1, 2, 3] we can "bump" the second batch out of the way by
-adding 2 to all of the ids.
+There are two strategies. The first is a naive offset where every ID in an
+input is shifted by a fixed amount so that its range sits after the previous
+input's. For example, if we have batches with IDs [1, 2] and [1, 2, 3], we can
+move the second batch out of the way by adding 2 to all of its IDs. This is
+represented as [`IdRemap::Offset`] and is applied as a single wrapping add
+during the copy.
 
-The problem with naive offset is that if the second batch has holes then we
-"use up" more ids than we need. For example if the second batch is [1, 3]
-then we still have to add 2 to every id to bump it out of the range of batch 1.
-However then the next batch has to start after id 5 and we've wasted id number
-4 because it was never used.
+The problem with a naive offset is that if the second batch has holes then we
+"use up" more IDs than we need. For example, if the second batch is [1, 3]
+then we still have to add 2 to every ID to move it out of the range of batch 1.
+The next batch then has to start after ID 5, and ID 4 is wasted because it was
+never used.
 
-The second reindexing strategy that avoids this is "compaction" where we
-sort the record batch, grab the contiguous ranges that don't have holes and
-remap those individually so that we get a perfectly compact reindexing. For
-example `[1, 3]` we would bump 1 up by 2 and 3 up by 1 to get [3, 4] which
-is a perfect contiguous and compact reindexing.
+The second strategy, "compaction", avoids this. It sorts the ID values, groups
+them into contiguous runs with no holes, and remaps each run individually,
+which gives a perfectly compact reindexing. For example, for [1, 3] we would
+move 1 up by 2 and 3 up by 1 to get [3, 4]. The compacted values are
+materialized in source order as [`IdRemap::Replace`].
 
 # Integrity violations
 
 The second major problem with naive offsets is the potential for integrity
-violations. Suppose we have corresponding id and parent id pairs like this:
+violations. Suppose we have corresponding `id` and `parent_id` pairs like this:
 
 id: [1, 2]  parent_id: [1, 3]
 
-parent_id has a referential integrgity violation. We compute the mappings
-and next offset based on the id column only, so 3 is dangling over into the
-range that the next otap batch will use and we can accidentally associate
-the row with `id = 3` with some record batch not in this otap batch.
+`parent_id` has a referential integrity violation. We compute the mappings and
+the next offset from the `id` column only, so 3 dangles into the range that
+the next OTAP batch will use. We could accidentally associate the row that has
+`parent_id = 3` with a record batch that is not in this OTAP batch.
 
-However if the referential integrity violation is in the middle somewhere,
-this is not a problem. Take this one for example:
+If the violation is in the middle of the range, however, it is not a problem.
+Take this example:
 
 id: [1, 3] parent_id: [2]
 
-In this case the dangling parent_id is in the middle of the id range that
-we've reserved for this otap batch.
+In this case the dangling `parent_id` is inside the ID range reserved for this
+OTAP batch, so it cannot attach to any other input's data.
+
+# Isolation guarantee
+
+A corrupt input may only affect its own rows. Every surviving ID of an input
+maps into a range reserved exclusively for that input. Dangling references
+that fall inside the reserved range are kept (garbage in, garbage out).
+Dangling references that would escape it are redacted. When a row is
+redacted, its own children are not re-examined. Those grandchildren still
+point inside their input's reserved range, so they are harmless orphans.
 
 # Approach
 
-We prefer naive offset as much as possible and only compact when either we
-would create junk data or we need the extra space.
+We prefer a naive offset whenever possible, and compact only when an offset
+would create junk data or when we need the extra space.
 
-We first compute the minmax value of every column and determine the eligible
-reindexing strategies. If the child's parent_id range is not inside the
-parents corresponding id range then we have to compact. If it is then we
-can choose to compact or apply some offset.
+We first compute the min and max of every column to find which strategies
+are eligible. If a child's `parent_id` range is not inside the parent's
+corresponding `id` range, we have to compact. If it is, we may choose either
+to compact or to apply an offset.
 
-For a naive offset on a primary id column, the number of ids that we
-will "use up" is the difference between the minmax of the column. For a
-compacting strategy we will use the length of the column because this is a
-primary id column and the values must be unique.
+For a naive offset on a primary ID column, the number of IDs we "use up" is
+the span of the column (max - min + 1). For compaction we use the length of
+the column, because it is a primary ID column and its values must be unique.
 
-For non primary id columns (resource id and scope id) we only know the upper
-bound of how many ids we'll use which is max - min + 1. We don't know how
-many unique ids will actually be in there unless we compact and find out.
+For non-primary ID columns (resource ID and scope ID) we only know an upper
+bound on how many IDs we will use, which is max - min + 1. We don't know how
+many unique IDs the column actually contains unless we compact and find out.
 
-Once we have the upper bound for how many ids we will use if we follow the
-best eligible strategy for each otap batch, then we see if we're going to
-overflow the limit. If we do then we compute the amount of "savings" that
-we need to achieve.
+Once we have that upper bound for every OTAP batch under its best eligible
+strategy, we check whether the total overflows the limit. If it does, we
+compute how many IDs we need to "save".
 
-The only way we can save id space is by choosing compaction and seeing if
-we end up with less ids than the upper bound. We keep choosing compaction
-until we've saved enough ids that we can use the optimal available strategy
-for the rest of the record batches.
+The only way to save ID space is to compact and hope we end up with fewer IDs
+than the upper bound. We keep choosing compaction until we have saved enough,
+and then use the best available strategy for the remaining record batches.
+
+# Null IDs
+
+Null slots in ID columns are excluded from statistics and compaction and stay
+null in the output. Their underlying values are never interpreted as IDs, and
+offsets are applied with wrapping arithmetic so an arbitrary value in a null
+slot cannot overflow.
+
+# TODO
+
+- TODO(D4): Make compaction faster. Today it sorts the valid values (or their
+  indices), builds range mappings, applies them in sorted order, and unsorts.
+  A rank bitmap or a dense lookup table indexed by `id - min` would avoid the
+  sort for dense ranges.
+- TODO(root-decode-noop): `remove_transport_optimized_encodings` rebuilds the
+  schema and record batch for root tables even when every column is already
+  plain. It should return the batch untouched in that case.
+- TODO(split-decode): `split` sorts and cuts batches by their ID columns
+  before transport-optimized encodings are removed (the batch processor with
+  `max_size` set, fed by an OTAP receiver). Sorting delta-encoded IDs
+  corrupts them. Encodings should be removed before splitting.
 */
 
-use std::ops::{Add, AddAssign, Range, Sub, SubAssign};
-use std::sync::Arc;
+use std::ops::Range;
 
 use arrow::array::{
-    Array, ArrayRef, ArrowNativeTypeOp, ArrowPrimitiveType, AsArray, DictionaryArray,
-    PrimitiveArray, RecordBatch,
+    Array, ArrowNativeTypeOp, ArrowPrimitiveType, AsArray, BooleanBufferBuilder, PrimitiveArray,
+    RecordBatch,
 };
-use arrow::buffer::ScalarBuffer;
-use arrow::compute::kernels::aggregate::{max_array, min_array};
+use arrow::buffer::{BooleanBuffer, ScalarBuffer};
+use arrow::compute::kernels::aggregate::{max, min};
 use arrow::datatypes::{
-    ArrowDictionaryKeyType, ArrowNativeType, ArrowNumericType, DataType, UInt8Type, UInt16Type,
-    UInt32Type,
+    ArrowDictionaryKeyType, ArrowNativeType, DataType, UInt8Type, UInt16Type, UInt32Type,
 };
 
 use crate::error::{Error, Result};
-use crate::otap::transform::transport_optimize::remove_transport_optimized_encodings;
-use crate::otap::transform::util::{
-    extract_id_column, payload_to_idx, remove_record_batch_ranges, replace_column,
-    sort_record_batch_by_indices,
+use crate::otap::OtapBatchStore;
+use crate::otap::transform::concatenate::plan::{AnyRemap, IdCol, IdRemap, InputPlan, Selection};
+use crate::otap::transform::transport_optimize::{
+    RESOURCE_ID_COL_PATH, SCOPE_ID_COL_PATH, remove_transport_optimized_encodings,
 };
-use crate::otap::{Logs, Metrics, OtapBatchStore, Traces};
+use crate::otap::transform::util::{extract_id_column, payload_to_idx};
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use crate::schema::consts::{ID, PARENT_ID};
 
 use super::util::{IdColumnType, PrimaryIdInfo, payload_relations};
 
-/// Reindex the provided record batches in place such that all IDs are unique
-/// for each payload type across all batches. This makes it safe to concatenate
-/// these record batches.
-///
-/// Note: reindex also removes the transport optimized encoding.
-/// Note: There are opportunities for optimization here, some of which are captured
-/// in https://github.com/open-telemetry/otel-arrow/issues/1926
-pub fn reindex<const N: usize>(batches: &mut [[Option<RecordBatch>; N]]) -> Result<()> {
-    if batches.is_empty() || batches.len() == 1 {
-        return Ok(());
-    }
+/// Per-payload, per-input plans. `plans[payload_idx][input_idx]`.
+pub(crate) type IdPlan<const N: usize> = [Vec<InputPlan>; N];
 
-    match N {
-        Logs::COUNT => reindex_logs::<{ N }>(batches),
-        Metrics::COUNT => reindex_metrics::<{ N }>(batches),
-        Traces::COUNT => reindex_traces::<{ N }>(batches),
-        _ => unreachable!(),
-    }
-}
-
-struct MultiBatchStore<'a, T, const N: usize> {
-    batches: &'a mut [[Option<RecordBatch>; N]],
-    _phantom: std::marker::PhantomData<T>,
-}
-
-impl<'a, T: OtapBatchStore, const N: usize> MultiBatchStore<'a, T, N> {
-    fn new(batches: &'a mut [[Option<RecordBatch>; N]]) -> Self {
-        Self {
-            batches,
-            _phantom: std::marker::PhantomData,
+/// Remove transport optimized encodings from every batch in place.
+pub(crate) fn remove_transport_encodings<S: OtapBatchStore, const N: usize>(
+    batches: &mut [[Option<RecordBatch>; N]],
+) -> Result<()> {
+    for &payload_type in S::allowed_payload_types() {
+        let idx = payload_to_idx(payload_type);
+        for group in batches.iter_mut() {
+            if let Some(rb) = group[idx].as_mut() {
+                *rb = remove_transport_optimized_encodings(payload_type, rb)?;
+            }
         }
     }
-
-    fn get_mut(&mut self, idx: usize) -> &mut [Option<RecordBatch>; N] {
-        &mut self.batches[idx]
-    }
-
-    fn len(&self) -> usize {
-        self.batches.len()
-    }
-
-    fn select(&self, payload_type: ArrowPayloadType) -> impl Iterator<Item = &RecordBatch> {
-        self.batches
-            .iter()
-            .filter_map(move |batch| batch[payload_to_idx(payload_type)].as_ref())
-    }
-
-    fn remove_transport_optimized_encodings(
-        &mut self,
-        payload_type: ArrowPayloadType,
-    ) -> Result<()> {
-        for rb in self.select_mut(payload_type) {
-            *rb = remove_transport_optimized_encodings(payload_type, rb)?;
-        }
-        Ok(())
-    }
-
-    fn select_mut(
-        &mut self,
-        payload_type: ArrowPayloadType,
-    ) -> impl Iterator<Item = &mut RecordBatch> {
-        self.batches
-            .iter_mut()
-            .filter_map(move |batch| batch[payload_to_idx(payload_type)].as_mut())
-    }
+    Ok(())
 }
 
-pub fn reindex_logs<const N: usize>(logs: &mut [[Option<RecordBatch>; N]]) -> Result<()> {
-    let mut store = MultiBatchStore::<Logs, { N }>::new(logs);
-    reindex_batch_store(&mut store)
-}
-
-pub fn reindex_metrics<const N: usize>(metrics: &mut [[Option<RecordBatch>; N]]) -> Result<()> {
-    let mut store = MultiBatchStore::<Metrics, { N }>::new(metrics);
-    reindex_batch_store(&mut store)
-}
-
-pub fn reindex_traces<const N: usize>(traces: &mut [[Option<RecordBatch>; N]]) -> Result<()> {
-    let mut store = MultiBatchStore::<Traces, { N }>::new(traces);
-    reindex_batch_store(&mut store)
-}
-
-/// Generic reindexing function that works for any OtapBatchStore
+/// Plan the ID rewrites needed to concatenate `batches` without collisions.
 ///
-/// Iterates over all allowed payload types, gets their relations, and reindexes
-/// each ID column and its corresponding parent_id columns in child tables.
-fn reindex_batch_store<S, const N: usize>(store: &mut MultiBatchStore<'_, S, N>) -> Result<()>
-where
-    S: OtapBatchStore,
-{
-    for payload_type in S::allowed_payload_types() {
-        store.remove_transport_optimized_encodings(*payload_type)?;
+/// Transport optimized encodings must already have been removed. The inputs
+/// are not modified.
+pub(crate) fn plan_ids<S: OtapBatchStore, const N: usize>(
+    batches: &[[Option<RecordBatch>; N]],
+) -> Result<IdPlan<N>> {
+    let mut plans: IdPlan<N> = std::array::from_fn(|_| vec![InputPlan::default(); batches.len()]);
+
+    if batches.len() <= 1 {
+        return Ok(plans);
     }
 
     for &payload_type in S::allowed_payload_types() {
         let info = payload_relations(payload_type);
 
-        // Check for obvious overflow on the primary ID column.
         if let Some(ref primary_id_info) = info.primary_id {
-            check_primary_id_for_overflow(store, payload_type, primary_id_info)?;
+            check_primary_id_for_overflow(batches, payload_type, primary_id_info)?;
         }
 
         for relation in info.relations {
             let is_primary = Some(relation.key_col) == info.primary_id.as_ref().map(|id| id.name);
+            let ctx = RelationCtx {
+                parent_payload_type: payload_type,
+                child_payload_types: relation.child_types,
+                id_column_path: relation.key_col,
+                id_col: id_col_for_path(relation.key_col),
+                is_primary,
+                size: relation.size,
+            };
             match relation.size {
-                IdColumnType::U16 => {
-                    reindex_id_column::<UInt16Type, S, N>(
-                        store,
-                        payload_type,
-                        relation.child_types,
-                        relation.key_col,
-                        is_primary,
-                        relation.size,
-                    )?;
-                }
-                IdColumnType::U32 => {
-                    reindex_id_column::<UInt32Type, S, N>(
-                        store,
-                        payload_type,
-                        relation.child_types,
-                        relation.key_col,
-                        is_primary,
-                        relation.size,
-                    )?;
-                }
+                IdColumnType::U16 => plan_relation::<UInt16Type, N>(batches, &mut plans, &ctx)?,
+                IdColumnType::U32 => plan_relation::<UInt32Type, N>(batches, &mut plans, &ctx)?,
             }
         }
     }
 
-    Ok(())
+    Ok(plans)
+}
+
+fn id_col_for_path(path: &str) -> IdCol {
+    match path {
+        RESOURCE_ID_COL_PATH => IdCol::ResourceId,
+        SCOPE_ID_COL_PATH => IdCol::ScopeId,
+        ID => IdCol::Id,
+        _ => unreachable!("unexpected id column path {path}"),
+    }
+}
+
+struct RelationCtx<'a> {
+    parent_payload_type: ArrowPayloadType,
+    child_payload_types: &'a [ArrowPayloadType],
+    id_column_path: &'a str,
+    id_col: IdCol,
+    is_primary: bool,
+    size: IdColumnType,
+}
+
+/// Trait tying the ID native types to their [AnyRemap] variant.
+trait IdType: ArrowPrimitiveType<Native: Ord + ArrowNativeTypeOp> {
+    fn wrap(remap: IdRemap<Self::Native>) -> AnyRemap;
+}
+
+impl IdType for UInt16Type {
+    fn wrap(remap: IdRemap<u16>) -> AnyRemap {
+        AnyRemap::U16(remap)
+    }
+}
+
+impl IdType for UInt32Type {
+    fn wrap(remap: IdRemap<u32>) -> AnyRemap {
+        AnyRemap::U32(remap)
+    }
 }
 
 // For a given primary id column, determine the count of Ids that exist across
 // every record batch and determine if it will fit in the type for that column.
-//
-// # Returns
-// * `Ok(())` if the primary id column will fit in the type
-// * `Err` if the primary id column will not fit in the type
-fn check_primary_id_for_overflow<S, const N: usize>(
-    store: &MultiBatchStore<'_, S, N>,
+fn check_primary_id_for_overflow<const N: usize>(
+    batches: &[[Option<RecordBatch>; N]],
     payload_type: ArrowPayloadType,
     id_info: &PrimaryIdInfo,
-) -> Result<()>
-where
-    S: OtapBatchStore,
-{
+) -> Result<()> {
+    let idx = payload_to_idx(payload_type);
     let mut count: u64 = 0;
-    for batch in store.select(payload_type) {
-        let Ok(id_col) = extract_id_column(batch, id_info.name) else {
+    for rb in batches.iter().filter_map(|b| b[idx].as_ref()) {
+        let Ok(id_col) = extract_id_column(rb, id_info.name) else {
             continue;
         };
         count += id_col.len() as u64;
     }
 
-    // TODO: Consider supporting u16::MAX + 1. This is a little tricky because we
-    // do offset math with the Native type which causes us to overflow right
-    // at the top. We could maybe try to do offset math with u64, but we will
-    // have to constantly cast back and forth and it won't be as clear if we've
-    // made a mistake somewhere. Only consequence is max batch size is 1 less.
+    // TODO: Consider supporting u16::MAX + 1. The offset math is done in the
+    // native type, which overflows right at the top. The only consequence is
+    // that the max batch size is 1 less.
     if count > id_info.size.max() {
         return Err(Error::TooManyItems {
             payload_type,
@@ -272,43 +261,19 @@ where
     Ok(())
 }
 
-// Reindex an ID across both parent id and child parent_id columns while
-// preferring a naive offset whenever possible.
-fn reindex_id_column<T, S, const N: usize>(
-    store: &mut MultiBatchStore<'_, S, N>,
-    parent_payload_type: ArrowPayloadType,
-    child_payload_types: &[ArrowPayloadType],
-    id_column_path: &str,
-    is_primary: bool,
-    size: IdColumnType,
-) -> Result<()>
-where
-    T: ArrowNumericType,
-    T::Native: Ord
-        + Copy
-        + Add<Output = T::Native>
-        + Sub<Output = T::Native>
-        + AddAssign
-        + SubAssign
-        + From<u8>
-        + ArrowNativeTypeOp,
-    S: OtapBatchStore,
-{
-    // Gather statistics
-    let stats = gather_column_stats::<T, S, N>(
-        store,
-        parent_payload_type,
-        child_payload_types,
-        id_column_path,
-        is_primary,
-    )?;
+/// Plan the remaps for one ID column and all of its child `parent_id`
+/// columns, preferring a naive offset whenever possible.
+fn plan_relation<T: IdType, const N: usize>(
+    batches: &[[Option<RecordBatch>; N]],
+    plans: &mut IdPlan<N>,
+    ctx: &RelationCtx<'_>,
+) -> Result<()> {
+    let stats = gather_column_stats::<T, N>(batches, ctx)?;
 
-    // Compute the ID headroom budget. When total_ids_needed exceeds the
-    // column-type limit we must compact enough batches to fit.
-    let limit: u64 = size.max();
-
-    // Figure out an upper bound on how many ids we will use with the
-    // optimal available strategy for each otap batch.
+    // Figure out an upper bound on how many ids we will use with the optimal
+    // available strategy for each input. When this exceeds the column-type
+    // limit we must compact enough inputs to fit.
+    let limit: u64 = ctx.size.max();
     let total_ids_needed: u64 = stats
         .iter()
         .filter_map(|s| s.as_ref())
@@ -316,501 +281,79 @@ where
         .sum();
     let need_to_save: u64 = total_ids_needed.saturating_sub(limit);
 
-    let mut offset = T::Native::from(0);
+    let parent_idx = payload_to_idx(ctx.parent_payload_type);
+    let mut offset = T::Native::usize_as(0);
     let mut current_saved: u64 = 0;
 
-    #[allow(clippy::needless_range_loop)]
-    for i in 0..store.len() {
-        let Some(ref stat) = stats[i] else {
+    for (i, stat) in stats.iter().enumerate() {
+        let Some(stat) = stat else {
             continue;
         };
 
         let must_compact = stat.strategy == ReindexStrategy::CompactOnly
             || (need_to_save > 0 && current_saved < need_to_save);
 
-        if must_compact {
-            let new_offset = apply_compact_reindex::<T, S, N>(
-                store,
-                i,
-                parent_payload_type,
-                child_payload_types,
-                id_column_path,
-                offset,
-            )?;
+        let parent_rb = batches[i][parent_idx]
+            .as_ref()
+            .expect("batch must exist for non-None stat");
+        let id_col = extract_id_column(parent_rb, ctx.id_column_path)?;
 
-            // ids_consume <= max_ids_needed always
+        if must_compact {
+            let (replace, mappings, new_offset) = compact_parent::<T>(id_col.as_ref(), offset)?;
+
+            // ids_consumed <= max_ids_needed always
             let ids_consumed = new_offset.as_usize() - offset.as_usize();
             current_saved += stat.max_ids_needed as u64 - ids_consumed as u64;
             offset = new_offset;
+
+            plans[parent_idx][i].remaps[ctx.id_col as usize] =
+                Some(T::wrap(IdRemap::Replace(replace)));
+
+            for &child_payload_type in ctx.child_payload_types {
+                let child_idx = payload_to_idx(child_payload_type);
+                let Some(child_rb) = batches[i][child_idx].as_ref() else {
+                    continue;
+                };
+                let child_col = extract_id_column(child_rb, PARENT_ID)?;
+                let (replace, selection) = compact_child::<T>(child_col.as_ref(), &mappings)?;
+                let plan = &mut plans[child_idx][i];
+                plan.remaps[IdCol::ParentId as usize] = Some(T::wrap(IdRemap::Replace(replace)));
+                plan.selection = selection;
+            }
         } else {
-            offset = apply_offset_reindex::<T, S, N>(
-                store,
-                i,
-                parent_payload_type,
-                child_payload_types,
-                id_column_path,
-                stat.min,
-                stat.max,
-                offset,
-            )?;
+            let delta = offset.sub_wrapping(stat.min);
+            let remap = T::wrap(IdRemap::Offset(delta));
+            for &child_payload_type in ctx.child_payload_types {
+                let child_idx = payload_to_idx(child_payload_type);
+                if batches[i][child_idx].is_some() {
+                    plans[child_idx][i].remaps[IdCol::ParentId as usize] = Some(remap.clone());
+                }
+            }
+            plans[parent_idx][i].remaps[ctx.id_col as usize] = Some(remap);
+
+            let span = stat.max.as_usize() - stat.min.as_usize() + 1;
+            offset = offset.add_wrapping(T::Native::usize_as(span));
         }
     }
 
     Ok(())
 }
 
-/// Returns (min, max) of an ID column, handling nulls and dictionary encoding.
-///
-/// Returns `None` if the column is empty or all null.
-fn id_column_min_max<T>(col: &dyn Array) -> Result<Option<(T::Native, T::Native)>>
-where
-    T: ArrowNumericType,
-    T::Native: ArrowNativeTypeOp,
-{
+/// Returns (min, max) over the valid values of an ID column, resolving
+/// dictionary encoding through its values. `None` if empty or all null.
+fn id_column_min_max<T: IdType>(col: &dyn Array) -> Result<Option<(T::Native, T::Native)>> {
     let values = materialize_id_values::<T>(col)?;
-    let Some(min) = min_array::<T, _>(values) else {
+    let Some(lo) = min::<T>(values) else {
         return Ok(None);
     };
-    // SAFETY: presence of a min value implies at least one non-null element,
-    // so max must also be Some.
-    let max = max_array::<T, _>(values).expect("max must exist when min exists");
-    Ok(Some((min, max)))
+    // safety: presence of a min implies at least one valid value.
+    let hi = max::<T>(values).expect("max must exist when min exists");
+    Ok(Some((lo, hi)))
 }
 
-/// Fast path: apply a uniform offset to the ID column and all child parent_id
-/// columns. Works for any column (primary or non-primary) as long as the values
-/// array is offset-safe (dict-encoded columns remap values, preserving key
-/// structure).
-///
-/// Returns the new offset (= old offset + span).
-fn apply_offset_reindex<T, S, const N: usize>(
-    store: &mut MultiBatchStore<'_, S, N>,
-    batch_index: usize,
-    parent_payload_type: ArrowPayloadType,
-    child_payload_types: &[ArrowPayloadType],
-    id_column_path: &str,
-    min: T::Native,
-    max: T::Native,
-    offset: T::Native,
-) -> Result<T::Native>
-where
-    T: ArrowNumericType,
-    T::Native: Ord
-        + Copy
-        + Add<Output = T::Native>
-        + Sub<Output = T::Native>
-        + AddAssign
-        + SubAssign
-        + From<u8>
-        + ArrowNativeTypeOp,
-    S: OtapBatchStore,
-{
-    let parent_idx = payload_to_idx(parent_payload_type);
-    let parent_rb = store.get_mut(batch_index)[parent_idx]
-        .take()
-        .expect("batch must exist for non-None stat");
-
-    let id_col = extract_id_column(&parent_rb, id_column_path)?;
-    let id_values = materialize_id_values::<T>(id_col.as_ref())?;
-
-    let (off, sign) = if min <= offset {
-        (offset - min, Sign::Positive)
-    } else {
-        (min - offset, Sign::Negative)
-    };
-
-    let mut ids = id_values.values().to_vec();
-    apply_uniform_offset(&mut ids, off, sign);
-    let parent_rb = replace_id_column::<T>(parent_rb, id_column_path, ids)?;
-    store.get_mut(batch_index)[parent_idx] = Some(parent_rb);
-
-    for &child_payload_type in child_payload_types {
-        let child_idx = payload_to_idx(child_payload_type);
-        if let Some(child_rb) = store.get_mut(batch_index)[child_idx].take() {
-            let child_rb = fast_path_reindex_child::<T>(child_rb, PARENT_ID, off, sign)?;
-            store.get_mut(batch_index)[child_idx] = Some(child_rb);
-        }
-    }
-
-    let span = max - min + T::Native::from(1);
-    Ok(offset + span)
-}
-
-/// Slow path: sort the ID column, create old->new mappings, and remap both the
-/// parent ID column and all child parent_id columns.
-///
-/// Returns the new offset after compaction.
-fn apply_compact_reindex<T, S, const N: usize>(
-    store: &mut MultiBatchStore<'_, S, N>,
-    batch_index: usize,
-    parent_payload_type: ArrowPayloadType,
-    child_payload_types: &[ArrowPayloadType],
-    id_column_path: &str,
-    offset: T::Native,
-) -> Result<T::Native>
-where
-    T: ArrowNumericType,
-    T::Native: Ord
-        + Copy
-        + Add<Output = T::Native>
-        + Sub<Output = T::Native>
-        + AddAssign
-        + SubAssign
-        + From<u8>
-        + ArrowNativeTypeOp,
-    S: OtapBatchStore,
-{
-    let parent_idx = payload_to_idx(parent_payload_type);
-    let parent_rb = store.get_mut(batch_index)[parent_idx]
-        .take()
-        .expect("batch must exist for non-None stat");
-
-    let id_col = extract_id_column(&parent_rb, id_column_path)?;
-    let id_values = materialize_id_values::<T>(id_col.as_ref())?;
-    let mut ids = id_values.values().to_vec();
-
-    let (mappings, new_offset) = if ids.is_sorted() {
-        let (m, o) = create_mappings::<T>(&ids, offset)?;
-        assert!(apply_mappings::<T>(&mut ids, &m).is_none());
-        (m, o)
-    } else {
-        let sort_indices = sort_vec_to_indices(&ids);
-        let mut sorted_ids = vec![T::Native::default(); ids.len()];
-        take_vec(&ids, &mut sorted_ids, &sort_indices);
-        let (m, o) = create_mappings::<T>(&sorted_ids, offset)?;
-        assert!(apply_mappings::<T>(&mut sorted_ids, &m).is_none());
-        untake_vec(&sorted_ids, &mut ids, &sort_indices);
-        (m, o)
-    };
-
-    let parent_rb = replace_id_column::<T>(parent_rb, id_column_path, ids)?;
-    store.get_mut(batch_index)[parent_idx] = Some(parent_rb);
-
-    for &child_payload_type in child_payload_types {
-        let child_idx = payload_to_idx(child_payload_type);
-        if let Some(child_rb) = store.get_mut(batch_index)[child_idx].take() {
-            let child_rb = reindex_child_column::<T>(child_rb, PARENT_ID, &mappings)?;
-            store.get_mut(batch_index)[child_idx] = Some(child_rb);
-        }
-    }
-
-    Ok(new_offset)
-}
-
-/// Check if all of a child's parent_id values for batch_index are within
-/// [min, max]. Returns false if the child has orphan references.
-fn children_in_parent_range<T, S, const N: usize>(
-    store: &MultiBatchStore<'_, S, N>,
-    batch_index: usize,
-    child_payload_type: ArrowPayloadType,
-    parent_min: T::Native,
-    parent_max: T::Native,
-) -> Result<bool>
-where
-    T: ArrowNumericType,
-    T::Native: Ord + Copy + ArrowNativeTypeOp,
-    S: OtapBatchStore,
-{
-    let child_idx = payload_to_idx(child_payload_type);
-    let Some(child_batch) = &store.batches[batch_index][child_idx] else {
-        return Ok(true);
-    };
-    let Ok(child_col) = extract_id_column(child_batch, PARENT_ID) else {
-        return Ok(true);
-    };
-    let Some((child_min, child_max)) = id_column_min_max::<T>(child_col.as_ref())? else {
-        return Ok(true);
-    };
-    Ok(child_min >= parent_min && child_max <= parent_max)
-}
-
-/// Applies a uniform offset to all values in a slice.
-fn apply_uniform_offset<T>(values: &mut [T], offset: T, sign: Sign)
-where
-    T: AddAssign + SubAssign + Copy,
-{
-    match sign {
-        Sign::Positive => values.iter_mut().for_each(|v| *v += offset),
-        Sign::Negative => values.iter_mut().for_each(|v| *v -= offset),
-    }
-}
-
-/// Fast-path child reindexing: applies a uniform offset to the parent_id
-/// column in a child record batch.
-fn fast_path_reindex_child<T>(
-    rb: RecordBatch,
-    column_path: &str,
-    offset: T::Native,
-    sign: Sign,
-) -> Result<RecordBatch>
-where
-    T: ArrowPrimitiveType,
-    T::Native: Ord + Copy + AddAssign + SubAssign + ArrowNativeType,
-{
-    let id_col = extract_id_column(&rb, column_path)?;
-    let id_values = materialize_id_values::<T>(id_col.as_ref())?;
-    let mut new_values = id_values.values().to_vec();
-    apply_uniform_offset(&mut new_values, offset, sign);
-    replace_id_column::<T>(rb, column_path, new_values)
-}
-
-/// Reindexes a child id column in a record batch using the provided mappings.
-/// Parent ids take a slightly different path because they need to separate the
-/// creation of the mappings from applying those mappings to potentially multiple
-/// child batches.
-fn reindex_child_column<T>(
-    rb: RecordBatch,
-    column_path: &str,
-    mappings: &[IdMapping<T::Native>],
-) -> Result<RecordBatch>
-where
-    T: ArrowPrimitiveType,
-    T::Native: Ord + Copy + Add<Output = T::Native> + AddAssign + SubAssign + ArrowNativeType,
-{
-    // Materialize the id values. In the case of a dictionary this is the
-    // values array and does not include the keys.
-    let id_col = extract_id_column(&rb, column_path)?;
-    let id_values = materialize_id_values::<T>(id_col.as_ref())?;
-    let mut id_values = id_values.values().to_vec();
-
-    let value_sort_indices = sort_vec_to_indices(&id_values);
-    let value_sort_indices = PrimitiveArray::from(value_sort_indices);
-    let mut new_ids = vec![T::Native::default(); id_values.len()];
-    take_vec(&id_values, &mut new_ids, value_sort_indices.values());
-    if let Some(violations) = apply_mappings::<T>(&mut new_ids, mappings) {
-        // We may have integrity violations in some number of ranges. We need to eliminate
-        // them because we're on the reindexing path where we're squashing all ids
-        // to contiguous ranges starting at 0, so any strays left behind may accidentally
-        // be associated to ids in other batches if we apply some offset to them.
-        //
-        // For primitive columns the violation ranges correspond directly to rows in
-        // the sorted record batch so we sort, remove the rows, compact new_ids, and
-        // replace the column.
-        //
-        // For dictionary columns the violations are in the values array, not the
-        // keys. In this case the violations could be for unreferenced dict values,
-        // so we map value-level redactions to key-level redactions to see what
-        // needs to be removed.
-        match id_col.data_type() {
-            DataType::Dictionary(key_type, _) => {
-                // Determine which value violations correspond to actual rows.
-                let key_redactions = match key_type.as_ref() {
-                    DataType::UInt8 => map_value_redactions_to_key_redactions::<UInt8Type>(
-                        id_col.as_ref(),
-                        &violations,
-                    ),
-                    DataType::UInt16 => map_value_redactions_to_key_redactions::<UInt16Type>(
-                        id_col.as_ref(),
-                        &violations,
-                    ),
-                    _ => {
-                        return Err(Error::UnsupportedDictionaryKeyType {
-                            expect_oneof: vec![DataType::UInt8, DataType::UInt16],
-                            actual: key_type.as_ref().clone(),
-                        });
-                    }
-                };
-
-                // Unsort the remapped values back to original order. Violation
-                // positions contain garbage but no key references them.
-                untake_vec(&new_ids, &mut id_values, value_sort_indices.values());
-
-                let rb = if !key_redactions.is_empty() {
-                    // Genuine violations - sort batch by the same key order
-                    // used to produce the key redaction ranges, then remove.
-                    let sort_indices = arrow::compute::sort_to_indices(&id_col, None, None)
-                        .map_err(|e| Error::Batching { source: e })?;
-                    let rb = sort_record_batch_by_indices(rb, &sort_indices)?;
-                    remove_record_batch_ranges(&rb, &key_redactions)
-                        .map_err(|e| Error::Batching { source: e })?
-                } else {
-                    rb
-                };
-
-                return replace_id_column::<T>(rb, column_path, id_values);
-            }
-            _ => {
-                // Primitive column: sort batch, remove violation rows, compact.
-                let rb = sort_record_batch_by_indices(rb, &value_sort_indices)?;
-                let rb = remove_record_batch_ranges(&rb, &violations)
-                    .map_err(|e| Error::Batching { source: e })?;
-                remove_vec_ranges(&mut new_ids, &violations);
-                return replace_id_column::<T>(rb, column_path, new_ids);
-            }
-        }
-    }
-
-    // Unsort the IDs. Note that since `take` and `untake` can't be done
-    // in place, we re-use the original id vec as the destination.
-    untake_vec(&new_ids, &mut id_values, value_sort_indices.values());
-    replace_id_column::<T>(rb, column_path, id_values)
-}
-
-/// Removes elements at the given ranges from a vector in place.
-/// Ranges must be sorted and non-overlapping.
-fn remove_vec_ranges<T>(vec: &mut Vec<T>, ranges: &[Range<usize>]) {
-    // Process in reverse so earlier indices remain valid
-    for range in ranges.iter().rev() {
-        drop(vec.drain(range.clone()));
-    }
-}
-
-/// Maps value-level redaction ranges to key-level (row-level) redaction ranges
-/// for dictionary-encoded columns.
-///
-/// # Background
-///
-/// When [reindex_child_column] processes a dictionary-encoded id column, it
-/// operates on the dictionary **values** array rather
-/// than the per-row keys. Not all dictionary values are necessarily referenced
-/// by a key which is a problem because [apply_mappings] may flag values that
-/// are not actually referenced in any row.
-///
-/// This function determines which, if any, flagged values are referenced by
-/// keys and returns ranges of indices for the keys which need to be removed.
-///
-/// # Algorithm
-///
-/// Dictionary keys are indices into the values array, and the redaction ranges
-/// are also indices into the values array. Both are directly comparable. We:
-///
-/// 1. Sort the keys. Since the redaction ranges are sorted and non-overlapping
-///    by construction, we merge-scan them in a single pass.
-/// 2. If a key falls inside a redaction range, that row has a genuine integrity
-///    violation.
-///
-/// The output ranges are positions in the sorted-key order, which corresponds
-/// to rows in the record batch after sorting by
-/// `arrow::compute::sort_to_indices(&id_col)`.
-///
-/// # Example
-///
-/// ```text
-/// Dictionary values array:  [0, 1, 2, 3, 4]   (indices 0..5)
-/// Dictionary keys array:    [0, 2, 4, 1]      (4 rows)
-/// Value redactions:         [3..5]            (values at indices 3,4 flagged)
-///
-/// ```
-///
-/// In this case:
-///
-/// Value index 3 was NOT referenced by any key (spurious).
-/// Value index 4 WAS referenced by key 4 (genuine) -> Output is [3..4)
-///
-fn map_value_redactions_to_key_redactions<K>(
-    id_col: &dyn Array,
-    value_redactions: &[Range<usize>],
-) -> Vec<Range<usize>>
-where
-    K: ArrowDictionaryKeyType,
-    K::Native: Ord,
-{
-    debug_assert!(
-        value_redactions.windows(2).all(|w| w[0].end <= w[1].start),
-        "value_redactions must be sorted and non-overlapping"
-    );
-
-    if value_redactions.is_empty() {
-        return Vec::new();
-    }
-
-    // safety: Caller checks the type before
-    let dict = id_col.as_dictionary::<K>();
-
-    // Keys are indices into the values array -- directly comparable to the
-    // redaction ranges which are also value-array indices. We keep the keys
-    // in their native type (u8 or u16) and cast the range bounds to match.
-    let mut sorted_keys: Vec<K::Native> = dict.keys().values().to_vec();
-    sorted_keys.sort_unstable();
-
-    // Merge-scan sorted keys against value redaction ranges.
-    let mut key_redactions = Vec::new();
-    let mut key_idx = 0;
-    let mut redaction_idx = 0;
-    let mut current_start: Option<usize> = None;
-
-    while key_idx < sorted_keys.len() && redaction_idx < value_redactions.len() {
-        let key = sorted_keys[key_idx];
-        let redaction = &value_redactions[redaction_idx];
-        // Cast range bounds to the key type. Safe because dictionary keys
-        // index into the values array, so all indices fit in K::Native.
-        // safety: K::Native is at most 16 bits, so we should be able to cast that into
-        // a usize on any 32 bit or larger platform.
-        let redaction_start = K::Native::from_usize(redaction.start).expect("usize > 16 bits");
-        let redaction_end = K::Native::from_usize(redaction.end).expect("usize > 16 bits");
-
-        // Key is before this redaction range - not a violation.
-        if key < redaction_start {
-            if let Some(start) = current_start.take() {
-                key_redactions.push(start..key_idx);
-            }
-
-            key_idx += 1;
-            continue;
-        }
-
-        // Key is past this redaction range - advance to the next range.
-        if key >= redaction_end {
-            if let Some(start) = current_start.take() {
-                key_redactions.push(start..key_idx);
-            }
-
-            redaction_idx += 1;
-            continue;
-        }
-
-        // Key is inside the redaction range - genuine violation.
-        if current_start.is_none() {
-            current_start = Some(key_idx);
-        }
-        key_idx += 1;
-    }
-
-    if let Some(start) = current_start {
-        key_redactions.push(start..key_idx);
-    }
-
-    key_redactions
-}
-
-fn replace_id_column<T>(
-    rb: RecordBatch,
-    column_path: &str,
-    new_ids: Vec<T::Native>,
-) -> Result<RecordBatch>
-where
-    T: ArrowPrimitiveType,
-    T::Native: ArrowNativeType,
-{
-    let id_col = extract_id_column(&rb, column_path)?;
-    let new_ids_array = PrimitiveArray::<T>::new(ScalarBuffer::from(new_ids), None);
-    let (schema, mut columns, _) = rb.into_parts();
-    let new_column = replace_ids::<T>(id_col.as_ref(), new_ids_array);
-    replace_column(column_path, None, &schema, &mut columns, new_column);
-    let rb =
-        RecordBatch::try_new(schema, columns).map_err(|e| Error::UnexpectedRecordBatchState {
-            reason: format!("Failed to create batch: {}", e),
-        })?;
-
-    Ok(rb)
-}
-
-/// Sorts a vector of values and returns the resulting sort indices
-fn sort_vec_to_indices<T: Ord>(values: &[T]) -> Vec<u32> {
-    let mut indices: Vec<u32> = (0u32..values.len() as u32).collect();
-    indices.sort_unstable_by_key(|&i| &values[i as usize]);
-    indices
-}
-
-/// Materializes an ID array from either a direct array or dictionary values.
-///
-/// For dictionary arrays, returns the VALUES array (unique dictionary entries), not the per-row
-/// logical values. This is intentional: callers remap just the dictionary values, and the
-/// dictionary keys preserve the per-row structure automatically.
-fn materialize_id_values<T>(array: &dyn Array) -> Result<&PrimitiveArray<T>>
-where
-    T: ArrowPrimitiveType,
-{
+/// Returns the primitive array holding the ID values of `array`. For
+/// dictionary arrays this is the VALUES array, not the per-row values.
+fn materialize_id_values<T: ArrowPrimitiveType>(array: &dyn Array) -> Result<&PrimitiveArray<T>> {
     let id_arr = match array.data_type() {
         data_type if data_type == &T::DATA_TYPE => array.as_primitive::<T>(),
         DataType::Dictionary(key_type, value_type) if value_type.as_ref() == &T::DATA_TYPE => {
@@ -837,58 +380,134 @@ where
     Ok(id_arr)
 }
 
-/// Creates a replacement ID column, preserving dictionary encoding if the original was
-/// dictionary-encoded. For plain columns, returns the new values directly. For dictionary
-/// columns, builds a new DictionaryArray with the original keys and the remapped values.
-fn replace_ids<T>(original: &dyn Array, new_values: PrimitiveArray<T>) -> ArrayRef
-where
-    T: ArrowPrimitiveType,
-{
-    match original.data_type() {
-        DataType::Dictionary(key_type, _) => match key_type.as_ref() {
-            DataType::UInt8 => {
-                let dict = original.as_dictionary::<UInt8Type>();
-                Arc::new(DictionaryArray::new(
-                    dict.keys().clone(),
-                    Arc::new(new_values),
-                ))
-            }
-            DataType::UInt16 => {
-                let dict = original.as_dictionary::<UInt16Type>();
-                Arc::new(DictionaryArray::new(
-                    dict.keys().clone(),
-                    Arc::new(new_values),
-                ))
-            }
-            _ => Arc::new(new_values),
-        },
-        _ => Arc::new(new_values),
+/// Compact a parent ID column starting at `offset`.
+///
+/// Returns the replacement values in source order (null slots hold 0), the
+/// range mappings needed to remap children, and the next free offset.
+fn compact_parent<T: IdType>(
+    col: &dyn Array,
+    offset: T::Native,
+) -> Result<(
+    ScalarBuffer<T::Native>,
+    Vec<IdMapping<T::Native>>,
+    T::Native,
+)> {
+    let array = materialize_id_values::<T>(col)?;
+    let values = array.values();
+    let mut out = vec![T::Native::default(); values.len()];
+
+    // Positions of valid (non-null) ids.
+    let valid: Vec<u32> = match array.nulls() {
+        Some(nulls) if nulls.null_count() > 0 => nulls.valid_indices().map(|i| i as u32).collect(),
+        _ => (0..values.len() as u32).collect(),
+    };
+
+    let mut sorted_positions = valid;
+    let already_sorted = sorted_positions
+        .windows(2)
+        .all(|w| values[w[0] as usize] <= values[w[1] as usize]);
+    if !already_sorted {
+        sorted_positions.sort_unstable_by_key(|&i| values[i as usize]);
     }
+
+    let mut sorted: Vec<T::Native> = sorted_positions
+        .iter()
+        .map(|&i| values[i as usize])
+        .collect();
+    let (mappings, new_offset) = create_mappings::<T>(&sorted, offset);
+    let violations = apply_mappings::<T>(&mut sorted, &mappings);
+    debug_assert!(violations.is_none(), "parent ids always map to themselves");
+
+    for (&pos, &v) in sorted_positions.iter().zip(&sorted) {
+        out[pos as usize] = v;
+    }
+
+    Ok((ScalarBuffer::from(out), mappings, new_offset))
 }
 
-/// Sign of an offset operation
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Sign {
-    /// Add the offset
-    Positive,
-    /// Subtract the offset
-    Negative,
+/// Remap a child `parent_id` column using the parent's mappings.
+///
+/// Returns the replacement values in source order (indexed like the values
+/// array for dictionary columns) and the selection of rows whose parent
+/// exists. Violating rows are excluded from the selection.
+fn compact_child<T: IdType>(
+    col: &dyn Array,
+    mappings: &[IdMapping<T::Native>],
+) -> Result<(ScalarBuffer<T::Native>, Selection)> {
+    let values = materialize_id_values::<T>(col)?.values();
+
+    let sort_indices = sort_vec_to_indices(values);
+    let mut sorted = vec![T::Native::default(); values.len()];
+    take_vec(values, &mut sorted, &sort_indices);
+    let violations = apply_mappings::<T>(&mut sorted, mappings);
+
+    let mut out = vec![T::Native::default(); values.len()];
+    untake_vec(&sorted, &mut out, &sort_indices);
+
+    let selection = match violations {
+        None => Selection::All,
+        Some(violations) => {
+            // Mark violating value positions (source order).
+            let mut value_ok = BooleanBufferBuilder::new(values.len());
+            value_ok.append_n(values.len(), true);
+            for range in violations {
+                for &src in &sort_indices[range] {
+                    value_ok.set_bit(src as usize, false);
+                }
+            }
+            let value_ok = value_ok.finish();
+
+            let row_ok = match col.data_type() {
+                DataType::Dictionary(key_type, _) => match key_type.as_ref() {
+                    DataType::UInt8 => rows_ok_from_keys::<UInt8Type>(col, &value_ok),
+                    DataType::UInt16 => rows_ok_from_keys::<UInt16Type>(col, &value_ok),
+                    k => {
+                        return Err(Error::UnsupportedDictionaryKeyType {
+                            expect_oneof: vec![DataType::UInt8, DataType::UInt16],
+                            actual: k.clone(),
+                        });
+                    }
+                },
+                _ => value_ok,
+            };
+            selection_from_bitmap(&row_ok)
+        }
+    };
+
+    Ok((ScalarBuffer::from(out), selection))
 }
 
-/// Represents a contiguous range of IDs with an offset to apply
-#[derive(Debug, Clone)]
-struct IdMapping<T> {
-    /// The first ID value in this range
-    start_id: T,
-    /// The last ID value in this range
-    end_id: T,
-    /// Offset to add or subtract from IDs in this range
-    offset: T,
-    /// Sign of the offset operation
-    sign: Sign,
+/// Map a per-value validity bitmap to a per-row bitmap through dictionary
+/// keys.
+fn rows_ok_from_keys<K: ArrowDictionaryKeyType>(
+    col: &dyn Array,
+    value_ok: &BooleanBuffer,
+) -> BooleanBuffer {
+    let dict = col.as_dictionary::<K>();
+    let keys = dict.keys().values();
+    let values_len = value_ok.len();
+    BooleanBuffer::collect_bool(keys.len(), |i| {
+        let k = keys[i].as_usize();
+        k < values_len && value_ok.value(k)
+    })
 }
 
-/// Whether a batch can use the fast offset path or must compact (sort + remap).
+/// Convert a keep-bitmap into a [Selection].
+fn selection_from_bitmap(keep: &BooleanBuffer) -> Selection {
+    if keep.count_set_bits() == keep.len() {
+        return Selection::All;
+    }
+    Selection::Ranges(keep.set_slices().map(|(s, e)| s..e).collect())
+}
+
+/// Sort a slice and return the resulting sort indices.
+fn sort_vec_to_indices<T: Ord>(values: &[T]) -> Vec<u32> {
+    let mut indices: Vec<u32> = (0u32..values.len() as u32).collect();
+    indices.sort_unstable_by_key(|&i| &values[i as usize]);
+    indices
+}
+
+/// Whether a batch can use the fast offset path or must compact.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ReindexStrategy {
     /// Must use the slow path (sort + compact).
@@ -897,86 +516,71 @@ enum ReindexStrategy {
     Any,
 }
 
-/// Per-batch statistics collected in the first pass of reindexing.
+/// Per-batch statistics collected in the first pass of planning.
 #[derive(Debug, Clone)]
 struct ColumnStats<T> {
     min: T,
     max: T,
-    /// Upper bound on IDs consumed if this batch uses the offset path.
-    /// Equal to `span` for `Any`, unique value count for `CompactOnly`.
+    /// Upper bound on IDs consumed by this batch under its best strategy.
     max_ids_needed: usize,
     strategy: ReindexStrategy,
 }
 
-/// Returns a `Vec` of length `store.len()`. Entry `i` is `None` when batch `i`
-/// has no parent payload, no ID column, or an empty/all-null ID column
-fn gather_column_stats<T, S, const N: usize>(
-    store: &MultiBatchStore<'_, S, N>,
-    parent_payload_type: ArrowPayloadType,
-    child_payload_types: &[ArrowPayloadType],
-    id_column_path: &str,
-    is_primary: bool,
-) -> Result<Vec<Option<ColumnStats<T::Native>>>>
-where
-    T: ArrowNumericType,
-    T::Native: Ord + Copy + ArrowNativeTypeOp,
-    S: OtapBatchStore,
-{
-    let parent_idx = payload_to_idx(parent_payload_type);
-    let mut stats = Vec::with_capacity(store.len());
+/// Returns one entry per input. Entry `i` is `None` when input `i` has no
+/// parent payload, no ID column, or an empty/all-null ID column.
+fn gather_column_stats<T: IdType, const N: usize>(
+    batches: &[[Option<RecordBatch>; N]],
+    ctx: &RelationCtx<'_>,
+) -> Result<Vec<Option<ColumnStats<T::Native>>>> {
+    let parent_idx = payload_to_idx(ctx.parent_payload_type);
+    let mut stats = Vec::with_capacity(batches.len());
 
-    for i in 0..store.len() {
-        let Some(parent_rb) = &store.batches[i][parent_idx] else {
+    for group in batches {
+        let Some(parent_rb) = &group[parent_idx] else {
+            stats.push(None);
+            continue;
+        };
+        let Ok(id_col) = extract_id_column(parent_rb, ctx.id_column_path) else {
+            stats.push(None);
+            continue;
+        };
+        let Some((lo, hi)) = id_column_min_max::<T>(id_col.as_ref())? else {
             stats.push(None);
             continue;
         };
 
-        let id_col = match extract_id_column(parent_rb, id_column_path) {
-            Ok(col) => col,
-            Err(_) => {
-                stats.push(None);
+        let len = id_col.len() - id_col.null_count();
+        let span = hi.as_usize() - lo.as_usize() + 1;
+
+        let mut children_ok = true;
+        for &ct in ctx.child_payload_types {
+            let Some(child_rb) = &group[payload_to_idx(ct)] else {
                 continue;
+            };
+            let Ok(child_col) = extract_id_column(child_rb, PARENT_ID) else {
+                continue;
+            };
+            if let Some((cmin, cmax)) = id_column_min_max::<T>(child_col.as_ref())?
+                && (cmin < lo || cmax > hi)
+            {
+                children_ok = false;
+                break;
             }
-        };
+        }
 
-        let Some((min, max)) = id_column_min_max::<T>(id_col.as_ref())? else {
-            stats.push(None);
-            continue;
-        };
-
-        let id_values = materialize_id_values::<T>(id_col.as_ref())?;
-        let len = id_values.len();
-        let span = max.as_usize() - min.as_usize() + 1;
-
-        let children_ok = child_payload_types.iter().all(|&ct| {
-            children_in_parent_range::<T, S, N>(store, i, ct, min, max).unwrap_or(false)
-        });
-
-        // We're computing the max number of ids that we will use after
-        // reindexing according to the given strategy.
-        let (strategy, max_ids_needed) = match is_primary {
-            // In the primary case, we can either take the existing
-            // span or we can compact and reduce the number of ids to
-            // the length (which is equal to span if the ids are
-            // contiguous already). We can only take the existing
-            // span if the children are within the parent range otherwise
-            // it's possible that we create integrity violations.
-            true if children_ok => (ReindexStrategy::Any, span),
-            true if !children_ok => (ReindexStrategy::CompactOnly, len),
-
-            // The non-primary case is similar, but we have to be more
-            // pessimistic for the CompactOnly case. In this case we don't
-            // know how many unique ids there will be after we compact as
-            // there could be gaps. This could be <= span, so we'll take the
-            // span as the upper bound.
-            false if children_ok => (ReindexStrategy::Any, span),
-            false if !children_ok => (ReindexStrategy::CompactOnly, span),
-            _ => unreachable!(),
+        // The number of ids used under each strategy. With an offset, the
+        // span is consumed. When compacting a primary column, exactly `len`
+        // ids are consumed since values are unique. For non-primary columns
+        // duplicates are possible so the span remains the upper bound.
+        let (strategy, max_ids_needed) = match (ctx.is_primary, children_ok) {
+            (_, true) => (ReindexStrategy::Any, span),
+            (true, false) => (ReindexStrategy::CompactOnly, len),
+            (false, false) => (ReindexStrategy::CompactOnly, span),
         };
 
         stats.push(Some(ColumnStats {
-            min,
-            max,
+            min: lo,
+            max: hi,
             max_ids_needed,
             strategy,
         }));
@@ -985,32 +589,42 @@ where
     Ok(stats)
 }
 
-/// Chunks the sorted ID column into consecutive ranges and creates mappings
+/// Sign of an offset operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Sign {
+    Positive,
+    Negative,
+}
+
+/// Represents a contiguous range of IDs with an offset to apply.
+#[derive(Debug, Clone)]
+struct IdMapping<T> {
+    start_id: T,
+    end_id: T,
+    offset: T,
+    sign: Sign,
+}
+
+/// Chunks sorted IDs into consecutive ranges and creates mappings that make
+/// them sequential starting from `offset`.
 ///
-/// Given a sorted slice of IDs, this identifies consecutive ranges (no gaps)
-/// and calculates the offset needed to make them sequential starting from `offset`.
-///
-/// Returns (mappings, max_new_id)
-fn create_mappings<T>(
+/// Returns (mappings, next_offset).
+fn create_mappings<T: IdType>(
     sorted_ids: &[T::Native],
     offset: T::Native,
-) -> Result<(Vec<IdMapping<T::Native>>, T::Native)>
-where
-    T: ArrowPrimitiveType,
-    T::Native: Ord + Copy + Add<Output = T::Native> + Sub<Output = T::Native> + From<u8>,
-{
+) -> (Vec<IdMapping<T::Native>>, T::Native) {
     let mut mappings = Vec::new();
     let mut current_offset = offset;
-    let one = T::Native::from(1);
+    let one = T::Native::usize_as(1);
 
-    for chunk in sorted_ids.chunk_by(|a, b| *b == *a + one || *b == *a) {
+    for chunk in sorted_ids.chunk_by(|a, b| *b == a.add_wrapping(one) || *b == *a) {
         let start_id = chunk[0];
         let end_id = chunk[chunk.len() - 1];
 
         let (offset, sign) = if start_id <= current_offset {
-            (current_offset - start_id, Sign::Positive)
+            (current_offset.sub_wrapping(start_id), Sign::Positive)
         } else {
-            (start_id - current_offset, Sign::Negative)
+            (start_id.sub_wrapping(current_offset), Sign::Negative)
         };
 
         mappings.push(IdMapping {
@@ -1020,37 +634,26 @@ where
             sign,
         });
 
-        // Calculate the next offset based on where this range ends
         let new_end = match sign {
-            Sign::Positive => end_id + offset,
-            Sign::Negative => end_id - offset,
+            Sign::Positive => end_id.add_wrapping(offset),
+            Sign::Negative => end_id.sub_wrapping(offset),
         };
-        current_offset = new_end + one;
+        current_offset = new_end.add_wrapping(one);
     }
 
-    Ok((mappings, current_offset))
+    (mappings, current_offset)
 }
 
-/// Applies mappings to a sorted ID buffer that were produced by processing the
-/// corresponding id column of the parent record batch.
+/// Applies mappings to a sorted ID buffer that were produced from the
+/// corresponding parent ID column.
 ///
-/// Returns ranges of indices where referential integrity violations were found.
-/// Referential integrity violations are when and ID is found in the child record
-/// batch that is not a part of the primary ID column from the parent that defines
-/// them.
-///
-/// For example if the parent record batch has idx [0, 1, 2] and the child
-/// record batch has parent_ids [0, 1, 3] then the parent_id 3 at position 2
-/// in the child record batch has a violation.
+/// Returns ranges of sorted positions whose IDs are not covered by any
+/// mapping (referential integrity violations), or `None` if there are none.
 #[must_use]
-fn apply_mappings<T>(
+fn apply_mappings<T: IdType>(
     sorted_ids: &mut [T::Native],
     mappings: &[IdMapping<T::Native>],
-) -> Option<Vec<Range<usize>>>
-where
-    T: ArrowPrimitiveType,
-    T::Native: Ord + Copy + Add<Output = T::Native> + AddAssign + SubAssign,
-{
+) -> Option<Vec<Range<usize>>> {
     let mut violations = Vec::new();
     let mut remaining_slice = &mut sorted_ids[..];
     let mut idx = 0;
@@ -1059,8 +662,7 @@ where
             break;
         }
 
-        // If there are elements left that come before the current mapping then these
-        // were never a part of the parent column
+        // Elements before the current mapping were never part of the parent.
         let map_start_idx = remaining_slice
             .iter()
             .position(|id| *id >= mapping.start_id)
@@ -1079,51 +681,40 @@ where
         let slice_to_map = &mut remaining_slice[0..end_idx];
         idx += slice_to_map.len();
 
-        // TODO: Anything we need to do here to make sure this is vectorized?
         match mapping.sign {
-            Sign::Positive => slice_to_map.iter_mut().for_each(|id| *id += mapping.offset),
-            Sign::Negative => slice_to_map.iter_mut().for_each(|id| *id -= mapping.offset),
+            Sign::Positive => slice_to_map
+                .iter_mut()
+                .for_each(|id| *id = id.add_wrapping(mapping.offset)),
+            Sign::Negative => slice_to_map
+                .iter_mut()
+                .for_each(|id| *id = id.sub_wrapping(mapping.offset)),
         }
         remaining_slice = &mut remaining_slice[end_idx..];
     }
 
-    // If there are elements left after processing all mappings, these were also
-    // never a part of the parent column
+    // Elements after all mappings were never part of the parent either.
     if !remaining_slice.is_empty() {
         violations.push(idx..idx + remaining_slice.len());
     }
 
-    match violations.is_empty() {
-        true => None,
-        false => Some(violations),
-    }
+    (!violations.is_empty()).then_some(violations)
 }
 
-/// Takes values from src to dst using indices
-///
-/// Copies values from src[indices[i]] to dst[i] for all i.
-/// All three slices must have the same length.
+/// Copies `src[indices[i]]` to `dst[i]` for all i.
 fn take_vec<T: Copy>(src: &[T], dst: &mut [T], indices: &[u32]) {
     assert_eq!(src.len(), dst.len());
     assert_eq!(src.len(), indices.len());
-
-    for i in 0..indices.len() {
-        let src_idx = indices[i] as usize;
-        dst[i] = src[src_idx];
+    for (d, &i) in dst.iter_mut().zip(indices) {
+        *d = src[i as usize];
     }
 }
 
-/// Untakes (unsorts) values from src to dst using sort indices
-///
-/// Copies values from src[i] to dst[indices[i]] for all i.
-/// All three slices must have the same length.
+/// Copies `src[i]` to `dst[indices[i]]` for all i.
 fn untake_vec<T: Copy>(src: &[T], dst: &mut [T], indices: &[u32]) {
     assert_eq!(src.len(), dst.len());
     assert_eq!(src.len(), indices.len());
-
-    for i in 0..indices.len() {
-        let dst_idx = indices[i] as usize;
-        dst[dst_idx] = src[i];
+    for (s, &i) in src.iter().zip(indices) {
+        dst[i as usize] = *s;
     }
 }
 
@@ -1135,6 +726,7 @@ mod tests {
     use arrow::array::RecordBatch;
 
     use crate::error::Error;
+    use crate::otap::transform::concatenate::{ConcatOptions, concatenate, reindex_in_place};
     use crate::otap::transform::testing::{assert_no_id_overlaps, extract_relation_fingerprints};
     use crate::otap::transform::transport_optimize::apply_transport_optimized_encodings;
     use crate::otap::transform::util::{IdColumnType, payload_relations, payload_to_idx};
@@ -1146,6 +738,14 @@ mod tests {
     use crate::{logs, metrics, traces};
 
     const HALF_U16: u16 = (u16::MAX / 2) + 1;
+
+    fn reindex_logs(batches: &mut [[Option<RecordBatch>; Logs::COUNT]]) -> Result<()> {
+        reindex_in_place::<Logs, { Logs::COUNT }>(batches)
+    }
+
+    fn reindex_traces(batches: &mut [[Option<RecordBatch>; Traces::COUNT]]) -> Result<()> {
+        reindex_in_place::<Traces, { Traces::COUNT }>(batches)
+    }
 
     // ---- Logs tests ----
 
@@ -2385,17 +1985,17 @@ mod tests {
 
     #[test]
     fn test_logs_u16_primary_id_bounds() {
-        test_u16_primary_id_bounds::<Logs, { Logs::COUNT }>(reindex_logs);
+        test_u16_primary_id_bounds::<Logs, { Logs::COUNT }>();
     }
 
     #[test]
     fn test_traces_u16_primary_id_bounds() {
-        test_u16_primary_id_bounds::<Traces, { Traces::COUNT }>(reindex_traces);
+        test_u16_primary_id_bounds::<Traces, { Traces::COUNT }>();
     }
 
     #[test]
     fn test_metrics_u16_primary_id_bounds() {
-        test_u16_primary_id_bounds::<Metrics, { Metrics::COUNT }>(reindex_metrics);
+        test_u16_primary_id_bounds::<Metrics, { Metrics::COUNT }>();
     }
 
     /// Tests the overflow bounds for every U16 primary id column in a batch store.
@@ -2403,9 +2003,8 @@ mod tests {
     ///
     /// For each U16 payload type, verifies that u16::MAX total rows succeeds
     /// and u16::MAX + 1 fails with TooManyItems.
-    fn test_u16_primary_id_bounds<S: OtapBatchStore, const N: usize>(
-        reindex_fn: fn(&mut [[Option<RecordBatch>; N]]) -> Result<()>,
-    ) {
+    fn test_u16_primary_id_bounds<S: OtapBatchStore, const N: usize>() {
+        let reindex_fn = |b: &mut [[Option<RecordBatch>; N]]| plan_ids::<S, N>(b).map(|_| ());
         for &payload_type in S::allowed_payload_types() {
             let info = payload_relations(payload_type);
             let Some(id_info) = info.primary_id else {
@@ -2515,6 +2114,199 @@ mod tests {
         );
     }
 
+    // ---- Null ID tests ----
+
+    /// Build a Logs store whose root `id` (and optionally `resource.id`) columns
+    /// contain nulls. The value stored under each null slot is 0, mirroring what
+    /// Arrow builders produce.
+    fn logs_with_null_ids(
+        ids: Vec<Option<u16>>,
+        resource_ids: Option<Vec<Option<u16>>>,
+        attr_parent_ids: Vec<u16>,
+        resource_attr_parent_ids: Vec<u16>,
+    ) -> Logs {
+        use arrow::array::{ArrayRef, UInt16Array};
+        use arrow::datatypes::{Field, Schema};
+        use std::sync::Arc;
+
+        let mut fields = vec![Field::new("id", DataType::UInt16, true)];
+        let mut cols: Vec<ArrayRef> = vec![Arc::new(UInt16Array::from(ids))];
+        if let Some(rids) = resource_ids {
+            fields.push(Field::new("resource.id", DataType::UInt16, true));
+            cols.push(Arc::new(UInt16Array::from(rids)));
+        }
+        let root = RecordBatch::try_new(Arc::new(Schema::new(fields)), cols).unwrap();
+
+        let mut inputs = vec![
+            (ArrowPayloadType::Logs, root),
+            (
+                ArrowPayloadType::LogAttrs,
+                record_batch!(("parent_id", UInt16, attr_parent_ids)).unwrap(),
+            ),
+        ];
+        if !resource_attr_parent_ids.is_empty() {
+            inputs.push((
+                ArrowPayloadType::ResourceAttrs,
+                record_batch!(("parent_id", UInt16, resource_attr_parent_ids)).unwrap(),
+            ));
+        }
+        crate::otap::testing::make_test_batch::<Logs, { Logs::COUNT }>(inputs)
+    }
+
+    fn column_at(rb: &RecordBatch, path: &str) -> arrow::array::ArrayRef {
+        extract_id_column(rb, path).unwrap()
+    }
+
+    /// Scenario: the second input's root `id` column has a null slot (holding
+    /// 0) and a minimum id above the running offset, so the offset delta is
+    /// negative. The old reindex subtracted the offset from the null slot's 0
+    /// and underflowed (panic in debug builds).
+    /// Guarantees: fused reindex + concatenate does not panic on null ID
+    /// slots, the null stays null at the same output row, valid ids remain
+    /// unique, and the data is OTLP-equivalent to the inputs.
+    #[test]
+    fn test_null_id_offset_underflow() {
+        let a = logs_with_null_ids(vec![Some(0), Some(1)], None, vec![0, 1], vec![]);
+        let b = logs_with_null_ids(vec![Some(5), None, Some(6)], None, vec![5, 6], vec![]);
+
+        let expected: Vec<_> = [a.clone(), b.clone()]
+            .into_iter()
+            .map(|s| otap_to_otlp(&s.into()))
+            .collect();
+        let mut batches = vec![a.into_batches(), b.into_batches()];
+        let out = concatenate::<{ Logs::COUNT }>(&mut batches, ConcatOptions::reindex()).unwrap();
+
+        let root = out[payload_to_idx(ArrowPayloadType::Logs)]
+            .as_ref()
+            .unwrap();
+        let ids = column_at(root, ID);
+        assert_eq!(ids.null_count(), 1);
+        assert!(ids.is_null(3));
+        let ids = ids.as_primitive::<UInt16Type>();
+        let valid: Vec<u16> = ids.iter().flatten().collect();
+        let unique: HashSet<u16> = valid.iter().copied().collect();
+        assert_eq!(valid.len(), unique.len());
+
+        let otlp = otap_to_otlp(&batches_to_otap::<Logs, { Logs::COUNT }>(&out));
+        assert_equivalent(&expected, &[otlp]);
+    }
+
+    /// Scenario: null root `id` slots on both the offset path and the
+    /// compaction path (forced by a child parent_id outside the parent range).
+    /// Guarantees: the null bitmap of the id column is preserved in the output
+    /// on both paths (the old reindex dropped it), and orphaned children that
+    /// would escape the input's id range are redacted.
+    #[test]
+    fn test_null_id_bitmap_preserved() {
+        // Offset path.
+        let a = logs_with_null_ids(vec![None, Some(1), Some(2)], None, vec![1, 2], vec![]);
+        let b = logs_with_null_ids(vec![Some(0), None, Some(1)], None, vec![0, 1], vec![]);
+        let mut batches = vec![a.into_batches(), b.into_batches()];
+        let out = concatenate::<{ Logs::COUNT }>(&mut batches, ConcatOptions::reindex()).unwrap();
+        let root = out[payload_to_idx(ArrowPayloadType::Logs)]
+            .as_ref()
+            .unwrap();
+        let ids = column_at(root, ID);
+        assert_eq!(ids.null_count(), 2);
+        assert!(ids.is_null(0) && ids.is_null(4));
+
+        // Compaction path: LogAttrs parent_id 9 is outside [1, 2].
+        let a = logs_with_null_ids(vec![None, Some(1), Some(2)], None, vec![1, 2, 9], vec![]);
+        let b = logs_with_null_ids(vec![Some(0), None, Some(1)], None, vec![0, 1], vec![]);
+        let mut batches = vec![a.into_batches(), b.into_batches()];
+        let out = concatenate::<{ Logs::COUNT }>(&mut batches, ConcatOptions::reindex()).unwrap();
+        let root = out[payload_to_idx(ArrowPayloadType::Logs)]
+            .as_ref()
+            .unwrap();
+        let ids = column_at(root, ID);
+        assert_eq!(ids.null_count(), 2);
+        assert!(ids.is_null(0) && ids.is_null(4));
+        let valid: Vec<u16> = ids.as_primitive::<UInt16Type>().iter().flatten().collect();
+        assert_eq!(valid.len(), valid.iter().collect::<HashSet<_>>().len());
+
+        let attrs = out[payload_to_idx(ArrowPayloadType::LogAttrs)]
+            .as_ref()
+            .unwrap();
+        assert_eq!(attrs.num_rows(), 4, "orphaned parent_id 9 must be redacted");
+        let pids: HashSet<u16> = column_at(attrs, PARENT_ID)
+            .as_primitive::<UInt16Type>()
+            .values()
+            .iter()
+            .copied()
+            .collect();
+        let idset: HashSet<u16> = valid.into_iter().collect();
+        assert!(pids.is_subset(&idset));
+    }
+
+    /// Scenario: the nullable `resource.id` struct child has nulls on both the
+    /// offset path and the compaction path (forced by an out-of-range
+    /// ResourceAttrs parent_id), with the null-slot value below the offset.
+    /// Guarantees: no panic, the `resource.id` null bitmap is preserved, and
+    /// valid resource ids from different inputs do not collide.
+    #[test]
+    fn test_null_resource_id() {
+        for resource_attr_pids in [vec![3u16, 4], vec![3u16, 4, 20]] {
+            let a = logs_with_null_ids(
+                vec![Some(0), Some(1)],
+                Some(vec![Some(0), Some(1)]),
+                vec![0],
+                vec![0, 1],
+            );
+            let b = logs_with_null_ids(
+                vec![Some(0), Some(1), Some(2)],
+                Some(vec![Some(3), None, Some(4)]),
+                vec![0],
+                resource_attr_pids.clone(),
+            );
+            let mut batches = vec![a.into_batches(), b.into_batches()];
+            let out =
+                concatenate::<{ Logs::COUNT }>(&mut batches, ConcatOptions::reindex()).unwrap();
+            let root = out[payload_to_idx(ArrowPayloadType::Logs)]
+                .as_ref()
+                .unwrap();
+            let rids = column_at(root, "resource.id");
+            assert_eq!(rids.null_count(), 1, "{resource_attr_pids:?}");
+            assert!(rids.is_null(3));
+            let rids = rids.as_primitive::<UInt16Type>();
+            let first: HashSet<u16> = rids.slice(0, 2).iter().flatten().collect();
+            let second: HashSet<u16> = rids.slice(2, 3).iter().flatten().collect();
+            assert!(first.is_disjoint(&second));
+        }
+    }
+
+    /// Scenario: a dictionary-encoded u32 parent_id column (SpanEventAttrs)
+    /// references a SpanEvents id that does not exist and lies outside the
+    /// parent range, forcing compaction.
+    /// Guarantees: exactly the violating rows are redacted and the surviving
+    /// rows keep their relation to their parent.
+    #[test]
+    #[rustfmt::skip]
+    fn test_dict_parent_id_redaction() {
+        let make = |attr_keys: Vec<u8>| traces!(
+            (Spans, ("id", UInt16, vec![0u16])),
+            (SpanEvents,
+                ("id", UInt32, vec![0u32, 1]),
+                ("parent_id", UInt16, vec![0u16, 0])),
+            (SpanEventAttrs,
+                ("parent_id", (UInt8, UInt32), (attr_keys, vec![0u32, 1, 7])))
+        );
+        let a = make(vec![0, 1]);
+        let b = make(vec![0, 2, 1, 2]);
+        let mut batches = vec![a.into_batches(), b.into_batches()];
+        let out = concatenate::<{ Traces::COUNT }>(&mut batches, ConcatOptions::reindex()).unwrap();
+
+        let attrs = out[payload_to_idx(ArrowPayloadType::SpanEventAttrs)].as_ref().unwrap();
+        assert_eq!(attrs.num_rows(), 4, "two rows referencing id 7 are redacted");
+        let events = out[payload_to_idx(ArrowPayloadType::SpanEvents)].as_ref().unwrap();
+        let event_ids: HashSet<u32> =
+            column_at(events, ID).as_primitive::<UInt32Type>().values().iter().copied().collect();
+        assert_eq!(event_ids.len(), 4);
+        let pids = crate::otap::transform::testing::collect_row_ids(
+            column_at(attrs, PARENT_ID).as_ref(),
+        );
+        assert!(pids.iter().all(|p| event_ids.contains(p)));
+    }
+
     // ---- Test helpers ----
 
     /// Converts a raw batch array back into an `OtapArrowRecords` via the store type `S`.
@@ -2548,10 +2340,8 @@ mod tests {
             .collect();
         let before_relations = extract_relation_fingerprints::<S, N>(&batches);
 
-        {
-            let mut store = MultiBatchStore::<S, N>::new(&mut batches);
-            reindex_batch_store(&mut store).unwrap();
-        }
+        let original = batches.clone();
+        reindex_in_place::<S, N>(&mut batches).unwrap();
         assert_no_id_overlaps::<S, N>(&batches);
 
         let after_relations = extract_relation_fingerprints::<S, N>(&batches);
@@ -2566,6 +2356,23 @@ mod tests {
             .collect();
 
         assert_equivalent(&before_otlp, &after_otlp);
+        assert_fused_concatenate_equivalent::<S, N>(original, &before_otlp);
+    }
+
+    /// Runs the fused reindex + concatenate over `batches` and asserts the
+    /// single output is equivalent to the inputs.
+    fn assert_fused_concatenate_equivalent<S, const N: usize>(
+        mut batches: Vec<[Option<RecordBatch>; N]>,
+        expected: &[crate::proto::OtlpProtoMessage],
+    ) where
+        S: OtapBatchStore<BatchArray = [Option<RecordBatch>; N]> + Into<OtapArrowRecords>,
+    {
+        if batches.iter().all(|b| b.iter().all(Option::is_none)) {
+            return;
+        }
+        let combined = concatenate::<N>(&mut batches, ConcatOptions::reindex()).unwrap();
+        let combined_otlp = otap_to_otlp(&batches_to_otap::<S, N>(&combined));
+        assert_equivalent(expected, &[combined_otlp]);
     }
 
     /// Reindexes transport-optimized batches and verifies OTLP equivalence.
@@ -2586,16 +2393,15 @@ mod tests {
             .map(|b| otap_to_otlp(&batches_to_otap::<S, N>(b)))
             .collect();
 
-        {
-            let mut store = MultiBatchStore::<S, N>::new(&mut batches);
-            reindex_batch_store(&mut store).unwrap();
-        }
+        let original = batches.clone();
+        reindex_in_place::<S, N>(&mut batches).unwrap();
 
         let after_otlp: Vec<_> = batches
             .iter()
             .map(|b| otap_to_otlp(&batches_to_otap::<S, N>(b)))
             .collect();
         assert_equivalent(&before_otlp, &after_otlp);
+        assert_fused_concatenate_equivalent::<S, N>(original, &before_otlp);
     }
 
     fn test_reindex_logs(stores: &[Logs]) {
