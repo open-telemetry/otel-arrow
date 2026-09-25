@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790293351192,
+  "lastUpdate": 1790296047896,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -44411,6 +44411,148 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/open-telemetry/otel-arrow/commit/5db83589a4e031e5d1eab177f80d30f01cfb3a9a"
         },
         "date": 1790293335721,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 84.68,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.77,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.19,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.73,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.97,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.69,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 71.89,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.86,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.48,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.09,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 117.02,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 104.23,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Tina Tan",
+            "username": "athomas9195",
+            "email": "43687093+athomas9195@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "5db83589a4e031e5d1eab177f80d30f01cfb3a9a",
+          "message": "chore(scraper): add checkpointing for shared scraper [2/4] (#4110)\n\n## Summary\n\nAdds filesystem checkpointing and source ownership to\n`otel-arrow-dfe-scraper`.\n\nThe crate now installs revisioned, checksummed checkpoint envelopes and\nan exclusive lease for a checkpoint storage identity. Vendor-specific\nreceivers still own connection settings, driver dependencies, SQL\ndialect validation, native execution, and node registration.\n\nThis is **part 2 of 4** of the split from\n[open-telemetry/otel-arrow#3969](https://github.com/open-telemetry/otel-arrow/pull/3969),\nfollowing the shared-crate boundary in\n[open-telemetry/otel-arrow#3918](https://github.com/open-telemetry/otel-arrow/issues/3918).\nIt is not the complete database-receiver RFC.\nThis PR does **not** add a polling controller, OTLP encoder, Oracle\ndriver, or runnable database receiver.\n\n## Stack / delivery sequence\n\nThe intended dependency and upstream landing order is:\n\n| Part | Scope | PR Link |\n| --- | --- | --- |\n| 1/4 | Shared crate skeleton and database-neutral contracts |\n[open-telemetry/otel-arrow#4093](https://github.com/open-telemetry/otel-arrow/pull/4093)\n|\n| 2/4 | Checkpointing and source ownership | This PR |\n| 3/4 | Shared polling, mapping, and delivery | pending |\n| 4/4 | Oracle adapter and receiver registration | pending |\n\n## Included\n\n- `CheckpointStore`: revisioned JSON envelopes with source identity,\nconfiguration fingerprint, checksum, and the acknowledged composite\ncursor.\n- Atomic install using a same-directory temporary file, file fsync, and\nrename. Fail closed on corrupt, incompatible, oversized, or malformed\nstate.\n- Retain the latest two revisions and reconcile after an uncertain\ninstall.\n- `SourceLease`: process-local ownership registry plus an advisory\nfilesystem lock with close-on-exec so child processes cannot keep the\nlease after `Drop`.\n- Mount-independent lock/generation filenames (hash the checkpoint\nbasename; the parent directory namespaces the file).\n- mkdir of the state tree without fsyncing ancestor directories (same\npattern as journald). Unix fsyncs the installed file and its parent\ndirectory only.\n- README updates for checkpoint/lease ownership, filesystem guarantees,\nand the shared-vs-vendor boundary.\n- Regression coverage without a database or native client (restart,\ncorruption, contention, nested state paths, lock namespace).\n\nThe shared crate still contains no vendor driver.\n\n## Follow-up work\n\n- Poll scheduling, OTLP encoding, backpressure, ACK/NACK handling,\nlifecycle, checkpoint integration, and runtime telemetry in part 3.\n- Oracle configuration, native-driver integration, factory registration,\nexamples, and user-facing changelog in part 4.\n- Additional PostgreSQL, MySQL, and SQL Server receivers.\n- Multiple named queries, scalar/snapshot modes, richer output mapping,\nprocess memory-pressure admission, shared database authentication, and\nexplicit vendor TLS configuration.\n- Whole-poll and normal-operation ACK deadlines, immediate backlog\ncatch-up, broader adapter conformance, and live end-to-end\nqualification.\n\nItems from the full RFC are not claimed complete merely because\ncheckpoint files exist here.\n\n## Delivery behavior\n\nThis PR can persist and reload a cursor; it does not collect or send\nrecords.\n\nThe later runtime is intended to provide conditional at-least-once\ndelivery: progress advances only after matching downstream\nacknowledgement and a successful durable checkpoint write. Replays can\noccur; exactly-once delivery is not claimed.\n\nThat behavior requires commit-visible cursor ordering, stable cursor/row\nvalues, adequate source retention, and an appropriate downstream\nacknowledgement boundary. Increasing IDs or append-only rows alone do\nnot establish those conditions.\n\nThe lease protects a checkpoint identity, not the underlying database\nquery. Different pipeline/receiver names or state directories can still\npoll the same source.\n\n## Durability\n\nOn Unix, after a checkpoint file is installed, that file and its parent\ndirectory are fsynced. Newly created ancestor directories are not\nfsynced. A power loss can drop a brand-new state tree and look like a\nfirst start (replay from the initial cursor). On Windows there is no\nportable directory-fsync step. Power-loss recovery has not been\nexperimentally qualified. Source retention must cover that window.\n\n## Configuration\n\nSee `rust/otap-dataflow/crates/scraper/README.md` for contract fields,\nvalidation rules, and the ownership boundary.\n\nA shared `CheckpointConfig` value is:\n\n```yaml\ndirectory: ./state/database\non_nack: rewind\nnack_backoff: 1s\nmax_consecutive_failures: 5\n```\n\nThis is **not** a complete native receiver configuration. No\n`urn:otel:receiver:oracle` registration is included.\n\n## Validation\n\n- `cargo test -p otel-arrow-dfe-scraper --lib`: 46 tests passed on\nWindows.\n- Locked crate compilation and formatting pass for the scraper crate.\n\n## Related issue\n\n- [RFC: Shared runtime and vendor-specific database polling\nreceivers](https://github.com/open-telemetry/otel-arrow/issues/3918)\n- [Original foundation and Oracle receiver\nimplementation](https://github.com/open-telemetry/otel-arrow/pull/3969)\n- [Part 1: shared\ncontracts](https://github.com/open-telemetry/otel-arrow/pull/4093)\n\n---------\n\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>\nCo-authored-by: Drew Relmas <drewrelmas@gmail.com>\nCo-authored-by: Juan Salazar <100889614+juanjosalco@users.noreply.github.com>",
+          "timestamp": "2026-09-24T22:56:03Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/5db83589a4e031e5d1eab177f80d30f01cfb3a9a"
+        },
+        "date": 1790296031910,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
