@@ -73,8 +73,13 @@
 //!   use the generic `MutableArrayData` fallback (`write_fallback`). Add a
 //!   specialized writer that copies offsets and child values directly.
 //! - TODO(bytes-gather-capacity): Byte capacity for dictionary inputs is sized
-//!   from the whole values array, which over-allocates when the column is
-//!   gathered into a native output. Size it from the selected keys instead.
+//!   from the whole values array, which (1) over-allocates when the keys don't
+//!   reference every value. This can often happen after splits. We could
+//!   instead try to pointer de-dup the dict values, try to have split indicate
+//!   which input record batches came from which output record batches (could
+//!   stamp them with some id or change the signature), or try to fuse split
+//!   and concat together. We can also (2) under-allocate if we're escalating
+//!   to a standard type and have to grow the array a bunch.
 //! - TODO(fused-decode): Fuse transport delta decoding into the ID statistics
 //!   and write passes instead of decoding in a separate pre-pass.
 //! - TODO(single-input): Pass a payload through unchanged (Arc reuse) when
