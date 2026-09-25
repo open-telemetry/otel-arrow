@@ -102,16 +102,42 @@ use crate::proto::consts::field_num::logs::{
     LOGS_DATA_RESOURCE, RESOURCE_LOGS_SCOPE_LOGS, SCOPE_LOGS_LOG_RECORDS,
 };
 use crate::proto::consts::field_num::metrics::{
-    EXPONENTIAL_HISTOGRAM_DATA_POINTS, GAUGE_DATA_POINTS, HISTOGRAM_DATA_POINTS,
     METRIC_EXPONENTIAL_HISTOGRAM, METRIC_GAUGE, METRIC_HISTOGRAM, METRIC_SUM, METRIC_SUMMARY,
     METRICS_DATA_RESOURCE_METRICS, RESOURCE_METRICS_SCOPE_METRICS, SCOPE_METRICS_METRICS,
-    SUM_DATA_POINTS, SUMMARY_DATA_POINTS,
 };
 use crate::proto::consts::field_num::traces::{
     RESOURCE_SPANS_SCOPE_SPANS, SCOPE_SPANS_SPANS, TRACES_DATA_RESOURCE_SPANS,
 };
 use crate::proto::consts::wire_types;
 use crate::views::otlp::bytes::decode::{field_value_range, read_varint};
+
+// Compile-time validation that metrics data-point fields are protobuf field 1, which is leveraged in count_metrics_data_points.
+const _: () = {
+    use crate::proto::consts::field_num::metrics::{
+        EXPONENTIAL_HISTOGRAM_DATA_POINTS, GAUGE_DATA_POINTS, HISTOGRAM_DATA_POINTS,
+        SUM_DATA_POINTS, SUMMARY_DATA_POINTS,
+    };
+    assert!(
+        GAUGE_DATA_POINTS == 1,
+        "count_metrics_data_points assumes GAUGE_DATA_POINTS == 1"
+    );
+    assert!(
+        SUM_DATA_POINTS == 1,
+        "count_metrics_data_points assumes SUM_DATA_POINTS == 1"
+    );
+    assert!(
+        HISTOGRAM_DATA_POINTS == 1,
+        "count_metrics_data_points assumes HISTOGRAM_DATA_POINTS == 1"
+    );
+    assert!(
+        EXPONENTIAL_HISTOGRAM_DATA_POINTS == 1,
+        "count_metrics_data_points assumes EXPONENTIAL_HISTOGRAM_DATA_POINTS == 1"
+    );
+    assert!(
+        SUMMARY_DATA_POINTS == 1,
+        "count_metrics_data_points assumes SUMMARY_DATA_POINTS == 1"
+    );
+};
 
 /// Concrete storage representation backing an [`OtapPayload`].
 ///
@@ -559,13 +585,6 @@ fn count_metrics_data_points(bytes: &[u8]) -> Result<usize, Error> {
         METRIC_EXPONENTIAL_HISTOGRAM,
         METRIC_SUMMARY,
     ];
-    let data_points_fields = [
-        GAUGE_DATA_POINTS,
-        SUM_DATA_POINTS,
-        HISTOGRAM_DATA_POINTS,
-        EXPONENTIAL_HISTOGRAM_DATA_POINTS,
-        SUMMARY_DATA_POINTS,
-    ];
 
     while let Some((field, wire_type, resource_bytes)) = next_field(bytes, &mut request_position)? {
         if field != METRICS_DATA_RESOURCE_METRICS || wire_type != wire_types::LEN {
@@ -604,7 +623,8 @@ fn count_metrics_data_points(bytes: &[u8]) -> Result<usize, Error> {
                     while let Some((field, wire_type, _data_point_bytes)) =
                         next_field(data_bytes, &mut data_point_position)?
                     {
-                        if data_points_fields.contains(&field) && wire_type == wire_types::LEN {
+                        // All metric data-point fields are field number 1 in the OTLP protobuf schema. This is validated by static assertions at the beginning of this file.
+                        if field == 1 && wire_type == wire_types::LEN {
                             count += 1;
                         }
                     }
