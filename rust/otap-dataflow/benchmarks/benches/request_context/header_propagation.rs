@@ -14,8 +14,10 @@ use otel_arrow_dfe_config::context::{ContextEntryName, ContextEntryRef};
 use otel_arrow_dfe_config::context_policy::{
     ContextEntryDeclaration, ContextEntryDefinition, ContextEntryPart, ContextScope,
 };
-use otel_arrow_dfe_config::transport_headers::{TransportHeader, TransportHeaders};
-use otel_arrow_dfe_config::transport_headers_policy::HeaderPropagationPolicy;
+use otel_arrow_dfe_config::transport_headers::TransportHeaders;
+use otel_arrow_dfe_config::transport_headers_policy::{
+    CaptureDefaults, CaptureRule, HeaderCapturePolicy, HeaderPropagationPolicy,
+};
 use std::hint::black_box;
 
 const HEADER_COUNTS: [usize; 4] = [1, 4, 16, 32];
@@ -23,6 +25,7 @@ const CONDITION_COUNTS: [usize; 4] = [1, 2, 3, 4];
 const CONDITION_NAME_VARIANTS: [&str; 4] = ["header", "HEADER", "Header", "hEaDeR"];
 const DUPLICATE_SOURCE_COUNTS: [usize; 4] = [1, 4, 16, 28];
 const DUPLICATE_TOTAL_HEADERS: usize = 32;
+const SHARED_CONDITION_BINDING_COUNTS: [usize; 3] = [4, 5, 32];
 
 pub(super) fn benchmarks(c: &mut Criterion) {
     let mut group = c.benchmark_group("header_propagation");
@@ -90,17 +93,40 @@ pub(super) fn benchmarks(c: &mut Criterion) {
     }
 
     duplicate_group.finish();
+
+    let mut binding_group = c.benchmark_group("header_propagation_bindings");
+    for binding_count in SHARED_CONDITION_BINDING_COUNTS {
+        let headers = shared_condition_headers(binding_count);
+        let _ = binding_group.throughput(Throughput::Elements(binding_count as u64));
+        for matches in [true, false] {
+            let conditional = shared_condition_policy(binding_count, matches);
+            assert_eq!(
+                conditional.propagate(&headers).count(),
+                if matches { binding_count } else { 0 }
+            );
+            let case = if matches { "match" } else { "miss" };
+            let _ = binding_group.bench_with_input(
+                BenchmarkId::new(
+                    format!("conditional_shared_{case}_4_conditions"),
+                    binding_count,
+                ),
+                &headers,
+                |b, headers| {
+                    b.iter(|| black_box(conditional.propagate(black_box(headers)).count()));
+                },
+            );
+        }
+    }
+
+    binding_group.finish();
 }
 
 fn headers(header_count: usize) -> TransportHeaders {
-    let mut headers = TransportHeaders::with_capacity(header_count);
-    for index in 0..header_count {
-        headers.push(TransportHeader::text(
-            context_name(&format!("header_{index}")),
-            format!("value_{index}"),
-        ));
-    }
-    headers
+    packed_headers(
+        (0..header_count)
+            .map(|index| (format!("header_{index}"), format!("value_{index}")))
+            .collect(),
+    )
 }
 
 fn unqualified_policy(header_count: usize) -> HeaderPropagationPolicy {
@@ -182,26 +208,17 @@ fn conditional_declaration(
 }
 
 fn duplicate_source_headers(source_count: usize) -> TransportHeaders {
-    let mut headers = TransportHeaders::with_capacity(DUPLICATE_TOTAL_HEADERS);
+    let mut headers = Vec::with_capacity(DUPLICATE_TOTAL_HEADERS);
     for _ in 0..source_count {
-        headers.push(TransportHeader::text(
-            context_name("selected_source"),
-            "selected",
-        ));
+        headers.push(("selected_source".to_owned(), "selected".to_owned()));
     }
     for index in source_count..DUPLICATE_TOTAL_HEADERS - CONDITION_COUNTS.len() {
-        headers.push(TransportHeader::text(
-            context_name(&format!("filler_{index}")),
-            "filler",
-        ));
+        headers.push((format!("filler_{index}"), "filler".to_owned()));
     }
     for index in 0..CONDITION_COUNTS.len() {
-        headers.push(TransportHeader::text(
-            context_name(&format!("condition_{index}")),
-            format!("value_{index}"),
-        ));
+        headers.push((format!("condition_{index}"), format!("value_{index}")));
     }
-    headers
+    packed_headers(headers)
 }
 
 fn duplicate_source_policy(matches: bool) -> HeaderPropagationPolicy {
@@ -235,6 +252,85 @@ default:
             definition: ContextEntryDefinition(parts),
         }])
         .expect("duplicate-source propagation policy compiles")
+}
+
+fn shared_condition_headers(binding_count: usize) -> TransportHeaders {
+    let mut headers = Vec::with_capacity(binding_count + CONDITION_COUNTS.len());
+    for index in 0..binding_count {
+        headers.push((format!("selected_source_{index}"), "selected".to_owned()));
+    }
+    for index in 0..CONDITION_COUNTS.len() {
+        headers.push((format!("condition_{index}"), format!("value_{index}")));
+    }
+    packed_headers(headers)
+}
+
+fn shared_condition_policy(binding_count: usize, matches: bool) -> HeaderPropagationPolicy {
+    let named = (0..binding_count)
+        .map(|index| format!("composite:selected_{index}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let policy: HeaderPropagationPolicy = serde_yaml::from_str(&format!(
+        r#"
+default:
+  selector:
+    type: named
+    named: [{named}]
+"#
+    ))
+    .expect("valid shared-condition propagation policy");
+    let mut parts = Vec::with_capacity(binding_count + CONDITION_COUNTS.len());
+    for index in 0..binding_count {
+        parts.push(ContextEntryPart::TransportHeader {
+            name: context_ref(&format!("selected_source_{index}")),
+            store_as: Some(context_name(&format!("selected_{index}"))),
+        });
+    }
+    for index in 0..CONDITION_COUNTS.len() {
+        parts.push(ContextEntryPart::TransportHeaderMatch {
+            name: context_ref(&format!("condition_{index}")),
+            value: if matches || index + 1 < CONDITION_COUNTS.len() {
+                format!("value_{index}")
+            } else {
+                "missing".to_owned()
+            },
+        });
+    }
+    policy
+        .compile_context(&[ContextEntryDeclaration {
+            scope: ContextScope::Engine,
+            name: context_name("composite"),
+            definition: ContextEntryDefinition(parts),
+        }])
+        .expect("shared-condition propagation policy compiles")
+}
+
+fn packed_headers(headers: Vec<(String, String)>) -> TransportHeaders {
+    let capture = HeaderCapturePolicy::new(
+        CaptureDefaults {
+            max_entries: headers.len(),
+            ..CaptureDefaults::default()
+        },
+        vec![CaptureRule {
+            match_names: headers.iter().map(|(name, _)| context_name(name)).collect(),
+            store_as: None,
+            sensitive: false,
+            value_kind: None,
+        }],
+    )
+    .compile(|_| false);
+    let mut captured = TransportHeaders::new();
+    let stats = capture.capture_from_pairs(
+        headers
+            .iter()
+            .map(|(name, value)| (name.as_str(), value.as_bytes())),
+        &mut captured,
+    );
+    assert!(
+        stats.is_none(),
+        "benchmark headers should fit capture limits"
+    );
+    captured
 }
 
 fn context_name(raw: &str) -> ContextEntryName {
