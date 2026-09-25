@@ -7773,6 +7773,7 @@ dependencies = [
  "ciborium",
  "criterion",
  "datafusion",
+ "dhat",
  "hex",
  "itertools 0.15.0",
  "nix 0.31.3",
