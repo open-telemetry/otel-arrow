@@ -37,6 +37,8 @@ use otel_arrow_dfe_pdata::PayloadData;
 use otel_arrow_dfe_pdata::otlp::OtlpProtoBytes;
 use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::any_value;
 use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::LogsData;
+use otel_arrow_dfe_telemetry::metrics::MetricValue;
+use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use prost::Message;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -518,6 +520,564 @@ fn matching_acks_reuse_encoder_and_commit_pages_through_the_receiver_loop() {
 }
 
 struct StartupFailureProbe<A: DriverAdapter>(DatabaseReceiver<A>);
+
+struct PermanentNackProbe(DatabaseReceiver<FakeAdapter>);
+
+#[async_trait(?Send)]
+impl local::Receiver<OtapPdata> for PermanentNackProbe {
+    async fn start(
+        self: Box<Self>,
+        controls: local::ControlChannel<OtapPdata>,
+        effects: local::EffectHandler<OtapPdata>,
+    ) -> Result<TerminalState, Error> {
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            local::Receiver::start(Box::new(self.0), controls, effects),
+        )
+        .await
+        .expect("permanent rejection must terminate, not replay forever");
+        let Err(Error::ReceiverError {
+            kind,
+            error,
+            source_detail,
+            ..
+        }) = result
+        else {
+            panic!("permanent rejection must return a receiver error");
+        };
+        assert_eq!(kind, ReceiverErrorKind::Transport);
+        assert_eq!(
+            error,
+            "downstream permanently rejected the database page; checkpoint unchanged"
+        );
+        assert!(
+            source_detail.is_empty(),
+            "do not expose downstream rejection details"
+        );
+        Ok(TerminalState::default())
+    }
+}
+
+fn snapshot_counter(snapshot: &MetricSetSnapshot, name: &str) -> u64 {
+    let index = snapshot
+        .descriptor()
+        .metrics
+        .iter()
+        .position(|field| field.name == name)
+        .expect("counter descriptor");
+    match snapshot.get_metrics()[index] {
+        MetricValue::U64(value) => value,
+        _ => panic!("expected unsigned counter"),
+    }
+}
+
+fn feedback_message(ack: bool, calldata: CallData) -> NodeControlMsg<OtapPdata> {
+    let pdata =
+        OtapPdata::new_todo_context(OtlpProtoBytes::ExportLogsRequest(Vec::new().into()).into());
+    if ack {
+        let mut ack = AckMsg::new(pdata);
+        ack.unwind.route.calldata = calldata;
+        NodeControlMsg::Ack(ack)
+    } else {
+        let mut nack = NackMsg::new_permanent("discarded feedback", pdata);
+        nack.unwind.route.calldata = calldata;
+        NodeControlMsg::Nack(nack)
+    }
+}
+
+/// Scenario: Query/encoding work receives ACK and permanent NACK controls before completing.
+/// Guarantees: Both controls count as discarded feedback without cancellation or delivery counters.
+#[tokio::test]
+async fn inactive_operation_counts_discarded_feedback() {
+    let pipeline = create_test_pipeline_context();
+    let mut metrics = Some(DatabaseReceiverMetrics::register(&pipeline));
+    let (sender, receiver) = Channel::new(2);
+    sender
+        .send(feedback_message(true, CallData::new()))
+        .expect("ACK");
+    sender
+        .send(feedback_message(false, CallData::new()))
+        .expect("NACK");
+    let mut controls = local::ControlChannel::new(Receiver::Local(LocalReceiver::mpsc(receiver)));
+    let cancelled = Rc::new(Cell::new(false));
+    let result = await_database_operation_or_stop(
+        async { 42 },
+        TestCancellation {
+            cancelled: Rc::clone(&cancelled),
+        },
+        &mut controls,
+        &mut metrics,
+        &Cell::new(false),
+        &poll_admission(),
+    )
+    .await
+    .expect("operation finishes");
+    assert!(matches!(result, OperationOutcome::Completed(42)));
+    let metrics = metrics.expect("metrics");
+    assert_eq!(metrics.stale_feedback.get(), 2);
+    assert_eq!(metrics.acks.get(), 0);
+    assert_eq!(metrics.nacks.get(), 0);
+    assert!(!cancelled.get());
+}
+
+struct DeferredFeedbackProbe {
+    admission: Rc<PollAdmission>,
+}
+
+#[async_trait(?Send)]
+impl local::Receiver<OtapPdata> for DeferredFeedbackProbe {
+    async fn start(
+        self: Box<Self>,
+        _controls: local::ControlChannel<OtapPdata>,
+        effects: local::EffectHandler<OtapPdata>,
+    ) -> Result<TerminalState, Error> {
+        let pdata = OtapPdata::new_todo_context(
+            OtlpProtoBytes::ExportLogsRequest(Vec::new().into()).into(),
+        );
+        effects.send_message(pdata.clone()).await?;
+        let pipeline = create_test_pipeline_context();
+        let mut metrics = Some(DatabaseReceiverMetrics::register(&pipeline));
+        let mut state =
+            ReceiverState::new(checkpoint(0, 0), Instant::now(), CatchUpConfig::default());
+        let valid: CallData = [Context8u8::from(1_u64), Context8u8::from(7_u64)]
+            .into_iter()
+            .collect();
+        let (sender, receiver) = Channel::new(6);
+        for control in [
+            feedback_message(true, CallData::new()),
+            feedback_message(
+                false,
+                [Context8u8::from(1_u64), Context8u8::from(6_u64)]
+                    .into_iter()
+                    .collect(),
+            ),
+            feedback_message(
+                false,
+                [Context8u8::from(2_u64), Context8u8::from(7_u64)]
+                    .into_iter()
+                    .collect(),
+            ),
+            feedback_message(false, valid.clone()),
+            feedback_message(true, valid),
+            pressure(1, MemoryPressureLevel::Hard),
+        ] {
+            sender.send(control).expect("queued control");
+        }
+        let mut controls =
+            local::ControlChannel::new(Receiver::Local(LocalReceiver::mpsc(receiver)));
+        let mut deferred = None;
+        let outcome = send_or_stop(
+            pdata,
+            &mut controls,
+            &effects,
+            &mut state,
+            &mut metrics,
+            &mut None,
+            &mut deferred,
+            7,
+            &self.admission,
+        )
+        .await?;
+        assert!(matches!(outcome, SendOutcome::Sent));
+        assert!(matches!(deferred, Some(NodeControlMsg::Nack(nack)) if nack.permanent));
+        let metrics = metrics.expect("metrics");
+        assert_eq!(
+            metrics.stale_feedback.get(),
+            4,
+            "retain first valid feedback without counting it"
+        );
+        assert_eq!(metrics.acks.get(), 0);
+        assert_eq!(metrics.nacks.get(), 0, "deferred NACK is not handled twice");
+        assert!(
+            state.pending.is_none(),
+            "send helper must not change delivery state"
+        );
+        Ok(TerminalState::default())
+    }
+}
+
+/// Scenario: A blocked send receives invalid feedback, a matching permanent NACK, and a duplicate ACK.
+/// Guarantees: Only the first matching feedback is deferred, its permanent flag survives, and every
+/// discarded message counts exactly once without prematurely marking the page ACKed or NACKed.
+#[test]
+fn blocked_send_counts_stale_feedback_and_preserves_permanent_nack() {
+    let admission = Rc::new(poll_admission());
+    let runtime = TestRuntime::<OtapPdata>::new();
+    let mut config = runtime.config().clone();
+    config.output_pdata_channel.capacity = 1;
+    let wrapper = ReceiverWrapper::local(
+        DeferredFeedbackProbe {
+            admission: Rc::clone(&admission),
+        },
+        test_node(config.name.clone()),
+        Arc::new(NodeUserConfig::new_receiver_config(
+            "urn:otel:receiver:deferred_feedback_test",
+        )),
+        &config,
+    );
+    runtime
+        .set_receiver(wrapper)
+        .run_test(|_| async {})
+        .run_validation_concurrent(move |mut ctx| async move {
+            tokio::time::timeout(Duration::from_secs(3), async {
+                while !admission.state.should_shed_ingress() {
+                    tokio::task::yield_now().await;
+                }
+                let _ = ctx.recv().await.expect("queue filler");
+                let _ = ctx.recv().await.expect("blocked page");
+            })
+            .await
+            .expect("feedback processed before output is released");
+        });
+}
+
+struct CheckpointFeedbackProbe {
+    store: CheckpointStore,
+    write: Arc<WriteControl>,
+}
+
+#[async_trait(?Send)]
+impl local::Receiver<OtapPdata> for CheckpointFeedbackProbe {
+    async fn start(
+        self: Box<Self>,
+        _controls: local::ControlChannel<OtapPdata>,
+        effects: local::EffectHandler<OtapPdata>,
+    ) -> Result<TerminalState, Error> {
+        let worker = ScraperWorker::new().expect("worker");
+        let pipeline = create_test_pipeline_context();
+        let mut metrics = Some(DatabaseReceiverMetrics::register(&pipeline));
+        let (sender, receiver) = Channel::new(6);
+        sender
+            .send(feedback_message(true, CallData::new()))
+            .expect("write ACK");
+        sender
+            .send(feedback_message(false, CallData::new()))
+            .expect("write NACK");
+        let mut controls =
+            local::ControlChannel::new(Receiver::Local(LocalReceiver::mpsc(receiver)));
+        let mut failures = 0;
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let candidate = checkpoint(0, 1).cursor;
+        let abandoned = Cell::new(false);
+        let admission = poll_admission();
+        let (result, ()) = tokio::time::timeout(Duration::from_secs(4), async {
+            tokio::join!(
+                commit_checkpoint(
+                    &worker,
+                    &self.store,
+                    0,
+                    &candidate,
+                    3,
+                    Duration::from_secs(60),
+                    &mut failures,
+                    "source",
+                    1,
+                    &effects,
+                    &mut metrics,
+                    &abandoned,
+                    &mut controls,
+                    None,
+                    &admission,
+                ),
+                async {
+                    while self.write.completed.load(Ordering::SeqCst) == 0 {
+                        tokio::task::yield_now().await;
+                    }
+                    // The worker publishes the write result before running this FIFO barrier.
+                    worker
+                        .run(|| ())
+                        .expect("write barrier")
+                        .await
+                        .expect("write result published");
+                    sender
+                        .send(feedback_message(true, CallData::new()))
+                        .expect("retry ACK");
+                    sender
+                        .send(feedback_message(false, CallData::new()))
+                        .expect("retry NACK");
+                    sender
+                        .send(NodeControlMsg::Shutdown {
+                            deadline,
+                            reason: "finish retry test".to_owned(),
+                        })
+                        .expect("shutdown");
+                }
+            )
+        })
+        .await
+        .expect("checkpoint feedback remains responsive");
+        assert!(
+            matches!(result?, CommitOutcome::Stopped(StopRequest::Shutdown(value)) if value == deadline)
+        );
+        let metrics = metrics.expect("metrics");
+        assert_eq!(metrics.stale_feedback.get(), 4);
+        assert_eq!(metrics.acks.get(), 0);
+        assert_eq!(metrics.nacks.get(), 0);
+        assert_eq!(metrics.checkpoint_failures.get(), 1);
+        assert_eq!(self.write.attempts.load(Ordering::SeqCst), 1);
+        worker
+            .stop(Instant::now() + Duration::from_secs(1))
+            .await
+            .expect("worker stopped");
+        assert!(self.store.read().expect("checkpoint").is_none());
+        Ok(TerminalState::default())
+    }
+}
+
+/// Scenario: Duplicate ACK/permanent NACK controls arrive during a failed checkpoint write and retry.
+/// Guarantees: All four discarded messages are counted, none advances delivery, and shutdown interrupts backoff.
+#[test]
+fn checkpoint_write_and_retry_count_discarded_feedback() {
+    let directory = tempfile::tempdir_in(".").expect("checkpoint directory");
+    let mut store = CheckpointStore::new(
+        directory.path(),
+        "group",
+        "pipeline",
+        "feedback",
+        "source",
+        "fingerprint".to_owned(),
+    );
+    let _lease = SourceLease::acquire(store.lease_key()).expect("lease");
+    let write = Arc::new(WriteControl {
+        delay: Duration::from_millis(100),
+        attempts: AtomicUsize::new(0),
+        completed: AtomicUsize::new(0),
+    });
+    store.write_control = Some(Arc::clone(&write));
+    let runtime = TestRuntime::<OtapPdata>::new();
+    let wrapper = ReceiverWrapper::local(
+        CheckpointFeedbackProbe { store, write },
+        test_node(runtime.config().name.clone()),
+        Arc::new(NodeUserConfig::new_receiver_config(
+            "urn:otel:receiver:checkpoint_feedback_test",
+        )),
+        runtime.config(),
+    );
+    runtime
+        .set_receiver(wrapper)
+        .run_test(|_| async {})
+        .run_validation(|_| async {});
+}
+
+/// Scenario: A matching permanent NACK arrives on a fresh or resumed source, including during drain.
+/// Guarantees: Collection exits without another page or checkpoint advancement, hides rejection details,
+/// and joins workers before releasing the lease for an in-process restart.
+#[test]
+fn permanent_nack_preserves_checkpoint_and_releases_lease() {
+    for (saved, draining) in [(false, false), (true, false), (true, true)] {
+        let directory = tempfile::tempdir_in(".").expect("checkpoint directory");
+        let config = CheckpointConfig {
+            directory: directory.path().to_string_lossy().into_owned(),
+            on_nack: OnNack::Rewind,
+            nack_backoff: Duration::from_millis(1),
+            max_consecutive_failures: 3,
+        };
+        let store = CheckpointStore::new(
+            directory.path(),
+            "group",
+            "pipeline",
+            "nack",
+            "source",
+            "fingerprint".to_owned(),
+        );
+        let lease = SourceLease::acquire(store.lease_key()).expect("lease");
+        let previous = saved.then(|| {
+            store
+                .write(0, &checkpoint(0, 41).cursor)
+                .expect("saved progress")
+                .0
+        });
+        let joined = Rc::new(Cell::new(false));
+        let receiver = DatabaseReceiver::new(
+            FakeAdapter {
+                shutdown_joined: Rc::clone(&joined),
+                lease_key: store.lease_key().to_path_buf(),
+            },
+            fake_query(&config),
+            store.clone(),
+            lease,
+            config.nack_backoff,
+            config.max_consecutive_failures,
+            "source".to_owned(),
+            normal_admission(),
+            None,
+        );
+        let runtime = TestRuntime::<OtapPdata>::new();
+        let wrapper = ReceiverWrapper::local(
+            PermanentNackProbe(receiver),
+            test_node(runtime.config().name.clone()),
+            Arc::new(NodeUserConfig::new_receiver_config(
+                "urn:otel:receiver:permanent_nack_test",
+            )),
+            runtime.config(),
+        );
+        runtime
+            .set_receiver(wrapper)
+            .run_test(|_| async {})
+            .run_validation_concurrent(move |mut ctx| async move {
+                let pdata = ctx.recv().await.expect("first page");
+                if draining {
+                    ctx.send_control_msg(NodeControlMsg::DrainIngress {
+                        deadline: Instant::now() + Duration::from_secs(3),
+                        reason: "drain with pending page".to_owned(),
+                    })
+                    .await
+                    .expect("drain");
+                }
+                let (_, nack) =
+                    next_nack(NackMsg::new_permanent("private-rejection-detail", pdata))
+                        .expect("NACK subscription");
+                ctx.send_control_msg(NodeControlMsg::Nack(nack))
+                    .await
+                    .expect("permanent NACK");
+                assert!(
+                    tokio::time::timeout(Duration::from_secs(5), ctx.recv())
+                        .await
+                        .expect("receiver stops")
+                        .is_err(),
+                    "permanent NACK must not produce a replay"
+                );
+            });
+        assert!(joined.get());
+        assert_eq!(store.read().expect("checkpoint"), previous);
+        drop(SourceLease::acquire(store.lease_key()).expect("source can restart"));
+    }
+}
+
+/// Scenario: A pending page receives malformed, wrong-generation, and wrong-batch feedback,
+/// followed by a retryable NACK, an ACK, and a permanent rejection of the next page.
+/// Guarantees: Stale permanent NACKs cannot stop collection, rejected feedback counts exactly once,
+/// retryable NACKs replay the original cursor, and only the ACKed page is checkpointed.
+#[test]
+fn stale_feedback_is_counted_and_retryable_nack_still_replays() {
+    let directory = tempfile::tempdir_in(".").expect("checkpoint directory");
+    let config = CheckpointConfig {
+        directory: directory.path().to_string_lossy().into_owned(),
+        on_nack: OnNack::Rewind,
+        nack_backoff: Duration::from_millis(1),
+        max_consecutive_failures: 3,
+    };
+    let store = CheckpointStore::new(
+        directory.path(),
+        "group",
+        "pipeline",
+        "feedback",
+        "source",
+        "fingerprint".to_owned(),
+    );
+    let lease = SourceLease::acquire(store.lease_key()).expect("lease");
+    let joined = Rc::new(Cell::new(false));
+    let pipeline = create_test_pipeline_context();
+    let receiver = DatabaseReceiver::new(
+        FakeAdapter {
+            shutdown_joined: Rc::clone(&joined),
+            lease_key: store.lease_key().to_path_buf(),
+        },
+        fake_query(&config),
+        store.clone(),
+        lease,
+        config.nack_backoff,
+        config.max_consecutive_failures,
+        "source".to_owned(),
+        normal_admission(),
+        Some(DatabaseReceiverMetrics::register(&pipeline)),
+    );
+    let runtime = TestRuntime::<OtapPdata>::new();
+    let wrapper = ReceiverWrapper::local(
+        PermanentNackProbe(receiver),
+        test_node(runtime.config().name.clone()),
+        Arc::new(NodeUserConfig::new_receiver_config(
+            "urn:otel:receiver:feedback_test",
+        )),
+        runtime.config(),
+    );
+    runtime
+        .set_receiver(wrapper)
+        .run_test(|_| async {})
+        .run_validation_concurrent(|mut ctx| async move {
+            let pdata = ctx.recv().await.expect("first page");
+            assert_page_id(&pdata, 1);
+            let (_, ack) = next_ack(AckMsg::new(pdata.clone())).expect("ACK subscription");
+            let (_, nack) = next_nack(NackMsg::new_permanent("stale", pdata.clone()))
+                .expect("NACK subscription");
+            let original = nack.unwind.route.calldata.clone();
+            for calldata in [
+                CallData::new(),
+                [original[0]].into_iter().collect(),
+                [original[0], Context8u8::from(u64::from(original[1]) + 1)]
+                    .into_iter()
+                    .collect(),
+                [Context8u8::from(u64::from(original[0]) + 1), original[1]]
+                    .into_iter()
+                    .collect(),
+            ] {
+                let mut stale_ack = ack.clone();
+                stale_ack.unwind.route.calldata = calldata.clone();
+                ctx.send_control_msg(NodeControlMsg::Ack(stale_ack))
+                    .await
+                    .expect("stale ACK");
+                let mut stale_nack = nack.clone();
+                stale_nack.unwind.route.calldata = calldata;
+                ctx.send_control_msg(NodeControlMsg::Nack(stale_nack))
+                    .await
+                    .expect("stale permanent NACK");
+            }
+            let (reports, reporter) = MetricsReporter::create_new_and_receiver(1);
+            ctx.send_control_msg(NodeControlMsg::CollectTelemetry {
+                metrics_reporter: reporter,
+            })
+            .await
+            .expect("metrics barrier");
+            let snapshot = tokio::time::timeout(Duration::from_secs(2), reports.recv_async())
+                .await
+                .expect("metrics received")
+                .expect("snapshot");
+            assert_eq!(snapshot_counter(&snapshot, "stale.feedback"), 8);
+            assert_eq!(snapshot_counter(&snapshot, "polls"), 1);
+            assert_eq!(snapshot_counter(&snapshot, "acks"), 0);
+            assert_eq!(snapshot_counter(&snapshot, "nacks"), 0);
+            assert_eq!(snapshot_counter(&snapshot, "replays"), 0);
+            let (_, retry) = next_nack(NackMsg::new("temporary", pdata)).expect("retryable NACK");
+            ctx.send_control_msg(NodeControlMsg::Nack(retry))
+                .await
+                .expect("retry");
+            let replay = ctx.recv().await.expect("replayed page");
+            assert_page_id(&replay, 1);
+            let (reports, reporter) = MetricsReporter::create_new_and_receiver(1);
+            ctx.send_control_msg(NodeControlMsg::CollectTelemetry {
+                metrics_reporter: reporter,
+            })
+            .await
+            .expect("replay metrics");
+            let snapshot = tokio::time::timeout(Duration::from_secs(2), reports.recv_async())
+                .await
+                .expect("replay metrics received")
+                .expect("snapshot");
+            assert_eq!(snapshot_counter(&snapshot, "nacks"), 1);
+            assert_eq!(snapshot_counter(&snapshot, "replays"), 1);
+            assert_eq!(snapshot_counter(&snapshot, "stale.feedback"), 0);
+            let (_, ack) = next_ack(AckMsg::new(replay)).expect("ACK replay");
+            ctx.send_control_msg(NodeControlMsg::Ack(ack))
+                .await
+                .expect("ACK");
+            let next = ctx.recv().await.expect("next committed page");
+            assert_page_id(&next, 2);
+            let (_, nack) =
+                next_nack(NackMsg::new_permanent("terminal", next)).expect("permanent NACK");
+            ctx.send_control_msg(NodeControlMsg::Nack(nack))
+                .await
+                .expect("stop");
+            assert!(
+                ctx.recv().await.is_err(),
+                "no page after terminal rejection"
+            );
+        });
+    let committed = store.read().expect("checkpoint").expect("ACKed first page");
+    assert_eq!(committed.revision, 1);
+    assert_eq!(committed.cursor.tie_breaker, 1);
+    assert!(joined.get());
+    drop(SourceLease::acquire(store.lease_key()).expect("lease released"));
+}
 
 struct ClosedControlCleanupProbe {
     receiver: DatabaseReceiver<FakeAdapter>,

@@ -47,7 +47,7 @@ pub struct DatabaseReceiverMetrics {
     /// Pages re-queried after a negative acknowledgement.
     #[metric(unit = "{replay}")]
     pub replays: Counter<u64>,
-    /// ACK/NACK feedback discarded because it did not match the in-flight page.
+    /// ACK/NACK feedback discarded as malformed, wrong-generation, stale, or duplicate.
     #[metric(unit = "{feedback}")]
     pub stale_feedback: Counter<u64>,
     /// Durable checkpoint commits.

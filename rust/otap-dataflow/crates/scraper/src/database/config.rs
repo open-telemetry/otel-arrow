@@ -126,12 +126,12 @@ impl fmt::Debug for TieBreakerCursorConfig {
 
 /// Behavior applied when a downstream node negatively acknowledges a page.
 ///
-/// Only `rewind` is implemented. A terminal `fail` policy is deferred so an
-/// operator cannot select a mode the receiver does not honor.
+/// Only `rewind` is configurable for retryable feedback. Permanent NACKs
+/// terminate collection without advancing the checkpoint regardless of this policy.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum OnNack {
-    /// Retain the durable cursor and re-query the same page after a backoff.
+    /// Retain the durable cursor and re-query after a retryable NACK and backoff.
     Rewind,
 }
 

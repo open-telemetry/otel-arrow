@@ -5,8 +5,8 @@
 //!
 //! Delivery is at least once. A page is emitted with a unique batch ID, and the
 //! durable cursor advances only after a matching ACK is followed by a
-//! successful checkpoint write. A NACK keeps the durable cursor and replays the
-//! same page after a fixed backoff, so an unacknowledged row is never skipped.
+//! successful checkpoint write. A retryable NACK replays from the durable cursor
+//! after a fixed backoff; a permanent NACK stops collection without skipping rows.
 
 use crate::checkpoint::{CheckpointState, CheckpointStore};
 use crate::database::{
@@ -539,13 +539,12 @@ where
                         NodeControlMsg::Ack(ack) => {
                             let Some(batch_id) = batch_id_from_call_data(&ack.unwind.route.calldata, lease.generation())
                             else {
+                                count_stale_feedback(&mut metrics);
                                 continue;
                             };
                             let Some(candidate) = state.ack_candidate(batch_id) else {
                                 // Late or duplicate feedback cannot advance state.
-                                if let Some(metrics) = metrics.as_mut() {
-                                    metrics.stale_feedback.add(1);
-                                }
+                                count_stale_feedback(&mut metrics);
                                 continue;
                             };
                             if let Some(metrics) = metrics.as_mut() {
@@ -599,14 +598,35 @@ where
                             let Some(batch_id) =
                                 batch_id_from_call_data(&nack.unwind.route.calldata, lease.generation())
                             else {
+                                count_stale_feedback(&mut metrics);
                                 continue;
                             };
+                            if state.pending.as_ref().is_none_or(|pending| pending.id != batch_id) {
+                                count_stale_feedback(&mut metrics);
+                                continue;
+                            }
+                            if let Some(metrics) = metrics.as_mut() {
+                                metrics.nacks.add(1);
+                            }
+                            if nack.permanent {
+                                // Downstream reasons may contain customer data; report only fixed context.
+                                otel_warn!(
+                                    "database_receiver.page_rejected",
+                                    source_id = source_id.as_str(),
+                                    batch_id = batch_id,
+                                    message = "Downstream permanently rejected the page; collection stopped without advancing the checkpoint"
+                                );
+                                return Err(receiver_error(
+                                    &effect_handler,
+                                    ReceiverErrorKind::Transport,
+                                    PermanentNack,
+                                ));
+                            }
                             let replay_at = Instant::now()
                                 .checked_add(nack_backoff)
                                 .unwrap_or_else(Instant::now);
                             if state.nack(batch_id, replay_at) {
                                 if let Some(metrics) = metrics.as_mut() {
-                                    metrics.nacks.add(1);
                                     metrics.replays.add(1);
                                 }
                                 otel_warn!(
@@ -625,8 +645,6 @@ where
                                     )
                                     .await;
                                 }
-                            } else if let Some(metrics) = metrics.as_mut() {
-                                metrics.stale_feedback.add(1);
                             }
                         }
                         NodeControlMsg::DrainIngress { deadline, .. } => {
@@ -870,6 +888,10 @@ enum SendOutcome {
     Stopped(StopRequest),
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error("downstream permanently rejected the database page; checkpoint unchanged")]
+struct PermanentNack;
+
 #[derive(Clone, Copy)]
 enum StopRequest {
     Drain(Instant),
@@ -977,6 +999,7 @@ async fn commit_checkpoint(
                         Ok(control) => {
                             let Some(control) = handle_common_control(control, metrics, admission)
                             else { continue };
+                            count_discarded_feedback(&control, metrics);
                             if let Some(request) = stop_request(&control) {
                                 let request = request.bounded();
                                 let deadline = request.deadline();
@@ -1067,6 +1090,7 @@ async fn commit_checkpoint(
                             let Some(control) = handle_common_control(
                                 control.map_err(Error::ChannelRecvError)?, metrics, admission,
                             ) else { continue };
+                            count_discarded_feedback(&control, metrics);
                             match stop_request(&control) {
                                 Some(stop @ StopRequest::Shutdown(_)) => {
                                     return Ok(CommitOutcome::Stopped(stop.bounded()));
@@ -1114,6 +1138,7 @@ where
                     Ok(control) => {
                         let Some(control) = handle_common_control(control, metrics, admission)
                         else { continue };
+                        count_discarded_feedback(&control, metrics);
                         if let Some(stop) = stop_request(&control) {
                             let stop = stop.bounded();
                             if let Some(metrics) = metrics.as_mut() {
@@ -1229,6 +1254,8 @@ async fn send_or_stop(
                             && batch_id_from_call_data(calldata, generation) == Some(state.next_batch_id)
                         {
                             *deferred_feedback = Some(control);
+                        } else {
+                            count_stale_feedback(metrics);
                         }
                     }
                     _ => {}
@@ -1239,6 +1266,22 @@ async fn send_or_stop(
                 return Ok(SendOutcome::Sent);
             }
         }
+    }
+}
+
+fn count_stale_feedback(metrics: &mut Option<MetricSet<DatabaseReceiverMetrics>>) {
+    if let Some(metrics) = metrics.as_mut() {
+        metrics.stale_feedback.add(1);
+    }
+}
+
+/// During query/encoding and checkpoint waits, no new feedback can be accepted.
+fn count_discarded_feedback(
+    control: &NodeControlMsg<OtapPdata>,
+    metrics: &mut Option<MetricSet<DatabaseReceiverMetrics>>,
+) {
+    if matches!(control, NodeControlMsg::Ack(_) | NodeControlMsg::Nack(_)) {
+        count_stale_feedback(metrics);
     }
 }
 
