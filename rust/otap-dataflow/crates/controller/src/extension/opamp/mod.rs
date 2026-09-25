@@ -1713,7 +1713,7 @@ mod test {
     /// that is actually passed will be overridden.
     async fn run_web_socket_test_with_config(
         mock_server_responses: Vec<Option<ServerToAgent>>,
-        control_plane: Arc<MockControlPlane>,
+        control_plane: Arc<dyn ControlPlane>,
         expected_exchanges: usize,
         mut config: Config,
         server_tls_config: Option<TlsServerConfig>,
@@ -2026,6 +2026,52 @@ mod test {
         assert!(status.error_message.contains("failed to apply config"));
     }
 
+    /// Scenario: OpAMP adds, removes, or replaces the state root.
+    /// Guarantees: OpAMP reports failure and committed config stays intact.
+    #[tokio::test]
+    async fn state_dir_changes_fail_through_opamp() {
+        let root_a = std::path::PathBuf::from(if cfg!(windows) {
+            r"C:\otel\a"
+        } else {
+            "/var/lib/otel/a"
+        });
+        let root_b = std::path::PathBuf::from(if cfg!(windows) {
+            r"C:\otel\b"
+        } else {
+            "/var/lib/otel/b"
+        });
+        for (current, desired) in [
+            (None, Some(root_a.clone())),
+            (Some(root_a.clone()), None),
+            (Some(root_a), Some(root_b)),
+        ] {
+            let mut initial = empty_engine_config();
+            initial.engine.state_dir = current;
+            let control_plane = crate::live_control::state_directory_test_control_plane(&initial);
+            let mut candidate = initial.clone();
+            candidate.engine.state_dir = desired;
+            let responses = vec![
+                Some(server_to_agent_with_config(&candidate, vec![5, 1, 4])),
+                None,
+                None,
+            ];
+            let config: Config = serde_json::from_value(serde_json::json!({
+                "instance_uid": EXPECTED_INSTANCE_UID_STR, "endpoint": ""
+            }))
+            .unwrap();
+            let requests =
+                run_web_socket_test_with_config(responses, control_plane.clone(), 3, config, None)
+                    .await;
+            let status = requests[2].remote_config_status.as_ref().unwrap();
+            assert_eq!(status.status, RemoteConfigStatuses::Failed as i32);
+            assert!(
+                status.error_message.contains("engine.state_dir"),
+                "{status:?}"
+            );
+            assert_eq!(control_plane.engine_config_snapshot().unwrap(), initial);
+        }
+    }
+
     #[tokio::test]
     async fn test_config_update_error() {
         let control_plane = Arc::new(MockControlPlane::new(empty_engine_config()));
@@ -2182,7 +2228,7 @@ mod test {
         .expect("OpAMP test config should parse");
 
         let requests =
-            run_web_socket_test_with_config(responses, Arc::clone(&control_plane), 3, config, None)
+            run_web_socket_test_with_config(responses, control_plane.clone(), 3, config, None)
                 .await;
 
         assert_eq!(requests.len(), 3);

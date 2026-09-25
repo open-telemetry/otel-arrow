@@ -579,6 +579,18 @@ impl<
         Ok(profiles)
     }
 
+    fn validate_live_state_dir_unchanged(
+        current_config: &OtelDataflowSpec,
+        desired_config: &OtelDataflowSpec,
+    ) -> Result<(), ControlPlaneError> {
+        if current_config.engine.state_dir != desired_config.engine.state_dir {
+            return Err(ControlPlaneError::InvalidRequest {
+                message: "engine.state_dir cannot be added, removed, or changed at runtime; restart the engine to select a different state location".to_owned(),
+            });
+        }
+        Ok(())
+    }
+
     // The process-wide memory limiter owns a runtime pressure-monitoring task
     // that is created during controller startup. Live reconciliation can replace
     // pipelines, but it does not currently restart or reconfigure that task, so
@@ -744,7 +756,7 @@ impl<
         }
     }
 
-    fn prepare_rollout_plan_for_engine_operation(
+    pub(super) fn prepare_rollout_plan_for_engine_operation(
         &self,
         pipeline_group_id: &str,
         pipeline_id: &str,
@@ -792,6 +804,7 @@ impl<
         let mut candidate_config = planning_config
             .cloned()
             .unwrap_or_else(|| live_config.clone());
+        Self::validate_live_state_dir_unchanged(&live_config, &candidate_config)?;
         let group_cfg = candidate_config
             .groups
             .get_mut(&pipeline_group_id)
@@ -2143,6 +2156,7 @@ impl<
             &desired_config,
             request.delete_missing,
         );
+        Self::validate_live_state_dir_unchanged(&live_config, &candidate_config)?;
         candidate_config
             .validate()
             .map_err(|err| ControlPlaneError::InvalidRequest {

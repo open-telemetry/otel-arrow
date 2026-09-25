@@ -54,6 +54,9 @@ async-channel = { workspace = true }
 uuid = { workspace = true }
 data-encoding = { workspace = true }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+nix = { workspace = true, features = ["user"] }
+
 [target.'cfg(not(windows))'.dependencies]
 tikv-jemalloc-ctl = { workspace = true, optional = true }
 tikv-jemalloc-sys = { workspace = true, optional = true }

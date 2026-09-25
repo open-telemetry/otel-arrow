@@ -779,6 +779,10 @@ while their semantic and format definitions remain normative from version 1.
 | State root | Crash after any directory creation or before a required sync | Retry the same path, validate and repeat syncs; never delete checkpoint artifacts or treat missing namespace authority as empty |
 | State root | Existing root, including one made visible by another creator | Validate opened objects, permissions and identity; repeat required durability steps rather than assuming existence proves sync |
 | State root | Untrusted symlink/reparse traversal, non-directory, substitution, permissions failure, unavailable storage, or failed required sync | Actionable startup failure; no alternate root or checkpoint reset |
+| State root | Live addition, removal, or replacement through rollout preparation or full reconciliation (including OpAMP) | Rejected before applied configuration or pipeline changes; unchanged roots remain usable |
+| State root | Unconfigured engine or configured root on an unsupported platform | Omission preserves existing behavior; unsupported provisioning fails startup clearly |
+| State root | Restrictive umask or inherited Linux POSIX ACL | Validate actual owner permissions and ACL mask through mode bits; no chmod or umask repair |
+| State root | Pipeline restart/resizing after ancestor rename or live root removal | Reuse the retained handle; no pathname reopening or automatic root recreation |
 | State root | Intentional root change | Select only that root; document different-state/new-namespace consequences; no sibling search or automatic relocation |
 | Recovery output | Idle flush emits `ABC`; crash before Ack; append `DEF` and LF before recovery | Recovered offset is unchanged; may emit `ABCDEF`, not identical `ABC` replay |
 | Recovery output | Idle flush resolves an incomplete UTF-8/UTF-16 unit; crash before Ack; append completing bytes | Decode combined input under the configured policy; body/type and malformed evidence may differ |
