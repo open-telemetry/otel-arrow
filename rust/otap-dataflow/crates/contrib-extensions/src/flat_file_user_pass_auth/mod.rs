@@ -1,35 +1,30 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! OAuth 2.0 Client Auth extension.
-//!
-//! Acquires and refreshes OAuth 2.0 access tokens using the client-credentials
-//! grant and exposes them to data-path nodes through the `BearerTokenProvider`
-//! capability. See `design.md` for the design.
+//! Flat file user pass extension.
 
 otel_arrow_dfe_telemetry::otel_component_scope!(
-    urn = OAUTH2_CLIENT_AUTH_URN,
-    target = "otel.extension.oauth2_client_auth",
+    urn = FLAT_FILE_USER_PASS_AUTH_URN,
+    target = "otel.extension.flat_file_user_pass_auth",
 );
 
 mod auth;
 pub mod config;
 pub mod error;
-mod jwt_crypto;
 mod metrics;
 
 #[cfg(test)]
 mod tests;
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use linkme::distributed_slice;
 use otel_arrow_dfe_config::error::Error as ConfigError;
 use otel_arrow_dfe_config::extension::ExtensionUserConfig;
 use otel_arrow_dfe_engine::ExtensionFactory;
-use otel_arrow_dfe_engine::capability::auth::bearer_token_provider::{
-    BearerTokenProvider, TOKEN_USABLE_MARGIN,
-};
+use otel_arrow_dfe_engine::capability::auth::BasicAuthCredential;
+use otel_arrow_dfe_engine::capability::auth::basic_auth_provider::BasicAuthProvider;
 use otel_arrow_dfe_engine::config::ExtensionConfig;
 use otel_arrow_dfe_engine::context::ExtensionContext;
 use otel_arrow_dfe_engine::extension::wrapper::ExtensionVariant;
@@ -38,20 +33,30 @@ use otel_arrow_dfe_engine::extension_capabilities;
 use otel_arrow_dfe_otap::OTAP_EXTENSION_FACTORIES;
 use tokio::sync::watch;
 
-use self::auth::Auth;
-use self::config::Config;
-use self::metrics::OAuth2ClientAuthMetrics;
 use crate::common::background_refresh::{
-    BackgroundProviderMetricsTracker, BackgroundProviderRefreshPolicy,
+    BackgroundProviderExtension, BackgroundProviderMetricsTracker, BackgroundProviderRefreshPolicy,
 };
-use crate::common::token_refresh::{NON_EXPIRING_TOKEN_REFRESH_INTERVAL, TokenProviderExtension};
 
-/// The OAuth 2.0 Client Auth extension: the shared bearer-token refresher
-/// driven by an OAuth 2.0 token endpoint.
-pub type OAuth2ClientAuthExtension = TokenProviderExtension<Auth, OAuth2ClientAuthMetrics>;
+use self::auth::FlatFileUserPassAuth;
+use self::config::Config;
+use self::metrics::FlatFileUserPassAuthMetrics;
+
+/// The flat file user pass extension using the shared background refresher.
+pub type FlatFileUserPassAuthExtension = BackgroundProviderExtension<
+    FlatFileUserPassAuth,
+    FlatFileUserPassAuthMetrics,
+    BasicAuthCredential,
+    BasicAuthProvider,
+>;
 
 /// URN under which this extension is registered.
-pub const OAUTH2_CLIENT_AUTH_URN: &str = "urn:otel:extension:oauth2_client_auth";
+pub const FLAT_FILE_USER_PASS_AUTH_URN: &str = "urn:otel:extension:flat_file_user_pass_auth";
+
+/// Default refresh interval.
+const DEFAULT_BASIC_AUTH_CREDENTIAL_REFRESH_INTERVAL: Duration = Duration::from_secs(60 * 60);
+
+/// Minimum refresh interval.
+const MINIMUM_BASIC_AUTH_CREDENTIAL_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 
 /// Deserializes and validates the extension's user configuration.
 fn parse_config(config: &serde_json::Value) -> Result<Config, ConfigError> {
@@ -70,7 +75,7 @@ fn validate_config(config: &serde_json::Value) -> Result<(), ConfigError> {
     parse_config(config).map(|_| ())
 }
 
-/// Builds an `OAuth2ClientAuthExtension` bundle.
+/// Builds an `FlatFileUserPassAuthExtension` bundle.
 fn create(
     ext_ctx: &ExtensionContext,
     name: otel_arrow_dfe_config::ExtensionId,
@@ -80,53 +85,52 @@ fn create(
     // Validate config now so a bad config fails fast at wiring time.
     let config = parse_config(&ext_config.config)?;
 
-    let auth = Auth::new(&config).map_err(|e| ConfigError::InvalidUserConfig {
-        error: format!("failed to initialize OAuth2 client: {e}"),
-    })?;
-
     // Register a dedicated entity + metric set for this extension instance.
     let entity_key = ext_ctx.register_extension_entity(name.clone(), ExtensionVariant::Shared);
-    let metric_set = ext_ctx.register_metric_set_for_entity::<OAuth2ClientAuthMetrics>(entity_key);
+    let metric_set =
+        ext_ctx.register_metric_set_for_entity::<FlatFileUserPassAuthMetrics>(entity_key);
     let tracker = BackgroundProviderMetricsTracker::new(metric_set);
 
     // Empty token cache; the background refresh loop publishes the first token.
     let (tx, _rx) = watch::channel(None);
+    let refresh_policy = if config.password_secret_file.is_some() {
+        BackgroundProviderRefreshPolicy::periodic(config.password_secret_file_refresh).map_err(
+            |e| ConfigError::InvalidUserConfig {
+                error: format!("failed to initialize flat file user pass extension: {e}"),
+            },
+        )?
+    } else {
+        BackgroundProviderRefreshPolicy::once()
+    };
 
-    let extension = OAuth2ClientAuthExtension::new(
+    let extension = FlatFileUserPassAuthExtension::new(
         &name,
-        auth,
-        BackgroundProviderRefreshPolicy::expiry_driven(
-            TOKEN_USABLE_MARGIN,
-            NON_EXPIRING_TOKEN_REFRESH_INTERVAL,
-            config.expiry_buffer,
-        )
-        .map_err(|e| ConfigError::InvalidUserConfig {
-            error: format!("failed to initialize OAuth2 client: {e}"),
-        })?,
+        FlatFileUserPassAuth::new(config),
+        refresh_policy,
         tx,
         tracker,
     );
 
     ExtensionWrapper::builder(name, ext_config, extension_config)
         .active()
-        .with_readiness_probe_timeout_override(config.startup_timeout)
-        .shared::<OAuth2ClientAuthExtension>(extension)
+        .with_readiness_probe()
+        .shared::<FlatFileUserPassAuthExtension>(extension)
         .build()
         .map_err(|e| ConfigError::InvalidUserConfig {
             error: e.to_string(),
         })
 }
 
-/// Factory registration for the OAuth 2.0 Client Auth extension.
+/// Factory registration for the flat file user pass extension.
 #[allow(unsafe_code)]
 #[otel_arrow_dfe_engine::component_inventory(category = Extension)]
 #[distributed_slice(OTAP_EXTENSION_FACTORIES)]
-pub static OAUTH2_CLIENT_AUTH_EXTENSION: ExtensionFactory = ExtensionFactory {
-    name: OAUTH2_CLIENT_AUTH_URN,
-    description: "Active+Shared extension exposing BearerTokenProvider via the OAuth 2.0 client-credentials and JWT-bearer grants",
+pub static FLAT_FILE_USER_PASS_AUTH_EXTENSION: ExtensionFactory = ExtensionFactory {
+    name: FLAT_FILE_USER_PASS_AUTH_URN,
+    description: "Active+Shared extension exposing BasicAuthProvider via the supplied username and password",
     documentation_url: "",
     capabilities: Some(extension_capabilities!(
-        shared: OAuth2ClientAuthExtension => [BearerTokenProvider]
+        shared: FlatFileUserPassAuthExtension => [BasicAuthProvider]
     )),
     create,
     validate_config,

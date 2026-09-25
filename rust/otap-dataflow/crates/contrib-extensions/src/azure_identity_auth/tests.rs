@@ -281,7 +281,7 @@ fn make_extension(credential: Arc<dyn TokenCredential>) -> AzureIdentityAuthExte
     AzureIdentityAuthExtension::new(
         "test-ext",
         auth,
-        BackgroundProviderRefreshPolicy::new(
+        BackgroundProviderRefreshPolicy::expiry_driven(
             TOKEN_USABLE_MARGIN,
             NON_EXPIRING_TOKEN_REFRESH_INTERVAL,
             Duration::from_secs(TOKEN_EXPIRY_BUFFER_SECS),

@@ -123,17 +123,27 @@ struct Inner<
 
 /// Refresh policy for [`BackgroundProviderExtension`].
 pub struct BackgroundProviderRefreshPolicy {
-    // How close to expiration a value stops being usable.
-    usable_margin: Duration,
-    /// How often a non-expiring value should be refreshed.
-    non_expiring_refresh_interval: Duration,
-    /// Refresh this far ahead of a value's expiry.
-    expiry_buffer: Duration,
+    strategy: BackgroundProviderRefreshStrategy,
+}
+
+enum BackgroundProviderRefreshStrategy {
+    ExpiryDriven {
+        /// How close to expiration a value stops being usable.
+        usable_margin: Duration,
+        /// How often a non-expiring value should be refreshed.
+        non_expiring_refresh_interval: Duration,
+        /// Refresh this far ahead of a value's expiry.
+        expiry_buffer: Duration,
+    },
+    Periodic {
+        refresh_interval: Duration,
+    },
+    Once,
 }
 
 impl BackgroundProviderRefreshPolicy {
-    /// Builds a new instance.
-    pub fn new(
+    /// Builds an expiry-driven refresh policy.
+    pub fn expiry_driven(
         usable_margin: Duration,
         mut non_expiring_refresh_interval: Duration,
         expiry_buffer: Duration,
@@ -144,14 +154,66 @@ impl BackgroundProviderRefreshPolicy {
             non_expiring_refresh_interval.max(Duration::from_secs(MIN_REFRESH_INTERVAL_SECS));
 
         if expiry_buffer <= usable_margin {
-            return Err("expiry_buffer should be greater than usable_marge");
+            return Err("expiry_buffer should be greater than usable_margin");
         }
 
         Ok(Self {
-            usable_margin,
-            non_expiring_refresh_interval,
-            expiry_buffer,
+            strategy: BackgroundProviderRefreshStrategy::ExpiryDriven {
+                usable_margin,
+                non_expiring_refresh_interval,
+                expiry_buffer,
+            },
         })
+    }
+
+    /// Builds a fixed-interval refresh policy for values without an expiry.
+    pub fn periodic(refresh_interval: Duration) -> Result<Self, &'static str> {
+        if refresh_interval < Duration::from_secs(MIN_REFRESH_INTERVAL_SECS) {
+            return Err("refresh_interval should be at least 10 seconds");
+        }
+        if Instant::now().checked_add(refresh_interval).is_none() {
+            return Err("refresh_interval is too large for this platform");
+        }
+
+        Ok(Self {
+            strategy: BackgroundProviderRefreshStrategy::Periodic { refresh_interval },
+        })
+    }
+
+    /// Builds a policy that stops scheduling after the first successful fetch.
+    #[must_use]
+    pub const fn once() -> Self {
+        Self {
+            strategy: BackgroundProviderRefreshStrategy::Once,
+        }
+    }
+
+    fn is_value_usable(&self, expires_on: Option<Instant>) -> bool {
+        match (&self.strategy, expires_on) {
+            (
+                BackgroundProviderRefreshStrategy::ExpiryDriven { usable_margin, .. },
+                Some(expires_on),
+            ) => Instant::now() + *usable_margin < expires_on,
+            _ => true,
+        }
+    }
+
+    fn next_refresh(&self, expires_on: Option<Instant>) -> Option<tokio::time::Instant> {
+        match &self.strategy {
+            BackgroundProviderRefreshStrategy::ExpiryDriven {
+                non_expiring_refresh_interval,
+                expiry_buffer,
+                ..
+            } => Some(jitter_refresh(schedule_next(
+                expires_on,
+                *expiry_buffer,
+                *non_expiring_refresh_interval,
+            ))),
+            BackgroundProviderRefreshStrategy::Periodic { refresh_interval } => {
+                Some(tokio::time::Instant::now() + *refresh_interval)
+            }
+            BackgroundProviderRefreshStrategy::Once => None,
+        }
     }
 }
 
@@ -221,15 +283,14 @@ impl<S: BackgroundProviderSource<T>, M: BackgroundProviderMetrics, T: Clone, C: 
         // guard, which would otherwise block the writer). Assumes `T` clones
         // are a cheap refcount bump.
         let value = self.inner.tx.borrow().clone()?;
-        match S::expires_on(&value) {
-            Some(expires_on) => {
-                if Instant::now() + self.inner.refresh_policy.usable_margin < expires_on {
-                    Some(value)
-                } else {
-                    None
-                }
-            }
-            None => Some(value),
+        if self
+            .inner
+            .refresh_policy
+            .is_value_usable(S::expires_on(&value))
+        {
+            Some(value)
+        } else {
+            None
         }
     }
 
@@ -406,6 +467,13 @@ pub(crate) fn jitter_refresh(target: tokio::time::Instant) -> tokio::time::Insta
     target - Duration::from_secs(jitter)
 }
 
+async fn wait_for_refresh(next_refresh: Option<tokio::time::Instant>) {
+    match next_refresh {
+        Some(deadline) => tokio::time::sleep_until(deadline).await,
+        None => std::future::pending().await,
+    }
+}
+
 #[async_trait]
 impl<
     S: BackgroundProviderSource<T>,
@@ -421,7 +489,7 @@ impl<
     ) -> Result<TerminalState, EngineError> {
         let inner = Arc::clone(&self.inner);
         // Refresh immediately on startup.
-        let mut next_refresh = tokio::time::Instant::now();
+        let mut next_refresh = Some(tokio::time::Instant::now());
         // The engine holds data-path node startup until we signal readiness
         // (see `with_readiness_probe`). Fire once, after the first value is
         // published, so consumers never observe an empty cache.
@@ -452,7 +520,7 @@ impl<
                         }
                     }
                 }
-                _ = tokio::time::sleep_until(next_refresh) => {
+                _ = wait_for_refresh(next_refresh) => {
                     // The acquisition itself: take the same `fetch_lock` the
                     // slow-path `get_value` uses so a scheduled refresh and a
                     // concurrent cache-miss fetch coalesce onto one in-flight
@@ -515,11 +583,9 @@ impl<
 
                     match outcome {
                         Ok(value) => {
-                            next_refresh =
-                                jitter_refresh(schedule_next(
-                                    S::expires_on(&value),
-                                    inner.refresh_policy.expiry_buffer,
-                                    inner.refresh_policy.non_expiring_refresh_interval));
+                            next_refresh = inner
+                                .refresh_policy
+                                .next_refresh(S::expires_on(&value));
                             if !ready_signaled {
                                 effect_handler.signal_ready();
                                 ready_signaled = true;
@@ -536,7 +602,7 @@ impl<
                             let backoff = jittered_backoff(negative_cache_window_secs(
                                 self.consecutive_failures(),
                             ));
-                            next_refresh = tokio::time::Instant::now() + backoff;
+                            next_refresh = Some(tokio::time::Instant::now() + backoff);
                         }
                     }
                 }
