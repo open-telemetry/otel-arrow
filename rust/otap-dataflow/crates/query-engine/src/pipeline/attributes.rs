@@ -12,8 +12,9 @@ use otel_arrow_dfe_pdata::otap::transform::{AttributesTransform, apply_attribute
 use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use std::sync::Arc;
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::pipeline::PipelineStage;
+use crate::pipeline::expr::{ChildRecordKind, RecordScope};
 use crate::pipeline::planner::AttributesIdentifier;
 use crate::pipeline::state::ExecutionState;
 
@@ -44,12 +45,20 @@ impl PipelineStage for AttributeTransformPipelineStage {
         _exec_state: &mut ExecutionState,
     ) -> Result<OtapArrowRecords> {
         let attrs_payload_type = match self.attrs_id {
-            AttributesIdentifier::Root => match otap_batch {
+            AttributesIdentifier::Record(RecordScope::Signal) => match otap_batch {
                 OtapArrowRecords::Logs(_) => ArrowPayloadType::LogAttrs,
                 OtapArrowRecords::Traces(_) => ArrowPayloadType::SpanAttrs,
                 _ => ArrowPayloadType::MetricAttrs,
             },
-            AttributesIdentifier::NonRoot(payload_type) => payload_type,
+            AttributesIdentifier::Record(RecordScope::Child(ChildRecordKind::DataPoint)) => {
+                return Err(Error::InvalidPipelineError {
+                    cause: "Encountered non-signal scoped attributes identifier \
+                        when executing pipeline for signal"
+                        .into(),
+                    query_location: Default::default(),
+                });
+            }
+            AttributesIdentifier::NonRecord(payload_type) => payload_type,
         };
 
         _ = apply_attribute_transform(&mut otap_batch, attrs_payload_type, &self.transform, false)?;
