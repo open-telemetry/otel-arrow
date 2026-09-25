@@ -312,7 +312,7 @@ fn gather_dict<K: ArrowDictionaryKeyType, B: ValueBuilder>(
             // Null keys may hold arbitrary values; clamp so the gather is
             // always in bounds. The null buffer masks the result.
             let max = values_len - 1;
-            builder.append_gather(&src, keys[r.clone()].iter().map(|k| k.as_usize().min(max)));
+            builder.append_gather::<K::Native>(&src, &keys[r.clone()], max);
         }
         // A null value referenced by a valid key is also null in the output.
         match values.nulls() {
@@ -644,8 +644,11 @@ trait ValueBuilder {
     /// Append logical indices `range` of `src`.
     fn append_range(&mut self, src: &Self::Src<'_>, range: Range<usize>);
 
-    /// Append `src[i]` for each `i` in `indices`. Indices are in bounds.
-    fn append_gather(&mut self, src: &Self::Src<'_>, indices: impl Iterator<Item = usize>);
+    /// Append `src[min(k, max)]` for each dictionary key `k` in `keys`.
+    ///
+    /// Keys are clamped to `max` (the last valid index) because null keys may
+    /// hold arbitrary values; the null buffer masks those rows.
+    fn append_gather<K: ArrowNativeType>(&mut self, src: &Self::Src<'_>, keys: &[K], max: usize);
 
     /// Append `n` placeholder values (masked by nulls).
     fn append_default(&mut self, n: usize);
@@ -668,6 +671,31 @@ fn u32_remap(col: IdCol) -> (IdCol, RemapFn<u32>) {
         Some(AnyRemap::U32(r)) => Some(r.clone()),
         _ => None,
     })
+}
+
+/// Split dictionary keys into maximal runs of consecutive value indices and
+/// call `f` with each run as a range of value indices, in key order.
+///
+/// Keys are clamped to `max` (see [ValueBuilder::append_gather]). A run of
+/// length 1 is a single value.
+#[inline]
+fn for_each_key_run<K: ArrowNativeType>(keys: &[K], max: usize, mut f: impl FnMut(Range<usize>)) {
+    let mut iter = keys.iter().map(|k| k.as_usize().min(max));
+    let Some(first) = iter.next() else {
+        return;
+    };
+    let mut start = first;
+    let mut end = first + 1;
+    for k in iter {
+        if k == end {
+            end += 1;
+        } else {
+            f(start..end);
+            start = k;
+            end = k + 1;
+        }
+    }
+    f(start..end);
 }
 
 struct PrimitiveBuilder<T: ArrowPrimitiveType> {
@@ -719,7 +747,8 @@ impl<T: ArrowPrimitiveType> ValueBuilder for PrimitiveBuilder<T> {
     }
 
     #[inline]
-    fn append_gather(&mut self, src: &Self::Src<'_>, indices: impl Iterator<Item = usize>) {
+    fn append_gather<K: ArrowNativeType>(&mut self, src: &Self::Src<'_>, keys: &[K], max: usize) {
+        let indices = keys.iter().map(|k| k.as_usize().min(max));
         match &self.remap {
             IdRemap::Identity => self.values.extend(indices.map(|i| src[i])),
             IdRemap::Offset(d) => {
@@ -768,10 +797,10 @@ impl ValueBuilder for BoolBuilder {
             .append_packed_range(offset + range.start..offset + range.end, bits.values());
     }
 
-    fn append_gather(&mut self, src: &Self::Src<'_>, indices: impl Iterator<Item = usize>) {
+    fn append_gather<K: ArrowNativeType>(&mut self, src: &Self::Src<'_>, keys: &[K], max: usize) {
         let bits = src.values();
-        for i in indices {
-            self.values.append(bits.value(i));
+        for k in keys {
+            self.values.append(bits.value(k.as_usize().min(max)));
         }
     }
 
@@ -852,15 +881,11 @@ impl<T: ByteArrayType<Offset = i32>> ValueBuilder for BytesBuilder<T> {
         );
     }
 
-    fn append_gather(&mut self, src: &Self::Src<'_>, indices: impl Iterator<Item = usize>) {
-        let o = src.value_offsets();
-        let data = src.value_data();
-        for i in indices {
-            let (s, e) = (o[i] as usize, o[i + 1] as usize);
-            self.data.extend_from_slice(&data[s..e]);
-            let next = self.last().wrapping_add((e - s) as i32);
-            self.offsets.push(next);
-        }
+    fn append_gather<K: ArrowNativeType>(&mut self, src: &Self::Src<'_>, keys: &[K], max: usize) {
+        // Runs of consecutive keys reference contiguous values, so each run
+        // is copied like `append_range`: one memcpy for the bytes and one
+        // shifted copy of the offsets.
+        for_each_key_run(keys, max, |run| self.append_range(src, run));
     }
 
     fn append_default(&mut self, n: usize) {
@@ -927,12 +952,10 @@ impl ValueBuilder for FsbBuilder {
             .extend_from_slice(&src.value_data()[range.start * w..range.end * w]);
     }
 
-    fn append_gather(&mut self, src: &Self::Src<'_>, indices: impl Iterator<Item = usize>) {
-        let w = self.width;
-        let data = src.value_data();
-        for i in indices {
-            self.data.extend_from_slice(&data[i * w..(i + 1) * w]);
-        }
+    fn append_gather<K: ArrowNativeType>(&mut self, src: &Self::Src<'_>, keys: &[K], max: usize) {
+        // Runs of consecutive keys reference contiguous values: one memcpy per
+        // run.
+        for_each_key_run(keys, max, |run| self.append_range(src, run));
     }
 
     fn append_default(&mut self, n: usize) {
@@ -1400,6 +1423,74 @@ mod tests {
                 None,
             ]));
         assert_eq!(out.as_ref(), expected.as_ref());
+    }
+
+    /// Scenario: dictionary inputs whose keys contain sequential runs,
+    /// descending and repeated keys, null keys with out-of-range values, and
+    /// a sliced key array are gathered into native Utf8 and FixedSizeBinary
+    /// outputs, with and without a row selection.
+    /// Guarantees: run-coalesced gathering produces exactly the logical
+    /// values of the inputs, in row order, with nulls preserved.
+    #[test]
+    fn test_dict_gather_runs() {
+        let values: Vec<String> = (0..12).map(|i| format!("v{i}{}", "x".repeat(i))).collect();
+        let str_values: ArrayRef = Arc::new(StringArray::from(values.clone()));
+        let fsb_values: ArrayRef = Arc::new(
+            FixedSizeBinaryArray::try_from_iter((0u8..12).map(|i| [i, i.wrapping_mul(7)])).unwrap(),
+        );
+
+        // Runs [2,3,4], [9], descending [8,7], repeats [5,5], a null key that
+        // holds an out-of-range value, then a run to the end [10,11].
+        let key_data: Vec<Option<u8>> = vec![
+            Some(2),
+            Some(3),
+            Some(4),
+            Some(9),
+            Some(8),
+            Some(7),
+            Some(5),
+            Some(5),
+            None,
+            Some(10),
+            Some(11),
+        ];
+        let mut keys = UInt8Array::from(key_data.clone());
+        // Give the null slot an out-of-range key value.
+        let (dt, mut raw, nulls) = keys.into_parts();
+        let mut v = raw.to_vec();
+        v[8] = 200;
+        raw = v.into();
+        keys = UInt8Array::new(raw, nulls).with_data_type(dt);
+
+        for (values, target) in [
+            (str_values, DataType::Utf8),
+            (fsb_values, DataType::FixedSizeBinary(2)),
+        ] {
+            let dict: ArrayRef = Arc::new(DictionaryArray::<UInt8Type>::new(
+                keys.clone(),
+                values.clone(),
+            ));
+            let expected_full = cast(dict.as_ref(), &target).unwrap();
+
+            // Whole input.
+            let out = write(
+                target.clone(),
+                &[(Some(dict.clone()), 11, plan_all())],
+                None,
+            );
+            assert_eq!(out.as_ref(), expected_full.as_ref(), "{target:?} full");
+
+            // Sliced keys (non-zero key offset) plus a selection.
+            let sliced = dict.slice(1, 9);
+            let out = write(
+                target.clone(),
+                &[(Some(sliced.clone()), 9, plan_ranges(vec![0..3, 5..9]))],
+                None,
+            );
+            let exp = cast(sliced.as_ref(), &target).unwrap();
+            let exp = arrow::compute::concat(&[&exp.slice(0, 3), &exp.slice(5, 4)]).unwrap();
+            assert_eq!(out.as_ref(), exp.as_ref(), "{target:?} sliced");
+        }
     }
 
     /// Scenario: a dictionary source has a null in its values array that is
