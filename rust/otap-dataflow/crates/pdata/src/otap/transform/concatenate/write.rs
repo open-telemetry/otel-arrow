@@ -25,6 +25,16 @@
 //!
 //! Every writer honors array offsets (sliced inputs) for both values and
 //! nulls, and null buffers are only materialized if a null is encountered.
+//!
+//! # TODO
+//!
+//! - TODO(list-writer): Replace [write_fallback] for List columns with a
+//!   specialized writer that copies offsets and child values directly.
+//! - TODO(dict-dedupe): [write_dict] appends the whole values array of every
+//!   dictionary input. Skip values arrays already appended (pointer identity)
+//!   and trim unreferenced values for heavily sliced inputs.
+//! - TODO(bytes-gather-capacity): Gathering dictionary values into a native
+//!   Utf8/Binary output grows the data buffer; pre-compute the exact size.
 
 use std::ops::Range;
 use std::sync::Arc;

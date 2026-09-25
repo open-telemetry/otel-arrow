@@ -1,6 +1,49 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+//! Concatenation of multiple OTAP batches into one.
+//!
+//! Reindexing, casting to a unified schema, and concatenation are fused so
+//! that every output column is written exactly once, directly from the input
+//! arrays.
+//!
+//! # Algorithm
+//!
+//! - **P0** If there are 0 or 1 inputs, return them as-is.
+//! - **P1** If reindexing, remove transport optimized encodings from every
+//!   input (see [`reindex`]).
+//! - **P2** For each payload type, index the fields present across inputs
+//!   and select a unified schema (`index_records`, `select_schema`). This
+//!   includes dictionary key width selection from the summed physical value
+//!   counts, and nullability.
+//! - **P3** If reindexing, plan ID rewrites without modifying inputs
+//!   ([`reindex::plan_ids`]). This produces a row [`plan::Selection`] and an
+//!   [`plan::IdRemap`] per ID column for every input.
+//! - **P4** Compute the output row count per payload from the selections.
+//! - **P5** For each target field, allocate a full-size destination and copy
+//!   every selected range of every input into it, casting between native and
+//!   dictionary encodings and applying ID remaps on the fly (see `write`).
+//!
+//! Only P5 writes column data (P1 only touches encoded columns, and P3 only
+//! allocates scratch space for compacted ID columns).
+//!
+//! # TODO
+//!
+//! - TODO(dict-policy): Tune when dictionary vs. native output is selected and
+//!   the key width, based on the least work, and possibly make it
+//!   configurable. Today a column is a dictionary if any input is, when the
+//!   summed physical value count fits.
+//! - TODO(dict-dedupe): Dictionary inputs append their entire values array.
+//!   Deduplicate values arrays shared between inputs (pointer identity, e.g.
+//!   slices of the same split batch) and trim values not referenced by the
+//!   selected keys.
+//! - TODO(list-writer): List columns (metrics quantiles, histogram buckets)
+//!   use a generic `MutableArrayData` fallback. Add a specialized writer.
+//! - TODO(fused-decode): Fuse transport delta decoding into the ID statistics
+//!   and write passes instead of decoding in a separate pre-pass.
+//! - TODO(single-input): Pass a payload through unchanged (Arc reuse) when
+//!   only one input contributes and its plan is identity.
+
 use ahash::AHashSet;
 use arrow::array::{
     Array, ArrayRef, ArrowPrimitiveType, AsArray, DictionaryArray, OffsetSizeTrait, RecordBatch,
