@@ -9,6 +9,8 @@ use std::time::Instant;
 use futures::StreamExt;
 use otel_arrow_dfe_config::error::Error as ConfigError;
 use otel_arrow_dfe_engine::shared::capability::auth::basic_auth_provider::BasicAuthProvider;
+use otel_arrow_dfe_engine::shared::extension::{ControlChannel, Extension as SharedExtension};
+use otel_arrow_dfe_engine::shared::message::SharedReceiver;
 use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
 use otel_arrow_dfe_telemetry::testing::EmptyAttributes;
 use secrecy::{ExposeSecret, SecretString};
@@ -353,6 +355,44 @@ async fn password_file_rotation_takes_effect() {
 
     assert_eq!(first.expose_password(), "password-1");
     assert_eq!(second.expose_password(), "password-2");
+}
+
+/// Scenario: The active refresh loop reaches the scheduled refresh after a password file rotates.
+/// Guarantees: The loop re-reads the file and publishes the rotated credential to subscribers.
+#[tokio::test(start_paused = true)]
+async fn background_refresh_publishes_rotated_password() {
+    let dir = tempfile::tempdir().expect("tempdir created");
+    let password_path = dir.path().join("password");
+    std::fs::write(&password_path, "password-1").expect("initial password written");
+    let extension = make_extension_with_config(Config {
+        username: "test_user".into(),
+        password_secret: None,
+        password_secret_file: Some(password_path.clone()),
+        password_secret_file_refresh: Duration::from_secs(300),
+    });
+    let mut stream = extension.credential_stream();
+
+    let (control_tx, control_rx) = tokio::sync::mpsc::channel(1);
+    let (_shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let control = ControlChannel::new(SharedReceiver::mpsc(control_rx), shutdown_rx);
+    let effect_handler =
+        otel_arrow_dfe_engine::testing::test_extension_effect_handler("test-ext".into());
+    let task = tokio::spawn(Box::new(extension).start(control, effect_handler));
+
+    let initial = stream.next().await.expect("initial credential published");
+    assert_eq!(initial.expose_password(), "password-1");
+
+    std::fs::write(&password_path, "password-2").expect("rotated password written");
+    tokio::time::advance(Duration::from_secs(300)).await;
+
+    let rotated = stream.next().await.expect("rotated credential published");
+    assert_eq!(rotated.expose_password(), "password-2");
+
+    drop(control_tx);
+    let _terminal_state = task
+        .await
+        .expect("refresh task joins")
+        .expect("refresh loop exits cleanly");
 }
 
 /// Scenario: A credential is acquired from a password file with a configured refresh interval.
