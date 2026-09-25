@@ -143,34 +143,68 @@ pub async fn load_server_tls_config(
     Ok(Some(tls_builder))
 }
 
+/// Client certificate + matching private key captured as raw PEM bytes.
+///
+/// Holding the exact bytes that were read (rather than re-deriving them from
+/// paths later) lets a single validated snapshot be reused to build the
+/// transport, which is a prerequisite for consistent hot-reload generations.
+#[derive(Clone, Debug)]
+pub(crate) struct ClientIdentityMaterial {
+    /// PEM-encoded client certificate chain.
+    pub(crate) cert_pem: Vec<u8>,
+    /// PEM-encoded private key matching `cert_pem`.
+    pub(crate) key_pem: Vec<u8>,
+}
+
+/// A validated, immutable snapshot of client TLS material.
+///
+/// This captures the bytes and policy needed to build a client transport
+/// (tonic `ClientTlsConfig` today, other backends later) without re-reading any
+/// files. Loading, validation, and transport construction are separated so a
+/// reload loop can read + validate one generation and build the transport from
+/// exactly those bytes.
+#[derive(Clone, Debug)]
+pub(crate) struct LoadedClientTlsMaterial {
+    /// Optional SNI / certificate-verification domain override.
+    pub(crate) server_name: Option<String>,
+    /// Whether the platform trust store is included as trust anchors.
+    pub(crate) include_system_ca: bool,
+    /// Custom CA bundles, in configuration order (`ca_file` then `ca_pem`).
+    pub(crate) ca_pems: Vec<Vec<u8>>,
+    /// Client identity for mTLS, when configured.
+    pub(crate) client_identity: Option<ClientIdentityMaterial>,
+}
+
 /// Loads TLS configuration for a client.
 ///
 /// This is used by **exporters** and other components that initiate TLS connections.
 ///
 /// Returns `Ok(None)` when TLS settings are empty and the endpoint URI is not `https://`.
 ///
-/// # Known Limitations
-///
-/// **TODO: Hot Reload Not Implemented**
-///
-/// Unlike the receiver implementation (which uses `LazyReloadableCertResolver` for automatic
-/// certificate reloading), exporter TLS configuration is static and loaded once at startup.
-/// The `reload_interval` field in `TlsConfig` is present but currently unused for clients.
-///
-/// **Impact:** Exporters with expiring client certificates require process restart. This creates
-/// a feature parity gap with receivers and an operational burden for long-running exporters
-/// with short-lived certificates (e.g., certificates rotated every 24 hours).
-///
-/// **Implementation Complexity:** Adding hot reload for exporters requires either:
-/// - Recreating the gRPC channel when certificates expire (may disrupt in-flight requests)
-/// - Implementing a custom TLS connector with lazy certificate loading (complex integration
-///   with tonic's transport layer)
-///
-/// Consider implementing certificate hot reload if this becomes an operational requirement.
+/// This is a thin wrapper that reads and validates one generation of client TLS
+/// material via [`load_client_tls_material`] and then builds a tonic
+/// [`ClientTlsConfig`] from exactly those bytes via [`build_tonic_client_tls`].
 pub(crate) async fn load_client_tls_config(
     config: Option<&TlsClientConfig>,
     endpoint_uri: &str,
 ) -> Result<Option<ClientTlsConfig>, io::Error> {
+    match load_client_tls_material(config, endpoint_uri).await? {
+        Some(material) => Ok(Some(build_tonic_client_tls(&material).await?)),
+        None => Ok(None),
+    }
+}
+
+/// Reads and validates one generation of client TLS material from configuration.
+///
+/// Files are read exactly once here; the returned snapshot owns the resulting
+/// bytes so a transport can be built from them without touching the filesystem
+/// again. Returns `Ok(None)` when the connection should not use a configured TLS
+/// block (plaintext `http://` with no config, or `insecure` with no custom CA),
+/// letting the endpoint scheme decide.
+pub(crate) async fn load_client_tls_material(
+    config: Option<&TlsClientConfig>,
+    endpoint_uri: &str,
+) -> Result<Option<LoadedClientTlsMaterial>, io::Error> {
     let wants_tls = endpoint_uri.starts_with("https://");
 
     let Some(config) = config else {
@@ -181,9 +215,12 @@ pub(crate) async fn load_client_tls_config(
             return Ok(None);
         }
 
-        let mut tls = ClientTlsConfig::new();
-        tls = add_system_trust_anchors_if_enabled(tls, true).await?;
-        return Ok(Some(tls));
+        return Ok(Some(LoadedClientTlsMaterial {
+            server_name: None,
+            include_system_ca: true,
+            ca_pems: Vec::new(),
+            client_identity: None,
+        }));
     };
 
     let insecure = config.insecure.unwrap_or(false);
@@ -224,22 +261,9 @@ pub(crate) async fn load_client_tls_config(
 
     // Note: Providing a TLS config block forces TLS regardless of scheme.
 
-    let mut tls = ClientTlsConfig::new();
-
-    // Domain name / SNI.
-    if let Some(domain) = &config.server_name {
-        tls = tls.domain_name(domain.clone());
-    }
-
     // Validate trust anchors are configured.
     let include_system = config.include_system_ca_certs_pool.unwrap_or(true);
-    let ca_configured = config.ca_file.is_some()
-        || config
-            .ca_pem
-            .as_ref()
-            .is_some_and(|pem| !pem.trim().is_empty());
-
-    if !include_system && !ca_configured {
+    if !include_system && !custom_ca_configured {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "TLS configuration error: no trust anchors configured. \
@@ -247,16 +271,15 @@ pub(crate) async fn load_client_tls_config(
         ));
     }
 
-    // System CA pool.
-    tls = add_system_trust_anchors_if_enabled(tls, include_system).await?;
-
-    // Custom CA.
+    // Custom CA bundles, captured in configuration order (ca_file then ca_pem)
+    // to match tonic's append semantics for `ca_certificate`.
+    let mut ca_pems: Vec<Vec<u8>> = Vec::new();
     if let Some(ca_file) = &config.ca_file {
         let ca_pem = read_file_with_limit_async(ca_file).await.map_err(|e| {
             otel_error!("tls.ca_file.read_error", ca_file = ?ca_file, error = ?e, message = "Failed to read CA file");
             e
         })?;
-        tls = tls.ca_certificate(Certificate::from_pem(ca_pem));
+        ca_pems.push(ca_pem);
     }
     if let Some(ca_pem) = &config.ca_pem {
         if ca_pem.trim().is_empty() {
@@ -265,11 +288,11 @@ pub(crate) async fn load_client_tls_config(
                 "TLS configuration error: ca_pem is set but empty or contains only whitespace",
             ));
         }
-        tls = tls.ca_certificate(Certificate::from_pem(ca_pem.as_bytes()));
+        ca_pems.push(ca_pem.as_bytes().to_vec());
     }
 
     // Client identity (mTLS).
-    if client_cert_configured || client_key_configured {
+    let client_identity = if client_cert_configured || client_key_configured {
         if !(client_cert_configured && client_key_configured) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -277,45 +300,151 @@ pub(crate) async fn load_client_tls_config(
             ));
         }
 
-        // Match on all combinations of cert/key sources to avoid unnecessary allocations.
-        // When using PEM strings, pass as_bytes() directly instead of copying to Vec.
-        tls = match (
-            (&config.config.cert_file, &config.config.cert_pem),
-            (&config.config.key_file, &config.config.key_pem),
-        ) {
-            ((Some(cert_path), _), (Some(key_path), _)) => {
-                let cert = read_file_with_limit_async(cert_path).await.map_err(|e| {
-                    otel_error!("tls.client_cert_file.read_error", cert_path = ?cert_path, error = %e, message = "Failed to read client cert file");
-                    e
-                })?;
-                let key = read_file_with_limit_async(key_path).await.map_err(|e| {
-                    otel_error!("tls.client_key_file.read_error", key_path = ?key_path, error = ?e, message = "Failed to read client key file");
-                    e
-                })?;
-                tls.identity(Identity::from_pem(cert, key))
-            }
-            ((Some(cert_path), _), (None, Some(key_pem))) => {
-                let cert = read_file_with_limit_async(cert_path).await.map_err(|e| {
-                    otel_error!("tls.client_cert_file.read_error", cert_path = ?cert_path, error = ?e, message = "Failed to read client cert file");
-                    e
-                })?;
-                tls.identity(Identity::from_pem(cert, key_pem.as_bytes()))
-            }
-            ((None, Some(cert_pem)), (Some(key_path), _)) => {
-                let key = read_file_with_limit_async(key_path).await.map_err(|e| {
-                    otel_error!("tls.client_key_file.read_error", key_path = ?key_path, error = ?e, message = "Failed to read client key file");
-                    e
-                })?;
-                tls.identity(Identity::from_pem(cert_pem.as_bytes(), key))
-            }
-            ((None, Some(cert_pem)), (None, Some(key_pem))) => {
-                tls.identity(Identity::from_pem(cert_pem.as_bytes(), key_pem.as_bytes()))
-            }
-            _ => unreachable!("validation ensures both cert and key are configured"),
+        let cert_pem = if let Some(cert_path) = &config.config.cert_file {
+            read_file_with_limit_async(cert_path).await.map_err(|e| {
+                otel_error!("tls.client_cert_file.read_error", cert_path = ?cert_path, error = %e, message = "Failed to read client cert file");
+                e
+            })?
+        } else {
+            // Presence validated above: cert is configured via cert_pem.
+            config.config.cert_pem.as_deref().unwrap_or_default().as_bytes().to_vec()
         };
+
+        let key_pem = if let Some(key_path) = &config.config.key_file {
+            read_file_with_limit_async(key_path).await.map_err(|e| {
+                otel_error!("tls.client_key_file.read_error", key_path = ?key_path, error = ?e, message = "Failed to read client key file");
+                e
+            })?
+        } else {
+            // Presence validated above: key is configured via key_pem.
+            config.config.key_pem.as_deref().unwrap_or_default().as_bytes().to_vec()
+        };
+
+        // Reject a certificate/key that do not form a matching pair, so a
+        // misconfiguration fails fast at load time rather than at connect time.
+        validate_client_keys_match(&cert_pem, &key_pem)?;
+
+        Some(ClientIdentityMaterial { cert_pem, key_pem })
+    } else {
+        None
+    };
+
+    Ok(Some(LoadedClientTlsMaterial {
+        server_name: config.server_name.clone(),
+        include_system_ca: include_system,
+        ca_pems,
+        client_identity,
+    }))
+}
+
+/// Builds a tonic [`ClientTlsConfig`] from a validated material snapshot.
+///
+/// Consumes only the captured bytes in `material`; it does not read any files.
+/// Builder-call order (domain, system anchors, custom CAs, identity) mirrors the
+/// previous inline implementation to preserve behavior.
+pub(crate) async fn build_tonic_client_tls(
+    material: &LoadedClientTlsMaterial,
+) -> Result<ClientTlsConfig, io::Error> {
+    let mut tls = ClientTlsConfig::new();
+
+    if let Some(domain) = &material.server_name {
+        tls = tls.domain_name(domain.clone());
     }
 
-    Ok(Some(tls))
+    tls = add_system_trust_anchors_if_enabled(tls, material.include_system_ca).await?;
+
+    for ca in &material.ca_pems {
+        tls = tls.ca_certificate(Certificate::from_pem(ca.clone()));
+    }
+
+    if let Some(identity) = &material.client_identity {
+        tls = tls.identity(Identity::from_pem(
+            identity.cert_pem.clone(),
+            identity.key_pem.clone(),
+        ));
+    }
+
+    Ok(tls)
+}
+
+/// Validates that a client certificate and private key form a matching pair.
+///
+/// The check is provider-independent: it signs a fixed probe message with the
+/// configured private key and verifies that signature against the leaf
+/// certificate's public key. This works even with crypto providers whose
+/// signing keys do not expose their public half (for example `ring`, where
+/// rustls's own `CertifiedKey::keys_match` returns `Unknown`).
+///
+/// When no crypto provider is installed, or the key cannot produce a signature
+/// with a verifiable scheme, the check is skipped rather than failing, so it
+/// never introduces a new startup failure mode on its own. A signature that the
+/// certificate's public key rejects is treated as a definitive mismatch.
+pub(crate) fn validate_client_keys_match(cert_pem: &[u8], key_pem: &[u8]) -> Result<(), io::Error> {
+    use std::io::BufReader;
+
+    // Without a default provider we cannot load a signing key. Skip: the
+    // transport layer installs a provider before it performs a handshake.
+    let Some(provider) = rustls::crypto::CryptoProvider::get_default() else {
+        otel_debug!(
+            "tls.client_keys_match.skipped",
+            message = "no rustls crypto provider installed; skipping client cert/key match check"
+        );
+        return Ok(());
+    };
+
+    // Parse the leaf (end-entity) certificate: the first certificate in the PEM.
+    let leaf = CertificateDer::pem_reader_iter(&mut BufReader::new(cert_pem))
+        .next()
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "TLS configuration error: no certificates found in client certificate",
+            )
+        })?
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+
+    // Load the private key through the active provider.
+    let key = PrivateKeyDer::from_pem_reader(&mut BufReader::new(key_pem))
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    let signing_key = provider
+        .key_provider
+        .load_private_key(key)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+
+    // Sign a fixed probe with a scheme the provider can also verify.
+    let algorithms = &provider.signature_verification_algorithms;
+    let Some(signer) = signing_key.choose_scheme(&algorithms.supported_schemes()) else {
+        otel_debug!(
+            "tls.client_keys_match.skipped",
+            message = "private key has no verifiable signature scheme; skipping cert/key match check"
+        );
+        return Ok(());
+    };
+    let scheme = signer.scheme();
+    const PROBE: &[u8] = b"otel-arrow-dfe client certificate/key consistency probe";
+    let signature = signer
+        .sign(PROBE)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+
+    // Verify the probe signature against the certificate's public key. A cert
+    // and key from the same pair verify; any other combination is rejected.
+    let cert = webpki::EndEntityCert::try_from(&leaf)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    let verified = algorithms
+        .mapping
+        .iter()
+        .filter(|(mapped_scheme, _)| *mapped_scheme == scheme)
+        .flat_map(|(_, algs)| algs.iter())
+        .any(|alg| cert.verify_signature(*alg, PROBE, &signature).is_ok());
+
+    if verified {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "TLS configuration error: client certificate and private key do not match",
+        ))
+    }
 }
 
 async fn add_system_trust_anchors_if_enabled(
@@ -2528,5 +2657,101 @@ mod tests {
         let (server_result, client_result) = tokio::join!(server_handle, client_handle);
         server_result.expect("Server task panicked");
         client_result.expect("Client task panicked");
+    }
+
+    /// Scenario: validate a client certificate paired with its own private key.
+    /// Guarantees: a cert and the key that produced it are accepted as a matching
+    /// pair, so valid mTLS material is never rejected by the added check.
+    #[test]
+    fn validate_client_keys_match_accepts_matching_pair() {
+        crate::crypto::ensure_crypto_provider();
+        let leaf = tls_certs::generate_self_signed_cert("client", Some("client"), false);
+        validate_client_keys_match(leaf.cert_pem.as_bytes(), leaf.key_pem.as_bytes())
+            .expect("matching cert/key pair must validate");
+    }
+
+    /// Scenario: validate a client certificate against an unrelated private key.
+    /// Guarantees: a cert and a key from different key pairs are rejected, so a
+    /// swapped or partially rotated key cannot be installed as mTLS material.
+    #[test]
+    fn validate_client_keys_match_rejects_mismatched_pair() {
+        crate::crypto::ensure_crypto_provider();
+        let cert = tls_certs::generate_self_signed_cert("client-a", Some("client-a"), false);
+        let other = tls_certs::generate_self_signed_cert("client-b", Some("client-b"), false);
+        let err = validate_client_keys_match(cert.cert_pem.as_bytes(), other.key_pem.as_bytes())
+            .expect_err("mismatched cert/key pair must be rejected");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    /// Scenario: load client TLS material whose cert and key do not match.
+    /// Guarantees: the mismatch is caught at load time (before any transport is
+    /// built), so a misconfigured mTLS identity fails fast rather than at connect.
+    #[tokio::test]
+    async fn load_client_tls_material_rejects_mismatched_identity() {
+        crate::crypto::ensure_crypto_provider();
+        let cert = tls_certs::generate_self_signed_cert("client-a", Some("client-a"), false);
+        let other = tls_certs::generate_self_signed_cert("client-b", Some("client-b"), false);
+
+        let cfg = TlsClientConfig {
+            config: TlsConfig {
+                cert_file: None,
+                cert_pem: Some(cert.cert_pem),
+                key_file: None,
+                key_pem: Some(other.key_pem),
+                reload_interval: None,
+            },
+            ca_file: None,
+            ca_pem: None,
+            include_system_ca_certs_pool: Some(true),
+            server_name: None,
+            insecure: None,
+            insecure_skip_verify: None,
+        };
+
+        let err = load_client_tls_material(Some(&cfg), "https://localhost:4317")
+            .await
+            .expect_err("mismatched client identity must be rejected at load time");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    /// Scenario: load client TLS material for a valid mTLS identity from PEM.
+    /// Guarantees: the captured snapshot holds exactly the configured cert and
+    /// key bytes, so a transport can later be built from the same generation.
+    #[tokio::test]
+    async fn load_client_tls_material_captures_matching_identity() {
+        crate::crypto::ensure_crypto_provider();
+        let leaf = tls_certs::generate_self_signed_cert("client", Some("client"), false);
+        let ca = tls_certs::generate_self_signed_cert("ca", Some("ca"), true);
+
+        let cfg = TlsClientConfig {
+            config: TlsConfig {
+                cert_file: None,
+                cert_pem: Some(leaf.cert_pem.clone()),
+                key_file: None,
+                key_pem: Some(leaf.key_pem.clone()),
+                reload_interval: None,
+            },
+            ca_file: None,
+            ca_pem: Some(ca.cert_pem.clone()),
+            // Avoid touching the platform trust store so the test is hermetic.
+            include_system_ca_certs_pool: Some(false),
+            server_name: Some("example.com".to_string()),
+            insecure: None,
+            insecure_skip_verify: None,
+        };
+
+        let material = load_client_tls_material(Some(&cfg), "https://example.com:4317")
+            .await
+            .expect("valid material must load")
+            .expect("material must be present when TLS is configured");
+
+        assert_eq!(material.server_name.as_deref(), Some("example.com"));
+        assert!(!material.include_system_ca);
+        assert_eq!(material.ca_pems, vec![ca.cert_pem.into_bytes()]);
+        let identity = material
+            .client_identity
+            .expect("client identity must be captured");
+        assert_eq!(identity.cert_pem, leaf.cert_pem.into_bytes());
+        assert_eq!(identity.key_pem, leaf.key_pem.into_bytes());
     }
 }

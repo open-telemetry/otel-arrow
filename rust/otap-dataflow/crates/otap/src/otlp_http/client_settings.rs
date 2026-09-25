@@ -291,6 +291,11 @@ impl HttpClientSettings {
                     unreachable!()
                 };
 
+                // Reject a certificate/key that do not form a matching pair,
+                // so a misconfiguration fails fast at build time rather than at
+                // connect time (matches the gRPC exporter behavior).
+                crate::tls_utils::validate_client_keys_match(&cert_pem, &key_pem)?;
+
                 // Combine cert and key into PEM format for Identity
                 let mut identity_pem = cert_pem;
                 identity_pem.extend_from_slice(&key_pem);
@@ -346,6 +351,8 @@ impl Default for HttpClientSettings {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use otel_arrow_dfe_config::tls::TlsConfig;
+    use otel_arrow_dfe_test_tls_certs as tls_certs;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
     use wiremock::matchers;
@@ -363,6 +370,45 @@ mod tests {
             }
             ResponseTemplate::new(200)
         }
+    }
+
+    /// Scenario: build an HTTP client whose mTLS cert and key are from different
+    /// key pairs.
+    /// Guarantees: the mismatch is rejected while building the client, so the
+    /// HTTP exporter fails fast on a misconfigured identity instead of at connect.
+    #[tokio::test]
+    async fn client_builder_rejects_mismatched_mtls_identity() {
+        crate::crypto::ensure_crypto_provider();
+        let cert = tls_certs::generate_self_signed_cert("client-a", Some("client-a"), false);
+        let other = tls_certs::generate_self_signed_cert("client-b", Some("client-b"), false);
+
+        let settings = HttpClientSettings {
+            tls: Some(TlsClientConfig {
+                config: TlsConfig {
+                    cert_file: None,
+                    cert_pem: Some(cert.cert_pem),
+                    key_file: None,
+                    key_pem: Some(other.key_pem),
+                    reload_interval: None,
+                },
+                ca_file: None,
+                ca_pem: None,
+                include_system_ca_certs_pool: Some(true),
+                server_name: None,
+                insecure: None,
+                insecure_skip_verify: None,
+            }),
+            ..Default::default()
+        };
+
+        let err = settings
+            .client_builder()
+            .await
+            .expect_err("mismatched mTLS identity must be rejected while building the client");
+        assert!(
+            err.to_string().contains("do not match"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
