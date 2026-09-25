@@ -120,7 +120,6 @@ use arrow::array::{
     RecordBatch,
 };
 use arrow::buffer::{BooleanBuffer, ScalarBuffer};
-use arrow::compute::kernels::aggregate::{max, min};
 use arrow::datatypes::{
     ArrowDictionaryKeyType, ArrowNativeType, DataType, UInt8Type, UInt16Type, UInt32Type,
 };
@@ -341,14 +340,36 @@ fn plan_relation<T: IdType, const N: usize>(
 
 /// Returns (min, max) over the valid values of an ID column, resolving
 /// dictionary encoding through its values. `None` if empty or all null.
+///
+/// Computed in a single pass over the values rather than separate min and
+/// max passes.
 fn id_column_min_max<T: IdType>(col: &dyn Array) -> Result<Option<(T::Native, T::Native)>> {
-    let values = materialize_id_values::<T>(col)?;
-    let Some(lo) = min::<T>(values) else {
-        return Ok(None);
+    let array = materialize_id_values::<T>(col)?;
+    let values = array.values();
+
+    let fold = |acc: Option<(T::Native, T::Native)>, v: T::Native| match acc {
+        None => Some((v, v)),
+        Some((lo, hi)) => Some((lo.min(v), hi.max(v))),
     };
-    // safety: presence of a min implies at least one valid value.
-    let hi = max::<T>(values).expect("max must exist when min exists");
-    Ok(Some((lo, hi)))
+
+    let result = match array.nulls() {
+        Some(nulls) if nulls.null_count() == array.len() => None,
+        Some(nulls) if nulls.null_count() > 0 => {
+            nulls.valid_indices().map(|i| values[i]).fold(None, fold)
+        }
+        _ => {
+            let (&first, rest) = match values.split_first() {
+                Some(split) => split,
+                None => return Ok(None),
+            };
+            Some(
+                rest.iter()
+                    .fold((first, first), |(lo, hi), &v| (lo.min(v), hi.max(v))),
+            )
+        }
+    };
+
+    Ok(result)
 }
 
 /// Returns the primitive array holding the ID values of `array`. For
@@ -2112,6 +2133,74 @@ mod tests {
             "expected ColumnDataTypeMismatch, got: {:?}",
             result,
         );
+    }
+
+    // ---- Min/max tests ----
+
+    /// Scenario: single-pass min/max over native and dictionary ID columns that
+    /// are empty, all null, null-free, or mixed with nulls whose underlying
+    /// slot values lie outside the valid range.
+    /// Guarantees: returns `None` for empty/all-null columns, otherwise the
+    /// min and max of the valid values only (null slots are ignored), and for
+    /// dictionaries the min/max of the values array.
+    #[test]
+    fn test_id_column_min_max() {
+        use arrow::array::{DictionaryArray, UInt8Array, UInt16Array, UInt32Array};
+        use arrow::buffer::{NullBuffer, ScalarBuffer};
+        use std::sync::Arc;
+
+        let empty = UInt16Array::from(Vec::<u16>::new());
+        assert_eq!(id_column_min_max::<UInt16Type>(&empty).unwrap(), None);
+
+        let all_null = UInt16Array::from(vec![None, None]);
+        assert_eq!(id_column_min_max::<UInt16Type>(&all_null).unwrap(), None);
+
+        let plain = UInt16Array::from(vec![7u16, 3, 9, 4]);
+        assert_eq!(
+            id_column_min_max::<UInt16Type>(&plain).unwrap(),
+            Some((3, 9))
+        );
+
+        // Null slots hold 0 and u16::MAX, which must not affect the result.
+        let mixed = UInt16Array::new(
+            ScalarBuffer::from(vec![0u16, 5, u16::MAX, 8]),
+            Some(NullBuffer::from(vec![false, true, false, true])),
+        );
+        assert_eq!(
+            id_column_min_max::<UInt16Type>(&mixed).unwrap(),
+            Some((5, 8))
+        );
+
+        // Sliced so the null buffer has a non-zero offset.
+        let sliced = mixed.slice(1, 3);
+        assert_eq!(
+            id_column_min_max::<UInt16Type>(&sliced).unwrap(),
+            Some((5, 8))
+        );
+
+        let dict = DictionaryArray::<UInt8Type>::new(
+            UInt8Array::from(vec![0u8, 1]),
+            Arc::new(UInt32Array::from(vec![40u32, 2, 17])),
+        );
+        assert_eq!(
+            id_column_min_max::<UInt32Type>(&dict).unwrap(),
+            Some((2, 40))
+        );
+
+        // Lengths spanning full lane chunks plus remainders, with extremes in
+        // the chunked body and in the remainder.
+        for len in [1usize, 31, 32, 33, 64, 100, 1000] {
+            let mut v: Vec<u32> = (0..len as u32).map(|i| 500 + (i * 7) % 97).collect();
+            v[len / 2] = 3;
+            v[len - 1] = 9000;
+            let expected = (*v.iter().min().unwrap(), *v.iter().max().unwrap());
+            let arr = UInt32Array::from(v);
+            assert_eq!(
+                id_column_min_max::<UInt32Type>(&arr).unwrap(),
+                Some(expected),
+                "len {len}"
+            );
+        }
     }
 
     // ---- Null ID tests ----
