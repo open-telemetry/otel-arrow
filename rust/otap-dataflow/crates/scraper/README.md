@@ -234,7 +234,7 @@ and acquires a `SourceLease`; the polling controller manages when they are used.
 | Field | Type | Default | Validation / meaning |
 | --- | --- | --- | --- |
 | `directory` | string | **required** | Non-empty path without `..` path components, as interpreted by the host platform. |
-| `on_nack` | string | **required** | Only `rewind`; other policies are rejected by deserialization. |
+| `on_nack` | string | **required** | Only `rewind` for retryable NACKs; permanent NACKs terminate collection without advancing the checkpoint. |
 | `nack_backoff` | duration string | **required** | Between `1ms` and `5m`, inclusive. Fixed delay before replay. |
 | `max_consecutive_failures` | integer | **required** | Between `1` and `1000`. Consecutive checkpoint-write failure limit, not a limit on all query or NACK retries. |
 
@@ -445,14 +445,17 @@ Acquire source ownership and load committed position
   -> Send downstream, honoring backpressure
   -> Receive matching ACK/NACK
   -> ACK: durably commit only acknowledged progress
-  -> NACK: retain committed progress and replay after backoff
+  -> Retryable NACK: retain committed progress and replay after backoff
+  -> Permanent NACK: retain committed progress and stop with an error
 ```
 
 | Condition | Required runtime behavior |
 | --- | --- |
 | Downstream backpressure | Stop admitting more work rather than accumulating unbounded pages. |
 | Matching ACK | Advance progress only after checkpoint installation succeeds, subject to the filesystem guarantees below. |
-| NACK, failed delivery, or uncertain outcome | Do not skip unacknowledged source positions. Apply an explicit replay or failure policy. |
+| Matching retryable NACK | Retain the checkpoint and replay after `nack_backoff`. |
+| Matching permanent NACK | Report a terminal error, retain the checkpoint, and clean up workers before releasing ownership. |
+| Stale, malformed, or duplicate ACK/NACK | Discard and count as `stale_feedback`; stale permanent NACKs cannot terminate collection. |
 | Crash after destination acceptance but before checkpoint commit | Allow replay; do not claim exactly-once delivery. |
 | Invalid or incompatible checkpoint | Fail explicitly rather than silently assume a fresh position. |
 | Shutdown/cancellation | Stop admitting work and coordinate native cleanup before permitting a competing source owner. |
@@ -478,9 +481,10 @@ both budgets permit it. When a cycle ends, the normal `interval` starts then.
 There is no separate opt-in or legacy scheduling mode; unresolved feedback still
 blocks another fetch.
 
-A NACK ends the burst and uses the existing `nack_backoff` without advancing
-the committed cursor. Native query errors still fail the receiver rather
-than gaining a new retry policy. A checkpoint write failure ends immediate
+A retryable NACK ends the burst and uses `nack_backoff` without advancing the
+committed cursor. A permanent NACK stops collection with an error and no cursor
+advancement; it does not schedule a replay. Native query errors still fail the
+receiver rather than gaining a new retry policy. A checkpoint write failure ends immediate
 catch-up, but the existing checkpoint retry policy must first finish committing
 the ACKed page (or reach its terminal failure limit).
 
