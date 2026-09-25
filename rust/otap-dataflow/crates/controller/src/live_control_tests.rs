@@ -854,6 +854,41 @@ fn register_runtime_instance_with_sender(
     }
 }
 
+struct RetryingPipelineAdminSender {
+    calls: Arc<Mutex<Vec<String>>>,
+    failures_remaining: Arc<AtomicUsize>,
+}
+
+impl PipelineAdminSender for RetryingPipelineAdminSender {
+    fn try_send_shutdown(&self, _deadline: Instant, reason: String) -> Result<(), EngineError> {
+        self.calls
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(reason);
+        let remaining = self.failures_remaining.load(Ordering::SeqCst);
+        if remaining > 0 {
+            self.failures_remaining
+                .store(remaining - 1, Ordering::SeqCst);
+            Err(EngineError::RuntimeMsgError {
+                error: "simulated send failure".to_owned(),
+            })
+        } else {
+            Ok(())
+        }
+    }
+}
+
+fn retrying_admin_sender(
+    initial_failures: usize,
+) -> (Arc<dyn PipelineAdminSender>, Arc<Mutex<Vec<String>>>) {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let sender = Arc::new(RetryingPipelineAdminSender {
+        calls: Arc::clone(&calls),
+        failures_remaining: Arc::new(AtomicUsize::new(initial_failures)),
+    });
+    (sender, calls)
+}
+
 struct RecordingPipelineAdminSender {
     calls: Arc<Mutex<Vec<String>>>,
     failure: Option<String>,
@@ -5957,6 +5992,193 @@ fn request_shutdown_all_attempts_all_active_instances_before_returning_error() {
 /// observability sender is not called until every regular instance reports its
 /// terminal exit, preserving their final internal telemetry.
 #[test]
+fn request_shutdown_all_retries_failed_sends() {
+    let runtime = test_runtime(&engine_config_with_pipeline(simple_pipeline_yaml()));
+    let key0 = deployed_key("g1", "p1", 0, 0);
+
+    // Fails on the first try, succeeds on the second try.
+    let (sender0, calls0) = retrying_admin_sender(1);
+
+    register_runtime_instance_with_sender(
+        &runtime,
+        key0.clone(),
+        sender0,
+        RuntimeInstanceLifecycle::Active,
+    );
+
+    // First attempt should fail.
+    let err = runtime
+        .request_shutdown_all(5)
+        .expect_err("shutdown-all should report the failed sender");
+
+    let ControlPlaneError::Internal { message } = err else {
+        panic!("unexpected shutdown-all error: {err:?}");
+    };
+    assert!(message.contains("g1:p1 core=0 generation=0"));
+    assert!(message.contains("simulated send failure"));
+
+    // Sender should still be retained because it failed.
+    let state = runtime
+        .state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert!(
+        state
+            .runtime_instances
+            .get(&key0)
+            .and_then(|instance| instance.control_sender.as_ref())
+            .is_some(),
+        "failed shutdown send should retain control sender"
+    );
+    drop(state);
+
+    // Second attempt should succeed.
+    runtime
+        .request_shutdown_all(5)
+        .expect("retry should succeed");
+
+    // Sender should now be released.
+    let state = runtime
+        .state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert!(
+        state
+            .runtime_instances
+            .get(&key0)
+            .and_then(|instance| instance.control_sender.as_ref())
+            .is_none(),
+        "successful shutdown send should release control sender"
+    );
+    drop(state);
+
+    // Should have been called twice.
+    assert_eq!(
+        *calls0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        vec!["global shutdown".to_owned(), "global shutdown".to_owned()]
+    );
+}
+
+#[test]
+fn register_launched_instance_retries_failed_sends() {
+    let runtime = test_runtime(&engine_config_with_pipeline(simple_pipeline_yaml()));
+    let key0 = deployed_key("g1", "p1", 0, 0);
+
+    // First request global shutdown.
+    let _ = runtime.request_shutdown_all(5);
+
+    // Fails on the first try (during late registration), succeeds on the second try.
+    let (sender0, calls0) = retrying_admin_sender(1);
+
+    let context_bindings = {
+        let state = runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        Arc::clone(&state.latest_context_bindings)
+    };
+
+    let launched = LaunchedPipelineThread {
+        pipeline_key: key0.clone(),
+        control_sender: sender0,
+        context_bindings,
+        _marker: std::marker::PhantomData,
+    };
+
+    // Late registration should attempt to send shutdown immediately, which will fail.
+    runtime.register_launched_instance(launched);
+
+    // Sender should still be retained because it failed.
+    let state = runtime
+        .state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert!(
+        state
+            .runtime_instances
+            .get(&key0)
+            .and_then(|instance| instance.control_sender.as_ref())
+            .is_some(),
+        "failed late-registration shutdown send should retain control sender"
+    );
+    drop(state);
+
+    // Second attempt via explicit request_shutdown_all should succeed.
+    runtime
+        .request_shutdown_all(5)
+        .expect("retry should succeed");
+
+    // Sender should now be released.
+    let state = runtime
+        .state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert!(
+        state
+            .runtime_instances
+            .get(&key0)
+            .and_then(|instance| instance.control_sender.as_ref())
+            .is_none(),
+        "successful shutdown send should release control sender"
+    );
+    drop(state);
+
+    // Should have been called twice.
+    assert_eq!(
+        *calls0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        vec![
+            "global shutdown (late registration)".to_owned(),
+            "global shutdown".to_owned()
+        ]
+    );
+}
+
+#[test]
+fn register_launched_instance_respects_global_shutdown_timeout() {
+    let runtime = test_runtime(&engine_config_with_pipeline(simple_pipeline_yaml()));
+    let key0 = deployed_key("g1", "p1", 0, 0);
+
+    // First request global shutdown with a specific timeout.
+    let _ = runtime.request_shutdown_all(30);
+
+    let (sender0, notifications) = deadline_notifying_admin_sender();
+    let context_bindings = {
+        let state = runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        Arc::clone(&state.latest_context_bindings)
+    };
+
+    let launched = LaunchedPipelineThread {
+        pipeline_key: key0,
+        control_sender: sender0,
+        context_bindings,
+        _marker: std::marker::PhantomData,
+    };
+
+    // Late registration should immediately receive a shutdown signal.
+    runtime.register_launched_instance(launched);
+
+    let (reason, deadline) = notifications
+        .recv()
+        .expect("should receive shutdown signal");
+    assert_eq!(reason, "global shutdown (late registration)");
+
+    // Deadline should be ~30 seconds from now.
+    let diff = deadline.duration_since(Instant::now());
+    assert!(
+        diff.as_secs() > 25 && diff.as_secs() <= 31,
+        "deadline should respect the original global shutdown timeout (30s), got {}s",
+        diff.as_secs()
+    );
+}
+
+#[test]
 fn request_shutdown_all_stops_observability_after_regular_instances_exit() {
     let runtime = test_runtime(&engine_config_with_pipeline(simple_pipeline_yaml()));
     let regular_key0 = deployed_key("g1", "p1", 0, 0);
@@ -6809,6 +7031,115 @@ fn runtime_thread_panic_populates_error_source_in_observed_status() {
     assert!(source.contains("backtrace:"));
 }
 
+static LAUNCH_STARTED: AtomicUsize = AtomicUsize::new(0);
+static LAUNCH_PROCEED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+fn blocking_create(
+    _pipeline_ctx: PipelineContext,
+    node: otel_arrow_dfe_engine::node::NodeId,
+    node_config: Arc<NodeUserConfig>,
+    receiver_config: &ReceiverConfig,
+    _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities,
+) -> Result<ReceiverWrapper<()>, otel_arrow_dfe_config::error::Error> {
+    if !LAUNCH_PROCEED.load(Ordering::SeqCst) {
+        let _ = LAUNCH_STARTED.fetch_add(1, Ordering::SeqCst);
+        while !LAUNCH_PROCEED.load(Ordering::SeqCst) {
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+    Ok(ReceiverWrapper::local(
+        RecoveryTestReceiver,
+        node,
+        node_config,
+        receiver_config,
+    ))
+}
+
+/// Scenario: shutdown is requested while a pipeline instance is still starting
+/// and has not yet been registered in the controller's runtime instances map.
+/// Guarantees: shutdown completion waits for the launch to finish and register,
+/// so it doesn't incorrectly return early with a 200 OK before the instance
+/// is even tracked.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn has_active_instances_checks_multiple_state_fields() {
+    LAUNCH_STARTED.store(0, Ordering::SeqCst);
+    LAUNCH_PROCEED.store(false, Ordering::SeqCst);
+
+    let receiver_factories: &'static [ReceiverFactory<()>] = Box::leak(Box::new(vec![
+        ReceiverFactory {
+            name: "urn:test:receiver:example",
+            create: blocking_create,
+            wiring_contract: WiringContract::UNRESTRICTED,
+            validate_config: test_validate_config,
+            context_declarations: None,
+        },
+        ReceiverFactory {
+            name: "urn:otel:receiver:internal_telemetry",
+            create: test_receiver_create,
+            wiring_contract: WiringContract::UNRESTRICTED,
+            validate_config: test_validate_config,
+            context_declarations: None,
+        },
+    ]));
+    let test_factory = Box::leak(Box::new(PipelineFactory::new(
+        receiver_factories,
+        TEST_PROCESSOR_FACTORIES,
+        RECOVERY_TEST_EXPORTER_FACTORIES,
+        &[],
+    )));
+
+    let config = engine_config_with_pipeline(simple_pipeline_yaml());
+    let runtime = test_runtime_with_factory(&config, test_factory);
+
+    let control_plane = runtime.control_plane();
+    let control_plane_clone = control_plane.clone();
+    let config_clone = config.clone();
+
+    let _reconcile_task = tokio::spawn(async move {
+        let req = reconcile_request(config_clone, false);
+        let _ = control_plane_clone.reconcile_engine_config(req).unwrap();
+    });
+
+    // Wait for the pipeline creation to begin and block
+    let start_wait = Instant::now();
+    while LAUNCH_STARTED.load(Ordering::SeqCst) == 0 {
+        if start_wait.elapsed() > Duration::from_secs(5) {
+            panic!("timeout waiting for launch to start");
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    // At this point, the instance is launching but NOT yet registered.
+    // The "pending lifecycle work" predicate keeps has_active_instances() true.
+    assert!(control_plane.has_active_instances());
+
+    // Request shutdown concurrently while launch is paused
+    control_plane.shutdown_all(1).unwrap();
+
+    // Verify it does not complete early
+    assert!(control_plane.has_active_instances());
+
+    // Allow the launch to finish, which will now register the instance *after* global_shutdown_requested is true.
+    LAUNCH_PROCEED.store(true, Ordering::SeqCst);
+
+    // The newly registered instance should immediately receive the shutdown message and exit.
+    // We poll has_active_instances until it becomes false (or we timeout).
+    let start = Instant::now();
+    let mut completed = false;
+    while start.elapsed() < Duration::from_secs(5) {
+        if !control_plane.has_active_instances() {
+            completed = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    assert!(
+        completed,
+        "Shutdown did not eventually complete after registration race"
+    );
+}
+
 /// Scenario: one core in a two-core regular pipeline exits with a runtime error
 /// while its sibling remains healthy, then a later rollout is planned.
 /// Guarantees: the controller promotes a ready replacement generation only for
@@ -7589,4 +7920,111 @@ fn rollout_planning_cancels_scheduled_runtime_recovery() {
     );
     assert_eq!(state.active_instances, 0);
     assert!(state.first_error.is_none());
+}
+/// Scenario: a pipeline instance registers with the controller *after* `request_shutdown_all`
+/// has already dispatched shutdown to all known instances and the original producer exits.
+/// Guarantees: the observability coordinator waits for the late-registered instance to exit
+/// before shutting down observability, preventing lost terminal telemetry.
+#[test]
+fn request_shutdown_all_waits_for_late_registered_instance_before_stopping_observability() {
+    let runtime = test_runtime(&engine_config_with_pipeline(simple_pipeline_yaml()));
+    let regular_key = deployed_key("g1", "p1", 0, 0);
+    let observability_key = deployed_key(
+        SYSTEM_PIPELINE_GROUP_ID,
+        SYSTEM_OBSERVABILITY_PIPELINE_ID,
+        2,
+        0,
+    );
+    let (regular_sender, regular_notifications) = notifying_admin_sender();
+    let (observability_sender, observability_notifications) = deadline_notifying_admin_sender();
+    register_runtime_instance_with_sender(
+        &runtime,
+        regular_key.clone(),
+        regular_sender,
+        RuntimeInstanceLifecycle::Active,
+    );
+    register_runtime_instance_with_sender(
+        &runtime,
+        observability_key.clone(),
+        observability_sender,
+        RuntimeInstanceLifecycle::Active,
+    );
+
+    // Start global shutdown - dispatches to the one known producer.
+    let shutdown_runtime = Arc::clone(&runtime);
+    let (shutdown_result_tx, shutdown_result_rx) = std::sync::mpsc::channel();
+    let shutdown_thread = thread::spawn(move || {
+        shutdown_result_tx
+            .send(shutdown_runtime.request_shutdown_all(5))
+            .expect("shutdown result receiver should remain open");
+    });
+
+    assert_eq!(
+        regular_notifications
+            .recv_timeout(Duration::from_secs(1))
+            .expect("regular instance should receive shutdown"),
+        "global shutdown"
+    );
+    shutdown_result_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("shutdown dispatch should return")
+        .expect("initial shutdown dispatch should succeed");
+    _ = shutdown_thread.join();
+
+    // Observability must not have received shutdown yet (original producer still active).
+    assert!(
+        observability_notifications.try_recv().is_err(),
+        "observability must remain active while regular instances drain"
+    );
+
+    // Simulate a late registration: a new instance registers after shutdown was dispatched.
+    // This mimics a pipeline thread that was still starting when shutdown was requested.
+    let late_key = deployed_key("g1", "p1", 1, 0);
+    let (late_sender, _late_notifications) = notifying_admin_sender();
+    register_runtime_instance_with_sender(
+        &runtime,
+        late_key.clone(),
+        late_sender,
+        RuntimeInstanceLifecycle::Active,
+    );
+
+    {
+        let state = runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert!(
+            state.global_shutdown_requested,
+            "global shutdown should already be flagged"
+        );
+    }
+
+    // Exit the original producer - observability should still wait because the
+    // late-registered instance is still active.
+    runtime.note_instance_exit(regular_key, RuntimeInstanceExit::Success);
+
+    // Give the coordinator thread a moment to check for late registrations.
+    thread::sleep(Duration::from_millis(100));
+
+    assert!(
+        observability_notifications.try_recv().is_err(),
+        "observability must remain active while the late-registered instance is still running"
+    );
+
+    // Now exit the late-registered instance.
+    runtime.note_instance_exit(late_key, RuntimeInstanceExit::Success);
+
+    // Observability should now receive its shutdown.
+    let (reason, _deadline) = observability_notifications
+        .recv_timeout(Duration::from_secs(2))
+        .expect("observability should receive shutdown after all producers (including late) exit");
+    assert_eq!(reason, "global shutdown");
+
+    // Clean up: exit observability and wait for coordinator completion.
+    runtime.note_instance_exit(observability_key, RuntimeInstanceExit::Success);
+    assert!(
+        runtime.wait_for_global_shutdown_completion(),
+        "the phased shutdown coordinator should complete after observability exits"
+    );
+    assert!(runtime.all_instances_exited());
 }
