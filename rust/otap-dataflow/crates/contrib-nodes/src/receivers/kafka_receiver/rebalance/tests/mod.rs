@@ -7,10 +7,12 @@
 
 use super::*;
 use crate::common::kafka::test::cluster::KafkaTestCluster;
+use crate::common::kafka::test::wait::poll_until;
 use crate::common::kafka::test::with_cluster;
 use rdkafka::ClientConfig;
 use std::collections::VecDeque;
 use std::sync::Arc;
+use std::time::Duration;
 
 // ---- Shared test helpers ----
 

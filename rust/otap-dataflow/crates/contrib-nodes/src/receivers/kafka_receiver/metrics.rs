@@ -236,9 +236,11 @@ pub struct KafkaReceiverConsumerMetrics {
     /// Owned partitions revoked from this consumer across rebalances.
     #[metric(name = "group.partition.revocations", unit = "{partition}")]
     pub partition_revocations: Counter<u64>,
-    /// Synchronous commit calls that failed while partitions were being revoked.
-    #[metric(name = "group.rebalance.commit_failures", unit = "{error}")]
-    pub rebalance_commit_failures: Counter<u64>,
+    /// Async commit-before-revoke calls that failed to enqueue locally during
+    /// partition revocation. A broker rejection of the commit is not counted
+    /// here; it is reported by `offset_commits` with `outcome="failure"`.
+    #[metric(name = "group.rebalance.commit_enqueue_failures", unit = "{error}")]
+    pub rebalance_commit_enqueue_failures: Counter<u64>,
     /// Partition resume operations that failed while clearing rebalance pause state.
     #[metric(name = "group.rebalance.resume_failures", unit = "{error}")]
     pub rebalance_resume_failures: Counter<u64>,
