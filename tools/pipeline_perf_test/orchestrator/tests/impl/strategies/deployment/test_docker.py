@@ -1,5 +1,6 @@
 import os
 import pytest
+from typing import Optional
 from unittest.mock import MagicMock, patch
 from docker.errors import DockerException, APIError
 
@@ -10,6 +11,10 @@ from lib.impl.strategies.deployment.docker import (
     DockerPortMapping,
     build_port_bindings,
     build_volume_bindings,
+)
+from lib.impl.strategies.monitoring.docker_component import (
+    _calculate_cpu_usage,
+    _docker_stats_interval_seconds,
 )
 from lib.core.component import Component
 from lib.core.context.framework_element_contexts import StepContext
@@ -264,6 +269,114 @@ def test_build_volume_bindings_param_string_modes(mount, expected_mode):
     result = build_volume_bindings([mount])
     host_path = os.path.abspath(mount.split(":")[0])
     assert result == {host_path: {"bind": "/container", "mode": expected_mode}}
+
+
+@pytest.mark.parametrize(
+    "mount,expected_source,expected_target,expected_mode",
+    [
+        (
+            "./config:C:/dataflow/config:ro",
+            "./config",
+            "C:/dataflow/config",
+            "ro",
+        ),
+        ("./data:C:/dataflow/data", "./data", "C:/dataflow/data", "rw"),
+        (
+            "C:/host/config:C:/dataflow/config:ro",
+            "C:/host/config",
+            "C:/dataflow/config",
+            "ro",
+        ),
+        ("C:/host/data:C:/dataflow/data", "C:/host/data", "C:/dataflow/data", "rw"),
+        (
+            r"C:\host\config:C:\dataflow\config:ro",
+            r"C:\host\config",
+            r"C:\dataflow\config",
+            "ro",
+        ),
+        (
+            r"C:\host\data:C:\dataflow\data",
+            r"C:\host\data",
+            r"C:\dataflow\data",
+            "rw",
+        ),
+    ],
+)
+# Scenario: Docker volume strings contain Windows drive-letter paths on the host or container side.
+# Guarantees: Drive-letter colons are preserved as path content and do not break mode parsing.
+def test_build_volume_bindings_windows_drive_letter_paths(
+    mount, expected_source, expected_target, expected_mode
+):
+    result = build_volume_bindings([mount])
+
+    assert result == {
+        os.path.abspath(expected_source): {
+            "bind": expected_target,
+            "mode": expected_mode,
+        }
+    }
+
+
+def _stats_payload(
+    *,
+    cpu_total: int,
+    precpu_total: int,
+    read: str = "2026-09-18T12:00:02.500000000Z",
+    preread: str = "2026-09-18T12:00:00.000000000Z",
+    system_total: Optional[int] = None,
+    presystem_total: Optional[int] = None,
+) -> dict:
+    payload = {
+        "read": read,
+        "preread": preread,
+        "cpu_stats": {"cpu_usage": {"total_usage": cpu_total}},
+        "precpu_stats": {"cpu_usage": {"total_usage": precpu_total}},
+    }
+    if system_total is not None and presystem_total is not None:
+        payload["cpu_stats"].update(
+            {"system_cpu_usage": system_total, "online_cpus": 4}
+        )
+        payload["precpu_stats"].update({"system_cpu_usage": presystem_total})
+    return payload
+
+
+# Scenario: Docker emits RFC3339Nano timestamps in stats responses.
+# Guarantees: Nanosecond precision timestamps are accepted and measured in seconds.
+def test_docker_stats_interval_uses_read_and_preread_timestamps():
+    payload = _stats_payload(
+        cpu_total=0,
+        precpu_total=0,
+        read="2026-09-18T12:00:02.123456789Z",
+        preread="2026-09-18T12:00:00.023456789Z",
+    )
+
+    assert _docker_stats_interval_seconds(payload) == pytest.approx(2.1)
+
+
+# Scenario: Windows Docker stats omit system_cpu_usage.
+# Guarantees: CPU usage is normalized with the stats sample window, not poll cadence.
+def test_calculate_cpu_usage_for_windows_uses_stats_sample_interval():
+    payload = _stats_payload(
+        cpu_total=60_000_000,
+        precpu_total=10_000_000,
+        read="2026-09-18T12:00:02.500000000Z",
+        preread="2026-09-18T12:00:00.000000000Z",
+    )
+
+    assert _calculate_cpu_usage(payload) == pytest.approx(2.0)
+
+
+# Scenario: Linux Docker stats include system_cpu_usage.
+# Guarantees: Existing system-delta CPU normalization remains unchanged.
+def test_calculate_cpu_usage_for_linux_uses_system_cpu_delta():
+    payload = _stats_payload(
+        cpu_total=30_000,
+        precpu_total=10_000,
+        system_total=250_000,
+        presystem_total=50_000,
+    )
+
+    assert _calculate_cpu_usage(payload) == pytest.approx(0.4)
 
 
 def test_build_port_bindings_simple_string():

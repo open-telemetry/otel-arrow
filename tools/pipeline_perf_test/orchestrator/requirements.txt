@@ -7,6 +7,9 @@ pydantic==2.13.4
 
 # Docker management
 docker==7.2.0
+# Required transitively by docker on Windows. Declare it explicitly so the
+# cross-platform hash lock includes Windows wheel hashes.
+pywin32==312; sys_platform == "win32"
 psutil==7.2.2
 
 # Kubernetes management
@@ -20,5 +23,8 @@ opentelemetry-sdk==1.44.0
 opentelemetry-proto==1.44.0
 prometheus_client==0.26.0
 pandas==3.0.5
+# Required transitively by pandas on Windows. Keep it in the hash lock so
+# Windows installs remain complete and reproducible.
+tzdata==2026.3; sys_platform == "win32"
 pyarrow==24.0.0
 tabulate==0.10.0
