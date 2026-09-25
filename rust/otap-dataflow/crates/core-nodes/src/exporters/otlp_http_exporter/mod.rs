@@ -1621,6 +1621,136 @@ mod test {
         cancel.cancel();
     }
 
+    fn finalize_unauthorized_generation(
+        runtime: &Runtime,
+        metrics: &mut OtlpHttpExporterMetrics,
+        effect_handler: &EffectHandler<OtapPdata>,
+        auth_generation: u64,
+    ) -> Option<u64> {
+        let port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
+        let endpoint_addr = format!("127.0.0.1:{port}");
+        let cancel = run_fixed_status_server(runtime, &endpoint_addr, 401);
+        wait_for_port_ready(&endpoint_addr);
+        let response = runtime
+            .block_on(Client::new().post(format!("http://{endpoint_addr}")).send())
+            .expect("test server must respond");
+        let error = response
+            .error_for_status_ref()
+            .expect_err("test server must reject the request");
+        cancel.cancel();
+
+        let attempt = runtime.block_on(metrics.boundary.attempt(SignalType::Logs).run(
+            async |attempt| {
+                Err(attempt.refused(ServiceRequestError::RequestError {
+                    err: error,
+                    detail: String::new(),
+                }))
+            },
+        ));
+        let completed = CompletedExport {
+            attempt,
+            context: Context::default(),
+            saved_payload: OtlpProtoBytes::ExportLogsRequest(Bytes::new()).into(),
+            signal_type: SignalType::Logs,
+            auth_generation: Some(auth_generation),
+        };
+
+        runtime.block_on(finalize_completed_export(
+            completed,
+            effect_handler,
+            metrics,
+        ))
+    }
+
+    fn http_rejection_test_context() -> (
+        Runtime,
+        OtlpHttpExporterMetrics,
+        EffectHandler<OtapPdata>,
+        Option<Box<dyn HttpClientAuthProvider>>,
+    ) {
+        let runtime = Runtime::new().unwrap();
+        let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(Interests::NODE_INPUT_METRICS);
+        let metrics = OtlpHttpExporterMetrics::register(&pipeline_ctx, None);
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let effect_handler = EffectHandler::new(
+            test_node("test-exporter"),
+            metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+        );
+        let auth: Option<Box<dyn HttpClientAuthProvider>> =
+            Some(Box::new(MockHttpClientAuthProvider::new(
+                header::AUTHORIZATION,
+                vec![
+                    ("Bearer rejected".into(), None),
+                    ("Bearer replacement".into(), None),
+                ],
+            )));
+
+        (runtime, metrics, effect_handler, auth)
+    }
+
+    /// Scenario: the HTTP backend rejects the currently cached auth generation,
+    /// then the provider publishes a replacement.
+    /// Guarantees: finalization invalidates the rejected auth and the later
+    /// publication restores readiness with a new generation.
+    #[test]
+    fn unauthorized_generation_recovers_after_provider_refresh() {
+        let (runtime, mut metrics, effect_handler, mut auth) = http_rejection_test_context();
+        assert!(runtime.block_on(poll_fn(|cx| auth
+            .as_mut()
+            .unwrap()
+            .poll_refresh(cx, &HTTP_AUTH_EVENTS))));
+        let rejected_generation = auth.as_ref().unwrap().header().unwrap().2;
+
+        let rejected_generation = finalize_unauthorized_generation(
+            &runtime,
+            &mut metrics,
+            &effect_handler,
+            rejected_generation,
+        );
+        apply_auth_rejection(&mut auth, rejected_generation);
+        assert!(!auth.as_ref().unwrap().is_ready());
+
+        assert!(runtime.block_on(poll_fn(|cx| auth
+            .as_mut()
+            .unwrap()
+            .poll_refresh(cx, &HTTP_AUTH_EVENTS))));
+        let (_, value, generation) = auth.as_ref().unwrap().header().unwrap();
+        assert_eq!(value, "Bearer replacement");
+        assert_eq!(generation, 2);
+    }
+
+    /// Scenario: a replacement auth is cached while an older HTTP request is in
+    /// flight, then that request completes with `401 Unauthorized`.
+    /// Guarantees: applying the stale rejected generation leaves the replacement
+    /// cached and ready for subsequent exports.
+    #[test]
+    fn stale_unauthorized_generation_keeps_newer_auth() {
+        let (runtime, mut metrics, effect_handler, mut auth) = http_rejection_test_context();
+        assert!(runtime.block_on(poll_fn(|cx| auth
+            .as_mut()
+            .unwrap()
+            .poll_refresh(cx, &HTTP_AUTH_EVENTS))));
+        let rejected_generation = auth.as_ref().unwrap().header().unwrap().2;
+
+        let rejected_generation = finalize_unauthorized_generation(
+            &runtime,
+            &mut metrics,
+            &effect_handler,
+            rejected_generation,
+        );
+        assert!(runtime.block_on(poll_fn(|cx| auth
+            .as_mut()
+            .unwrap()
+            .poll_refresh(cx, &HTTP_AUTH_EVENTS))));
+        apply_auth_rejection(&mut auth, rejected_generation);
+
+        assert!(auth.as_ref().unwrap().is_ready());
+        let (_, value, generation) = auth.as_ref().unwrap().header().unwrap();
+        assert_eq!(value, "Bearer replacement");
+        assert_eq!(generation, 2);
+    }
+
     // Scenario: A bound auth provider is present and the backend answers 403 Forbidden.
     // Guarantees: 403 is NACK'd as permanent (not retryable), because a scope or
     // permission problem is not fixed by refreshing the token.

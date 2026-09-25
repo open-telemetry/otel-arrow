@@ -189,11 +189,34 @@ mod tests {
     use super::*;
     use otel_arrow_dfe_engine::Interests;
     use otel_arrow_dfe_engine::testing::test_pipeline_ctx_with_interests;
+    use otel_arrow_dfe_otap::http_client_auth::test_support::MockHttpClientAuthProvider;
     use otel_arrow_dfe_otap::metrics::ErrorWithOutcome;
 
     fn new_metrics() -> OtlpGrpcExporterMetrics {
         let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(Interests::NODE_INPUT_METRICS);
         OtlpGrpcExporterMetrics::register(&pipeline_ctx, None)
+    }
+
+    /// Scenario: a gRPC exporter with a bound auth provider records failed
+    /// credential polls.
+    /// Guarantees: the provider-specific authentication metric is emitted and
+    /// counts each failed poll exactly once.
+    #[test]
+    fn bound_auth_provider_records_authentication_failures() {
+        let (pipeline_ctx, _) =
+            test_pipeline_ctx_with_interests(Interests::NODE_INPUT_METRICS);
+        let auth = MockHttpClientAuthProvider::never_publishes();
+        let mut metrics = OtlpGrpcExporterMetrics::register(&pipeline_ctx, Some(&auth));
+
+        metrics.record_auth_failure();
+        metrics.record_auth_failure();
+
+        let snapshots = metrics.terminal_snapshots();
+        let auth_snapshot = snapshots
+            .iter()
+            .find(|snapshot| snapshot.descriptor().name == "exporter.otlp_grpc.authentication")
+            .expect("bound auth must register its authentication metric set");
+        assert_eq!(auth_snapshot.get_metrics()[0].to_u64_lossy(), 2);
     }
 
     /// Scenario: Every gRPC status is classified into a bounded actionable category.

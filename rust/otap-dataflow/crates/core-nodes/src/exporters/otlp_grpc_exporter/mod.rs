@@ -3038,6 +3038,132 @@ mod tests {
         );
     }
 
+    fn finalize_unauthenticated_generation(
+        runtime: &Runtime,
+        metrics: &mut OtlpGrpcExporterMetrics,
+        effect_handler: &EffectHandler<OtapPdata>,
+        auth_generation: u64,
+    ) -> Option<u64> {
+        let channel = runtime
+            .block_on(async { Channel::from_static("http://127.0.0.1:4317").connect_lazy() });
+        let client = SignalClient::Logs(LogsServiceClient::new(channel));
+        let attempt = runtime.block_on(metrics.boundary.attempt(SignalType::Logs).run(
+            async |attempt| {
+                Err(attempt.refused((
+                    (
+                        OtlpGrpcExporterErrorType::Authentication,
+                        tonic::Status::unauthenticated("token rejected"),
+                    ),
+                    client,
+                )))
+            },
+        ));
+        let completed = CompletedExport {
+            attempt,
+            context: Context::default(),
+            saved_payload: OtlpProtoBytes::ExportLogsRequest(Bytes::new()).into(),
+            signal_type: SignalType::Logs,
+            auth_generation: Some(auth_generation),
+        };
+
+        runtime
+            .block_on(finalize_completed_export(
+                completed,
+                effect_handler,
+                metrics,
+            ))
+            .1
+    }
+
+    fn rejection_test_context() -> (
+        Runtime,
+        OtlpGrpcExporterMetrics,
+        EffectHandler<OtapPdata>,
+        Option<Box<dyn HttpClientAuthProvider>>,
+    ) {
+        let runtime = Runtime::new().unwrap();
+        let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(Interests::NODE_INPUT_METRICS);
+        let metrics = OtlpGrpcExporterMetrics::register(&pipeline_ctx, None);
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let effect_handler = EffectHandler::new(
+            test_node("test-exporter"),
+            metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+        );
+        let auth: Option<Box<dyn HttpClientAuthProvider>> =
+            Some(Box::new(MockHttpClientAuthProvider::new(
+                header::AUTHORIZATION,
+                vec![
+                    ("Bearer rejected".into(), None),
+                    ("Bearer replacement".into(), None),
+                ],
+            )));
+
+        (runtime, metrics, effect_handler, auth)
+    }
+
+    /// Scenario: the backend rejects the currently cached auth generation, then
+    /// the provider publishes a replacement.
+    /// Guarantees: finalization invalidates the rejected auth and the later
+    /// publication restores readiness with a new generation.
+    #[test]
+    fn unauthenticated_generation_recovers_after_provider_refresh() {
+        let (runtime, mut metrics, effect_handler, mut auth) = rejection_test_context();
+        assert!(runtime.block_on(poll_fn(|cx| auth
+            .as_mut()
+            .unwrap()
+            .poll_refresh(cx, &GRPC_AUTH_EVENTS))));
+        let rejected_generation = auth.as_ref().unwrap().header().unwrap().2;
+
+        let rejected_generation = finalize_unauthenticated_generation(
+            &runtime,
+            &mut metrics,
+            &effect_handler,
+            rejected_generation,
+        );
+        apply_auth_rejection(&mut auth, rejected_generation);
+        assert!(!auth.as_ref().unwrap().is_ready());
+
+        assert!(runtime.block_on(poll_fn(|cx| auth
+            .as_mut()
+            .unwrap()
+            .poll_refresh(cx, &GRPC_AUTH_EVENTS))));
+        let (_, value, generation) = auth.as_ref().unwrap().header().unwrap();
+        assert_eq!(value, "Bearer replacement");
+        assert_eq!(generation, 2);
+    }
+
+    /// Scenario: a replacement auth is cached while an older request is in
+    /// flight, then that request completes with `UNAUTHENTICATED`.
+    /// Guarantees: applying the stale rejected generation leaves the replacement
+    /// cached and ready for subsequent exports.
+    #[test]
+    fn stale_unauthenticated_generation_keeps_newer_auth() {
+        let (runtime, mut metrics, effect_handler, mut auth) = rejection_test_context();
+        assert!(runtime.block_on(poll_fn(|cx| auth
+            .as_mut()
+            .unwrap()
+            .poll_refresh(cx, &GRPC_AUTH_EVENTS))));
+        let rejected_generation = auth.as_ref().unwrap().header().unwrap().2;
+
+        let rejected_generation = finalize_unauthenticated_generation(
+            &runtime,
+            &mut metrics,
+            &effect_handler,
+            rejected_generation,
+        );
+        assert!(runtime.block_on(poll_fn(|cx| auth
+            .as_mut()
+            .unwrap()
+            .poll_refresh(cx, &GRPC_AUTH_EVENTS))));
+        apply_auth_rejection(&mut auth, rejected_generation);
+
+        assert!(auth.as_ref().unwrap().is_ready());
+        let (_, value, generation) = auth.as_ref().unwrap().header().unwrap();
+        assert_eq!(value, "Bearer replacement");
+        assert_eq!(generation, 2);
+    }
+
     // ---- build_grpc_metadata unit tests ----------------------------------------
 
     /// Helper: Creates an [`EffectHandler`] with an optional propagation policy set.

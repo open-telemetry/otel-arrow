@@ -828,6 +828,54 @@ mod tests {
         );
     }
 
+    /// Scenario: bearer-token and agent-fed credential capabilities are both bound.
+    /// Guarantees: resolving bearer authentication rejects the ambiguous configuration.
+    #[test]
+    fn resolving_two_bearer_capabilities_is_rejected() {
+        let capabilities = MockCapabilities::new()
+            .with_local::<bearer_token_provider::BearerTokenProvider>(Box::new(
+                MockBearerTokenProvider {},
+            ))
+            .with_local::<agent_fed_credential_provider::AgentFedCredentialProvider>(Box::new(
+                MockAgentFedCredentialProvider {},
+            ));
+
+        let error = new_http_client_auth_provider_from_resolver(
+            &capabilities,
+            HttpClientAuthProviders::BEARER_TOKEN,
+        )
+        .err()
+        .expect("multiple bearer capabilities must be rejected");
+
+        assert_eq!(
+            error.to_string(),
+            "An invalid user configuration occurred: Multiple authentication providers cannot be bound to a single component"
+        );
+    }
+
+    /// Scenario: API-key and basic-auth capabilities are both bound and supported.
+    /// Guarantees: resolving authentication rejects providers of different supported kinds.
+    #[test]
+    fn resolving_two_distinct_auth_capabilities_is_rejected() {
+        let capabilities = MockCapabilities::new()
+            .with_local::<api_key_provider::ApiKeyProvider>(Box::new(MockApiKeyProvider {}))
+            .with_local::<basic_auth_provider::BasicAuthProvider>(Box::new(
+                MockBasicAuthProvider {},
+            ));
+
+        let error = new_http_client_auth_provider_from_resolver(
+            &capabilities,
+            HttpClientAuthProviders::API_KEY | HttpClientAuthProviders::BASIC,
+        )
+        .err()
+        .expect("multiple auth capabilities must be rejected");
+
+        assert_eq!(
+            error.to_string(),
+            "An invalid user configuration occurred: Multiple authentication providers cannot be bound to a single component"
+        );
+    }
+
     #[test]
     fn new_http_client_auth_provider_allows_empty_providers() {
         let auth = new_http_client_auth_provider_from_providers(vec![]).expect("success");
