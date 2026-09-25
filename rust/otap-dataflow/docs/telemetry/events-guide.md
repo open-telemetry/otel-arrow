@@ -332,11 +332,16 @@ termination verb `cancel`, and one internal safety verb `abort`.
 
 ## Repeated exporter failures
 
-The OTLP HTTP exporter uses the shared `export_diagnostics` helper to report
-observed export behavior before events reach ITS, console providers, or the
-retained log tap. This policy is independent of metric collection and does not
-change retries, Ack/Nack routing, backpressure, or readiness. Integration with
-other exporters is deferred to future changes.
+This shared policy is intended for adoption by all exporters. **Currently, only
+the OTLP HTTP exporter implements it.** Integration with other exporters will
+follow in future PRs.
+
+The protocol-independent `export_diagnostics` helper reports observed export
+behavior before events reach ITS, console providers, or the retained log tap.
+This policy is independent of metric collection and does not change retries,
+Ack/Nack routing, backpressure, or readiness.
+
+The current OTLP HTTP integration emits these events:
 
 - `otlp.exporter.http.export_error` (WARN): the first failed export of an
   episode and summaries at most once every 60 seconds while further failures
@@ -356,6 +361,44 @@ on completions, without probes or timers. Idle periods produce no new reports
 and do not establish recovery. A success can trigger a summary only when there
 are unreported failures and recovery has not been confirmed. Changing error
 categories does not restart an episode or bypass the summary interval.
+
+### Delivery episodes
+
+An episode begins with the first failed export and ends with confirmed recovery.
+The diagram shows the shared delivery logic, currently used by OTLP HTTP, for
+one exporter instance/core, signal, and configured destination.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Unknown
+
+    Unknown --> Delivering: Success / no log
+    Unknown --> Degraded: First failure / open episode, WARN
+    Delivering --> Degraded: First failure / open episode, WARN
+
+    Degraded --> Degraded: Completion without confirmed recovery
+    Degraded --> Delivering: Confirmed recovery / INFO, clear episode
+
+    note right of Degraded
+        Count every completion in interval + episode totals.
+        First failure or summary due: WARN, reset interval only.
+        Otherwise: no log; count suppressed failures.
+        Episode totals remain until recovery.
+    end note
+```
+
+- **Bounded volume:** the first failure emits a WARN. Further WARN summaries
+  require a completion, unreported failures, and at least 60 seconds since the
+  last report. Recovery takes priority over a due summary. Suppression happens
+  before log subscribers receive events.
+- **Accurate counts:** while an episode is active, every success or failure is
+  counted before reporting in both interval counters and episode totals.
+  Failures also update error-category counts and, when no warning is emitted,
+  suppressed counts. Each report resets interval counters only; recovery
+  includes its triggering success in the final totals, then clears the episode.
+- **Recovery:** every failure restarts the 30-second failure-free window.
+  Recovery also requires a successful attempt started after the latest failure.
+  Idle time alone produces no reports or state changes.
 
 ### Scope and boundaries
 
