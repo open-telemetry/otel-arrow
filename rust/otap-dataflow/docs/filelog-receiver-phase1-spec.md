@@ -757,6 +757,43 @@ enabled, it resolves and opens according to that policy without
 unconditionally applying `O_NOFOLLOW`. `fstat` or an equivalent handle query
 must prove that the opened object is a regular file before any content read.
 
+On Linux, pin the candidate with `O_PATH | O_CLOEXEC`, adding `O_NOFOLLOW`
+only for the non-following policy. Validate type and any expected locator on
+that handle before a normal read-open. This rejects devices without invoking
+an ordinary device open and rejects FIFOs without registering a reader.
+`O_PATH | O_NOFOLLOW` pins a final symlink itself; reject its non-regular type.
+
+Before a read-open, query the pinned source with `fstatfs`. Reject procfs,
+sysfs, debugfs, tracefs, securityfs, and cgroup v1/v2 as unsupported source
+filesystems, even when their objects report regular-file type. Apply this rule
+to both direct candidates and followed symlinks. Process-state and kernel-control
+pseudo-files are not ordinary log files. Failure to query the filesystem rejects
+the operation with the original OS error rather than bypassing the check.
+
+This checks the resolved source object's filesystem, not the procfs transport
+used to reopen an eligible pin. Regular files on tmpfs remain eligible. The
+rule is not a filesystem allowlist or path confinement: links to sensitive
+regular files on otherwise eligible storage still require resolved-target
+policy and least-privilege access. Network and unstable-locator filesystem
+qualification remains governed by the platform requirements.
+
+Reopen only the pinned regular file through trusted Linux `/proc/self/fd`,
+keeping the pin alive until the read handle is acquired and checked. Validate
+regular-file type and equal locator on the read handle and capture fresh
+metadata from it. A missing or inaccessible procfs reopen is a distinct
+operation failure that preserves the OS error, including source read-permission
+failures. Never fall back to the original pathname. All cancellation and failure
+paths close both descriptors; successful conversion retains only the read handle.
+
+Distinguish selection-locator changes from a reopened-handle mismatch so callers
+can report the failing stage. Neither authorizes progress or automatic quarantine.
+OS-error classification must preserve errno across ordinary I/O and pinned-reopen
+failures; descriptor pressure and `EAGAIN` do not depend on which stage failed.
+Keep `O_NONBLOCK` on the read-open so a conflicting write lease returns
+`EWOULDBLOCK` for bounded retry instead of waiting for lease release. This does
+not bound all open latency: fanotify permission responses and filesystem work
+already executing in the kernel can still delay completion.
+
 On Windows, probing uses reparse-point behavior appropriate to the selected
 follow policy. `FILE_FLAG_OPEN_REPARSE_POINT` applies to the non-following path
 and is not unconditional. Handle type, attributes, reparse state, volume, and
@@ -779,8 +816,13 @@ A replacement, truncation, path-resolution change, evidence read failure, or uns
 observation makes the pass incomplete. It is not converted into false uniqueness or
 absence evidence.
 
-Discovery uses at most one transient probe handle beyond `max_open_files`. It does not
-retain one probe per candidate.
+Discovery and reader reopens share at most two transient source-open descriptors
+beyond `max_open_files`. Reserve the two-descriptor peak before starting a
+conversion; concurrent workers must share this allowance rather than each owning
+one. A returned discovery probe remains charged until closed; a resident handle
+must transfer into a reserved resident slot. The two candidate observations are
+sequential: close the first before starting the second. Never retain a probe per
+candidate.
 
 Watched directories are a source trust boundary distinct from checkpoint state.
 Application-writable directories can supply adversarial names, links, churn, and
@@ -871,7 +913,7 @@ populations to transfer progress across locators.
 | Distinguished matched-path bindings | One per durable tracked identity; additional aliases visited incrementally |
 | Durable tracked identities | `max_tracked_files` |
 | Resident tail handles | `max_open_files` |
-| Transient discovery probes | One beyond the resident-handle pool |
+| Transient source opens | Two shared by discovery and reader reopens beyond the resident-handle pool |
 
 The scanner never materializes the full filesystem match set. It keeps generation
 markers only for bounded tracked identities and retained pending candidates, while
@@ -1207,7 +1249,8 @@ durable registration or recovery. The logical reader may exist without a residen
 handle.
 
 `max_tracked_files` bounds logical identity state. `max_open_files` independently bounds
-resident tail handles. Discovery may hold only the separately bounded transient probe.
+resident tail handles. Discovery and reader reopens share the separately bounded
+transient source-open allowance.
 
 The receiver-local descriptor budget is:
 
@@ -1215,7 +1258,7 @@ The receiver-local descriptor budget is:
 filelog_fd_budget =
   limits.max_open_files
   + 1 discovery traversal directory
-  + 1 transient candidate probe
+  + 2 transient source-open descriptors (shared by discovery and reader reopens)
   + 8 checkpoint/namespace descriptors
 ```
 
@@ -3574,11 +3617,15 @@ Platform-specific APIs may differ, but they do not change logical identity or pr
 
 ### Linux
 
-Linux uses nonblocking, close-on-exec probes and handle-derived device and inode
-locator evidence. Non-following opens reject final symlinks when
+Linux uses close-on-exec `O_PATH` probes and handle-derived device and inode
+locator evidence. Non-following probes reject final symlinks when
 `follow_symlinks: false`; following mode resolves and validates the target
 instead of applying `O_NOFOLLOW` unconditionally. `fstat` or equivalent must
-prove a regular file. Open unlinked files remain readable through resident descriptors.
+prove a regular file before reopening the pinned object for reading through
+trusted `/proc/self/fd`. The read handle uses nonblocking, close-on-exec flags;
+its type and locator are checked again. The conversion requires the shared
+transient source-open allowance and never reopens the candidate pathname.
+Open unlinked files remain readable through resident descriptors.
 Checkpoint publication uses same-directory atomic rename and file and directory sync.
 Opening or creating a namespace path component additionally syncs its immediate
 parent before relying on that component; syncing the new child alone does not
@@ -3648,6 +3695,12 @@ Windows validation covers:
 Network shares and filesystems with weak, unstable, or nonlocal locator and advisory-
 lock behavior require separate contracts. Phase 1 does not infer their correctness from
 local Linux, macOS, or Windows validation.
+
+Some overlayfs configurations can change the observed device/inode pair during
+copy-up. Treat a selection or reopened-handle mismatch as failed continuity
+validation; do not accept the new locator implicitly. The exact behavior depends
+on the layer filesystems and mount options, so generic Linux tests do not qualify
+every overlay configuration.
 
 Detailed resource-admission models, telemetry semantics, validation cases, and
 normative examples are owned by the

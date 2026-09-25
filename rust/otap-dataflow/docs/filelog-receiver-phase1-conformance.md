@@ -543,7 +543,19 @@ while their semantic and format definitions remain normative from version 1.
 | Discovery | Lexical alias maps to excluded target | Excluded |
 | Discovery | `follow_symlinks: false` final symlink | Not admitted |
 | Discovery | `follow_symlinks: true` allowed target | Admitted once |
-| Discovery | FIFO, socket, directory, or device candidate | Rejected without blocking the discovery thread |
+| Discovery | FIFO, socket, directory, or device candidate | Rejected before a normal read-open; Linux O_PATH probes do not invoke a device open or register a FIFO reader |
+| Linux source access | Final symlink rejected under O_PATH + O_NOFOLLOW | Pinned symlink is rejected as non-regular |
+| Linux source access | Direct or followed regular-looking file on procfs, sysfs, debugfs, tracefs, securityfs, or cgroup v1/v2 | Unsupported-filesystem rejection on the pin before read-open |
+| Linux source access | Filesystem query fails | Original OS error; no read-open or bypass |
+| Linux source access | Regular log file on tmpfs | Filesystem check and pinned reopen succeed subject to ordinary permissions |
+| Linux source access | Read permission denied during pinned reopen | Distinct reopen error retains EACCES; all acquired descriptors closed |
+| Linux source access | Conflicting write lease | Nonblocking reopen returns WouldBlock for caller-owned bounded retry |
+| Linux source access | Descriptor pressure or interruption at different I/O stages | Common OS-error inspection preserves the errno for consistent retry classification |
+| Linux source access | Candidate name changes after O_PATH pinning | Read reopen uses the pinned object; no original-path fallback |
+| Linux source access | Procfs reopen unavailable, permission denied, or descriptor limit reached | Distinct reopen failure preserves OS error and closes the pin |
+| Linux source access | Reopened handle has different type or locator | Distinct reopened-mismatch error; both descriptors closed; no progress or automatic quarantine |
+| Linux source access | Cancellation between pin, metadata and read-open stages | All acquired descriptors closed; caller-owned directory unaffected |
+| Resource | Concurrent discovery and reader reopen operations | Shared transient source-open population never exceeds two beyond reserved resident handles |
 | Discovery | Path target substituted between check and open | Opened handle fails policy/type/identity validation; not admitted |
 | Discovery | Symlink directory cycle | Bounded, incomplete pass |
 | Discovery | Hardlink/overlapping glob | One locator candidate/reader |
