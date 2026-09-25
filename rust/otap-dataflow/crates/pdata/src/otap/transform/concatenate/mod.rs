@@ -6,20 +6,23 @@ use arrow::array::{
     Array, ArrayRef, ArrowPrimitiveType, AsArray, DictionaryArray, OffsetSizeTrait, RecordBatch,
     StructArray,
 };
-use arrow::compute::kernels::cast;
 use arrow::datatypes::{
     ArrowNativeType, DurationMicrosecondType, DurationMillisecondType, DurationNanosecondType,
     DurationSecondType, Float64Type, GenericBinaryType, Int64Type, TimestampMicrosecondType,
     TimestampMillisecondType, TimestampNanosecondType, TimestampSecondType, UInt8Type, UInt16Type,
     UInt64Type,
 };
-use arrow_schema::{DataType, Field, FieldRef, Fields, Schema, SchemaBuilder};
+use arrow_schema::{DataType, Field, FieldRef, Schema, SchemaBuilder};
 use itertools::Either;
 use roaring::RoaringBitmap;
 use std::sync::Arc;
 
 #[allow(dead_code)]
 pub(crate) mod plan;
+mod write;
+
+use plan::InputPlan;
+use write::Input;
 
 use crate::error::Error;
 use crate::otap::{Logs, Metrics, OtapBatchStore, Result, Traces};
@@ -158,154 +161,81 @@ fn concatenate_signal<S: OtapBatchStore, const N: usize>(
         }
 
         let selected = select_schema(&index)?;
-        let new_schema: Arc<Schema> = Arc::from(selected.schema);
-        let mut batcher = arrow::compute::BatchCoalescer::new(new_schema.clone(), index.row_count);
+        let batches: Vec<&RecordBatch> = select_all(items, i).flatten().collect();
+        let plans = vec![InputPlan::default(); batches.len()];
+        result[i] = Some(write_payload(&batches, &plans, payload_def, selected)?);
+
         for payload in select_all_mut(items, i) {
-            let Some(rb) = payload.take() else {
-                continue;
-            };
-
-            let (curr_schema, columns, num_rows) = rb.into_parts();
-            let converted_columns = convert(
-                columns,
-                num_rows,
-                &curr_schema.fields,
-                &new_schema.fields,
-                payload_def,
-                &selected.slot_to_target,
-            )?;
-
-            // safety: Unless we have a bug, we've satisfied all the preconditions
-            // for try_new and push_batch by converting everything to a unified
-            // schema.
-            let converted = RecordBatch::try_new(new_schema.clone(), converted_columns)
-                .expect("Valid construction");
-            batcher
-                .push_batch(converted)
-                .map_err(|source| Error::Batching { source })?;
+            *payload = None;
         }
-
-        batcher
-            .finish_buffered_batch()
-            .map_err(|e| Error::Batching { source: e })?;
-
-        // safety: If if finish_buffered_batch succeeded then we can expect
-        // next_completed_batch to succeed.
-        assert!(batcher.has_completed_batch());
-        let batch = batcher.next_completed_batch().expect("complete batch");
-        result[i] = Some(batch);
     }
 
     Ok(result)
 }
 
-/// Convert the columns of a single input batch to the unified `target_fields`.
+/// Write the output record batch for one payload type.
 ///
-/// The input batch conforms to `payload_def`, so instead of scanning
-/// `target_fields` for every current field (an O(fields^2) search), we look each
-/// current field up in the payload spec to get its slot, then map that slot to
-/// its position in the target schema via `slot_to_target`. Fields present in the
-/// target but absent from this batch are filled with nulls afterward.
-fn convert(
-    columns: Vec<Arc<dyn Array>>,
-    num_rows: usize,
-    curr_fields: &Fields,
-    target_fields: &Fields,
+/// `batches[j]` is the j-th contributing input and `plans[j]` its row
+/// selection and ID remaps. Every output column is written exactly once.
+fn write_payload(
+    batches: &[&RecordBatch],
+    plans: &[InputPlan],
     payload_def: &PayloadSchema,
-    slot_to_target: &[i16; MAX_SLOTS],
-) -> Result<Vec<Arc<dyn Array>>> {
-    assert_eq!(columns.len(), curr_fields.len());
+    selected: SelectedSchema,
+) -> Result<RecordBatch> {
+    debug_assert_eq!(batches.len(), plans.len());
+    let schema = Arc::new(selected.schema);
+    let target_fields = schema.fields();
 
-    // Pre-fill so every target position is initialized; positions not written
-    // by an input column are missing fields and are null-padded below.
-    let mut new_columns: Vec<Option<Arc<dyn Array>>> = vec![None; target_fields.len()];
-
-    for (curr_idx, curr_field) in curr_fields.iter().enumerate() {
-        let slot = payload_def.slot_of(curr_field.name()).ok_or_else(|| {
-            Error::ColumnDataTypeMismatch {
-                name: curr_field.name().clone(),
-                expect: DataType::Null,
-                actual: curr_field.data_type().clone(),
-            }
-        })?;
-        let target_idx = slot_to_target[slot];
-        debug_assert!(target_idx >= 0, "indexed field must have a target position");
-        let target_idx = target_idx as usize;
-        let target_field = &target_fields[target_idx];
-
-        let converted = if curr_field.data_type() == target_field.data_type() {
-            columns[curr_idx].clone()
-        } else if let DataType::Struct(target_struct_fields) = target_field.data_type() {
-            let sub_def = payload_def
-                .get(curr_field.name())
-                .and_then(|f| f.data_type.as_struct_schema())
-                .expect("struct field must have a struct sub-schema");
-            let sub_map = struct_slot_map(sub_def, target_struct_fields);
-
-            // TODO: Figure out how to avoid the clone here. as_any just returns
-            // a ref, so we cannot downcast_mut and break into parts. The clone
-            // is only a Vec<ArrayRef>.
-            let struct_array = columns[curr_idx]
-                .as_any()
-                .downcast_ref::<StructArray>()
-                .expect("Struct array")
-                .clone();
-            let (struct_fields, struct_columns, nulls) = struct_array.into_parts();
-
-            // Recursively convert the struct; depth is bounded to 1 since valid
-            // OTAP batches do not have nested structs.
-            let struct_columns = convert(
-                struct_columns,
-                num_rows,
-                &struct_fields,
-                target_struct_fields,
-                sub_def,
-                &sub_map,
-            )?;
-
-            // safety: preconditions satisfied by construction above.
-            Arc::new(
-                StructArray::try_new_with_length(
-                    target_struct_fields.clone(),
-                    struct_columns,
-                    nulls,
-                    num_rows,
-                )
-                .expect("valid struct array"),
-            )
-        } else {
-            // safety: the selected type is cast-compatible by construction.
-            cast(columns[curr_idx].as_ref(), target_field.data_type()).expect("Compatible types")
-        };
-
-        new_columns[target_idx] = Some(converted);
-    }
-
-    // Fill any target field that this batch did not carry with nulls, reusing
-    // the already-allocated Vec rather than collecting into a second one.
-    let out = new_columns
-        .into_iter()
-        .enumerate()
-        .map(|(idx, col)| match col {
-            Some(col) => col,
-            // TODO: Can we optimize here with REE support?
-            None => arrow::array::new_null_array(target_fields[idx].data_type(), num_rows),
-        })
-        .collect();
-
-    Ok(out)
-}
-
-/// Build the spec-slot -> target-index map for a struct sub-schema, matching
-/// child fields by name against the already-selected target struct fields.
-fn struct_slot_map(sub_def: &PayloadSchema, target_fields: &Fields) -> [i16; MAX_SLOTS] {
-    let mut map = [-1i16; MAX_SLOTS];
-    for (target_idx, field) in target_fields.iter().enumerate() {
-        if let Some(slot) = sub_def.slot_of(field.name()) {
-            map[slot] = target_idx as i16;
+    // Resolve, for every input, the source column for each target position.
+    // This is O(fields) per input and avoids name lookups per column.
+    let mut sources: Vec<Vec<Option<&ArrayRef>>> = Vec::with_capacity(batches.len());
+    for rb in batches {
+        let mut cols = vec![None; target_fields.len()];
+        for (field, col) in rb.schema_ref().fields().iter().zip(rb.columns()) {
+            let slot =
+                payload_def
+                    .slot_of(field.name())
+                    .ok_or_else(|| Error::ColumnDataTypeMismatch {
+                        name: field.name().clone(),
+                        expect: DataType::Null,
+                        actual: field.data_type().clone(),
+                    })?;
+            let target_idx = selected.slot_to_target[slot];
+            debug_assert!(target_idx >= 0, "indexed field must have a target position");
+            cols[target_idx as usize] = Some(col);
         }
+        sources.push(cols);
     }
-    map
+
+    let rows: usize = batches
+        .iter()
+        .zip(plans)
+        .map(|(rb, plan)| plan.selection.count(rb.num_rows()))
+        .sum();
+
+    let mut columns = Vec::with_capacity(target_fields.len());
+    let mut inputs: Vec<Input<'_>> = Vec::with_capacity(batches.len());
+    for (target_idx, target) in target_fields.iter().enumerate() {
+        inputs.clear();
+        inputs.extend(
+            batches
+                .iter()
+                .zip(plans)
+                .zip(&sources)
+                .map(|((rb, plan), cols)| Input {
+                    column: cols[target_idx],
+                    num_rows: rb.num_rows(),
+                    plan,
+                }),
+        );
+        let id_col = write::top_level_id_col(target.name());
+        columns.push(write::write_column(target, &inputs, rows, id_col)?);
+    }
+
+    let options = arrow::array::RecordBatchOptions::new().with_row_count(Some(rows));
+    RecordBatch::try_new_with_options(schema, columns, &options)
+        .map_err(|source| Error::Batching { source })
 }
 
 /// The output of schema selection: the unified schema plus a map from each
@@ -986,13 +916,13 @@ fn select_all_mut<const N: usize>(
     batches.iter_mut().map(move |batches| &mut batches[i])
 }
 
-/// Benchmark-only accessors that expose the schema-unification stages
-/// (`index_records`, `select_schema`, and `convert`) so their cost can be
-/// measured separately from the row-copying performed by the coalescer.
+/// Benchmark-only accessors that expose the concatenation stages
+/// (`index_records`, `select_schema`, and writing the output) so their cost can
+/// be measured separately.
 ///
 /// Each stage consumes the previous stage's output, so each accessor runs a
 /// cumulative prefix of the pipeline: `bench_index_records` runs indexing,
-/// `bench_select_schema` runs indexing + selection, and `bench_convert_all`
+/// `bench_select_schema` runs indexing + selection, and `bench_write_payload`
 /// runs all three. Per-stage cost is the difference between adjacent results.
 ///
 /// These are gated behind the `bench` feature and are not part of the public
@@ -1026,34 +956,19 @@ pub mod bench_exports {
         Ok(select_schema(&index)?.schema)
     }
 
-    /// Run the full schema unification (index + select + convert) for payload
-    /// slot `i`, returning the converted columns for every input batch. The
-    /// timing includes `index_records` and `select_schema`, and isolates the
-    /// schema-unification work from the `BatchCoalescer` row copy.
-    pub fn bench_convert_all<S: OtapBatchStore, const N: usize>(
+    /// Run the full per-payload pipeline (index + select + write) for payload
+    /// slot `i`, returning the concatenated output batch. The timing includes
+    /// `index_records` and `select_schema`.
+    pub fn bench_write_payload<S: OtapBatchStore, const N: usize>(
         items: &[[Option<RecordBatch>; N]],
         i: usize,
-    ) -> Result<Vec<Vec<ArrayRef>>> {
+    ) -> Result<RecordBatch> {
         let payload_def = payloads::get(S::payload_type_at_idx(i));
         let index = index_records(select_all(items, i), payload_def)?;
         let selected = select_schema(&index)?;
-        let new_schema = Arc::new(selected.schema);
-
-        let mut converted = Vec::new();
-        for payload in select_all(items, i).flatten() {
-            let columns = payload.columns().to_vec();
-            let num_rows = payload.num_rows();
-            let curr_fields = payload.schema_ref().fields.clone();
-            converted.push(convert(
-                columns,
-                num_rows,
-                &curr_fields,
-                &new_schema.fields,
-                payload_def,
-                &selected.slot_to_target,
-            )?);
-        }
-        Ok(converted)
+        let batches: Vec<&RecordBatch> = select_all(items, i).flatten().collect();
+        let plans = vec![InputPlan::default(); batches.len()];
+        write_payload(&batches, &plans, payload_def, selected)
     }
 }
 

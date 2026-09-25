@@ -5,19 +5,17 @@
 //!
 //! `concatenate` performs three logically distinct pieces of work per payload
 //! table: indexing every field across the input batches (`index_records`),
-//! selecting a unified output schema (`select_schema`), and casting/reordering
-//! every input batch to that schema (`convert`). The end-to-end `concatenate`
-//! benchmark is dominated by the `BatchCoalescer` row copy, which masks the cost
-//! of these stages. These benchmarks call the stages directly (via the
-//! `bench` feature exports) so their cost can be attributed and tracked across
-//! optimization work.
+//! selecting a unified output schema (`select_schema`), and writing every
+//! output column directly from the inputs (`write`). These benchmarks call the
+//! stages directly (via the `bench` feature exports) so their cost can be
+//! attributed and tracked across optimization work.
 //!
 //! Each stage depends on the output of the previous one, so the timings are
 //! cumulative and the benchmark IDs say so:
 //!
 //! - `index`: `index_records` only.
 //! - `index+select`: `index_records` then `select_schema`.
-//! - `index+select+convert`: all three stages.
+//! - `index+select+write`: all three stages.
 //!
 //! The cost of a single stage is the difference between adjacent IDs.
 //!
@@ -35,7 +33,7 @@ use arrow::datatypes::{DataType, Field, Schema, UInt8Type, UInt16Type};
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 
 use otel_arrow_dfe_pdata::otap::transform::concatenate::bench_exports::{
-    bench_convert_all, bench_index_records, bench_select_schema,
+    bench_index_records, bench_select_schema, bench_write_payload,
 };
 use otel_arrow_dfe_pdata::otap::{Logs, OtapArrowRecords, OtapBatchStore, Traces};
 use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
@@ -86,7 +84,7 @@ fn bench_generated_traces(c: &mut Criterion) {
                     .expect("schema unify stage failed")
             },
             || {
-                bench_convert_all::<Traces, { Traces::COUNT }>(&batches, spans_idx)
+                bench_write_payload::<Traces, { Traces::COUNT }>(&batches, spans_idx)
                     .expect("schema unify stage failed")
             },
         );
@@ -113,7 +111,7 @@ fn bench_generated_logs(c: &mut Criterion) {
                     .expect("schema unify stage failed")
             },
             || {
-                bench_convert_all::<Logs, { Logs::COUNT }>(&batches, log_attrs_idx)
+                bench_write_payload::<Logs, { Logs::COUNT }>(&batches, log_attrs_idx)
                     .expect("schema unify stage failed")
             },
         );
@@ -152,7 +150,7 @@ fn bench_synthetic(c: &mut Criterion) {
                         .expect("schema unify stage failed")
                 },
                 || {
-                    bench_convert_all::<Logs, { Logs::COUNT }>(&batches, log_attrs_idx)
+                    bench_write_payload::<Logs, { Logs::COUNT }>(&batches, log_attrs_idx)
                         .expect("schema unify stage failed")
                 },
             );
@@ -166,14 +164,14 @@ fn bench_synthetic(c: &mut Criterion) {
 // ---------------------------------------------------------------------------
 
 /// Time the three cumulative stage prefixes. `index` runs `index_records`,
-/// `index_select` additionally runs `select_schema`, and `index_select_convert`
-/// runs the full unification including `convert`.
+/// `index_select` additionally runs `select_schema`, and `index_select_write`
+/// additionally writes the concatenated output.
 fn bench_stages<R1, R2, R3>(
     group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
     n: usize,
     index: impl Fn() -> R1,
     index_select: impl Fn() -> R2,
-    index_select_convert: impl Fn() -> R3,
+    index_select_write: impl Fn() -> R3,
 ) {
     let _ = group.bench_with_input(BenchmarkId::new("index", n), &n, |b, _| {
         b.iter(|| black_box(index()));
@@ -181,8 +179,8 @@ fn bench_stages<R1, R2, R3>(
     let _ = group.bench_with_input(BenchmarkId::new("index+select", n), &n, |b, _| {
         b.iter(|| black_box(index_select()));
     });
-    let _ = group.bench_with_input(BenchmarkId::new("index+select+convert", n), &n, |b, _| {
-        b.iter(|| black_box(index_select_convert()));
+    let _ = group.bench_with_input(BenchmarkId::new("index+select+write", n), &n, |b, _| {
+        b.iter(|| black_box(index_select_write()));
     });
 }
 
@@ -302,7 +300,7 @@ fn attrs_batch(fields: Vec<Field>, columns: Vec<ArrayRef>) -> RecordBatch {
 }
 
 /// Scenario 3: optional value columns present only in some batches, forcing
-/// nullability determination and null padding on convert.
+/// nullability determination and null padding on write.
 fn make_optional_subset(num_batches: usize, rows: usize) -> Vec<LogsBatches> {
     (0..num_batches)
         .map(|b| {
@@ -327,7 +325,7 @@ fn make_optional_subset(num_batches: usize, rows: usize) -> Vec<LogsBatches> {
 }
 
 /// Scenario 4: same columns everywhere, but field order permuted so the
-/// convert stage cannot rely on positional identity.
+/// write stage cannot rely on positional identity.
 fn make_permuted_order(num_batches: usize, rows: usize) -> Vec<LogsBatches> {
     (0..num_batches)
         .map(|b| {
@@ -366,7 +364,7 @@ fn make_dict_cross_u8(num_batches: usize, rows: usize) -> Vec<LogsBatches> {
 const DICT_CROSS_U16_CARDINALITY: usize = 10_000;
 
 /// Scenario 6: a dict<u16> column whose summed physical cardinality crosses
-/// 65535, forcing demotion to a plain column in select_schema + convert.
+/// 65535, forcing demotion to a plain column in select_schema + write.
 fn make_dict_cross_u16(num_batches: usize, rows: usize) -> Vec<LogsBatches> {
     let card = DICT_CROSS_U16_CARDINALITY;
     assert!(
