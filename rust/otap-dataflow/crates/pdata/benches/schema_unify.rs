@@ -12,6 +12,15 @@
 //! `bench` feature exports) so their cost can be attributed and tracked across
 //! optimization work.
 //!
+//! Each stage depends on the output of the previous one, so the timings are
+//! cumulative and the benchmark IDs say so:
+//!
+//! - `index`: `index_records` only.
+//! - `index+select`: `index_records` then `select_schema`.
+//! - `index+select+convert`: all three stages.
+//!
+//! The cost of a single stage is the difference between adjacent IDs.
+//!
 //! Scenarios deliberately exercise paths the generator-driven `concatenate`
 //! benchmark does not: differing optional fields, permuted field order, plain
 //! vs. dictionary columns, and dictionary key-width transitions.
@@ -153,24 +162,27 @@ fn bench_synthetic(c: &mut Criterion) {
 }
 
 // ---------------------------------------------------------------------------
-// Shared bench harness: time the three stages under one parameter.
+// Shared bench harness: time the cumulative stages under one parameter.
 // ---------------------------------------------------------------------------
 
+/// Time the three cumulative stage prefixes. `index` runs `index_records`,
+/// `index_select` additionally runs `select_schema`, and `index_select_convert`
+/// runs the full unification including `convert`.
 fn bench_stages<R1, R2, R3>(
     group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
     n: usize,
     index: impl Fn() -> R1,
-    select: impl Fn() -> R2,
-    convert: impl Fn() -> R3,
+    index_select: impl Fn() -> R2,
+    index_select_convert: impl Fn() -> R3,
 ) {
-    let _ = group.bench_with_input(BenchmarkId::new("index_records", n), &n, |b, _| {
+    let _ = group.bench_with_input(BenchmarkId::new("index", n), &n, |b, _| {
         b.iter(|| black_box(index()));
     });
-    let _ = group.bench_with_input(BenchmarkId::new("select_schema", n), &n, |b, _| {
-        b.iter(|| black_box(select()));
+    let _ = group.bench_with_input(BenchmarkId::new("index+select", n), &n, |b, _| {
+        b.iter(|| black_box(index_select()));
     });
-    let _ = group.bench_with_input(BenchmarkId::new("convert", n), &n, |b, _| {
-        b.iter(|| black_box(convert()));
+    let _ = group.bench_with_input(BenchmarkId::new("index+select+convert", n), &n, |b, _| {
+        b.iter(|| black_box(index_select_convert()));
     });
 }
 
@@ -349,9 +361,21 @@ fn make_dict_cross_u8(num_batches: usize, rows: usize) -> Vec<LogsBatches> {
         .collect()
 }
 
+/// Per-batch dictionary cardinality for the `dict_cross_u16` scenario. With
+/// 8 batches this sums to 80,000 physical values, above `u16::MAX`.
+const DICT_CROSS_U16_CARDINALITY: usize = 10_000;
+
 /// Scenario 6: a dict<u16> column whose summed physical cardinality crosses
 /// 65535, forcing demotion to a plain column in select_schema + convert.
 fn make_dict_cross_u16(num_batches: usize, rows: usize) -> Vec<LogsBatches> {
+    let card = DICT_CROSS_U16_CARDINALITY;
+    assert!(
+        num_batches * card > usize::from(u16::MAX),
+        "dict_cross_u16 must exceed u16::MAX physical values to exercise \
+         demotion: {num_batches} batches * {card} = {}",
+        num_batches * card
+    );
+
     (0..num_batches)
         .map(|b| {
             let (mut fields, mut cols) = base_attrs_columns(rows, 16);
@@ -362,7 +386,6 @@ fn make_dict_cross_u16(num_batches: usize, rows: usize) -> Vec<LogsBatches> {
             ));
             // Each batch contributes a disjoint block of distinct values so the
             // physical total grows without bound across batches.
-            let card = 1000usize;
             let values: Vec<String> = (0..card).map(|i| format!("s_{b}_{i}")).collect();
             let keys: Vec<u16> = (0..rows).map(|i| (i % card) as u16).collect();
             let dict = DictionaryArray::<UInt16Type>::new(

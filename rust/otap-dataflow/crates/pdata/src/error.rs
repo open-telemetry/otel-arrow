@@ -253,6 +253,9 @@ pub enum Error {
         found: SignalType,
         expected: SignalType,
     },
+
+    #[error("Unsupported batch store type: no OTAP signal has batch width {batch_width}")]
+    UnsupportedBatchStoreType { batch_width: usize },
 }
 
 impl From<EncodeFailure> for Error {

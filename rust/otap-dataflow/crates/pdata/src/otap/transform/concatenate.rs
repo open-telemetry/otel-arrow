@@ -74,9 +74,27 @@ const MAX_U16_CARDINALITY: usize = 65535;
 /// - TODO: Consider using new_unchecked for record batch construction if we're
 ///   confident in it. We mostly unwrap those operations a lot, so skipping the
 ///   checks or moving similar checks to debug asserts may be reasonable.
+///
+/// # Errors
+///
+/// Returns [`Error::UnsupportedBatchStoreType`] if `N` is not the batch width
+/// of a known signal (`Logs`, `Metrics`, or `Traces`), regardless of how many
+/// batches are passed. The signal is selected by width alone, so a future
+/// batch store that reuses an existing signal's width would be routed to that
+/// signal's payload schemas.
 pub fn concatenate<const N: usize>(
     items: &mut [[Option<RecordBatch>; N]],
 ) -> Result<[Option<RecordBatch>; N]> {
+    // Resolve the signal up front so an unsupported width is rejected even on
+    // the empty and single-batch fast paths below.
+    let concat_signal: fn(&mut [[Option<RecordBatch>; N]]) -> Result<[Option<RecordBatch>; N]> =
+        match N {
+            Logs::COUNT => concatenate_signal::<Logs, N>,
+            Metrics::COUNT => concatenate_signal::<Metrics, N>,
+            Traces::COUNT => concatenate_signal::<Traces, N>,
+            _ => return Err(Error::UnsupportedBatchStoreType { batch_width: N }),
+        };
+
     let mut result = [const { None }; N];
     if items.is_empty() {
         return Ok(result);
@@ -89,16 +107,7 @@ pub fn concatenate<const N: usize>(
         return Ok(result);
     }
 
-    // N is the batch-array width of an OtapBatchStore, so it always equals one
-    // of the signal COUNTs. Every caller is constrained by
-    // `OtapBatchStore<BatchArray = [Option<RecordBatch>; N]>`, so no other width
-    // can reach here.
-    match N {
-        Logs::COUNT => concatenate_signal::<Logs, N>(items),
-        Metrics::COUNT => concatenate_signal::<Metrics, N>(items),
-        Traces::COUNT => concatenate_signal::<Traces, N>(items),
-        _ => unreachable!("concatenate called with non-signal batch width {N}"),
-    }
+    concat_signal(items)
 }
 
 fn concatenate_signal<S: OtapBatchStore, const N: usize>(
@@ -944,9 +953,14 @@ fn select_all_mut<const N: usize>(
     batches.iter_mut().map(move |batches| &mut batches[i])
 }
 
-/// Benchmark-only accessors that expose the individual schema-unification
-/// stages (`index_records`, `select_schema`, and `convert`) so their cost can
-/// be measured in isolation from the row-copying performed by the coalescer.
+/// Benchmark-only accessors that expose the schema-unification stages
+/// (`index_records`, `select_schema`, and `convert`) so their cost can be
+/// measured separately from the row-copying performed by the coalescer.
+///
+/// Each stage consumes the previous stage's output, so each accessor runs a
+/// cumulative prefix of the pipeline: `bench_index_records` runs indexing,
+/// `bench_select_schema` runs indexing + selection, and `bench_convert_all`
+/// runs all three. Per-stage cost is the difference between adjacent results.
 ///
 /// These are gated behind the `bench` feature and are not part of the public
 /// API. They exist purely so the `schema_unify` benchmark can attribute time to
@@ -968,7 +982,8 @@ pub mod bench_exports {
         Ok(index.fields.slots.iter().filter(|s| s.is_some()).count())
     }
 
-    /// Run the indexing and schema-selection stages for payload slot `i`.
+    /// Run the indexing and schema-selection stages for payload slot `i`. The
+    /// timing includes `index_records`, since selection consumes its output.
     pub fn bench_select_schema<S: OtapBatchStore, const N: usize>(
         items: &[[Option<RecordBatch>; N]],
         i: usize,
@@ -979,8 +994,9 @@ pub mod bench_exports {
     }
 
     /// Run the full schema unification (index + select + convert) for payload
-    /// slot `i`, returning the converted columns for every input batch. This
-    /// isolates the schema-unification work from the `BatchCoalescer` row copy.
+    /// slot `i`, returning the converted columns for every input batch. The
+    /// timing includes `index_records` and `select_schema`, and isolates the
+    /// schema-unification work from the `BatchCoalescer` row copy.
     pub fn bench_convert_all<S: OtapBatchStore, const N: usize>(
         items: &[[Option<RecordBatch>; N]],
         i: usize,
@@ -1005,6 +1021,40 @@ pub mod bench_exports {
             )?);
         }
         Ok(converted)
+    }
+}
+
+#[cfg(test)]
+mod batch_width_tests {
+    use super::*;
+
+    /// Scenario: call `concatenate` with a batch width (1) that matches no
+    /// signal, using zero, one, and two input batch arrays so the empty and
+    /// single-batch fast paths are exercised as well as the general path.
+    /// Guarantees: every call returns `UnsupportedBatchStoreType` carrying the
+    /// width instead of panicking or silently succeeding.
+    #[test]
+    fn unsupported_batch_width_returns_error() {
+        for num_batches in 0..=2 {
+            let mut items: Vec<[Option<RecordBatch>; 1]> = vec![[None]; num_batches];
+            let err = concatenate::<1>(&mut items).unwrap_err();
+            assert!(
+                matches!(err, Error::UnsupportedBatchStoreType { batch_width: 1 }),
+                "{num_batches} batches: unexpected error: {err:?}"
+            );
+        }
+    }
+
+    /// Scenario: compare each signal store's `COUNT` with the number of payload
+    /// types it allows.
+    /// Guarantees: they are equal for Logs, Metrics, and Traces, so
+    /// `concatenate_signal`'s `payload_type_at_idx(i)` lookup for every
+    /// `i < COUNT` can never index out of bounds.
+    #[test]
+    fn signal_counts_match_payload_types() {
+        assert_eq!(Logs::COUNT, Logs::allowed_payload_types().len());
+        assert_eq!(Metrics::COUNT, Metrics::allowed_payload_types().len());
+        assert_eq!(Traces::COUNT, Traces::allowed_payload_types().len());
     }
 }
 
