@@ -57,7 +57,8 @@ cargo run -- --config configs/otlp-otlp.yaml --validate-and-exit
 
 Validation parses YAML or JSON, validates the root model, checks graph
 references, checks that every node type is registered in the binary, and runs
-node-specific config validation when the component provides it.
+node-specific config validation when the component provides it. It also compiles
+context bindings, including qualified propagation selectors.
 
 After loading, the CLI can override selected engine-level settings:
 
@@ -697,10 +698,9 @@ Use `--validate-and-exit` while editing:
 cargo run -- --config path/to/config.yaml --validate-and-exit
 ```
 
-Qualified propagation selectors are resolved when the engine compiles exporter
-bindings at startup. `--validate-and-exit` currently performs static validation
-only and does not resolve composite members or detect primitive-source
-collisions.
+`--validate-and-exit` compiles context bindings and rejects qualified
+propagation selectors that reference unknown composites, unknown or unsupported
+members, or conflicting primitive transport-header sources.
 
 If validation fails inside a node config, open that node's README from the
 [core-node catalog](../crates/core-nodes/README.md) or
