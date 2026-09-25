@@ -6,10 +6,10 @@
 //! Run with:
 //!
 //! ```text
-//! cargo bench -p otel-arrow-dfe-config --bench header_propagation
+//! cargo bench -p benchmarks --bench request_context -- header_propagation
 //! ```
 
-use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, Throughput};
 use otel_arrow_dfe_config::context::{ContextEntryName, ContextEntryRef};
 use otel_arrow_dfe_config::context_policy::{
     ContextEntryDeclaration, ContextEntryDefinition, ContextEntryPart, ContextScope,
@@ -24,7 +24,7 @@ const CONDITION_NAME_VARIANTS: [&str; 4] = ["header", "HEADER", "Header", "hEaDe
 const DUPLICATE_SOURCE_COUNTS: [usize; 4] = [1, 4, 16, 28];
 const DUPLICATE_TOTAL_HEADERS: usize = 32;
 
-fn bench_header_propagation(c: &mut Criterion) {
+pub(super) fn benchmarks(c: &mut Criterion) {
     let mut group = c.benchmark_group("header_propagation");
 
     for header_count in HEADER_COUNTS {
@@ -241,6 +241,3 @@ fn context_name(raw: &str) -> ContextEntryName {
 fn context_ref(raw: &str) -> ContextEntryRef {
     ContextEntryRef::try_from(raw).expect("valid benchmark context entry reference")
 }
-
-criterion_group!(benches, bench_header_propagation);
-criterion_main!(benches);

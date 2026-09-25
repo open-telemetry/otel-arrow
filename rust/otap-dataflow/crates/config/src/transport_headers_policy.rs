@@ -442,6 +442,12 @@ pub enum ValueKindConfig {
 
 /// Policy controlling which captured transport headers are propagated by
 /// exporters onto outbound requests.
+///
+/// Deserialization and [`Self::new`] produce an unresolved policy. Unqualified
+/// named selectors work immediately, but qualified `composite:member`
+/// selectors remain inactive until [`Self::compile_context`] resolves them
+/// against the visible context declarations. The engine performs this
+/// compilation before installing exporter bindings.
 #[derive(
     Debug, Clone, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Hash, PartialOrd, Ord,
 )]
@@ -473,7 +479,10 @@ struct CompiledTransportHeaderMatch {
 }
 
 impl HeaderPropagationPolicy {
-    /// Create a new propagation policy from the given default behavior and overrides.
+    /// Creates an unresolved propagation policy from the default and overrides.
+    ///
+    /// Call [`Self::compile_context`] before using the policy when the default
+    /// selector contains qualified `composite:member` references.
     #[must_use]
     pub fn new(default: PropagationDefault, overrides: Vec<PropagationOverride>) -> Self {
         Self {
@@ -483,7 +492,11 @@ impl HeaderPropagationPolicy {
         }
     }
 
-    /// Compiles qualified named selectors from visible composite declarations.
+    /// Resolves qualified named selectors from visible composite declarations.
+    ///
+    /// This step validates every qualified `composite:member` reference and
+    /// installs the primitive transport-header bindings used by propagation.
+    /// It is safe to call for policies containing only unqualified selectors.
     pub fn compile_context(
         mut self,
         declarations: &[ContextEntryDeclaration],
@@ -597,6 +610,10 @@ impl HeaderPropagationPolicy {
     /// Returns borrowed headers selected for propagation.
     /// [`NameStrategy`] selects each header's original or stored name.
     /// Headers with [`PropagationAction::Drop`] are omitted.
+    ///
+    /// Qualified `composite:member` selectors are active only after
+    /// [`Self::compile_context`] has resolved the policy. Unqualified selectors
+    /// do not require compilation.
     pub fn propagate<'a>(
         &'a self,
         headers: &'a TransportHeaders,
