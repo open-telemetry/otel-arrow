@@ -15,6 +15,7 @@ use otel_arrow_dfe_pdata::otap::child_payload_types;
 use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use parquet::arrow::AsyncArrowWriter;
 use parquet::arrow::async_writer::ParquetObjectWriter;
+use parquet::basic::{Compression, ZstdLevel};
 use parquet::errors::ParquetError;
 use parquet::file::properties::WriterProperties;
 use thiserror::Error;
@@ -450,7 +451,16 @@ fn new_parquet_arrow_writer(
     full_path: String,
 ) -> AsyncArrowWriter<ParquetObjectWriter> {
     let object_writer = ParquetObjectWriter::new(object_store, full_path.into());
-    AsyncArrowWriter::try_new(object_writer, schema, Some(WriterProperties::default()))
+    // parquet-rs defaults to UNCOMPRESSED and 1M-row groups; for the cold-bucket read
+    // path we want zstd (~14x on log bodies) and several row groups per hourly file so
+    // footer stats can prune within a file (see otelgw-poc/otel-cold-storage-design.md)
+    let props = WriterProperties::builder()
+        .set_compression(Compression::ZSTD(
+            ZstdLevel::try_new(3).expect("valid zstd level"),
+        ))
+        .set_max_row_group_size(150_000)
+        .build();
+    AsyncArrowWriter::try_new(object_writer, schema, Some(props))
         .expect("Failed to create AsyncArrowWriter")
 }
 

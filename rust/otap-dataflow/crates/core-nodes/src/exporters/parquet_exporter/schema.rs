@@ -24,7 +24,8 @@ use std::sync::{Arc, LazyLock};
 use arrow::array::{
     Array, ArrayRef, BinaryArray, BooleanArray, DurationNanosecondArray, FixedSizeBinaryArray,
     Float32Array, Float64Array, Int32Array, Int64Array, ListArray, RecordBatch, StringArray,
-    StructArray, TimestampNanosecondArray, UInt8Array, UInt16Array, UInt32Array, UInt64Array,
+    StructArray, TimestampMicrosecondArray, TimestampNanosecondArray, UInt8Array, UInt16Array,
+    UInt32Array, UInt64Array,
 };
 use arrow::buffer::{NullBuffer, OffsetBuffer};
 use arrow::datatypes::{DataType, Field, Fields, Schema, TimeUnit};
@@ -60,6 +61,7 @@ fn transform_record_batch_to_known_schema(
         record_batch.columns(),
         current_schema.fields(),
         template_schema.fields(),
+        false,
     )?;
 
     // important to preserve the schema metadata, as it may be used for partitioning ..
@@ -71,7 +73,54 @@ fn transform_record_batch_to_known_schema(
     let new_rb = RecordBatch::try_new(new_schema, new_columns)
         .expect("unexpected error creating record batch with known schema");
 
-    Ok(new_rb)
+    cast_timestamps_to_micros(new_rb)
+}
+
+/// Cast every top-level Timestamp(ns) column to Timestamp(µs).
+///
+/// Iceberg v2 has no nanosecond timestamp type: catalogs registering these files declare
+/// the column as µs but copy the parquet footer min/max verbatim into manifest bounds,
+/// making them wrong by 1000x — bounded time predicates then prune every file and silently
+/// return 0 rows. Telemetry doesn't need ns precision, so write µs and every layer agrees
+/// by construction. (OTAP schemas only carry timestamps at the top level.)
+fn cast_timestamps_to_micros(
+    record_batch: RecordBatch,
+) -> Result<RecordBatch, ParquetExporterError> {
+    let schema = record_batch.schema_ref();
+    if !schema
+        .fields()
+        .iter()
+        .any(|f| matches!(f.data_type(), DataType::Timestamp(TimeUnit::Nanosecond, _)))
+    {
+        return Ok(record_batch);
+    }
+
+    let mut new_fields = Vec::with_capacity(schema.fields().len());
+    let mut new_columns = Vec::with_capacity(schema.fields().len());
+    for (field, column) in schema.fields().iter().zip(record_batch.columns()) {
+        if let DataType::Timestamp(TimeUnit::Nanosecond, tz) = field.data_type() {
+            let target = DataType::Timestamp(TimeUnit::Microsecond, tz.clone());
+            let new_column = arrow::compute::cast(column, &target).map_err(|e| {
+                ParquetExporterError::InvalidRecordBatch {
+                    error: format!(
+                        "failed to cast column '{}' to microsecond timestamp: {e}",
+                        field.name()
+                    ),
+                }
+            })?;
+            new_fields.push(Arc::new(field.as_ref().clone().with_data_type(target)));
+            new_columns.push(new_column);
+        } else {
+            new_fields.push(field.clone());
+            new_columns.push(column.clone());
+        }
+    }
+
+    let new_schema = Arc::new(
+        Schema::new(Fields::from(new_fields)).with_metadata(schema.metadata().clone()),
+    );
+    Ok(RecordBatch::try_new(new_schema, new_columns)
+        .expect("unexpected error creating record batch with microsecond timestamps"))
 }
 
 fn transform_struct_to_known_schema(
@@ -84,6 +133,7 @@ fn transform_struct_to_known_schema(
         current_array.columns(),
         current_array.fields(),
         template_fields,
+        true,
     )?;
 
     Ok(StructArray::new(
@@ -98,6 +148,7 @@ fn transform_to_known_schema_internal(
     current_columns: &[ArrayRef],
     current_fields: &Fields,
     template_fields: &Fields,
+    nested: bool,
 ) -> Result<(Vec<ArrayRef>, Fields), ParquetExporterError> {
     let mut new_columns = Vec::with_capacity(template_fields.len());
     let mut new_fields = Vec::with_capacity(template_fields.len());
@@ -133,6 +184,23 @@ fn transform_to_known_schema_internal(
                     )?;
 
                     Arc::new(new_struct_arr)
+                } else if nested && current_field.data_type() != template_field.data_type() {
+                    // The parquet writer tolerates `T` vs `Dictionary<K, T>` for top-level
+                    // columns but not for struct children, and the OTLP→OTAP encoder picks
+                    // encodings adaptively per batch — a mid-file flip (e.g. resource.schema_url
+                    // Utf8 → Dictionary(UInt8, Utf8) under bursty uniform traffic) is rejected
+                    // as "Incompatible type", which is fatal to the pipeline. Normalize nested
+                    // children to the template type so every batch matches the bound writer.
+                    arrow::compute::cast(current_column, template_field.data_type()).map_err(
+                        |e| ParquetExporterError::InvalidRecordBatch {
+                            error: format!(
+                                "failed to cast nested column '{}' from {} to template type {}: {e}",
+                                template_field.name(),
+                                current_field.data_type(),
+                                template_field.data_type()
+                            ),
+                        },
+                    )?
                 } else {
                     // otherwise just keep the existing column
                     current_column.clone()
@@ -329,7 +397,8 @@ fn get_template_schema(
 
 static RESOURCE_TEMPLATE_FIELDS: LazyLock<Fields> = LazyLock::new(|| {
     Fields::from(vec![
-        Field::new(consts::ID, DataType::UInt16, true),
+        // u64: resource attr-set hash when id_generation = content_hash
+        Field::new(consts::ID, DataType::UInt64, true),
         Field::new(consts::SCHEMA_URL, DataType::Utf8, true),
         Field::new(consts::DROPPED_ATTRIBUTES_COUNT, DataType::UInt32, true),
     ])
@@ -337,7 +406,7 @@ static RESOURCE_TEMPLATE_FIELDS: LazyLock<Fields> = LazyLock::new(|| {
 
 static SCOPE_TEMPLATE_FIELDS: LazyLock<Fields> = LazyLock::new(|| {
     Fields::from(vec![
-        Field::new(consts::ID, DataType::UInt16, true),
+        Field::new(consts::ID, DataType::UInt64, true),
         Field::new(consts::NAME, DataType::Utf8, true),
         Field::new(consts::VERSION, DataType::Utf8, true),
         Field::new(consts::DROPPED_ATTRIBUTES_COUNT, DataType::UInt32, true),
@@ -346,7 +415,8 @@ static SCOPE_TEMPLATE_FIELDS: LazyLock<Fields> = LazyLock::new(|| {
 
 static LOGS_TEMPLATE_SCHEMA: LazyLock<Schema> = LazyLock::new(|| {
     Schema::new(vec![
-        Field::new(consts::ID, DataType::UInt16, true),
+        // u64: log attr-set hash when id_generation = content_hash
+        Field::new(consts::ID, DataType::UInt64, true),
         Field::new(
             consts::RESOURCE,
             DataType::Struct(RESOURCE_TEMPLATE_FIELDS.clone()),
@@ -397,7 +467,8 @@ static LOGS_TEMPLATE_SCHEMA: LazyLock<Schema> = LazyLock::new(|| {
 
 static METRICS_TEMPLATE_SCHEMA: LazyLock<Schema> = LazyLock::new(|| {
     Schema::new(vec![
-        Field::new(consts::ID, DataType::UInt16, true),
+        // u64: metrics hub content hash when id_generation = content_hash
+        Field::new(consts::ID, DataType::UInt64, true),
         Field::new(
             consts::RESOURCE,
             DataType::Struct(RESOURCE_TEMPLATE_FIELDS.clone()),
@@ -420,8 +491,9 @@ static METRICS_TEMPLATE_SCHEMA: LazyLock<Schema> = LazyLock::new(|| {
 
 static NUMBERS_DP_TEMPLATE_SCHEMA: LazyLock<Schema> = LazyLock::new(|| {
     Schema::new(vec![
-        Field::new(consts::ID, DataType::UInt32, false),
-        Field::new(consts::PARENT_ID, DataType::UInt16, false),
+        // u64: content-hash ids (series/hub hashes) when id_generation = content_hash
+        Field::new(consts::ID, DataType::UInt64, false),
+        Field::new(consts::PARENT_ID, DataType::UInt64, false),
         Field::new(
             consts::START_TIME_UNIX_NANO,
             DataType::Timestamp(TimeUnit::Nanosecond, None),
@@ -440,8 +512,9 @@ static NUMBERS_DP_TEMPLATE_SCHEMA: LazyLock<Schema> = LazyLock::new(|| {
 
 static SUMMARY_DP_TEMPLATE_SCHEMA: LazyLock<Schema> = LazyLock::new(|| {
     Schema::new(vec![
-        Field::new(consts::ID, DataType::UInt32, false),
-        Field::new(consts::PARENT_ID, DataType::UInt16, false),
+        // u64: content-hash ids (series/hub hashes) when id_generation = content_hash
+        Field::new(consts::ID, DataType::UInt64, false),
+        Field::new(consts::PARENT_ID, DataType::UInt64, false),
         Field::new(
             consts::START_TIME_UNIX_NANO,
             DataType::Timestamp(TimeUnit::Nanosecond, None),
@@ -472,8 +545,9 @@ static SUMMARY_DP_TEMPLATE_SCHEMA: LazyLock<Schema> = LazyLock::new(|| {
 
 static HISTOGRAM_DP_TEMPLATE_SCHEMA: LazyLock<Schema> = LazyLock::new(|| {
     Schema::new(vec![
-        Field::new(consts::ID, DataType::UInt32, false),
-        Field::new(consts::PARENT_ID, DataType::UInt16, false),
+        // u64: content-hash ids (series/hub hashes) when id_generation = content_hash
+        Field::new(consts::ID, DataType::UInt64, false),
+        Field::new(consts::PARENT_ID, DataType::UInt64, false),
         Field::new(
             consts::START_TIME_UNIX_NANO,
             DataType::Timestamp(TimeUnit::Nanosecond, None),
@@ -504,8 +578,9 @@ static HISTOGRAM_DP_TEMPLATE_SCHEMA: LazyLock<Schema> = LazyLock::new(|| {
 
 static EXP_HISTOGRAM_DP_TEMPLATE_SCHEMA: LazyLock<Schema> = LazyLock::new(|| {
     Schema::new(vec![
-        Field::new(consts::ID, DataType::UInt32, false),
-        Field::new(consts::PARENT_ID, DataType::UInt16, false),
+        // u64: content-hash ids (series/hub hashes) when id_generation = content_hash
+        Field::new(consts::ID, DataType::UInt64, false),
+        Field::new(consts::PARENT_ID, DataType::UInt64, false),
         Field::new(
             consts::START_TIME_UNIX_NANO,
             DataType::Timestamp(TimeUnit::Nanosecond, None),
@@ -552,8 +627,8 @@ static EXP_HISTOGRAM_DP_TEMPLATE_SCHEMA: LazyLock<Schema> = LazyLock::new(|| {
 
 static EXEMPLAR_TEMPLATE_SCHEMA: LazyLock<Schema> = LazyLock::new(|| {
     Schema::new(vec![
-        Field::new(consts::ID, DataType::UInt32, true),
-        Field::new(consts::PARENT_ID, DataType::UInt32, false),
+        Field::new(consts::ID, DataType::UInt64, true),
+        Field::new(consts::PARENT_ID, DataType::UInt64, false),
         Field::new(
             consts::TIME_UNIX_NANO,
             DataType::Timestamp(TimeUnit::Nanosecond, None),
@@ -637,7 +712,8 @@ static SPAN_LINKS_TEMPLATE_SCHEMA: LazyLock<Schema> = LazyLock::new(|| {
 
 static ATTRS_16_TEMPLATE_SCHEMA: LazyLock<Schema> = LazyLock::new(|| {
     Schema::new(vec![
-        Field::new(consts::PARENT_ID, DataType::UInt16, false),
+        // u64: attr-set hash when id_generation = content_hash
+        Field::new(consts::PARENT_ID, DataType::UInt64, false),
         Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
         Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
         Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
@@ -651,7 +727,7 @@ static ATTRS_16_TEMPLATE_SCHEMA: LazyLock<Schema> = LazyLock::new(|| {
 
 static ATTRS_32_TEMPLATE_SCHEMA: LazyLock<Schema> = LazyLock::new(|| {
     Schema::new(vec![
-        Field::new(consts::PARENT_ID, DataType::UInt32, false),
+        Field::new(consts::PARENT_ID, DataType::UInt64, false),
         Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
         Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
         Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
@@ -710,14 +786,16 @@ mod test {
             transform_record_batch_to_known_schema(&log_attrs_record_batch, ArrowPayloadType::Logs)
                 .unwrap();
 
+        // nested ids are normalized to the template's u64 (missing resource is filled from the
+        // template; the scope id present as u16 is cast) so the writer schema stays stable
         let expected_resource_fields = Fields::from(vec![
-            Field::new(consts::ID, DataType::UInt16, true),
+            Field::new(consts::ID, DataType::UInt64, true),
             Field::new(consts::SCHEMA_URL, DataType::Utf8, true),
             Field::new(consts::DROPPED_ATTRIBUTES_COUNT, DataType::UInt32, true),
         ]);
 
         let expected_scope_fields = Fields::from(vec![
-            Field::new(consts::ID, DataType::UInt16, true),
+            Field::new(consts::ID, DataType::UInt64, true),
             Field::new(consts::NAME, DataType::Utf8, true),
             Field::new(consts::VERSION, DataType::Utf8, true),
             Field::new(consts::DROPPED_ATTRIBUTES_COUNT, DataType::UInt32, true),
@@ -747,14 +825,15 @@ mod test {
                     false,
                 ),
                 Field::new(consts::SCHEMA_URL, DataType::Utf8, false),
+                // timestamps come out as µs (see cast_timestamps_to_micros)
                 Field::new(
                     consts::TIME_UNIX_NANO,
-                    DataType::Timestamp(TimeUnit::Nanosecond, None),
+                    DataType::Timestamp(TimeUnit::Microsecond, None),
                     false,
                 ),
                 Field::new(
                     consts::OBSERVED_TIME_UNIX_NANO,
-                    DataType::Timestamp(TimeUnit::Nanosecond, None),
+                    DataType::Timestamp(TimeUnit::Microsecond, None),
                     false,
                 ),
                 Field::new(consts::TRACE_ID, DataType::FixedSizeBinary(16), true),
@@ -776,7 +855,7 @@ mod test {
                 Arc::new(StructArray::new(
                     expected_resource_fields.clone(),
                     vec![
-                        Arc::new(UInt16Array::new_null(3)),
+                        Arc::new(UInt64Array::new_null(3)),
                         Arc::new(StringArray::new_null(3)),
                         Arc::new(UInt32Array::new_null(3)),
                     ],
@@ -786,8 +865,8 @@ mod test {
                 Arc::new(StructArray::new(
                     expected_scope_fields.clone(),
                     vec![
-                        // ensure it keeps the original nested struct column:
-                        Arc::new(UInt16Array::from_iter(vec![Some(0), None, Some(1)])),
+                        // nested id values survive, widened to the template's u64:
+                        Arc::new(UInt64Array::from_iter(vec![Some(0), None, Some(1)])),
                         Arc::new(StringArray::new_null(3)),
                         Arc::new(StringArray::new_null(3)),
                         Arc::new(UInt32Array::new_null(3)),
@@ -795,8 +874,8 @@ mod test {
                     Some(NullBuffer::new_valid(3)),
                 )),
                 Arc::new(StringArray::from_iter_values(repeat_n("", 3))),
-                Arc::new(TimestampNanosecondArray::from_iter_values(repeat_n(0, 3))),
-                Arc::new(TimestampNanosecondArray::from_iter_values(repeat_n(0, 3))),
+                Arc::new(TimestampMicrosecondArray::from_iter_values(repeat_n(0, 3))),
+                Arc::new(TimestampMicrosecondArray::from_iter_values(repeat_n(0, 3))),
                 Arc::new(FixedSizeBinaryArray::new_null(16, 3)),
                 Arc::new(FixedSizeBinaryArray::new_null(8, 3)),
                 Arc::new(Int32Array::new_null(3)),

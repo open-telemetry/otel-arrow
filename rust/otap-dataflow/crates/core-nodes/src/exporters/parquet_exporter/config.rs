@@ -20,6 +20,23 @@ pub struct Config {
 
     /// Options for the writer
     pub writer_options: Option<WriterOptions>,
+
+    /// How IDs are (re)generated before writing (see [`IdGenerationStrategy`])
+    #[serde(default)]
+    pub id_generation: IdGenerationStrategy,
+}
+
+/// Strategy for converting per-batch OTAP ids into ids that are meaningful in storage
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum IdGenerationStrategy {
+    /// sequential ids, unique only within a `_part_id` partition (the historical behavior)
+    #[default]
+    PartitionSequence,
+    /// content-hash ids: attribute-set/series hashes that are globally stable and give the
+    /// attrs tables dimension-table semantics (deduplicated per UTC day). Widens id columns
+    /// to u64.
+    ContentHash,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -63,6 +80,34 @@ pub enum PartitioningStrategy {
     /// compute partition values from schema metadata keys
     #[serde(alias = "schema_metadata")]
     SchemaMetadata(Vec<String>),
+
+    /// compute partition values from the wall-clock time at which the batch is written
+    /// (ingest time). Produces hive-style `date=YYYY-MM-DD` path segments (plus `hour=HH`
+    /// for hourly granularity), which enables time-based partition pruning in query engines.
+    ///
+    /// Note this buckets by ingest time, not by the timestamps within the data. Data that
+    /// arrives late will land in the partition for the time it was received, so readers
+    /// filtering on event time should include a margin of adjacent partitions.
+    #[serde(alias = "time_bucket")]
+    TimeBucket(TimeBucketConfig),
+}
+
+/// Configuration for the [`PartitioningStrategy::TimeBucket`] partitioning strategy
+#[derive(Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct TimeBucketConfig {
+    /// the granularity of the time buckets
+    pub granularity: TimeBucketGranularity,
+}
+
+/// Granularity of the time bucket partitions
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum TimeBucketGranularity {
+    /// partition by day: `date=YYYY-MM-DD`
+    Day,
+    /// partition by hour: `date=YYYY-MM-DD/hour=HH`
+    Hour,
 }
 
 #[cfg(test)]
@@ -102,12 +147,60 @@ mod test {
             partitioning_strategies: Some(vec![PartitioningStrategy::SchemaMetadata(vec![
                 "_part_id".to_string(),
             ])]),
+            id_generation: Default::default(),
             writer_options: Some(WriterOptions {
                 flush_when_older_than: Some(Duration::from_secs(300)),
                 target_rows_per_file: Some(1000000000),
             }),
         };
         assert_eq!(config, expected)
+    }
+
+    #[test]
+    fn test_deserialize_time_bucket() {
+        let json_cfg = json!({
+            "storage": {
+                "file": {
+                  "base_uri": "s3://albert-bucket/parquet-files"
+                }
+            },
+            "partitioning_strategies": [
+                {
+                    "time_bucket": { "granularity": "day" }
+                },
+                {
+                    "schema_metadata": [ "_part_id" ]
+                }
+            ]
+        })
+        .to_string();
+
+        let config: Config = serde_json::from_str(&json_cfg).unwrap();
+        assert_eq!(
+            config.partitioning_strategies,
+            Some(vec![
+                PartitioningStrategy::TimeBucket(TimeBucketConfig {
+                    granularity: TimeBucketGranularity::Day,
+                }),
+                PartitioningStrategy::SchemaMetadata(vec!["_part_id".to_string()]),
+            ])
+        );
+
+        // hour granularity also deserializes
+        let json_cfg = json!({
+            "storage": { "file": { "base_uri": "/tmp/parquet-files" } },
+            "partitioning_strategies": [
+                { "time_bucket": { "granularity": "hour" } }
+            ]
+        })
+        .to_string();
+        let config: Config = serde_json::from_str(&json_cfg).unwrap();
+        assert_eq!(
+            config.partitioning_strategies,
+            Some(vec![PartitioningStrategy::TimeBucket(TimeBucketConfig {
+                granularity: TimeBucketGranularity::Hour,
+            })])
+        );
     }
 
     #[test]

@@ -27,6 +27,7 @@ otel_arrow_dfe_telemetry::otel_component_scope!(
 );
 
 pub mod config;
+pub mod content_idgen;
 pub mod error;
 #[cfg(test)]
 mod fixtures;
@@ -37,6 +38,9 @@ pub mod records;
 pub mod schema;
 pub mod writer;
 
+use self::config::IdGenerationStrategy;
+use self::content_idgen::ContentHashIdGenerator;
+use self::error::ParquetExporterError;
 use self::idgen::PartitionSequenceIdGenerator;
 use self::partition::{Partition, partition};
 use self::schema::transform_to_known_schema;
@@ -79,6 +83,24 @@ pub struct ParquetExporter {
     >,
     pdata_metrics: Option<MeasurementMetricSet<ExporterExportMetrics>>,
     io_metrics: Option<MetricSet<metrics::ParquetExporterMetrics>>,
+}
+
+/// Runtime dispatch over the configured [`IdGenerationStrategy`]
+enum IdGenerator {
+    PartitionSequence(PartitionSequenceIdGenerator),
+    ContentHash(ContentHashIdGenerator),
+}
+
+impl IdGenerator {
+    fn generate_unique_ids(
+        &mut self,
+        otap_batch: &mut records::OtapParquetRecords,
+    ) -> Result<(), ParquetExporterError> {
+        match self {
+            Self::PartitionSequence(g) => g.generate_unique_ids(otap_batch),
+            Self::ContentHash(g) => g.generate_unique_ids(otap_batch),
+        }
+    }
 }
 
 /// Declares the Parquet exporter as a local exporter factory
@@ -230,7 +252,14 @@ impl Exporter<OtapPdata> for ParquetExporter {
 
         let mut writer = writer::WriterManager::new(object_store, writer_options);
         let mut batch_id = 0;
-        let mut id_generator = PartitionSequenceIdGenerator::new();
+        let mut id_generator = match self.config.id_generation {
+            IdGenerationStrategy::PartitionSequence => {
+                IdGenerator::PartitionSequence(PartitionSequenceIdGenerator::new())
+            }
+            IdGenerationStrategy::ContentHash => {
+                IdGenerator::ContentHash(ContentHashIdGenerator::new())
+            }
+        };
 
         loop {
             match msg_chan.recv().await? {
@@ -615,6 +644,7 @@ mod test {
             retry: None,
             partitioning_strategies: None,
             writer_options: None,
+            id_generation: Default::default(),
         });
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
         let exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
@@ -724,6 +754,7 @@ mod test {
             retry: None,
             partitioning_strategies: None,
             writer_options: None,
+            id_generation: Default::default(),
         });
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
         let exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
@@ -870,6 +901,7 @@ mod test {
                 vec![idgen::PARTITION_METADATA_KEY.to_string()],
             )]),
             writer_options: None,
+            id_generation: Default::default(),
         });
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
         let exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
@@ -957,6 +989,7 @@ mod test {
             retry: None,
             partitioning_strategies: None,
             writer_options: None,
+            id_generation: Default::default(),
         });
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
         let exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
@@ -999,6 +1032,7 @@ mod test {
             },
             retry: None,
             partitioning_strategies: None,
+            id_generation: Default::default(),
             writer_options: Some(WriterOptions {
                 target_rows_per_file: Some(50),
                 ..Default::default()
@@ -1161,6 +1195,7 @@ mod test {
             },
             retry: None,
             partitioning_strategies: None,
+            id_generation: Default::default(),
             writer_options: Some(WriterOptions {
                 target_rows_per_file: None,
                 flush_when_older_than: Some(Duration::from_millis(200)),
@@ -1323,6 +1358,7 @@ mod test {
             retry: None,
             partitioning_strategies: None,
             writer_options: None,
+            id_generation: Default::default(),
         });
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
         let exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
@@ -1395,6 +1431,7 @@ mod test {
             retry: None,
             partitioning_strategies: None,
             writer_options: None,
+            id_generation: Default::default(),
         });
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
         let exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
@@ -1741,6 +1778,7 @@ mod test {
             retry: None,
             partitioning_strategies: None,
             writer_options: None,
+            id_generation: Default::default(),
         });
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
         let exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(

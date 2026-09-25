@@ -1,11 +1,12 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+use chrono::{DateTime, Utc};
 use otel_arrow_dfe_pdata::{
     proto::opentelemetry::arrow::v1::ArrowPayloadType, schema::get_schema_metadata,
 };
 
-use super::config::PartitioningStrategy;
+use super::config::{PartitioningStrategy, TimeBucketConfig, TimeBucketGranularity};
 use super::records::OtapParquetRecords;
 
 pub enum PartitionAttributeValue {
@@ -44,6 +45,9 @@ pub fn partition(
             PartitioningStrategy::SchemaMetadata(metadata_keys) => attributes.append(
                 &mut static_partitions_from_schema_metadata(&otap_batch, metadata_keys),
             ),
+            PartitioningStrategy::TimeBucket(config) => {
+                attributes.append(&mut time_bucket_partitions(config, Utc::now()))
+            }
         }
     }
 
@@ -51,6 +55,24 @@ pub fn partition(
         otap_batch,
         attributes: Some(attributes),
     }]
+}
+
+fn time_bucket_partitions(
+    config: &TimeBucketConfig,
+    now: DateTime<Utc>,
+) -> Vec<PartitionAttribute> {
+    let mut attributes = vec![PartitionAttribute {
+        key: "date".to_string(),
+        value: PartitionAttributeValue::String(now.format("%Y-%m-%d").to_string()),
+    }];
+    if config.granularity == TimeBucketGranularity::Hour {
+        attributes.push(PartitionAttribute {
+            key: "hour".to_string(),
+            value: PartitionAttributeValue::String(now.format("%H").to_string()),
+        });
+    }
+
+    attributes
 }
 
 fn static_partitions_from_schema_metadata(
@@ -140,6 +162,57 @@ pub mod test {
         assert_eq!(partitions.len(), 1);
         let attrs = partitions[0].attributes.as_ref().unwrap();
         assert!(attrs.is_empty());
+    }
+
+    #[test]
+    fn test_time_bucket_partitions_day() {
+        let now = DateTime::parse_from_rfc3339("2026-08-11T23:59:31Z")
+            .unwrap()
+            .to_utc();
+        let config = TimeBucketConfig {
+            granularity: TimeBucketGranularity::Day,
+        };
+        let attrs = time_bucket_partitions(&config, now);
+        assert_eq!(attrs.len(), 1);
+        assert_eq!(attrs[0].key, "date");
+        assert_eq!(format!("{}", attrs[0].value), "2026-08-11");
+    }
+
+    #[test]
+    fn test_time_bucket_partitions_hour() {
+        let now = DateTime::parse_from_rfc3339("2026-08-11T05:00:00Z")
+            .unwrap()
+            .to_utc();
+        let config = TimeBucketConfig {
+            granularity: TimeBucketGranularity::Hour,
+        };
+        let attrs = time_bucket_partitions(&config, now);
+        assert_eq!(attrs.len(), 2);
+        assert_eq!(attrs[0].key, "date");
+        assert_eq!(format!("{}", attrs[0].value), "2026-08-11");
+        assert_eq!(attrs[1].key, "hour");
+        assert_eq!(format!("{}", attrs[1].value), "05");
+    }
+
+    #[test]
+    fn test_partition_with_time_bucket_and_schema_metadata_strategies() {
+        let otap_batch = make_otap_batch_with_metadata("_part_id", "abc-123");
+        let strategies = vec![
+            PartitioningStrategy::TimeBucket(TimeBucketConfig {
+                granularity: TimeBucketGranularity::Day,
+            }),
+            PartitioningStrategy::SchemaMetadata(vec!["_part_id".to_string()]),
+        ];
+
+        let partitions = partition(otap_batch, &strategies);
+        assert_eq!(partitions.len(), 1);
+
+        // strategies emit attributes in config order: date first, then _part_id
+        let attrs = partitions[0].attributes.as_ref().unwrap();
+        assert_eq!(attrs.len(), 2);
+        assert_eq!(attrs[0].key, "date");
+        assert_eq!(attrs[1].key, "_part_id");
+        assert_eq!(format!("{}", attrs[1].value), "abc-123");
     }
 
     #[test]
