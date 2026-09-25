@@ -40,6 +40,56 @@ fn checkpoint_config() -> CheckpointConfig {
     }
 }
 
+/// Scenario: Deserialized watermark settings contain a customer timestamp and row identifier.
+/// Guarantees: Direct and nested Debug output redact initial values without changing configuration or query binds.
+#[test]
+fn watermark_debug_redacts_initial_values() {
+    let timestamp = "2037-04-05 06:07:08.987654321";
+    let row_id = 873_654_219_087_321_i64;
+    let config: WatermarkConfig = serde_json::from_value(serde_json::json!({
+        "mode": "composite",
+        "timestamp": {
+            "column": "EVENT_TS",
+            "bind": "last_timestamp",
+            "initial": timestamp,
+            "timezone": "UTC"
+        },
+        "tie_breaker": {
+            "column": "EVENT_ID",
+            "bind": "last_tie_breaker",
+            "initial": row_id
+        }
+    }))
+    .expect("watermark configuration");
+    config.validate().expect("valid watermark");
+    assert_eq!(config.timestamp().initial, timestamp);
+    assert_eq!(config.tie_breaker().initial, row_id);
+
+    for debug in [
+        format!("{:?}", config.timestamp()),
+        format!("{:#?}", config.timestamp()),
+        format!("{:?}", config.tie_breaker()),
+        format!("{:#?}", config.tie_breaker()),
+        format!("{config:?}"),
+        format!("{config:#?}"),
+    ] {
+        assert!(debug.contains("<redacted>"));
+        assert!(!debug.contains(timestamp));
+        assert!(!debug.contains(&row_id.to_string()));
+    }
+
+    let query = CompiledQuery::compile(
+        "SELECT EVENT_TS, EVENT_ID FROM EVENTS".to_owned(),
+        polling(),
+        &config,
+        &checkpoint_config(),
+        OutputConfig::default(),
+    )
+    .expect("compiled query");
+    assert_eq!(query.watermark().initial.timestamp, timestamp);
+    assert_eq!(query.watermark().initial.tie_breaker, row_id);
+}
+
 /// Scenario: A query does not start with SELECT.
 /// Guarantees: The shared filter rejects non-SELECT leading keywords without opening a connection.
 #[test]

@@ -22,7 +22,7 @@ impl DatabaseSystem {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::Oracle => "oracle",
+            Self::Oracle => "oracle.db",
         }
     }
 }
@@ -51,10 +51,24 @@ pub trait DriverAdapter {
     /// Resets cancellation state before one native operation starts.
     fn begin_operation(&mut self) -> Result<Self::Cancellation, Self::Error>;
 
-    /// Inspects live result metadata and validates cursor columns.
+    /// Validates SQL and cursor metadata before polling starts.
     ///
-    /// Implementations must reject cursor columns whose vendor types cannot
-    /// produce a deterministic, non-null composite cursor.
+    /// Each adapter must apply its dialect's rules before executing any SQL,
+    /// including during preparation or metadata inspection:
+    ///
+    /// - Require one read-only SELECT; reject extra statements and row-locking
+    ///   forms such as `SELECT ... FOR UPDATE`.
+    /// - Verify both cursor binds are real parameters used by the full keyset
+    ///   predicate, which must select only rows strictly after the supplied cursor.
+    /// - Require deterministic ascending timestamp/tie-breaker ordering consistent
+    ///   with the predicate and selected cursor columns.
+    /// - Require present, non-null cursor columns compatible with the UTC timestamp
+    ///   and signed `int64` tie-breaker contract without lossy conversion.
+    ///
+    /// Reject unsupported or ambiguous forms. [`CompiledQuery::compile`]'s SELECT
+    /// prefix check and a read-only account do not replace this validation.
+    /// Source commit ordering, uniqueness, immutability, and retention remain
+    /// separate source-data requirements.
     async fn validate_query(
         &mut self,
         query: &CompiledQuery,
@@ -64,6 +78,9 @@ pub trait DriverAdapter {
     ///
     /// Implementations bind the cursor through named database parameters and
     /// return a bounded page whose rows each carry their own cursor.
+    /// Callers must successfully validate this same query with
+    /// [`Self::validate_query`] before its first execution. Substitute cursor
+    /// values through parameter binding, never SQL string concatenation.
     async fn execute(
         &mut self,
         query: &CompiledQuery,
