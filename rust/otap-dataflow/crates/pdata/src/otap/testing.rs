@@ -356,11 +356,11 @@ fn simple_type_array(simple_type: &SimpleType, num_rows: usize) -> (DataType, Ar
             (DataType::FixedSizeBinary(*size), Arc::new(array))
         }
         SimpleType::TimestampNanosecond => (
-            DataType::Timestamp(TimeUnit::Nanosecond, None),
-            Arc::new(arrow::array::TimestampNanosecondArray::from(vec![
-                0i64;
-                num_rows
-            ])),
+            SimpleType::TimestampNanosecond.to_arrow(),
+            Arc::new(
+                arrow::array::TimestampNanosecondArray::from(vec![0i64; num_rows])
+                    .with_timezone(crate::schema::UTC_TIME_ZONE),
+            ),
         ),
         SimpleType::DurationNanosecond => (
             DataType::Duration(TimeUnit::Nanosecond),

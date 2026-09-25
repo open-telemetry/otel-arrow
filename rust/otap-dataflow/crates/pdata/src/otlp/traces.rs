@@ -523,6 +523,7 @@ impl TracesProtoBytesEncoder {
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::schema::UTC_TIME_ZONE;
 
     use arrow::array::{
         DurationNanosecondArray, FixedSizeBinaryArray, Int32Array, RecordBatch, StringArray,
@@ -578,7 +579,7 @@ mod test {
                 Field::new(consts::TRACE_ID, DataType::FixedSizeBinary(16), true),
                 Field::new(
                     consts::START_TIME_UNIX_NANO,
-                    DataType::Timestamp(TimeUnit::Nanosecond, None),
+                    DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                     true,
                 ),
                 Field::new(
@@ -622,9 +623,10 @@ mod test {
                     )
                     .unwrap(),
                 ),
-                Arc::new(TimestampNanosecondArray::from_iter_values([
-                    1i64, 5i64, 8i64,
-                ])),
+                Arc::new(
+                    TimestampNanosecondArray::from_iter_values([1i64, 5i64, 8i64])
+                        .with_timezone(UTC_TIME_ZONE),
+                ),
                 Arc::new(DurationNanosecondArray::from_iter_values([
                     1i64, 2i64, 1i64,
                 ])),
@@ -660,7 +662,7 @@ mod test {
                 Field::new(consts::PARENT_ID, DataType::UInt16, false),
                 Field::new(
                     consts::TIME_UNIX_NANO,
-                    DataType::Timestamp(TimeUnit::Nanosecond, None),
+                    DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                     false,
                 ),
                 Field::new(consts::NAME, DataType::Utf8, false),
@@ -669,7 +671,10 @@ mod test {
             vec![
                 Arc::new(UInt32Array::from_iter_values([0, 1])),
                 Arc::new(UInt16Array::from_iter_values([1, 1])),
-                Arc::new(TimestampNanosecondArray::from_iter_values([1i64, 2i64])),
+                Arc::new(
+                    TimestampNanosecondArray::from_iter_values([1i64, 2i64])
+                        .with_timezone(UTC_TIME_ZONE),
+                ),
                 Arc::new(StringArray::from_iter_values(["sea", "seb"])),
                 Arc::new(UInt32Array::from_iter_values([0, 2])),
             ],

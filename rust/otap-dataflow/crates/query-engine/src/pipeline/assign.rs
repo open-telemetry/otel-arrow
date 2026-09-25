@@ -8565,11 +8565,13 @@ mod test {
         let result = exec_logs_pipeline::<OplParser>(query, logs_data.clone()).await;
         assert_result(result, AnyValue::new_double(5.0));
 
+        // Timestamp columns are UTC, so the string rendering carries the "Z"
+        // zone designator.
         let query = r#"logs | set attributes["result"] = time_unix_nano as String"#;
         let result = exec_logs_pipeline::<OplParser>(query, logs_data.clone()).await;
         assert_result(
             result,
-            AnyValue::new_string("1970-01-01T00:00:00.000000005"),
+            AnyValue::new_string("1970-01-01T00:00:00.000000005Z"),
         );
 
         // test cast from result of function call
