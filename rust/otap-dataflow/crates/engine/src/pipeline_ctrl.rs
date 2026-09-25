@@ -524,10 +524,10 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
                     consecutive_runtime_ctrl += 1;
                     match msg {
                         RuntimeControlMsg::Shutdown { deadline, reason } => {
-                            self.terminal_metrics_deadline.record(deadline);
                             if is_draining_ingress {
                                 continue;
                             }
+                            self.terminal_metrics_deadline.record_shutdown(deadline);
                             self.event_reporter.report(EngineEvent::shutdown_requested(
                                 self.pipeline_key.clone(),
                                 Some(reason.clone()),
@@ -2444,6 +2444,45 @@ mod tests {
                 // Manager should terminate cleanly
                 let shutdown_result = timeout(Duration::from_millis(100), manager_handle).await;
                 assert!(shutdown_result.is_ok(), "Manager should shutdown cleanly");
+            })
+            .await;
+    }
+
+    /// Scenario: A second shutdown request specifies an earlier deadline while the manager drains.
+    /// Guarantees: Duplicate requests cannot shorten processor cancellation or terminal metrics deadlines.
+    #[tokio::test(start_paused = true)]
+    async fn duplicate_shutdown_preserves_original_deadline() {
+        LocalSet::new()
+            .run_until(async {
+                let (manager, pipeline_tx, _control_receivers, _nodes, _pipeline_entity_guard) =
+                    setup_test_manager::<()>();
+                let deadline = manager.terminal_metrics_deadline.clone();
+                let original = tokio::time::Instant::now() + Duration::from_secs(10);
+                pipeline_tx
+                    .send(RuntimeControlMsg::Shutdown {
+                        deadline: original.into_std(),
+                        reason: "first shutdown".to_owned(),
+                    })
+                    .await
+                    .unwrap();
+                pipeline_tx
+                    .send(RuntimeControlMsg::Shutdown {
+                        deadline: (original - Duration::from_secs(8)).into_std(),
+                        reason: "duplicate shutdown".to_owned(),
+                    })
+                    .await
+                    .unwrap();
+                drop(pipeline_tx);
+                manager.run().await.unwrap();
+                assert_eq!(deadline.get(), original.into_std());
+                assert!(
+                    timeout(Duration::from_secs(3), deadline.expired())
+                        .await
+                        .is_err(),
+                    "duplicate request must not cancel processors early"
+                );
+                deadline.expired().await;
+                assert_eq!(tokio::time::Instant::now(), original);
             })
             .await;
     }
