@@ -17,9 +17,10 @@ use itertools::Either;
 use roaring::RoaringBitmap;
 use std::sync::Arc;
 
-#[allow(dead_code)]
 pub(crate) mod plan;
 mod write;
+
+use crate::otap::transform::reindex;
 
 use plan::InputPlan;
 use write::Input;
@@ -67,44 +68,15 @@ impl ConcatOptions {
     }
 }
 
-/// Concatenate the provided OtapArrowRecords into a single batch.
+/// Concatenate the provided OTAP batches into a single batch.
 ///
-/// # Preconditions
+/// See the module documentation for the algorithm. When `opts.reindex` is
+/// set, transport optimized encodings are removed and ID columns are
+/// rewritten so that IDs from different inputs cannot collide. Otherwise ID
+/// columns are copied as-is, which is only correct when the inputs are
+/// disjoint pieces of the same original batch.
 ///
-/// Currently the caller is responsible for satisfying the following:
-///
-///   1. Remove the transport optimized encodings from the columns, if any
-///   2. Reindex the ID columns so that the parent child relationships are
-///      consistent after the concatenation
-///
-/// These will be handled internally in the future as we refine the API, see
-/// https://github.com/open-telemetry/otel-arrow/issues/1926.
-///
-/// # General Algorithm
-///
-/// Concatenating multiple OtapArrowRecords involves three steps:
-///
-///   1. Reindexing the ID columns so that the parent child relationships are
-///      consistent after the concatenation
-///   2. Selecting a common schema and converting every record batch to that
-///      schema. This includes several steps:
-///         * Indexing all fields for the same ArrowPayloadType across every batch
-///         * Selecting a safe key type for each dictionary field from the
-///           physical number of dictionary values that Arrow may concatenate.
-///         * Determining nullability for each field in the final batch
-///   3. Casting every record batch to the final schema, including casting individual
-///      arrays as well as reordering the columns to match the schema.
-///
-/// # Future optimizations
-///
-/// - TODO: Re-indexing probably should not be a separate operation. We should decide
-///   within this function whether or not to do it and ensure it happens if required.
-///   This is deferred until we totally remove the old implementation in groups.rs
-///   due to interface incompatibility.
-///
-/// - TODO: Consider using new_unchecked for record batch construction if we're
-///   confident in it. We mostly unwrap those operations a lot, so skipping the
-///   checks or moving similar checks to debug asserts may be reasonable.
+/// The inputs are consumed: every slot in `items` is `None` on success.
 ///
 /// # Errors
 ///
@@ -119,21 +91,18 @@ pub fn concatenate<const N: usize>(
 ) -> Result<[Option<RecordBatch>; N]> {
     // Resolve the signal up front so an unsupported width is rejected even on
     // the empty and single-batch fast paths below.
-    let concat_signal: fn(&mut [[Option<RecordBatch>; N]]) -> Result<[Option<RecordBatch>; N]> =
-        match N {
-            Logs::COUNT => concatenate_signal::<Logs, N>,
-            Metrics::COUNT => concatenate_signal::<Metrics, N>,
-            Traces::COUNT => concatenate_signal::<Traces, N>,
-            _ => return Err(Error::UnsupportedBatchStoreType { batch_width: N }),
-        };
+    type ConcatSignal<const N: usize> =
+        fn(&mut [[Option<RecordBatch>; N]], ConcatOptions) -> Result<[Option<RecordBatch>; N]>;
+    let concat_signal: ConcatSignal<N> = match N {
+        Logs::COUNT => concatenate_signal::<Logs, N>,
+        Metrics::COUNT => concatenate_signal::<Metrics, N>,
+        Traces::COUNT => concatenate_signal::<Traces, N>,
+        _ => return Err(Error::UnsupportedBatchStoreType { batch_width: N }),
+    };
 
     let mut result = [const { None }; N];
     if items.is_empty() {
         return Ok(result);
-    }
-
-    if opts.reindex {
-        crate::otap::transform::reindex::reindex(items)?;
     }
 
     if items.len() == 1 {
@@ -143,26 +112,48 @@ pub fn concatenate<const N: usize>(
         return Ok(result);
     }
 
-    concat_signal(items)
+    concat_signal(items, opts)
 }
 
 fn concatenate_signal<S: OtapBatchStore, const N: usize>(
     items: &mut [[Option<RecordBatch>; N]],
+    opts: ConcatOptions,
 ) -> Result<[Option<RecordBatch>; N]> {
     let mut result = [const { None }; N];
+
+    // P1 + P3: decode transport encodings and plan the ID rewrites. Nothing
+    // is copied here apart from decoding encoded columns and the scratch
+    // values of compacted ID columns.
+    let mut id_plan = if opts.reindex {
+        reindex::remove_transport_encodings::<S, N>(items)?;
+        Some(reindex::plan_ids::<S, N>(items)?)
+    } else {
+        None
+    };
 
     #[allow(clippy::needless_range_loop)]
     for i in 0..N {
         let payload_def = payloads::get(S::payload_type_at_idx(i));
 
+        // P2: index fields and select the unified schema.
         let index = index_records(select_all(items, i), payload_def)?;
         if index.batch_count == 0 {
             continue;
         }
-
         let selected = select_schema(&index)?;
-        let batches: Vec<&RecordBatch> = select_all(items, i).flatten().collect();
-        let plans = vec![InputPlan::default(); batches.len()];
+
+        // P5: write every output column once.
+        let mut batches: Vec<&RecordBatch> = Vec::with_capacity(index.batch_count);
+        let mut plans: Vec<InputPlan> = Vec::with_capacity(index.batch_count);
+        for (j, group) in items.iter().enumerate() {
+            if let Some(rb) = group[i].as_ref() {
+                batches.push(rb);
+                plans.push(match id_plan.as_mut() {
+                    Some(p) => std::mem::take(&mut p[i][j]),
+                    None => InputPlan::default(),
+                });
+            }
+        }
         result[i] = Some(write_payload(&batches, &plans, payload_def, selected)?);
 
         for payload in select_all_mut(items, i) {
@@ -171,6 +162,31 @@ fn concatenate_signal<S: OtapBatchStore, const N: usize>(
     }
 
     Ok(result)
+}
+
+/// Test helper: apply the reindex plan to every input independently, without
+/// concatenating. This lets tests verify the planner using per-input
+/// assertions (no overlaps across inputs, preserved relations).
+#[cfg(test)]
+pub(crate) fn reindex_in_place<S: OtapBatchStore, const N: usize>(
+    items: &mut [[Option<RecordBatch>; N]],
+) -> Result<()> {
+    reindex::remove_transport_encodings::<S, N>(items)?;
+    let mut id_plan = reindex::plan_ids::<S, N>(items)?;
+    for (j, group) in items.iter_mut().enumerate() {
+        for i in 0..N {
+            let Some(rb) = group[i].as_ref() else {
+                continue;
+            };
+            let payload_def = payloads::get(S::payload_type_at_idx(i));
+            let index = index_records(std::iter::once(Some(rb)), payload_def)?;
+            let selected = select_schema(&index)?;
+            let plan = std::mem::take(&mut id_plan[i][j]);
+            let out = write_payload(&[rb], &[plan], payload_def, selected)?;
+            group[i] = Some(out);
+        }
+    }
+    Ok(())
 }
 
 /// Write the output record batch for one payload type.
