@@ -288,7 +288,7 @@ impl PipelineStage for ConditionalPipelineStage {
             // evaluate the branch condition directly on the attributes record batch
             let predicate = branch
                 .condition
-                .evaluate_on_batch(&attrs_record_batch, &EvalContext::new(session_ctx))?;
+                .evaluate_on_attrs_batch(&attrs_record_batch, &EvalContext::new(session_ctx))?;
             let predicate_selection_vec =
                 scoped_value_to_boolean_array(predicate, attrs_record_batch.num_rows())?;
 

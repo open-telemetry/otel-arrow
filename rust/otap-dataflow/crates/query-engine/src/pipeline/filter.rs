@@ -115,7 +115,7 @@ impl PipelineStage for FilterPipelineStage {
     ) -> Result<RecordBatch> {
         let result = self
             .predicate
-            .evaluate_on_batch(&attrs_record_batch, &EvalContext::new(session_context))?;
+            .evaluate_on_attrs_batch(&attrs_record_batch, &EvalContext::new(session_context))?;
 
         let selection_vec = scoped_value_to_boolean_array(result, attrs_record_batch.num_rows())?;
         let new_batch = filter_record_batch(&attrs_record_batch, &selection_vec)?;

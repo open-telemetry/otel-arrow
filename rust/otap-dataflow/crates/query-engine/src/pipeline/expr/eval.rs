@@ -133,11 +133,10 @@ impl ScopedExpr {
     /// Used for nested attribute pipelines where the "root" is the attributes batch itself
     /// (e.g., `logs | apply attributes { set value = value + 2 }`).
     ///
-    /// Supports `Eval(DatafusionExpr)` nodes and boolean combination nodes (`BitmapAnd`,
-    /// `BitmapOr`, `BitmapNot`) which recursively evaluate their children on the same batch.
-    pub(crate) fn evaluate_on_batch(
+    /// Supports `Eval(DatafusionExpr)` nodes only
+    pub(crate) fn evaluate_on_attrs_batch(
         &mut self,
-        record_batch: &RecordBatch,
+        attrs_record_batch: &RecordBatch,
         eval_ctx: &EvalContext<'_>,
     ) -> Result<ColumnarValue> {
         match self {
@@ -146,10 +145,24 @@ impl ScopedExpr {
                     LeafEval::DatafusionExpr {
                         logical_expr,
                         physical_expr,
+                        projection,
+                        projection_opts,
+                        missing_data_passes,
                         ..
                     },
                 ..
-            } => evaluate_df_expr(logical_expr, physical_expr, eval_ctx, record_batch),
+            } => {
+                match projection.project_attrs_record_batch(attrs_record_batch, projection_opts)? {
+                    Some(projected_rb) => {
+                        evaluate_df_expr(logical_expr, physical_expr, eval_ctx, &projected_rb)
+                    }
+                    None => Ok(ColumnarValue::Scalar(if *missing_data_passes {
+                        ScalarValue::Boolean(Some(true))
+                    } else {
+                        ScalarValue::Null
+                    })),
+                }
+            }
             _ => Err(Error::InvalidPipelineError {
                 cause: "only Eval(DatafusionExpr) can be evaluated on a provided batch".into(),
                 query_location: None,
@@ -229,7 +242,7 @@ pub(super) fn eval_datafusion_expr_value(
 
             // project the source RecordBatch to match the physical expression's expected schema
             let projected_rb = if *scope != DataScope::StaticScalar {
-                match projection.project_with_options(&source_rb, projection_opts)? {
+                match projection.project_with_options(source_rb.as_ref(), projection_opts)? {
                     Some(projected) => projected,
                     None => {
                         // required columns missing
