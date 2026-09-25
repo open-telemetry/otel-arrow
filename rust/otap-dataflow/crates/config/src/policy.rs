@@ -2255,16 +2255,16 @@ hard_limit: 2 GiB
 
         let policies = Policies {
             transport_headers: Some(TransportHeadersPolicy {
-                header_propagation: HeaderPropagationPolicy {
-                    default: PropagationDefault {
+                header_propagation: HeaderPropagationPolicy::new(
+                    PropagationDefault {
                         selector: PropagationSelector {
                             selector_type: PropagationSelectorType::Named,
                             named: None, // Invalid: named type requires named list
                         },
                         ..Default::default()
                     },
-                    ..Default::default()
-                },
+                    vec![],
+                ),
                 ..Default::default()
             }),
             ..Default::default()

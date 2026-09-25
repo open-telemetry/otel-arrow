@@ -57,7 +57,8 @@ cargo run -- --config configs/otlp-otlp.yaml --validate-and-exit
 
 Validation parses YAML or JSON, validates the root model, checks graph
 references, checks that every node type is registered in the binary, and runs
-node-specific config validation when the component provides it.
+node-specific config validation when the component provides it. It also compiles
+context bindings, including qualified propagation selectors.
 
 After loading, the CLI can override selected engine-level settings:
 
@@ -240,6 +241,54 @@ Policies are scoped by hierarchy. For regular pipelines, precedence is:
 Policy overrides apply by policy family rather than by deep-merging every
 nested field. The process-wide memory limiter is only supported at top-level
 `policies.resources.memory_limiter`.
+
+### Conditional Transport Header Propagation
+
+Composite context entries can conditionally select a captured transport header
+for exporter propagation:
+
+```yaml
+policies:
+    context:
+        entries:
+            tenant:
+                - type: transport_header
+                  name: workspace
+                  store_as: workspace_id
+                - type: transport_header_match
+                  name: environment
+                  value: production
+    transport_headers:
+        header_capture:
+            headers:
+                - match_names: [x-workspace]
+                  store_as: workspace
+                - match_names: [x-environment]
+                  store_as: environment
+        header_propagation:
+            default:
+                selector:
+                    type: named
+                    named: [tenant:workspace_id]
+                name: stored_name
+```
+
+The selected `workspace` header is emitted as `workspace_id` only when it exists
+and at least one captured `environment` value exactly matches `production`.
+Every configured match condition must pass. Header names are ASCII
+case-insensitive; values are exact byte matches. Other composite members are
+not evaluated for this transport-header binding. The selected source and every
+condition header must be captured; the example stores `x-workspace` as
+`workspace` and `x-environment` as `environment`.
+
+Qualified composite selectors cannot share a primitive source with another
+qualified or unqualified entry. Repeated unqualified entries, including ASCII
+case variants, are accepted as equivalent. Unknown composites, unknown members,
+authorized-identity members, and conflicting source bindings are rejected
+during startup. Exporter overrides retain precedence and can independently
+select the primitive header. See
+[Transport header policies](transport-headers.md#conditional-composite-members)
+for complete matching, naming, and override semantics.
 
 ### Pipeline Core Allocation
 
@@ -648,6 +697,10 @@ Use `--validate-and-exit` while editing:
 ```bash
 cargo run -- --config path/to/config.yaml --validate-and-exit
 ```
+
+`--validate-and-exit` compiles context bindings and rejects qualified
+propagation selectors that reference unknown composites, unknown or unsupported
+members, or conflicting primitive transport-header sources.
 
 If validation fails inside a node config, open that node's README from the
 [core-node catalog](../crates/core-nodes/README.md) or
