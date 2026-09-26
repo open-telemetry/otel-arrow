@@ -4,7 +4,7 @@
 //! The configuration for a pipeline group.
 
 use crate::error::Error;
-use crate::pipeline::PipelineConfig;
+use crate::pipeline::{PipelineConfig, PipelineExtensions};
 use crate::policy::Policies;
 use crate::topic::TopicSpec;
 use crate::{PipelineGroupId, PipelineId, TopicName};
@@ -25,6 +25,10 @@ pub struct PipelineGroupConfig {
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub topics: HashMap<TopicName, TopicSpec>,
 
+    /// Group-scoped extension declarations visible to every pipeline in this group.
+    #[serde(default, skip_serializing_if = "PipelineExtensions::is_empty")]
+    pub extensions: PipelineExtensions,
+
     /// All pipelines belonging to this pipeline group, keyed by pipeline ID.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub pipelines: HashMap<PipelineId, PipelineConfig>,
@@ -37,6 +41,7 @@ impl PipelineGroupConfig {
         Self {
             policies: None,
             topics: HashMap::new(),
+            extensions: PipelineExtensions::default(),
             pipelines: HashMap::new(),
         }
     }
@@ -49,6 +54,7 @@ impl PipelineGroupConfig {
     #[must_use]
     pub fn redacted_for_snapshot(&self) -> PipelineGroupConfig {
         let mut redacted = self.clone();
+        redacted.extensions = redacted.extensions.redacted_for_snapshot();
         for pipeline in redacted.pipelines.values_mut() {
             *pipeline = pipeline.redacted_for_snapshot();
         }
@@ -70,6 +76,15 @@ impl PipelineGroupConfig {
 
     /// Validates the pipeline group configuration.
     pub fn validate(&self, pipeline_group_id: &PipelineGroupId) -> Result<(), Error> {
+        self.validate_with_engine_extensions(pipeline_group_id, &PipelineExtensions::default())
+    }
+
+    /// Validates this group with engine-scoped extensions available to its pipelines.
+    pub(crate) fn validate_with_engine_extensions(
+        &self,
+        pipeline_group_id: &PipelineGroupId,
+        engine_extensions: &PipelineExtensions,
+    ) -> Result<(), Error> {
         let mut errors = Vec::new();
 
         if let Some(policies) = &self.policies {
@@ -102,7 +117,15 @@ impl PipelineGroupConfig {
                         .map(|error| Error::InvalidUserConfig { error }),
                 );
             }
-            if let Err(e) = pipeline.validate(pipeline_group_id, pipeline_id) {
+            if let Err(e) = pipeline.validate_with_visible_extensions(
+                pipeline_group_id,
+                pipeline_id,
+                |extension_id| {
+                    pipeline.extensions().contains_key(extension_id)
+                        || self.extensions.contains_key(extension_id)
+                        || engine_extensions.contains_key(extension_id)
+                },
+            ) {
                 errors.push(e);
             }
         }

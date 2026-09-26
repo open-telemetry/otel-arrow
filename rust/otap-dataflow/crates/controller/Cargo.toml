@@ -58,6 +58,7 @@ otel-arrow-dfe-test-net = { workspace = true }
 otel-arrow-dfe-test-tls-certs = { workspace = true }
 rustls-pki-types = { workspace = true }
 tempfile = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
 tokio-rustls = { workspace = true }
 tokio-tungstenite = { workspace = true }
 tracing = { workspace = true }

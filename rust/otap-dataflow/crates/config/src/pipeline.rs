@@ -451,11 +451,12 @@ impl IntoIterator for PipelineNodes {
     }
 }
 
-/// A collection of pipeline extensions, keyed by extension ID.
+/// A collection of extension declarations, keyed by extension ID.
 ///
 /// Mirrors [`PipelineNodes`] but uses [`ExtensionUserConfig`] instead of
 /// [`NodeUserConfig`], reflecting that extensions have a simpler configuration
-/// model (no output ports, wiring, or header policies).
+/// model (no output ports, wiring, or header policies). The collection is
+/// reused at engine, pipeline-group, and pipeline scope.
 ///
 /// Deserialization rejects duplicate extension IDs (see
 /// [`Self::deserialize`]) so a config that accidentally repeats an
@@ -545,7 +546,7 @@ impl PipelineExtensions {
 
     /// Returns a clone with credential header values redacted for config snapshots.
     #[must_use]
-    pub(crate) fn redacted_for_snapshot(&self) -> Self {
+    pub fn redacted_for_snapshot(&self) -> Self {
         let mut redacted = self.clone();
         for extension in redacted.0.values_mut() {
             *extension = Arc::new(extension.redacted_for_snapshot());
@@ -622,6 +623,28 @@ impl PipelineConfig {
         Ok(cfg)
     }
 
+    /// Creates a pipeline from JSON when extension bindings may resolve from
+    /// an enclosing engine or pipeline-group scope.
+    ///
+    /// Structural validation still runs here. The owning engine configuration
+    /// must later validate capability bindings against the full lexical scope.
+    pub fn from_json_allowing_inherited_extensions(
+        pipeline_group_id: PipelineGroupId,
+        pipeline_id: PipelineId,
+        json_str: &str,
+    ) -> Result<Self, Error> {
+        let mut cfg: PipelineConfig =
+            serde_json::from_str(json_str).map_err(|e| Error::DeserializationError {
+                context: Context::new(pipeline_group_id.clone(), pipeline_id.clone()),
+                format: "JSON".to_string(),
+                details: e.to_string(),
+            })?;
+
+        cfg.canonicalize_plugin_urns(&pipeline_group_id, &pipeline_id)?;
+        cfg.validate_with_visible_extensions(&pipeline_group_id, &pipeline_id, |_| true)?;
+        Ok(cfg)
+    }
+
     /// Create a new [`PipelineConfig`] from a YAML string.
     pub fn from_yaml(
         pipeline_group_id: PipelineGroupId,
@@ -637,6 +660,28 @@ impl PipelineConfig {
 
         spec.canonicalize_plugin_urns(&pipeline_group_id, &pipeline_id)?;
         spec.validate(&pipeline_group_id, &pipeline_id)?;
+        Ok(spec)
+    }
+
+    /// Creates a pipeline from YAML when extension bindings may resolve from
+    /// an enclosing engine or pipeline-group scope.
+    ///
+    /// Structural validation still runs here. The owning engine configuration
+    /// must later validate capability bindings against the full lexical scope.
+    pub fn from_yaml_allowing_inherited_extensions(
+        pipeline_group_id: PipelineGroupId,
+        pipeline_id: PipelineId,
+        yaml_str: &str,
+    ) -> Result<Self, Error> {
+        let mut spec: PipelineConfig =
+            serde_yaml::from_str(yaml_str).map_err(|e| Error::DeserializationError {
+                context: Context::new(pipeline_group_id.clone(), pipeline_id.clone()),
+                format: "YAML".to_string(),
+                details: e.to_string(),
+            })?;
+
+        spec.canonicalize_plugin_urns(&pipeline_group_id, &pipeline_id)?;
+        spec.validate_with_visible_extensions(&pipeline_group_id, &pipeline_id, |_| true)?;
         Ok(spec)
     }
 
@@ -827,6 +872,19 @@ impl PipelineConfig {
         pipeline_group_id: &PipelineGroupId,
         pipeline_id: &PipelineId,
     ) -> Result<(), Error> {
+        self.validate_with_visible_extensions(pipeline_group_id, pipeline_id, |extension_id| {
+            self.extensions.contains_key(extension_id)
+        })
+    }
+
+    /// Validates this pipeline using extension declarations visible from its
+    /// declaration scope.
+    pub(crate) fn validate_with_visible_extensions(
+        &self,
+        pipeline_group_id: &PipelineGroupId,
+        pipeline_id: &PipelineId,
+        extension_exists: impl Fn(&str) -> bool,
+    ) -> Result<(), Error> {
         let mut errors = Vec::new();
 
         for (node_name, node_config) in self.nodes.iter() {
@@ -841,7 +899,7 @@ impl PipelineConfig {
             &mut errors,
         );
 
-        self.validate_capability_bindings(&mut errors);
+        self.validate_capability_bindings(&extension_exists, &mut errors);
 
         if !errors.is_empty() {
             Err(Error::InvalidConfiguration { errors })
@@ -850,19 +908,21 @@ impl PipelineConfig {
         }
     }
 
-    /// Validates that every capability binding references an extension that
-    /// exists in the `extensions:` section, and that extensions themselves
-    /// do not declare capability bindings (they provide capabilities, not
-    /// consume them).
-    fn validate_capability_bindings(&self, errors: &mut Vec<Error>) {
+    /// Validates that every capability binding references an extension visible
+    /// from this pipeline's lexical configuration scope.
+    fn validate_capability_bindings(
+        &self,
+        extension_exists: &impl Fn(&str) -> bool,
+        errors: &mut Vec<Error>,
+    ) {
         // Check that capability bindings on nodes reference valid extensions
         for (node_id, node_config) in self.nodes.iter() {
             for (capability_name, extension_name) in &node_config.capabilities {
-                if !self.extensions.contains_key(extension_name.as_ref()) {
+                if !extension_exists(extension_name.as_ref()) {
                     errors.push(Error::InvalidUserConfig {
                         error: format!(
                             "Node '{}' binds capability '{}' to extension '{}', \
-                             but no extension with that name exists in the `extensions` section.",
+                             but no extension with that name is visible from the pipeline scope.",
                             node_id.as_ref(),
                             capability_name,
                             extension_name,
@@ -3083,6 +3143,42 @@ connections:
         }
     }
 
+    /// Scenario: an isolated pipeline document binds a capability supplied by
+    /// an enclosing engine or pipeline-group extension declaration.
+    /// Guarantees: reconfiguration parsing can preserve the inherited binding
+    /// while strict standalone validation still rejects an unresolved ID.
+    #[test]
+    fn allowing_inherited_extensions_defers_binding_resolution() {
+        let yaml = r#"
+nodes:
+  receiver:
+    type: "urn:test:receiver:example"
+  exporter:
+    type: "urn:test:exporter:example"
+    capabilities:
+      bearer_token_provider: "ancestor_auth"
+
+connections:
+  - from: receiver
+    to: exporter
+"#;
+
+        assert!(
+            super::PipelineConfig::from_yaml("g".into(), "p".into(), yaml).is_err(),
+            "strict standalone parsing must reject an unresolved extension"
+        );
+        let parsed = super::PipelineConfig::from_yaml_allowing_inherited_extensions(
+            "g".into(),
+            "p".into(),
+            yaml,
+        )
+        .expect("inherited extension bindings should parse for full-spec validation");
+        assert!(
+            parsed.validate(&"g".into(), &"p".into()).is_err(),
+            "the full lexical owner must still validate the inherited binding"
+        );
+    }
+
     #[test]
     fn test_capability_binding_to_existing_extension_passes() {
         let yaml = r#"
@@ -3146,10 +3242,11 @@ connections:
         );
     }
 
+    /// Scenario: A pipeline group declares a shared extension beside its pipelines.
+    /// Guarantees: Group-level extensions deserialize into the pipeline-group
+    /// declaration scope.
     #[test]
-    fn test_extensions_at_group_level_rejected_by_serde() {
-        // PipelineGroupConfig uses #[serde(deny_unknown_fields)],
-        // so `extensions:` at the group level is rejected by deserialization.
+    fn test_extensions_at_group_level_accepted_by_serde() {
         let yaml = r#"
 pipelines:
   main:
@@ -3165,12 +3262,9 @@ extensions:
   auth:
     type: "urn:test:extension:auth"
 "#;
-        let result: Result<crate::pipeline_group::PipelineGroupConfig, _> =
-            serde_yaml::from_str(yaml);
-        assert!(
-            result.is_err(),
-            "extensions at group level should be rejected by serde"
-        );
+        let group: crate::pipeline_group::PipelineGroupConfig =
+            serde_yaml::from_str(yaml).expect("group-level extensions should deserialize");
+        assert!(group.extensions.contains_key("auth"));
     }
 
     #[test]

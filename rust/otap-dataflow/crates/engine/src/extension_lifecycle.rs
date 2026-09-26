@@ -22,6 +22,7 @@ use crate::extension_monitor::{
 };
 use crate::terminal_state::TerminalMetricsDeadline;
 use futures::FutureExt;
+use futures::future::LocalBoxFuture;
 use futures::stream::{FuturesUnordered, StreamExt};
 use otel_arrow_dfe_telemetry::otel_warn;
 use otel_arrow_dfe_telemetry::registry::EntityKey;
@@ -75,7 +76,45 @@ impl ExtensionLifecycle {
         metrics_reporter: MetricsReporter,
         terminal_metrics_deadline: TerminalMetricsDeadline,
         ext_ctx: &ExtensionContext,
+        monitor: ExtensionMetricsMonitor,
+    ) -> Self {
+        Self::spawn_with(
+            extensions,
+            metrics_reporter,
+            terminal_metrics_deadline,
+            ext_ctx,
+            monitor,
+            |future| local_tasks.spawn_local(future),
+        )
+    }
+
+    /// Spawns extensions on the [`LocalSet`] currently driving this task.
+    pub(crate) fn spawn_current(
+        extensions: Vec<(ExtensionWrapper, EntityKey)>,
+        metrics_reporter: MetricsReporter,
+        terminal_metrics_deadline: TerminalMetricsDeadline,
+        ext_ctx: &ExtensionContext,
+        monitor: ExtensionMetricsMonitor,
+    ) -> Self {
+        Self::spawn_with(
+            extensions,
+            metrics_reporter,
+            terminal_metrics_deadline,
+            ext_ctx,
+            monitor,
+            task::spawn_local,
+        )
+    }
+
+    fn spawn_with(
+        extensions: Vec<(ExtensionWrapper, EntityKey)>,
+        metrics_reporter: MetricsReporter,
+        terminal_metrics_deadline: TerminalMetricsDeadline,
+        ext_ctx: &ExtensionContext,
         mut monitor: ExtensionMetricsMonitor,
+        mut spawn_task: impl FnMut(
+            LocalBoxFuture<'static, (ExtensionKey, Result<(), Error>)>,
+        ) -> JoinHandle<(ExtensionKey, Result<(), Error>)>,
     ) -> Self {
         let futures: FuturesUnordered<JoinHandle<(ExtensionKey, Result<(), Error>)>> =
             FuturesUnordered::new();
@@ -144,7 +183,7 @@ impl ExtensionLifecycle {
                 drop(control_sender);
                 (task_key, res)
             };
-            let handle = local_tasks.spawn_local(fut);
+            let handle = spawn_task(fut.boxed_local());
             let _ = task_id_to_key.insert(handle.id(), key.clone());
             futures.push(handle);
             let _ = pending_starts.insert(key);
@@ -451,6 +490,11 @@ impl ExtensionLifecycle {
     /// Broadcasts `Shutdown` to every active+background extension via its
     /// priority oneshot channel. Single-shot: subsequent calls are no-ops.
     pub fn initiate_shutdown(&mut self, reason: Option<&str>) {
+        self.initiate_shutdown_until(reason, Instant::now() + EXTENSION_SHUTDOWN_GRACE);
+    }
+
+    /// Uses the host's phase deadline for both extension shutdown and draining.
+    pub(crate) fn initiate_shutdown_until(&mut self, reason: Option<&str>, deadline: Instant) {
         if matches!(self.phase, LifecyclePhase::ShuttingDown { .. }) {
             return;
         }
@@ -458,7 +502,6 @@ impl ExtensionLifecycle {
             return;
         }
 
-        let deadline = Instant::now() + EXTENSION_SHUTDOWN_GRACE;
         self.phase = LifecyclePhase::ShuttingDown { deadline };
 
         let reason = reason.unwrap_or(DEFAULT_SHUTDOWN_REASON).to_string();
@@ -482,10 +525,12 @@ impl ExtensionLifecycle {
         }
     }
 
-    /// Drains remaining extension tasks, bounded by the shutdown deadline.
-    pub async fn drain_until_deadline(&mut self) {
+    /// Drains remaining extension tasks, aborting stragglers at the deadline.
+    ///
+    /// Returns the number of tasks that required forced cancellation.
+    pub async fn drain_until_deadline(&mut self) -> usize {
         if self.futures.is_empty() {
-            return;
+            return 0;
         }
         let deadline = match self.phase {
             LifecyclePhase::ShuttingDown { deadline } => deadline,
@@ -544,17 +589,36 @@ impl ExtensionLifecycle {
             }
         };
 
-        if tokio::time::timeout_at(drain_deadline, drain)
-            .await
-            .is_err()
-        {
+        if tokio::time::timeout_at(drain_deadline, drain).await.is_ok() {
+            return 0;
+        }
+
+        let timed_out = self.futures.len();
+        if timed_out > 0 {
             otel_warn!(
                 "extension.shutdown.timeout",
                 grace_secs = EXTENSION_SHUTDOWN_GRACE.as_secs(),
-                remaining = self.futures.len()
+                remaining = timed_out
             );
             self.monitor.mark_stragglers_as_timeout();
+            for handle in self.futures.iter() {
+                handle.abort();
+            }
+            while let Some(result) = self.futures.next().await {
+                if let Err(error) = result
+                    && !error.is_cancelled()
+                {
+                    otel_warn!(
+                        "extension.shutdown.forced_abort_join_error",
+                        is_panic = error.is_panic(),
+                        error = error.to_string()
+                    );
+                }
+            }
+            self.task_id_to_key.clear();
+            self.shutdown_channels.clear();
         }
+        timed_out
     }
 }
 
@@ -583,6 +647,8 @@ mod tests {
         (key, channel, rx)
     }
 
+    /// Scenario: An extension ignores shutdown past its bounded drain deadline.
+    /// Guarantees: The task is aborted and fully joined before the lifecycle returns.
     #[test]
     fn drain_until_deadline_is_bounded_for_stuck_extension() {
         let (rt, local_tasks) = crate::testing::setup_test_runtime();
@@ -619,7 +685,7 @@ mod tests {
             };
 
             let start = Instant::now();
-            lifecycle.drain_until_deadline().await;
+            let timed_out = lifecycle.drain_until_deadline().await;
             let elapsed = start.elapsed();
 
             let upper_bound = Duration::from_millis(100)
@@ -631,10 +697,8 @@ mod tests {
                 elapsed,
                 upper_bound,
             );
-            assert!(
-                !lifecycle.futures.is_empty(),
-                "stuck extension should still be present after the bounded drain timed out",
-            );
+            assert_eq!(timed_out, 1);
+            assert!(lifecycle.futures.is_empty());
         }));
     }
 
@@ -1340,7 +1404,7 @@ mod tests {
             );
 
             lifecycle.initiate_shutdown(Some("test"));
-            lifecycle.drain_until_deadline().await;
+            _ = lifecycle.drain_until_deadline().await;
 
             assert!(
                 observed_shutdown.get(),
@@ -1422,7 +1486,7 @@ mod tests {
             );
 
             lifecycle.initiate_shutdown(Some("test"));
-            lifecycle.drain_until_deadline().await;
+            _ = lifecycle.drain_until_deadline().await;
 
             assert!(observed_shutdown.get(), "extension must have observed Shutdown");
             assert!(!observed_close.get(), "extension control channel must not have closed early");

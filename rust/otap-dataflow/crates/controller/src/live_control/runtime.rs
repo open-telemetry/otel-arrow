@@ -22,6 +22,7 @@ struct RuntimeRecoveryAttempt {
     attempt: usize,
     target_key: DeployedPipelineKey,
     resolved: ResolvedPipelineConfig,
+    inherited_extensions: InheritedExtensionRegistrations,
     context_bindings: Arc<CompiledContextBindings>,
     placement: LivePipelinePlacement,
     backoff: Duration,
@@ -42,6 +43,11 @@ fn deployed_instance_label(deployed_key: &DeployedPipelineKey) -> String {
         deployed_key.core_id,
         deployed_key.deployment_generation
     )
+}
+
+fn is_observability_instance(deployed_key: &DeployedPipelineKey) -> bool {
+    deployed_key.pipeline_group_id.as_ref() == SYSTEM_PIPELINE_GROUP_ID
+        && deployed_key.pipeline_id.as_ref() == SYSTEM_OBSERVABILITY_PIPELINE_ID
 }
 
 /// Computes capped exponential backoff for a one-based restart attempt.
@@ -74,10 +80,18 @@ impl<
     PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + Unwindable + FlowMetricHook,
 > ControllerRuntime<PData>
 {
+    /// Final drain window, independent of producer and extension-scope shutdown.
+    pub(crate) const OBSERVABILITY_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
+
+    /// Full observability drain and runtime-completion budget.
+    pub(crate) const OBSERVABILITY_SHUTDOWN_COMPLETION_TIMEOUT: Duration =
+        Self::OBSERVABILITY_SHUTDOWN_TIMEOUT.saturating_add(PIPELINE_SHUTDOWN_COMPLETION_GRACE);
+
     /// Launches one regular pipeline instance on a specific core and generation.
     pub(super) fn launch_regular_pipeline_instance(
         self: &Arc<Self>,
         resolved_pipeline: &ResolvedPipelineConfig,
+        inherited_extensions: &InheritedExtensionRegistrations,
         context_bindings: Arc<CompiledContextBindings>,
         placement: &LivePipelinePlacement,
         core_id: usize,
@@ -102,7 +116,7 @@ impl<
             core_id,
             deployment_generation,
         };
-        let launched = Controller::<PData>::launch_pipeline_thread(
+        Controller::<PData>::launch_pipeline_thread(
             self.pipeline_factory,
             deployed_key.clone(),
             CoreId { id: core_id },
@@ -115,6 +129,7 @@ impl<
             resolved_pipeline.policies.telemetry.clone(),
             resolved_pipeline.policies.rate_limiters.clone(),
             resolved_pipeline.policies.rate_limiter_scope.clone(),
+            inherited_extensions.clone(),
             self.controller_context.clone(),
             self.metrics_reporter.clone(),
             self.engine_event_reporter.clone(),
@@ -123,66 +138,298 @@ impl<
             self.memory_pressure_tx.clone(),
             &live_config,
             &self.declared_topics,
-            Arc::downgrade(self),
+            self,
             thread_id,
             None,
         )?;
-        self.register_launched_instance(launched);
         Ok(deployed_key)
     }
 
-    /// Registers a launched instance and reconciles the race where the thread exited first.
+    /// Reserves one deployed key before its pipeline OS thread is spawned.
+    pub(crate) fn reserve_instance_launch(
+        &self,
+        pipeline_key: &DeployedPipelineKey,
+        context_bindings: Arc<CompiledContextBindings>,
+    ) -> Result<(), Error> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.launches_closed || state.global_shutdown_requested {
+            let message = state.first_error.as_ref().map_or_else(
+                || {
+                    format!(
+                        "pipeline launch admission is closed for {}",
+                        deployed_instance_label(pipeline_key)
+                    )
+                },
+                |error| {
+                    format!(
+                        "pipeline launch admission is closed for {} after fatal runtime failure: {error}",
+                        deployed_instance_label(pipeline_key)
+                    )
+                },
+            );
+            return Err(Error::PipelineRuntimeError {
+                source: Box::new(io::Error::other(message)),
+            });
+        }
+        let already_live = state.launching_instances.contains_key(pipeline_key)
+            || state
+                .runtime_instances
+                .get(pipeline_key)
+                .is_some_and(|instance| {
+                    matches!(instance.lifecycle, RuntimeInstanceLifecycle::Active)
+                });
+        if already_live {
+            return Err(Error::PipelineRuntimeError {
+                source: Box::new(io::Error::other(format!(
+                    "pipeline instance is already launching or active: {}",
+                    deployed_instance_label(pipeline_key)
+                ))),
+            });
+        }
+        let _ = state
+            .launching_instances
+            .insert(pipeline_key.clone(), context_bindings);
+        state.active_instances += 1;
+        self.state_changed.notify_all();
+        Ok(())
+    }
+
+    /// Rolls back a launch reservation when OS-thread creation fails.
+    pub(crate) fn abort_instance_launch(&self, pipeline_key: &DeployedPipelineKey) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.launching_instances.remove(pipeline_key).is_some() {
+            state.active_instances = state.active_instances.saturating_sub(1);
+            self.state_changed.notify_all();
+        }
+    }
+
+    /// Publishes the control sender for a successfully spawned pipeline thread.
     ///
-    /// The launch path inserts the instance as Active here, while the runtime thread reports its
-    /// terminal exit independently through note_instance_exit(). If that exit arrived first, it
-    /// was parked in pending_instance_exits and is applied immediately during registration.
+    /// Returns a deadline when shutdown raced with the spawn and must be sent
+    /// to the newly active instance.
+    pub(crate) fn activate_instance_launch(
+        &self,
+        pipeline_key: DeployedPipelineKey,
+        control_sender: Arc<dyn PipelineAdminSender>,
+    ) -> Option<Instant> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let context_bindings = state.launching_instances.remove(&pipeline_key)?;
+        let is_observability = is_observability_instance(&pipeline_key);
+        let _ = state.runtime_instances.insert(
+            pipeline_key,
+            RuntimeInstanceRecord {
+                control_sender: Some(control_sender),
+                context_bindings,
+                lifecycle: RuntimeInstanceLifecycle::Active,
+            },
+        );
+        let shutdown_deadline = if state.launches_closed || state.global_shutdown_requested {
+            if is_observability {
+                if state.extension_scope_hosts_stopped
+                    && !Self::has_live_producer_instances_locked(&state)
+                {
+                    Some(
+                        *state
+                            .observability_shutdown_deadline
+                            .get_or_insert_with(|| {
+                                Instant::now() + Self::OBSERVABILITY_SHUTDOWN_TIMEOUT
+                            }),
+                    )
+                } else {
+                    None
+                }
+            } else {
+                Some(state.global_shutdown_deadline.unwrap_or_else(Instant::now))
+            }
+        } else {
+            None
+        };
+        self.state_changed.notify_all();
+        shutdown_deadline
+    }
+
+    /// Publishes a spawned instance and immediately stops it when shutdown won the race.
+    pub(crate) fn complete_instance_launch(
+        &self,
+        pipeline_key: DeployedPipelineKey,
+        control_sender: Arc<dyn PipelineAdminSender>,
+    ) {
+        if let Some(deadline) =
+            self.activate_instance_launch(pipeline_key.clone(), control_sender.clone())
+        {
+            if let Err(error) =
+                control_sender.try_send_shutdown(deadline, "global shutdown".to_owned())
+            {
+                match self.instance_exit(&pipeline_key) {
+                    Some(_) => self.release_instance_control_sender(&pipeline_key),
+                    None => {
+                        self.record_fatal_runtime_error(format!(
+                            "failed to stop pipeline launched during global shutdown ({}): {error}",
+                            deployed_instance_label(&pipeline_key)
+                        ));
+                    }
+                }
+            } else {
+                self.release_instance_control_sender(&pipeline_key);
+            }
+        }
+    }
+
+    /// Registers a synthetic launched instance used by controller state tests.
+    #[cfg(test)]
     pub(crate) fn register_launched_instance(
         self: &Arc<Self>,
         launched: LaunchedPipelineThread<PData>,
     ) {
-        let context_bindings = Arc::clone(&launched.context_bindings);
-        let (should_compact, pending_exit) = {
+        let pending_exit = {
             let mut state = self
                 .state
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            _ = state.runtime_instances.insert(
-                launched.pipeline_key.clone(),
-                RuntimeInstanceRecord {
-                    control_sender: Some(launched.control_sender.clone()),
-                    context_bindings: launched.context_bindings,
-                    lifecycle: RuntimeInstanceLifecycle::Active,
-                },
-            );
-            state.active_instances += 1;
-            let pending_exit = state.pending_instance_exits.remove(&launched.pipeline_key);
-            let should_compact = if let Some(exit) = pending_exit.as_ref() {
-                Self::apply_instance_exit_locked(&mut state, &launched.pipeline_key, exit)
-            } else {
-                false
-            };
-            self.state_changed.notify_all();
-            (should_compact, pending_exit)
+            state.pending_instance_exits.remove(&launched.pipeline_key)
         };
-
-        if should_compact {
-            let logical_pipeline_key = PipelineKey::new(
-                launched.pipeline_key.pipeline_group_id.clone(),
-                launched.pipeline_key.pipeline_id.clone(),
-            );
-            self.observed_state_store
-                .compact_pipeline_instances(&logical_pipeline_key);
+        if let Some(exit) = pending_exit {
+            let should_compact = {
+                let mut state = self
+                    .state
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                let _ = state.runtime_instances.insert(
+                    launched.pipeline_key.clone(),
+                    RuntimeInstanceRecord {
+                        control_sender: None,
+                        context_bindings: Arc::clone(&launched.context_bindings),
+                        lifecycle: RuntimeInstanceLifecycle::Exited(exit.clone()),
+                    },
+                );
+                let logical_pipeline_key = PipelineKey::new(
+                    launched.pipeline_key.pipeline_group_id.clone(),
+                    launched.pipeline_key.pipeline_id.clone(),
+                );
+                Self::prune_exited_runtime_instances_for_pipeline_locked(
+                    &mut state,
+                    &logical_pipeline_key,
+                )
+            };
+            if should_compact {
+                let logical_pipeline_key = PipelineKey::new(
+                    launched.pipeline_key.pipeline_group_id.clone(),
+                    launched.pipeline_key.pipeline_id.clone(),
+                );
+                self.observed_state_store
+                    .compact_pipeline_instances(&logical_pipeline_key);
+            }
+            self.state_changed.notify_all();
+            if let RuntimeInstanceExit::Error(error) = exit {
+                self.schedule_runtime_recovery(
+                    launched.pipeline_key,
+                    launched.context_bindings,
+                    error,
+                );
+            }
+            return;
         }
-        if let Some(RuntimeInstanceExit::Error(error)) = pending_exit {
-            self.schedule_runtime_recovery(launched.pipeline_key, context_bindings, error);
+        self.reserve_instance_launch(&launched.pipeline_key, launched.context_bindings)
+            .expect("synthetic runtime instance should reserve");
+        let _ = self.activate_instance_launch(launched.pipeline_key, launched.control_sender);
+    }
+
+    /// Closes pipeline launch admission for the remainder of this controller run.
+    #[cfg(test)]
+    pub(crate) fn close_pipeline_launches(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.launches_closed = true;
+        self.state_changed.notify_all();
+    }
+
+    /// Opens the final shutdown phase for the system observability pipeline.
+    pub(crate) fn mark_extension_scope_hosts_stopped(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.extension_scope_hosts_stopped = true;
+        self.state_changed.notify_all();
+    }
+
+    /// Completes teardown on the scope-host thread after its LocalSet is gone.
+    ///
+    /// The controller's join remains bounded. If it times out, this thread
+    /// retains telemetry support while waiting for actual descendant and
+    /// observability exits, not merely the fatal-shutdown release latch.
+    pub(crate) fn finish_shutdown_after_extension_scopes(
+        self: &Arc<Self>,
+        shutdown_requested: &CancellationToken,
+    ) {
+        let deadline = self.global_shutdown_deadline_or_insert(Duration::from_secs(30));
+        if let Err(error) = self.request_shutdown_all_until(deadline) {
+            self.record_async_global_shutdown_failure(format!(
+                "failed to drain pipelines after extension scope shutdown: {error:?}"
+            ));
+        }
+
+        {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            while Self::has_live_producer_instances_locked(&state)
+                || state
+                    .runtime_recoveries
+                    .values()
+                    .any(|recovery| recovery.worker_id.is_some())
+            {
+                state = self
+                    .state_changed
+                    .wait(state)
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+            }
+        }
+
+        // An early return or panic can reach cleanup before controller-owned
+        // metric producers stop. The guard cancels only after those producers
+        // are gone; keep observability open until that handoff occurs.
+        while !shutdown_requested.is_cancelled() {
+            thread::sleep(Duration::from_millis(10));
+        }
+        self.mark_extension_scope_hosts_stopped();
+        // A producer-only coordinator may have owned dispatch when the hosts
+        // stopped. Wait for it before opening observability with its own budget.
+        _ = self.wait_for_global_shutdown_completion();
+        if let Err(error) = self.request_shutdown_all_until(deadline) {
+            self.record_async_global_shutdown_failure(format!(
+                "failed to stop system observability after extension scopes: {error:?}"
+            ));
+        }
+
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        while state.active_instances > 0 || state.global_shutdown_coordinators > 0 {
+            state = self
+                .state_changed
+                .wait(state)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
         }
     }
 
     /// Records a pipeline instance exit and closes the registration-before/after-exit race.
     ///
-    /// If the instance is already visible in runtime_instances, the exit is applied immediately.
-    /// Otherwise we store it in pending_instance_exits so register_launched_instance() can
-    /// reconcile it as soon as registration becomes visible.
+    /// A reserved or active instance is completed immediately. Synthetic test
+    /// exits without a reservation remain pending until test registration.
     pub(crate) fn note_instance_exit(
         self: &Arc<Self>,
         pipeline_key: DeployedPipelineKey,
@@ -208,14 +455,35 @@ impl<
                 .state
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if let Some(context_bindings) = state
-                .runtime_instances
-                .get(&pipeline_key)
-                .map(|instance| Arc::clone(&instance.context_bindings))
-            {
+            if let Some(context_bindings) = state.launching_instances.remove(&pipeline_key) {
+                let _ = state.runtime_instances.insert(
+                    pipeline_key.clone(),
+                    RuntimeInstanceRecord {
+                        control_sender: None,
+                        context_bindings: Arc::clone(&context_bindings),
+                        lifecycle: RuntimeInstanceLifecycle::Exited(exit.clone()),
+                    },
+                );
+                state.active_instances = state.active_instances.saturating_sub(1);
+                let logical_pipeline_key = PipelineKey::new(
+                    pipeline_key.pipeline_group_id.clone(),
+                    pipeline_key.pipeline_id.clone(),
+                );
+                (
+                    Self::prune_exited_runtime_instances_for_pipeline_locked(
+                        &mut state,
+                        &logical_pipeline_key,
+                    ),
+                    true,
+                    Some(context_bindings),
+                )
+            } else if let Some(instance) = state.runtime_instances.get(&pipeline_key) {
+                let exit_was_applied =
+                    matches!(instance.lifecycle, RuntimeInstanceLifecycle::Active);
+                let context_bindings = Arc::clone(&instance.context_bindings);
                 (
                     Self::apply_instance_exit_locked(&mut state, &pipeline_key, &exit),
-                    true,
+                    exit_was_applied,
                     Some(context_bindings),
                 )
             } else {
@@ -635,6 +903,7 @@ impl<
 
             let target_key = match self.launch_regular_pipeline_instance(
                 &attempt.resolved,
+                &attempt.inherited_extensions,
                 Arc::clone(&attempt.context_bindings),
                 &attempt.placement,
                 core_id,
@@ -814,10 +1083,11 @@ impl<
             return RuntimeRecoveryAttemptDecision::Exhausted;
         }
 
-        let Some((resolved, placement, placement_generation)) =
+        let Some((resolved, inherited_extensions, placement, placement_generation)) =
             state.logical_pipelines.get(pipeline_key).map(|record| {
                 (
                     record.resolved.clone(),
+                    record.inherited_extensions.clone(),
                     record.placement.clone(),
                     record.placement_generation,
                 )
@@ -856,6 +1126,7 @@ impl<
                 deployment_generation: target_generation,
             },
             resolved,
+            inherited_extensions,
             context_bindings,
             placement,
             backoff: runtime_recovery_backoff(policy, attempt),
@@ -1035,10 +1306,11 @@ impl<
         }
     }
 
-    /// Cancels and joins every active runtime recovery worker.
+    /// Requests cancellation for every active runtime recovery worker.
     ///
-    /// Global shutdown uses this barrier before collecting instances so no new
-    /// recovery candidate can appear after the shutdown snapshot.
+    /// Global shutdown closes launch admission before calling this method, so
+    /// workers can be allowed to release their fencing tokens asynchronously
+    /// without creating a candidate after the shutdown snapshot.
     fn cancel_all_runtime_recoveries(&self) {
         let mut state = self
             .state
@@ -1050,16 +1322,6 @@ impl<
             }
         }
         self.state_changed.notify_all();
-        while state
-            .runtime_recoveries
-            .values()
-            .any(|recovery| recovery.worker_id.is_some())
-        {
-            state = self
-                .state_changed
-                .wait(state)
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-        }
     }
 
     /// Clears one worker's candidate generation while preserving its streak.
@@ -1283,7 +1545,7 @@ impl<
     }
 
     /// Returns the terminal exit result for one deployed instance, if any.
-    pub(super) fn instance_exit(
+    pub(crate) fn instance_exit(
         &self,
         deployed_key: &DeployedPipelineKey,
     ) -> Option<RuntimeInstanceExit> {
@@ -1291,6 +1553,10 @@ impl<
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        // A reused key may still retain the previous launch's terminal record.
+        if state.launching_instances.contains_key(deployed_key) {
+            return None;
+        }
         state
             .runtime_instances
             .get(deployed_key)
@@ -1420,6 +1686,20 @@ impl<
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         loop {
+            if state.launching_instances.contains_key(deployed_key) {
+                let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                    return Err(format!(
+                        "timed out waiting for pipeline {} to finish launching and drain before system observability shutdown",
+                        deployed_instance_label(deployed_key)
+                    ));
+                };
+                let (next_state, _) = self
+                    .state_changed
+                    .wait_timeout(state, remaining)
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                state = next_state;
+                continue;
+            }
             match state.runtime_instances.get(deployed_key) {
                 None
                 | Some(RuntimeInstanceRecord {
@@ -1471,7 +1751,7 @@ impl<
     /// an active instance. Releasing it makes shutdown dispatch idempotent for
     /// that instance and lets the pipeline control loop observe channel closure
     /// once node tasks have exited.
-    pub(super) fn release_instance_control_sender(&self, deployed_key: &DeployedPipelineKey) {
+    pub(crate) fn release_instance_control_sender(&self, deployed_key: &DeployedPipelineKey) {
         let mut state = self
             .state
             .lock()
@@ -1488,15 +1768,58 @@ impl<
     /// dispatch boundary: instances that already accepted shutdown have released
     /// their retained control sender and are skipped by later calls. When the
     /// system observability pipeline is active, producer pipelines are signaled
-    /// and awaited first so their final telemetry reaches the internal receiver
-    /// before that receiver is shut down.
+    /// and awaited first. Observability remains active until the controller marks
+    /// extension scope hosts stopped, then a later call starts its final phase.
+    /// Repeated requests retain the first producer deadline. Observability gets
+    /// its own fixed window when its dependencies have stopped.
     pub(super) fn request_shutdown_all(
         self: &Arc<Self>,
         timeout_secs: u64,
     ) -> Result<(), ControlPlaneError> {
+        self.request_shutdown_all_until(Instant::now() + Duration::from_secs(timeout_secs.max(1)))
+    }
+
+    /// Returns the established producer deadline, creating it only once.
+    pub(crate) fn global_shutdown_deadline_or_insert(&self, timeout: Duration) -> Instant {
+        let candidate = Instant::now() + timeout;
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *state.global_shutdown_deadline.get_or_insert(candidate)
+    }
+
+    /// Returns the fixed deadline for the final observability phase.
+    ///
+    /// Call only after producer pipelines and extension scope hosts stop.
+    pub(crate) fn observability_shutdown_deadline_or_insert(&self) -> Instant {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *state
+            .observability_shutdown_deadline
+            .get_or_insert_with(|| Instant::now() + Self::OBSERVABILITY_SHUTDOWN_TIMEOUT)
+    }
+
+    /// Requests global shutdown with an absolute deadline for producer draining.
+    pub(crate) fn request_shutdown_all_until(
+        self: &Arc<Self>,
+        requested_deadline: Instant,
+    ) -> Result<(), ControlPlaneError> {
+        let deadline = {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let deadline = state.global_shutdown_deadline.unwrap_or(requested_deadline);
+            state.launches_closed = true;
+            state.global_shutdown_requested = true;
+            state.global_shutdown_deadline = Some(deadline);
+            self.state_changed.notify_all();
+            deadline
+        };
         self.cancel_all_runtime_recoveries();
-        let shutdown_timeout = Duration::from_secs(timeout_secs.max(1));
-        let deadline = Instant::now() + shutdown_timeout;
 
         // Snapshot under the state lock, then send outside the lock so runtime
         // callbacks can report exits while shutdown dispatch is in progress.
@@ -1514,6 +1837,7 @@ impl<
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             let coordinator_active = state.global_shutdown_coordinators > 0;
+            let extension_scope_hosts_stopped = state.extension_scope_hosts_stopped;
             let mut producer_keys = Vec::new();
             let mut producer_senders = Vec::new();
             let mut observability_senders = Vec::new();
@@ -1523,11 +1847,12 @@ impl<
                     continue;
                 }
 
-                let is_observability = deployed_key.pipeline_group_id.as_ref()
-                    == SYSTEM_PIPELINE_GROUP_ID
-                    && deployed_key.pipeline_id.as_ref() == SYSTEM_OBSERVABILITY_PIPELINE_ID;
+                let is_observability = is_observability_instance(deployed_key);
                 if is_observability {
-                    if !coordinator_active && let Some(sender) = instance.control_sender.take() {
+                    if extension_scope_hosts_stopped
+                        && !coordinator_active
+                        && let Some(sender) = instance.control_sender.take()
+                    {
                         // Taking the sender is the idempotence marker for the
                         // asynchronous observability-shutdown coordinator.
                         observability_senders.push((deployed_key.clone(), sender));
@@ -1539,10 +1864,16 @@ impl<
                     }
                 }
             }
+            producer_keys.extend(
+                state
+                    .launching_instances
+                    .keys()
+                    .filter(|deployed_key| !is_observability_instance(deployed_key))
+                    .cloned(),
+            );
 
             let coordinator_reserved = !coordinator_active
                 && (!producer_keys.is_empty() || !observability_senders.is_empty());
-            state.global_shutdown_requested = true;
             if coordinator_reserved {
                 state.global_shutdown_coordinators += 1;
             }
@@ -1612,7 +1943,6 @@ impl<
                             producer_keys,
                             observability_senders,
                             deadline,
-                            shutdown_timeout,
                         );
                     }));
                     runtime.finish_global_shutdown_coordinator();
@@ -1661,7 +1991,6 @@ impl<
         producer_keys: Vec<DeployedPipelineKey>,
         observability_senders: Vec<(DeployedPipelineKey, Arc<dyn PipelineAdminSender>)>,
         producer_deadline: Instant,
-        shutdown_timeout: Duration,
     ) {
         let mut wait_failures = Vec::new();
         let producer_completion_deadline = pipeline_shutdown_completion_deadline(producer_deadline);
@@ -1687,13 +2016,14 @@ impl<
             producer_keys
                 .iter()
                 .filter(|deployed_key| {
-                    matches!(
-                        state.runtime_instances.get(*deployed_key),
-                        Some(RuntimeInstanceRecord {
-                            lifecycle: RuntimeInstanceLifecycle::Active,
-                            ..
-                        })
-                    )
+                    state.launching_instances.contains_key(*deployed_key)
+                        || matches!(
+                            state.runtime_instances.get(*deployed_key),
+                            Some(RuntimeInstanceRecord {
+                                lifecycle: RuntimeInstanceLifecycle::Active,
+                                ..
+                            })
+                        )
                 })
                 .map(deployed_instance_label)
                 .collect::<Vec<_>>()
@@ -1707,10 +2037,10 @@ impl<
             return;
         }
 
-        // Observability is a distinct shutdown phase. Give it the same budget
-        // selected by the caller instead of collapsing that phase to one second
-        // after producers have consumed their own drain budget.
-        let observability_deadline = Instant::now() + shutdown_timeout;
+        if observability_senders.is_empty() {
+            return;
+        }
+        let observability_deadline = self.observability_shutdown_deadline_or_insert();
         let mut observability_keys = Vec::new();
         for (deployed_key, sender) in observability_senders {
             let final_error = loop {
@@ -1796,13 +2126,59 @@ impl<
         state.global_shutdown_requested
     }
 
+    /// Waits up to `timeout` for every phased global-shutdown coordinator.
+    pub(crate) fn wait_for_global_shutdown_completion_for(&self, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        while state.global_shutdown_coordinators > 0 {
+            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                return false;
+            };
+            let (next_state, wait_result) = self
+                .state_changed
+                .wait_timeout(state, remaining)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            state = next_state;
+            if wait_result.timed_out() && state.global_shutdown_coordinators > 0 {
+                return false;
+            }
+        }
+        true
+    }
+
     /// Returns whether every registered runtime instance has exited.
+    #[cfg(test)]
     pub(crate) fn all_instances_exited(&self) -> bool {
         self.state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .active_instances
             == 0
+    }
+
+    /// Records a fatal controller-owned runtime error for final teardown.
+    pub(crate) fn record_fatal_runtime_error(&self, message: String) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.first_error.is_none() {
+            state.first_error = Some(message);
+        }
+        state.instance_wait_released = true;
+        self.state_changed.notify_all();
+    }
+
+    /// Returns whether teardown has a fatal runtime error to surface.
+    pub(crate) fn has_fatal_runtime_error(&self) -> bool {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .first_error
+            .is_some()
     }
 
     /// Restores system observability senders if the coordinator could not start.
@@ -1837,6 +2213,8 @@ impl<
         if state.first_error.is_none() {
             state.first_error = Some(message);
         }
+        state.instance_wait_released = true;
+        self.state_changed.notify_all();
     }
 
     /// Starts a tracked shutdown operation for one logical pipeline.
@@ -1921,6 +2299,7 @@ impl<
 
     /// Blocks until all active runtime instances have exited, or until the wait
     /// is released via [`release_instance_wait`](Self::release_instance_wait).
+    #[cfg(test)]
     pub(crate) fn wait_until_all_instances_exit(&self) {
         let mut state = self
             .state
@@ -1948,7 +2327,8 @@ impl<
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         while !state.instance_wait_released
-            && (!state.global_shutdown_requested || state.active_instances > 0)
+            && (!state.global_shutdown_requested
+                || Self::has_live_producer_instances_locked(&state))
         {
             state = self
                 .state_changed
@@ -1957,8 +2337,7 @@ impl<
         }
     }
 
-    /// Releases [`wait_until_all_instances_exit`](Self::wait_until_all_instances_exit)
-    /// unconditionally, even if runtime instances are still active.
+    /// Releases controller lifecycle waits even if runtime instances are still active.
     ///
     /// This is a fatal-shutdown escape hatch: when a controller extension fails
     /// or runtime recovery is exhausted, the engine tears down regardless of
@@ -1984,16 +2363,87 @@ impl<
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        while state.runtime_instances.iter().any(|(key, instance)| {
-            matches!(instance.lifecycle, RuntimeInstanceLifecycle::Active)
-                && !(key.pipeline_group_id.as_ref() == SYSTEM_PIPELINE_GROUP_ID
-                    && key.pipeline_id.as_ref() == SYSTEM_OBSERVABILITY_PIPELINE_ID)
-        }) {
+        while !state.instance_wait_released && Self::has_live_producer_instances_locked(&state) {
             state = self
                 .state_changed
                 .wait(state)
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
         }
+    }
+
+    /// Returns whether every non-observability runtime instance has exited.
+    pub(crate) fn all_producer_instances_exited(&self) -> bool {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        !Self::has_live_producer_instances_locked(&state)
+    }
+
+    /// Waits for non-observability runtime instances without honoring the fatal-release latch.
+    pub(crate) fn wait_until_all_producer_instances_exit_for(&self, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        while Self::has_live_producer_instances_locked(&state) {
+            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                return false;
+            };
+            let (next_state, wait_result) = self
+                .state_changed
+                .wait_timeout(state, remaining)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            state = next_state;
+            if wait_result.timed_out() && Self::has_live_producer_instances_locked(&state) {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Waits for every recovery worker to release its launch fencing token.
+    pub(crate) fn wait_for_runtime_recoveries_for(&self, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        while state
+            .runtime_recoveries
+            .values()
+            .any(|recovery| recovery.worker_id.is_some())
+        {
+            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                return false;
+            };
+            let (next_state, wait_result) = self
+                .state_changed
+                .wait_timeout(state, remaining)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            state = next_state;
+            if wait_result.timed_out()
+                && state
+                    .runtime_recoveries
+                    .values()
+                    .any(|recovery| recovery.worker_id.is_some())
+            {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn has_live_producer_instances_locked(state: &ControllerRuntimeState) -> bool {
+        state
+            .launching_instances
+            .keys()
+            .any(|key| !is_observability_instance(key))
+            || state.runtime_instances.iter().any(|(key, instance)| {
+                matches!(instance.lifecycle, RuntimeInstanceLifecycle::Active)
+                    && !is_observability_instance(key)
+            })
     }
 
     /// Blocks until every runtime instance exits or the timeout elapses.

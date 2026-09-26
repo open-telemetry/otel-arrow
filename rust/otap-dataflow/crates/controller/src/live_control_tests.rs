@@ -5,35 +5,56 @@ use super::*;
 use async_trait::async_trait;
 use otel_arrow_dfe_config::ContextEntryName;
 use otel_arrow_dfe_config::engine::ResolvedPipelineRole;
+use otel_arrow_dfe_config::extension::ExtensionUserConfig;
 use otel_arrow_dfe_config::observed_state::ObservedStateSettings;
 use otel_arrow_dfe_config::settings::telemetry::logs::LogLevel;
-use otel_arrow_dfe_engine::config::{ExporterConfig, ProcessorConfig, ReceiverConfig};
+use otel_arrow_dfe_engine::capability::ExtensionCapabilities;
+use otel_arrow_dfe_engine::capability::registry::Capabilities;
+use otel_arrow_dfe_engine::config::{
+    ExporterConfig, ExtensionConfig, ProcessorConfig, ReceiverConfig,
+};
+use otel_arrow_dfe_engine::context::ExtensionContext;
 use otel_arrow_dfe_engine::context_declaration::{
     ConfigNodeContextDeclaration, ContextDeclaration, ContextDeclarationProvider,
     NodeContextDeclarations,
 };
 use otel_arrow_dfe_engine::control::{
-    NodeControlMsg, RuntimeControlMsg, RuntimeCtrlMsgReceiver, runtime_ctrl_msg_channel,
+    ExtensionControlMsg, NodeControlMsg, RuntimeControlMsg, RuntimeCtrlMsgReceiver,
+    runtime_ctrl_msg_channel,
 };
 use otel_arrow_dfe_engine::error::Error as EngineError;
 use otel_arrow_dfe_engine::exporter::ExporterWrapper;
+use otel_arrow_dfe_engine::extension::wrapper::ExtensionVariant;
+use otel_arrow_dfe_engine::extension::{EffectHandler, ExtensionBundle, ExtensionWrapper};
 use otel_arrow_dfe_engine::listener_group::ListenerProtocol;
 use otel_arrow_dfe_engine::local::{exporter, receiver};
 use otel_arrow_dfe_engine::message::{ExporterInbox, Message};
 use otel_arrow_dfe_engine::processor::ProcessorWrapper;
 use otel_arrow_dfe_engine::receiver::ReceiverWrapper;
 use otel_arrow_dfe_engine::terminal_state::TerminalState;
+use otel_arrow_dfe_engine::testing::capability::no_op_stateful::{
+    NoOpStateful, SharedNoOpStateful,
+};
+use otel_arrow_dfe_engine::testing::capability::no_op_stateless::{
+    LocalNoOpStateless, NoOpStateless, SharedNoOpStateless,
+};
 use otel_arrow_dfe_engine::topology::NumaTopology;
 use otel_arrow_dfe_engine::wiring_contract::WiringContract;
-use otel_arrow_dfe_engine::{ExporterFactory, ProcessorFactory, ReceiverFactory};
+use otel_arrow_dfe_engine::{
+    ExporterFactory, ExtensionFactory, ProcessorFactory, ReceiverFactory, extension_capabilities,
+};
 use otel_arrow_dfe_state::pipeline_status::PipelineStatus;
-use otel_arrow_dfe_telemetry::TracingSetup;
+use otel_arrow_dfe_telemetry::attributes::AttributeSetHandler;
 use otel_arrow_dfe_telemetry::event::EngineEvent;
 use otel_arrow_dfe_telemetry::log_filter::{RuntimeLogFilter, RuntimeLogFilterHandle};
-use otel_arrow_dfe_telemetry::metrics::MetricSetSnapshot;
+use otel_arrow_dfe_telemetry::metrics::{
+    MetricExportBatch, MetricSet, MetricSetSnapshot, MetricValue,
+};
 use otel_arrow_dfe_telemetry::tracing_init::ProviderSetup;
+use otel_arrow_dfe_telemetry::{InternalTelemetrySystem, TracingSetup};
 use serde::Deserialize;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use tokio_util::sync::CancellationToken;
 use tracing::{Event, Subscriber};
 use tracing_subscriber::Registry;
@@ -148,7 +169,7 @@ fn context_bindings_test_receiver_create(
     node: otel_arrow_dfe_engine::node::NodeId,
     node_config: Arc<NodeUserConfig>,
     receiver_config: &ReceiverConfig,
-    _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities,
+    _capabilities: &Capabilities,
 ) -> Result<ReceiverWrapper<()>, otel_arrow_dfe_config::error::Error> {
     let config: ContextBindingsTestConfig = serde_json::from_value(node_config.config.clone())
         .map_err(
@@ -174,7 +195,7 @@ fn test_receiver_create(
     _node: otel_arrow_dfe_engine::node::NodeId,
     _node_config: Arc<NodeUserConfig>,
     _receiver_config: &ReceiverConfig,
-    _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities,
+    _capabilities: &Capabilities,
 ) -> Result<ReceiverWrapper<()>, otel_arrow_dfe_config::error::Error> {
     panic!("test receiver factory should not be constructed")
 }
@@ -184,7 +205,7 @@ fn test_exporter_create(
     _node: otel_arrow_dfe_engine::node::NodeId,
     _node_config: Arc<NodeUserConfig>,
     _exporter_config: &ExporterConfig,
-    _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities,
+    _capabilities: &Capabilities,
 ) -> Result<ExporterWrapper<()>, otel_arrow_dfe_config::error::Error> {
     panic!("test exporter factory should not be constructed")
 }
@@ -194,7 +215,7 @@ fn test_processor_create(
     _node: otel_arrow_dfe_engine::node::NodeId,
     _node_config: Arc<NodeUserConfig>,
     _processor_config: &ProcessorConfig,
-    _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities,
+    _capabilities: &Capabilities,
 ) -> Result<ProcessorWrapper<()>, otel_arrow_dfe_config::error::Error> {
     panic!("test processor factory should not be constructed")
 }
@@ -247,7 +268,7 @@ fn recovery_test_receiver_create(
     node: otel_arrow_dfe_engine::node::NodeId,
     node_config: Arc<NodeUserConfig>,
     receiver_config: &ReceiverConfig,
-    _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities,
+    _capabilities: &Capabilities,
 ) -> Result<ReceiverWrapper<()>, otel_arrow_dfe_config::error::Error> {
     Ok(ReceiverWrapper::local(
         RecoveryTestReceiver,
@@ -262,7 +283,7 @@ fn recovery_test_exporter_create(
     node: otel_arrow_dfe_engine::node::NodeId,
     node_config: Arc<NodeUserConfig>,
     exporter_config: &ExporterConfig,
-    _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities,
+    _capabilities: &Capabilities,
 ) -> Result<ExporterWrapper<()>, otel_arrow_dfe_config::error::Error> {
     Ok(ExporterWrapper::local(
         RecoveryTestExporter,
@@ -272,6 +293,606 @@ fn recovery_test_exporter_create(
     ))
 }
 
+#[derive(Default)]
+struct VariantReloadLifecycleCounts {
+    created: AtomicUsize,
+    started: AtomicUsize,
+    stopped: AtomicUsize,
+    dropped: AtomicUsize,
+}
+
+#[derive(Clone, Default)]
+struct VariantReloadProbe {
+    local: Arc<VariantReloadLifecycleCounts>,
+    shared: Arc<VariantReloadLifecycleCounts>,
+}
+
+// Factory callbacks are static function pointers and pipeline generations run on
+// separate OS threads. This registry only routes per-test counters by unique
+// config key; pipeline data paths never access it.
+static VARIANT_RELOAD_PROBES: std::sync::OnceLock<Mutex<HashMap<String, VariantReloadProbe>>> =
+    std::sync::OnceLock::new();
+
+fn variant_reload_probes() -> &'static Mutex<HashMap<String, VariantReloadProbe>> {
+    VARIANT_RELOAD_PROBES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn register_variant_reload_probe(key: &str) -> VariantReloadProbe {
+    let probe = VariantReloadProbe::default();
+    _ = variant_reload_probes()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(key.to_owned(), probe.clone());
+    probe
+}
+
+fn lookup_variant_reload_probe(key: &str) -> VariantReloadProbe {
+    variant_reload_probes()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(key)
+        .cloned()
+        .unwrap_or_else(|| panic!("variant reload probe `{key}` is not registered"))
+}
+
+struct VariantReloadLocalExtension {
+    counts: Arc<VariantReloadLifecycleCounts>,
+    counts_lifecycle_drop: bool,
+}
+
+impl Clone for VariantReloadLocalExtension {
+    fn clone(&self) -> Self {
+        Self {
+            counts: Arc::clone(&self.counts),
+            counts_lifecycle_drop: false,
+        }
+    }
+}
+
+impl Drop for VariantReloadLocalExtension {
+    fn drop(&mut self) {
+        if self.counts_lifecycle_drop {
+            _ = self.counts.dropped.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+}
+
+#[async_trait(?Send)]
+impl LocalNoOpStateless for VariantReloadLocalExtension {
+    fn name(&self) -> &str {
+        "variant-reload-local"
+    }
+
+    fn echo(&self, value: u64) -> u64 {
+        value
+    }
+
+    async fn ping(&self) -> u64 {
+        0
+    }
+
+    async fn echo_async(&self, value: String) -> String {
+        value
+    }
+}
+
+#[async_trait(?Send)]
+impl otel_arrow_dfe_engine::local::extension::Extension for VariantReloadLocalExtension {
+    async fn start(
+        self: Rc<Self>,
+        mut ctrl: otel_arrow_dfe_engine::local::extension::ControlChannel,
+        _effect_handler: EffectHandler,
+    ) -> Result<TerminalState, EngineError> {
+        _ = self.counts.started.fetch_add(1, Ordering::SeqCst);
+        loop {
+            match ctrl.recv().await {
+                Ok(ExtensionControlMsg::Shutdown { .. }) | Err(_) => {
+                    _ = self.counts.stopped.fetch_add(1, Ordering::SeqCst);
+                    return Ok(TerminalState::default());
+                }
+                Ok(_) => {}
+            }
+        }
+    }
+}
+
+struct VariantReloadSharedExtension {
+    counts: Arc<VariantReloadLifecycleCounts>,
+    counts_lifecycle_drop: bool,
+}
+
+impl Clone for VariantReloadSharedExtension {
+    fn clone(&self) -> Self {
+        Self {
+            counts: Arc::clone(&self.counts),
+            counts_lifecycle_drop: false,
+        }
+    }
+}
+
+impl Drop for VariantReloadSharedExtension {
+    fn drop(&mut self) {
+        if self.counts_lifecycle_drop {
+            _ = self.counts.dropped.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+}
+
+#[async_trait]
+impl SharedNoOpStateless for VariantReloadSharedExtension {
+    fn name(&self) -> &str {
+        "variant-reload-shared"
+    }
+
+    fn echo(&self, value: u64) -> u64 {
+        value
+    }
+
+    async fn ping(&self) -> u64 {
+        0
+    }
+
+    async fn echo_async(&self, value: String) -> String {
+        value
+    }
+}
+
+#[async_trait]
+impl otel_arrow_dfe_engine::shared::extension::Extension for VariantReloadSharedExtension {
+    async fn start(
+        self: Box<Self>,
+        mut ctrl: otel_arrow_dfe_engine::shared::extension::ControlChannel,
+        _effect_handler: EffectHandler,
+    ) -> Result<TerminalState, EngineError> {
+        _ = self.counts.started.fetch_add(1, Ordering::SeqCst);
+        loop {
+            match ctrl.recv().await {
+                Ok(ExtensionControlMsg::Shutdown { .. }) | Err(_) => {
+                    _ = self.counts.stopped.fetch_add(1, Ordering::SeqCst);
+                    return Ok(TerminalState::default());
+                }
+                Ok(_) => {}
+            }
+        }
+    }
+}
+
+const VARIANT_RELOAD_EXTENSION_URN: &str = "urn:test:extension:variant-reload";
+
+fn variant_reload_extension_create(
+    _context: &ExtensionContext,
+    name: ExtensionId,
+    user_config: Arc<ExtensionUserConfig>,
+    runtime_config: &ExtensionConfig,
+) -> Result<ExtensionBundle, otel_arrow_dfe_config::error::Error> {
+    let probe_key = user_config
+        .config
+        .get("probe_key")
+        .and_then(|value| value.as_str())
+        .expect("variant reload extension config should contain probe_key");
+    let probe = lookup_variant_reload_probe(probe_key);
+    _ = probe.local.created.fetch_add(1, Ordering::SeqCst);
+    _ = probe.shared.created.fetch_add(1, Ordering::SeqCst);
+
+    let bundle = ExtensionWrapper::builder(name, user_config, runtime_config)
+        .active()
+        .shared(VariantReloadSharedExtension {
+            counts: probe.shared,
+            counts_lifecycle_drop: true,
+        })
+        .local(Rc::new(VariantReloadLocalExtension {
+            counts: probe.local,
+            counts_lifecycle_drop: true,
+        }))
+        .build()
+        .expect("variant reload extension bundle should build");
+    Ok(bundle)
+}
+
+const VARIANT_RELOAD_EXTENSION_FACTORY: ExtensionFactory = ExtensionFactory {
+    name: VARIANT_RELOAD_EXTENSION_URN,
+    description: "dual active extension for live-reload variant lifecycle tests",
+    documentation_url: "",
+    capabilities: Some(extension_capabilities!(
+        (
+            shared: VariantReloadSharedExtension,
+            local: VariantReloadLocalExtension
+        ) => [NoOpStateless]
+    )),
+    create: variant_reload_extension_create,
+    validate_config: test_validate_config,
+};
+
+const VARIANT_RELOAD_RECEIVER_URN: &str = "urn:test:receiver:variant-reload";
+
+fn variant_reload_receiver_create(
+    _pipeline_ctx: PipelineContext,
+    node: otel_arrow_dfe_engine::node::NodeId,
+    node_config: Arc<NodeUserConfig>,
+    receiver_config: &ReceiverConfig,
+    capabilities: &Capabilities,
+) -> Result<ReceiverWrapper<()>, otel_arrow_dfe_config::error::Error> {
+    match node_config
+        .config
+        .get("variant")
+        .and_then(|value| value.as_str())
+        .expect("variant reload receiver config should contain variant")
+    {
+        "local" => {
+            let capability = capabilities
+                .require_local::<NoOpStateless>()
+                .expect("local variant binding should resolve");
+            assert_eq!(capability.name(), "variant-reload-local");
+        }
+        "shared" => {
+            let capability = capabilities
+                .require_shared::<NoOpStateless>()
+                .expect("shared variant binding should resolve");
+            assert_eq!(capability.name(), "variant-reload-shared");
+        }
+        variant => panic!("unsupported variant reload receiver mode `{variant}`"),
+    }
+
+    Ok(ReceiverWrapper::local(
+        RecoveryTestReceiver,
+        node,
+        node_config,
+        receiver_config,
+    ))
+}
+
+const VARIANT_RELOAD_RECEIVER_FACTORY: ReceiverFactory<()> = ReceiverFactory {
+    name: VARIANT_RELOAD_RECEIVER_URN,
+    create: variant_reload_receiver_create,
+    context_declarations: None,
+    wiring_contract: WiringContract::UNRESTRICTED,
+    validate_config: test_validate_config,
+};
+
+#[otel_arrow_dfe_telemetry_macros::metric_set(name = "test.extension.outer_scope_live_reconfig")]
+#[derive(Debug, Default, Clone)]
+struct OuterScopeLiveReconfigMetrics {
+    #[metric(name = "reported", unit = "{item}")]
+    reported: otel_arrow_dfe_telemetry::instrument::Counter<u64>,
+}
+
+struct OuterScopeLiveReconfigProbe {
+    created: AtomicUsize,
+    started: AtomicUsize,
+    stopped: AtomicUsize,
+    dropped: AtomicUsize,
+    bindings: AtomicUsize,
+    collections: AtomicUsize,
+    provider_bindings: Mutex<Vec<OuterScopeProviderBinding>>,
+    // Delivers deterministic collection barriers from the scope-host task to the test driver.
+    collection_events: tokio::sync::mpsc::UnboundedSender<usize>,
+}
+
+struct OuterScopeProviderBinding {
+    key: DeployedPipelineKey,
+    value: u64,
+    failure: CancellationToken,
+}
+
+// Scope hosts and pipeline generations run on different threads. This registry shares only
+// per-test lifecycle counters, bounded test observations, failure controls, and collection
+// barriers, keyed by immutable test configuration.
+static OUTER_SCOPE_LIVE_RECONFIG_PROBES: std::sync::OnceLock<
+    Mutex<HashMap<String, Arc<OuterScopeLiveReconfigProbe>>>,
+> = std::sync::OnceLock::new();
+
+fn outer_scope_live_reconfig_probes()
+-> &'static Mutex<HashMap<String, Arc<OuterScopeLiveReconfigProbe>>> {
+    OUTER_SCOPE_LIVE_RECONFIG_PROBES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn register_outer_scope_live_reconfig_probe(
+    key: &str,
+) -> (
+    Arc<OuterScopeLiveReconfigProbe>,
+    tokio::sync::mpsc::UnboundedReceiver<usize>,
+) {
+    let (collection_events, collection_events_rx) = tokio::sync::mpsc::unbounded_channel();
+    let probe = Arc::new(OuterScopeLiveReconfigProbe {
+        created: AtomicUsize::new(0),
+        started: AtomicUsize::new(0),
+        stopped: AtomicUsize::new(0),
+        dropped: AtomicUsize::new(0),
+        bindings: AtomicUsize::new(0),
+        collections: AtomicUsize::new(0),
+        provider_bindings: Mutex::new(Vec::new()),
+        collection_events,
+    });
+    _ = outer_scope_live_reconfig_probes()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(key.to_owned(), Arc::clone(&probe));
+    (probe, collection_events_rx)
+}
+
+fn lookup_outer_scope_live_reconfig_probe(key: &str) -> Arc<OuterScopeLiveReconfigProbe> {
+    outer_scope_live_reconfig_probes()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(key)
+        .cloned()
+        .unwrap_or_else(|| panic!("outer-scope live-reconfig probe `{key}` is not registered"))
+}
+
+struct OuterScopeLiveReconfigExtension {
+    metrics: MetricSet<OuterScopeLiveReconfigMetrics>,
+    report_value: u64,
+    probe: Arc<OuterScopeLiveReconfigProbe>,
+    // Box-cloned capability handles share this provider-local counter across pipeline threads.
+    // Reconstructing a provider resets it, unlike the test's aggregate lifecycle counters.
+    counter: Arc<AtomicU64>,
+    last_recorded: Option<u64>,
+    counts_lifecycle_drop: bool,
+}
+
+impl Clone for OuterScopeLiveReconfigExtension {
+    fn clone(&self) -> Self {
+        Self {
+            metrics: self.metrics.clone(),
+            report_value: self.report_value,
+            probe: Arc::clone(&self.probe),
+            counter: Arc::clone(&self.counter),
+            last_recorded: self.last_recorded,
+            counts_lifecycle_drop: false,
+        }
+    }
+}
+
+impl Drop for OuterScopeLiveReconfigExtension {
+    fn drop(&mut self) {
+        if self.counts_lifecycle_drop {
+            _ = self.probe.dropped.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+}
+
+#[async_trait]
+impl SharedNoOpStateless for OuterScopeLiveReconfigExtension {
+    fn name(&self) -> &str {
+        "outer-scope-live-reconfig"
+    }
+
+    fn echo(&self, value: u64) -> u64 {
+        value
+    }
+
+    async fn ping(&self) -> u64 {
+        0
+    }
+
+    async fn echo_async(&self, value: String) -> String {
+        value
+    }
+}
+
+#[async_trait]
+impl SharedNoOpStateful for OuterScopeLiveReconfigExtension {
+    fn count(&self) -> u64 {
+        self.counter.load(Ordering::SeqCst)
+    }
+
+    fn increment(&mut self) -> u64 {
+        self.counter.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    fn reset(&mut self) {
+        self.counter.store(0, Ordering::SeqCst);
+        self.last_recorded = None;
+    }
+
+    async fn record(&mut self, value: u64) -> u64 {
+        self.last_recorded = Some(value);
+        self.count() + value
+    }
+
+    fn last_recorded(&self) -> Option<u64> {
+        self.last_recorded
+    }
+}
+
+#[async_trait]
+impl otel_arrow_dfe_engine::shared::extension::Extension for OuterScopeLiveReconfigExtension {
+    async fn start(
+        mut self: Box<Self>,
+        mut ctrl: otel_arrow_dfe_engine::shared::extension::ControlChannel,
+        _effect_handler: EffectHandler,
+    ) -> Result<TerminalState, EngineError> {
+        _ = self.probe.started.fetch_add(1, Ordering::SeqCst);
+        loop {
+            match ctrl.recv().await {
+                Ok(ExtensionControlMsg::CollectTelemetry {
+                    mut metrics_reporter,
+                }) => {
+                    self.metrics.reported.add(self.report_value);
+                    metrics_reporter
+                        .report(&mut self.metrics)
+                        .map_err(|error| EngineError::InternalError {
+                            message: format!(
+                                "outer-scope live-reconfig metric reporting failed: {error}"
+                            ),
+                        })?;
+                    let collection = self.probe.collections.fetch_add(1, Ordering::SeqCst) + 1;
+                    _ = self.probe.collection_events.send(collection);
+                }
+                Ok(ExtensionControlMsg::Shutdown { .. }) | Err(_) => {
+                    _ = self.probe.stopped.fetch_add(1, Ordering::SeqCst);
+                    return Ok(TerminalState::default());
+                }
+                Ok(ExtensionControlMsg::Config { .. }) => {}
+            }
+        }
+    }
+}
+
+const OUTER_SCOPE_LIVE_RECONFIG_EXTENSION_URN: &str =
+    "urn:test:extension:outer-scope-live-reconfig";
+
+fn outer_scope_live_reconfig_extension_create(
+    context: &ExtensionContext,
+    name: ExtensionId,
+    user_config: Arc<ExtensionUserConfig>,
+    runtime_config: &ExtensionConfig,
+) -> Result<ExtensionBundle, otel_arrow_dfe_config::error::Error> {
+    let probe_key = user_config
+        .config
+        .get("probe_key")
+        .and_then(|value| value.as_str())
+        .expect("outer-scope extension config should contain probe_key");
+    let report_value = user_config
+        .config
+        .get("report_value")
+        .and_then(serde_json::Value::as_u64)
+        .expect("outer-scope extension config should contain report_value");
+    let probe = lookup_outer_scope_live_reconfig_probe(probe_key);
+    _ = probe.created.fetch_add(1, Ordering::SeqCst);
+
+    let entity_key = context.register_extension_entity(name.clone(), ExtensionVariant::Shared);
+    let metrics =
+        context.register_metric_set_for_entity::<OuterScopeLiveReconfigMetrics>(entity_key);
+    let bundle = ExtensionWrapper::builder(name, user_config, runtime_config)
+        .active()
+        .shared(OuterScopeLiveReconfigExtension {
+            metrics,
+            report_value,
+            probe,
+            counter: Arc::new(AtomicU64::new(report_value)),
+            last_recorded: None,
+            counts_lifecycle_drop: true,
+        })
+        .build()
+        .expect("outer-scope live-reconfig extension should build");
+    Ok(bundle)
+}
+
+const OUTER_SCOPE_LIVE_RECONFIG_EXTENSION_FACTORY: ExtensionFactory = ExtensionFactory {
+    name: OUTER_SCOPE_LIVE_RECONFIG_EXTENSION_URN,
+    description: "active shared extension for outer-scope live-reconfiguration tests",
+    documentation_url: "",
+    capabilities: Some(extension_capabilities!(
+        shared: OuterScopeLiveReconfigExtension => [NoOpStateless, NoOpStateful]
+    )),
+    create: outer_scope_live_reconfig_extension_create,
+    validate_config: test_validate_config,
+};
+
+const OUTER_SCOPE_LIVE_RECONFIG_RECEIVER_URN: &str = "urn:test:receiver:outer-scope-live-reconfig";
+
+struct OuterScopeLiveReconfigReceiver {
+    failure: CancellationToken,
+}
+
+#[async_trait(?Send)]
+impl receiver::Receiver<()> for OuterScopeLiveReconfigReceiver {
+    async fn start(
+        self: Box<Self>,
+        ctrl_chan: receiver::ControlChannel<()>,
+        effect_handler: receiver::EffectHandler<()>,
+    ) -> Result<TerminalState, EngineError> {
+        tokio::select! {
+            result = Box::new(RecoveryTestReceiver).start(ctrl_chan, effect_handler) => result,
+            _ = self.failure.cancelled() => Err(EngineError::InternalError {
+                message: "injected outer-scope receiver runtime failure".to_owned(),
+            }),
+        }
+    }
+}
+
+fn outer_scope_live_reconfig_receiver_create(
+    pipeline_ctx: PipelineContext,
+    node: otel_arrow_dfe_engine::node::NodeId,
+    node_config: Arc<NodeUserConfig>,
+    receiver_config: &ReceiverConfig,
+    capabilities: &Capabilities,
+) -> Result<ReceiverWrapper<()>, otel_arrow_dfe_config::error::Error> {
+    if node_config
+        .config
+        .get("unbound")
+        .and_then(serde_json::Value::as_bool)
+        == Some(true)
+    {
+        assert!(
+            capabilities
+                .optional_shared::<NoOpStateless>()
+                .expect("unbound stateless capability lookup should succeed")
+                .is_none()
+        );
+        assert!(
+            capabilities
+                .optional_shared::<NoOpStateful>()
+                .expect("unbound stateful capability lookup should succeed")
+                .is_none()
+        );
+        return Ok(ReceiverWrapper::local(
+            RecoveryTestReceiver,
+            node,
+            node_config,
+            receiver_config,
+        ));
+    }
+    let probe_key = node_config
+        .config
+        .get("probe_key")
+        .and_then(|value| value.as_str())
+        .expect("outer-scope receiver config should contain probe_key");
+    let capability = capabilities
+        .require_shared::<NoOpStateless>()
+        .expect("outer-scope shared capability should resolve");
+    assert_eq!(capability.name(), "outer-scope-live-reconfig");
+    assert_eq!(capability.echo(37), 37);
+    let probe = lookup_outer_scope_live_reconfig_probe(probe_key);
+    let failure = CancellationToken::new();
+    if let Some(mut capability) = capabilities
+        .optional_shared::<NoOpStateful>()
+        .expect("stateful capability lookup should succeed")
+    {
+        probe
+            .provider_bindings
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(OuterScopeProviderBinding {
+                key: DeployedPipelineKey {
+                    pipeline_group_id: pipeline_ctx.pipeline_group_id(),
+                    pipeline_id: pipeline_ctx.pipeline_id(),
+                    core_id: pipeline_ctx.core_id(),
+                    deployment_generation: pipeline_ctx.deployment_generation(),
+                },
+                value: capability.increment(),
+                failure: failure.clone(),
+            });
+    }
+    _ = probe.bindings.fetch_add(1, Ordering::SeqCst);
+    if node_config
+        .config
+        .get("fail_on_core")
+        .and_then(serde_json::Value::as_u64)
+        == Some(pipeline_ctx.core_id() as u64)
+    {
+        return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
+            error: "injected outer-scope receiver construction failure".to_owned(),
+        });
+    }
+
+    Ok(ReceiverWrapper::local(
+        OuterScopeLiveReconfigReceiver { failure },
+        node,
+        node_config,
+        receiver_config,
+    ))
+}
+
+const OUTER_SCOPE_LIVE_RECONFIG_RECEIVER_FACTORY: ReceiverFactory<()> = ReceiverFactory {
+    name: OUTER_SCOPE_LIVE_RECONFIG_RECEIVER_URN,
+    create: outer_scope_live_reconfig_receiver_create,
+    context_declarations: None,
+    wiring_contract: WiringContract::UNRESTRICTED,
+    validate_config: test_validate_config,
+};
+
 static TEST_RECEIVER_FACTORIES: &[ReceiverFactory<()>] = &[
     ReceiverFactory {
         name: "urn:test:receiver:example",
@@ -280,6 +901,7 @@ static TEST_RECEIVER_FACTORIES: &[ReceiverFactory<()>] = &[
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
     },
+    VARIANT_RELOAD_RECEIVER_FACTORY,
     ReceiverFactory {
         name: "urn:otel:receiver:topic",
         create: test_receiver_create,
@@ -342,11 +964,42 @@ static TEST_EXPORTER_FACTORIES: &[ExporterFactory<()>] = &[
     },
 ];
 
+fn test_scope_extension_create(
+    _context: &ExtensionContext,
+    name: ExtensionId,
+    user_config: Arc<ExtensionUserConfig>,
+    runtime_config: &ExtensionConfig,
+) -> Result<ExtensionBundle, otel_arrow_dfe_config::error::Error> {
+    Ok(ExtensionWrapper::builder(name, user_config, runtime_config)
+        .passive()
+        .cloned()
+        .shared(())
+        .build()
+        .expect("test scope-hosted extension should build"))
+}
+
+static TEST_EXTENSION_FACTORIES: &[ExtensionFactory] = &[
+    ExtensionFactory {
+        name: "urn:test:extension:scope-shared",
+        description: "shared extension for declaration-scope live-control tests",
+        documentation_url: "",
+        capabilities: Some(ExtensionCapabilities {
+            shared: &["bearer_token_provider"],
+            local: &[],
+            register_shared: |_, _, _| Ok(()),
+            register_local: |_, _, _| Ok(()),
+        }),
+        create: test_scope_extension_create,
+        validate_config: test_validate_config,
+    },
+    VARIANT_RELOAD_EXTENSION_FACTORY,
+];
+
 static TEST_PIPELINE_FACTORY: PipelineFactory<()> = PipelineFactory::new(
     TEST_RECEIVER_FACTORIES,
     TEST_PROCESSOR_FACTORIES,
     TEST_EXPORTER_FACTORIES,
-    &[],
+    TEST_EXTENSION_FACTORIES,
 );
 
 static CONTEXT_BINDINGS_TEST_RECEIVER_FACTORIES: &[ReceiverFactory<()>] = &[
@@ -449,6 +1102,48 @@ static RECOVERY_TEST_PIPELINE_FACTORY: PipelineFactory<()> = PipelineFactory::ne
     &[],
 );
 
+static VARIANT_RELOAD_TEST_RECEIVER_FACTORIES: &[ReceiverFactory<()>] = &[
+    VARIANT_RELOAD_RECEIVER_FACTORY,
+    ReceiverFactory {
+        name: "urn:otel:receiver:internal_telemetry",
+        create: recovery_test_receiver_create,
+        context_declarations: None,
+        wiring_contract: WiringContract::UNRESTRICTED,
+        validate_config: test_validate_config,
+    },
+];
+
+static VARIANT_RELOAD_TEST_EXTENSION_FACTORIES: &[ExtensionFactory] =
+    &[VARIANT_RELOAD_EXTENSION_FACTORY];
+
+static VARIANT_RELOAD_TEST_PIPELINE_FACTORY: PipelineFactory<()> = PipelineFactory::new(
+    VARIANT_RELOAD_TEST_RECEIVER_FACTORIES,
+    TEST_PROCESSOR_FACTORIES,
+    RECOVERY_TEST_EXPORTER_FACTORIES,
+    VARIANT_RELOAD_TEST_EXTENSION_FACTORIES,
+);
+
+static OUTER_SCOPE_LIVE_RECONFIG_TEST_RECEIVER_FACTORIES: &[ReceiverFactory<()>] = &[
+    OUTER_SCOPE_LIVE_RECONFIG_RECEIVER_FACTORY,
+    ReceiverFactory {
+        name: "urn:otel:receiver:internal_telemetry",
+        create: recovery_test_receiver_create,
+        context_declarations: None,
+        wiring_contract: WiringContract::UNRESTRICTED,
+        validate_config: test_validate_config,
+    },
+];
+
+static OUTER_SCOPE_LIVE_RECONFIG_TEST_EXTENSION_FACTORIES: &[ExtensionFactory] =
+    &[OUTER_SCOPE_LIVE_RECONFIG_EXTENSION_FACTORY];
+
+static OUTER_SCOPE_LIVE_RECONFIG_TEST_PIPELINE_FACTORY: PipelineFactory<()> = PipelineFactory::new(
+    OUTER_SCOPE_LIVE_RECONFIG_TEST_RECEIVER_FACTORIES,
+    TEST_PROCESSOR_FACTORIES,
+    RECOVERY_TEST_EXPORTER_FACTORIES,
+    OUTER_SCOPE_LIVE_RECONFIG_TEST_EXTENSION_FACTORIES,
+);
+
 fn test_runtime(config: &OtelDataflowSpec) -> Arc<ControllerRuntime<()>> {
     test_runtime_with_factory_and_topology(config, &TEST_PIPELINE_FACTORY, NumaTopology::unknown())
 }
@@ -473,6 +1168,35 @@ fn test_runtime_with_factory_and_topology(
     topology: NumaTopology,
 ) -> Arc<ControllerRuntime<()>> {
     test_runtime_with_log_filter_and_topology(config, pipeline_factory, topology).0
+}
+
+fn test_runtime_with_extension_scope_registry(
+    config: &OtelDataflowSpec,
+    extension_scope_registry: ExtensionScopeRegistry,
+) -> Arc<ControllerRuntime<()>> {
+    test_runtime_with_factory_and_extension_scope_registry(
+        config,
+        &TEST_PIPELINE_FACTORY,
+        extension_scope_registry,
+    )
+}
+
+fn test_runtime_with_factory_and_extension_scope_registry(
+    config: &OtelDataflowSpec,
+    pipeline_factory: &'static PipelineFactory<()>,
+    extension_scope_registry: ExtensionScopeRegistry,
+) -> Arc<ControllerRuntime<()>> {
+    let (log_filter, log_filter_handle) =
+        RuntimeLogFilter::new(config.engine.telemetry.logs.level.as_ref());
+    test_runtime_with_supplied_log_filter_topology_and_extension_scope_registry(
+        config,
+        pipeline_factory,
+        NumaTopology::unknown(),
+        log_filter,
+        log_filter_handle,
+        extension_scope_registry,
+    )
+    .0
 }
 
 fn test_runtime_with_log_filter(
@@ -517,6 +1241,28 @@ fn test_runtime_with_supplied_log_filter_and_topology(
     RuntimeLogFilterHandle,
     RuntimeLogFilter,
 ) {
+    test_runtime_with_supplied_log_filter_topology_and_extension_scope_registry(
+        config,
+        pipeline_factory,
+        topology,
+        log_filter,
+        log_filter_handle,
+        ExtensionScopeRegistry::default(),
+    )
+}
+
+fn test_runtime_with_supplied_log_filter_topology_and_extension_scope_registry(
+    config: &OtelDataflowSpec,
+    pipeline_factory: &'static PipelineFactory<()>,
+    topology: NumaTopology,
+    log_filter: RuntimeLogFilter,
+    log_filter_handle: RuntimeLogFilterHandle,
+    extension_scope_registry: ExtensionScopeRegistry,
+) -> (
+    Arc<ControllerRuntime<()>>,
+    RuntimeLogFilterHandle,
+    RuntimeLogFilter,
+) {
     let registry = TelemetryRegistryHandle::new();
     let observed_state_store =
         ObservedStateStore::new(&ObservedStateSettings::default(), registry.clone());
@@ -539,6 +1285,7 @@ fn test_runtime_with_supplied_log_filter_and_topology(
             observed_state_handle,
             engine_event_reporter,
             metrics_reporter,
+            extension_scope_registry,
             declared_topics,
             context.runtime_requirements,
             context.bindings,
@@ -652,6 +1399,559 @@ where
             pipeline_key.pipeline_id()
         );
         thread::sleep(Duration::from_millis(25));
+    }
+}
+
+fn wait_for_atomic_count(counter: &AtomicUsize, expected: usize, label: &str) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let actual = counter.load(Ordering::SeqCst);
+        if actual == expected {
+            return;
+        }
+        assert!(
+            actual < expected,
+            "{label} exceeded expected count {expected}: {actual}"
+        );
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for {label} to reach {expected}; current count: {actual}"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+fn wait_for_terminal_rollout(runtime: &ControllerRuntime<()>, rollout_id: &str) -> RolloutStatus {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let status = runtime
+            .rollout_status_snapshot(rollout_id)
+            .expect("rollout should remain queryable");
+        if matches!(
+            status.state,
+            ApiPipelineRolloutState::Succeeded
+                | ApiPipelineRolloutState::Failed
+                | ApiPipelineRolloutState::RollbackFailed
+        ) {
+            return status;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for rollout {rollout_id}; current state: {:?}",
+            status.state
+        );
+        thread::sleep(Duration::from_millis(25));
+    }
+}
+
+fn launch_committed_test_pipeline(
+    runtime: &Arc<ControllerRuntime<()>>,
+    config: &OtelDataflowSpec,
+) -> DeployedPipelineKey {
+    let resolved = config
+        .resolve()
+        .pipelines
+        .into_iter()
+        .find(|pipeline| {
+            pipeline.role == ResolvedPipelineRole::Regular
+                && pipeline.pipeline_group_id.as_ref() == "g1"
+                && pipeline.pipeline_id.as_ref() == "p1"
+        })
+        .expect("resolved test pipeline should exist");
+    let placement = runtime
+        .pipeline_placement_for_resolved(&resolved)
+        .expect("test pipeline placement should resolve");
+    let live_placement = runtime.live_pipeline_placement_from(&resolved, placement.clone(), 0);
+    let inherited_extensions =
+        runtime.inherited_extensions_for_pipeline(&resolved.pipeline_group_id, &resolved.pipeline);
+    runtime.register_committed_pipeline_with_inherited(
+        resolved.clone(),
+        inherited_extensions.clone(),
+        placement,
+        0,
+    );
+    let deployed_key = runtime
+        .launch_regular_pipeline_instance(
+            &resolved,
+            &inherited_extensions,
+            current_test_context_bindings(runtime),
+            &live_placement,
+            0,
+            0,
+        )
+        .expect("initial test pipeline should launch");
+    runtime
+        .wait_for_pipeline_ready(&deployed_key, Instant::now() + Duration::from_secs(5))
+        .expect("initial test pipeline should become ready");
+    deployed_key
+}
+
+fn variant_reload_pipeline_yaml(probe_key: &str, include_local_consumer: bool) -> String {
+    let local_node = include_local_consumer.then(|| {
+        format!(
+            r#"
+  local_receiver:
+    type: "{VARIANT_RELOAD_RECEIVER_URN}"
+    config:
+      variant: local
+    capabilities:
+      no_op_stateless: variant_extension"#
+        )
+    });
+    let local_connection = include_local_consumer.then_some(
+        r#"
+  - from: local_receiver
+    to: exporter"#,
+    );
+
+    format!(
+        r#"
+policies:
+  resources:
+    core_allocation:
+      type: core_count
+      count: 1
+extensions:
+  variant_extension:
+    type: "{VARIANT_RELOAD_EXTENSION_URN}"
+    config:
+      probe_key: "{probe_key}"
+nodes:
+  shared_receiver:
+    type: "{VARIANT_RELOAD_RECEIVER_URN}"
+    config:
+      variant: shared
+    capabilities:
+      no_op_stateless: variant_extension
+{local_node}
+  exporter:
+    type: "urn:test:exporter:example"
+connections:
+  - from: shared_receiver
+    to: exporter
+{local_connection}
+"#,
+        local_node = local_node.as_deref().unwrap_or(""),
+        local_connection = local_connection.unwrap_or(""),
+    )
+}
+
+fn variant_reload_engine_config(probe_key: &str, include_local_consumer: bool) -> OtelDataflowSpec {
+    let pipeline_yaml = variant_reload_pipeline_yaml(probe_key, include_local_consumer);
+    let indented_pipeline = pipeline_yaml
+        .lines()
+        .map(|line| format!("        {line}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    OtelDataflowSpec::from_yaml(&format!(
+        "version: otel_dataflow/v1\ngroups:\n  g1:\n    pipelines:\n      p1:\n{indented_pipeline}\n"
+    ))
+    .expect("variant reload engine config should parse")
+}
+
+fn variant_reload_pipeline_config(probe_key: &str, include_local_consumer: bool) -> PipelineConfig {
+    PipelineConfig::from_yaml(
+        "g1".into(),
+        "p1".into(),
+        &variant_reload_pipeline_yaml(probe_key, include_local_consumer),
+    )
+    .expect("variant reload pipeline config should parse")
+}
+
+#[derive(Clone, Copy)]
+enum OuterScopeLiveReconfigDeclarationScope {
+    Engine,
+    PipelineGroup,
+}
+
+impl OuterScopeLiveReconfigDeclarationScope {
+    const fn probe_key(self) -> &'static str {
+        match self {
+            Self::Engine => "engine-outer-scope-live-reconfig",
+            Self::PipelineGroup => "group-outer-scope-live-reconfig",
+        }
+    }
+
+    const fn report_value(self) -> u64 {
+        match self {
+            Self::Engine => 17,
+            Self::PipelineGroup => 29,
+        }
+    }
+
+    const fn scope_kind(self) -> &'static str {
+        match self {
+            Self::Engine => "engine",
+            Self::PipelineGroup => "group",
+        }
+    }
+
+    const fn pipeline_group_id(self) -> Option<&'static str> {
+        match self {
+            Self::Engine => None,
+            Self::PipelineGroup => Some("g1"),
+        }
+    }
+}
+
+fn outer_scope_live_reconfig_pipeline_yaml(probe_key: &str, revision: u64) -> String {
+    format!(
+        r#"
+policies:
+  resources:
+    core_allocation:
+      type: core_count
+      count: 1
+nodes:
+  receiver:
+    type: "{OUTER_SCOPE_LIVE_RECONFIG_RECEIVER_URN}"
+    config:
+      probe_key: "{probe_key}"
+      revision: {revision}
+    capabilities:
+      no_op_stateless: outer_scope_extension
+  exporter:
+    type: "urn:test:exporter:example"
+connections:
+  - from: receiver
+    to: exporter
+"#
+    )
+}
+
+fn outer_scope_live_reconfig_engine_config(
+    declaration_scope: OuterScopeLiveReconfigDeclarationScope,
+) -> OtelDataflowSpec {
+    outer_scope_live_reconfig_engine_config_with_revision(declaration_scope, 0)
+}
+
+fn outer_scope_live_reconfig_engine_config_with_revision(
+    declaration_scope: OuterScopeLiveReconfigDeclarationScope,
+    revision: u64,
+) -> OtelDataflowSpec {
+    outer_scope_live_reconfig_engine_config_for_probe(
+        declaration_scope,
+        declaration_scope.probe_key(),
+        revision,
+    )
+}
+
+fn outer_scope_live_reconfig_engine_config_for_probe(
+    declaration_scope: OuterScopeLiveReconfigDeclarationScope,
+    probe_key: &str,
+    revision: u64,
+) -> OtelDataflowSpec {
+    let report_value = declaration_scope.report_value();
+    let pipeline_yaml = outer_scope_live_reconfig_pipeline_yaml(probe_key, revision);
+    let indented_pipeline = pipeline_yaml
+        .lines()
+        .map(|line| format!("        {line}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let yaml = match declaration_scope {
+        OuterScopeLiveReconfigDeclarationScope::Engine => format!(
+            r#"
+version: otel_dataflow/v1
+extensions:
+  outer_scope_extension:
+    type: "{OUTER_SCOPE_LIVE_RECONFIG_EXTENSION_URN}"
+    config:
+      probe_key: "{probe_key}"
+      report_value: {report_value}
+groups:
+  g1:
+    pipelines:
+      p1:
+{indented_pipeline}
+"#
+        ),
+        OuterScopeLiveReconfigDeclarationScope::PipelineGroup => format!(
+            r#"
+version: otel_dataflow/v1
+groups:
+  g1:
+    extensions:
+      outer_scope_extension:
+        type: "{OUTER_SCOPE_LIVE_RECONFIG_EXTENSION_URN}"
+        config:
+          probe_key: "{probe_key}"
+          report_value: {report_value}
+    pipelines:
+      p1:
+{indented_pipeline}
+"#
+        ),
+    };
+    OtelDataflowSpec::from_yaml(&yaml).expect("outer-scope live-reconfig config should parse")
+}
+
+fn outer_scope_stateful_config(
+    declaration_scope: OuterScopeLiveReconfigDeclarationScope,
+    probe_key: &str,
+) -> OtelDataflowSpec {
+    let mut config =
+        outer_scope_live_reconfig_engine_config_for_probe(declaration_scope, probe_key, 0);
+    let pipeline = config
+        .groups
+        .get_mut(&PipelineGroupId::from("g1"))
+        .and_then(|group| group.pipelines.get_mut(&PipelineId::from("p1")))
+        .expect("test pipeline should exist");
+    let mut json = serde_json::to_value(&*pipeline).expect("pipeline should serialize");
+    json["nodes"]["receiver"]["capabilities"]["no_op_stateful"] =
+        serde_json::json!("outer_scope_extension");
+    json["policies"]["runtime_recovery"] = serde_json::json!({
+        "initial_backoff": "1ms",
+        "max_backoff": "1ms",
+        "startup_timeout": "5s",
+    });
+    *pipeline = outer_scope_pipeline_from_json(&json);
+    config
+}
+
+fn outer_scope_pipeline_from_json(json: &serde_json::Value) -> PipelineConfig {
+    PipelineConfig::from_json_allowing_inherited_extensions(
+        "g1".into(),
+        "p1".into(),
+        &json.to_string(),
+    )
+    .expect("test pipeline should parse")
+}
+
+fn outer_scope_provider_values(probe: &OuterScopeLiveReconfigProbe) -> Vec<(usize, u64, u64)> {
+    probe
+        .provider_bindings
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .iter()
+        .map(|binding| {
+            (
+                binding.key.core_id,
+                binding.key.deployment_generation,
+                binding.value,
+            )
+        })
+        .collect()
+}
+
+fn run_outer_scope_rollout(
+    runtime: &Arc<ControllerRuntime<()>>,
+    pipeline: &serde_json::Value,
+    expected_action: RolloutAction,
+    expected_state: ApiPipelineRolloutState,
+) -> RolloutStatus {
+    let plan = runtime
+        .prepare_rollout_plan(
+            "g1",
+            "p1",
+            &ReconfigureRequest {
+                pipeline: outer_scope_pipeline_from_json(pipeline),
+                step_timeout_secs: 5,
+                drain_timeout_secs: 5,
+            },
+        )
+        .expect("outer-scope rollout should plan");
+    assert_eq!(plan.action, expected_action);
+    let accepted = runtime.spawn_rollout(plan).expect("rollout should start");
+    let status = wait_for_terminal_rollout(runtime, &accepted.rollout_id);
+    assert_eq!(
+        status.state, expected_state,
+        "unexpected rollout result: {:?}",
+        status.failure_reason
+    );
+    status
+}
+
+fn outer_scope_live_reconfig_replacement(
+    declaration_scope: OuterScopeLiveReconfigDeclarationScope,
+) -> PipelineConfig {
+    outer_scope_live_reconfig_engine_config_with_revision(declaration_scope, 1)
+        .groups
+        .get(&PipelineGroupId::from("g1"))
+        .and_then(|group| group.pipelines.get(&PipelineId::from("p1")))
+        .cloned()
+        .expect("outer-scope live-reconfig replacement pipeline should exist")
+}
+
+async fn wait_for_outer_scope_collection(
+    collection_events: &mut tokio::sync::mpsc::UnboundedReceiver<usize>,
+    expected: usize,
+) {
+    let received = tokio::time::timeout(Duration::from_secs(15), collection_events.recv())
+        .await
+        .expect("outer-scope telemetry collection should arrive within one collection period")
+        .expect("outer-scope telemetry collection channel should remain open");
+    assert_eq!(
+        received, expected,
+        "outer-scope telemetry collection sequence must be monotonic"
+    );
+}
+
+fn assert_outer_scope_live_reconfig_metric_batch(
+    batch: MetricExportBatch,
+    declaration_scope: OuterScopeLiveReconfigDeclarationScope,
+) -> BTreeMap<String, String> {
+    let mut matching = batch.metric_sets.into_iter().filter(|metric_set| {
+        metric_set.descriptor.name == "test.extension.outer_scope_live_reconfig"
+    });
+    let metric_set = matching
+        .next()
+        .expect("outer-scope custom metric set must reach the collector");
+    assert!(
+        matching.next().is_none(),
+        "one hosted outer-scope extension must produce one custom metric set per collection"
+    );
+    assert_eq!(
+        metric_set.values,
+        vec![MetricValue::from(declaration_scope.report_value())]
+    );
+
+    let attributes = metric_set
+        .attributes
+        .iter_attributes()
+        .map(|(key, value)| (key.to_owned(), value.to_string_value()))
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(
+        attributes.get("extension.id").map(String::as_str),
+        Some("outer_scope_extension")
+    );
+    assert_eq!(
+        attributes.get("extension.variant").map(String::as_str),
+        Some("shared")
+    );
+    assert_eq!(
+        attributes.get("scope.kind").map(String::as_str),
+        Some(declaration_scope.scope_kind())
+    );
+    match declaration_scope.pipeline_group_id() {
+        Some(pipeline_group_id) => assert_eq!(
+            attributes.get("pipeline.group.id").map(String::as_str),
+            Some(pipeline_group_id)
+        ),
+        None => assert!(
+            attributes
+                .get("pipeline.group.id")
+                .map(String::as_str)
+                .unwrap_or_default()
+                .is_empty(),
+            "engine-scoped metrics must not carry a pipeline group identity"
+        ),
+    }
+    attributes
+}
+
+async fn exercise_outer_scope_extension_live_reconfig(
+    declaration_scope: OuterScopeLiveReconfigDeclarationScope,
+) {
+    let (probe, mut collection_events) =
+        register_outer_scope_live_reconfig_probe(declaration_scope.probe_key());
+    let config = outer_scope_live_reconfig_engine_config(declaration_scope);
+    let telemetry_system = InternalTelemetrySystem::default();
+    let collector = telemetry_system.collector();
+    let extension_scope_registry = ExtensionScopeRegistry::default();
+    let controller_context = ControllerContext::new(telemetry_system.registry());
+    let prepared = OUTER_SCOPE_LIVE_RECONFIG_TEST_PIPELINE_FACTORY
+        .prepare_extension_scope_hosts(
+            &config,
+            &controller_context,
+            telemetry_system.reporter(),
+            extension_scope_registry.clone(),
+        )
+        .expect("outer-scope extension hosts should prepare");
+    let running = prepared
+        .start()
+        .await
+        .expect("outer-scope extension hosts should start");
+    tokio::task::yield_now().await;
+    assert_eq!(probe.created.load(Ordering::SeqCst), 1);
+    assert_eq!(probe.started.load(Ordering::SeqCst), 1);
+
+    let runtime = test_runtime_with_factory_and_extension_scope_registry(
+        &config,
+        &OUTER_SCOPE_LIVE_RECONFIG_TEST_PIPELINE_FACTORY,
+        extension_scope_registry,
+    );
+    let _observed_state_runner = ObservedStateRunner::start(&runtime);
+    let _initial_key = launch_committed_test_pipeline(&runtime, &config);
+    wait_for_atomic_count(&probe.bindings, 1, "initial outer-scope capability binding");
+
+    let plan = runtime
+        .prepare_rollout_plan(
+            "g1",
+            "p1",
+            &ReconfigureRequest {
+                pipeline: outer_scope_live_reconfig_replacement(declaration_scope),
+                step_timeout_secs: 5,
+                drain_timeout_secs: 5,
+            },
+        )
+        .expect("outer-scope pipeline replacement should plan");
+    assert_eq!(plan.action, RolloutAction::Replace);
+    let accepted = runtime
+        .spawn_rollout(plan)
+        .expect("outer-scope pipeline replacement should start");
+    let status = wait_for_terminal_rollout(&runtime, &accepted.rollout_id);
+    assert_eq!(
+        status.state,
+        ApiPipelineRolloutState::Succeeded,
+        "outer-scope pipeline replacement failed: {:?}",
+        status.failure_reason
+    );
+    wait_for_atomic_count(
+        &probe.bindings,
+        2,
+        "replacement outer-scope capability binding",
+    );
+    assert_eq!(probe.created.load(Ordering::SeqCst), 1);
+    assert_eq!(probe.started.load(Ordering::SeqCst), 1);
+    assert_eq!(probe.stopped.load(Ordering::SeqCst), 0);
+    assert_eq!(probe.dropped.load(Ordering::SeqCst), 0);
+
+    tokio::time::advance(Duration::from_secs(1)).await;
+    wait_for_outer_scope_collection(&mut collection_events, 1).await;
+    collector.collect_pending();
+    _ = assert_outer_scope_live_reconfig_metric_batch(
+        telemetry_system.registry().drain_metric_export_batch(),
+        declaration_scope,
+    );
+    assert_eq!(probe.collections.load(Ordering::SeqCst), 1);
+
+    let target_key = deployed_key("g1", "p1", 0, status.target_generation);
+    shutdown_test_pipeline(&runtime, &target_key);
+    assert_eq!(probe.stopped.load(Ordering::SeqCst), 0);
+    assert_eq!(probe.dropped.load(Ordering::SeqCst), 0);
+
+    tokio::time::resume();
+    running
+        .shutdown()
+        .await
+        .expect("outer-scope extension hosts should stop cleanly");
+    assert_eq!(probe.stopped.load(Ordering::SeqCst), 1);
+    assert_eq!(probe.dropped.load(Ordering::SeqCst), 1);
+    collector.collect_pending();
+}
+
+fn shutdown_test_pipeline(
+    runtime: &Arc<ControllerRuntime<()>>,
+    deployed_key: &DeployedPipelineKey,
+) {
+    runtime
+        .request_instance_shutdown(deployed_key, 5, "variant reload test cleanup")
+        .expect("test pipeline should accept shutdown");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let active_instances = runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .active_instances;
+        if active_instances == 0 {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for test pipeline shutdown; active instances: {active_instances}"
+        );
+        thread::sleep(Duration::from_millis(10));
     }
 }
 
@@ -770,6 +2070,14 @@ fn simple_pipeline_yaml() -> &'static str {
 
 fn register_existing_pipeline(runtime: &ControllerRuntime<()>, config: &OtelDataflowSpec) {
     register_pipeline(runtime, config, "g1", "p1");
+}
+
+fn current_test_context_bindings(runtime: &ControllerRuntime<()>) -> Arc<CompiledContextBindings> {
+    let state = runtime
+        .state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    Arc::clone(&state.latest_context_bindings)
 }
 
 fn register_pipeline(
@@ -934,6 +2242,22 @@ fn deadline_notifying_admin_sender() -> (
         Arc::new(DeadlineNotifyingPipelineAdminSender { notification }),
         receiver,
     )
+}
+
+struct ExitThenFailPipelineAdminSender {
+    runtime: std::sync::Weak<ControllerRuntime<()>>,
+    deployed_key: DeployedPipelineKey,
+}
+
+impl PipelineAdminSender for ExitThenFailPipelineAdminSender {
+    fn try_send_shutdown(&self, _deadline: Instant, _reason: String) -> Result<(), EngineError> {
+        if let Some(runtime) = self.runtime.upgrade() {
+            runtime.note_instance_exit(self.deployed_key.clone(), RuntimeInstanceExit::Success);
+        }
+        Err(EngineError::RuntimeMsgError {
+            error: "sender closed after clean exit".to_owned(),
+        })
+    }
 }
 
 fn launched_runtime_instance(
@@ -3922,6 +5246,609 @@ fn create_group_rejects_payload_with_pipelines() {
     assert!(runtime.group_details_snapshot(&group_id).is_none());
 }
 
+/// Scenario: generation 0 prunes an unconsumed local extension variant, then
+/// live reload adds a node that consumes the local capability.
+/// Guarantees: the replacement generation constructs and starts a fresh local
+/// variant while the disposed generation-0 local variant remains stopped.
+#[test]
+fn live_reload_recreates_previously_pruned_local_extension_variant() {
+    let initial_probe = register_variant_reload_probe("variant-reload-unused-to-needed-initial");
+    let target_probe = register_variant_reload_probe("variant-reload-unused-to-needed-target");
+    let config = variant_reload_engine_config("variant-reload-unused-to-needed-initial", false);
+    let runtime = test_runtime_with_factory(&config, &VARIANT_RELOAD_TEST_PIPELINE_FACTORY);
+    let _observed_state_runner = ObservedStateRunner::start(&runtime);
+    let _initial_key = launch_committed_test_pipeline(&runtime, &config);
+
+    wait_for_atomic_count(&initial_probe.local.created, 1, "initial local creation");
+    wait_for_atomic_count(&initial_probe.shared.created, 1, "initial shared creation");
+    wait_for_atomic_count(&initial_probe.local.dropped, 1, "initial local drop");
+    wait_for_atomic_count(&initial_probe.shared.started, 1, "initial shared start");
+    assert_eq!(initial_probe.local.started.load(Ordering::SeqCst), 0);
+    assert_eq!(initial_probe.local.stopped.load(Ordering::SeqCst), 0);
+    assert_eq!(initial_probe.shared.stopped.load(Ordering::SeqCst), 0);
+    assert_eq!(initial_probe.shared.dropped.load(Ordering::SeqCst), 0);
+
+    let plan = runtime
+        .prepare_rollout_plan(
+            "g1",
+            "p1",
+            &ReconfigureRequest {
+                pipeline: variant_reload_pipeline_config(
+                    "variant-reload-unused-to-needed-target",
+                    true,
+                ),
+                step_timeout_secs: 5,
+                drain_timeout_secs: 5,
+            },
+        )
+        .expect("variant-enabling replacement should plan");
+    assert_eq!(plan.action, RolloutAction::Replace);
+    let accepted = runtime
+        .spawn_rollout(plan)
+        .expect("variant-enabling replacement should start");
+    let status = wait_for_terminal_rollout(&runtime, &accepted.rollout_id);
+    assert_eq!(
+        status.state,
+        ApiPipelineRolloutState::Succeeded,
+        "variant-enabling rollout failed: {:?}",
+        status.failure_reason
+    );
+
+    wait_for_atomic_count(&target_probe.local.created, 1, "target local creation");
+    wait_for_atomic_count(&target_probe.shared.created, 1, "target shared creation");
+    wait_for_atomic_count(&target_probe.local.started, 1, "target local start");
+    wait_for_atomic_count(&target_probe.shared.started, 1, "target shared start");
+    wait_for_atomic_count(&initial_probe.shared.stopped, 1, "initial shared stop");
+    wait_for_atomic_count(&initial_probe.shared.dropped, 1, "initial shared drop");
+    assert_eq!(initial_probe.local.started.load(Ordering::SeqCst), 0);
+    assert_eq!(initial_probe.local.stopped.load(Ordering::SeqCst), 0);
+    assert_eq!(target_probe.local.stopped.load(Ordering::SeqCst), 0);
+    assert_eq!(target_probe.local.dropped.load(Ordering::SeqCst), 0);
+    assert_eq!(target_probe.shared.stopped.load(Ordering::SeqCst), 0);
+    assert_eq!(target_probe.shared.dropped.load(Ordering::SeqCst), 0);
+
+    let target_key = deployed_key("g1", "p1", 0, status.target_generation);
+    shutdown_test_pipeline(&runtime, &target_key);
+    wait_for_atomic_count(&target_probe.local.stopped, 1, "target local stop");
+    wait_for_atomic_count(&target_probe.local.dropped, 1, "target local drop");
+    wait_for_atomic_count(&target_probe.shared.stopped, 1, "target shared stop");
+    wait_for_atomic_count(&target_probe.shared.dropped, 1, "target shared drop");
+}
+
+/// Scenario: generation 0 uses both extension variants, then live reload
+/// removes the only node that consumes the local capability.
+/// Guarantees: the replacement generation drops its newly constructed local
+/// variant before startup while retaining and starting the shared variant.
+#[test]
+fn live_reload_prunes_local_extension_variant_after_last_consumer_is_removed() {
+    let initial_probe = register_variant_reload_probe("variant-reload-needed-to-unused-initial");
+    let target_probe = register_variant_reload_probe("variant-reload-needed-to-unused-target");
+    let config = variant_reload_engine_config("variant-reload-needed-to-unused-initial", true);
+    let runtime = test_runtime_with_factory(&config, &VARIANT_RELOAD_TEST_PIPELINE_FACTORY);
+    let _observed_state_runner = ObservedStateRunner::start(&runtime);
+    let _initial_key = launch_committed_test_pipeline(&runtime, &config);
+
+    wait_for_atomic_count(&initial_probe.local.created, 1, "initial local creation");
+    wait_for_atomic_count(&initial_probe.shared.created, 1, "initial shared creation");
+    wait_for_atomic_count(&initial_probe.local.started, 1, "initial local start");
+    wait_for_atomic_count(&initial_probe.shared.started, 1, "initial shared start");
+    assert_eq!(initial_probe.local.stopped.load(Ordering::SeqCst), 0);
+    assert_eq!(initial_probe.local.dropped.load(Ordering::SeqCst), 0);
+    assert_eq!(initial_probe.shared.stopped.load(Ordering::SeqCst), 0);
+    assert_eq!(initial_probe.shared.dropped.load(Ordering::SeqCst), 0);
+
+    let plan = runtime
+        .prepare_rollout_plan(
+            "g1",
+            "p1",
+            &ReconfigureRequest {
+                pipeline: variant_reload_pipeline_config(
+                    "variant-reload-needed-to-unused-target",
+                    false,
+                ),
+                step_timeout_secs: 5,
+                drain_timeout_secs: 5,
+            },
+        )
+        .expect("variant-pruning replacement should plan");
+    assert_eq!(plan.action, RolloutAction::Replace);
+    let accepted = runtime
+        .spawn_rollout(plan)
+        .expect("variant-pruning replacement should start");
+    let status = wait_for_terminal_rollout(&runtime, &accepted.rollout_id);
+    assert_eq!(
+        status.state,
+        ApiPipelineRolloutState::Succeeded,
+        "variant-pruning rollout failed: {:?}",
+        status.failure_reason
+    );
+
+    wait_for_atomic_count(&target_probe.local.created, 1, "target local creation");
+    wait_for_atomic_count(&target_probe.shared.created, 1, "target shared creation");
+    wait_for_atomic_count(&target_probe.local.dropped, 1, "target local drop");
+    wait_for_atomic_count(&target_probe.shared.started, 1, "target shared start");
+    wait_for_atomic_count(&initial_probe.local.stopped, 1, "initial local stop");
+    wait_for_atomic_count(&initial_probe.local.dropped, 1, "initial local drop");
+    wait_for_atomic_count(&initial_probe.shared.stopped, 1, "initial shared stop");
+    wait_for_atomic_count(&initial_probe.shared.dropped, 1, "initial shared drop");
+    assert_eq!(target_probe.local.started.load(Ordering::SeqCst), 0);
+    assert_eq!(target_probe.local.stopped.load(Ordering::SeqCst), 0);
+    assert_eq!(target_probe.shared.stopped.load(Ordering::SeqCst), 0);
+    assert_eq!(target_probe.shared.dropped.load(Ordering::SeqCst), 0);
+
+    let target_key = deployed_key("g1", "p1", 0, status.target_generation);
+    shutdown_test_pipeline(&runtime, &target_key);
+    assert_eq!(target_probe.local.started.load(Ordering::SeqCst), 0);
+    assert_eq!(target_probe.local.stopped.load(Ordering::SeqCst), 0);
+    wait_for_atomic_count(&target_probe.shared.stopped, 1, "target shared stop");
+    wait_for_atomic_count(&target_probe.shared.dropped, 1, "target shared drop");
+}
+
+/// Scenario: A pipeline using an engine-scoped extension is replaced while its provider host runs.
+/// Guarantees: Both generations bind one retained host, which reports scoped metrics after cutover.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn live_reload_retains_engine_extension_host_and_metric_collection() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(exercise_outer_scope_extension_live_reconfig(
+            OuterScopeLiveReconfigDeclarationScope::Engine,
+        ))
+        .await;
+}
+
+/// Scenario: A pipeline using a group-scoped extension is replaced inside that pipeline group.
+/// Guarantees: Both generations bind one retained group host, which reports metrics after cutover.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn live_reload_retains_pipeline_group_extension_host_and_metric_collection() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(exercise_outer_scope_extension_live_reconfig(
+            OuterScopeLiveReconfigDeclarationScope::PipelineGroup,
+        ))
+        .await;
+}
+
+/// Scenario: engine and group providers are revealed by removing a pipeline shadow,
+/// then the pipeline is no-op updated, resized, rejected before cutover, and recovered.
+/// Guarantees: consumers observe the same ancestor counter throughout; failed targets use
+/// their own provider without changing committed visibility, and healthy ancestors never restart.
+#[tokio::test(flavor = "current_thread")]
+async fn live_rollouts_and_recovery_preserve_inherited_provider_state() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            for scope in [
+                OuterScopeLiveReconfigDeclarationScope::Engine,
+                OuterScopeLiveReconfigDeclarationScope::PipelineGroup,
+            ] {
+                let probe_key = format!("{}-provider-state", scope.scope_kind());
+                let shadow_key = format!("{probe_key}-shadow");
+                let (probe, _collections) = register_outer_scope_live_reconfig_probe(&probe_key);
+                let (shadow_probe, _shadow_collections) =
+                    register_outer_scope_live_reconfig_probe(&shadow_key);
+                let mut config = outer_scope_stateful_config(scope, &probe_key);
+                let pipeline = config
+                    .groups
+                    .get_mut(&PipelineGroupId::from("g1"))
+                    .and_then(|group| group.pipelines.get_mut(&PipelineId::from("p1")))
+                    .expect("test pipeline should exist");
+                let mut inherited = serde_json::to_value(&*pipeline).expect("pipeline serializes");
+                let mut shadowed = inherited.clone();
+                shadowed["extensions"] = serde_json::json!({
+                    "outer_scope_extension": {
+                        "type": OUTER_SCOPE_LIVE_RECONFIG_EXTENSION_URN,
+                        "config": {"probe_key": shadow_key, "report_value": 100},
+                    },
+                });
+                *pipeline = outer_scope_pipeline_from_json(&shadowed);
+
+                let telemetry = InternalTelemetrySystem::default();
+                let registry = ExtensionScopeRegistry::default();
+                let running = OUTER_SCOPE_LIVE_RECONFIG_TEST_PIPELINE_FACTORY
+                    .prepare_extension_scope_hosts(
+                        &config,
+                        &ControllerContext::new(telemetry.registry()),
+                        telemetry.reporter(),
+                        registry.clone(),
+                    )
+                    .expect("ancestor hosts should prepare")
+                    .start()
+                    .await
+                    .expect("ancestor hosts should start");
+                tokio::task::yield_now().await;
+                let runtime = test_runtime_with_factory_and_extension_scope_registry(
+                    &config,
+                    &OUTER_SCOPE_LIVE_RECONFIG_TEST_PIPELINE_FACTORY,
+                    registry,
+                );
+                let _runner = ObservedStateRunner::start(&runtime);
+                _ = launch_committed_test_pipeline(&runtime, &config);
+                assert_eq!(outer_scope_provider_values(&probe), [(0, 0, 101)]);
+
+                let revealed = run_outer_scope_rollout(
+                    &runtime,
+                    &inherited,
+                    RolloutAction::Replace,
+                    ApiPipelineRolloutState::Succeeded,
+                );
+                let generation = revealed.target_generation;
+                let base = scope.report_value();
+                let mut expected = vec![(0, 0, 101), (0, generation, base + 1)];
+                assert_eq!(outer_scope_provider_values(&probe), expected);
+                wait_for_atomic_count(&shadow_probe.dropped, 1, "removed pipeline shadow");
+
+                let noop = run_outer_scope_rollout(
+                    &runtime,
+                    &inherited,
+                    RolloutAction::NoOp,
+                    ApiPipelineRolloutState::Succeeded,
+                );
+                assert_eq!(noop.target_generation, generation);
+                assert!(noop.cores.is_empty());
+                assert_eq!(outer_scope_provider_values(&probe), expected);
+
+                for (count, next_value) in [(2, Some(base + 2)), (1, None), (2, Some(base + 3))] {
+                    inherited["policies"]["resources"]["core_allocation"]["count"] =
+                        serde_json::json!(count);
+                    let resized = run_outer_scope_rollout(
+                        &runtime,
+                        &inherited,
+                        RolloutAction::Resize,
+                        ApiPipelineRolloutState::Succeeded,
+                    );
+                    assert_eq!(resized.target_generation, generation);
+                    if let Some(value) = next_value {
+                        expected.push((1, generation, value));
+                    }
+                    assert_eq!(outer_scope_provider_values(&probe), expected);
+                }
+
+                let committed = runtime.engine_config_snapshot();
+                let mut invalid = inherited.clone();
+                invalid["nodes"]["receiver"]["capabilities"]["no_op_stateful"] =
+                    serde_json::json!("missing_provider");
+                assert!(matches!(
+                    runtime.prepare_rollout_plan(
+                        "g1",
+                        "p1",
+                        &ReconfigureRequest {
+                            pipeline: outer_scope_pipeline_from_json(&invalid),
+                            step_timeout_secs: 5,
+                            drain_timeout_secs: 5,
+                        },
+                    ),
+                    Err(ControlPlaneError::InvalidRequest { .. })
+                ));
+                assert_eq!(runtime.engine_config_snapshot(), committed);
+                assert_eq!(outer_scope_provider_values(&probe), expected);
+
+                let mut failing = inherited.clone();
+                failing["extensions"] = shadowed["extensions"].clone();
+                failing["nodes"]["receiver"]["config"]["fail_on_core"] = serde_json::json!(0);
+                let failed = run_outer_scope_rollout(
+                    &runtime,
+                    &failing,
+                    RolloutAction::Replace,
+                    ApiPipelineRolloutState::Failed,
+                );
+                assert!(
+                    failed
+                        .failure_reason
+                        .as_deref()
+                        .expect("failed replacement should explain its failure")
+                        .contains("injected outer-scope receiver construction failure")
+                );
+                expected.push((0, failed.target_generation, 101));
+                assert_eq!(outer_scope_provider_values(&probe), expected);
+                assert_eq!(runtime.engine_config_snapshot(), committed);
+                let pipeline_key = PipelineKey::new("g1".into(), "p1".into());
+                {
+                    let state = runtime
+                        .state
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    let record = state
+                        .logical_pipelines
+                        .get(&pipeline_key)
+                        .expect("committed record");
+                    assert_eq!(record.active_generation, generation);
+                    assert!(!record.inherited_extensions.is_empty());
+                    assert_eq!(state.active_instances, 2);
+                    assert!(state.first_error.is_none());
+                }
+
+                let failed_key = deployed_key("g1", "p1", 0, generation);
+                let failure = probe
+                    .provider_bindings
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .iter()
+                    .rev()
+                    .find(|binding| binding.key == failed_key)
+                    .expect("the committed receiver should remain available for recovery")
+                    .failure
+                    .clone();
+                failure.cancel();
+                let recovery_generation = failed.target_generation + 1;
+                let recovered = wait_for_observed_status(&runtime, &pipeline_key, |status| {
+                    status.serving_generations().get(&0) == Some(&recovery_generation)
+                        && status.running_cores() == 2
+                        && status.readiness()
+                });
+                assert!(
+                    recovered
+                        .instance_status(1, generation)
+                        .is_some_and(|instance| matches!(instance.phase(), PipelinePhase::Running))
+                );
+                assert!(runtime.wait_for_runtime_recoveries_for(Duration::from_secs(5)));
+                expected.push((0, recovery_generation, base + 4));
+                assert_eq!(outer_scope_provider_values(&probe), expected);
+                assert_eq!(runtime.engine_config_snapshot(), committed);
+                assert!(!runtime.has_fatal_runtime_error());
+                assert_eq!(probe.created.load(Ordering::SeqCst), 1);
+                assert_eq!(probe.started.load(Ordering::SeqCst), 1);
+                assert_eq!(probe.stopped.load(Ordering::SeqCst), 0);
+                assert_eq!(probe.dropped.load(Ordering::SeqCst), 0);
+                wait_for_atomic_count(&shadow_probe.dropped, 2, "failed pipeline shadow");
+
+                runtime
+                    .request_shutdown_all(5)
+                    .expect("pipelines should stop");
+                assert!(runtime.wait_until_all_instances_exit_for(Duration::from_secs(5)));
+                assert!(runtime.wait_for_global_shutdown_completion_for(Duration::from_secs(5)));
+                assert_eq!(probe.stopped.load(Ordering::SeqCst), 0);
+                running
+                    .shutdown()
+                    .await
+                    .expect("ancestor hosts should stop");
+                assert_eq!(probe.stopped.load(Ordering::SeqCst), 1);
+                assert_eq!(probe.dropped.load(Ordering::SeqCst), 1);
+            }
+        })
+        .await;
+}
+
+/// Scenario: an engine or group host starts with no consumers, gains a pipeline binding,
+/// and loses its last binding through another pipeline replacement.
+/// Guarantees: no phase recreates or prunes the host; its metric scope and registration
+/// timestamp remain stable and it continues reporting even with zero consumers.
+#[tokio::test(flavor = "current_thread")]
+async fn live_reload_retains_idle_ancestor_hosts_through_consumer_round_trip() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            for scope in [
+                OuterScopeLiveReconfigDeclarationScope::Engine,
+                OuterScopeLiveReconfigDeclarationScope::PipelineGroup,
+            ] {
+                let probe_key = format!("{}-zero-consumer-round-trip", scope.scope_kind());
+                let (probe, mut collections) = register_outer_scope_live_reconfig_probe(&probe_key);
+                let mut config = outer_scope_stateful_config(scope, &probe_key);
+                let pipeline = config
+                    .groups
+                    .get_mut(&PipelineGroupId::from("g1"))
+                    .and_then(|group| group.pipelines.get_mut(&PipelineId::from("p1")))
+                    .expect("test pipeline should exist");
+                let bound = serde_json::to_value(&*pipeline).expect("pipeline should serialize");
+                let mut unbound = bound.clone();
+                unbound["nodes"]["receiver"]["config"]["unbound"] = serde_json::json!(true);
+                unbound["nodes"]["receiver"]["capabilities"] = serde_json::json!({});
+                *pipeline = outer_scope_pipeline_from_json(&unbound);
+
+                let telemetry = InternalTelemetrySystem::default();
+                let collector = telemetry.collector();
+                let registry = ExtensionScopeRegistry::default();
+                let running = OUTER_SCOPE_LIVE_RECONFIG_TEST_PIPELINE_FACTORY
+                    .prepare_extension_scope_hosts(
+                        &config,
+                        &ControllerContext::new(telemetry.registry()),
+                        telemetry.reporter(),
+                        registry.clone(),
+                    )
+                    .expect("idle ancestor hosts should prepare")
+                    .start()
+                    .await
+                    .expect("idle ancestor hosts should start");
+                tokio::task::yield_now().await;
+                let runtime = test_runtime_with_factory_and_extension_scope_registry(
+                    &config,
+                    &OUTER_SCOPE_LIVE_RECONFIG_TEST_PIPELINE_FACTORY,
+                    registry,
+                );
+                let _runner = ObservedStateRunner::start(&runtime);
+                _ = launch_committed_test_pipeline(&runtime, &config);
+                let mut metric_identity = None;
+                for (phase, pipeline) in [&unbound, &bound, &unbound].into_iter().enumerate() {
+                    if phase > 0 {
+                        _ = run_outer_scope_rollout(
+                            &runtime,
+                            pipeline,
+                            RolloutAction::Replace,
+                            ApiPipelineRolloutState::Succeeded,
+                        );
+                    }
+                    assert_eq!(
+                        probe.bindings.load(Ordering::SeqCst),
+                        usize::from(phase > 0)
+                    );
+                    assert_eq!(probe.created.load(Ordering::SeqCst), 1);
+                    assert_eq!(probe.started.load(Ordering::SeqCst), 1);
+                    assert_eq!(probe.stopped.load(Ordering::SeqCst), 0);
+                    assert_eq!(probe.dropped.load(Ordering::SeqCst), 0);
+
+                    wait_for_outer_scope_collection(&mut collections, phase + 1).await;
+                    collector.collect_pending();
+                    let batch = telemetry.registry().drain_metric_export_batch();
+                    let registered_at = batch
+                        .metric_sets
+                        .iter()
+                        .find(|set| {
+                            set.descriptor.name == "test.extension.outer_scope_live_reconfig"
+                        })
+                        .expect("idle and bound hosts must both report metrics")
+                        .cumulative_start_time_unix_nano;
+                    let attributes = assert_outer_scope_live_reconfig_metric_batch(batch, scope);
+                    let identity = (registered_at, attributes);
+                    if let Some(previous) = &metric_identity {
+                        assert_eq!(
+                            &identity, previous,
+                            "host metric identity changed during reload"
+                        );
+                    } else {
+                        metric_identity = Some(identity);
+                    }
+                }
+                assert_eq!(
+                    outer_scope_provider_values(&probe),
+                    [(0, 1, scope.report_value() + 1)]
+                );
+                assert_eq!(probe.collections.load(Ordering::SeqCst), 3);
+
+                runtime
+                    .request_shutdown_all(5)
+                    .expect("unbound pipeline should stop");
+                assert!(runtime.wait_until_all_instances_exit_for(Duration::from_secs(5)));
+                assert!(runtime.wait_for_global_shutdown_completion_for(Duration::from_secs(5)));
+                assert_eq!(probe.stopped.load(Ordering::SeqCst), 0);
+                running
+                    .shutdown()
+                    .await
+                    .expect("idle ancestor hosts should stop");
+                assert_eq!(probe.stopped.load(Ordering::SeqCst), 1);
+                assert_eq!(probe.dropped.load(Ordering::SeqCst), 1);
+            }
+        })
+        .await;
+}
+
+/// Scenario: a committed pipeline inherits an engine provider, then a replacement
+/// shadows the same extension ID with a pipeline-local declaration.
+/// Guarantees: rollout planning and commit retain exact, generation-specific
+/// inherited snapshots instead of consulting mutable scope-registry state.
+#[test]
+fn rollout_generation_records_exact_inherited_extension_snapshot() {
+    let config = OtelDataflowSpec::from_yaml(
+        r#"
+version: otel_dataflow/v1
+extensions:
+  root_auth:
+    type: urn:test:extension:scope-shared
+groups:
+  g1:
+    pipelines:
+      p1:
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 1
+        nodes:
+          receiver:
+            type: urn:test:receiver:example
+          exporter:
+            type: urn:test:exporter:example
+        connections:
+          - from: receiver
+            to: exporter
+"#,
+    )
+    .expect("config should parse");
+
+    let async_runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("test runtime should build");
+    let local = tokio::task::LocalSet::new();
+    async_runtime.block_on(local.run_until(async {
+        let extension_scope_registry = ExtensionScopeRegistry::default();
+        let controller_context = ControllerContext::new(TelemetryRegistryHandle::new());
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(8);
+        let prepared = TEST_PIPELINE_FACTORY
+            .prepare_extension_scope_hosts(
+                &config,
+                &controller_context,
+                metrics_reporter,
+                extension_scope_registry.clone(),
+            )
+            .expect("extension scope hosts should prepare");
+        let running = prepared
+            .start()
+            .await
+            .expect("extension scope hosts should start");
+
+        let runtime = test_runtime_with_extension_scope_registry(&config, extension_scope_registry);
+        register_existing_pipeline(&runtime, &config);
+        let _control =
+            register_runtime_instance(&runtime, "g1", "p1", 0, 0, RuntimeInstanceLifecycle::Active);
+        let replacement = PipelineConfig::from_yaml(
+            "g1".into(),
+            "p1".into(),
+            r#"
+extensions:
+  root_auth:
+    type: urn:test:extension:scope-shared
+policies:
+  resources:
+    core_allocation:
+      type: core_count
+      count: 1
+nodes:
+  receiver:
+    type: urn:test:receiver:example
+  exporter:
+    type: urn:test:exporter:example
+connections:
+  - from: receiver
+    to: exporter
+"#,
+        )
+        .expect("replacement should parse");
+
+        let plan = runtime
+            .prepare_rollout_plan(
+                "g1",
+                "p1",
+                &ReconfigureRequest {
+                    pipeline: replacement,
+                    step_timeout_secs: 5,
+                    drain_timeout_secs: 5,
+                },
+            )
+            .expect("shadowing replacement should plan");
+
+        assert_eq!(plan.action, RolloutAction::Replace);
+        assert!(
+            !plan
+                .current_record
+                .as_ref()
+                .expect("replacement should retain its previous record")
+                .inherited_extensions
+                .is_empty()
+        );
+        assert!(
+            plan.target_inherited_extensions.is_empty(),
+            "pipeline-local shadowing must be frozen into the target generation"
+        );
+
+        runtime.commit_pipeline_record(&plan, plan.target_generation);
+        assert!(
+            runtime
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .logical_pipelines
+                .get(&plan.pipeline_key)
+                .expect("target generation should be committed")
+                .inherited_extensions
+                .is_empty()
+        );
+
+        runtime.note_instance_exit(deployed_key("g1", "p1", 0, 0), RuntimeInstanceExit::Success);
+        running
+            .shutdown()
+            .await
+            .expect("extension scope hosts should stop cleanly");
+    }));
+}
+
 /// Scenario: a control-plane caller deletes a stopped logical pipeline.
 /// Guarantees: the pipeline is removed from committed live config and the
 /// containing group remains available as an empty group.
@@ -4004,6 +5931,8 @@ fn delete_pipeline_recompiles_context_bindings_without_removed_declarations() {
     let _deployed_key = runtime
         .launch_regular_pipeline_instance(
             &resolved,
+            &runtime
+                .inherited_extensions_for_pipeline(&resolved.pipeline_group_id, &resolved.pipeline),
             Arc::clone(&initial_bindings),
             &live_placement,
             core_id,
@@ -4400,6 +6329,17 @@ fn reconfigure_accepts_supported_context_runtime_requirements() {
 /// Guarantees: recovery reuses that generation's binding snapshot.
 #[test]
 fn runtime_recovery_reuses_context_bindings_snapshot() {
+    assert_runtime_recovery_reuses_context_bindings_snapshot(false);
+}
+
+/// Scenario: a reserved pipeline fails before activation after the controller's latest bindings change.
+/// Guarantees: recovery retains the failed launch's compiled context snapshot rather than the latest one.
+#[test]
+fn runtime_recovery_before_activation_reuses_context_bindings_snapshot() {
+    assert_runtime_recovery_reuses_context_bindings_snapshot(true);
+}
+
+fn assert_runtime_recovery_reuses_context_bindings_snapshot(exit_before_activation: bool) {
     let _capture_guard = CONTEXT_BINDINGS_TEST_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -4436,9 +6376,37 @@ fn runtime_recovery_reuses_context_bindings_snapshot() {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         Arc::clone(&state.latest_context_bindings)
     };
-    let _runtime_control =
-        register_runtime_instance(&runtime, "g1", "p1", 0, 0, RuntimeInstanceLifecycle::Active);
+    let _runtime_control = if exit_before_activation {
+        runtime
+            .reserve_instance_launch(
+                &deployed_key("g1", "p1", 0, 0),
+                Arc::clone(&expected_bindings),
+            )
+            .expect("launch should reserve its context snapshot");
+        None
+    } else {
+        Some(register_runtime_instance(
+            &runtime,
+            "g1",
+            "p1",
+            0,
+            0,
+            RuntimeInstanceLifecycle::Active,
+        ))
+    };
     report_ready(&runtime, deployed_key("g1", "p1", 0, 0));
+
+    let latest_bindings = runtime
+        .pipeline_factory
+        .compile_initial_context(&empty_engine_config().resolve())
+        .expect("new context snapshot should compile")
+        .bindings;
+    assert!(!Arc::ptr_eq(&expected_bindings, &latest_bindings));
+    runtime
+        .state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .latest_context_bindings = latest_bindings;
 
     runtime.note_instance_exit(
         deployed_key("g1", "p1", 0, 0),
@@ -4835,6 +6803,230 @@ fn initial_config_activation_applies_log_level_before_noop_reconciliation() {
         otel_info!("test.controller.reconciled_runtime_filter");
     });
     assert_eq!(event_count.load(Ordering::SeqCst), 1);
+}
+
+/// Scenario: full-config reconciliation changes a running engine-scoped
+/// extension declaration.
+/// Guarantees: the request is rejected before committed configuration changes.
+#[test]
+fn reconcile_rejects_engine_extension_declaration_mutation() {
+    let config = OtelDataflowSpec::from_yaml(
+        r#"
+version: otel_dataflow/v1
+extensions:
+  root_auth:
+    type: urn:test:extension:scope-shared
+    config:
+      audience: current
+"#,
+    )
+    .expect("config should parse");
+    let desired = OtelDataflowSpec::from_yaml(
+        r#"
+version: otel_dataflow/v1
+extensions:
+  root_auth:
+    type: urn:test:extension:scope-shared
+    config:
+      audience: desired
+"#,
+    )
+    .expect("desired config should parse");
+    let runtime = test_runtime(&config);
+
+    let err = runtime
+        .reconcile_engine_config(reconcile_request(desired, true))
+        .expect_err("engine extension mutation should require restart");
+
+    assert!(matches!(
+        err,
+        ControlPlaneError::InvalidRequest { ref message }
+            if message.contains("runtime engine extension mutation")
+    ));
+    assert_eq!(runtime.engine_config_snapshot(), config);
+}
+
+/// Scenario: full-config reconciliation changes a running group-scoped
+/// extension declaration.
+/// Guarantees: the request is rejected before committed configuration changes.
+#[test]
+fn reconcile_rejects_pipeline_group_extension_declaration_mutation() {
+    let config = OtelDataflowSpec::from_yaml(
+        r#"
+version: otel_dataflow/v1
+groups:
+  g1:
+    extensions:
+      group_auth:
+        type: urn:test:extension:scope-shared
+        config:
+          audience: current
+"#,
+    )
+    .expect("config should parse");
+    let desired = OtelDataflowSpec::from_yaml(
+        r#"
+version: otel_dataflow/v1
+groups:
+  g1:
+    extensions:
+      group_auth:
+        type: urn:test:extension:scope-shared
+        config:
+          audience: desired
+"#,
+    )
+    .expect("desired config should parse");
+    let runtime = test_runtime(&config);
+
+    let err = runtime
+        .reconcile_engine_config(reconcile_request(desired, true))
+        .expect_err("group extension mutation should require restart");
+
+    assert!(matches!(
+        err,
+        ControlPlaneError::InvalidRequest { ref message }
+            if message.contains("pipeline group `g1`")
+    ));
+    assert_eq!(runtime.engine_config_snapshot(), config);
+}
+
+/// Scenario: partial reconciliation omits immutable engine and group extension
+/// declarations while retaining their declaration scopes.
+/// Guarantees: `delete_missing: false` preserves engine and pipeline-group
+/// extension declarations.
+#[test]
+fn reconcile_preserves_omitted_extension_scope_declarations() {
+    let config = OtelDataflowSpec::from_yaml(
+        r#"
+version: otel_dataflow/v1
+extensions:
+  root_auth:
+    type: urn:test:extension:scope-shared
+  root_store:
+    type: urn:test:extension:scope-shared
+groups:
+  g1:
+    extensions:
+      group_auth:
+        type: urn:test:extension:scope-shared
+      group_store:
+        type: urn:test:extension:scope-shared
+"#,
+    )
+    .expect("config should parse");
+    let desired = OtelDataflowSpec::from_yaml(
+        r#"
+version: otel_dataflow/v1
+extensions:
+  root_auth:
+    type: urn:test:extension:scope-shared
+groups:
+  g1:
+    extensions:
+      group_auth:
+        type: urn:test:extension:scope-shared
+"#,
+    )
+    .expect("desired config should parse");
+    let runtime = test_runtime(&config);
+
+    let status = runtime
+        .reconcile_engine_config(reconcile_request(desired, false))
+        .expect("omitted immutable declarations should be retained");
+
+    assert_eq!(status.state, EngineConfigReconcileState::Succeeded);
+    let snapshot = runtime.engine_config_snapshot();
+    assert_eq!(snapshot.extensions, config.extensions);
+    assert_eq!(
+        snapshot.groups[&PipelineGroupId::from("g1")].extensions,
+        config.groups[&PipelineGroupId::from("g1")].extensions
+    );
+}
+
+/// Scenario: full-config reconciliation changes channel capacity consumed by
+/// a running engine-scoped extension host.
+/// Guarantees: policies that would require rebuilding the host are rejected.
+#[test]
+fn reconcile_rejects_extension_host_policy_mutation() {
+    let config = OtelDataflowSpec::from_yaml(
+        r#"
+version: otel_dataflow/v1
+extensions:
+  root_auth:
+    type: urn:test:extension:scope-shared
+"#,
+    )
+    .expect("config should parse");
+    let desired = OtelDataflowSpec::from_yaml(
+        r#"
+version: otel_dataflow/v1
+policies:
+  channel_capacity:
+    control:
+      node: 200
+      pipeline: 201
+      completion: 203
+    pdata: 202
+extensions:
+  root_auth:
+    type: urn:test:extension:scope-shared
+"#,
+    )
+    .expect("desired config should parse");
+    let runtime = test_runtime(&config);
+
+    let err = runtime
+        .reconcile_engine_config(reconcile_request(desired, true))
+        .expect_err("host runtime policy mutation should require restart");
+
+    assert!(matches!(
+        err,
+        ControlPlaneError::InvalidRequest { ref message }
+            if message.contains("policies used by hosted engine extensions")
+    ));
+    assert_eq!(runtime.engine_config_snapshot(), config);
+}
+
+/// Scenario: full-config reconciliation changes telemetry settings that a
+/// running engine extension host does not consume.
+/// Guarantees: unrelated live telemetry behavior remains reloadable.
+#[test]
+fn reconcile_accepts_irrelevant_extension_host_policy_changes() {
+    let config = OtelDataflowSpec::from_yaml(
+        r#"
+version: otel_dataflow/v1
+policies:
+  telemetry:
+    tokio_metrics: true
+    runtime_metrics: basic
+extensions:
+  root_auth:
+    type: urn:test:extension:scope-shared
+"#,
+    )
+    .expect("config should parse");
+    let desired = OtelDataflowSpec::from_yaml(
+        r#"
+version: otel_dataflow/v1
+policies:
+  telemetry:
+    tokio_metrics: false
+    runtime_metrics: detailed
+extensions:
+  root_auth:
+    type: urn:test:extension:scope-shared
+"#,
+    )
+    .expect("desired config should parse");
+    let runtime = test_runtime(&config);
+
+    let status = runtime
+        .reconcile_engine_config(reconcile_request(desired.clone(), true))
+        .expect("unused hosted-extension telemetry changes should reconcile");
+
+    assert_eq!(status.state, EngineConfigReconcileState::Succeeded);
+    assert_eq!(runtime.engine_config_snapshot(), desired);
 }
 
 /// Scenario: a full-config reconciliation request omits live stopped
@@ -5951,13 +8143,139 @@ fn request_shutdown_all_attempts_all_active_instances_before_returning_error() {
     );
 }
 
+/// Scenario: an active pipeline exits cleanly after global shutdown snapshots
+/// its sender but before that sender reports a closed-channel failure.
+/// Guarantees: the retained terminal result wins the race, so clean completion
+/// is not misreported as a fatal shutdown-send failure.
+#[test]
+fn request_shutdown_all_recognizes_exit_racing_with_send_failure() {
+    let runtime = test_runtime(&empty_engine_config());
+    let deployed_key = deployed_key("g1", "p1", 0, 0);
+    let sender: Arc<dyn PipelineAdminSender> = Arc::new(ExitThenFailPipelineAdminSender {
+        runtime: Arc::downgrade(&runtime),
+        deployed_key: deployed_key.clone(),
+    });
+    register_runtime_instance_with_sender(
+        &runtime,
+        deployed_key.clone(),
+        sender,
+        RuntimeInstanceLifecycle::Active,
+    );
+
+    runtime
+        .request_shutdown_all(1)
+        .expect("a clean racing exit should satisfy global shutdown");
+    assert!(runtime.wait_for_global_shutdown_completion_for(Duration::from_secs(1)));
+    assert!(
+        matches!(
+            runtime.instance_exit(&deployed_key),
+            Some(RuntimeInstanceExit::Success)
+        ),
+        "the clean terminal result should remain available during global shutdown"
+    );
+    assert!(!runtime.has_fatal_runtime_error());
+}
+
+/// Scenario: callers repeat global shutdown with different timeout requests
+/// while teardown is already active.
+/// Guarantees: producer instances retain the first accepted absolute deadline;
+/// later calls cannot reset, shorten, or extend that phase's budget.
+#[test]
+fn request_shutdown_all_preserves_first_absolute_deadline() {
+    let runtime = test_runtime(&empty_engine_config());
+    runtime
+        .request_shutdown_all(30)
+        .expect("initial global shutdown should succeed");
+    let first_deadline = runtime
+        .state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .global_shutdown_deadline
+        .expect("initial shutdown should establish a deadline");
+
+    runtime
+        .request_shutdown_all(1)
+        .expect("shorter repeated global shutdown should succeed");
+    let retained_deadline = runtime
+        .state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .global_shutdown_deadline
+        .expect("repeated shutdown should retain a deadline");
+    assert_eq!(retained_deadline, first_deadline);
+
+    runtime
+        .request_shutdown_all(60)
+        .expect("longer repeated global shutdown should succeed");
+    assert_eq!(
+        runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .global_shutdown_deadline,
+        Some(first_deadline)
+    );
+}
+
+/// Scenario: global shutdown begins while a runtime recovery worker still owns
+/// its fencing token and may take a long time to unwind.
+/// Guarantees: launch admission closes and recovery cancellation is requested
+/// without blocking shutdown dispatch on the worker's release.
+#[test]
+fn request_shutdown_all_does_not_wait_for_recovery_worker_release() {
+    let runtime = test_runtime(&empty_engine_config());
+    let pipeline_key = PipelineKey::new("g1".into(), "p1".into());
+    {
+        let mut state = runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let context_bindings = Arc::clone(&state.latest_context_bindings);
+        _ = state.runtime_recoveries.insert(
+            (pipeline_key, 0),
+            RuntimeRecoveryState {
+                serving_generation: 0,
+                context_bindings,
+                restart_count: 0,
+                ready_since: None,
+                worker_id: Some(42),
+                candidate_generation: None,
+                cancel_requested: false,
+            },
+        );
+    }
+
+    let started = Instant::now();
+    runtime
+        .request_shutdown_all(1)
+        .expect("shutdown dispatch should not wait for recovery release");
+    assert!(
+        started.elapsed() < Duration::from_millis(250),
+        "global shutdown must not block on recovery cleanup"
+    );
+
+    let state = runtime
+        .state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let recovery = state
+        .runtime_recoveries
+        .values()
+        .next()
+        .expect("synthetic recovery should remain present");
+    assert!(recovery.cancel_requested);
+    assert!(state.launches_closed);
+    drop(state);
+    assert!(!runtime.wait_for_runtime_recoveries_for(Duration::from_millis(20)));
+}
+
 /// Scenario: global shutdown includes regular producer instances and the
 /// engine's system observability instance.
 /// Guarantees: all regular instances receive shutdown first, and the system
-/// observability sender is not called until every regular instance reports its
-/// terminal exit, preserving their final internal telemetry.
+/// observability sender is not called until both regular instances and the
+/// extension scope hosts have stopped, with a fresh, fixed observability deadline.
 #[test]
-fn request_shutdown_all_stops_observability_after_regular_instances_exit() {
+fn request_shutdown_all_defers_observability_until_extension_scope_hosts_stop() {
     let runtime = test_runtime(&engine_config_with_pipeline(simple_pipeline_yaml()));
     let regular_key0 = deployed_key("g1", "p1", 0, 0);
     let regular_key1 = deployed_key("g1", "p1", 1, 0);
@@ -6016,6 +8334,24 @@ fn request_shutdown_all_stops_observability_after_regular_instances_exit() {
     shutdown_thread
         .join()
         .expect("global shutdown dispatch thread should join");
+    let original_deadline = runtime
+        .state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .global_shutdown_deadline
+        .expect("global shutdown should establish one deadline");
+    runtime
+        .request_shutdown_all(30)
+        .expect("a longer repeated request should remain idempotent");
+    assert_eq!(
+        runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .global_shutdown_deadline,
+        Some(original_deadline),
+        "a repeated request must not extend the original deadline"
+    );
     assert!(
         observability_notifications.try_recv().is_err(),
         "observability must remain active while regular instances drain"
@@ -6027,14 +8363,36 @@ fn request_shutdown_all_stops_observability_after_regular_instances_exit() {
         "one remaining regular instance must keep observability active"
     );
     runtime.note_instance_exit(regular_key1, RuntimeInstanceExit::Success);
+    assert!(runtime.wait_for_global_shutdown_completion());
+    assert!(
+        observability_notifications.try_recv().is_err(),
+        "extension scope hosts must stop before observability is stopped"
+    );
+
+    let observability_started = Instant::now();
+    runtime.mark_extension_scope_hosts_stopped();
+    runtime
+        .request_shutdown_all(5)
+        .expect("observability shutdown dispatch should succeed");
 
     let (reason, deadline) = observability_notifications
         .recv_timeout(Duration::from_secs(1))
         .expect("observability should receive shutdown after producers exit");
     assert_eq!(reason, "global shutdown");
     assert!(
-        deadline.saturating_duration_since(Instant::now()) > Duration::from_secs(4),
-        "observability should receive the caller's five-second shutdown budget"
+        deadline >= observability_started + ControllerRuntime::<()>::OBSERVABILITY_SHUTDOWN_TIMEOUT
+    );
+    assert!(deadline > original_deadline);
+    runtime
+        .request_shutdown_all(60)
+        .expect("a repeated request must retain the active observability deadline");
+    assert_eq!(
+        runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .observability_shutdown_deadline,
+        Some(deadline)
     );
     runtime.note_instance_exit(observability_key, RuntimeInstanceExit::Success);
     assert!(
@@ -6090,8 +8448,18 @@ fn request_shutdown_all_keeps_observability_active_when_producer_times_out() {
             .is_err(),
         "observability must remain active when a producer misses its deadline"
     );
+    assert!(runtime.wait_for_global_shutdown_completion());
+    assert!(
+        runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .instance_wait_released,
+        "a timed-out global shutdown must release the main lifecycle wait"
+    );
 
     runtime.note_instance_exit(regular_key, RuntimeInstanceExit::Success);
+    runtime.mark_extension_scope_hosts_stopped();
     runtime
         .request_shutdown_all(1)
         .expect("a later request should retry the restored observability sender");
@@ -6101,6 +8469,107 @@ fn request_shutdown_all_keeps_observability_active_when_producer_times_out() {
     runtime.note_instance_exit(observability_key, RuntimeInstanceExit::Success);
     assert!(runtime.wait_for_global_shutdown_completion());
     assert!(runtime.all_instances_exited());
+}
+
+/// Scenario: observability finishes launching before or after scope hosts stop, after producer grace expires.
+/// Guarantees: late activation waits for providers and uses the fixed, fresh observability deadline.
+#[test]
+fn global_shutdown_late_observability_launch_gets_its_own_deadline() {
+    for activate_before_hosts_stop in [true, false] {
+        let runtime = test_runtime(&empty_engine_config());
+        let key = deployed_key(
+            SYSTEM_PIPELINE_GROUP_ID,
+            SYSTEM_OBSERVABILITY_PIPELINE_ID,
+            0,
+            0,
+        );
+        runtime
+            .reserve_instance_launch(&key, current_test_context_bindings(&runtime))
+            .expect("observability launch should reserve");
+        let producer_deadline = Instant::now() - Duration::from_secs(1);
+        runtime
+            .request_shutdown_all_until(producer_deadline)
+            .expect("producer shutdown should start");
+        let (sender, notifications) = deadline_notifying_admin_sender();
+        let phase_started = Instant::now();
+        if activate_before_hosts_stop {
+            runtime.complete_instance_launch(key.clone(), sender);
+            assert!(notifications.try_recv().is_err());
+            assert!(
+                runtime
+                    .state
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .observability_shutdown_deadline
+                    .is_none(),
+                "launching observability must not start its drain clock before providers stop"
+            );
+            runtime.mark_extension_scope_hosts_stopped();
+        } else {
+            runtime.mark_extension_scope_hosts_stopped();
+            runtime.complete_instance_launch(key.clone(), sender);
+        }
+        runtime
+            .request_shutdown_all(60)
+            .expect("observability shutdown should dispatch");
+        let (_, deadline) = notifications
+            .recv_timeout(Duration::from_secs(1))
+            .expect("late observability instance should receive shutdown");
+        assert!(
+            deadline >= phase_started + ControllerRuntime::<()>::OBSERVABILITY_SHUTDOWN_TIMEOUT
+        );
+        assert_eq!(
+            runtime.observability_shutdown_deadline_or_insert(),
+            deadline,
+            "repeated shutdown must not replenish observability grace"
+        );
+        assert_eq!(
+            runtime.global_shutdown_deadline_or_insert(Duration::from_secs(60)),
+            producer_deadline
+        );
+        runtime.note_instance_exit(key, RuntimeInstanceExit::Success);
+        assert!(runtime.wait_for_global_shutdown_completion_for(Duration::from_secs(1)));
+    }
+}
+
+/// Scenario: an observability launch completes after providers stop but a reserved producer is still live.
+/// Guarantees: activation does not shut down observability until that final producer actually exits.
+#[test]
+fn global_shutdown_late_observability_launch_waits_for_remaining_producer() {
+    let runtime = test_runtime(&empty_engine_config());
+    let producer_key = deployed_key("g1", "p1", 0, 0);
+    let observability_key = deployed_key(
+        SYSTEM_PIPELINE_GROUP_ID,
+        SYSTEM_OBSERVABILITY_PIPELINE_ID,
+        1,
+        0,
+    );
+    runtime
+        .reserve_instance_launch(&producer_key, current_test_context_bindings(&runtime))
+        .expect("producer launch should reserve");
+    runtime
+        .reserve_instance_launch(&observability_key, current_test_context_bindings(&runtime))
+        .expect("observability launch should reserve");
+    runtime
+        .request_shutdown_all(5)
+        .expect("producer shutdown should start");
+    runtime.mark_extension_scope_hosts_stopped();
+    let (sender, notifications) = deadline_notifying_admin_sender();
+    runtime.complete_instance_launch(observability_key.clone(), sender);
+    assert!(
+        notifications.try_recv().is_err(),
+        "a late observability launch must still wait for live producers"
+    );
+    runtime.note_instance_exit(producer_key, RuntimeInstanceExit::Success);
+    assert!(runtime.wait_for_global_shutdown_completion_for(Duration::from_secs(1)));
+    runtime
+        .request_shutdown_all(5)
+        .expect("observability shutdown should dispatch after producer exit");
+    _ = notifications
+        .recv_timeout(Duration::from_secs(1))
+        .expect("observability should receive its final shutdown");
+    runtime.note_instance_exit(observability_key, RuntimeInstanceExit::Success);
+    assert!(runtime.wait_for_global_shutdown_completion_for(Duration::from_secs(1)));
 }
 
 /// Scenario: all targeted runtime instances exit cleanly after a pipeline
@@ -6459,6 +8928,1079 @@ fn exited_runtime_instances_without_active_operation_are_pruned_immediately() {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     assert!(!state.runtime_instances.contains_key(&deployed_key));
+}
+
+/// Scenario: a pipeline launch is reserved immediately before its OS thread is
+/// created and has not yet published a control sender.
+/// Guarantees: liveness includes the launching thread and spawn failure can
+/// roll the reservation back exactly once.
+#[test]
+fn launch_reservation_counts_liveness_before_activation() {
+    let runtime = test_runtime(&empty_engine_config());
+    let deployed_key = deployed_key("g1", "p1", 0, 7);
+
+    runtime
+        .reserve_instance_launch(&deployed_key, current_test_context_bindings(&runtime))
+        .expect("launch reservation should succeed");
+    {
+        let state = runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert_eq!(state.active_instances, 1);
+        assert!(state.launching_instances.contains_key(&deployed_key));
+        assert!(!state.runtime_instances.contains_key(&deployed_key));
+    }
+
+    runtime.abort_instance_launch(&deployed_key);
+    runtime.abort_instance_launch(&deployed_key);
+    let state = runtime
+        .state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert_eq!(state.active_instances, 0);
+    assert!(!state.launching_instances.contains_key(&deployed_key));
+}
+
+/// Scenario: the controller's latest context snapshot changes between launch reservation and activation.
+/// Guarantees: the activated runtime retains the reserved generation's snapshot rather than the latest one.
+#[test]
+fn launch_activation_retains_reserved_context_bindings() {
+    let config = empty_engine_config();
+    let runtime = test_runtime(&config);
+    let key = deployed_key("g1", "p1", 0, 7);
+    let reserved_bindings = current_test_context_bindings(&runtime);
+    runtime
+        .reserve_instance_launch(&key, Arc::clone(&reserved_bindings))
+        .expect("launch reservation should succeed");
+    let latest_bindings = runtime
+        .pipeline_factory
+        .compile_initial_context(&config.resolve())
+        .expect("new context snapshot should compile")
+        .bindings;
+    assert!(!Arc::ptr_eq(&reserved_bindings, &latest_bindings));
+    runtime
+        .state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .latest_context_bindings = latest_bindings;
+
+    let (sender, _calls) = recording_admin_sender(None);
+    runtime.complete_instance_launch(key.clone(), sender);
+    {
+        let state = runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let instance = state
+            .runtime_instances
+            .get(&key)
+            .expect("activated instance");
+        assert!(Arc::ptr_eq(&reserved_bindings, &instance.context_bindings));
+        assert!(!state.launching_instances.contains_key(&key));
+    }
+    runtime.note_instance_exit(key, RuntimeInstanceExit::Success);
+    assert!(runtime.all_instances_exited());
+}
+
+/// Scenario: a stopped or failed runtime is reserved for relaunch, then activated or aborted.
+/// Guarantees: reservation hides the prior exit, activation replaces it, and abort preserves it.
+#[test]
+fn relaunch_reservation_hides_old_exit_until_activated_or_aborted() {
+    for failed in [false, true] {
+        for abort in [false, true] {
+            let runtime = test_runtime(&empty_engine_config());
+            let key = deployed_key("g1", "p1", 0, 7);
+            let previous_exit = if failed {
+                RuntimeInstanceExit::Error(RuntimeInstanceError::runtime(
+                    "previous runtime failure".to_owned(),
+                ))
+            } else {
+                RuntimeInstanceExit::Success
+            };
+            let _control = register_runtime_instance(
+                &runtime,
+                "g1",
+                "p1",
+                0,
+                7,
+                RuntimeInstanceLifecycle::Exited(previous_exit),
+            );
+            runtime
+                .reserve_instance_launch(&key, current_test_context_bindings(&runtime))
+                .expect("a stopped or failed runtime should reserve a new launch");
+            assert!(
+                runtime.instance_exit(&key).is_none(),
+                "the previous exit must not decide the pending launch"
+            );
+
+            if abort {
+                runtime.abort_instance_launch(&key);
+                match runtime
+                    .instance_exit(&key)
+                    .expect("previous exit is retained")
+                {
+                    RuntimeInstanceExit::Success => assert!(!failed),
+                    RuntimeInstanceExit::Error(error) => {
+                        assert!(failed);
+                        assert_eq!(error.message, "previous runtime failure");
+                    }
+                }
+            } else {
+                let (sender, _calls) = recording_admin_sender(None);
+                runtime.complete_instance_launch(key.clone(), sender);
+                assert!(
+                    runtime.instance_exit(&key).is_none(),
+                    "activation must replace the previous terminal record"
+                );
+                runtime.note_instance_exit(key, RuntimeInstanceExit::Success);
+            }
+            assert!(runtime.all_instances_exited());
+        }
+    }
+}
+
+/// Scenario: shutdown-when-done observes a producer whose launch is reserved
+/// but whose runtime record is not active yet.
+/// Guarantees: producer drain waits for the launching thread instead of
+/// advancing to observability shutdown early.
+#[test]
+fn producer_wait_includes_launch_reservations() {
+    let runtime = test_runtime(&empty_engine_config());
+    let deployed_key = deployed_key("g1", "p1", 0, 7);
+    runtime
+        .reserve_instance_launch(&deployed_key, current_test_context_bindings(&runtime))
+        .expect("launch reservation should succeed");
+
+    let waiter = {
+        let runtime = Arc::clone(&runtime);
+        thread::spawn(move || runtime.wait_until_all_producer_instances_exit())
+    };
+    thread::sleep(Duration::from_millis(100));
+    assert!(
+        !waiter.is_finished(),
+        "producer wait must include in-flight launches"
+    );
+
+    runtime.note_instance_exit(deployed_key, RuntimeInstanceExit::Success);
+    waiter.join().expect("producer wait should finish");
+}
+
+/// Scenario: a fatal extension scope failure releases shutdown-when-done while a
+/// producer launch remains reserved.
+/// Guarantees: the producer wait reaches bounded extension scope teardown instead of
+/// blocking forever on the stalled launch.
+#[test]
+fn producer_wait_honors_fatal_release_latch() {
+    let runtime = test_runtime(&empty_engine_config());
+    let deployed_key = deployed_key("g1", "p1", 0, 7);
+    runtime
+        .reserve_instance_launch(&deployed_key, current_test_context_bindings(&runtime))
+        .expect("launch reservation should succeed");
+
+    let waiter = {
+        let runtime = Arc::clone(&runtime);
+        thread::spawn(move || runtime.wait_until_all_producer_instances_exit())
+    };
+    thread::sleep(Duration::from_millis(100));
+    assert!(!waiter.is_finished());
+
+    runtime.release_instance_wait();
+    waiter
+        .join()
+        .expect("fatal release should unblock producer wait");
+    runtime.abort_instance_launch(&deployed_key);
+}
+
+/// Scenario: an extension scope failure closes launch admission during bootstrap.
+/// Guarantees: the rejected launch reports the recorded extension scope failure
+/// rather than replacing it with only a generic admission error.
+#[test]
+fn closed_launch_admission_preserves_fatal_runtime_error() {
+    let runtime = test_runtime(&empty_engine_config());
+    runtime.record_fatal_runtime_error("engine extension `auth` failed".to_owned());
+    runtime.close_pipeline_launches();
+
+    let error = runtime
+        .reserve_instance_launch(
+            &deployed_key("g1", "p1", 0, 8),
+            current_test_context_bindings(&runtime),
+        )
+        .expect_err("launch admission should be closed");
+    assert!(error.to_string().contains("engine extension `auth` failed"));
+}
+
+/// Scenario: a pipeline thread exits after launch reservation but before the
+/// spawning thread can activate its runtime record.
+/// Guarantees: the exit consumes the reservation, decrements liveness once,
+/// and a late activation cannot resurrect the exited instance.
+#[test]
+fn exit_before_activation_consumes_launch_reservation_once() {
+    let runtime = test_runtime(&empty_engine_config());
+    let deployed_key = deployed_key("g1", "p1", 0, 8);
+    let (sender, _calls) = recording_admin_sender(None);
+
+    runtime
+        .reserve_instance_launch(&deployed_key, current_test_context_bindings(&runtime))
+        .expect("launch reservation should succeed");
+    runtime.note_instance_exit(deployed_key.clone(), RuntimeInstanceExit::Success);
+    assert!(
+        runtime
+            .activate_instance_launch(deployed_key.clone(), sender)
+            .is_none()
+    );
+
+    let state = runtime
+        .state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert_eq!(state.active_instances, 0);
+    assert!(!state.launching_instances.contains_key(&deployed_key));
+    assert!(!state.runtime_instances.contains_key(&deployed_key));
+}
+
+/// Scenario: global shutdown begins after a launch reservation but before its
+/// pipeline thread publishes a control sender.
+/// Guarantees: launch admission closes atomically, the in-flight activation
+/// inherits shutdown, and later launches are rejected.
+#[test]
+fn global_shutdown_catches_inflight_launch_activation() {
+    let runtime = test_runtime(&empty_engine_config());
+    let in_flight_key = deployed_key("g1", "p1", 0, 9);
+    let observability_key = deployed_key(
+        SYSTEM_PIPELINE_GROUP_ID,
+        SYSTEM_OBSERVABILITY_PIPELINE_ID,
+        0,
+        0,
+    );
+    let (observability_sender, observability_shutdown) = deadline_notifying_admin_sender();
+    register_runtime_instance_with_sender(
+        &runtime,
+        observability_key.clone(),
+        observability_sender,
+        RuntimeInstanceLifecycle::Active,
+    );
+    runtime
+        .reserve_instance_launch(&in_flight_key, current_test_context_bindings(&runtime))
+        .expect("in-flight launch should reserve");
+
+    runtime
+        .request_shutdown_all(2)
+        .expect("shutdown dispatch should succeed");
+    assert!(
+        observability_shutdown
+            .recv_timeout(Duration::from_millis(100))
+            .is_err(),
+        "observability must wait for the in-flight producer"
+    );
+
+    let (sender, calls) = recording_admin_sender(None);
+    runtime.complete_instance_launch(in_flight_key.clone(), sender);
+    assert_eq!(
+        calls
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_slice(),
+        ["global shutdown"]
+    );
+    assert!(
+        runtime
+            .reserve_instance_launch(
+                &deployed_key("g1", "p1", 1, 9),
+                current_test_context_bindings(&runtime),
+            )
+            .is_err()
+    );
+
+    runtime.note_instance_exit(in_flight_key, RuntimeInstanceExit::Success);
+    assert!(runtime.wait_for_global_shutdown_completion());
+    runtime.mark_extension_scope_hosts_stopped();
+    runtime
+        .request_shutdown_all(2)
+        .expect("observability shutdown dispatch should succeed");
+    let (reason, _) = observability_shutdown
+        .recv_timeout(Duration::from_secs(1))
+        .expect("observability should stop after the producer exits");
+    assert_eq!(reason, "global shutdown");
+    runtime.note_instance_exit(observability_key, RuntimeInstanceExit::Success);
+    assert!(runtime.wait_for_global_shutdown_completion());
+    assert!(runtime.all_instances_exited());
+}
+
+/// Scenario: a shutdown-racing launch exits cleanly while its immediate
+/// shutdown send observes the already-closed control channel.
+/// Guarantees: activation uses the retained terminal result and does not turn
+/// the clean exit into a fatal extension-scope shutdown error.
+#[test]
+fn global_shutdown_activation_recognizes_clean_exit_before_send_failure() {
+    let runtime = test_runtime(&empty_engine_config());
+    let in_flight_key = deployed_key("g1", "p1", 0, 10);
+    runtime
+        .reserve_instance_launch(&in_flight_key, current_test_context_bindings(&runtime))
+        .expect("in-flight launch should reserve");
+    runtime
+        .request_shutdown_all(1)
+        .expect("shutdown dispatch should succeed");
+
+    let sender: Arc<dyn PipelineAdminSender> = Arc::new(ExitThenFailPipelineAdminSender {
+        runtime: Arc::downgrade(&runtime),
+        deployed_key: in_flight_key.clone(),
+    });
+    runtime.complete_instance_launch(in_flight_key.clone(), sender);
+
+    assert!(runtime.wait_for_global_shutdown_completion_for(Duration::from_secs(1)));
+    assert!(
+        matches!(
+            runtime.instance_exit(&in_flight_key),
+            Some(RuntimeInstanceExit::Success)
+        ),
+        "the launch-racing clean exit should remain available"
+    );
+    assert!(!runtime.has_fatal_runtime_error());
+}
+
+/// Scenario: scope-host shutdown is followed by observability draining and runtime completion.
+/// Guarantees: the default supervisor join includes completion grace and coordination slack.
+#[test]
+fn extension_scope_supervisor_guard_budget_includes_observability_completion_grace() {
+    let runtime = test_runtime(&empty_engine_config());
+    let handle = spawn_thread_local_task(
+        "test-scope-observability-completion-budget",
+        TracingSetup::new(ProviderSetup::Noop, LogLevel::default(), engine_context),
+        move |cancellation_token| async move {
+            cancellation_token.cancelled().await;
+            Ok::<(), Error>(())
+        },
+    )
+    .expect("test extension scope supervisor should spawn");
+    let guard = ExtensionScopeSupervisorGuard::new(handle, runtime);
+    let scope_shutdown_start = Instant::now();
+    let observability_drain_deadline = scope_shutdown_start
+        + RunningExtensionScopeSupervisor::SHUTDOWN_TIMEOUT
+        + ControllerRuntime::<()>::OBSERVABILITY_SHUTDOWN_TIMEOUT;
+    let observability_completion_deadline =
+        pipeline_shutdown_completion_deadline(observability_drain_deadline);
+
+    assert_eq!(
+        guard.supervisor_shutdown_timeout,
+        observability_completion_deadline.duration_since(scope_shutdown_start)
+            + Duration::from_secs(1)
+    );
+}
+
+/// Scenario: a controller with no ancestor hosts shuts down explicitly or through an early-return guard drop.
+/// Guarantees: cleanup closes launch admission and releases telemetry leases without creating a supervisor thread.
+#[test]
+fn empty_scope_guard_never_starts_a_thread_for_completed_pipelines() {
+    for explicit in [false, true] {
+        let runtime = test_runtime(&empty_engine_config());
+        let lease = Arc::new(());
+        let cleanup_lease = Arc::clone(&lease);
+        let mut guard =
+            ExtensionScopeSupervisorGuard::without_hosts(Arc::clone(&runtime), move || {
+                drop(cleanup_lease);
+                panic!("completed pipelines must not need deferred cleanup");
+            });
+        assert!(guard.handle.is_none());
+        assert_eq!(Arc::strong_count(&lease), 2);
+        if explicit {
+            assert!(guard.shutdown_after_descendants().is_none());
+        }
+        drop(guard);
+        assert_eq!(Arc::strong_count(&lease), 1);
+        let state = runtime.state.lock().expect("controller state");
+        assert!(state.launches_closed);
+        assert!(state.extension_scope_hosts_stopped);
+    }
+}
+
+/// Scenario: a no-host controller has a reserved producer and an observability runtime.
+/// Guarantees: observability waits for the reservation, retains completion grace, and requires no cleanup thread.
+#[test]
+fn empty_scope_guard_orders_producers_before_observability() {
+    let runtime = test_runtime(&empty_engine_config());
+    let producer = deployed_key("g1", "pending", 0, 0);
+    runtime
+        .reserve_instance_launch(&producer, current_test_context_bindings(&runtime))
+        .expect("producer reserves");
+    let observability = deployed_key(
+        SYSTEM_PIPELINE_GROUP_ID,
+        SYSTEM_OBSERVABILITY_PIPELINE_ID,
+        0,
+        0,
+    );
+    let (sender, shutdown) = deadline_notifying_admin_sender();
+    register_runtime_instance_with_sender(
+        &runtime,
+        observability.clone(),
+        sender,
+        RuntimeInstanceLifecycle::Active,
+    );
+    let guard_runtime = Arc::clone(&runtime);
+    let worker = thread::spawn(move || {
+        let mut guard = ExtensionScopeSupervisorGuard::without_hosts(guard_runtime, || {
+            panic!("cooperative pipelines must not need deferred cleanup");
+        });
+        guard.shutdown_after_descendants()
+    });
+    assert!(shutdown.recv_timeout(Duration::from_millis(50)).is_err());
+    // Exercise runtime completion after the fixed observability drain deadline,
+    // but before its separate completion grace.
+    {
+        let mut state = runtime.state.lock().expect("controller state");
+        state.observability_shutdown_deadline = Some(Instant::now() - Duration::from_millis(10));
+    }
+    runtime.note_instance_exit(producer, RuntimeInstanceExit::Success);
+    let (_, deadline) = shutdown
+        .recv_timeout(Duration::from_secs(2))
+        .expect("observability stops last");
+    assert!(deadline < Instant::now());
+    runtime.note_instance_exit(observability, RuntimeInstanceExit::Success);
+    assert!(worker.join().expect("guard joins").is_none());
+    assert!(runtime.all_instances_exited());
+}
+
+/// Scenario: a no-host controller's launch reservation outlives both bounded teardown waits.
+/// Guarantees: only the timeout path starts cleanup, retains telemetry leases, and releases them after the actual exit.
+#[test]
+fn empty_scope_guard_defers_telemetry_cleanup_for_a_late_producer() {
+    exercise_empty_scope_deferred_cleanup(false);
+}
+
+/// Scenario: observability remains active after its completion deadline in a no-host controller.
+/// Guarantees: timed-out teardown retains telemetry leases until observability actually exits.
+#[test]
+fn empty_scope_guard_defers_telemetry_cleanup_for_late_observability() {
+    exercise_empty_scope_deferred_cleanup(true);
+}
+
+fn exercise_empty_scope_deferred_cleanup(observability: bool) {
+    let runtime = test_runtime(&empty_engine_config());
+    let producer = if observability {
+        let key = deployed_key(
+            SYSTEM_PIPELINE_GROUP_ID,
+            SYSTEM_OBSERVABILITY_PIPELINE_ID,
+            0,
+            0,
+        );
+        let (sender, _) = recording_admin_sender(None);
+        register_runtime_instance_with_sender(
+            &runtime,
+            key.clone(),
+            sender,
+            RuntimeInstanceLifecycle::Active,
+        );
+        runtime
+            .state
+            .lock()
+            .expect("controller state")
+            .observability_shutdown_deadline = Some(Instant::now() - Duration::from_secs(2));
+        key
+    } else {
+        let key = deployed_key("g1", "pending", 0, 0);
+        runtime
+            .reserve_instance_launch(&key, current_test_context_bindings(&runtime))
+            .expect("producer reserves");
+        key
+    };
+    let lease = Arc::new(());
+    let cleanup_lease = Arc::clone(&lease);
+    let completion_runtime = Arc::clone(&runtime);
+    let (started_tx, started_rx) = std_mpsc::channel();
+    let (finished_tx, finished_rx) = std_mpsc::channel();
+    let mut guard = ExtensionScopeSupervisorGuard::without_hosts(Arc::clone(&runtime), move || {
+        started_tx.send(()).expect("observe lazy cleanup startup");
+        spawn_thread_local_task_with_cleanup(
+            "test-empty-scope-deferred-cleanup",
+            TracingSetup::new(ProviderSetup::Noop, LogLevel::default(), engine_context),
+            |_| async { Ok(()) },
+            move |token| {
+                completion_runtime.finish_shutdown_after_extension_scopes(&token);
+                drop(cleanup_lease);
+                finished_tx
+                    .send(())
+                    .expect("observe deferred cleanup completion");
+            },
+        )
+    });
+    guard.descendant_drain_timeout = Duration::from_millis(50);
+    guard.supervisor_shutdown_timeout = Duration::from_millis(50);
+    assert!(started_rx.try_recv().is_err());
+    let started = Instant::now();
+    let result = guard.shutdown_after_descendants();
+    let elapsed = started.elapsed();
+    let retained = Arc::strong_count(&lease);
+    let finished_early = finished_rx.try_recv().is_ok();
+    if observability {
+        runtime.note_instance_exit(producer, RuntimeInstanceExit::Success);
+    } else {
+        runtime.abort_instance_launch(&producer);
+    }
+    finished_rx
+        .recv_timeout(Duration::from_secs(3))
+        .expect("late producer cleanup finishes");
+    assert!(result.is_some());
+    assert!(elapsed < Duration::from_secs(2));
+    started_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("cleanup starts on timeout");
+    assert!(!finished_early);
+    assert_eq!(retained, 2);
+    assert_eq!(Arc::strong_count(&lease), 1);
+    assert!(runtime.wait_for_global_shutdown_completion_for(Duration::from_secs(1)));
+}
+
+/// Scenario: an early controller error drops the extension scope supervisor
+/// guard while a reserved pipeline thread is still alive.
+/// Guarantees: the guard closes launch admission and waits for the descendant
+/// exit before cancelling the extension scope supervisor task.
+#[test]
+fn extension_scope_supervisor_guard_keeps_hosts_alive_until_reserved_pipeline_exits() {
+    let runtime = test_runtime(&empty_engine_config());
+    let in_flight_key = deployed_key("g1", "p1", 0, 10);
+    runtime
+        .reserve_instance_launch(&in_flight_key, current_test_context_bindings(&runtime))
+        .expect("launch reservation should succeed");
+
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let (stopped_tx, stopped_rx) = std::sync::mpsc::channel();
+    let handle = spawn_thread_local_task(
+        "test-extension-scope-guard",
+        TracingSetup::new(ProviderSetup::Noop, LogLevel::default(), engine_context),
+        move |cancellation_token| async move {
+            _ = started_tx.send(());
+            cancellation_token.cancelled().await;
+            _ = stopped_tx.send(());
+            Ok::<(), Error>(())
+        },
+    )
+    .expect("test extension scope supervisor should spawn");
+    started_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("test extension scope supervisor should start");
+
+    let guard = ExtensionScopeSupervisorGuard::new(handle, Arc::clone(&runtime));
+    let drop_thread = thread::spawn(move || drop(guard));
+    thread::sleep(Duration::from_millis(100));
+    assert!(
+        stopped_rx.try_recv().is_err(),
+        "extension scope supervisor must remain alive while a descendant is reserved"
+    );
+
+    runtime.note_instance_exit(in_flight_key, RuntimeInstanceExit::Success);
+    drop_thread
+        .join()
+        .expect("extension scope supervisor guard cleanup should finish");
+    stopped_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("extension scope supervisor should stop after descendants exit");
+}
+
+/// Scenario: teardown begins while a recovery worker owns its fencing token
+/// but no producer pipeline remains active.
+/// Guarantees: the extension scope supervisor guard initiates global shutdown,
+/// requests recovery cancellation, and waits for the worker before stopping providers.
+#[test]
+fn extension_scope_supervisor_guard_cancels_recovery_without_live_producer() {
+    let runtime = test_runtime(&empty_engine_config());
+    let pipeline_key = PipelineKey::new("g1".into(), "p1".into());
+    {
+        let mut state = runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let context_bindings = Arc::clone(&state.latest_context_bindings);
+        _ = state.runtime_recoveries.insert(
+            (pipeline_key.clone(), 0),
+            RuntimeRecoveryState {
+                serving_generation: 0,
+                context_bindings,
+                restart_count: 0,
+                ready_since: None,
+                worker_id: Some(43),
+                candidate_generation: None,
+                cancel_requested: false,
+            },
+        );
+    }
+
+    let recovery_runtime = Arc::clone(&runtime);
+    let recovery_thread = thread::spawn(move || {
+        for _ in 0..100 {
+            let mut state = recovery_runtime
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let recovery = state
+                .runtime_recoveries
+                .get_mut(&(pipeline_key.clone(), 0))
+                .expect("synthetic recovery should remain present");
+            if recovery.cancel_requested {
+                recovery.worker_id = None;
+                recovery_runtime.state_changed.notify_all();
+                return;
+            }
+            drop(state);
+            thread::sleep(Duration::from_millis(5));
+        }
+        panic!("extension scope supervisor guard did not cancel the synthetic recovery worker");
+    });
+
+    let (stopped_tx, stopped_rx) = std::sync::mpsc::channel();
+    let handle = spawn_thread_local_task(
+        "test-extension-scope-recovery-drain",
+        TracingSetup::new(ProviderSetup::Noop, LogLevel::default(), engine_context),
+        move |cancellation_token| async move {
+            cancellation_token.cancelled().await;
+            _ = stopped_tx.send(());
+            Ok::<(), Error>(())
+        },
+    )
+    .expect("test extension scope supervisor should spawn");
+    let guard = ExtensionScopeSupervisorGuard::new_with_timeouts(
+        handle,
+        Arc::clone(&runtime),
+        Duration::from_secs(1),
+        Duration::from_secs(1),
+    );
+
+    drop(guard);
+    recovery_thread
+        .join()
+        .expect("synthetic recovery worker should stop");
+    stopped_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("extension scope supervisor should stop after recovery worker release");
+    assert!(runtime.wait_for_runtime_recoveries_for(Duration::ZERO));
+}
+
+/// Scenario: a descendant pipeline remains live beyond the extension scope
+/// supervisor guard's finite cleanup budget.
+/// Guarantees: scope-host teardown returns a timeout error and cancels the
+/// supervisor instead of waiting forever.
+#[test]
+fn extension_scope_supervisor_guard_returns_after_descendant_timeout() {
+    let runtime = test_runtime(&empty_engine_config());
+    let stalled_key = deployed_key("g1", "p1", 0, 11);
+    runtime
+        .reserve_instance_launch(&stalled_key, current_test_context_bindings(&runtime))
+        .expect("launch reservation should succeed");
+
+    let (stopped_tx, stopped_rx) = std::sync::mpsc::channel();
+    let handle = spawn_thread_local_task(
+        "test-extension-scope-timeout",
+        TracingSetup::new(ProviderSetup::Noop, LogLevel::default(), engine_context),
+        move |cancellation_token| async move {
+            cancellation_token.cancelled().await;
+            _ = stopped_tx.send(());
+            Ok::<(), Error>(())
+        },
+    )
+    .expect("test extension scope supervisor should spawn");
+    let mut guard = ExtensionScopeSupervisorGuard::new_with_timeouts(
+        handle,
+        Arc::clone(&runtime),
+        Duration::from_millis(150),
+        Duration::from_millis(150),
+    );
+
+    let started = Instant::now();
+    let error = guard
+        .shutdown_after_descendants()
+        .expect("stalled descendant should produce a timeout");
+    assert!(
+        error
+            .to_string()
+            .contains("global shutdown deadline elapsed")
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "descendant and supervisor cleanup must each remain bounded"
+    );
+    stopped_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("extension scope supervisor should be cancelled after timeout");
+
+    runtime.abort_instance_launch(&stalled_key);
+    assert!(runtime.wait_for_global_shutdown_completion_for(Duration::from_secs(2)));
+}
+
+/// Scenario: shutdown cancels a real recovery backoff and a reserved producer exits before
+/// activation; both workers finish before the scope guard observes the expired producer deadline.
+/// Guarantees: completed conditions succeed with zero remaining budget, late activation cannot
+/// resurrect the producer, and provider teardown neither reports a false timeout nor resets grace.
+#[test]
+fn extension_scope_supervisor_guard_accepts_completed_descendants_after_expired_deadline() {
+    let config = engine_config_with_pipeline(
+        r#"
+        policies:
+          runtime_recovery:
+            initial_backoff: 30s
+            max_backoff: 30s
+        nodes:
+          receiver:
+            type: urn:test:receiver:example
+          exporter:
+            type: urn:test:exporter:example
+        connections:
+          - from: receiver
+            to: exporter
+"#,
+    );
+    let runtime = test_runtime_with_factory(&config, &RECOVERY_TEST_PIPELINE_FACTORY);
+    register_existing_pipeline(&runtime, &config);
+    let _control =
+        register_runtime_instance(&runtime, "g1", "p1", 0, 0, RuntimeInstanceLifecycle::Active);
+    runtime.note_instance_exit(
+        deployed_key("g1", "p1", 0, 0),
+        RuntimeInstanceExit::Error(RuntimeInstanceError::runtime(
+            "recoverable failure".to_owned(),
+        )),
+    );
+    let pipeline_key = PipelineKey::new("g1".into(), "p1".into());
+    _ = wait_for_recovery_candidate_generation(&runtime, &pipeline_key, 0);
+
+    let reserved_key = deployed_key("g1", "pending", 1, 0);
+    runtime
+        .reserve_instance_launch(&reserved_key, current_test_context_bindings(&runtime))
+        .expect("producer should reserve before shutdown closes admission");
+    let producer_deadline = Instant::now();
+    runtime
+        .request_shutdown_all_until(producer_deadline)
+        .expect("shutdown should cancel recovery and track the pending producer");
+    runtime.note_instance_exit(reserved_key.clone(), RuntimeInstanceExit::Success);
+    assert!(runtime.wait_for_global_shutdown_completion_for(Duration::from_secs(5)));
+    assert!(runtime.wait_for_runtime_recoveries_for(Duration::from_secs(5)));
+    let (sender, calls) = recording_admin_sender(None);
+    runtime.complete_instance_launch(reserved_key, sender);
+    assert!(
+        calls
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .is_empty()
+    );
+    assert!(runtime.all_instances_exited());
+    assert!(producer_deadline < Instant::now());
+    assert!(runtime.wait_until_all_producer_instances_exit_for(Duration::ZERO));
+    assert!(runtime.wait_for_global_shutdown_completion_for(Duration::ZERO));
+    assert!(runtime.wait_for_runtime_recoveries_for(Duration::ZERO));
+    {
+        let state = runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let recovery = state
+            .runtime_recoveries
+            .get(&(pipeline_key, 0))
+            .expect("cancelled recovery should remain tracked");
+        assert_eq!(recovery.restart_count, 0);
+        assert!(recovery.worker_id.is_none());
+        assert!(recovery.candidate_generation.is_none());
+        assert!(state.deferred_runtime_recoveries.is_empty());
+        assert!(state.launching_instances.is_empty());
+    }
+
+    let (stopped_tx, stopped_rx) = std::sync::mpsc::channel();
+    let handle = spawn_thread_local_task(
+        "test-scope-completed-descendants",
+        TracingSetup::new(ProviderSetup::Noop, LogLevel::default(), engine_context),
+        move |cancellation_token| async move {
+            cancellation_token.cancelled().await;
+            stopped_tx
+                .send(())
+                .expect("scope shutdown should remain observable");
+            Ok::<(), Error>(())
+        },
+    )
+    .expect("scope supervisor should start");
+    let mut guard = ExtensionScopeSupervisorGuard::new_with_timeouts(
+        handle,
+        Arc::clone(&runtime),
+        Duration::from_secs(1),
+        Duration::from_secs(1),
+    );
+    assert!(guard.shutdown_after_descendants().is_none());
+    stopped_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("scope supervisor should stop after completed descendants");
+    assert_eq!(
+        runtime.global_shutdown_deadline_or_insert(Duration::from_secs(60)),
+        producer_deadline
+    );
+    assert!(!runtime.has_fatal_runtime_error());
+    assert!(
+        runtime
+            .reserve_instance_launch(
+                &deployed_key("g1", "p1", 0, 2),
+                current_test_context_bindings(&runtime),
+            )
+            .is_err()
+    );
+}
+
+/// Scenario: producer draining has finished but its deadline is already past when scope shutdown begins.
+/// Guarantees: the supervisor gets its own finite window without changing the producer deadline.
+#[test]
+fn extension_scope_supervisor_guard_starts_new_budget_after_producer_deadline() {
+    let runtime = test_runtime(&empty_engine_config());
+    let producer_deadline = Instant::now() - Duration::from_secs(1);
+    runtime
+        .request_shutdown_all_until(producer_deadline)
+        .expect("completed producer phase should establish its deadline");
+    let handle = spawn_thread_local_task(
+        "test-scope-independent-shutdown-budget",
+        TracingSetup::new(ProviderSetup::Noop, LogLevel::default(), engine_context),
+        move |cancellation_token| async move {
+            cancellation_token.cancelled().await;
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            Ok::<(), Error>(())
+        },
+    )
+    .expect("scope supervisor should start");
+    let mut guard = ExtensionScopeSupervisorGuard::new(handle, Arc::clone(&runtime));
+    let error = guard.shutdown_after_descendants();
+    assert!(
+        error.is_none(),
+        "expired producer grace must not truncate the next phase: {error:?}"
+    );
+    assert_eq!(
+        runtime.global_shutdown_deadline_or_insert(Duration::from_secs(60)),
+        producer_deadline
+    );
+}
+
+/// Scenario: a scope thread outlives its join budget and reports metrics after controller teardown returns.
+/// Guarantees: timeout detaches without stopping collection; observability gets fresh grace and owns final draining.
+#[tokio::test(flavor = "current_thread")]
+async fn extension_scope_supervisor_guard_bounds_scope_host_thread_join() {
+    let runtime = test_runtime(&empty_engine_config());
+    let observability_key = deployed_key(
+        SYSTEM_PIPELINE_GROUP_ID,
+        SYSTEM_OBSERVABILITY_PIPELINE_ID,
+        0,
+        0,
+    );
+    let (observability_sender, observability_shutdown) = deadline_notifying_admin_sender();
+    register_runtime_instance_with_sender(
+        &runtime,
+        observability_key.clone(),
+        observability_sender,
+        RuntimeInstanceLifecycle::Active,
+    );
+
+    struct ExitObservabilityOnDrop(Arc<ControllerRuntime<()>>, DeployedPipelineKey);
+    impl Drop for ExitObservabilityOnDrop {
+        fn drop(&mut self) {
+            self.0
+                .note_instance_exit(self.1.clone(), RuntimeInstanceExit::Success);
+        }
+    }
+    let observability_exit = ExitObservabilityOnDrop(Arc::clone(&runtime), observability_key);
+
+    let telemetry = InternalTelemetrySystem::default();
+    let collector = telemetry.collector();
+    let (collector_ready_tx, collector_ready_rx) = std_mpsc::channel();
+    let (collector_stopped_tx, collector_stopped_rx) = std_mpsc::channel();
+    // As in controller teardown, only lifetime ownership crosses these threads.
+    let collector_handle = Arc::new(
+        spawn_thread_local_task(
+            "test-deferred-scope-collector",
+            TracingSetup::new(ProviderSetup::Noop, LogLevel::default(), engine_context),
+            move |cancellation_token| {
+                let task = collector.run(cancellation_token);
+                _ = collector_ready_tx.send(());
+                async move {
+                    let result = task.await;
+                    _ = collector_stopped_tx.send(());
+                    result
+                }
+            },
+        )
+        .expect("collector should start"),
+    );
+    collector_ready_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("collector should be running");
+    let collector_lease = Arc::clone(&collector_handle);
+    let context = ControllerContext::new(telemetry.registry());
+    let mut metrics = telemetry
+        .registry()
+        .register_metric_set_for_entity::<OuterScopeLiveReconfigMetrics>(
+            context.register_engine_entity(),
+        );
+    let mut reporter = telemetry.reporter();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    let (stopped_tx, stopped_rx) = std::sync::mpsc::channel();
+    let (cleanup_tx, cleanup_rx) = std_mpsc::channel();
+    let completion_runtime = Arc::clone(&runtime);
+    let handle = spawn_thread_local_task_with_cleanup(
+        "test-slow-extension-scope-shutdown",
+        TracingSetup::new(ProviderSetup::Noop, LogLevel::default(), engine_context),
+        move |cancellation_token| async move {
+            cancellation_token.cancelled().await;
+            release_rx
+                .await
+                .map_err(|error| Error::PipelineRuntimeError {
+                    source: Box::new(error),
+                })?;
+            metrics.reported.add(37);
+            reporter.report(&mut metrics)?;
+            reporter.flush().await?;
+            _ = stopped_tx.send(Instant::now());
+            Ok::<(), Error>(())
+        },
+        move |cancellation_token| {
+            completion_runtime.finish_shutdown_after_extension_scopes(&cancellation_token);
+            drop(collector_lease);
+            _ = cleanup_tx.send(());
+        },
+    )
+    .expect("test extension scope supervisor should spawn");
+    let mut guard = ExtensionScopeSupervisorGuard::new_with_timeouts(
+        handle,
+        Arc::clone(&runtime),
+        Duration::from_millis(100),
+        Duration::from_millis(100),
+    );
+
+    let started = Instant::now();
+    let error = guard
+        .shutdown_after_descendants()
+        .expect("slow extension scope shutdown should time out");
+    assert!(matches!(error, Error::ThreadJoinTimeout { .. }));
+    assert!(
+        started.elapsed() < Duration::from_millis(300),
+        "extension scope supervisor thread join must honor its own deadline"
+    );
+    assert!(
+        observability_shutdown.try_recv().is_err(),
+        "join timeout must not open observability shutdown"
+    );
+    let telemetry_error =
+        shutdown_telemetry_task("test-deferred-scope-collector", collector_handle)
+            .expect_err("controller must defer collector teardown while the scope thread is alive");
+    assert!(telemetry_error.to_string().contains("shutdown deferred"));
+    telemetry
+        .reporter()
+        .flush()
+        .await
+        .expect("collector must remain responsive after the join timeout");
+    runtime.release_instance_wait();
+    release_tx
+        .send(())
+        .expect("detached scope thread should still accept its completion barrier");
+    let scope_finished = stopped_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("detached scope thread should report its final metrics");
+    let (reason, deadline) = observability_shutdown
+        .recv_timeout(Duration::from_secs(1))
+        .expect("observability should stop after the extension scope hosts");
+    assert_eq!(reason, "global shutdown");
+    assert!(deadline >= scope_finished + ControllerRuntime::<()>::OBSERVABILITY_SHUTDOWN_TIMEOUT);
+    let batch = telemetry.registry().drain_metric_export_batch();
+    let values = batch
+        .metric_sets
+        .into_iter()
+        .filter(|set| set.descriptor.name == "test.extension.outer_scope_live_reconfig")
+        .map(|set| set.values)
+        .collect::<Vec<_>>();
+    assert_eq!(values, vec![vec![MetricValue::from(37_u64)]]);
+    assert!(
+        collector_stopped_rx.try_recv().is_err(),
+        "fatal wait release must not stop collection while observability is still alive"
+    );
+    drop(observability_exit);
+    collector_stopped_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("collector should stop after observability actually exits");
+    cleanup_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("detached supervisor should release all deferred resources");
+    assert!(runtime.wait_for_global_shutdown_completion_for(Duration::from_secs(1)));
+}
+
+/// Scenario: global shutdown begins while system observability and the
+/// extension scope supervisor are both active.
+/// Guarantees: extension scope hosts stop before observability receives its
+/// shutdown signal, preserving terminal scope-host telemetry.
+#[test]
+fn extension_scope_supervisor_guard_stops_observability_after_scope_hosts() {
+    let runtime = test_runtime(&empty_engine_config());
+    let observability_key = deployed_key(
+        SYSTEM_PIPELINE_GROUP_ID,
+        SYSTEM_OBSERVABILITY_PIPELINE_ID,
+        0,
+        0,
+    );
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let observability_sender: Arc<dyn PipelineAdminSender> =
+        Arc::new(RecordingPipelineAdminSender {
+            calls: Arc::clone(&events),
+            failure: None,
+        });
+    register_runtime_instance_with_sender(
+        &runtime,
+        observability_key.clone(),
+        observability_sender,
+        RuntimeInstanceLifecycle::Active,
+    );
+    runtime
+        .request_shutdown_all(1)
+        .expect("initial producer shutdown phase should succeed");
+    assert!(
+        events
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .is_empty(),
+        "observability must remain active before extension scope shutdown"
+    );
+
+    let extension_scope_events = Arc::clone(&events);
+    let handle = spawn_thread_local_task(
+        "test-extension-scope-observability-order",
+        TracingSetup::new(ProviderSetup::Noop, LogLevel::default(), engine_context),
+        move |cancellation_token| async move {
+            cancellation_token.cancelled().await;
+            extension_scope_events
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push("extension scope hosts stopped".to_owned());
+            Ok::<(), Error>(())
+        },
+    )
+    .expect("test extension scope supervisor should spawn");
+    let guard = ExtensionScopeSupervisorGuard::new_with_timeouts(
+        handle,
+        Arc::clone(&runtime),
+        Duration::from_secs(2),
+        Duration::from_secs(2),
+    );
+    let drop_thread = thread::spawn(move || drop(guard));
+
+    let deadline = Instant::now() + Duration::from_secs(1);
+    loop {
+        let observed = events
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        if observed.len() >= 2 {
+            assert_eq!(
+                observed,
+                ["extension scope hosts stopped", "global shutdown"]
+            );
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for ordered extension scope and observability shutdown"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+
+    runtime.note_instance_exit(observability_key, RuntimeInstanceExit::Success);
+    drop_thread
+        .join()
+        .expect("extension scope supervisor guard cleanup should finish");
 }
 
 /// Scenario: a runtime thread reports exit before the controller finishes

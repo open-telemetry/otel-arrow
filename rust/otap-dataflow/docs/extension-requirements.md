@@ -31,7 +31,7 @@ The extension system should:
   * thread-per-core execution
   * minimal synchronization
   * local hot-path access
-* support **future hierarchical scopes** (global, group, pipeline)
+* support extension **declaration scopes** (engine, group, pipeline)
 * allow extensions to run **background tasks**
 
 ## Non-Goals
@@ -105,10 +105,10 @@ Multiple instances may exist using different configurations or implementations.
 
 The execution model of an extension (for example **local per core** or
 **shared**) is defined by the **extension provider implementation**, not by the
-configuration. The placement of the extension declaration in the configuration
-hierarchy remains an orthogonal concern handled by the runtime, and ultimately
-determines the *sharing boundary* of an instance (see
-[Extension Scopes](#extension-scopes)).
+configuration. The placement of the extension declaration remains an
+orthogonal concern handled by the runtime, and ultimately determines the
+*sharing boundary* of an instance (see
+[Extension Declaration Scopes](#extension-declaration-scopes)).
 
 ### Capability Binding
 
@@ -142,36 +142,42 @@ This approach improves:
 
 ## Configuration Integration
 
-The extension system integrates directly into the engine's configuration
-hierarchy.
+The extension system integrates directly into the engine configuration.
+Extensions can be declared at engine, group, or pipeline scope.
+The declaration scope determines the physical instance boundary:
 
-For phase 1, extensions are declared at the **pipeline level** and consumed by
-nodes within that pipeline.
+* engine scope: one host shared by all regular pipelines in the process
+* group scope: one host shared by regular pipelines in that group
+* pipeline scope: one instance per runtime pipeline instance (per core)
 
 Example:
 
 ```yaml
 version: otel_dataflow/v1
 
+extensions:
+  oidc_auth_main:
+    type: extension:oidc_auth
+    config:
+      issuer: https://accounts.example.com
+
 groups:
   continuous_benchmark:
+    extensions:
+      local_auth:
+        type: extension:basic_auth
+        config:
+          file: /etc/auth/tokens.yaml
+
     pipelines:
       sut:
-
         extensions:
-
-          oidc_auth_main:
-            type: extension:oidc_auth
+          pipeline_auth:
+            type: extension:static_auth
             config:
-              issuer: https://accounts.example.com
-
-          local_auth:
-            type: extension:basic_auth
-            config:
-              file: /etc/auth/tokens.yaml
+              token: example
 
         nodes:
-
           otlp_recv1:
             type: receiver:otlp
             capabilities:
@@ -191,8 +197,15 @@ groups:
                   listening_addr: "127.0.0.1:4337"
 ```
 
-This model keeps extension usage explicit and consistent with the existing
-`groups -> pipelines -> nodes` structure.
+Bindings resolve lexically. A pipeline declaration shadows a group or engine
+declaration with the same extension id, and a group declaration shadows the
+engine declaration. Shadowing applies to the entire extension id, sibling
+groups are isolated, and the internal observability pipeline does not inherit
+user-declared engine or group extensions.
+
+Engine- and group-scoped declarations require a provider with a shared
+execution variant because their capability handles cross pipeline-thread
+boundaries. Local-only providers remain valid at pipeline scope.
 
 ## User Experience
 
@@ -322,43 +335,38 @@ The execution model of an extension (`local` or `shared`) is determined by the
 model defines the *type constraints* on the implementation (`!Send` for
 `local`, `Send + Clone` for `shared`); the *sharing boundary* of an instance is
 determined by the configuration scope at which the extension is declared (see
-[Extension Scopes](#extension-scopes)).
+[Extension Declaration Scopes](#extension-declaration-scopes)).
 
 These extension implementation bounds are distinct from capability trait
 bounds. The generated local capability trait adds no `Send` or `Sync`
 requirement, while the generated shared capability trait requires
 `Send + Sync`. This allows a shared capability handle to be retained behind
-shared references by concurrent consumers without changing the Phase 1
-per-pipeline extension instance boundary.
+shared references by concurrent consumers without changing the pipeline-scoped
+per-core instance boundary.
 
-## Extension Scopes
+## Extension Declaration Scopes
 
-### Phase 1 - Pipeline Scope
+The execution model and declaration scope are separate choices. The provider's
+execution model defines its type constraints. The declaration scope defines
+how many physical extension hosts exist and which pipelines can bind to them.
 
-In phase 1, extensions are declared at the **pipeline level** and consumed by
-nodes within that pipeline.
+| Declaration scope | Physical host boundary                  | Visible to                      | Required execution variant |
+| ----------------- | --------------------------------------- | ------------------------------- | -------------------------- |
+| engine            | one per engine process                  | all regular pipelines           | shared                     |
+| group             | one per pipeline group                  | regular pipelines in that group | shared                     |
+| pipeline          | one per runtime pipeline instance/core  | nodes in that pipeline          | local, shared, or both     |
 
-Two execution models are supported by extension providers. The execution model
-expresses the *type constraints* the implementation accepts; the actual
-*sharing boundary* of an instance is determined by the scope at which it is
-declared (pipeline scope in Phase 1).
+Pipeline-scoped behavior is unchanged from phase 1: even a provider's shared
+variant is constructed independently in every runtime pipeline instance.
+Cross-core sharing occurs only when the declaration is moved to group or
+engine scope. A dual provider uses its shared variant at engine or group scope;
+a local-only or local-background provider is rejected there.
 
-| Execution Model | Type Constraints  | Phase 1 Sharing Boundary (pipeline scope)                     |
-|-----------------|-------------------|---------------------------------------------------------------|
-| `local`         | `!Send`           | One instance per pipeline instance (per core)                 |
-| `shared`        | `Send + Clone`    | One instance per pipeline instance (per core); cloned on bind |
-
-The supported model is declared by the extension provider implementation.
-
-> **Phase 1 note on `shared`.** Because Phase 1 only supports pipeline scope,
-> a `shared` extension is still instantiated *per pipeline instance* (i.e., per
-> core) -- it is not yet shared across cores. The `Send + Clone` bounds are
-> what makes true cross-core sharing possible *later*, when extensions can be
-> declared at higher scopes (group, engine). At those scopes, a single
-> `shared` instance will be cloned to each pipeline instance, giving genuine
-> cross-core sharing of state behind `Arc`. Until then, treat `shared` as
-> "per-pipeline-instance, ready to be hoisted to a broader scope without code
-> changes" rather than "one instance for the whole engine".
+Engine- and group-scoped providers are hosted by the controller. The controller
+waits for their spawn and opt-in readiness barriers before constructing
+pipelines. Pipelines receive immutable registration snapshots, resolve typed
+capability handles during construction, and perform no scope-registry lookup on
+the data path.
 
 ### Local Execution Model Advantages
 
@@ -392,14 +400,17 @@ Features:
 * capability binding in nodes
 * background tasks supported
 
-### Phase 2 - Hierarchical Extensions
+### Phase 2 - Extension Declaration Scopes (implemented)
 
-Adds:
+Includes:
 
 * extension declarations at
 
   * top/engine-level
   * group-level
+* lexical visibility and whole-id shadowing
+* controller-owned engine/group scope hosts and readiness
+* immutable inherited capability snapshots for pipeline generations
 
 Possible future distributed scope.
 
@@ -539,8 +550,8 @@ A typical pattern is:
 
 ### 6. Shared scopes should avoid making every call cross-core
 
-For non-local `pipeline` scope and future broader scopes, implementations should
-avoid designs where every capability call requires cross-core communication.
+For group and engine scopes, implementations should avoid designs where every
+capability call requires cross-core communication.
 
 A better pattern is usually:
 
@@ -565,8 +576,10 @@ it should remain up to date and include at least:
 
 * description
 * supported capabilities
-* supported scopes
+* supported execution models
 * documentation URL
 
-Note: We probably want to enforce this with a macro to register extensions,
-which would require metadata fields to be provided at compile time.
+Engine/group-scope eligibility is currently inferred from shared capability
+metadata and verified against the extension bundle produced at startup. An
+explicit supported-scope metadata field can be added later if it provides
+enough value to justify the factory API change.

@@ -147,6 +147,13 @@ pub enum Error {
         source: std::io::Error,
     },
 
+    /// A controller-owned thread did not stop before its teardown deadline.
+    #[error("Timed out waiting for thread '{thread_name}' to stop")]
+    ThreadJoinTimeout {
+        /// Name of the thread that remained active.
+        thread_name: String,
+    },
+
     /// Failed to enumerate available CPU cores on this platform.
     #[error("Failed to get available CPU cores (core detection unavailable on this platform)")]
     CoreDetectionUnavailable,

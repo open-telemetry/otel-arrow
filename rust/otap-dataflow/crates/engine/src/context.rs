@@ -298,6 +298,24 @@ impl ControllerContext {
         self.telemetry_registry_handle.clone()
     }
 
+    /// Returns an extension context hosted once for the engine.
+    #[must_use]
+    pub fn engine_extension_context(&self) -> ExtensionContext {
+        ExtensionContext::new(self.clone(), ExtensionScopeAttributeSet::engine())
+    }
+
+    /// Returns an extension context hosted once for a pipeline group.
+    #[must_use]
+    pub fn pipeline_group_extension_context(
+        &self,
+        pipeline_group_id: PipelineGroupId,
+    ) -> ExtensionContext {
+        ExtensionContext::new(
+            self.clone(),
+            ExtensionScopeAttributeSet::group(pipeline_group_id),
+        )
+    }
+
     /// Returns the shared process-wide memory pressure state.
     #[must_use]
     pub fn memory_pressure_state(&self) -> MemoryPressureState {

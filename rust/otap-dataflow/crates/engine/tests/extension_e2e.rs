@@ -28,8 +28,10 @@
 //!    drained.
 
 use async_trait::async_trait;
+use otel_arrow_dfe_config::engine::OtelDataflowSpec;
 use otel_arrow_dfe_config::observed_state::{ObservedStateSettings, SendPolicy};
 use otel_arrow_dfe_config::pipeline::PipelineConfig;
+use otel_arrow_dfe_config::pipeline::telemetry::TelemetryConfig;
 use otel_arrow_dfe_config::policy::{
     ChannelCapacityPolicy, RateLimitAggregation, RateLimitEnforcement, RateLimitPressure,
     RateLimitUnit, RateLimiterPolicy, TelemetryPolicy, TokenBucketPolicy,
@@ -47,6 +49,8 @@ use otel_arrow_dfe_engine::control::{
 };
 use otel_arrow_dfe_engine::error::Error as EngineError;
 use otel_arrow_dfe_engine::exporter::ExporterWrapper;
+use otel_arrow_dfe_engine::extension::scope::ExtensionScopeRegistry;
+use otel_arrow_dfe_engine::extension::wrapper::ExtensionVariant;
 use otel_arrow_dfe_engine::extension::{EffectHandler, ExtensionBundle, ExtensionWrapper};
 use otel_arrow_dfe_engine::local::exporter as local_exp;
 use otel_arrow_dfe_engine::local::processor as local_proc;
@@ -63,7 +67,10 @@ use otel_arrow_dfe_engine::testing::capability::no_op_stateless::NoOpStateless;
 use otel_arrow_dfe_engine::testing::capability::no_op_stateless::SharedNoOpStateless;
 use otel_arrow_dfe_engine::{PipelineFactory, extension_capabilities};
 use otel_arrow_dfe_state::store::ObservedStateStore;
-use otel_arrow_dfe_telemetry::InternalTelemetrySystem;
+use otel_arrow_dfe_telemetry::attributes::AttributeSetHandler;
+use otel_arrow_dfe_telemetry::metrics::{MetricSet, MetricValue};
+use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
+use otel_arrow_dfe_telemetry::{InternalTelemetrySystem, LogContext};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -322,8 +329,9 @@ fn probe_receiver_create(
             }
         }
         CallSequence::Shared => {
-            if capabilities.require_shared::<NoOpStateless>().is_ok() {
+            if let Ok(handle) = capabilities.require_shared::<NoOpStateless>() {
                 let _ = probe.first_call_succeeded.fetch_add(1, Ordering::SeqCst);
+                *probe.captured_name.lock() = Some(handle.name().to_owned());
             }
         }
         CallSequence::RequireLocalTwice => {
@@ -1287,6 +1295,205 @@ const BACKGROUND_EXTENSION_FACTORY: ExtensionFactory = ExtensionFactory {
 };
 
 // ---------------------------------------------------------------------
+// Outer-scope telemetry extension -- reports a custom metric whenever
+// the host sends CollectTelemetry.
+// ---------------------------------------------------------------------
+
+#[otel_arrow_dfe_telemetry_macros::metric_set(name = "test.extension.outer_scope")]
+#[derive(Debug, Default, Clone)]
+struct OuterScopeExtensionMetrics {
+    #[metric(name = "reported", unit = "{item}")]
+    reported: otel_arrow_dfe_telemetry::instrument::Counter<u64>,
+}
+
+#[derive(Clone)]
+struct OuterScopeMetricsExtension {
+    metrics: MetricSet<OuterScopeExtensionMetrics>,
+    report_value: u64,
+    // Shared only as a completion barrier between both scope-host tasks and the test driver.
+    collected: Arc<AtomicUsize>,
+    shutdown_probe: Option<OuterScopeShutdownProbe>,
+}
+
+#[derive(Debug)]
+enum OuterScopeShutdownEvent {
+    Started {
+        value: u64,
+        deadline: Instant,
+    },
+    Completed {
+        value: u64,
+        at: Instant,
+        terminal_deadline: Instant,
+    },
+}
+
+#[derive(Clone)]
+struct OuterScopeShutdownProbe {
+    events: tokio::sync::mpsc::UnboundedSender<OuterScopeShutdownEvent>,
+    delay: Duration,
+    empty_terminal_state: bool,
+    // Shared only to pass a completion gate through the static test factory.
+    release: Option<Arc<tokio::sync::Notify>>,
+}
+
+async fn wait_outer_scope_shutdown_completion(
+    events: &mut tokio::sync::mpsc::UnboundedReceiver<OuterScopeShutdownEvent>,
+    expected_value: u64,
+) -> Instant {
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if let OuterScopeShutdownEvent::Completed {
+                value,
+                terminal_deadline,
+                ..
+            } = events
+                .recv()
+                .await
+                .expect("scope event channel should stay open")
+                && value == expected_value
+            {
+                return terminal_deadline;
+            }
+        }
+    })
+    .await
+    .expect("extension should return its terminal state")
+}
+
+#[async_trait]
+impl otel_arrow_dfe_engine::shared::extension::Extension for OuterScopeMetricsExtension {
+    async fn start(
+        mut self: Box<Self>,
+        mut ctrl: otel_arrow_dfe_engine::shared::extension::ControlChannel,
+        _eh: EffectHandler,
+    ) -> Result<TerminalState, EngineError> {
+        loop {
+            match ctrl.recv().await {
+                Ok(ExtensionControlMsg::CollectTelemetry {
+                    mut metrics_reporter,
+                }) => {
+                    self.metrics.reported.add(self.report_value);
+                    metrics_reporter
+                        .report(&mut self.metrics)
+                        .map_err(|error| EngineError::InternalError {
+                            message: format!(
+                                "outer-scope extension metric reporting failed: {error}"
+                            ),
+                        })?;
+                    let _ = self.collected.fetch_add(1, Ordering::SeqCst);
+                }
+                Ok(ExtensionControlMsg::Shutdown { deadline, .. }) => {
+                    if let Some(probe) = &self.shutdown_probe {
+                        let _ = probe.events.send(OuterScopeShutdownEvent::Started {
+                            value: self.report_value,
+                            deadline,
+                        });
+                        tokio::time::sleep(probe.delay).await;
+                        if let Some(release) = &probe.release {
+                            release.notified().await;
+                        }
+                        let terminal_state = if probe.empty_terminal_state {
+                            TerminalState::default()
+                        } else {
+                            self.metrics.reported.add(self.report_value);
+                            TerminalState::new(deadline, [self.metrics.snapshot()])
+                        };
+                        let _ = probe.events.send(OuterScopeShutdownEvent::Completed {
+                            value: self.report_value,
+                            at: Instant::now(),
+                            terminal_deadline: terminal_state.deadline(),
+                        });
+                        return Ok(terminal_state);
+                    }
+                    return Ok(TerminalState::new(deadline, [self.metrics]));
+                }
+                Err(_) => break,
+                Ok(ExtensionControlMsg::Config { .. }) => {}
+            }
+        }
+        Ok(TerminalState::default())
+    }
+}
+
+#[derive(Clone, Default)]
+struct OuterScopeMetricsProbe {
+    collected: Arc<AtomicUsize>,
+    shutdown: Option<OuterScopeShutdownProbe>,
+}
+
+static OUTER_SCOPE_METRICS_PROBES: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<String, OuterScopeMetricsProbe>>,
+> = std::sync::OnceLock::new();
+
+fn outer_scope_metrics_probes()
+-> &'static std::sync::Mutex<std::collections::HashMap<String, OuterScopeMetricsProbe>> {
+    OUTER_SCOPE_METRICS_PROBES
+        .get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+fn register_outer_scope_metrics_probe(key: &str, probe: OuterScopeMetricsProbe) {
+    let _ = outer_scope_metrics_probes()
+        .lock()
+        .expect("outer-scope metrics probes mutex poisoned")
+        .insert(key.to_owned(), probe);
+}
+
+fn lookup_outer_scope_metrics_probe(key: &str) -> OuterScopeMetricsProbe {
+    outer_scope_metrics_probes()
+        .lock()
+        .expect("outer-scope metrics probes mutex poisoned")
+        .get(key)
+        .cloned()
+        .unwrap_or_else(|| panic!("no OuterScopeMetricsProbe registered for key '{key}'"))
+}
+
+const OUTER_SCOPE_METRICS_EXTENSION_URN: &str = "urn:test:extension:outer_scope_metrics_extension";
+
+fn outer_scope_metrics_extension_create(
+    ctx: &ExtensionContext,
+    name: otel_arrow_dfe_config::ExtensionId,
+    user_config: Arc<otel_arrow_dfe_config::extension::ExtensionUserConfig>,
+    extension_config: &ExtensionConfig,
+) -> Result<ExtensionBundle, otel_arrow_dfe_config::error::Error> {
+    let probe_key = user_config
+        .config
+        .get("probe_key")
+        .and_then(|value| value.as_str())
+        .expect("probe_key present in outer-scope metrics extension config");
+    let report_value = user_config
+        .config
+        .get("report_value")
+        .and_then(serde_json::Value::as_u64)
+        .expect("report_value present in outer-scope metrics extension config");
+    let probe = lookup_outer_scope_metrics_probe(probe_key);
+
+    let entity_key = ctx.register_extension_entity(name.clone(), ExtensionVariant::Shared);
+    let metrics = ctx.register_metric_set_for_entity::<OuterScopeExtensionMetrics>(entity_key);
+    let extension = OuterScopeMetricsExtension {
+        metrics,
+        report_value,
+        collected: probe.collected,
+        shutdown_probe: probe.shutdown,
+    };
+    let bundle = ExtensionWrapper::builder(name, user_config, extension_config)
+        .background()
+        .shared::<OuterScopeMetricsExtension>(extension)
+        .build()
+        .expect("outer-scope metrics extension bundle builds");
+    Ok(bundle)
+}
+
+const OUTER_SCOPE_METRICS_EXTENSION_FACTORY: ExtensionFactory = ExtensionFactory {
+    name: OUTER_SCOPE_METRICS_EXTENSION_URN,
+    description: "background extension reporting a custom metric from an outer scope",
+    documentation_url: "",
+    capabilities: None,
+    create: outer_scope_metrics_extension_create,
+    validate_config: otel_arrow_dfe_config::validation::no_config,
+};
+
+// ---------------------------------------------------------------------
 // Shared-counter extension -- provides NoOpStateful via passive Cloned;
 // holds an `Arc<AtomicU64>` counter so cloned consumers share state.
 // ---------------------------------------------------------------------
@@ -1850,6 +2057,7 @@ const EXTENSION_FACTORIES: &[ExtensionFactory] = &[
     SHUTDOWN_RECORDING_EXTENSION_FACTORY,
     DUAL_ACTIVE_EXTENSION_FACTORY,
     BACKGROUND_EXTENSION_FACTORY,
+    OUTER_SCOPE_METRICS_EXTENSION_FACTORY,
     SHARED_COUNTER_EXTENSION_FACTORY,
     SHARED_COUNTER_SHARED_EXTENSION_FACTORY,
     CONSTRUCTED_EXTENSION_FACTORY,
@@ -2183,6 +2391,739 @@ connections:
         Some("passive-noop"),
         "name from passive-cloned extension is observable to the consumer"
     );
+}
+
+// ---------------------------------------------------------------------
+// Extension declaration scope inheritance
+// ---------------------------------------------------------------------
+
+/// Scenario: An engine extension is shadowed by a group extension with the same ID.
+/// Guarantees: A descendant resolves the nearest declaration and captures its shared capability.
+#[test]
+fn test_pipeline_group_extension_shadows_engine_extension() {
+    let probe_key = "scope-shadow";
+    let probe = make_probe(probe_key, CallSequence::Shared);
+    let yaml = format!(
+        r#"
+version: otel_dataflow/v1
+engine: {{}}
+extensions:
+  shared-ext:
+    type: "{PASSIVE_EXTENSION_URN}"
+groups:
+  test-group:
+    extensions:
+      shared-ext:
+        type: "{DUAL_EXTENSION_URN}"
+    pipelines:
+      test-pipeline:
+        nodes:
+          receiver:
+            type: "{PROBE_RECEIVER_URN}"
+            config:
+              probe_key: "{probe_key}"
+            capabilities:
+              no_op_stateless: shared-ext
+          exporter:
+            type: "{NOOP_EXPORTER_URN}"
+        connections:
+          - from: receiver
+            to: exporter
+"#
+    );
+    let spec = OtelDataflowSpec::from_yaml(&yaml).expect("valid extension scope config");
+    let telemetry_system = InternalTelemetrySystem::default();
+    let controller_ctx = ControllerContext::new(telemetry_system.registry());
+    let registry = ExtensionScopeRegistry::default();
+
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime")
+        .block_on(async {
+            let local_set = tokio::task::LocalSet::new();
+            local_set
+                .run_until(async {
+                    let prepared = TEST_PIPELINE_FACTORY
+                        .prepare_extension_scope_hosts(
+                            &spec,
+                            &controller_ctx,
+                            telemetry_system.reporter(),
+                            registry.clone(),
+                        )
+                        .expect("extension scope hosts prepare");
+                    let running = prepared.start().await.expect("extension scope hosts start");
+
+                    let group_id = PipelineGroupId::from("test-group");
+                    let pipeline_id = PipelineId::from("test-pipeline");
+                    let pipeline_config = spec
+                        .groups
+                        .get(&group_id)
+                        .expect("group")
+                        .pipelines
+                        .get(&pipeline_id)
+                        .expect("pipeline")
+                        .clone();
+                    let inherited = registry.registrations_for_pipeline(
+                        &group_id,
+                        pipeline_config.extensions(),
+                        pipeline_config
+                            .nodes()
+                            .iter()
+                            .flat_map(|(_, node)| node.capabilities.values()),
+                    );
+                    let pipeline_ctx =
+                        controller_ctx.pipeline_context_with(group_id, pipeline_id, 0, 1, 0);
+                    let _entity_key = pipeline_ctx.register_pipeline_entity();
+                    let runtime_pipeline = TEST_PIPELINE_FACTORY
+                        .build_with_inherited_extensions(
+                            pipeline_ctx,
+                            pipeline_config,
+                            ChannelCapacityPolicy::default(),
+                            TelemetryPolicy::default(),
+                            std::collections::BTreeMap::new(),
+                            None,
+                            None,
+                            inherited,
+                        )
+                        .expect("pipeline builds");
+                    drop(runtime_pipeline);
+
+                    running
+                        .run(async {}, |_| {})
+                        .await
+                        .expect("extension scope hosts stop");
+                })
+                .await;
+        });
+
+    assert_eq!(
+        probe.captured_name.lock().as_deref(),
+        Some("dual-noop"),
+        "the nearest group declaration must shadow the engine declaration"
+    );
+}
+
+/// Scenario: Two runtime instances of one logical pipeline inherit one engine-scoped extension.
+/// Guarantees: Both builds observe the same shared state instead of constructing per-core state.
+#[test]
+fn test_engine_extension_state_is_shared_across_pipeline_instances() {
+    let receiver_probe_key = "scope-shared-state";
+    let receiver_probe = make_probe(receiver_probe_key, CallSequence::SharedStatefulIncrement);
+    let extension_probe_key = "scope-engine";
+    let counter = Arc::new(AtomicU64::new(0));
+    register_shared_counter_probe(
+        extension_probe_key,
+        SharedCounterProbe {
+            counter: Arc::clone(&counter),
+        },
+    );
+    let yaml = format!(
+        r#"
+version: otel_dataflow/v1
+engine: {{}}
+extensions:
+  shared-state:
+    type: "{SHARED_COUNTER_SHARED_EXTENSION_URN}"
+    config:
+      probe_key: "{extension_probe_key}"
+groups:
+  test-group:
+    pipelines:
+      test-pipeline:
+        nodes:
+          receiver:
+            type: "{PROBE_RECEIVER_URN}"
+            config:
+              probe_key: "{receiver_probe_key}"
+            capabilities:
+              no_op_stateful: shared-state
+          exporter:
+            type: "{NOOP_EXPORTER_URN}"
+        connections:
+          - from: receiver
+            to: exporter
+"#
+    );
+    let spec = OtelDataflowSpec::from_yaml(&yaml).expect("valid extension scope config");
+    let telemetry_system = InternalTelemetrySystem::default();
+    let controller_ctx = ControllerContext::new(telemetry_system.registry());
+    let registry = ExtensionScopeRegistry::default();
+
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime")
+        .block_on(async {
+            let local_set = tokio::task::LocalSet::new();
+            local_set
+                .run_until(async {
+                    let prepared = TEST_PIPELINE_FACTORY
+                        .prepare_extension_scope_hosts(
+                            &spec,
+                            &controller_ctx,
+                            telemetry_system.reporter(),
+                            registry.clone(),
+                        )
+                        .expect("extension scope hosts prepare");
+                    let running = prepared.start().await.expect("extension scope hosts start");
+
+                    let group_id = PipelineGroupId::from("test-group");
+                    let pipeline_id = PipelineId::from("test-pipeline");
+                    let pipeline_config = spec
+                        .groups
+                        .get(&group_id)
+                        .expect("group")
+                        .pipelines
+                        .get(&pipeline_id)
+                        .expect("pipeline")
+                        .clone();
+                    let inherited = registry.registrations_for_pipeline(
+                        &group_id,
+                        pipeline_config.extensions(),
+                        pipeline_config
+                            .nodes()
+                            .iter()
+                            .flat_map(|(_, node)| node.capabilities.values()),
+                    );
+
+                    for core_id in 0..2 {
+                        let pipeline_ctx = controller_ctx.pipeline_context_with(
+                            group_id.clone(),
+                            pipeline_id.clone(),
+                            core_id,
+                            2,
+                            core_id,
+                        );
+                        let _entity_key = pipeline_ctx.register_pipeline_entity();
+                        let runtime_pipeline = TEST_PIPELINE_FACTORY
+                            .build_with_inherited_extensions(
+                                pipeline_ctx,
+                                pipeline_config.clone(),
+                                ChannelCapacityPolicy::default(),
+                                TelemetryPolicy::default(),
+                                std::collections::BTreeMap::new(),
+                                None,
+                                None,
+                                inherited.clone(),
+                            )
+                            .expect("pipeline instance builds");
+                        drop(runtime_pipeline);
+                    }
+
+                    running
+                        .run(async {}, |_| {})
+                        .await
+                        .expect("extension scope hosts stop");
+                })
+                .await;
+        });
+
+    assert_eq!(
+        receiver_probe.create_calls.load(Ordering::SeqCst),
+        2,
+        "both pipeline instances must consume the inherited capability"
+    );
+    assert_eq!(
+        counter.load(Ordering::SeqCst),
+        2,
+        "both pipeline instances must mutate the same engine-scoped state"
+    );
+    assert_eq!(
+        receiver_probe
+            .stateful_increment_return
+            .lock()
+            .as_ref()
+            .copied(),
+        Some(2),
+        "the second pipeline instance must observe the first instance's mutation"
+    );
+}
+
+/// Scenario: Engine- and group-scoped shared background extensions receive scheduled telemetry.
+/// Guarantees: Both custom snapshots reach the collector with their provider host scope identity.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn test_outer_scope_extensions_report_custom_metrics_to_collector() {
+    let probe_key = "outer-scope-metric-collection";
+    let collected = Arc::new(AtomicUsize::new(0));
+    register_outer_scope_metrics_probe(
+        probe_key,
+        OuterScopeMetricsProbe {
+            collected: Arc::clone(&collected),
+            ..Default::default()
+        },
+    );
+    let yaml = format!(
+        r#"
+version: otel_dataflow/v1
+engine: {{}}
+extensions:
+  engine-metrics:
+    type: "{OUTER_SCOPE_METRICS_EXTENSION_URN}"
+    config:
+      probe_key: "{probe_key}"
+      report_value: 11
+groups:
+  test-group:
+    extensions:
+      group-metrics:
+        type: "{OUTER_SCOPE_METRICS_EXTENSION_URN}"
+        config:
+          probe_key: "{probe_key}"
+          report_value: 29
+    pipelines:
+      test-pipeline:
+        nodes:
+          receiver:
+            type: "{PROBE_RECEIVER_URN}"
+            config:
+              optional_only: true
+          exporter:
+            type: "{NOOP_EXPORTER_URN}"
+        connections:
+          - from: receiver
+            to: exporter
+"#
+    );
+    let spec = OtelDataflowSpec::from_yaml(&yaml).expect("valid extension scope config");
+    let telemetry_system = InternalTelemetrySystem::default();
+    let controller_ctx = ControllerContext::new(telemetry_system.registry());
+    let scope_registry = ExtensionScopeRegistry::default();
+    let local_set = tokio::task::LocalSet::new();
+
+    let batch = local_set
+        .run_until(async {
+            let collector_task =
+                tokio::task::spawn_local(telemetry_system.collector().run_collection_loop());
+            let prepared = TEST_PIPELINE_FACTORY
+                .prepare_extension_scope_hosts(
+                    &spec,
+                    &controller_ctx,
+                    telemetry_system.reporter(),
+                    scope_registry,
+                )
+                .expect("extension scope hosts prepare");
+            let running = prepared.start().await.expect("extension scope hosts start");
+
+            tokio::time::advance(Duration::from_secs(1)).await;
+            for _ in 0..32 {
+                if collected.load(Ordering::SeqCst) == 2 {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+            assert_eq!(
+                collected.load(Ordering::SeqCst),
+                2,
+                "the first monitor tick must collect both outer-scope extensions"
+            );
+
+            telemetry_system
+                .reporter()
+                .flush()
+                .await
+                .expect("collector must aggregate outer-scope extension snapshots");
+            let batch = telemetry_system.registry().drain_metric_export_batch();
+
+            running
+                .run(async {}, |_| {})
+                .await
+                .expect("extension scope hosts stop");
+            collector_task.abort();
+            let abort = collector_task
+                .await
+                .expect_err("collector task must remain active until explicitly stopped");
+            assert!(abort.is_cancelled(), "collector task must be cancelled");
+            batch
+        })
+        .await;
+
+    let mut metrics_by_extension = std::collections::BTreeMap::new();
+    for metric_set in batch
+        .metric_sets
+        .into_iter()
+        .filter(|metric_set| metric_set.descriptor.name == "test.extension.outer_scope")
+    {
+        let attributes = metric_set
+            .attributes
+            .iter_attributes()
+            .map(|(key, value)| (key.to_owned(), value.to_string_value()))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let extension_id = attributes
+            .get("extension.id")
+            .cloned()
+            .expect("outer-scope metric must carry extension.id");
+        assert!(
+            metrics_by_extension
+                .insert(extension_id, (attributes, metric_set.values))
+                .is_none(),
+            "each outer-scope extension must produce exactly one custom metric set"
+        );
+    }
+
+    assert_eq!(
+        metrics_by_extension.len(),
+        2,
+        "engine and group scope must each export one custom metric set"
+    );
+    let (engine_attributes, engine_values) = metrics_by_extension
+        .get("engine-metrics")
+        .expect("engine-scoped custom metrics");
+    assert_eq!(
+        engine_attributes.get("scope.kind").map(String::as_str),
+        Some("engine")
+    );
+    assert_eq!(
+        engine_attributes
+            .get("extension.variant")
+            .map(String::as_str),
+        Some("shared")
+    );
+    assert_eq!(engine_values, &[MetricValue::from(11_u64)]);
+
+    let (group_attributes, group_values) = metrics_by_extension
+        .get("group-metrics")
+        .expect("group-scoped custom metrics");
+    assert_eq!(
+        group_attributes.get("scope.kind").map(String::as_str),
+        Some("group")
+    );
+    assert_eq!(
+        group_attributes
+            .get("pipeline.group.id")
+            .map(String::as_str),
+        Some("test-group")
+    );
+    assert_eq!(
+        group_attributes
+            .get("extension.variant")
+            .map(String::as_str),
+        Some("shared")
+    );
+    assert_eq!(group_values, &[MetricValue::from(29_u64)]);
+}
+
+/// Scenario: two group providers drain concurrently before their engine provider.
+/// Guarantees: peers share a deadline, the engine gets fresh grace, and all terminal snapshots are collected.
+#[tokio::test(flavor = "current_thread")]
+async fn test_outer_scope_shutdown_preserves_phase_budgets_and_terminal_metrics() {
+    let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
+    let probe_keys = [
+        ("shutdown-engine", Duration::from_millis(20)),
+        ("shutdown-fast-group", Duration::from_millis(20)),
+        ("shutdown-slow-group", Duration::from_millis(60)),
+    ];
+    for (key, delay) in probe_keys {
+        register_outer_scope_metrics_probe(
+            key,
+            OuterScopeMetricsProbe {
+                shutdown: Some(OuterScopeShutdownProbe {
+                    events: events_tx.clone(),
+                    delay,
+                    empty_terminal_state: false,
+                    release: None,
+                }),
+                ..Default::default()
+            },
+        );
+    }
+    let spec = OtelDataflowSpec::from_yaml(&format!(
+        r#"
+version: otel_dataflow/v1
+engine: {{}}
+extensions:
+  engine-final:
+    type: "{OUTER_SCOPE_METRICS_EXTENSION_URN}"
+    config:
+      probe_key: shutdown-engine
+      report_value: 11
+groups:
+  fast:
+    extensions:
+      fast-group-final:
+        type: "{OUTER_SCOPE_METRICS_EXTENSION_URN}"
+        config:
+          probe_key: shutdown-fast-group
+          report_value: 29
+    pipelines: {{}}
+  slow:
+    extensions:
+      slow-group-final:
+        type: "{OUTER_SCOPE_METRICS_EXTENSION_URN}"
+        config:
+          probe_key: shutdown-slow-group
+          report_value: 37
+    pipelines: {{}}
+"#
+    ))
+    .expect("scope shutdown config should parse");
+    let telemetry_system = InternalTelemetrySystem::default();
+    let controller_ctx = ControllerContext::new(telemetry_system.registry());
+    let local_set = tokio::task::LocalSet::new();
+    let (shutdown_started, batch) = local_set
+        .run_until(async {
+            let collector =
+                tokio::task::spawn_local(telemetry_system.collector().run_collection_loop());
+            let running = TEST_PIPELINE_FACTORY
+                .prepare_extension_scope_hosts(
+                    &spec,
+                    &controller_ctx,
+                    telemetry_system.reporter(),
+                    ExtensionScopeRegistry::default(),
+                )
+                .expect("scope hosts should prepare")
+                .start()
+                .await
+                .expect("scope hosts should start");
+            let shutdown_started = Instant::now();
+            running.shutdown().await.expect("scope hosts should drain");
+            telemetry_system
+                .reporter()
+                .flush()
+                .await
+                .expect("collector must remain available after terminal host reporting");
+            let batch = telemetry_system.registry().drain_metric_export_batch();
+            collector.abort();
+            let error = collector
+                .await
+                .expect_err("collector should run until explicitly stopped");
+            assert!(error.is_cancelled());
+            (shutdown_started, batch)
+        })
+        .await;
+
+    let mut started = std::collections::BTreeMap::new();
+    let mut completed = std::collections::BTreeMap::new();
+    let mut sequence = Vec::new();
+    while let Ok(event) = events_rx.try_recv() {
+        match event {
+            OuterScopeShutdownEvent::Started { value, deadline } => {
+                assert!(started.insert(value, deadline).is_none());
+                sequence.push((value, "started"));
+            }
+            OuterScopeShutdownEvent::Completed { value, at, .. } => {
+                assert!(completed.insert(value, at).is_none());
+                sequence.push((value, "completed"));
+            }
+        }
+    }
+    assert_eq!(started.len(), 3);
+    assert_eq!(completed.len(), 3);
+    assert_eq!(
+        started[&29], started[&37],
+        "peer groups must share the same phase deadline"
+    );
+    assert!(started[&29] >= shutdown_started + Duration::from_secs(5));
+    for group in [29, 37] {
+        assert!(
+            started[&11] >= completed[&group] + Duration::from_secs(5),
+            "engine grace must begin only after every group finishes"
+        );
+    }
+    assert_eq!(
+        &sequence[4..],
+        &[(11, "started"), (11, "completed")],
+        "both group shutdowns must finish before engine shutdown starts"
+    );
+
+    let metrics = batch
+        .metric_sets
+        .into_iter()
+        .filter(|set| set.descriptor.name == "test.extension.outer_scope")
+        .map(|set| {
+            let extension_id = set
+                .attributes
+                .iter_attributes()
+                .find(|(key, _)| *key == "extension.id")
+                .expect("terminal snapshot should retain its extension identity")
+                .1
+                .to_string_value();
+            (extension_id, set.values)
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(
+        metrics,
+        std::collections::BTreeMap::from([
+            ("engine-final".to_owned(), vec![MetricValue::from(11_u64)]),
+            (
+                "fast-group-final".to_owned(),
+                vec![MetricValue::from(29_u64)]
+            ),
+            (
+                "slow-group-final".to_owned(),
+                vec![MetricValue::from(37_u64)]
+            ),
+        ]),
+        "the running collector must preserve all final custom snapshots"
+    );
+    let mut probes = outer_scope_metrics_probes()
+        .lock()
+        .expect("scope metric probes mutex should not be poisoned");
+    for (key, _) in probe_keys {
+        let _ = probes.remove(key);
+    }
+}
+
+/// Scenario: a fast scope peer returns an empty default state before a slower peer reports to a full collector.
+/// Guarantees: engine and group hosts preserve the slow peer's reporting grace and collect its terminal snapshot.
+#[tokio::test(flavor = "current_thread")]
+async fn test_outer_scope_peers_keep_independent_terminal_reporting_deadlines() {
+    for group_scoped in [false, true] {
+        let scope = if group_scoped { "group" } else { "engine" };
+        let fast_key = format!("peer-deadline-{scope}-fast");
+        let slow_key = format!("peer-deadline-{scope}-slow");
+        let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
+        let release_slow = Arc::new(tokio::sync::Notify::new());
+        for (key, empty_terminal_state, release) in [
+            (&fast_key, true, None),
+            (&slow_key, false, Some(Arc::clone(&release_slow))),
+        ] {
+            register_outer_scope_metrics_probe(
+                key,
+                OuterScopeMetricsProbe {
+                    shutdown: Some(OuterScopeShutdownProbe {
+                        events: events_tx.clone(),
+                        delay: Duration::ZERO,
+                        empty_terminal_state,
+                        release,
+                    }),
+                    ..Default::default()
+                },
+            );
+        }
+        let mut spec = OtelDataflowSpec::from_yaml(&format!(
+            r#"
+version: otel_dataflow/v1
+engine: {{}}
+policies:
+  telemetry:
+    pipeline_metrics: false
+    runtime_metrics: none
+extensions:
+  fast-peer:
+    type: "{OUTER_SCOPE_METRICS_EXTENSION_URN}"
+    config:
+      probe_key: "{fast_key}"
+      report_value: 11
+  slow-peer:
+    type: "{OUTER_SCOPE_METRICS_EXTENSION_URN}"
+    config:
+      probe_key: "{slow_key}"
+      report_value: 29
+groups:
+  test-group:
+    pipelines: {{}}
+"#
+        ))
+        .expect("peer deadline config should parse");
+        if group_scoped {
+            spec.groups
+                .get_mut(&PipelineGroupId::from("test-group"))
+                .expect("test group should exist")
+                .extensions = std::mem::take(&mut spec.extensions);
+        }
+        let config = TelemetryConfig {
+            reporting_channel_size: 1,
+            ..TelemetryConfig::default()
+        };
+        let registry = TelemetryRegistryHandle::new();
+        let telemetry = InternalTelemetrySystem::new(
+            &config,
+            config.reporting_interval,
+            registry.clone(),
+            None,
+            SendPolicy::default(),
+            LogContext::new,
+            None,
+        )
+        .expect("telemetry should initialize");
+        let context = ControllerContext::new(registry.clone());
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                // Claim the production collector, but do not poll it until both
+                // peers have returned. Its one-slot queue must stay backpressured.
+                let collection_loop = telemetry.collector().run_collection_loop();
+                let mut reporter = telemetry.reporter();
+                let mut filler = registry
+                    .register_metric_set_for_entity::<OuterScopeExtensionMetrics>(
+                        context.register_engine_entity(),
+                    );
+                filler.reported.add(1);
+                reporter
+                    .report(&mut filler)
+                    .expect("filler must occupy the collector's only queue slot");
+                let running = TEST_PIPELINE_FACTORY
+                    .prepare_extension_scope_hosts(
+                        &spec,
+                        &context,
+                        reporter.clone(),
+                        ExtensionScopeRegistry::default(),
+                    )
+                    .expect("peer hosts should prepare")
+                    .start()
+                    .await
+                    .expect("peer hosts should start");
+                let mut shutdown = tokio::task::spawn_local(running.shutdown());
+                let fast_deadline = wait_outer_scope_shutdown_completion(&mut events_rx, 11).await;
+                tokio::time::sleep_until(tokio::time::Instant::from_std(
+                    fast_deadline + Duration::from_millis(20),
+                ))
+                .await;
+                release_slow.notify_one();
+                let slow_deadline = wait_outer_scope_shutdown_completion(&mut events_rx, 29).await;
+                assert!(slow_deadline > Instant::now());
+
+                let early_shutdown =
+                    tokio::time::timeout(Duration::from_millis(100), &mut shutdown).await;
+                let waited_for_collector = early_shutdown.is_err();
+                let collector = tokio::task::spawn_local(collection_loop);
+                let shutdown_result = match early_shutdown {
+                    Ok(result) => result,
+                    Err(_) => shutdown.await,
+                };
+                shutdown_result
+                    .expect("scope shutdown task should join")
+                    .expect("scope hosts should stop cleanly");
+                reporter
+                    .flush()
+                    .await
+                    .expect("collector should aggregate the terminal snapshot");
+                let batch = registry.drain_metric_export_batch();
+                collector.abort();
+                assert!(
+                    collector
+                        .await
+                        .expect_err("collector should run until stopped")
+                        .is_cancelled()
+                );
+                let slow_values = batch
+                    .metric_sets
+                    .into_iter()
+                    .filter(|set| {
+                        set.descriptor.name == "test.extension.outer_scope"
+                            && set.attributes.iter_attributes().any(|(key, value)| {
+                                key == "extension.id" && value.to_string_value() == "slow-peer"
+                            })
+                    })
+                    .map(|set| set.values)
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    slow_values,
+                    vec![vec![MetricValue::from(29_u64)]],
+                    "{scope} peer must not lose metrics to an earlier peer's deadline"
+                );
+                assert!(
+                    waited_for_collector,
+                    "{scope} host must wait within its own grace while the collector is blocked"
+                );
+            })
+            .await;
+        let mut probes = outer_scope_metrics_probes()
+            .lock()
+            .expect("scope metric probes mutex should not be poisoned");
+        _ = probes.remove(&fast_key);
+        _ = probes.remove(&slow_key);
+    }
 }
 
 // ---------------------------------------------------------------------
@@ -4348,6 +5289,7 @@ fn build_runtime_pipeline_with_ready_gate(
         SHUTDOWN_RECORDING_EXTENSION_FACTORY,
         DUAL_ACTIVE_EXTENSION_FACTORY,
         BACKGROUND_EXTENSION_FACTORY,
+        OUTER_SCOPE_METRICS_EXTENSION_FACTORY,
         SHARED_COUNTER_EXTENSION_FACTORY,
         SHARED_COUNTER_SHARED_EXTENSION_FACTORY,
         CONSTRUCTED_EXTENSION_FACTORY,

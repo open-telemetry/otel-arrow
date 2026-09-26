@@ -483,6 +483,8 @@ pub(super) struct RuntimeRecoveryState {
 /// Committed logical pipeline config plus the active deployment generation.
 pub(super) struct LogicalPipelineRecord {
     pub(super) resolved: ResolvedPipelineConfig,
+    /// Inherited provider snapshot captured when this logical config was committed.
+    pub(super) inherited_extensions: InheritedExtensionRegistrations,
     /// Compiled context bindings for this deployment generation.
     pub(super) context_bindings: Arc<CompiledContextBindings>,
     /// Pipeline-wide config generation; recovered cores may serve newer generations.
@@ -534,6 +536,8 @@ pub(super) struct ControllerRuntimeState {
     pub(super) logical_pipelines: HashMap<PipelineKey, LogicalPipelineRecord>,
     /// Deployed runtime instances keyed by group/pipeline/core/generation.
     pub(super) runtime_instances: HashMap<DeployedPipelineKey, RuntimeInstanceRecord>,
+    /// Reserved pipeline threads and their context snapshots before activation.
+    pub(super) launching_instances: HashMap<DeployedPipelineKey, Arc<CompiledContextBindings>>,
     /// Per-core restart streak and active recovery-worker state.
     pub(super) runtime_recoveries: HashMap<(PipelineKey, usize), RuntimeRecoveryState>,
     /// Runtime failures held while an explicit operation owns their lifecycle.
@@ -542,9 +546,8 @@ pub(super) struct ControllerRuntimeState {
     /// Planning-stage lifecycle reservations keyed by logical pipeline.
     pub(super) pipeline_operation_reservations:
         HashMap<PipelineKey, PipelineOperationReservationState>,
-    // A pipeline thread can finish before register_launched_instance() publishes it as Active.
-    // We park that exit here and reconcile it during registration instead of leaving stale
-    // liveness behind.
+    // Synthetic tests can report an exit before creating a launch reservation.
+    // Park those exits until test registration instead of leaving stale liveness behind.
     pub(super) pending_instance_exits: HashMap<DeployedPipelineKey, RuntimeInstanceExit>,
     /// Rollout snapshots retained for active and recent terminal lookups.
     pub(super) rollouts: HashMap<String, RolloutRecord>,
@@ -560,10 +563,21 @@ pub(super) struct ControllerRuntimeState {
     pub(super) terminal_shutdowns: HashMap<PipelineKey, VecDeque<String>>,
     /// Next deployment generation to assign for each logical pipeline.
     pub(super) generation_counters: HashMap<PipelineKey, u64>,
-    /// Count of runtime instances still considered active by the controller.
+    /// Count of pipeline threads still launching or active.
     pub(super) active_instances: usize,
+    /// Monotonic latch preventing any new pipeline thread from being spawned.
+    pub(super) launches_closed: bool,
     /// Whether at least one engine-wide shutdown request has been accepted.
     pub(super) global_shutdown_requested: bool,
+    /// First accepted producer shutdown deadline, also inherited by producer
+    /// threads that finish spawning after shutdown begins.
+    pub(super) global_shutdown_deadline: Option<Instant>,
+    /// Fixed deadline for the final observability phase, established only after
+    /// producer pipelines and extension scope hosts have stopped.
+    pub(super) observability_shutdown_deadline: Option<Instant>,
+    /// Whether engine and pipeline-group extension scope hosts have stopped, allowing the
+    /// system observability pipeline to enter its final shutdown phase.
+    pub(super) extension_scope_hosts_stopped: bool,
     /// Number of phased global-shutdown coordinators still running.
     pub(super) global_shutdown_coordinators: usize,
     /// Active engine-scoped live operation, if any.
@@ -630,6 +644,8 @@ pub(super) struct CandidateRolloutPlan {
     pub(super) action: RolloutAction,
     /// Resolved target pipeline config after applying the request.
     pub(super) resolved_pipeline: ResolvedPipelineConfig,
+    /// Inherited provider snapshot captured while this rollout was planned.
+    pub(super) target_inherited_extensions: InheritedExtensionRegistrations,
     /// Compiled context bindings for the target runtime instances.
     pub(super) context_bindings: Arc<CompiledContextBindings>,
     /// Runtime config revision used to build this plan.

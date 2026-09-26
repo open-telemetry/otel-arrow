@@ -304,13 +304,12 @@ pub(crate) async fn report_terminal_metrics(
     terminal_state: TerminalState,
     terminal_metrics_deadline: &TerminalMetricsDeadline,
 ) {
-    let deadline = terminal_state.deadline();
-    terminal_metrics_deadline.record(deadline);
+    let deadline = terminal_metrics_deadline.for_report(terminal_state.deadline());
     report_metric_snapshots(
         metrics_reporter,
         terminal_state.into_metrics(),
         "terminal",
-        terminal_metrics_deadline.get(),
+        deadline,
     )
     .await;
 }
@@ -319,7 +318,7 @@ pub(crate) async fn report_terminal_metrics(
 ///
 /// Reporting continues after individual failures, but every operation shares
 /// one absolute `deadline` so a long sequence cannot extend shutdown.
-async fn report_metric_snapshots(
+pub(crate) async fn report_metric_snapshots(
     metrics_reporter: &MetricsReporter,
     snapshots: impl IntoIterator<Item = MetricSetSnapshot>,
     phase: &'static str,
@@ -539,7 +538,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
             rt.block_on(local_tasks.run_until(extension_lifecycle.wait_all_spawned()))
         {
             extension_lifecycle.initiate_shutdown(Some("spawn barrier failed"));
-            rt.block_on(local_tasks.run_until(extension_lifecycle.drain_until_deadline()));
+            _ = rt.block_on(local_tasks.run_until(extension_lifecycle.drain_until_deadline()));
             return Err(barrier_err);
         }
 
@@ -554,7 +553,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
             rt.block_on(local_tasks.run_until(extension_lifecycle.wait_all_ready()))
         {
             extension_lifecycle.initiate_shutdown(Some("extension readiness gate failed"));
-            rt.block_on(local_tasks.run_until(extension_lifecycle.drain_until_deadline()));
+            _ = rt.block_on(local_tasks.run_until(extension_lifecycle.drain_until_deadline()));
             return Err(readiness_err);
         }
 
@@ -1026,7 +1025,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                     // idempotent (no-op on the happy path).
                     extension_lifecycle
                         .initiate_shutdown(Some("pipeline data-path drained"));
-                    extension_lifecycle.drain_until_deadline().await;
+                    _ = extension_lifecycle.drain_until_deadline().await;
                     // Final monitor flush so per-extension counters reflect
                     // any terminal `ShutdownTimeout` entries on the way out.
                     let mut final_monitor_reporter = metrics_reporter.clone();
@@ -1196,6 +1195,20 @@ mod tests {
     use otel_arrow_dfe_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
     use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
     use otel_arrow_dfe_telemetry::{InternalTelemetrySystem, LogContext};
+    use std::time::Instant;
+
+    fn test_metrics_system(config: TelemetryConfig) -> InternalTelemetrySystem {
+        InternalTelemetrySystem::new(
+            &config,
+            config.reporting_interval,
+            TelemetryRegistryHandle::new(),
+            None,
+            SendPolicy::default(),
+            LogContext::new,
+            None,
+        )
+        .expect("ITS telemetry system should initialize")
+    }
 
     /// Scenario: completion duration, item counts, and size are enabled without message interests.
     /// Guarantees: optional node measurements register independently without input/output message sets.
@@ -1250,18 +1263,8 @@ mod tests {
     /// Guarantees: the final snapshot reaches the registry before entity handles are released.
     #[tokio::test(flavor = "current_thread")]
     async fn terminal_snapshot_is_aggregated_before_telemetry_cleanup() {
-        let registry = TelemetryRegistryHandle::new();
-        let config = TelemetryConfig::default();
-        let metrics_system = InternalTelemetrySystem::new(
-            &config,
-            config.reporting_interval,
-            registry.clone(),
-            None,
-            SendPolicy::default(),
-            LogContext::new,
-            None,
-        )
-        .expect("ITS telemetry system should initialize");
+        let metrics_system = test_metrics_system(TelemetryConfig::default());
+        let registry = metrics_system.registry();
         let reporter = metrics_system.reporter();
         let collector_task = tokio::spawn(metrics_system.collector().run_collection_loop());
 
@@ -1281,7 +1284,7 @@ mod tests {
 
         report_terminal_metrics(
             &reporter,
-            TerminalState::new(std::time::Instant::now(), metric_set.terminal_snapshots()),
+            TerminalState::new(Instant::now(), metric_set.terminal_snapshots()),
             &TerminalMetricsDeadline::default(),
         )
         .await;
@@ -1324,5 +1327,40 @@ mod tests {
                 .expect_err("collector task should be cancelled")
                 .is_cancelled()
         );
+    }
+
+    /// Scenario: a provider's terminal deadline is expired while its host still has grace and the collector is blocked.
+    /// Guarantees: only that report stops waiting; the shared host phase deadline remains unchanged.
+    #[tokio::test(flavor = "current_thread")]
+    async fn host_terminal_reporting_honors_the_individual_deadline() {
+        let metrics_system = test_metrics_system(TelemetryConfig {
+            reporting_channel_size: 1,
+            ..TelemetryConfig::default()
+        });
+        let reporter = metrics_system.reporter();
+        let collection_loop = metrics_system.collector().run_collection_loop();
+        let deadline = TerminalMetricsDeadline::host_owned();
+        let phase_deadline = Instant::now() + Duration::from_secs(5);
+        deadline.record(phase_deadline);
+
+        let mut blocked_flush = Box::pin(reporter.flush_until(phase_deadline));
+        assert!(futures::poll!(blocked_flush.as_mut()).is_pending());
+        let report = report_terminal_metrics(
+            &reporter,
+            TerminalState::new(
+                Instant::now() - Duration::from_secs(1),
+                std::iter::empty::<MetricSetSnapshot>(),
+            ),
+            &deadline,
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), report)
+                .await
+                .is_ok(),
+            "an expired individual deadline must not wait for the host's longer deadline"
+        );
+        assert_eq!(deadline.get(), phase_deadline);
+        drop(blocked_flush);
+        drop(collection_loop);
     }
 }

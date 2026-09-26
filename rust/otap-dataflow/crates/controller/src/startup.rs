@@ -22,8 +22,9 @@
 
 use crate::{CONTROLLER_EXTENSION_FACTORIES, ControllerExtensionRegistry};
 use otel_arrow_dfe_config::engine::{HttpAdminSettings, OtelDataflowSpec};
+use otel_arrow_dfe_config::extension::ExtensionDeclarationScope;
 use otel_arrow_dfe_config::node::NodeKind;
-use otel_arrow_dfe_config::pipeline::PipelineConfig;
+use otel_arrow_dfe_config::pipeline::{PipelineConfig, PipelineExtensions};
 use otel_arrow_dfe_config::policy::{CoreAllocation, ResolvedPolicies, ResourcesPolicy};
 use otel_arrow_dfe_config::{PipelineGroupId, PipelineId};
 use otel_arrow_dfe_engine::PipelineFactory;
@@ -228,6 +229,43 @@ fn validate_rate_limiter_bindings(
     Ok(())
 }
 
+fn validate_extension_scope_declarations<PData: 'static + Clone + Debug>(
+    declaration_scope: &ExtensionDeclarationScope,
+    extensions: &PipelineExtensions,
+    factory: &PipelineFactory<PData>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    for (extension_id, extension) in extensions.iter() {
+        let urn = extension.r#type.as_str();
+        let Some(extension_factory) = factory.get_extension_factory_map().get(urn) else {
+            return Err(std::io::Error::other(format!(
+                "Unknown extension component `{urn}` at {declaration_scope} extension={}",
+                extension_id.as_ref()
+            ))
+            .into());
+        };
+        // Background factories advertise no capabilities. Their execution variant
+        // is checked after construction; `None` does not imply a local-only provider.
+        if extension_factory
+            .capabilities
+            .as_ref()
+            .is_some_and(|capabilities| capabilities.shared.is_empty())
+        {
+            return Err(std::io::Error::other(format!(
+                "Extension `{}` cannot be declared at {declaration_scope} because it does not provide a shared variant",
+                extension_id.as_ref()
+            ))
+            .into());
+        }
+        (extension_factory.validate_config)(&extension.config).map_err(|error| {
+            std::io::Error::other(format!(
+                "Invalid config for extension `{urn}` at {declaration_scope} extension={}: {error}",
+                extension_id.as_ref()
+            ))
+        })?;
+    }
+    Ok(())
+}
+
 /// Validates that every node in every pipeline (including the engine
 /// observability pipeline) references a component URN registered in the
 /// given [`PipelineFactory`].
@@ -239,6 +277,19 @@ pub fn validate_engine_components<PData: 'static + Clone + Debug>(
     engine_cfg: &OtelDataflowSpec,
     factory: &PipelineFactory<PData>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    validate_extension_scope_declarations(
+        &ExtensionDeclarationScope::Engine,
+        &engine_cfg.extensions,
+        factory,
+    )?;
+    for (pipeline_group_id, group) in &engine_cfg.groups {
+        validate_extension_scope_declarations(
+            &ExtensionDeclarationScope::PipelineGroup(pipeline_group_id.clone()),
+            &group.extensions,
+            factory,
+        )?;
+    }
+
     for resolved in engine_cfg.resolve().pipelines {
         validate_pipeline_components(
             &resolved.pipeline_group_id,
@@ -380,16 +431,25 @@ Example configuration files can be found in the configs/ directory.{}",
 #[cfg(test)]
 mod tests {
     use super::*;
+    use otel_arrow_dfe_config::extension::ExtensionUserConfig;
     use otel_arrow_dfe_config::policy::{CoreRange, Policies};
-    use otel_arrow_dfe_config::{PipelineGroupId, PipelineId, node::NodeUserConfig};
-    use otel_arrow_dfe_engine::config::{ExporterConfig, ProcessorConfig, ReceiverConfig};
-    use otel_arrow_dfe_engine::context::PipelineContext;
+    use otel_arrow_dfe_config::{ExtensionId, PipelineGroupId, PipelineId, node::NodeUserConfig};
+    use otel_arrow_dfe_engine::capability::ExtensionCapabilities;
+    use otel_arrow_dfe_engine::config::{
+        ExporterConfig, ExtensionConfig, ProcessorConfig, ReceiverConfig,
+    };
+    use otel_arrow_dfe_engine::context::{ExtensionContext, PipelineContext};
     use otel_arrow_dfe_engine::exporter::ExporterWrapper;
+    use otel_arrow_dfe_engine::extension::ExtensionBundle;
     use otel_arrow_dfe_engine::processor::ProcessorWrapper;
     use otel_arrow_dfe_engine::receiver::ReceiverWrapper;
     use otel_arrow_dfe_engine::wiring_contract::WiringContract;
-    use otel_arrow_dfe_engine::{ExporterFactory, ProcessorFactory, ReceiverFactory};
+    use otel_arrow_dfe_engine::{
+        ExporterFactory, ExtensionFactory, ProcessorFactory, ReceiverFactory,
+    };
     use std::sync::Arc;
+
+    const SCOPE_EXTENSION_URN: &str = "urn:test:extension:scope-validation";
 
     fn test_receiver_create(
         _pipeline_ctx: PipelineContext,
@@ -422,6 +482,12 @@ mod tests {
     }
 
     fn test_factory() -> PipelineFactory<()> {
+        test_factory_with_extensions(&[])
+    }
+
+    fn test_factory_with_extensions(
+        extension_factories: &'static [ExtensionFactory],
+    ) -> PipelineFactory<()> {
         let receiver_factories = Box::leak(Box::new([
             ReceiverFactory {
                 name: "urn:test:receiver:example",
@@ -472,8 +538,79 @@ mod tests {
             receiver_factories,
             processor_factories,
             exporter_factories,
-            &[],
+            extension_factories,
         )
+    }
+
+    fn test_extension_create(
+        _context: &ExtensionContext,
+        _name: ExtensionId,
+        _config: Arc<ExtensionUserConfig>,
+        _runtime_config: &ExtensionConfig,
+    ) -> Result<ExtensionBundle, otel_arrow_dfe_config::error::Error> {
+        panic!("static validation must not construct extensions")
+    }
+
+    fn test_scope_capabilities(
+        shared: &'static [&'static str],
+        local: &'static [&'static str],
+    ) -> ExtensionCapabilities {
+        ExtensionCapabilities {
+            shared,
+            local,
+            register_shared: |_, _, _| {
+                panic!("static validation must not register shared capabilities")
+            },
+            register_local: |_, _, _| {
+                panic!("static validation must not register local capabilities")
+            },
+        }
+    }
+
+    fn test_scope_factory(capabilities: Option<ExtensionCapabilities>) -> PipelineFactory<()> {
+        let extensions = Box::leak(Box::new([ExtensionFactory {
+            name: SCOPE_EXTENSION_URN,
+            description: "static scope validation fixture",
+            documentation_url: "",
+            capabilities,
+            create: test_extension_create,
+            validate_config: otel_arrow_dfe_config::validation::no_config,
+        }]));
+        test_factory_with_extensions(extensions)
+    }
+
+    fn test_extension_declarations(urn: &str, config: serde_json::Value) -> PipelineExtensions {
+        serde_json::from_value(serde_json::json!({
+            "scope_provider": {
+                "type": urn,
+                "config": config
+            }
+        }))
+        .expect("extension declaration should deserialize")
+    }
+
+    fn test_outer_scope_configurations(
+        urn: &str,
+        config: serde_json::Value,
+    ) -> [(ExtensionDeclarationScope, OtelDataflowSpec); 2] {
+        let declarations = test_extension_declarations(urn, config);
+        let mut engine_cfg =
+            OtelDataflowSpec::from_yaml(minimal_engine_yaml()).expect("engine config parses");
+        let mut group_cfg = engine_cfg.clone();
+        engine_cfg.extensions = declarations.clone();
+        let group_id = PipelineGroupId::from("default");
+        group_cfg
+            .groups
+            .get_mut(&group_id)
+            .expect("default group exists")
+            .extensions = declarations;
+        [
+            (ExtensionDeclarationScope::Engine, engine_cfg),
+            (
+                ExtensionDeclarationScope::PipelineGroup(group_id),
+                group_cfg,
+            ),
+        ]
     }
 
     fn minimal_engine_yaml() -> &'static str {
@@ -606,6 +743,146 @@ extensions:
             "unexpected error: {msg}"
         );
         assert!(msg.contains("not-registered"), "unexpected error: {msg}");
+    }
+
+    /// Scenario: an unknown engine/group extension has no regular pipelines consuming it.
+    /// Guarantees: validation still rejects the declaration and identifies its scope and ID.
+    #[test]
+    fn validate_engine_components_rejects_unknown_outer_scope_extensions_without_pipelines() {
+        let urn = "urn:test:extension:unknown-scope-provider";
+        let factory = test_factory();
+        for (scope, mut cfg) in test_outer_scope_configurations(urn, serde_json::Value::Null) {
+            for group in cfg.groups.values_mut() {
+                group.pipelines.clear();
+            }
+            let error = validate_engine_components(&cfg, &factory)
+                .expect_err("unknown outer-scope extension must be rejected");
+            let message = error.to_string();
+            assert!(message.contains("Unknown extension component"), "{message}");
+            assert!(message.contains(urn), "{message}");
+            assert!(message.contains("scope_provider"), "{message}");
+            assert!(message.contains(&scope.to_string()), "{message}");
+        }
+    }
+
+    /// Scenario: a factory advertises only local capabilities at engine or group scope.
+    /// Guarantees: validation rejects unsupported placement before invoking its constructor.
+    #[test]
+    fn validate_engine_components_rejects_local_only_outer_scope_capabilities() {
+        let factory = test_scope_factory(Some(test_scope_capabilities(&[], &["scope_probe"])));
+        for (scope, cfg) in
+            test_outer_scope_configurations(SCOPE_EXTENSION_URN, serde_json::Value::Null)
+        {
+            let error = validate_engine_components(&cfg, &factory)
+                .expect_err("local-only capabilities cannot be hosted at an ancestor scope");
+            let message = error.to_string();
+            assert!(
+                message.contains("does not provide a shared variant"),
+                "{message}"
+            );
+            assert!(message.contains("scope_provider"), "{message}");
+            assert!(message.contains(&scope.to_string()), "{message}");
+        }
+    }
+
+    /// Scenario: a factory advertises shared capabilities at engine or group scope.
+    /// Guarantees: static validation accepts both scopes without constructing or registering providers.
+    #[test]
+    fn validate_engine_components_accepts_shared_outer_scope_capabilities() {
+        let factory = test_scope_factory(Some(test_scope_capabilities(&["scope_probe"], &[])));
+        for (scope, cfg) in
+            test_outer_scope_configurations(SCOPE_EXTENSION_URN, serde_json::Value::Null)
+        {
+            let result = validate_engine_components(&cfg, &factory);
+            assert!(result.is_ok(), "shared provider at {scope}: {result:?}");
+        }
+    }
+
+    /// Scenario: a dual factory advertises both local and shared capabilities at an ancestor scope.
+    /// Guarantees: the available shared variant makes either ancestor declaration valid.
+    #[test]
+    fn validate_engine_components_accepts_dual_outer_scope_capabilities() {
+        let factory = test_scope_factory(Some(test_scope_capabilities(
+            &["scope_probe"],
+            &["scope_probe"],
+        )));
+        for (scope, cfg) in
+            test_outer_scope_configurations(SCOPE_EXTENSION_URN, serde_json::json!({}))
+        {
+            let result = validate_engine_components(&cfg, &factory);
+            assert!(result.is_ok(), "dual provider at {scope}: {result:?}");
+        }
+    }
+
+    /// Scenario: a background factory has no capability metadata at engine or group scope.
+    /// Guarantees: absent capability metadata is not mistaken for a local-only execution variant.
+    #[test]
+    fn validate_engine_components_accepts_outer_scope_background_metadata() {
+        let factory = test_scope_factory(None);
+        for (scope, cfg) in
+            test_outer_scope_configurations(SCOPE_EXTENSION_URN, serde_json::Value::Null)
+        {
+            let result = validate_engine_components(&cfg, &factory);
+            assert!(result.is_ok(), "background factory at {scope}: {result:?}");
+        }
+    }
+
+    /// Scenario: shared-capability and background factories reject their engine/group configuration.
+    /// Guarantees: both kinds are validated without construction and errors retain declaration context.
+    #[test]
+    fn validate_engine_components_rejects_invalid_outer_scope_extension_config() {
+        for capabilities in [Some(test_scope_capabilities(&["scope_probe"], &[])), None] {
+            let factory = test_scope_factory(capabilities);
+            for (scope, cfg) in test_outer_scope_configurations(
+                SCOPE_EXTENSION_URN,
+                serde_json::json!({"unexpected": true}),
+            ) {
+                let error = validate_engine_components(&cfg, &factory)
+                    .expect_err("invalid extension configuration must fail static validation");
+                let message = error.to_string();
+                assert!(
+                    message.contains("Invalid config for extension"),
+                    "{message}"
+                );
+                assert!(message.contains(SCOPE_EXTENSION_URN), "{message}");
+                assert!(message.contains("scope_provider"), "{message}");
+                assert!(message.contains(&scope.to_string()), "{message}");
+                assert!(
+                    message.contains("does not accept configuration"),
+                    "{message}"
+                );
+            }
+        }
+    }
+
+    /// Scenario: a pipeline declares a local-only or background extension rather than an ancestor.
+    /// Guarantees: ancestor shared-variant restrictions do not reject valid pipeline declarations.
+    #[test]
+    fn validate_engine_components_preserves_pipeline_local_extension_eligibility() {
+        for capabilities in [Some(test_scope_capabilities(&[], &["scope_probe"])), None] {
+            let factory = test_scope_factory(capabilities);
+            let mut cfg =
+                OtelDataflowSpec::from_yaml(minimal_engine_yaml()).expect("engine config parses");
+            let pipeline = cfg
+                .groups
+                .get_mut(&PipelineGroupId::from("default"))
+                .expect("default group exists")
+                .pipelines
+                .get_mut(&PipelineId::from("main"))
+                .expect("main pipeline exists");
+            let mut definition =
+                serde_json::to_value(&*pipeline).expect("pipeline configuration serializes");
+            definition["extensions"] = serde_json::to_value(test_extension_declarations(
+                SCOPE_EXTENSION_URN,
+                serde_json::Value::Null,
+            ))
+            .expect("extension declarations serialize");
+            *pipeline =
+                PipelineConfig::from_json("default".into(), "main".into(), &definition.to_string())
+                    .expect("pipeline extension configuration parses");
+            validate_engine_components(&cfg, &factory)
+                .expect("pipeline-scoped extensions do not need a shared variant");
+        }
     }
 
     /// Scenario: a custom receiver is registered while a rate limiter is configured.
