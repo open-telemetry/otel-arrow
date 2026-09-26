@@ -1,0 +1,7 @@
+change_type: breaking
+component: pipeline
+note: >-
+  Migrated topic exporter telemetry from flat counters to dimensioned metric populations with enum attributes.
+issues: [3530]
+subtext: >-
+  Migration: Update dashboards to use dimensioned metrics: exporter.topic.dropped and exporter.topic.end_to_end_responses.
