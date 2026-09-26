@@ -16,6 +16,7 @@ use datafusion::prelude::SessionContext;
 use otel_arrow_dfe_pdata::OtapArrowRecords;
 
 use otel_arrow_dfe_pdata::otap::filter::{IdBitmapPool, filter_otap_batch};
+use otel_arrow_dfe_pdata::otap::transform::concatenate::ConcatOptions;
 
 use crate::error::Result;
 use crate::pipeline::concat::{
@@ -243,9 +244,15 @@ impl PipelineStage for ConditionalPipelineStage {
 
         // reconstruct the result with the results of each branch
         match otap_batch {
-            OtapArrowRecords::Logs(_) => concatenate_logs(&mut branch_results),
-            OtapArrowRecords::Metrics(_) => concatenate_metrics(&mut branch_results),
-            OtapArrowRecords::Traces(_) => concatenate_traces(&mut branch_results),
+            OtapArrowRecords::Logs(_) => {
+                concatenate_logs(&mut branch_results, ConcatOptions::preserve_ids())
+            }
+            OtapArrowRecords::Metrics(_) => {
+                concatenate_metrics(&mut branch_results, ConcatOptions::preserve_ids())
+            }
+            OtapArrowRecords::Traces(_) => {
+                concatenate_traces(&mut branch_results, ConcatOptions::preserve_ids())
+            }
         }
     }
 

@@ -4,7 +4,7 @@
 //! OTAP schema definition types. These can be used to describe the schema of
 //! any otap payload type. See [crate::schema::payloads::get]
 
-use arrow::array::{Array, ArrayRef, AsArray, RecordBatch};
+use arrow::array::{Array, ArrayRef, AsArray, GenericListArray, RecordBatch};
 
 use crate::schema::error::Error;
 
@@ -184,13 +184,10 @@ impl DataType {
                 true
             }
             DataType::List(inner_dt) => {
-                let ArrowDT::List(_) = arrow_dt else {
+                let Some(list_array) = array.as_any().downcast_ref::<GenericListArray<i32>>()
+                else {
                     return false;
                 };
-                // safety: We verified this is a list type.
-                // note: i32 is not the type of the list, but the type of
-                // offsets into the list.
-                let list_array = array.as_list::<i32>();
                 inner_dt.matches(list_array.values())
             }
         }
@@ -271,6 +268,14 @@ impl Schema {
     pub fn get(&self, name: &str) -> Option<&'static Field> {
         let i = (self.idx)(name)?;
         Some(&self.fields[i])
+    }
+
+    /// Look up the declaration-order slot of a field by name. Returns `None` if
+    /// the field is not part of this schema. The slot is a stable index into
+    /// [`Schema::fields`].
+    #[must_use]
+    pub fn slot_of(&self, name: &str) -> Option<usize> {
+        (self.idx)(name)
     }
 
     /// Returns the names of all required fields.
