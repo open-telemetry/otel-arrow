@@ -134,7 +134,11 @@ const MAX_U8_CARDINALITY: usize = 255;
 const MAX_U16_CARDINALITY: usize = 65535;
 
 /// Options controlling [concatenate].
-#[derive(Debug, Clone, Copy, Default)]
+///
+/// The default is [`ConcatOptions::reindex`], which is correct for any set of
+/// inputs. Use [`ConcatOptions::preserve_ids`] only when the inputs are known
+/// to have disjoint IDs.
+#[derive(Debug, Clone, Copy)]
 pub struct ConcatOptions {
     /// Rewrite ID / PARENT_ID columns so that IDs from different inputs do not
     /// collide in the output. This also removes transport optimized encodings.
@@ -155,6 +159,14 @@ impl ConcatOptions {
     #[must_use]
     pub const fn preserve_ids() -> Self {
         Self { reindex: false }
+    }
+}
+
+impl Default for ConcatOptions {
+    /// Defaults to [`ConcatOptions::reindex`] so that concatenating unrelated
+    /// batches can never silently produce colliding IDs.
+    fn default() -> Self {
+        Self::reindex()
     }
 }
 
@@ -403,7 +415,8 @@ fn select_struct_type(struct_index: &FieldIndex<'_>) -> Result<DataType> {
             continue;
         };
 
-        // Nested structs are rejected during indexing.
+        // Nested structs are rejected in `index_fields` with
+        // `Error::InvalidDataTypeForStruct`.
         debug_assert!(!matches!(info.value_type, DataType::Struct(_)));
 
         let typ = select_field_type(info, Some(def_field))?;
@@ -511,7 +524,7 @@ fn index_records<'a>(
 
         let fields = rb.schema_ref().fields();
         let iter = fields.iter().zip(rb.columns());
-        index_fields(&mut index.fields, iter)?;
+        index_fields(&mut index.fields, iter, None)?;
     }
 
     // Finalize nullability: a field is nullable if it was null in any batch or
@@ -551,9 +564,14 @@ fn finalize_nullability(index: &mut FieldIndex<'_>, batch_count: usize) {
 /// across batches. A struct child whose scalar type diverges between batches is
 /// still rejected (at child granularity), as is a struct-vs-non-struct collision
 /// on the same column.
+///
+/// `parent` is the name of the enclosing struct column when indexing struct
+/// children, and `None` at the top level. Structs nested inside structs are
+/// rejected because valid OTAP batches never contain them.
 fn index_fields<'a>(
     index: &mut FieldIndex<'a>,
     fields: impl Iterator<Item = (&'a FieldRef, &'a ArrayRef)>,
+    parent: Option<&str>,
 ) -> Result<()> {
     let schema = index.schema;
 
@@ -575,20 +593,27 @@ fn index_fields<'a>(
 
         if index.slots[slot].is_none() {
             let struct_index = if matches!(value_type, DataType::Struct(_)) {
-                let sub_def = schema.fields()[slot]
-                    .data_type
-                    .as_struct_schema()
-                    .expect("spec struct field has a struct sub-schema");
+                // Valid OTAP batches never nest structs, and only spec struct
+                // fields may carry a struct column.
+                if let Some(parent) = parent {
+                    return Err(Error::InvalidDataTypeForStruct {
+                        parent: parent.to_string(),
+                        name: field.name().clone(),
+                        data_type: value_type.clone(),
+                    });
+                }
+                let Some(sub_def) = schema.fields()[slot].data_type.as_struct_schema() else {
+                    return Err(Error::ColumnDataTypeMismatch {
+                        name: field.name().clone(),
+                        expect: spec_value_type(&schema.fields()[slot].data_type),
+                        actual: value_type.clone(),
+                    });
+                };
 
-                // safety: value_type is Struct
-                let struct_array = data
-                    .as_any()
-                    .downcast_ref::<StructArray>()
-                    .expect("Struct array");
-
+                let struct_array = as_struct_column(field, data)?;
                 let mut sub = FieldIndex::new(sub_def);
                 let iter = struct_array.fields().iter().zip(struct_array.columns());
-                index_fields(&mut sub, iter)?;
+                index_fields(&mut sub, iter, Some(name))?;
                 Some(Box::new(sub))
             } else {
                 None
@@ -617,13 +642,9 @@ fn index_fields<'a>(
                 });
             }
 
-            // safety: value_type is Struct (checked above)
-            let struct_array = data
-                .as_any()
-                .downcast_ref::<StructArray>()
-                .expect("Struct array");
+            let struct_array = as_struct_column(field, data)?;
             let iter = struct_array.fields().iter().zip(struct_array.columns());
-            index_fields(struct_index, iter)?;
+            index_fields(struct_index, iter, Some(name))?;
         } else {
             if existing.value_type != value_type {
                 return Err(Error::ColumnDataTypeMismatch {
@@ -642,6 +663,28 @@ fn index_fields<'a>(
     }
 
     Ok(())
+}
+
+/// Downcast a column whose value type is a struct to a [`StructArray`].
+/// Dictionary-encoded structs are not valid OTAP and are rejected.
+fn as_struct_column<'a>(field: &FieldRef, data: &'a ArrayRef) -> Result<&'a StructArray> {
+    data.as_any()
+        .downcast_ref::<StructArray>()
+        .ok_or_else(|| Error::ColumnDataTypeMismatch {
+            name: field.name().clone(),
+            expect: DataType::Struct(Default::default()),
+            actual: data.data_type().clone(),
+        })
+}
+
+/// The Arrow type used to describe a spec field in type-mismatch errors.
+fn spec_value_type(data_type: &crate::schema::schema::DataType) -> DataType {
+    use crate::schema::schema::DataType as SpecType;
+    match data_type {
+        SpecType::Simple(t) | SpecType::Dictionary { value_type: t, .. } => t.to_arrow(),
+        SpecType::Struct(_) => DataType::Struct(Default::default()),
+        SpecType::List(inner) => DataType::new_list(spec_value_type(inner), true),
+    }
 }
 
 fn get_dictionary_values(array: &ArrayRef) -> Result<&ArrayRef> {
@@ -1163,7 +1206,7 @@ pub(crate) fn write_column(
 ) -> Result<ArrayRef> {
     debug_assert_eq!(rows, inputs.iter().map(Input::selected_rows).sum::<usize>());
 
-    match target.data_type() {
+    let result = match target.data_type() {
         DataType::Struct(fields) => write_struct(target.name(), fields, inputs, rows),
         DataType::Dictionary(key, value) => match key.as_ref() {
             DataType::UInt8 => dispatch_value::<DictDriver<UInt8Type>>(value, inputs, rows, id_col),
@@ -1173,6 +1216,26 @@ pub(crate) fn write_column(
             _ => write_fallback(target.data_type(), inputs, rows),
         },
         value => dispatch_value::<NativeDriver>(value, inputs, rows, id_col),
+    };
+
+    result.map_err(|e| with_column_name(e, target.name()))
+}
+
+/// Attach the column name to a [check_value_type] error. The value writers
+/// do not know which column they are writing, so the name is filled in here.
+/// A name already set by a nested (struct child) call is kept.
+fn with_column_name(err: Error, column: &str) -> Error {
+    match err {
+        Error::ColumnDataTypeMismatch {
+            name,
+            expect,
+            actual,
+        } if name.is_empty() => Error::ColumnDataTypeMismatch {
+            name: column.to_string(),
+            expect,
+            actual,
+        },
+        e => e,
     }
 }
 
@@ -1586,6 +1649,8 @@ fn write_fallback(target: &DataType, inputs: &[Input<'_>], rows: usize) -> Resul
     Ok(make_array(mutable.freeze()))
 }
 
+/// Check that an input column's value type matches the selected output type.
+/// The returned error has an empty `name`; [write_column] fills it in.
 fn check_value_type(actual: &DataType, expected: &DataType) -> Result<()> {
     if actual == expected {
         Ok(())
@@ -1877,19 +1942,24 @@ struct BytesBuilder<T: ByteArrayType<Offset = i32>> {
 impl<T: ByteArrayType<Offset = i32>> BytesBuilder<T> {
     fn new(capacity: usize, inputs: &[Input<'_>]) -> Self {
         // Exact byte capacity for native inputs; dictionary inputs are either
-        // gathered (unknown, grows) or appended whole (exact).
+        // gathered (unknown, grows) or appended whole (exact). Inputs of an
+        // unexpected type are skipped here; the writer rejects them with
+        // `check_value_type`.
         let mut bytes = 0usize;
         for inp in inputs {
             let Some(col) = inp.column else { continue };
             match col.data_type() {
                 DataType::Dictionary(_, _) => {
-                    if let Some(v) = dict_values(col) {
-                        let o = v.as_bytes::<T>().value_offsets();
+                    if let Some(v) = dict_values(col).and_then(|v| v.as_bytes_opt::<T>()) {
+                        let o = v.value_offsets();
                         bytes += (o[o.len() - 1] - o[0]) as usize;
                     }
                 }
                 _ => {
-                    let o = col.as_bytes::<T>().value_offsets();
+                    let Some(b) = col.as_bytes_opt::<T>() else {
+                        continue;
+                    };
+                    let o = b.value_offsets();
                     for r in inp.ranges() {
                         bytes += (o[r.end] - o[r.start]) as usize;
                     }
@@ -3090,6 +3160,75 @@ mod index_tests {
         }
     }
 
+    /// Scenario: the Logs "flags" column, which the spec defines as a scalar,
+    /// arrives as a struct in an unvalidated batch.
+    /// Guarantees: index_records returns ColumnDataTypeMismatch for "flags"
+    /// instead of panicking on the missing struct sub-schema.
+    #[test]
+    fn test_struct_in_scalar_spec_slot_is_error() {
+        let child = Field::new(ATTRIBUTE_INT, DataType::Int32, true);
+        let struct_array = StructArray::from(vec![(
+            Arc::new(child.clone()),
+            Arc::new(Int32Array::from(vec![1, 2, 3])) as ArrayRef,
+        )]);
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            FLAGS,
+            DataType::Struct(vec![child].into()),
+            true,
+        )]));
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(struct_array)]).unwrap();
+
+        let result = index_records(std::iter::once(Some(&batch)), payloads::get(Logs));
+
+        match result {
+            Err(Error::ColumnDataTypeMismatch { name, actual, .. }) => {
+                assert_eq!(name, FLAGS);
+                assert!(matches!(actual, DataType::Struct(_)));
+            }
+            _ => panic!("Expected ColumnDataTypeMismatch error, got: {:?}", result),
+        }
+    }
+
+    /// Scenario: the Logs "resource" struct carries an "id" child that is itself
+    /// a struct (a nested struct, which valid OTAP never contains) in an
+    /// unvalidated batch.
+    /// Guarantees: index_records returns InvalidDataTypeForStruct naming the
+    /// parent "resource" and child "id" instead of panicking.
+    #[test]
+    fn test_nested_struct_is_error() {
+        let leaf = Field::new(ATTRIBUTE_INT, DataType::Int32, true);
+        let inner = StructArray::from(vec![(
+            Arc::new(leaf.clone()),
+            Arc::new(Int32Array::from(vec![1, 2, 3])) as ArrayRef,
+        )]);
+        let inner_field = Field::new(ID, DataType::Struct(vec![leaf].into()), true);
+        let outer = StructArray::from(vec![(
+            Arc::new(inner_field.clone()),
+            Arc::new(inner) as ArrayRef,
+        )]);
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            RESOURCE,
+            DataType::Struct(vec![inner_field].into()),
+            true,
+        )]));
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(outer)]).unwrap();
+
+        let result = index_records(std::iter::once(Some(&batch)), payloads::get(Logs));
+
+        match result {
+            Err(Error::InvalidDataTypeForStruct {
+                parent,
+                name,
+                data_type,
+            }) => {
+                assert_eq!(parent, RESOURCE);
+                assert_eq!(name, ID);
+                assert!(matches!(data_type, DataType::Struct(_)));
+            }
+            _ => panic!("Expected InvalidDataTypeForStruct error, got: {:?}", result),
+        }
+    }
+
     /// Scenario: the real LogAttrs "str" column is a dictionary of Int64 values in
     /// one batch and Utf8 values in another.
     /// Guarantees: divergent dictionary value types are reported as
@@ -4092,7 +4231,8 @@ mod struct_field_tests {
 mod write_tests {
     use super::*;
     use arrow::array::{
-        BinaryArray, Float64Array, ListArray, StringArray, UInt8Array, UInt16Array, UInt32Array,
+        BinaryArray, Float64Array, Int32Array, ListArray, StringArray, UInt8Array, UInt16Array,
+        UInt32Array,
     };
     use arrow::datatypes::Int32Type as I32;
 
@@ -4159,6 +4299,60 @@ mod write_tests {
 
     fn utf8(v: Vec<Option<&str>>) -> ArrayRef {
         Arc::new(StringArray::from(v))
+    }
+
+    /// Scenario: write_column is asked to write an Int64 target column from an
+    /// input column whose value type is Int32 (indexing and writing disagree).
+    /// Guarantees: the ColumnDataTypeMismatch error names the target column
+    /// rather than leaving `name` empty.
+    #[test]
+    fn test_value_type_mismatch_names_column() {
+        let field = Field::new("my_col", DataType::Int64, true);
+        let col: ArrayRef = Arc::new(Int32Array::from(vec![1, 2]));
+        let plan = plan_all();
+        let inputs = [Input {
+            column: Some(&col),
+            num_rows: 2,
+            plan: &plan,
+        }];
+
+        match write_column(&field, &inputs, 2, None) {
+            Err(Error::ColumnDataTypeMismatch {
+                name,
+                expect,
+                actual,
+            }) => {
+                assert_eq!(name, "my_col");
+                assert_eq!(expect, DataType::Int64);
+                assert_eq!(actual, DataType::Int32);
+            }
+            other => panic!("Expected ColumnDataTypeMismatch, got: {:?}", other),
+        }
+    }
+
+    /// Scenario: write_column is asked to write a Utf8 target column from an
+    /// Int32 input column, which exercises the byte-array builder's capacity
+    /// pre-scan before the value type check.
+    /// Guarantees: the mismatch surfaces as a named ColumnDataTypeMismatch
+    /// instead of a downcast panic in the capacity pre-scan.
+    #[test]
+    fn test_bytes_value_type_mismatch_is_error() {
+        let field = Field::new("my_col", DataType::Utf8, true);
+        let col: ArrayRef = Arc::new(Int32Array::from(vec![1, 2]));
+        let plan = plan_all();
+        let inputs = [Input {
+            column: Some(&col),
+            num_rows: 2,
+            plan: &plan,
+        }];
+
+        match write_column(&field, &inputs, 2, None) {
+            Err(Error::ColumnDataTypeMismatch { name, actual, .. }) => {
+                assert_eq!(name, "my_col");
+                assert_eq!(actual, DataType::Int32);
+            }
+            other => panic!("Expected ColumnDataTypeMismatch, got: {:?}", other),
+        }
     }
 
     /// Scenario: every source encoding (native, Dict(u8), Dict(u16), missing)
