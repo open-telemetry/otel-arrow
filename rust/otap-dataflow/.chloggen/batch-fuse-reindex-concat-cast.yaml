@@ -22,5 +22,4 @@ issues: [4170]
 subtext: |
   Speeds up OTAP batch concatenation by up to 80% by fusing reindexing, casting, and
   concatenation together which allows for constructing the final column data for a
-  batch in place and in one pass. Additionally introduce new benchmarks that target
-  the fused operation rather than reindexing and concatenation separately.
+  batch in place and in one pass.
