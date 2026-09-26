@@ -585,7 +585,12 @@ fn evaluate_df_expr(
         // lazily plan the physical expression
         let session_state = eval_ctx.session_context.state();
         let df_schema = DFSchema::try_from(record_batch.schema_ref().as_ref().clone())?;
-        let expr = create_physical_expr(logical_expr, &df_schema, session_state.execution_props())?;
+        let expr = create_physical_expr(
+            logical_expr,
+            &df_schema,
+            session_state.execution_props(),
+            &Default::default(),
+        )?;
         *physical_expr = Some(expr);
     }
 

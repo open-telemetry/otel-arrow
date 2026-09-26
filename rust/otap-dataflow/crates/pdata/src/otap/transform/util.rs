@@ -82,7 +82,9 @@ pub fn take_record_batch_ranges(
         let data = column.to_data();
         let mut new_data = MutableArrayData::new(vec![&data], false, new_len);
         for range in ranges {
-            new_data.extend(0, range.start, range.end);
+            new_data
+                .try_extend(0, range.start, range.end)
+                .expect("valid array extension");
         }
         new_columns.push(make_array(new_data.freeze()));
     }
@@ -102,10 +104,14 @@ pub(crate) fn remove_record_batch_ranges(
         let mut new_data = MutableArrayData::new(vec![&data], false, new_len);
         let mut pos = 0;
         for range in ranges {
-            new_data.extend(0, pos, range.start);
+            new_data
+                .try_extend(0, pos, range.start)
+                .expect("valid array extension");
             pos = range.end;
         }
-        new_data.extend(0, pos, rb.num_rows());
+        new_data
+            .try_extend(0, pos, rb.num_rows())
+            .expect("valid array extension");
         new_columns.push(make_array(new_data.freeze()));
     }
 

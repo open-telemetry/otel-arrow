@@ -3267,7 +3267,9 @@ where
     let total_keep = ranges.iter().map(Range::len).sum();
     let mut mutable = MutableArrayData::new(vec![&data], false, total_keep);
     for range in ranges {
-        mutable.extend(0, range.start, range.end);
+        mutable
+            .try_extend(0, range.start, range.end)
+            .expect("valid array extension");
     }
 
     let data = mutable.freeze();

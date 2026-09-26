@@ -268,7 +268,9 @@ impl PartitionValue {
             | ScalarValue::IntervalYearMonth(_)
             | ScalarValue::FixedSizeList(_)
             | ScalarValue::List(_)
+            | ScalarValue::ListView(_)
             | ScalarValue::LargeList(_)
+            | ScalarValue::LargeListView(_)
             | ScalarValue::Map(_)
             | ScalarValue::Union(_, _, _) => {
                 return Err(Error::ExecutionError {
