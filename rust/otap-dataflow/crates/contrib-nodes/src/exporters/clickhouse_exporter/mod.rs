@@ -57,8 +57,7 @@ use otel_arrow_dfe_pdata::{
     OtapArrowRecords, OtapPayload, OtlpProtoBytes, PayloadData, TryIntoWithOptions,
 };
 use otel_arrow_dfe_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
-use otel_arrow_dfe_telemetry::metrics::MetricSetHandler;
-use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSet};
+use otel_arrow_dfe_telemetry::metrics::MeasurementMetricSet;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -111,7 +110,7 @@ const SUPPORTED_ARROW_PAYLOAD_TYPES: &[ArrowPayloadType] = &[
 pub struct ClickhouseExporter {
     config: Config,
     pdata_metrics: MeasurementMetricSet<ExporterExportMetrics>,
-    ch_metrics: MetricSet<ClickhouseExporterMetrics>,
+    ch_metrics: ClickhouseExporterMetrics,
 }
 
 impl ClickhouseExporter {
@@ -120,7 +119,7 @@ impl ClickhouseExporter {
         pipeline_ctx: PipelineContext,
         config: &serde_json::Value,
     ) -> Result<Self, otel_arrow_dfe_config::error::Error> {
-        let ch_metrics = ClickhouseExporterMetrics::register(&pipeline_ctx);
+        let ch_metrics = ClickhouseExporterMetrics::new(&pipeline_ctx);
         let pdata_metrics = ExporterExportMetrics::register(&pipeline_ctx);
 
         let patch: ConfigPatch = serde_json::from_value(config.clone()).map_err(|e| {
@@ -146,14 +145,12 @@ impl ClickhouseExporter {
     fn terminal_state(
         deadline: Instant,
         mut pdata_metrics: MeasurementMetricSet<ExporterExportMetrics>,
-        ch_metrics: MetricSet<ClickhouseExporterMetrics>,
+        mut ch_metrics: ClickhouseExporterMetrics,
     ) -> TerminalState {
         let mut snapshots = Vec::new();
 
         snapshots.extend(pdata_metrics.terminal_snapshots());
-        if ch_metrics.needs_flush() {
-            snapshots.push(ch_metrics.snapshot());
-        }
+        snapshots.extend(ch_metrics.terminal_snapshots());
 
         TerminalState::new(deadline, snapshots)
     }
@@ -354,7 +351,7 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
                     mut metrics_reporter,
                 }) => {
                     _ = metrics_reporter.report_measurement(&mut self.pdata_metrics);
-                    _ = metrics_reporter.report(&mut self.ch_metrics);
+                    _ = self.ch_metrics.report(&mut metrics_reporter);
                 }
                 Message::PData(pdata) => {
                     let export_started_at = Instant::now();
