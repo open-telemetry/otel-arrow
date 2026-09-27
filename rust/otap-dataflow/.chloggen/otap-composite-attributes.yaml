@@ -1,0 +1,6 @@
+change_type: bug_fix
+component: otap
+note: "Decode Map and Slice attributes in the OTAP views. The `ser` column is now read as CBOR, so `as_kvlist` and `as_array` return the real entries instead of an empty value."
+issues: [4117]
+subtext: |
+  The reader walks the CBOR buffer zero-copy, mirroring the OTLP RawAnyValue byte view, and handles both indefinite and definite-length maps and arrays.

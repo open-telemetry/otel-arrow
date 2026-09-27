@@ -227,6 +227,8 @@ pub enum MessageFormat {
     //OtlpJson,
     /// OTAP (Arrow) protobuf encoding.
     OtapProto,
+    /// Syslog encoding for Kafka log records.
+    Syslog,
     // others eventually
 }
 
@@ -391,6 +393,9 @@ pub const MSG_FORMAT_OTLP: &[u8] = b"otlp";
 
 /// header value for OTAP format in bytes
 pub const MSG_FORMAT_OTAP: &[u8] = b"otap";
+
+/// header value for Syslog format in bytes
+pub const MSG_FORMAT_SYSLOG: &[u8] = b"syslog";
 
 /// Maximum length of a Kafka topic name.
 ///

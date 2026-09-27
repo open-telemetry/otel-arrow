@@ -745,9 +745,18 @@ fn estimate_cardinality_from_bytes<'a, const ELEMENT_WIDTH: usize>(
         match nulls {
             Some(nulls) => Either::Left(nulls.valid_slices().flat_map(move |(start, end)| {
                 let range = start * ELEMENT_WIDTH..end * ELEMENT_WIDTH;
-                buf[range].chunks_exact(ELEMENT_WIDTH)
+                buf[range]
+                    .as_chunks::<ELEMENT_WIDTH>()
+                    .0
+                    .iter()
+                    .map(|chunk| chunk.as_slice())
             })),
-            None => Either::Right(buf.chunks_exact(ELEMENT_WIDTH)),
+            None => Either::Right(
+                buf.as_chunks::<ELEMENT_WIDTH>()
+                    .0
+                    .iter()
+                    .map(|chunk| chunk.as_slice()),
+            ),
         }
     });
 

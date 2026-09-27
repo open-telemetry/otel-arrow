@@ -3,7 +3,7 @@
 
 use std::hash::{DefaultHasher, Hash, Hasher};
 
-use data_engine_expressions::{
+use otel_arrow_contrib_data_engine_expressions::{
     ArgumentScalarExpression, BranchDataExpression, DataExpression, DataExpressionBranch,
     DiscardDataExpression, Expression, InvokeFunctionScalarExpression, LogicalExpression,
     MapKeyRenameSelector, MapSelectionExpression, MapSelector, MutableValueExpression,
@@ -13,7 +13,7 @@ use data_engine_expressions::{
     ScalarExpression, SetTransformExpression, SourceScalarExpression, StaticScalarExpression,
     StringScalarExpression, TransformExpression, ValueAccessor, ValueType,
 };
-use data_engine_parser_abstractions::{
+use otel_arrow_contrib_data_engine_parser_abstractions::{
     ParserError, parse_standard_string_literal, to_query_location,
 };
 use pest::iterators::Pair;
@@ -616,7 +616,7 @@ pub(crate) fn parse_apply_operator_call(
 
 #[cfg(test)]
 mod tests {
-    use data_engine_expressions::{
+    use otel_arrow_contrib_data_engine_expressions::{
         ArgumentScalarExpression, BranchDataExpression, DataExpression, DataExpressionBranch,
         DiscardDataExpression, EqualToLogicalExpression, InvokeFunctionScalarExpression,
         LogicalExpression, MapKeyRenameSelector, MapSelectionExpression, MapSelector,
@@ -627,7 +627,7 @@ mod tests {
         SourceScalarExpression, StaticScalarExpression, StringScalarExpression,
         TransformExpression, ValueAccessor, ValueType,
     };
-    use data_engine_parser_abstractions::{Parser, ParserOptions, ParserState};
+    use otel_arrow_contrib_data_engine_parser_abstractions::{Parser, ParserOptions, ParserState};
     use pest::Parser as _;
     use pretty_assertions::assert_eq;
 
@@ -693,7 +693,7 @@ mod tests {
 
     #[test]
     fn test_parse_set_operator_call_multiple() {
-        use data_engine_expressions::IntegerScalarExpression;
+        use otel_arrow_contrib_data_engine_expressions::IntegerScalarExpression;
 
         let query = "set a=1, b=2";
         let mut state = ParserState::new(query);

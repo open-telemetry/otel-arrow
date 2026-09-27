@@ -871,14 +871,14 @@ impl ExtensionBundleBuilder {
     /// (dual registration requires distinct local and shared
     /// implementations).
     pub(super) fn build(self) -> Result<ExtensionBundle, Error> {
-        if let (Some(local), Some(shared)) = (&self.local, &self.shared) {
-            if local.type_id == shared.type_id {
-                return Err(Error::InternalError {
-                    message: "local and shared variants must use different concrete types; \
+        if let (Some(local), Some(shared)) = (&self.local, &self.shared)
+            && local.type_id == shared.type_id
+        {
+            return Err(Error::InternalError {
+                message: "local and shared variants must use different concrete types; \
                               register only one execution model for single-variant extensions"
-                        .into(),
-                });
-            }
+                    .into(),
+            });
         }
 
         let cap = self.runtime_config.control_channel.capacity;
@@ -895,12 +895,12 @@ impl ExtensionBundleBuilder {
             local_signaller,
         } = self;
 
-        if let Some(probe) = local_probe.as_ref().or(shared_probe.as_ref()) {
-            if probe.timeout().is_zero() {
-                return Err(Error::ExtensionReadinessZeroTimeout {
-                    extension: name.as_ref().to_owned(),
-                });
-            }
+        if let Some(probe) = local_probe.as_ref().or(shared_probe.as_ref())
+            && probe.timeout().is_zero()
+        {
+            return Err(Error::ExtensionReadinessZeroTimeout {
+                extension: name.as_ref().to_owned(),
+            });
         }
 
         debug_assert!(

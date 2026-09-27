@@ -143,19 +143,19 @@ pub struct Frame {
     /// The caller's node_id for routing.
     pub node_id: usize,
     /// Number of signal items produced (emitted) by the node at send time.
-    /// Stamped only when the node has `PRODUCER_METRICS` interest. Saturates
+    /// Stamped only when the node has `NODE_ITEM_COUNTS` interest. Saturates
     /// at `u32::MAX`.
-    pub produced_items: u32,
+    pub output_items: u32,
     /// Number of signal items consumed (received) by the node at receive time.
-    /// Stamped only when the node has `CONSUMER_METRICS` interest. Saturates
+    /// Stamped only when the node has `NODE_ITEM_COUNTS` interest. Saturates
     /// at `u32::MAX`.
-    pub consumed_items: u32,
+    pub input_items: u32,
     /// Logical payload size produced by the node at send time, in bytes.
     /// Zero means the measurement was disabled, unavailable, or empty.
-    pub produced_size: u64,
+    pub output_size: u64,
     /// Logical payload size consumed by the node at receive time, in bytes.
     /// Zero means the measurement was disabled, unavailable, or empty.
-    pub consumed_size: u64,
+    pub input_size: u64,
 }
 
 /// The ACK message.
@@ -190,6 +190,10 @@ pub enum NackCause {
     RouteClosed,
     /// The node had to refuse locally parked work because shutdown started.
     NodeShutdown,
+    /// The request was permanently refused due to its content or a policy
+    /// decision (client error). Non-retryable; the client must change the
+    /// request or its configuration.
+    Refused,
 }
 
 /// The NACK message.
@@ -710,10 +714,10 @@ impl<PData> ControlSenders<PData> {
 
         for typed_sender in self.senders.values() {
             // Apply filter if specified
-            if let Some(filter_type) = node_type_filter {
-                if typed_sender.node_type != filter_type {
-                    continue;
-                }
+            if let Some(filter_type) = node_type_filter
+                && typed_sender.node_type != filter_type
+            {
+                continue;
             }
 
             let shutdown_msg = NodeControlMsg::Shutdown {

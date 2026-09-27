@@ -1,5 +1,8 @@
 # Admin Interface
 
+This crate is currently pre-1.0. Its public API may evolve between minor
+releases.
+
 `otel-arrow-dfe-admin` provides:
 
 - admin, health, status, and telemetry HTTP endpoints;

@@ -1,0 +1,24 @@
+[package]
+name = "otel-arrow-contrib-data-engine-kql-parser"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+homepage = "https://github.com/open-telemetry/otel-arrow"
+documentation = "https://docs.rs/otel-arrow-contrib-data-engine-kql-parser"
+license.workspace = true
+readme = "README.md"
+publish = true
+rust-version.workspace = true
+description = "Experimental, pre-1.0 KQL (Kusto Query Language) parser producing the data-engine expression AST"
+keywords = ["opentelemetry", "kql", "query-engine", "parser"]
+categories = ["parser-implementations", "compilers"]
+
+[dependencies]
+chrono = { workspace = true }
+pest = { workspace = true }
+pest_derive = { workspace = true }
+regex = { workspace = true }
+
+otel-arrow-contrib-data-engine-expressions = { path = "../expressions", version = "=0.1.0" }
+otel-arrow-contrib-data-engine-parser-abstractions = { path = "../parser-abstractions", version = "=0.1.0" }

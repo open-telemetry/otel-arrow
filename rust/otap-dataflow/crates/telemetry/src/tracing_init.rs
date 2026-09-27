@@ -41,7 +41,7 @@ impl TracingSetup {
     /// the internal telemetry system.
     #[must_use]
     pub fn new(provider: ProviderSetup, log_level: LogLevel, context_fn: LogContextFn) -> Self {
-        let (log_filter, _handle) = RuntimeLogFilter::new(&log_level);
+        let (log_filter, _handle) = RuntimeLogFilter::new_configured(&log_level);
         Self::from_log_filter(provider, log_filter, context_fn)
     }
 
@@ -84,7 +84,7 @@ impl TracingSetup {
     where
         F: FnOnce() -> R,
     {
-        let log_level = self.log_filter.configured_level();
+        let log_level = self.log_filter.effective_level();
         self.provider
             .with_subscriber_ignoring_env(&log_level, self.context_fn, f)
     }
@@ -280,7 +280,7 @@ mod tests {
     fn internal_async_provider_applies_runtime_level_updates() {
         crate::with_cleared_rust_log(|| {
             let (reporter, receiver) = test_reporter();
-            let (filter, handle) = RuntimeLogFilter::new(&level("warn"));
+            let (filter, handle) = RuntimeLogFilter::new(Some(&level("warn")));
             let setup = test_setup(internal_async_provider(reporter), level("warn"))
                 .with_log_filter(filter);
 
@@ -290,11 +290,11 @@ mod tests {
                 emit_info();
                 assert!(receiver.try_recv().is_err());
 
-                handle.apply(&level("info"));
+                handle.apply(Some(&level("info")));
                 emit_info();
                 assert!(matches!(receiver.try_recv(), Ok(ObservedEvent::Log(_))));
 
-                handle.apply(&level("warn"));
+                handle.apply(Some(&level("warn")));
                 emit_info();
                 assert!(receiver.try_recv().is_err());
             });
@@ -573,7 +573,13 @@ mod tests {
             let registry = crate::registry::TelemetryRegistryHandle::new();
             let mut scope_cache = ScopeToBytesMap::new(registry);
             let mut buf = ProtoBuffer::default();
-            encode_export_logs_request(&mut buf, &log_event, &resource_bytes, &mut scope_cache);
+            encode_export_logs_request(
+                &mut buf,
+                &mut [log_event],
+                &resource_bytes,
+                &mut scope_cache,
+            )
+            .unwrap();
             let bytes_vec = buf.into_bytes();
 
             let raw = RawLogsData::new(bytes_vec.as_ref());

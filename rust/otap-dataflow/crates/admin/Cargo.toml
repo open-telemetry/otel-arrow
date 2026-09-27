@@ -5,7 +5,10 @@ version.workspace = true
 authors.workspace = true
 repository.workspace = true
 license.workspace = true
-publish.workspace = true
+readme = "README.md"
+publish = true
+keywords = ["telemetry", "opentelemetry", "otlp", "otap", "admin"]
+categories = ["web-programming"]
 edition.workspace = true
 rust-version.workspace = true
 

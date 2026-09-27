@@ -3,7 +3,7 @@
 ## Metadata
 
 - Type: `urn:microsoft:processor:recordset_kql`
-- Feature gate: `recordset-kql-processor`
+- Feature gate: `recordset-kql`
 - Stability: Experimental
 
 An OTAP-Dataflow processor that filters and transforms OpenTelemetry data using
@@ -19,7 +19,7 @@ will be lower.
 ## Overview
 
 This processor integrates the experimental KQL "recordset" engine from
-`rust/experimental/query_engine` to enable powerful data transformations within
+`rust/contrib/data_engine` to enable powerful data transformations within
 OTAP pipelines.  This was developed as a prototype as we prepare for a direct
 column-oriented implementation, it is functional and production quality however
 not an optimized implementation.
@@ -171,10 +171,10 @@ query: "source | summarize Count = count() by SeverityText"
 
 ## Building
 
-Enable the `recordset-kql-processor` feature flag:
+Enable the `recordset-kql` feature flag:
 
 ```bash
-cargo build --features recordset-kql-processor
+cargo build --features recordset-kql
 ```
 
 ## Running the Demo
@@ -183,7 +183,7 @@ A complete demo configuration is available at
 `configs/trafficgen-kql-debug-noop.yaml`. Run it with:
 
 ```bash
-cargo run --features recordset-kql-processor --bin df_engine -- \
+cargo run --features recordset-kql --bin df_engine -- \
   --config ./configs/trafficgen-kql-debug-noop.yaml \
   --num-cores 1
 ```

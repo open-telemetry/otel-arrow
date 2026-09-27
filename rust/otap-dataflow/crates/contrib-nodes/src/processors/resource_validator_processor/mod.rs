@@ -58,7 +58,7 @@ use otel_arrow_dfe_config::node::NodeUserConfig;
 use otel_arrow_dfe_engine::ConsumerEffectHandlerExtension;
 use otel_arrow_dfe_engine::config::ProcessorConfig;
 use otel_arrow_dfe_engine::context::PipelineContext;
-use otel_arrow_dfe_engine::control::{NackMsg, NodeControlMsg};
+use otel_arrow_dfe_engine::control::{NackCause, NackMsg, NodeControlMsg};
 use otel_arrow_dfe_engine::error::Error;
 use otel_arrow_dfe_engine::local::processor as local;
 use otel_arrow_dfe_engine::message::Message;
@@ -189,6 +189,7 @@ pub static RESOURCE_VALIDATOR_PROCESSOR_FACTORY: otel_arrow_dfe_engine::Processo
          _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities| {
             create_resource_validator_processor(pipeline_ctx, node, node_config, proc_cfg)
         },
+    context_declarations: None,
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<Config>,
 };
@@ -196,7 +197,7 @@ pub static RESOURCE_VALIDATOR_PROCESSOR_FACTORY: otel_arrow_dfe_engine::Processo
 impl ResourceValidatorProcessor {
     /// Creates a new ResourceValidatorProcessor from configuration
     pub fn from_config(pipeline_ctx: PipelineContext, config: &Value) -> Result<Self, ConfigError> {
-        let metrics = pipeline_ctx.register_metrics::<ResourceValidatorMetrics>();
+        let metrics = ResourceValidatorMetrics::register(&pipeline_ctx);
         let config: Config =
             serde_json::from_value(config.clone()).map_err(|e| ConfigError::InvalidUserConfig {
                 error: e.to_string(),
@@ -221,7 +222,7 @@ impl ResourceValidatorProcessor {
         case_sensitive: bool,
         pipeline_ctx: PipelineContext,
     ) -> Self {
-        let metrics = pipeline_ctx.register_metrics::<ResourceValidatorMetrics>();
+        let metrics = ResourceValidatorMetrics::register(&pipeline_ctx);
         Self {
             required_attribute_key,
             allowed_values,
@@ -548,11 +549,24 @@ impl local::Processor<OtapPdata> for ResourceValidatorProcessor {
                         effect_handler.send_message(pdata).await?;
                         Ok(())
                     }
-                    Err((_, error_msg)) => {
-                        // Validation failed, send permanent NACK
-                        effect_handler
-                            .notify_nack(NackMsg::new_permanent(&error_msg, pdata))
-                            .await?;
+                    Err((failure, error_msg)) => {
+                        // Client-caused failures are permanent refusals (INVALID_ARGUMENT);
+                        // an internal conversion error is a permanent server failure (INTERNAL).
+                        let nack = match failure {
+                            ValidationFailure::ConversionError => {
+                                NackMsg::new_permanent(&error_msg, pdata)
+                            }
+                            ValidationFailure::MissingAttribute
+                            | ValidationFailure::InvalidAttributeType
+                            | ValidationFailure::NotInAllowedList => {
+                                NackMsg::new_permanent_with_cause(
+                                    &error_msg,
+                                    pdata,
+                                    NackCause::Refused,
+                                )
+                            }
+                        };
+                        effect_handler.notify_nack(nack).await?;
                         Ok(())
                     }
                 }

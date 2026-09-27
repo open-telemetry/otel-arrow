@@ -4,8 +4,8 @@
 //! Errors for the columnar query engine.
 
 use arrow::error::ArrowError;
-use data_engine_expressions::QueryLocation;
 use datafusion::error::DataFusionError;
+use otel_arrow_contrib_data_engine_expressions::QueryLocation;
 
 /// Result type for methods returned from query engine
 pub type Result<T> = std::result::Result<T, Error>;

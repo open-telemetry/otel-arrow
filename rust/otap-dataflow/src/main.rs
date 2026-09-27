@@ -17,6 +17,9 @@ use otel_arrow_dfe_controller::startup;
 use otel_arrow_dfe_controller::{BuildInfo, Controller, ControllerRunOptions};
 // This item import also links the crate so its `linkme` registrations are visible.
 use otel_arrow_dfe_core_nodes::exporters::console_exporter::claim_structured_stdout;
+// Development nodes are omitted from builds that disable `dev-tools`.
+#[cfg(feature = "dev-tools")]
+use otel_arrow_dfe_dev_nodes as _;
 use otel_arrow_dfe_otap::OTAP_PIPELINE_FACTORY;
 use otel_arrow_dfe_telemetry::output_service::{
     OutputService, OutputServiceConfig, ShutdownOutcome,

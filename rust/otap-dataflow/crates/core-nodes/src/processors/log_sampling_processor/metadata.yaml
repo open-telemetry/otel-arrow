@@ -1,0 +1,6 @@
+type: log_sampling
+status:
+  class: processor
+  codeowners:
+    active:
+      - JakeDern

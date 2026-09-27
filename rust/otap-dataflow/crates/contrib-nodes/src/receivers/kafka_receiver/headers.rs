@@ -8,16 +8,17 @@
 //! resource attributes for all signal types (traces, metrics, logs).
 
 use super::config::{AttributeValueType, HeaderExtraction};
+use super::receiver::decode::SignalDecoder;
 use bytes::Bytes;
+use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_engine::error::Error as EngineError;
 use otel_arrow_dfe_otap::pdata::{Context, OtapPdata};
-use otel_arrow_dfe_pdata::Consumer as PdataConsumer;
 use otel_arrow_dfe_pdata::OtlpProtoBytes;
+use otel_arrow_dfe_pdata::otap::OtapArrowRecords;
 use otel_arrow_dfe_pdata::otap::transform::{
     AttributesTransform, LiteralValue, UpsertTransform, apply_attribute_transform,
 };
-use otel_arrow_dfe_pdata::otap::{OtapArrowRecords, from_record_messages};
-use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::{ArrowPayloadType, BatchArrowRecords};
+use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
 use otel_arrow_dfe_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
 use otel_arrow_dfe_pdata::proto::opentelemetry::collector::trace::v1::ExportTraceServiceRequest;
@@ -252,7 +253,7 @@ impl HeaderExtractions {
     ///
     /// Injects attributes into `ResourceAttrs` for the traces payload.
     pub(crate) fn apply_otap_traces(&self, data: &[u8]) -> Result<OtapPdata, EngineError> {
-        let arrow_records = decode_otap_traces(data)?;
+        let arrow_records = SignalDecoder::decode_otap(SignalType::Traces, data)?;
         self.apply_otap_resource_attrs(arrow_records)
     }
 
@@ -260,7 +261,7 @@ impl HeaderExtractions {
     ///
     /// Injects attributes into `ResourceAttrs` for the metrics payload.
     pub(crate) fn apply_otap_metrics(&self, data: &[u8]) -> Result<OtapPdata, EngineError> {
-        let arrow_records = decode_otap_metrics(data)?;
+        let arrow_records = SignalDecoder::decode_otap(SignalType::Metrics, data)?;
         self.apply_otap_resource_attrs(arrow_records)
     }
 
@@ -268,7 +269,16 @@ impl HeaderExtractions {
     ///
     /// Injects attributes into `ResourceAttrs` for the logs payload.
     pub(crate) fn apply_otap_logs(&self, data: &[u8]) -> Result<OtapPdata, EngineError> {
-        let arrow_records = decode_otap_logs(data)?;
+        let arrow_records = SignalDecoder::decode_otap(SignalType::Logs, data)?;
+        self.apply_otap_resource_attrs(arrow_records)
+    }
+
+    /// Apply header extractions to a Syslog logs payload.
+    ///
+    /// Parses one complete Syslog message, converts it to OTAP Arrow logs, and
+    /// injects attributes into `ResourceAttrs`.
+    pub(crate) fn apply_syslog_logs(&self, data: &[u8]) -> Result<OtapPdata, EngineError> {
+        let arrow_records = SignalDecoder::decode_syslog_logs(data)?;
         self.apply_otap_resource_attrs(arrow_records)
     }
 
@@ -305,51 +315,6 @@ fn upsert_resource_attributes(resource: &mut Resource, kvs: &[KeyValue]) {
             resource.attributes.push(kv.clone());
         }
     }
-}
-
-/// Decode OTAP Arrow bytes into `OtapArrowRecords::Traces`.
-fn decode_otap_traces(data: &[u8]) -> Result<OtapArrowRecords, EngineError> {
-    let mut bar =
-        BatchArrowRecords::decode(data).map_err(|e| EngineError::PdataConversionError {
-            error: e.to_string(),
-        })?;
-    let mut pdc = PdataConsumer::default();
-    let record_messages = pdc.consume_bar(&mut bar)?;
-    Ok(OtapArrowRecords::Traces(
-        from_record_messages(record_messages).map_err(|e| EngineError::PdataConversionError {
-            error: e.to_string(),
-        })?,
-    ))
-}
-
-/// Decode OTAP Arrow bytes into `OtapArrowRecords::Metrics`.
-fn decode_otap_metrics(data: &[u8]) -> Result<OtapArrowRecords, EngineError> {
-    let mut bar =
-        BatchArrowRecords::decode(data).map_err(|e| EngineError::PdataConversionError {
-            error: e.to_string(),
-        })?;
-    let mut pdc = PdataConsumer::default();
-    let record_messages = pdc.consume_bar(&mut bar)?;
-    Ok(OtapArrowRecords::Metrics(
-        from_record_messages(record_messages).map_err(|e| EngineError::PdataConversionError {
-            error: e.to_string(),
-        })?,
-    ))
-}
-
-/// Decode OTAP Arrow bytes into `OtapArrowRecords::Logs`.
-fn decode_otap_logs(data: &[u8]) -> Result<OtapArrowRecords, EngineError> {
-    let mut bar =
-        BatchArrowRecords::decode(data).map_err(|e| EngineError::PdataConversionError {
-            error: e.to_string(),
-        })?;
-    let mut pdc = PdataConsumer::default();
-    let record_messages = pdc.consume_bar(&mut bar)?;
-    Ok(OtapArrowRecords::Logs(
-        from_record_messages(record_messages).map_err(|e| EngineError::PdataConversionError {
-            error: e.to_string(),
-        })?,
-    ))
 }
 
 /// Parse raw header bytes into an [`any_value::Value`] for the OTLP protobuf path.

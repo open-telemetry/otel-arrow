@@ -5,7 +5,10 @@ authors.workspace = true
 edition.workspace = true
 repository.workspace = true
 license.workspace = true
-publish.workspace = true
+readme = "README.md"
+publish = true
+keywords = ["telemetry", "opentelemetry", "otlp", "otap", "histogram"]
+categories = ["data-structures"]
 rust-version.workspace = true
 description = "Allocation-free OpenTelemetry exponential histogram"
 

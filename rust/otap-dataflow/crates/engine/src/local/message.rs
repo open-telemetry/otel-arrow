@@ -130,16 +130,16 @@ impl<T> LocalSender<T> {
         {
             queue_depth.record_send();
         }
-        if let Some(metrics) = &self.metrics {
-            if let Ok(mut metrics) = metrics.try_borrow_mut() {
-                match &result {
-                    Ok(()) => metrics.record_send_ok(signal),
-                    Err(SendError::Full(_)) => {
-                        metrics.record_send_error(signal, ChannelSendErrorType::Full);
-                    }
-                    Err(SendError::Closed(_)) => {
-                        metrics.record_send_error(signal, ChannelSendErrorType::Closed);
-                    }
+        if let Some(metrics) = &self.metrics
+            && let Ok(mut metrics) = metrics.try_borrow_mut()
+        {
+            match &result {
+                Ok(()) => metrics.record_send_ok(signal),
+                Err(SendError::Full(_)) => {
+                    metrics.record_send_error(signal, ChannelSendErrorType::Full);
+                }
+                Err(SendError::Closed(_)) => {
+                    metrics.record_send_error(signal, ChannelSendErrorType::Closed);
                 }
             }
         }
@@ -160,16 +160,16 @@ impl<T> LocalSender<T> {
         {
             queue_depth.record_send();
         }
-        if let Some(metrics) = &self.metrics {
-            if let Ok(mut metrics) = metrics.try_borrow_mut() {
-                match &result {
-                    Ok(()) => metrics.record_send_ok(signal),
-                    Err(SendError::Full(_)) => {
-                        metrics.record_send_error(signal, ChannelSendErrorType::Full);
-                    }
-                    Err(SendError::Closed(_)) => {
-                        metrics.record_send_error(signal, ChannelSendErrorType::Closed);
-                    }
+        if let Some(metrics) = &self.metrics
+            && let Ok(mut metrics) = metrics.try_borrow_mut()
+        {
+            match &result {
+                Ok(()) => metrics.record_send_ok(signal),
+                Err(SendError::Full(_)) => {
+                    metrics.record_send_error(signal, ChannelSendErrorType::Full);
+                }
+                Err(SendError::Closed(_)) => {
+                    metrics.record_send_error(signal, ChannelSendErrorType::Closed);
                 }
             }
         }
@@ -283,17 +283,17 @@ impl<T> LocalReceiver<T> {
             LocalReceiverInner::Mpmc(receiver) => receiver.recv().await,
         };
 
-        if result.is_ok() {
-            if let Some(queue_depth) = &self.queue_depth {
-                queue_depth.record_receive();
-            }
+        if result.is_ok()
+            && let Some(queue_depth) = &self.queue_depth
+        {
+            queue_depth.record_receive();
         }
-        if let Some(metrics) = &self.metrics {
-            if let Ok(mut metrics) = metrics.try_borrow_mut() {
-                if let Ok(message) = &result {
-                    metrics.record_recv_ok(self.signal.and_then(|extract| extract(message)));
-                }
-            }
+
+        if let Some(metrics) = &self.metrics
+            && let Ok(mut metrics) = metrics.try_borrow_mut()
+            && let Ok(message) = &result
+        {
+            metrics.record_recv_ok(self.signal.and_then(|extract| extract(message)));
         }
 
         result
@@ -306,17 +306,17 @@ impl<T> LocalReceiver<T> {
             LocalReceiverInner::Mpmc(receiver) => receiver.try_recv(),
         };
 
-        if result.is_ok() {
-            if let Some(queue_depth) = &self.queue_depth {
-                queue_depth.record_receive();
-            }
+        if result.is_ok()
+            && let Some(queue_depth) = &self.queue_depth
+        {
+            queue_depth.record_receive();
         }
-        if let Some(metrics) = &self.metrics {
-            if let Ok(mut metrics) = metrics.try_borrow_mut() {
-                if let Ok(message) = &result {
-                    metrics.record_recv_ok(self.signal.and_then(|extract| extract(message)));
-                }
-            }
+
+        if let Some(metrics) = &self.metrics
+            && let Ok(mut metrics) = metrics.try_borrow_mut()
+            && let Ok(message) = &result
+        {
+            metrics.record_recv_ok(self.signal.and_then(|extract| extract(message)));
         }
 
         result

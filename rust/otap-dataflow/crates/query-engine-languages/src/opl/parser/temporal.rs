@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use chrono::{DateTime, FixedOffset, NaiveDate, NaiveTime, TimeZone, Utc};
-use data_engine_expressions::QueryLocation;
-use data_engine_parser_abstractions::ParserError;
+use otel_arrow_contrib_data_engine_expressions::QueryLocation;
+use otel_arrow_contrib_data_engine_parser_abstractions::ParserError;
 
 /// Number of milliseconds in a nanosecond
 const MINUTES_PER_SECOND: i32 = 60;
@@ -118,7 +118,9 @@ mod test {
 
     use chrono::TimeZone;
     use chrono_tz::{Canada, Tz};
-    use data_engine_expressions::{DateTimeValue, ScalarExpression, StaticScalarExpression};
+    use otel_arrow_contrib_data_engine_expressions::{
+        DateTimeValue, ScalarExpression, StaticScalarExpression,
+    };
     use pest::Parser;
 
     use crate::opl::parser::{Rule, expression::parse_tagged_literal, pest::OplPestParser};

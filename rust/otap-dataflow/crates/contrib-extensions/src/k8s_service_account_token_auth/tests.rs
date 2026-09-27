@@ -51,7 +51,7 @@ fn config_defaults_apply() {
     assert!(cfg.audiences[0].resource_attributes.is_none());
     assert_eq!(cfg.cache_ttl, Duration::from_secs(300));
     assert_eq!(cfg.cache_max_entries, 1024);
-    assert_eq!(cfg.review_timeout, Duration::from_secs(10));
+    assert_eq!(cfg.review_timeout, Duration::from_secs(5));
 }
 
 /// Scenario: parse configs that omit `audiences`, supply an empty list, or a
@@ -1940,7 +1940,7 @@ async fn decide_lists_every_matched_audience_when_all_admit() {
 //   K8S_SAT_TOKEN="$(kubectl create token sat-tester -n sat-authz-test \
 //     --audience=https://sat-authz-test.example)" \
 //   cargo test -p otel-arrow-dfe-contrib-extensions \
-//     --features k8s-service-account-token-auth-extension \
+//     --features k8s-service-account-token-auth \
 //     k8s_service_account_token_auth -- --ignored --nocapture
 //
 // The cluster is expected to have the fixtures from the extension's test setup:

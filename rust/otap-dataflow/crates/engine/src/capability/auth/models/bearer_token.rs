@@ -108,18 +108,18 @@ impl BearerToken {
         Self::with_expiry(secret, Instant::now().checked_add(expires_in))
     }
 
-    /// Creates a token from a whole `Authorization` header value, with no
-    /// expiry.
+    /// Creates a token from a valid bearer `Authorization` header value, with
+    /// no expiry.
     ///
-    /// Strips a leading, case-insensitive `Bearer ` scheme prefix when present
-    /// (e.g. `"Bearer eyJ..."` -> `"eyJ..."`), and otherwise treats the trimmed
-    /// value as the token verbatim. Surrounding whitespace is trimmed either
-    /// way. A caller that already has the bare token should use
+    /// The scheme is matched case-insensitively and must be followed by one or
+    /// more ASCII spaces and a valid RFC 6750 `b64token`. Returns `None` for a
+    /// missing scheme, a non-bearer scheme, or a malformed token. A caller that
+    /// already has the bare token should use
     /// [`without_expiry`](Self::without_expiry).
     #[must_use]
-    pub fn from_header_value(header_value: &str) -> Self {
-        let token = strip_bearer_prefix(header_value).unwrap_or_else(|| header_value.trim());
-        Self::without_expiry(token.to_owned())
+    pub fn from_header_value(header_value: &str) -> Option<Self> {
+        let token = extract_bearer_token(header_value)?;
+        Some(Self::without_expiry(token.to_owned()))
     }
 
     /// Exposes the bearer token secret, for the authorizer to validate or for
@@ -139,18 +139,36 @@ impl BearerToken {
     }
 }
 
-/// Strips a leading, case-insensitive `Bearer ` scheme from an `Authorization`
-/// header value, returning the trimmed token. Returns `None` when no `Bearer `
-/// scheme is present (including a bare token with no scheme), so the caller can
-/// fall back to treating the whole value as the token.
-fn strip_bearer_prefix(header_value: &str) -> Option<&str> {
-    let trimmed = header_value.trim();
-    let (scheme, rest) = trimmed.split_once(char::is_whitespace)?;
-    if scheme.eq_ignore_ascii_case("Bearer") {
-        Some(rest.trim())
-    } else {
-        None
+/// Extracts a non-empty token from a case-insensitive bearer authorization
+/// header.
+fn extract_bearer_token(header_value: &str) -> Option<&str> {
+    let trimmed = header_value.trim_matches([' ', '\t']);
+    let (scheme, rest) = trimmed.split_once(' ')?;
+    if !scheme.eq_ignore_ascii_case("Bearer") {
+        return None;
     }
+    let token = rest.trim_matches(' ');
+    is_valid_b64token(token).then_some(token)
+}
+
+fn is_valid_b64token(token: &str) -> bool {
+    let mut saw_token_byte = false;
+    let mut saw_padding = false;
+
+    for byte in token.bytes() {
+        if byte == b'=' {
+            saw_padding = true;
+        } else if saw_padding
+            || !(byte.is_ascii_alphanumeric()
+                || matches!(byte, b'-' | b'.' | b'_' | b'~' | b'+' | b'/'))
+        {
+            return false;
+        } else {
+            saw_token_byte = true;
+        }
+    }
+
+    saw_token_byte
 }
 
 /// Converts an absolute wall-clock expiry to a monotonic [`Instant`] offset from
@@ -316,118 +334,115 @@ mod tests {
     #[test]
     fn from_header_value_strips_bearer_prefix() {
         assert_eq!(
-            BearerToken::from_header_value("Bearer eyJ.abc.sig").expose_token(),
+            BearerToken::from_header_value("Bearer eyJ.abc.sig")
+                .expect("valid bearer header")
+                .expose_token(),
             "eyJ.abc.sig"
         );
         // Case-insensitive scheme and surrounding/extra whitespace.
         assert_eq!(
-            BearerToken::from_header_value("  bEaReR   eyJ.abc.sig  ").expose_token(),
+            BearerToken::from_header_value("  bEaReR   eyJ.abc.sig  ")
+                .expect("valid case-insensitive bearer header")
+                .expose_token(),
             "eyJ.abc.sig"
         );
     }
 
-    /// Scenario: parse a header value that has no scheme prefix, only
-    /// surrounding whitespace.
-    /// Guarantees: the value is used verbatim as the token, trimmed only of
-    /// surrounding whitespace.
+    /// Scenario: parse a header value that has no scheme prefix.
+    /// Guarantees: a bare value cannot construct a token through the header
+    /// parser.
     #[test]
-    fn from_header_value_without_scheme_is_verbatim() {
-        // A bare token (no scheme) is used as-is, only trimmed.
-        assert_eq!(
-            BearerToken::from_header_value("  eyJ.abc.sig  ").expose_token(),
-            "eyJ.abc.sig"
-        );
+    fn from_header_value_rejects_missing_scheme() {
+        assert!(BearerToken::from_header_value("  eyJ.abc.sig  ").is_none());
     }
 
     /// Scenario: parse a header value carrying a non-`Bearer` scheme (e.g.
     /// `Basic ...`).
-    /// Guarantees: the whole value is kept verbatim (not stripped), so it fails
-    /// validation downstream rather than being silently mangled.
+    /// Guarantees: a non-bearer authorization scheme is rejected at
+    /// construction.
     #[test]
-    fn from_header_value_non_bearer_scheme_not_stripped() {
-        // A non-Bearer scheme is not a bearer token; the whole value is kept so
-        // it fails validation downstream rather than being silently mangled.
-        assert_eq!(
-            BearerToken::from_header_value("Basic dXNlcjpwYXNz").expose_token(),
-            "Basic dXNlcjpwYXNz"
-        );
+    fn from_header_value_rejects_non_bearer_scheme() {
+        assert!(BearerToken::from_header_value("Basic dXNlcjpwYXNz").is_none());
     }
 
     /// Scenario: parse values that merely start with the letters "Bearer" but
     /// have no whitespace separator (e.g. `BearerToken`, `Bearer-eyJ...`).
-    /// Guarantees: without a whitespace separator nothing is stripped, so a
-    /// token that happens to begin with "Bearer" is never mangled.
+    /// Guarantees: values without a scheme separator are rejected.
     #[test]
     fn from_header_value_requires_whitespace_separator() {
-        // The `Bearer` prefix is only stripped when followed by whitespace. A
-        // value that merely starts with the letters "Bearer" (no separator) is
-        // NOT a scheme and must be kept verbatim, so we never mangle a token
-        // that happens to begin with "Bearer".
-        assert_eq!(
-            BearerToken::from_header_value("BearerToken").expose_token(),
-            "BearerToken"
-        );
-        assert_eq!(
-            BearerToken::from_header_value("Bearer-eyJ.abc.sig").expose_token(),
-            "Bearer-eyJ.abc.sig"
-        );
+        assert!(BearerToken::from_header_value("BearerToken").is_none());
+        assert!(BearerToken::from_header_value("Bearer-eyJ.abc.sig").is_none());
     }
 
     /// Scenario: parse a header value that is exactly the scheme word `Bearer`
     /// with no token following it.
-    /// Guarantees: with no separator, nothing is stripped and the value is used
-    /// verbatim (so it fails validation downstream).
+    /// Guarantees: a scheme without a credential is rejected.
     #[test]
-    fn from_header_value_scheme_only_is_verbatim() {
-        // Just "Bearer" with no token following: no separator, so nothing is
-        // stripped and the value is used verbatim (it will fail validation).
+    fn from_header_value_rejects_scheme_only() {
+        assert!(BearerToken::from_header_value("Bearer").is_none());
+        assert!(BearerToken::from_header_value("Bearer   ").is_none());
+    }
+
+    /// Scenario: parse a header value with multiple ASCII spaces between the
+    /// scheme and token.
+    /// Guarantees: the RFC 6750 `1*SP` separator accepts more than one space.
+    #[test]
+    fn from_header_value_accepts_multiple_spaces() {
         assert_eq!(
-            BearerToken::from_header_value("Bearer").expose_token(),
-            "Bearer"
+            BearerToken::from_header_value("Bearer  eyJ.abc.sig")
+                .expect("valid bearer header")
+                .expose_token(),
+            "eyJ.abc.sig"
         );
     }
 
-    /// Scenario: parse header values whose scheme/token separator is a tab or
-    /// multiple spaces rather than a single ASCII space.
-    /// Guarantees: any whitespace run is accepted as the separator, yielding the
-    /// bare token.
+    /// Scenario: parse a header value with a tab between the scheme and token.
+    /// Guarantees: a tab is rejected because RFC 6750 requires one or more
+    /// ASCII spaces between `Bearer` and the credential.
     #[test]
-    fn from_header_value_accepts_any_whitespace_separator() {
-        // The separator may be any whitespace (tab, multiple spaces, a mix), not
-        // just a single ASCII space.
+    fn from_header_value_rejects_tab_separator() {
+        assert!(BearerToken::from_header_value("Bearer\teyJ.abc.sig").is_none());
+    }
+
+    /// Scenario: parse bearer credentials containing every RFC 6750 `b64token`
+    /// symbol and optional trailing padding.
+    /// Guarantees: valid bearer-token characters and trailing `=` padding are
+    /// accepted without changing the credential.
+    #[test]
+    fn from_header_value_accepts_b64token_characters() {
+        let token = "AZaz09-._~+/==";
         assert_eq!(
-            BearerToken::from_header_value("Bearer\teyJ.abc.sig").expose_token(),
-            "eyJ.abc.sig"
+            BearerToken::from_header_value(&format!("Bearer {token}"))
+                .expect("valid b64token")
+                .expose_token(),
+            token
         );
-        assert_eq!(
-            BearerToken::from_header_value("Bearer  eyJ.abc.sig").expose_token(),
-            "eyJ.abc.sig"
-        );
+    }
+
+    /// Scenario: parse bearer credentials containing punctuation outside the
+    /// RFC 6750 `b64token` grammar or padding followed by more token bytes.
+    /// Guarantees: malformed bearer credentials are rejected before reaching
+    /// an authorizer.
+    #[test]
+    fn from_header_value_rejects_invalid_b64token_characters() {
+        assert!(BearerToken::from_header_value("Bearer abc:def").is_none());
+        assert!(BearerToken::from_header_value("Bearer abc=def").is_none());
     }
 
     /// Scenario: parse a header value containing two `Bearer ` prefixes (e.g.
     /// `Bearer Bearer eyJ...`).
-    /// Guarantees: only the single leading scheme is stripped; the remainder
-    /// (including a second "Bearer") is preserved as the token.
+    /// Guarantees: whitespace inside the credential is rejected.
     #[test]
-    fn from_header_value_strips_only_the_leading_scheme() {
-        // Only the single leading `Bearer ` scheme is stripped; a second
-        // "Bearer" is part of the token and is preserved (not re-stripped).
-        assert_eq!(
-            BearerToken::from_header_value("Bearer Bearer eyJ.abc.sig").expose_token(),
-            "Bearer eyJ.abc.sig"
-        );
+    fn from_header_value_rejects_whitespace_in_token() {
+        assert!(BearerToken::from_header_value("Bearer first second").is_none());
     }
 
     /// Scenario: parse empty and whitespace-only header values.
-    /// Guarantees: both trim to an empty token (which downstream validation
-    /// rejects) rather than panicking or retaining whitespace.
+    /// Guarantees: both are rejected rather than constructing an empty token.
     #[test]
-    fn from_header_value_empty_or_whitespace_yields_empty_token() {
-        // No token at all: an empty or whitespace-only header value trims to an
-        // empty token (which downstream validation rejects).
-        assert_eq!(BearerToken::from_header_value("").expose_token(), "");
-        assert_eq!(BearerToken::from_header_value("   ").expose_token(), "");
+    fn from_header_value_rejects_empty_or_whitespace() {
+        assert!(BearerToken::from_header_value("").is_none());
+        assert!(BearerToken::from_header_value("   ").is_none());
     }
 
     /// Scenario: pass a header-looking value (`Bearer eyJ...`) to `without_expiry` rather
