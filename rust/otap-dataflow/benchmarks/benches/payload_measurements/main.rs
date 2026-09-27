@@ -54,7 +54,7 @@ fn create_logs_data(record_count: usize) -> LogsData {
     LogsData::new(vec![ResourceLogs::new(resource, vec![scope_logs])])
 }
 
-fn create_metrics_data(record_count: usize) -> MetricsData {
+fn create_metrics_data(record_count: usize, use_many_metrics: bool) -> MetricsData {
     let kvs = vec![
         KeyValue::new("k1", AnyValue::new_string("v1")),
         KeyValue::new("k2", AnyValue::new_string("v2")),
@@ -66,23 +66,39 @@ fn create_metrics_data(record_count: usize) -> MetricsData {
         .attributes(kvs.clone())
         .value_int(1i64)
         .finish();
-    let metrics = vec![
-        Metric::build()
-            .name("gauge1")
-            .data_gauge(Gauge::new(vec![
-                number_data_point.clone();
-                record_count / 2
-            ]))
-            .finish(),
-        Metric::build()
-            .name("sum1")
-            .data_sum(Sum::new(
-                AggregationTemporality::Cumulative,
-                true,
-                vec![number_data_point.clone(); record_count - record_count / 2],
-            ))
-            .finish(),
-    ];
+    let metrics: Vec<Metric> = if use_many_metrics {
+        vec![1; record_count]
+            .into_iter()
+            .enumerate()
+            .map(|(index, metric_point_count)| {
+                Metric::build()
+                    .name(format!("gauge{}", index))
+                    .data_gauge(Gauge::new(vec![
+                        number_data_point.clone();
+                        metric_point_count
+                    ]))
+                    .finish()
+            })
+            .collect()
+    } else {
+        vec![
+            Metric::build()
+                .name("gauge1")
+                .data_gauge(Gauge::new(vec![
+                    number_data_point.clone();
+                    record_count / 2
+                ]))
+                .finish(),
+            Metric::build()
+                .name("sum1")
+                .data_sum(Sum::new(
+                    AggregationTemporality::Cumulative,
+                    true,
+                    vec![number_data_point.clone(); record_count - record_count / 2],
+                ))
+                .finish(),
+        ]
+    };
     let scope_metrics =
         ScopeMetrics::new(scope, metrics).set_schema_url("http://schema.opentelemetry.io");
 
@@ -439,7 +455,7 @@ fn otlp_logs_metrics_traces_count_payload_items(c: &mut Criterion) {
     for record_count in [10, 100, 1_000] {
         let log_message = OtlpProtoMessage::Logs(create_logs_data(record_count));
         let trace_message = OtlpProtoMessage::Traces(create_traces_data(record_count));
-        let metric_message = OtlpProtoMessage::Metrics(create_metrics_data(record_count));
+        let metric_message = OtlpProtoMessage::Metrics(create_metrics_data(record_count, false));
 
         for (spec_name, spec_message) in [
             ("Logs", log_message),
@@ -474,6 +490,44 @@ fn otlp_logs_metrics_traces_count_payload_items(c: &mut Criterion) {
     group.finish();
 }
 
+fn otlp_many_metrics_few_points_count_payload_items(c: &mut Criterion) {
+    let mut group = c.benchmark_group("PData OTLP Many Metrics Few Points num_items/1000");
+    let record_count = 1000;
+
+    let many_metrics_few_points_message =
+        OtlpProtoMessage::Metrics(create_metrics_data(record_count, true));
+    let few_metrics_many_points_message =
+        OtlpProtoMessage::Metrics(create_metrics_data(record_count, false));
+
+    _ = group.bench_function("many_metrics_few_points", |b| {
+        b.iter_batched_ref(
+            || {
+                OtapPdata::new(
+                    Context::default(),
+                    black_box(otlp_message_to_bytes(&many_metrics_few_points_message).into()),
+                )
+            },
+            |pdata| black_box(pdata.num_items()),
+            BatchSize::SmallInput,
+        )
+    });
+
+    _ = group.bench_function("few_metrics_many_points", |b| {
+        b.iter_batched_ref(
+            || {
+                OtapPdata::new(
+                    Context::default(),
+                    black_box(otlp_message_to_bytes(&few_metrics_many_points_message).into()),
+                )
+            },
+            |pdata| black_box(pdata.num_items()),
+            BatchSize::SmallInput,
+        )
+    });
+
+    group.finish();
+}
+
 criterion_group!(
     payload_measurements,
     count_logs,
@@ -481,6 +535,7 @@ criterion_group!(
     measure_payload_size,
     legacy_representation_paths,
     direct_codec_paths,
-    otlp_logs_metrics_traces_count_payload_items
+    otlp_logs_metrics_traces_count_payload_items,
+    otlp_many_metrics_few_points_count_payload_items
 );
 criterion_main!(payload_measurements);
