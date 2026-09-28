@@ -251,7 +251,8 @@ fn check_primary_id_for_overflow<const N: usize>(
         let Ok(id_col) = extract_id_column(rb, id_info.name) else {
             continue;
         };
-        count += id_col.len() as u64;
+        // Null ids are not planned and consume no id space.
+        count += (id_col.len() - id_col.logical_null_count()) as u64;
     }
 
     // TODO: Consider supporting u16::MAX + 1. The offset math is done in the
@@ -464,7 +465,9 @@ fn compact_child<T: IdType>(
     col: &dyn Array,
     mappings: &[IdMapping<T::Native>],
 ) -> Result<(ScalarBuffer<T::Native>, Selection)> {
-    let values = materialize_id_values::<T>(col)?.values();
+    let array = materialize_id_values::<T>(col)?;
+    let values = array.values();
+    let value_nulls = array.nulls().filter(|n| n.null_count() > 0);
 
     let sort_indices = sort_vec_to_indices(values);
     let mut sorted = vec![T::Native::default(); values.len()];
@@ -477,12 +480,18 @@ fn compact_child<T: IdType>(
     let selection = match violations {
         None => Selection::All,
         Some(violations) => {
-            // Mark violating value positions (source order).
+            // Mark violating value positions (source order). Null slots hold
+            // arbitrary values that are not ids, so they are never violations
+            // and the row stays null in the output.
             let mut value_ok = BooleanBufferBuilder::new(values.len());
             value_ok.append_n(values.len(), true);
             for range in violations {
                 for &src in &sort_indices[range] {
-                    value_ok.set_bit(src as usize, false);
+                    let src = src as usize;
+                    if value_nulls.is_some_and(|n| n.is_null(src)) {
+                        continue;
+                    }
+                    value_ok.set_bit(src, false);
                 }
             }
             let value_ok = value_ok.finish();
@@ -508,15 +517,20 @@ fn compact_child<T: IdType>(
 }
 
 /// Map a per-value validity bitmap to a per-row bitmap through dictionary
-/// keys.
+/// keys. Rows with a null key are always kept: the key slot may hold an
+/// arbitrary value that must not decide whether the row survives.
 fn rows_ok_from_keys<K: ArrowDictionaryKeyType>(
     col: &dyn Array,
     value_ok: &BooleanBuffer,
 ) -> BooleanBuffer {
     let dict = col.as_dictionary::<K>();
     let keys = dict.keys().values();
+    let key_nulls = dict.keys().nulls().filter(|n| n.null_count() > 0);
     let values_len = value_ok.len();
     BooleanBuffer::collect_bool(keys.len(), |i| {
+        if key_nulls.is_some_and(|n| n.is_null(i)) {
+            return true;
+        }
         let k = keys[i].as_usize();
         k < values_len && value_ok.value(k)
     })
@@ -2403,6 +2417,173 @@ mod tests {
             column_at(attrs, PARENT_ID).as_ref(),
         );
         assert!(pids.iter().all(|p| event_ids.contains(p)));
+    }
+
+    /// Build a Logs store with root ids `ids` and a LogAttrs table whose
+    /// `parent_id` column is `parent_ids` (which may carry nulls).
+    fn logs_with_attr_parent_ids(ids: Vec<u16>, parent_ids: arrow::array::UInt16Array) -> Logs {
+        use arrow::array::{ArrayRef, UInt16Array};
+        use arrow::datatypes::{Field, Schema};
+        use std::sync::Arc;
+
+        let root = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("id", DataType::UInt16, false)])),
+            vec![Arc::new(UInt16Array::from(ids)) as ArrayRef],
+        )
+        .unwrap();
+        let attrs = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "parent_id",
+                DataType::UInt16,
+                true,
+            )])),
+            vec![Arc::new(parent_ids) as ArrayRef],
+        )
+        .unwrap();
+        crate::otap::testing::make_test_batch::<Logs, { Logs::COUNT }>(vec![
+            (ArrowPayloadType::Logs, root),
+            (ArrowPayloadType::LogAttrs, attrs),
+        ])
+    }
+
+    /// Scenario: a LogAttrs `parent_id` column has a null row whose hidden
+    /// slot value is either inside the parent id range (1) or far outside it
+    /// (999), alongside a genuine violation (9) that forces the compaction
+    /// path.
+    /// Guarantees: whether a null row survives does not depend on the hidden
+    /// slot value -- the null row is kept and stays null in both cases -- and
+    /// the genuine violation is still redacted.
+    #[test]
+    fn test_null_parent_id_hidden_value_does_not_redact() {
+        use arrow::array::UInt16Array;
+        use arrow::buffer::{NullBuffer, ScalarBuffer};
+
+        for hidden in [1u16, 999] {
+            let pids = UInt16Array::new(
+                ScalarBuffer::from(vec![1u16, hidden, 2, 9]),
+                Some(NullBuffer::from(vec![true, false, true, true])),
+            );
+            let a = logs_with_attr_parent_ids(vec![1, 2], pids);
+            let b = logs_with_attr_parent_ids(vec![0, 1], UInt16Array::from(vec![0u16, 1]));
+
+            let mut batches = vec![a.into_batches(), b.into_batches()];
+            let out =
+                concatenate::<{ Logs::COUNT }>(&mut batches, ConcatOptions::reindex()).unwrap();
+            let attrs = out[payload_to_idx(ArrowPayloadType::LogAttrs)]
+                .as_ref()
+                .unwrap();
+            assert_eq!(
+                attrs.num_rows(),
+                5,
+                "hidden={hidden}: null row kept, violation 9 redacted"
+            );
+            let pids = column_at(attrs, PARENT_ID);
+            assert_eq!(pids.null_count(), 1, "hidden={hidden}");
+            assert!(pids.is_null(1), "hidden={hidden}");
+        }
+    }
+
+    /// Scenario: a dictionary-encoded u32 SpanEventAttrs `parent_id` has (a)
+    /// a null key whose slot holds an out-of-range key and (b) a valid key
+    /// pointing at a null dictionary value whose hidden id (500) is outside
+    /// the parent range, alongside a genuine violation (id 7) that forces
+    /// compaction.
+    /// Guarantees: both null rows survive and stay null; only the rows
+    /// referencing the genuinely missing parent are redacted.
+    #[test]
+    fn test_null_dict_parent_id_does_not_redact() {
+        use arrow::array::{ArrayRef, DictionaryArray, UInt8Array, UInt32Array};
+        use arrow::buffer::{NullBuffer, ScalarBuffer};
+        use arrow::datatypes::{Field, Schema};
+        use std::sync::Arc;
+
+        let make = |with_nulls: bool| {
+            let spans = record_batch!(("id", UInt16, vec![0u16])).unwrap();
+            let events = record_batch!(
+                ("id", UInt32, vec![0u32, 1]),
+                ("parent_id", UInt16, vec![0u16, 0])
+            )
+            .unwrap();
+            // values: [0, 1, 7, <null:500>]
+            let values = UInt32Array::new(
+                ScalarBuffer::from(vec![0u32, 1, 7, 500]),
+                Some(NullBuffer::from(vec![true, true, true, false])),
+            );
+            // keys: [0, 1, 2 (violation), null(hidden 200), 3 (null value)]
+            let keys = if with_nulls {
+                UInt8Array::new(
+                    ScalarBuffer::from(vec![0u8, 1, 2, 200, 3]),
+                    Some(NullBuffer::from(vec![true, true, true, false, true])),
+                )
+            } else {
+                UInt8Array::from(vec![0u8, 1, 2])
+            };
+            let dict: ArrayRef = Arc::new(DictionaryArray::new(keys, Arc::new(values)));
+            let attrs = RecordBatch::try_new(
+                Arc::new(Schema::new(vec![Field::new(
+                    "parent_id",
+                    dict.data_type().clone(),
+                    true,
+                )])),
+                vec![dict],
+            )
+            .unwrap();
+            crate::otap::testing::make_test_batch::<Traces, { Traces::COUNT }>(vec![
+                (ArrowPayloadType::Spans, spans),
+                (ArrowPayloadType::SpanEvents, events),
+                (ArrowPayloadType::SpanEventAttrs, attrs),
+            ])
+        };
+
+        let mut batches = vec![make(true).into_batches(), make(false).into_batches()];
+        let out = concatenate::<{ Traces::COUNT }>(&mut batches, ConcatOptions::reindex()).unwrap();
+        let attrs = out[payload_to_idx(ArrowPayloadType::SpanEventAttrs)]
+            .as_ref()
+            .unwrap();
+        // First input: 5 rows - 1 violation = 4. Second: 3 rows - 1 = 2.
+        assert_eq!(attrs.num_rows(), 6, "only rows referencing id 7 redacted");
+        let pids = column_at(attrs, PARENT_ID);
+        let nulls = pids.logical_nulls().expect("null parent ids");
+        let null_rows: Vec<usize> = (0..pids.len()).filter(|&i| nulls.is_null(i)).collect();
+        assert_eq!(null_rows, vec![2, 3]);
+    }
+
+    /// Scenario: two Logs inputs whose root u16 `id` columns together hold
+    /// exactly `u16::MAX` valid ids plus two null ids, then the same with one
+    /// extra valid id.
+    /// Guarantees: null primary ids do not count toward the id-space overflow
+    /// check, so the first case concatenates successfully, while exceeding
+    /// the limit with valid ids is still rejected with `TooManyItems`.
+    #[test]
+    fn test_overflow_check_ignores_null_primary_ids() {
+        let limit = u16::MAX as usize;
+        let make = |valid: usize, nulls: usize| {
+            let mut ids: Vec<Option<u16>> = (0..valid).map(|i| Some(i as u16)).collect();
+            ids.extend(std::iter::repeat_n(None, nulls));
+            logs_with_null_ids(ids, None, vec![0], vec![])
+        };
+
+        let half = limit / 2;
+        let mut batches = vec![
+            make(half, 1).into_batches(),
+            make(limit - half, 1).into_batches(),
+        ];
+        let out = concatenate::<{ Logs::COUNT }>(&mut batches, ConcatOptions::reindex())
+            .expect("valid ids fit exactly; nulls must not count");
+        let root = out[payload_to_idx(ArrowPayloadType::Logs)]
+            .as_ref()
+            .unwrap();
+        assert_eq!(root.num_rows(), limit + 2);
+
+        let mut batches = vec![
+            make(half + 1, 1).into_batches(),
+            make(limit - half, 1).into_batches(),
+        ];
+        let result = concatenate::<{ Logs::COUNT }>(&mut batches, ConcatOptions::reindex());
+        assert!(
+            matches!(result, Err(Error::TooManyItems { .. })),
+            "expected TooManyItems, got {result:?}"
+        );
     }
 
     // ---- Test helpers ----

@@ -511,6 +511,10 @@ struct IndexedField<'a> {
     // all dictionary batches. Bounds the number of dictionary entries that Arrow
     // may append while coalescing, and hence the required key width.
     total_physical_value_count: usize,
+    // The dictionary values array of the most recent input carrying this
+    // column, if it was dictionary encoded. A repeat of the same values array
+    // in the next input is shared by the writer, so it is counted once.
+    last_dict_values: Option<&'a ArrayRef>,
     // For struct columns, the recursively-indexed children.
     struct_index: Option<Box<FieldIndex<'a>>>,
 }
@@ -633,6 +637,7 @@ fn index_fields<'a>(
                 is_dictionary: is_dict,
                 present_count: 1,
                 total_physical_value_count: array.len(),
+                last_dict_values: is_dict.then_some(array),
                 struct_index,
             });
             continue;
@@ -667,7 +672,23 @@ fn index_fields<'a>(
 
         existing.nullable = existing.nullable || data.null_count() > 0;
         existing.present_count += 1;
-        existing.total_physical_value_count += array.len();
+
+        // Mirror the writer's sharing rule (see `WrittenDictValues`). ID
+        // columns may be remapped per input and then cannot share values,
+        // so they always count every values array.
+        let is_id_col = match parent {
+            None => top_level_id_col(name).is_some(),
+            Some(parent) => struct_child_id_col(parent, name).is_some(),
+        };
+        let shared = is_dict
+            && !is_id_col
+            && existing
+                .last_dict_values
+                .is_some_and(|prev| same_values(prev, array));
+        if !shared {
+            existing.total_physical_value_count += array.len();
+        }
+        existing.last_dict_values = is_dict.then_some(array);
     }
 
     Ok(())
@@ -1296,13 +1317,24 @@ impl<K: ArrowDictionaryKeyType> Driver for DictDriver<K> {
 /// Upper bound on the number of values the builder will receive, used for
 /// capacity. For native output this is `rows`; for dictionary output this is
 /// the sum of dictionary value lengths plus native selected rows.
+///
+/// A values array identical to the previous input's is counted once, since
+/// [write_dict] may share it (see [WrittenDictValues]).
 fn dict_values_capacity(inputs: &[Input<'_>]) -> usize {
+    let mut prev: Option<&ArrayRef> = None;
     inputs
         .iter()
         .map(|inp| match inp.column {
-            Some(col) => match col.data_type() {
-                DataType::Dictionary(_, _) => dict_values(col).map(|v| v.len()).unwrap_or(0),
-                _ => inp.selected_rows(),
+            Some(col) => match dict_values(col) {
+                Some(v) => {
+                    let repeat = prev.is_some_and(|p| same_values(p, v));
+                    prev = Some(v);
+                    if repeat { 0 } else { v.len() }
+                }
+                None => {
+                    prev = None;
+                    inp.selected_rows()
+                }
             },
             None => 0,
         })
@@ -1471,6 +1503,7 @@ fn write_dict<K: ArrowDictionaryKeyType, B: ValueBuilder>(
     let mut key_nulls = LazyNulls::new(rows);
     let mut value_nulls = LazyNulls::new(dict_values_capacity(inputs));
     let mut vbase: usize = 0;
+    let mut written = WrittenDictValues::default();
 
     for inp in inputs {
         builder.begin_input(inp.plan);
@@ -1480,6 +1513,9 @@ fn write_dict<K: ArrowDictionaryKeyType, B: ValueBuilder>(
             key_nulls.append_null(n);
             continue;
         };
+        if dict_values(col).is_none() {
+            written.set(None);
+        }
 
         match col.data_type() {
             DataType::Dictionary(key, _) => match key.as_ref() {
@@ -1489,6 +1525,7 @@ fn write_dict<K: ArrowDictionaryKeyType, B: ValueBuilder>(
                     &mut key_nulls,
                     &mut value_nulls,
                     &mut vbase,
+                    &mut written,
                     inp,
                     col,
                     value_type,
@@ -1499,6 +1536,7 @@ fn write_dict<K: ArrowDictionaryKeyType, B: ValueBuilder>(
                     &mut key_nulls,
                     &mut value_nulls,
                     &mut vbase,
+                    &mut written,
                     inp,
                     col,
                     value_type,
@@ -1549,6 +1587,7 @@ fn append_dict_input<Ks: ArrowDictionaryKeyType, K: ArrowDictionaryKeyType, B: V
     key_nulls: &mut LazyNulls,
     value_nulls: &mut LazyNulls,
     vbase: &mut usize,
+    written: &mut WrittenDictValues,
     inp: &Input<'_>,
     col: &ArrayRef,
     value_type: &DataType,
@@ -1557,14 +1596,28 @@ fn append_dict_input<Ks: ArrowDictionaryKeyType, K: ArrowDictionaryKeyType, B: V
     let values = dict.values();
     check_value_type(values.data_type(), value_type)?;
 
-    // Append the whole values array. This keeps key rewriting a pure add.
-    let values_len = values.len();
-    let src = B::downcast(values.as_ref());
-    builder.append_range(&src, 0..values_len);
-    value_nulls.append_from(values.nulls(), 0..values_len);
+    // Zero-copy slices of one dictionary (e.g. from `split`) share a values
+    // array. When this input copies values unchanged, reuse the earlier copy
+    // instead of appending the same values again. Remapped ID inputs must
+    // write their own values since the remap differs per input.
+    let reusable = builder.is_identity();
+    let base = match reusable.then(|| written.find(values)).flatten() {
+        Some(base) => base,
+        None => {
+            // Append the whole values array. This keeps key rewriting a pure
+            // add.
+            let values_len = values.len();
+            let src = B::downcast(values.as_ref());
+            builder.append_range(&src, 0..values_len);
+            value_nulls.append_from(values.nulls(), 0..values_len);
+            let base = *vbase;
+            *vbase += values_len;
+            written.set(reusable.then_some((values, base)));
+            base
+        }
+    };
 
     let src_keys = dict.keys().values();
-    let base = *vbase;
     for r in inp.ranges() {
         keys.extend(
             src_keys[r.clone()]
@@ -1573,8 +1626,44 @@ fn append_dict_input<Ks: ArrowDictionaryKeyType, K: ArrowDictionaryKeyType, B: V
         );
         key_nulls.append_from(dict.nulls(), r);
     }
-    *vbase += values_len;
     Ok(())
+}
+
+/// The most recent dictionary values array written unchanged to a
+/// dictionary output, with the position of its first value in the output
+/// values array.
+///
+/// Only the previous input is compared: zero-copy pieces of one dictionary
+/// (e.g. from `split`) are adjacent, and a full scan would be quadratic in
+/// the number of inputs. [index_fields] applies the same rule, so the writer
+/// never writes more values than the selected key type can address.
+#[derive(Default)]
+struct WrittenDictValues {
+    last: Option<(ArrayRef, usize)>,
+}
+
+impl WrittenDictValues {
+    /// The base of the previously written values array if it is identical
+    /// to `values`.
+    fn find(&self, values: &ArrayRef) -> Option<usize> {
+        self.last
+            .as_ref()
+            .filter(|(v, _)| same_values(v, values))
+            .map(|(_, base)| *base)
+    }
+
+    /// Record the values array just written. `None` when the values were
+    /// remapped and must not be shared.
+    fn set(&mut self, last: Option<(&ArrayRef, usize)>) {
+        self.last = last.map(|(v, base)| (Arc::clone(v), base));
+    }
+}
+
+/// True if two dictionary values arrays are the same physical array: the
+/// same `Arc`, or the same buffers, offset, length and null buffer (as
+/// Arrow's own concat checks). Never compares values.
+fn same_values(a: &ArrayRef, b: &ArrayRef) -> bool {
+    Arc::ptr_eq(a, b) || (a.len() == b.len() && a.to_data().ptr_eq(&b.to_data()))
 }
 
 /// Produce a struct output column, recursing into its children.
@@ -1769,6 +1858,13 @@ trait ValueBuilder {
     /// Called before each input is processed.
     fn begin_input(&mut self, _plan: &InputPlan) {}
 
+    /// True if the current input's values are copied unchanged, i.e. no ID
+    /// remap applies. Only then can a dictionary values array already
+    /// written for an earlier input be shared by this one.
+    fn is_identity(&self) -> bool {
+        true
+    }
+
     /// Append logical indices `range` of `src`.
     fn append_range(&mut self, src: &Self::Src<'_>, range: Range<usize>);
 
@@ -1858,6 +1954,14 @@ impl<T: ArrowPrimitiveType> ValueBuilder for PrimitiveBuilder<T> {
     fn begin_input(&mut self, plan: &InputPlan) {
         if let Some((col, f)) = self.remap_source {
             self.remap = f(plan, col).unwrap_or(IdRemap::Identity);
+        }
+    }
+
+    fn is_identity(&self) -> bool {
+        match &self.remap {
+            IdRemap::Identity => true,
+            IdRemap::Offset(d) => d.is_zero(),
+            IdRemap::Replace(_) => false,
         }
     }
 
@@ -1954,11 +2058,21 @@ impl<T: ByteArrayType<Offset = i32>> BytesBuilder<T> {
         // unexpected type are skipped here; the writer rejects them with
         // `check_value_type`.
         let mut bytes = 0usize;
+        let mut prev: Option<&ArrayRef> = None;
         for inp in inputs {
             let Some(col) = inp.column else { continue };
             match col.data_type() {
                 DataType::Dictionary(_, _) => {
-                    if let Some(v) = dict_values(col).and_then(|v| v.as_bytes_opt::<T>()) {
+                    let Some(values) = dict_values(col) else {
+                        continue;
+                    };
+                    // Values shared with the previous input are written once.
+                    let repeat = prev.is_some_and(|p| same_values(p, values));
+                    prev = Some(values);
+                    if repeat {
+                        continue;
+                    }
+                    if let Some(v) = values.as_bytes_opt::<T>() {
                         let o = v.value_offsets();
                         bytes += (o[o.len() - 1] - o[0]) as usize;
                     }
@@ -2626,6 +2740,36 @@ mod schema_tests {
                 .unwrap()
                 .is_nullable()
         );
+    }
+
+    /// Scenario: a root Logs batch with a u8 `severity_text` dictionary of 200
+    /// values is sliced into two zero-copy pieces (as `split` does), which
+    /// share one values array, and the pieces are concatenated back together.
+    /// Guarantees: the shared values array is counted and written once, so the
+    /// output keeps u8 keys and holds 200 dictionary values rather than
+    /// widening the key or duplicating the values per piece.
+    #[test]
+    fn test_split_then_concat_dict_values_not_amplified() {
+        let count = 200usize;
+        let values: Arc<dyn Array> = Arc::new(StringArray::from(
+            (0..count).map(|i| format!("sev-{i}")).collect::<Vec<_>>(),
+        ));
+        let keys = UInt8Array::from((0..count).map(|i| i as u8).collect::<Vec<_>>());
+        let batch = create_dict_batch(SEVERITY_TEXT, keys, values, DataType::Utf8);
+
+        let half = count / 2;
+        let out = concat_logs_root(batch.slice(0, half), batch.slice(half, count - half));
+
+        assert_eq!(out.num_rows(), count);
+        let col = out.column_by_name(SEVERITY_TEXT).unwrap();
+        assert_eq!(
+            col.data_type(),
+            &DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+        );
+        assert_eq!(col.as_dictionary::<UInt8Type>().values().len(), count);
+        let actual = cast(col, &DataType::Utf8).unwrap();
+        let expected = cast(batch.column(0), &DataType::Utf8).unwrap();
+        assert_eq!(actual.as_ref(), expected.as_ref());
     }
 
     /// Scenario: the same real dictionary column (str) is carried with u8 keys in
@@ -4820,5 +4964,92 @@ mod write_tests {
         let d = dict_u8(vec![Some(0), Some(1)], utf8(vec![None, Some("a")]));
         let out = write(DataType::Utf8, &[(Some(d), 2, plan_all())], None);
         assert_eq!(out.as_ref(), utf8(vec![None, Some("a")]).as_ref());
+    }
+
+    /// Scenario: one dictionary column is sliced into several zero-copy
+    /// pieces (as `split` does) that all share the same values array, and the
+    /// pieces are written back into a single dictionary output.
+    /// Guarantees: the shared values array is written to the output once, not
+    /// once per piece, and every row keeps its logical value and null state.
+    #[test]
+    fn test_dict_shared_values_written_once() {
+        let values: ArrayRef = Arc::new(StringArray::from(
+            (0..50).map(|i| format!("value-{i}")).collect::<Vec<_>>(),
+        ));
+        let keys: Vec<Option<u16>> = (0u16..30)
+            .map(|i| (i % 7 != 3).then_some(i * 13 % 50))
+            .collect();
+        let dict = dict_u16(keys, values.clone());
+        let target = DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8));
+
+        let pieces: Vec<ArrayRef> = [0..10, 10..20, 20..30]
+            .into_iter()
+            .map(|r| dict.slice(r.start, r.len()))
+            .collect();
+        let plans = [plan_all(), plan_ranges(vec![1..4, 6..9]), plan_all()];
+        let cols: Vec<_> = pieces
+            .iter()
+            .zip(&plans)
+            .map(|(p, plan)| (Some(p.clone()), p.len(), plan.clone()))
+            .collect();
+        let out = write(target, &cols, None);
+
+        let out_dict = out.as_dictionary::<UInt16Type>();
+        assert_eq!(
+            out_dict.values().len(),
+            values.len(),
+            "shared dictionary values must not be duplicated per input"
+        );
+
+        let expected_parts: Vec<ArrayRef> = [
+            pieces[0].clone(),
+            pieces[1].slice(1, 3),
+            pieces[1].slice(6, 3),
+            pieces[2].clone(),
+        ]
+        .iter()
+        .map(|p| cast(p.as_ref(), &DataType::Utf8).unwrap())
+        .collect();
+        let expected_refs: Vec<&dyn Array> = expected_parts.iter().map(|a| a.as_ref()).collect();
+        let expected = arrow::compute::concat(&expected_refs).unwrap();
+        let actual = cast(out.as_ref(), &DataType::Utf8).unwrap();
+        assert_eq!(actual.as_ref(), expected.as_ref());
+    }
+
+    /// Scenario: two slices of one dictionary-encoded u32 `parent_id` column
+    /// share a values array but receive different ID remaps (`Offset(0)` and
+    /// `Offset(100)`).
+    /// Guarantees: shared values are not reused across inputs whose remaps
+    /// differ -- the second input's rows come out shifted by 100 -- while the
+    /// identity-remapped first input still produces the source values.
+    #[test]
+    fn test_dict_shared_values_remapped_id_not_shared() {
+        let values: ArrayRef = Arc::new(UInt32Array::from(vec![0u32, 1, 2, 3]));
+        let dict = dict_u8(
+            vec![Some(0), Some(1), Some(2), Some(3), Some(1), Some(0)],
+            values,
+        );
+        let a = dict.slice(0, 3);
+        let b = dict.slice(3, 3);
+        let target = DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::UInt32));
+        let out = write(
+            target,
+            &[
+                (
+                    Some(a),
+                    3,
+                    plan_remap(IdCol::ParentId, AnyRemap::U32(IdRemap::Offset(0))),
+                ),
+                (
+                    Some(b),
+                    3,
+                    plan_remap(IdCol::ParentId, AnyRemap::U32(IdRemap::Offset(100))),
+                ),
+            ],
+            Some(IdCol::ParentId),
+        );
+        let actual = cast(out.as_ref(), &DataType::UInt32).unwrap();
+        let expected = UInt32Array::from(vec![0u32, 1, 2, 103, 101, 100]);
+        assert_eq!(actual.as_primitive::<UInt32Type>(), &expected);
     }
 }
