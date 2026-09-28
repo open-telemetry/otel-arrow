@@ -21,6 +21,7 @@ otel-arrow-dfe-channel = { workspace = true }
 otel-arrow-dfe-config = { workspace = true }
 otel-arrow-dfe-engine = { workspace = true }
 otel-arrow-dfe-core-nodes = { workspace = true, optional = true, default-features = false }
+otel-arrow-dfe-scraper = { workspace = true, optional = true }
 otel-arrow-dfe-otap = { workspace = true }
 otel-arrow-dfe-pdata = { workspace = true }
 otel-arrow-dfe-pdata-views = { workspace = true }
@@ -38,7 +39,10 @@ thiserror.workspace = true
 linkme.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+oracle = { workspace = true, optional = true }
+jni = { workspace = true, optional = true, features = ["invocation"] }
 base64 = { workspace = true, optional = true }
+blake3 = { workspace = true, optional = true }
 chrono = { workspace = true, optional = true }
 humantime-serde = { workspace = true, optional = true }
 itoa = { workspace = true, optional = true }
@@ -100,6 +104,7 @@ contrib-nodes = ["contrib-receivers", "contrib-processors", "contrib-exporters"]
 contrib-receivers = [
     "etw",
     "kafka",
+    "oracle-receiver",
     "user-events",
 ]
 contrib-processors = [
@@ -132,6 +137,19 @@ kafka = [
 
 # Receivers.
 etw = ["dep:one_collect", "dep:humantime-serde"]
+database-receiver = ["dep:otel-arrow-dfe-scraper"]
+oracle-receiver = [
+    "database-receiver",
+    "dep:blake3",
+    "dep:humantime-serde",
+    "dep:oracle",
+    "dep:secrecy",
+]
+oracle-jdbc-receiver = [
+    "oracle-receiver",
+    "dep:chrono",
+    "dep:jni",
+]
 user-events = [
     "dep:base64",
     "dep:chrono",
@@ -219,6 +237,7 @@ otel-arrow-dfe-state.workspace = true
 pretty_assertions.workspace = true
 rand.workspace = true
 serde_yaml.workspace = true
+tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 tracing-subscriber = { workspace = true, features = ["fmt", "std", "env-filter"] }
 wiremock.workspace = true
@@ -280,3 +299,8 @@ required-features = ["user-events"]
 name = "user_events_eventheader_producer"
 path = "src/receivers/user_events_receiver/examples/eventheader_producer.rs"
 required-features = ["user-events"]
+
+[[example]]
+name = "oracle_load_generator"
+path = "examples/oracle_load_generator.rs"
+required-features = ["oracle-receiver"]

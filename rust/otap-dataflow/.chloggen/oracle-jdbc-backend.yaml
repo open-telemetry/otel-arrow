@@ -1,0 +1,7 @@
+change_type: enhancement
+component: pipeline
+note: "Add an opt-in JDBC backend for the Oracle receiver."
+issues: []
+subtext: |
+  The JDBC backend uses the existing Oracle query, composite watermark,
+  durable checkpoint, ACK/NACK, and bounded-page behavior.
