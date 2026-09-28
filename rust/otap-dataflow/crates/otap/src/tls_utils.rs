@@ -148,12 +148,23 @@ pub async fn load_server_tls_config(
 /// Holding the exact bytes that were read (rather than re-deriving them from
 /// paths later) lets a single validated snapshot be reused to build the
 /// transport, which is a prerequisite for consistent hot-reload generations.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub(crate) struct ClientIdentityMaterial {
     /// PEM-encoded client certificate chain.
     pub(crate) cert_pem: Vec<u8>,
     /// PEM-encoded private key matching `cert_pem`.
     pub(crate) key_pem: Vec<u8>,
+}
+
+// Keep private key material out of diagnostic output.
+impl fmt::Debug for ClientIdentityMaterial {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ClientIdentityMaterial")
+            .field("cert_pem", &self.cert_pem)
+            .field("key_pem", &"[REDACTED]")
+            .finish()
+    }
 }
 
 /// A validated, immutable snapshot of client TLS material.
@@ -2766,5 +2777,35 @@ mod tests {
             .expect("client identity must be captured");
         assert_eq!(identity.cert_pem, leaf.cert_pem.into_bytes());
         assert_eq!(identity.key_pem, leaf.key_pem.into_bytes());
+    }
+
+    /// Scenario: format captured client identity material directly and through
+    /// its enclosing TLS material snapshot.
+    /// Guarantees: Debug output identifies the redacted key field without
+    /// exposing the private key bytes in either representation.
+    #[test]
+    fn client_identity_material_debug_redacts_private_key() {
+        let key_pem = b"private-key-sentinel".to_vec();
+        let rendered_key_bytes = format!("{key_pem:?}");
+        let identity = ClientIdentityMaterial {
+            cert_pem: b"certificate".to_vec(),
+            key_pem,
+        };
+
+        let identity_debug = format!("{identity:?}");
+        assert!(!identity_debug.contains(&rendered_key_bytes));
+        assert!(identity_debug.contains("key_pem: \"[REDACTED]\""));
+
+        let material_debug = format!(
+            "{:?}",
+            LoadedClientTlsMaterial {
+                server_name: None,
+                include_system_ca: false,
+                ca_pems: Vec::new(),
+                client_identity: Some(identity),
+            }
+        );
+        assert!(!material_debug.contains(&rendered_key_bytes));
+        assert!(material_debug.contains("key_pem: \"[REDACTED]\""));
     }
 }
