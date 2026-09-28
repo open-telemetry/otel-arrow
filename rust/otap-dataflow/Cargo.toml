@@ -184,7 +184,7 @@ prost-types = "0.14"
 quote = "1.0"
 rand = "0.10.1"
 rcgen = "0.14"
-rdkafka = { version = "=0.38.0", features = ["tokio", "tracing"] }
+rdkafka = { version = "=0.39.0", features = ["tokio", "tracing"] }
 regex = "1.12"
 regex-automata = "0.4.14"
 ring = "0.17"
