@@ -466,7 +466,7 @@ impl local::Processor<OtapPdata> for ResourceValidatorProcessor {
                 }
                 Ok(())
             }
-            Message::PData(mut pdata) => {
+            Message::PData(pdata) => {
                 let signal_type = pdata.signal_type();
 
                 // Get allowed values (extension point for future dynamic auth)
