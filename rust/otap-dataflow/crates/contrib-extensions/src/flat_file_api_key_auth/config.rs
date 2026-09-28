@@ -66,7 +66,7 @@ impl Config {
                 // design. Some consumers may not use HTTP or may use a known
                 // header which may not be changed by users.
                 // ApiKey::HTTP_HEADER_NAME_ATTRIBUTE is meant to allow users to
-                // configue a header where it is needed\supported (OTLP
+                // configure a header where it is needed/supported (OTLP
                 // exporters for example).
             }
         }
