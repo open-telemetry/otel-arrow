@@ -62,7 +62,12 @@ impl Config {
                 return Err("`attributes.http.header_name` must be a string".to_string());
             }
             None => {
-                return Err("`attributes.http.header_name` must be set".to_string());
+                // Note: ApiKey::HTTP_HEADER_NAME_ATTRIBUTE is not required by
+                // design. Some consumers may not use HTTP or may use a known
+                // header which may not be changed by users.
+                // ApiKey::HTTP_HEADER_NAME_ATTRIBUTE is meant to allow users to
+                // configue a header where it is needed\supported (OTLP
+                // exporters for example).
             }
         }
 

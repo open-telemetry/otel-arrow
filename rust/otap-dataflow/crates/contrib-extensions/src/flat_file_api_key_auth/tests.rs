@@ -74,11 +74,18 @@ fn config_key_source_is_required_and_non_empty() {
 }
 
 /// Scenario: Config parsing receives missing or incorrectly typed HTTP attributes.
-/// Guarantees: Header metadata required by API key consumers is rejected unless well formed.
+/// Guarantees: Optional header metadata may be omitted but is rejected when malformed.
 #[test]
 fn config_http_attributes_are_validated() {
+    assert!(
+        config_from_json(serde_json::json!({
+            "key_secret": "test-key"
+        }))
+        .is_ok(),
+        "HTTP attributes are optional"
+    );
+
     for attributes in [
-        serde_json::json!({}),
         serde_json::json!({"http.header_name": ""}),
         serde_json::json!({"http.header_name": 42}),
         serde_json::json!({"http.header_name": "x-api-key", "http.header_scheme": false}),
