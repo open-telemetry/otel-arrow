@@ -1,0 +1,4 @@
+change_type: enhancement
+component: observability
+note: "Allow receiver and exporter local duration metrics to select basic, normal, or detailed aggregation per node."
+issues: [2051]

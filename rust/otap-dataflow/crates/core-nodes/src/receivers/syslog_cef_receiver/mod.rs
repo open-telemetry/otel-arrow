@@ -1129,7 +1129,11 @@ impl SyslogCefReceiverMetrics {
         let entity = register_syslog_entity(pipeline_ctx, protocol);
         let registrar = pipeline_ctx.metric_set_registrar_for_entity(entity);
         Self {
-            received: ReceiverMetrics::register_with(&registrar, pipeline_ctx.node_interests()),
+            received: ReceiverMetrics::register_with_distribution(
+                &registrar,
+                pipeline_ctx.node_interests(),
+                pipeline_ctx.node_duration_distribution(),
+            ),
             rejections: SyslogCefRejectionMetrics::register(pipeline_ctx, &signal_attrs),
             transport: SyslogCefTransportMetrics::register(pipeline_ctx),
             truncations: SyslogCefTruncationMetrics::register(pipeline_ctx, &signal_attrs),
