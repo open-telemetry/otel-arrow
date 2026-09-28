@@ -355,3 +355,14 @@ async fn api_key_stream_receives_acquisition() {
     let streamed = stream.next().await.expect("key published");
     assert_eq!(streamed.expose_value(), acquired.expose_value());
 }
+
+/// Scenario: A stream subscribes after a direct API key acquisition.
+/// Guarantees: The stream's first item is the currently cached API key.
+#[tokio::test]
+async fn api_key_stream_starts_with_cached_key() {
+    let extension = make_extension(inline_config());
+    let acquired = extension.get_api_key().await.expect("key acquired");
+    let mut stream = extension.api_key_stream();
+    let streamed = stream.next().await.expect("cached key published");
+    assert_eq!(streamed.expose_value(), acquired.expose_value());
+}
