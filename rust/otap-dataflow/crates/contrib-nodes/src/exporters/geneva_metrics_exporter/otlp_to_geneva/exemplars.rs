@@ -3,23 +3,153 @@
 
 //! OTLP exemplar selection for Geneva metrics.
 
-use super::super::encoder::MetricExemplar;
-use super::super::encoder::exemplar::{MAX_EXEMPLAR_PAYLOAD_SIZE, encoded_exemplar_size};
+use std::str::{self, Utf8Error};
 
+use otel_arrow_dfe_pdata_views::views::common::{AnyValueView, AttributeView};
+use otel_arrow_dfe_pdata_views::views::metrics::{ExemplarView, Value};
+
+use super::super::encoder::MetricExemplar;
+use super::super::encoder::exemplar::{
+    MAX_EXEMPLAR_PAYLOAD_SIZE, encoded_exemplar_size_from_parts,
+};
+
+const MAX_EXEMPLAR_AGE_NANOS: u64 = 60_000_000_000;
 const MAX_SAMPLING_BUCKET_COUNT: usize = 12;
 const SAMPLING_BUCKET_COUNTS: [usize; 6] = [MAX_SAMPLING_BUCKET_COUNT, 10, 8, 6, 4, 2];
 
-pub(super) fn retain_exemplars_within_limits(exemplars: &mut Vec<MetricExemplar>) {
-    exemplars.retain(|exemplar| encoded_exemplar_size(exemplar).is_ok());
-    let mut payload_size = exemplar_payload_size(exemplars);
+#[derive(Clone, Debug)]
+struct ExemplarCandidate<E> {
+    source: E,
+    value: f64,
+    encoded_size: usize,
+}
+
+pub(super) fn map_exemplars<I, E>(
+    exemplars: I,
+    data_point_time: u64,
+) -> Result<Vec<MetricExemplar>, Utf8Error>
+where
+    I: IntoIterator<Item = E>,
+    E: ExemplarView,
+{
+    let mut candidates = Vec::new();
+    for exemplar in exemplars {
+        if exemplar
+            .time_unix_nano()
+            .saturating_add(MAX_EXEMPLAR_AGE_NANOS)
+            < data_point_time
+        {
+            continue;
+        }
+        if let Some(candidate) = exemplar_candidate(exemplar)? {
+            candidates.push(candidate);
+        }
+    }
+    retain_candidates_within_limits(&mut candidates);
+    candidates
+        .into_iter()
+        .map(|candidate| map_exemplar(&candidate.source))
+        .collect()
+}
+
+fn exemplar_candidate<E>(exemplar: E) -> Result<Option<ExemplarCandidate<E>>, Utf8Error>
+where
+    E: ExemplarView,
+{
+    validate_exemplar_attributes(&exemplar)?;
+    let value = exemplar_value(&exemplar);
+    let encoded_size = encoded_exemplar_size_from_parts(
+        value,
+        exemplar.time_unix_nano() != 0,
+        exemplar.trace_id().is_some_and(id_is_nonzero),
+        exemplar.span_id().is_some_and(id_is_nonzero),
+        false,
+        exemplar.filtered_attributes().map(|attribute| {
+            let value_length = attribute
+                .value()
+                .map_or(0, |value| value.as_string().map_or(0, |value| value.len()));
+            (attribute.key().len(), value_length)
+        }),
+    )
+    .ok();
+    Ok(encoded_size.map(|encoded_size| ExemplarCandidate {
+        source: exemplar,
+        value,
+        encoded_size,
+    }))
+}
+
+fn validate_exemplar_attributes<E>(exemplar: &E) -> Result<(), Utf8Error>
+where
+    E: ExemplarView,
+{
+    for attribute in exemplar.filtered_attributes() {
+        let _ = str::from_utf8(attribute.key())?;
+        if let Some(value) = attribute.value()
+            && let Some(value) = value.as_string()
+        {
+            let _ = str::from_utf8(value)?;
+        }
+    }
+    Ok(())
+}
+
+fn map_exemplar<E>(exemplar: &E) -> Result<MetricExemplar, Utf8Error>
+where
+    E: ExemplarView,
+{
+    let mut filtered_attributes = Vec::new();
+    for attribute in exemplar.filtered_attributes() {
+        let name = str::from_utf8(attribute.key())?.to_string();
+        let value = match attribute.value() {
+            Some(value) => match value.as_string() {
+                Some(value) => str::from_utf8(value)?.to_string(),
+                None => String::new(),
+            },
+            None => String::new(),
+        };
+        filtered_attributes.push((name, value));
+    }
+    Ok(MetricExemplar {
+        value: exemplar_value(exemplar),
+        time_unix_nano: Some(exemplar.time_unix_nano()),
+        trace_id: nonzero_id(exemplar.trace_id()),
+        span_id: nonzero_id(exemplar.span_id()),
+        sample_count: None,
+        filtered_attributes,
+    })
+}
+
+fn nonzero_id<const N: usize>(identifier: Option<&[u8; N]>) -> Option<[u8; N]> {
+    identifier
+        .filter(|identifier| id_is_nonzero(identifier))
+        .copied()
+}
+
+fn id_is_nonzero<const N: usize>(identifier: &[u8; N]) -> bool {
+    identifier.iter().any(|byte| *byte != 0)
+}
+
+fn exemplar_value<E>(exemplar: &E) -> f64
+where
+    E: ExemplarView,
+{
+    match exemplar.value().unwrap_or(Value::Integer(0)) {
+        Value::Double(value) => value,
+        Value::Integer(value) => value as f64,
+    }
+}
+
+fn retain_candidates_within_limits<E>(candidates: &mut Vec<ExemplarCandidate<E>>) {
+    let mut payload_size = candidate_payload_size(candidates);
     if payload_size <= MAX_EXEMPLAR_PAYLOAD_SIZE {
         return;
     }
 
-    let extrema = ExemplarExtrema::from_exemplars(exemplars);
+    let extrema = ExemplarExtrema::from_candidates(candidates);
     for bucket_count in SAMPLING_BUCKET_COUNTS {
-        payload_size = retain_distribution_sample(exemplars, bucket_count, extrema, payload_size);
-        if payload_size <= MAX_EXEMPLAR_PAYLOAD_SIZE || exemplars.len() <= 2 {
+        payload_size = retain_distribution_sample(candidates, bucket_count, extrema, payload_size);
+        if payload_size <= MAX_EXEMPLAR_PAYLOAD_SIZE || candidates.len() <= 2 {
             break;
         }
     }
@@ -28,11 +158,11 @@ pub(super) fn retain_exemplars_within_limits(exemplars: &mut Vec<MetricExemplar>
     }
 
     let excess = payload_size - MAX_EXEMPLAR_PAYLOAD_SIZE;
-    let excess = discard_exemplar_bytes(exemplars, excess, |exemplar| {
-        !extrema.contains(exemplar.value)
+    let excess = discard_candidate_bytes(candidates, excess, |candidate| {
+        !extrema.contains(candidate.value)
     });
     if excess > 0 {
-        let excess = discard_exemplar_bytes(exemplars, excess, |_| true);
+        let excess = discard_candidate_bytes(candidates, excess, |_| true);
         debug_assert_eq!(excess, 0);
     }
 }
@@ -44,10 +174,10 @@ struct ExemplarExtrema {
 }
 
 impl ExemplarExtrema {
-    fn from_exemplars(exemplars: &[MetricExemplar]) -> Self {
+    fn from_candidates<E>(candidates: &[ExemplarCandidate<E>]) -> Self {
         let mut extrema = Self::default();
-        for exemplar in exemplars {
-            let value = exemplar.value;
+        for candidate in candidates {
+            let value = candidate.value;
             let range = if value < 0.0 {
                 &mut extrema.negative
             } else if value > 0.0 {
@@ -69,31 +199,30 @@ impl ExemplarExtrema {
     }
 }
 
-fn exemplar_payload_size(exemplars: &[MetricExemplar]) -> usize {
-    exemplars.iter().map(validated_exemplar_size).sum()
+fn candidate_payload_size<E>(candidates: &[ExemplarCandidate<E>]) -> usize {
+    candidates
+        .iter()
+        .map(|candidate| candidate.encoded_size)
+        .sum()
 }
 
-fn discard_exemplar_bytes(
-    exemplars: &mut Vec<MetricExemplar>,
+fn discard_candidate_bytes<E>(
+    candidates: &mut Vec<ExemplarCandidate<E>>,
     mut excess: usize,
-    mut should_discard: impl FnMut(&MetricExemplar) -> bool,
+    mut should_discard: impl FnMut(&ExemplarCandidate<E>) -> bool,
 ) -> usize {
-    exemplars.retain(|exemplar| {
-        if excess == 0 || !should_discard(exemplar) {
+    candidates.retain(|candidate| {
+        if excess == 0 || !should_discard(candidate) {
             return true;
         }
-        excess = excess.saturating_sub(validated_exemplar_size(exemplar));
+        excess = excess.saturating_sub(candidate.encoded_size);
         false
     });
     excess
 }
 
-fn validated_exemplar_size(exemplar: &MetricExemplar) -> usize {
-    encoded_exemplar_size(exemplar).expect("exemplars were size-validated before sampling")
-}
-
-fn retain_distribution_sample(
-    exemplars: &mut Vec<MetricExemplar>,
+fn retain_distribution_sample<E>(
+    candidates: &mut Vec<ExemplarCandidate<E>>,
     bucket_count: usize,
     extrema: ExemplarExtrema,
     mut payload_size: usize,
@@ -104,47 +233,79 @@ fn retain_distribution_sample(
     let mut positive_buckets = [false; MAX_SAMPLING_BUCKET_COUNT + 1];
     let mut negative_buckets = [false; MAX_SAMPLING_BUCKET_COUNT + 1];
     let mut zero_seen = false;
-    let mut nan_seen = false;
+    let has_mixed_signs = extrema.negative.is_some() && extrema.positive.is_some();
+    let single_range = extrema.positive.or(extrema.negative);
+    let original_len = candidates.len();
+    let mut current = 0;
+    let mut active_len = original_len;
 
-    exemplars.retain(|exemplar| {
-        if payload_size <= MAX_EXEMPLAR_PAYLOAD_SIZE {
-            return true;
-        }
-        let value = exemplar.value;
-        let keep = if value == 0.0 {
+    for _ in 0..original_len {
+        let value = candidates[current].value;
+        let is_zero = value == 0.0;
+        let decision = if is_zero {
             if zero_seen {
-                false
+                SamplingDecision::Discard
             } else {
                 zero_seen = true;
-                true
+                SamplingDecision::Keep
+            }
+        } else if has_mixed_signs {
+            if value > 0.0 {
+                bucket_decision(
+                    &mut positive_buckets,
+                    exemplar_bucket(value, extrema.positive, bucket_count),
+                )
+            } else if value < 0.0 {
+                bucket_decision(
+                    &mut negative_buckets,
+                    mixed_negative_exemplar_bucket(value, extrema.negative, bucket_count),
+                )
+            } else {
+                SamplingDecision::Reprocess
             }
         } else {
-            let selection = if value > 0.0 {
-                exemplar_bucket(value, extrema.positive, bucket_count)
-                    .map(|index| (&mut positive_buckets, index))
-            } else if value < 0.0 {
-                exemplar_bucket(value, extrema.negative, bucket_count)
-                    .map(|index| (&mut negative_buckets, index))
-            } else if nan_seen {
-                None
+            let buckets = if extrema.positive.is_some() {
+                &mut positive_buckets
             } else {
-                nan_seen = true;
-                return true;
+                &mut negative_buckets
             };
-            match selection {
-                Some((buckets, index)) if !buckets[index] => {
-                    buckets[index] = true;
-                    true
-                }
-                _ => false,
-            }
+            bucket_decision(buckets, exemplar_bucket(value, single_range, bucket_count))
         };
-        if !keep {
-            payload_size = payload_size.saturating_sub(validated_exemplar_size(exemplar));
+
+        match decision {
+            SamplingDecision::Keep => current += 1,
+            SamplingDecision::Discard => {
+                payload_size = payload_size.saturating_sub(candidates[current].encoded_size);
+                active_len -= 1;
+                candidates.swap(current, active_len);
+            }
+            SamplingDecision::Reprocess => {}
         }
-        keep
-    });
+        if !is_zero && payload_size <= MAX_EXEMPLAR_PAYLOAD_SIZE {
+            break;
+        }
+    }
+    candidates.truncate(active_len);
     payload_size
+}
+
+enum SamplingDecision {
+    Keep,
+    Discard,
+    Reprocess,
+}
+
+fn bucket_decision(
+    buckets: &mut [bool; MAX_SAMPLING_BUCKET_COUNT + 1],
+    index: Option<usize>,
+) -> SamplingDecision {
+    match index {
+        Some(index) if !buckets[index] => {
+            buckets[index] = true;
+            SamplingDecision::Keep
+        }
+        _ => SamplingDecision::Discard,
+    }
 }
 
 fn exemplar_bucket(value: f64, range: Option<(f64, f64)>, bucket_count: usize) -> Option<usize> {
@@ -171,86 +332,293 @@ fn exemplar_bucket(value: f64, range: Option<(f64, f64)>, bucket_count: usize) -
     Some(index)
 }
 
+fn mixed_negative_exemplar_bucket(
+    value: f64,
+    range: Option<(f64, f64)>,
+    bucket_count: usize,
+) -> Option<usize> {
+    let (minimum, maximum) = range?;
+    let raw_index = if value == minimum {
+        bucket_count as f64
+    } else {
+        let growth = (maximum / minimum).powf(1.0 / bucket_count as f64);
+        ((value / minimum).ln() / growth.ln()).floor()
+    };
+    if !raw_index.is_finite() {
+        return None;
+    }
+    let mut index = raw_index as isize;
+    if index < 0 {
+        index = bucket_count as isize;
+    }
+    if index > bucket_count as isize {
+        return None;
+    }
+    let index = index as usize;
+    if (index == 0 && value != minimum) || (index == bucket_count && value != maximum) {
+        return None;
+    }
+    Some(index)
+}
+
 #[cfg(test)]
 mod tests {
+    use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue, any_value};
+    use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::{
+        Exemplar as OtlpExemplar, exemplar,
+    };
+    use otel_arrow_dfe_pdata::views::otlp::proto::metrics::{ExemplarIter, ObjExemplar};
+    use otel_arrow_dfe_pdata::views::otlp::proto::wrappers::Wraps;
+
     use super::*;
 
     const DEFAULT_UNIX_SECONDS: u64 = 1_388_577_600;
 
-    fn sampling_exemplar(value: f64) -> MetricExemplar {
-        MetricExemplar {
+    fn exemplar_candidate(exemplar: &OtlpExemplar) -> Option<ExemplarCandidate<ObjExemplar<'_>>> {
+        super::exemplar_candidate(ObjExemplar::new(exemplar))
+            .expect("test exemplar should contain valid UTF-8")
+    }
+
+    fn map_exemplar(exemplar: &OtlpExemplar) -> MetricExemplar {
+        super::map_exemplar(&ObjExemplar::new(exemplar))
+            .expect("test exemplar should contain valid UTF-8")
+    }
+
+    fn sampling_candidate(value: f64, source_index: usize) -> ExemplarCandidate<usize> {
+        let encoded_size = encoded_exemplar_size_from_parts(
             value,
-            time_unix_nano: Some(DEFAULT_UNIX_SECONDS * 1_000_000_000),
-            trace_id: Some([1; 16]),
-            span_id: Some([2; 8]),
-            sample_count: None,
-            filtered_attributes: vec![("key".to_string(), "value".to_string())],
+            true,
+            true,
+            true,
+            false,
+            std::iter::once((3, 5)),
+        )
+        .expect("sampling candidate should fit");
+        ExemplarCandidate {
+            source: source_index,
+            value,
+            encoded_size,
+        }
+    }
+
+    fn string_attribute(key: &str, value: &str) -> KeyValue {
+        KeyValue {
+            key: key.to_string(),
+            value: Some(AnyValue {
+                value: Some(any_value::Value::StringValue(value.to_string())),
+            }),
         }
     }
 
     /// Scenario: A large exemplar set spans a logarithmic positive range in forward and reverse order.
     /// Guarantees: Distribution sampling bounds the payload and retains both range extrema independently of input order.
     #[test]
-    fn samples_exemplars_across_the_value_distribution() {
+    fn samples_candidates_across_the_value_distribution() {
         let values = (0..32).map(|power| 2_f64.powi(power)).collect::<Vec<_>>();
 
         for reverse in [false, true] {
-            let mut exemplars: Vec<_> = if reverse {
+            let mut candidates: Vec<_> = if reverse {
                 values
                     .iter()
                     .rev()
                     .copied()
-                    .map(sampling_exemplar)
+                    .enumerate()
+                    .map(|(index, value)| sampling_candidate(value, index))
                     .collect()
             } else {
-                values.iter().copied().map(sampling_exemplar).collect()
-            };
-            assert!(exemplar_payload_size(&exemplars) > MAX_EXEMPLAR_PAYLOAD_SIZE);
-
-            retain_exemplars_within_limits(&mut exemplars);
-
-            assert!(exemplar_payload_size(&exemplars) <= MAX_EXEMPLAR_PAYLOAD_SIZE);
-            assert!(exemplars.iter().any(|exemplar| exemplar.value == values[0]));
-            assert!(
-                exemplars
+                values
                     .iter()
-                    .any(|exemplar| exemplar.value == values[values.len() - 1])
+                    .copied()
+                    .enumerate()
+                    .map(|(index, value)| sampling_candidate(value, index))
+                    .collect()
+            };
+            assert!(candidate_payload_size(&candidates) > MAX_EXEMPLAR_PAYLOAD_SIZE);
+
+            retain_candidates_within_limits(&mut candidates);
+
+            assert!(candidate_payload_size(&candidates) <= MAX_EXEMPLAR_PAYLOAD_SIZE);
+            assert!(
+                candidates
+                    .iter()
+                    .any(|candidate| candidate.value == values[0])
             );
-            assert!(exemplars.len() < values.len());
+            assert!(
+                candidates
+                    .iter()
+                    .any(|candidate| candidate.value == values[values.len() - 1])
+            );
+            assert!(candidates.len() < values.len());
         }
     }
 
-    /// Scenario: An oversized exemplar set contains only duplicate positive values.
-    /// Guarantees: ME-style bucket sampling stops at the payload limit instead of deleting every duplicate.
+    /// Scenario: An oversized exemplar set contains equal positive values with distinct trace IDs.
+    /// Guarantees: ME-style tail replacement preserves the same retained exemplar identities and order.
     #[test]
     fn retains_duplicate_exemplars_up_to_payload_limit() {
-        let mut exemplars = vec![sampling_exemplar(68.0); 32];
-        let exemplar_size = validated_exemplar_size(&exemplars[0]);
+        let mut candidates = (0..32)
+            .map(|index| sampling_candidate(68.0, index))
+            .collect::<Vec<_>>();
+        let retained_count = MAX_EXEMPLAR_PAYLOAD_SIZE / candidates[0].encoded_size;
+        let mut expected_indexes = vec![0, retained_count];
+        expected_indexes.extend(2..retained_count);
 
-        retain_exemplars_within_limits(&mut exemplars);
+        retain_candidates_within_limits(&mut candidates);
 
-        assert_eq!(exemplars.len(), MAX_EXEMPLAR_PAYLOAD_SIZE / exemplar_size);
-        assert!(exemplars.iter().all(|exemplar| exemplar.value == 68.0));
-        assert!(exemplar_payload_size(&exemplars) <= MAX_EXEMPLAR_PAYLOAD_SIZE);
+        assert_eq!(candidates.len(), retained_count);
+        assert!(candidates.iter().all(|candidate| candidate.value == 68.0));
+        assert_eq!(
+            candidates
+                .iter()
+                .map(|candidate| candidate.source)
+                .collect::<Vec<_>>(),
+            expected_indexes
+        );
+        assert!(candidate_payload_size(&candidates) <= MAX_EXEMPLAR_PAYLOAD_SIZE);
+    }
+
+    /// Scenario: Mixed-sign sampling encounters the negative minimum and a duplicate negative maximum.
+    /// Guarantees: The FE mixed-sign buckets and tail swaps select the same exemplar identities and order.
+    #[test]
+    fn matches_mixed_sign_tail_replacement() {
+        let values = [
+            -16.0, -1.0, -1.0, 1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0, 128.0, 1.0,
+        ];
+        let mut candidates = values
+            .into_iter()
+            .enumerate()
+            .map(|(index, value)| sampling_candidate(value, index))
+            .collect::<Vec<_>>();
+
+        retain_candidates_within_limits(&mut candidates);
+
+        assert_eq!(
+            candidates
+                .iter()
+                .map(|candidate| candidate.source)
+                .collect::<Vec<_>>(),
+            vec![11, 1, 10, 3, 4, 5, 6, 7, 8, 9]
+        );
+        assert!(candidate_payload_size(&candidates) <= MAX_EXEMPLAR_PAYLOAD_SIZE);
+    }
+
+    /// Scenario: Removing a duplicate zero first brings an exemplar payload below the size limit.
+    /// Guarantees: FE still reprocesses and removes the swapped duplicate tail exemplar before stopping.
+    #[test]
+    fn reprocesses_tail_after_zero_removal_reaches_limit() {
+        let values = [1.0, 0.0, 0.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0, 128.0, 1.0];
+        let mut candidates = values
+            .into_iter()
+            .enumerate()
+            .map(|(index, value)| sampling_candidate(value, index))
+            .collect::<Vec<_>>();
+
+        retain_candidates_within_limits(&mut candidates);
+
+        assert_eq!(
+            candidates
+                .iter()
+                .map(|candidate| candidate.source)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 9, 3, 4, 5, 6, 7, 8]
+        );
+        assert!(candidate_payload_size(&candidates) <= MAX_EXEMPLAR_PAYLOAD_SIZE);
+    }
+
+    /// Scenario: Borrowed OTLP exemplar sizing covers string and non-string labels plus optional identifier fields.
+    /// Guarantees: Candidate preflight matches the encoder size and rejects oversized exemplars before label cloning.
+    #[test]
+    fn preflights_exemplar_size_before_mapping() {
+        let valid = OtlpExemplar {
+            filtered_attributes: vec![
+                string_attribute("key", "value"),
+                KeyValue {
+                    key: "empty".to_string(),
+                    value: Some(AnyValue {
+                        value: Some(any_value::Value::IntValue(7)),
+                    }),
+                },
+            ],
+            time_unix_nano: DEFAULT_UNIX_SECONDS * 1_000_000_000,
+            span_id: vec![2; 8],
+            trace_id: vec![1; 16],
+            value: Some(exemplar::Value::AsDouble(1.5)),
+        };
+        let candidate = exemplar_candidate(&valid).expect("valid exemplar should fit");
+        let mapped = map_exemplar(&valid);
+
+        assert_eq!(
+            candidate.encoded_size,
+            super::super::super::encoder::exemplar::encoded_exemplar_size(&mapped)
+                .expect("mapped exemplar should fit")
+        );
+
+        let oversized = OtlpExemplar {
+            filtered_attributes: vec![string_attribute(&"k".repeat(193), "")],
+            ..valid
+        };
+        assert!(exemplar_candidate(&oversized).is_none());
+    }
+
+    /// Scenario: Exemplar input contains one stale entry, one oversized entry, and one valid entry.
+    /// Guarantees: Single-pass candidate collection retains only the valid exemplar without changing filtering behavior.
+    #[test]
+    fn collects_only_valid_exemplar_candidates() {
+        let data_point_time = DEFAULT_UNIX_SECONDS * 1_000_000_000;
+        let stale = OtlpExemplar {
+            time_unix_nano: data_point_time - MAX_EXEMPLAR_AGE_NANOS - 1,
+            value: Some(exemplar::Value::AsDouble(1.0)),
+            ..Default::default()
+        };
+        let oversized = OtlpExemplar {
+            filtered_attributes: vec![string_attribute(&"k".repeat(193), "")],
+            time_unix_nano: data_point_time,
+            value: Some(exemplar::Value::AsDouble(2.0)),
+            ..Default::default()
+        };
+        let valid = OtlpExemplar {
+            filtered_attributes: vec![string_attribute("key", "value")],
+            time_unix_nano: data_point_time,
+            value: Some(exemplar::Value::AsDouble(3.0)),
+            ..Default::default()
+        };
+
+        let mapped = map_exemplars(
+            ExemplarIter::new([stale, oversized, valid].iter()),
+            data_point_time,
+        )
+        .expect("test exemplars should contain valid UTF-8");
+
+        assert_eq!(mapped.len(), 1);
+        assert_eq!(mapped[0].value, 3.0);
+        assert_eq!(
+            mapped[0].filtered_attributes,
+            vec![("key".to_string(), "value".to_string())]
+        );
     }
 
     /// Scenario: A zero-only exemplar set exceeds the payload limit by one minimal exemplar.
     /// Guarantees: Sampling skips logarithmic buckets and fallback trimming retains the maximum 102 zero exemplars.
     #[test]
     fn retains_zero_exemplars_up_to_payload_limit() {
-        let exemplar = MetricExemplar {
+        let candidate = ExemplarCandidate {
+            source: (),
             value: 0.0,
-            time_unix_nano: None,
-            trace_id: None,
-            span_id: None,
-            sample_count: None,
-            filtered_attributes: Vec::new(),
+            encoded_size: encoded_exemplar_size_from_parts(
+                0.0,
+                false,
+                false,
+                false,
+                false,
+                std::iter::empty(),
+            )
+            .expect("minimal exemplar should fit"),
         };
-        let mut exemplars = vec![exemplar; 103];
+        let mut candidates = vec![candidate; 103];
 
-        retain_exemplars_within_limits(&mut exemplars);
+        retain_candidates_within_limits(&mut candidates);
 
-        assert_eq!(exemplars.len(), 102);
-        assert_eq!(exemplar_payload_size(&exemplars), 510);
+        assert_eq!(candidates.len(), 102);
+        assert_eq!(candidate_payload_size(&candidates), 510);
     }
 }

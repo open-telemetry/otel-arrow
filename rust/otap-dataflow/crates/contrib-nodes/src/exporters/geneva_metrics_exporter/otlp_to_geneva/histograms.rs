@@ -3,9 +3,7 @@
 
 //! OTLP histogram conversion helpers.
 
-use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::{
-    HistogramDataPoint, exponential_histogram_data_point,
-};
+use otel_arrow_dfe_pdata_views::views::metrics::{BucketsView, HistogramDataPointView};
 
 use super::super::encoder::MetricHistogram;
 
@@ -13,25 +11,42 @@ pub(super) const MIN_EXPONENTIAL_SCALE: i32 = -11;
 pub(super) const MAX_EXPONENTIAL_SCALE: i32 = 20;
 const MAX_EXPONENTIAL_BUCKETS: usize = 502;
 
-pub(super) fn valid_explicit_histogram(point: &HistogramDataPoint) -> bool {
-    point.explicit_bounds.is_empty() || point.bucket_counts.len() > point.explicit_bounds.len()
+pub(super) fn valid_explicit_histogram<P>(point: &P) -> bool
+where
+    P: HistogramDataPointView,
+{
+    let mut bound_count = 0;
+    for bound in point.explicit_bounds() {
+        if bound.is_nan() {
+            return false;
+        }
+        bound_count += 1;
+    }
+    bound_count == 0 || point.bucket_counts().count() > bound_count
 }
 
-pub(super) fn explicit_histogram(point: &HistogramDataPoint) -> Option<MetricHistogram> {
-    if point.bucket_counts.is_empty() {
-        return None;
+pub(super) fn explicit_histogram<P>(point: &P) -> Option<MetricHistogram>
+where
+    P: HistogramDataPointView,
+{
+    let mut counts = point.bucket_counts();
+    let first_count = counts.next()?;
+    let bounds = point.explicit_bounds();
+    let mut buckets = Vec::with_capacity(bounds.size_hint().0 + 1);
+    let mut current_count = Some(first_count);
+    let mut overflow_bound = 1.0;
+    for bound in bounds {
+        if bound.is_nan() {
+            return None;
+        }
+        let count = current_count.take()?;
+        buckets.push((bound, clamp_bucket_count(count)));
+        overflow_bound = bound + 1.0;
+        current_count = counts.next();
     }
-    let mut buckets = Vec::with_capacity(point.bucket_counts.len());
-    for (&bound, &count) in point.explicit_bounds.iter().zip(&point.bucket_counts) {
-        add_explicit_bucket(&mut buckets, bound, clamp_bucket_count(count));
-    }
-    let overflow_count = point.bucket_counts[point.explicit_bounds.len()];
-    let overflow_bound = point.explicit_bounds.last().copied().unwrap_or(0.0) + 1.0;
-    add_explicit_bucket(
-        &mut buckets,
-        overflow_bound,
-        clamp_bucket_count(overflow_count),
-    );
+    let overflow_count = current_count?;
+    buckets.push((overflow_bound, clamp_bucket_count(overflow_count)));
+    normalize_explicit_buckets(&mut buckets);
     Some(MetricHistogram::Explicit(buckets))
 }
 
@@ -39,31 +54,39 @@ fn clamp_bucket_count(count: u64) -> u32 {
     count.min(u64::from(u32::MAX)) as u32
 }
 
-fn add_explicit_bucket(buckets: &mut Vec<(f64, u32)>, bound: f64, count: u32) {
-    let index = buckets.partition_point(|(existing_bound, _)| *existing_bound < bound);
-    if let Some((existing_bound, existing_count)) = buckets.get_mut(index)
-        && *existing_bound == bound
-    {
-        *existing_count = existing_count.wrapping_add(count);
-    } else {
-        buckets.insert(index, (bound, count));
+fn normalize_explicit_buckets(buckets: &mut Vec<(f64, u32)>) {
+    buckets.sort_unstable_by(|left, right| {
+        left.0
+            .partial_cmp(&right.0)
+            .expect("NaN bounds are rejected before normalization")
+    });
+    let mut write_index = 0;
+    for read_index in 0..buckets.len() {
+        let (bound, count) = buckets[read_index];
+        if write_index > 0 && buckets[write_index - 1].0 == bound {
+            buckets[write_index - 1].1 = buckets[write_index - 1].1.wrapping_add(count);
+        } else {
+            buckets[write_index] = (bound, count);
+            write_index += 1;
+        }
     }
+    buckets.truncate(write_index);
 }
 
-pub(super) fn sparse_buckets(
-    buckets: Option<&exponential_histogram_data_point::Buckets>,
-) -> Option<Vec<(i32, u64)>> {
+pub(super) fn sparse_buckets<B>(buckets: Option<B>) -> Option<Vec<(i32, u64)>>
+where
+    B: BucketsView,
+{
     let Some(buckets) = buckets else {
         return Some(Vec::new());
     };
     buckets
-        .bucket_counts
-        .iter()
+        .bucket_counts()
         .enumerate()
-        .filter(|(_, count)| **count != 0)
+        .filter(|(_, count)| *count != 0)
         .map(|(index, count)| {
             let index = i32::try_from(index).ok()?;
-            Some((buckets.offset.checked_add(index)?, *count))
+            Some((buckets.offset().checked_add(index)?, count))
         })
         .collect()
 }
@@ -107,7 +130,27 @@ fn downscale_buckets(buckets: &mut Vec<(i32, u64)>, factor: u32) {
 
 #[cfg(test)]
 mod tests {
+    use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::{
+        HistogramDataPoint, exponential_histogram_data_point,
+    };
+    use otel_arrow_dfe_pdata::views::otlp::proto::metrics::{ObjBuckets, ObjHistogramDataPoint};
+    use otel_arrow_dfe_pdata::views::otlp::proto::wrappers::Wraps;
+
     use super::*;
+
+    fn valid_explicit_histogram(point: &HistogramDataPoint) -> bool {
+        super::valid_explicit_histogram(&ObjHistogramDataPoint::new(point))
+    }
+
+    fn explicit_histogram(point: &HistogramDataPoint) -> Option<MetricHistogram> {
+        super::explicit_histogram(&ObjHistogramDataPoint::new(point))
+    }
+
+    fn sparse_buckets(
+        buckets: Option<&exponential_histogram_data_point::Buckets>,
+    ) -> Option<Vec<(i32, u64)>> {
+        super::sparse_buckets(buckets.map(ObjBuckets::new))
+    }
 
     fn explicit_point(bounds: Vec<f64>, counts: Vec<u64>) -> HistogramDataPoint {
         HistogramDataPoint {
@@ -127,8 +170,8 @@ mod tests {
         }
     }
 
-    /// Scenario: Explicit histogram bucket counts omit or include the required overflow bucket.
-    /// Guarantees: Only shapes with one more count than bound are accepted.
+    /// Scenario: Explicit histogram bucket counts omit, include, or exceed the required overflow bucket.
+    /// Guarantees: FE rejects missing overflow counts and ignores counts beyond the first overflow bucket.
     #[test]
     fn validates_explicit_histogram_bucket_shape() {
         assert!(!valid_explicit_histogram(&explicit_point(
@@ -139,6 +182,16 @@ mod tests {
             vec![1.0, 2.0],
             vec![3, 4, 5],
         )));
+        let extra_counts = explicit_point(vec![1.0, 2.0], vec![3, 4, 5, 999]);
+        assert!(valid_explicit_histogram(&extra_counts));
+        assert_eq!(
+            explicit_histogram(&extra_counts),
+            Some(MetricHistogram::Explicit(vec![
+                (1.0, 3),
+                (2.0, 4),
+                (3.0, 5),
+            ]))
+        );
     }
 
     /// Scenario: An explicit histogram contains finite bounds and an overflow bucket.
@@ -174,6 +227,16 @@ mod tests {
                 (f64::MAX, 9),
             ]))
         );
+    }
+
+    /// Scenario: An explicit histogram includes a NaN bound among otherwise valid bounds.
+    /// Guarantees: Malformed input is rejected before the quadratic insertion fallback can run.
+    #[test]
+    fn rejects_nan_explicit_histogram_bounds() {
+        let point = explicit_point(vec![1.0, f64::NAN, 2.0], vec![1, 2, 3, 4]);
+
+        assert!(!valid_explicit_histogram(&point));
+        assert_eq!(explicit_histogram(&point), None);
     }
 
     /// Scenario: Explicit histogram bucket counts exceed the Geneva u32 representation.

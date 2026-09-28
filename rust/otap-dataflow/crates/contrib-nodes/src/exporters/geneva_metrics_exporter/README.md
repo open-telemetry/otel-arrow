@@ -15,9 +15,10 @@ metric model, encodes Geneva metrics ingestion protocol and publishes them to Ge
 The exporter is separate from `geneva_exporter`, which publishes logs and
 traces through a different Geneva protocol and client.
 
-The current implementation contains the protocol model, encoder, and
-compatibility fixtures. OTLP mapping, publication, authentication, and runtime
-configuration are introduced by follow-up changes.
+The current implementation contains the protocol model, encoder, compatibility
+fixtures, and FE-compatible mapping for OTLP and OTAP metrics views.
+Publication, authentication, exporter registration, and runtime configuration
+are introduced by follow-up changes.
 
 ## Testing
 

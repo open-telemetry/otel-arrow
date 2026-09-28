@@ -40,28 +40,24 @@ pub fn encode(packet: &Packet) -> Result<Vec<u8>, EncodeError> {
 
     for (metric_index, metric) in packet.metrics.iter().enumerate() {
         validate_metric_for_packet(metric_index, metric, packet.current_time_bucket)?;
+        let namespace_index = string_table.intern_borrowed(&metric.namespace)?;
+        let name_index = string_table.intern_borrowed(&metric.name)?;
         let metadata = MetadataKey {
-            namespace: metric.namespace.clone(),
-            name: metric.name.clone(),
-            dimension_names: metric
+            namespace_index,
+            name_index,
+            dimension_name_indexes: metric
                 .dimensions
                 .iter()
-                .map(|dimension| dimension.name.clone())
-                .collect(),
+                .map(|dimension| {
+                    if dimension.name.is_empty() {
+                        Ok(None)
+                    } else {
+                        string_table.intern_borrowed(&dimension.name).map(Some)
+                    }
+                })
+                .collect::<Result<Vec<_>, EncodeError>>()?,
         };
-        let (metadata_index, metadata_is_new) = metadata_table.intern(metadata)?;
-        if metadata_is_new {
-            let metadata = &metadata_table.values()[metadata_index as usize];
-            let _ = string_table.intern(metadata.namespace.clone())?;
-            let _ = string_table.intern(metadata.name.clone())?;
-            for dimension_name in metadata
-                .dimension_names
-                .iter()
-                .filter(|name| !name.is_empty())
-            {
-                let _ = string_table.intern(dimension_name.clone())?;
-            }
-        }
+        let metadata_index = metadata_table.intern(metadata)?;
         writer.write_unsigned_base128(metadata_index as u64);
         let time_difference =
             i128::from(packet.current_time_bucket) - i128::from(metric.time_bucket);
@@ -77,7 +73,7 @@ pub fn encode(packet: &Packet) -> Result<Vec<u8>, EncodeError> {
             .iter()
             .filter(|dimension| !dimension.name.is_empty())
         {
-            let (string_index, _) = string_table.intern(dimension.value.clone())?;
+            let string_index = string_table.intern_borrowed(&dimension.value)?;
             writer.write_unsigned_base128(string_index as u64);
         }
 
@@ -87,34 +83,25 @@ pub fn encode(packet: &Packet) -> Result<Vec<u8>, EncodeError> {
     let metadata_offset =
         u64::try_from(writer.len()).map_err(|_| EncodeError::OffsetOverflow(writer.len()))?;
     writer.write_u64_at(metadata_offset_position, metadata_offset);
-    writer.write_unsigned_base128(metadata_table.len() as u64);
+    let metadata_values = metadata_table.into_values();
+    writer.write_unsigned_base128(metadata_values.len() as u64);
 
-    for metadata in metadata_table.values() {
-        let (namespace_index, _) = string_table.intern(metadata.namespace.clone())?;
-        let (name_index, _) = string_table.intern(metadata.name.clone())?;
-        writer.write_unsigned_base128(namespace_index as u64);
-        writer.write_unsigned_base128(name_index as u64);
-        let dimension_count = metadata
-            .dimension_names
-            .iter()
-            .filter(|name| !name.is_empty())
-            .count();
+    for metadata in &metadata_values {
+        writer.write_unsigned_base128(metadata.namespace_index as u64);
+        writer.write_unsigned_base128(metadata.name_index as u64);
+        let dimension_count = metadata.dimension_name_indexes.iter().flatten().count();
         writer.write_unsigned_base128(dimension_count as u64);
-        for dimension_name in metadata
-            .dimension_names
-            .iter()
-            .filter(|name| !name.is_empty())
-        {
-            let (dimension_index, _) = string_table.intern(dimension_name.clone())?;
-            writer.write_unsigned_base128(dimension_index as u64);
+        for dimension_index in metadata.dimension_name_indexes.iter().flatten() {
+            writer.write_unsigned_base128(*dimension_index as u64);
         }
     }
 
     let string_offset =
         u64::try_from(writer.len()).map_err(|_| EncodeError::OffsetOverflow(writer.len()))?;
     writer.write_u64_at(string_offset_position, string_offset);
-    writer.write_unsigned_base128(string_table.len() as u64);
-    for value in string_table.values() {
+    let string_values = string_table.into_values();
+    writer.write_unsigned_base128(string_values.len() as u64);
+    for value in &string_values {
         writer.write_unsigned_base128(value.len() as u64);
         writer.write_bytes(value.as_bytes());
     }
@@ -528,49 +515,66 @@ fn write_count_and_histogram<T>(
     Ok(())
 }
 
-#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+#[derive(Debug, Hash, PartialEq, Eq)]
 struct MetadataKey {
-    namespace: String,
-    name: String,
-    dimension_names: Vec<String>,
+    namespace_index: u32,
+    name_index: u32,
+    dimension_name_indexes: Vec<Option<u32>>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 struct OrderedInterner<T> {
     indexes: HashMap<T, u32>,
-    values: Vec<T>,
 }
 
 impl<T> Default for OrderedInterner<T> {
     fn default() -> Self {
         Self {
             indexes: HashMap::new(),
-            values: Vec::new(),
         }
     }
 }
 
 impl<T> OrderedInterner<T>
 where
-    T: Clone + Eq + std::hash::Hash,
+    T: Eq + std::hash::Hash,
 {
-    fn intern(&mut self, value: T) -> Result<(u32, bool), EncodeError> {
+    fn intern(&mut self, value: T) -> Result<u32, EncodeError> {
         if let Some(index) = self.indexes.get(&value) {
-            return Ok((*index, false));
+            return Ok(*index);
         }
-        let index = u32::try_from(self.values.len())
-            .map_err(|_| EncodeError::DictionaryCountOverflow(self.values.len()))?;
-        self.values.push(value.clone());
+
+        self.insert_new(value)
+    }
+
+    fn insert_new(&mut self, value: T) -> Result<u32, EncodeError> {
+        let index = u32::try_from(self.indexes.len())
+            .map_err(|_| EncodeError::DictionaryCountOverflow(self.indexes.len()))?;
         let _ = self.indexes.insert(value, index);
-        Ok((index, true))
+        Ok(index)
     }
 
-    fn len(&self) -> usize {
-        self.values.len()
+    fn into_values(self) -> Vec<T> {
+        let mut values = std::iter::repeat_with(|| None)
+            .take(self.indexes.len())
+            .collect::<Vec<_>>();
+        for (value, index) in self.indexes {
+            values[index as usize] = Some(value);
+        }
+        values
+            .into_iter()
+            .map(|value| value.expect("interner indexes are assigned contiguously"))
+            .collect()
     }
+}
 
-    fn values(&self) -> &[T] {
-        &self.values
+impl OrderedInterner<String> {
+    fn intern_borrowed(&mut self, value: &str) -> Result<u32, EncodeError> {
+        if let Some(index) = self.indexes.get(value) {
+            return Ok(*index);
+        }
+
+        self.insert_new(value.to_owned())
     }
 }
 
@@ -1484,6 +1488,36 @@ mod tests {
         assert_eq!(
             u32::from_le_bytes(bytes[2..6].try_into().expect("CRC field")),
             crc32fast::hash(&bytes[CRC_INPUT_OFFSET..])
+        );
+    }
+
+    /// Scenario: Borrowed strings are interned with a duplicate after a distinct value.
+    /// Guarantees: Duplicate lookups reuse the original index and first-seen ordering stores each unique string once.
+    #[test]
+    fn borrowed_string_interning_reuses_indexes_and_preserves_order() {
+        let mut interner = OrderedInterner::<String>::default();
+
+        assert_eq!(
+            interner
+                .intern_borrowed("namespace")
+                .expect("first string should intern"),
+            0
+        );
+        assert_eq!(
+            interner
+                .intern_borrowed("metric")
+                .expect("second string should intern"),
+            1
+        );
+        assert_eq!(
+            interner
+                .intern_borrowed("namespace")
+                .expect("duplicate string should reuse its index"),
+            0
+        );
+        assert_eq!(
+            interner.into_values(),
+            ["namespace".to_string(), "metric".to_string()]
         );
     }
 
