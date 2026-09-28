@@ -307,7 +307,13 @@ pub(crate) async fn load_client_tls_material(
             })?
         } else {
             // Presence validated above: cert is configured via cert_pem.
-            config.config.cert_pem.as_deref().unwrap_or_default().as_bytes().to_vec()
+            config
+                .config
+                .cert_pem
+                .as_deref()
+                .unwrap_or_default()
+                .as_bytes()
+                .to_vec()
         };
 
         let key_pem = if let Some(key_path) = &config.config.key_file {
@@ -317,7 +323,13 @@ pub(crate) async fn load_client_tls_material(
             })?
         } else {
             // Presence validated above: key is configured via key_pem.
-            config.config.key_pem.as_deref().unwrap_or_default().as_bytes().to_vec()
+            config
+                .config
+                .key_pem
+                .as_deref()
+                .unwrap_or_default()
+                .as_bytes()
+                .to_vec()
         };
 
         // Reject a certificate/key that do not form a matching pair, so a
@@ -416,7 +428,8 @@ pub(crate) fn validate_client_keys_match(cert_pem: &[u8], key_pem: &[u8]) -> Res
     let Some(signer) = signing_key.choose_scheme(&algorithms.supported_schemes()) else {
         otel_debug!(
             "tls.client_keys_match.skipped",
-            message = "private key has no verifiable signature scheme; skipping cert/key match check"
+            message =
+                "private key has no verifiable signature scheme; skipping cert/key match check"
         );
         return Ok(());
     };
