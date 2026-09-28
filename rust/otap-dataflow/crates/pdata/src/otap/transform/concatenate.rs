@@ -16,7 +16,6 @@ use arrow::datatypes::{
 use arrow_schema::{DataType, Field, FieldRef, Fields, Schema, SchemaBuilder};
 use itertools::Either;
 use roaring::RoaringBitmap;
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crate::error::Error;
@@ -75,9 +74,27 @@ const MAX_U16_CARDINALITY: usize = 65535;
 /// - TODO: Consider using new_unchecked for record batch construction if we're
 ///   confident in it. We mostly unwrap those operations a lot, so skipping the
 ///   checks or moving similar checks to debug asserts may be reasonable.
+///
+/// # Errors
+///
+/// Returns [`Error::UnsupportedBatchStoreType`] if `N` is not the batch width
+/// of a known signal (`Logs`, `Metrics`, or `Traces`), regardless of how many
+/// batches are passed. The signal is selected by width alone, so a future
+/// batch store that reuses an existing signal's width would be routed to that
+/// signal's payload schemas.
 pub fn concatenate<const N: usize>(
     items: &mut [[Option<RecordBatch>; N]],
 ) -> Result<[Option<RecordBatch>; N]> {
+    // Resolve the signal up front so an unsupported width is rejected even on
+    // the empty and single-batch fast paths below.
+    let concat_signal: fn(&mut [[Option<RecordBatch>; N]]) -> Result<[Option<RecordBatch>; N]> =
+        match N {
+            Logs::COUNT => concatenate_signal::<Logs, N>,
+            Metrics::COUNT => concatenate_signal::<Metrics, N>,
+            Traces::COUNT => concatenate_signal::<Traces, N>,
+            _ => return Err(Error::UnsupportedBatchStoreType { batch_width: N }),
+        };
+
     let mut result = [const { None }; N];
     if items.is_empty() {
         return Ok(result);
@@ -90,48 +107,25 @@ pub fn concatenate<const N: usize>(
         return Ok(result);
     }
 
-    match N {
-        Logs::COUNT => concatenate_signal::<Logs, N>(items),
-        Metrics::COUNT => concatenate_signal::<Metrics, N>(items),
-        Traces::COUNT => concatenate_signal::<Traces, N>(items),
-        // FIXME: This is a hack for now to avoid having to rewrite a lot of
-        // the tests. We can make the tests a lot better now that we have payload
-        // definitions.
-        _ => concatenate_without_spec(items),
-    }
-}
-
-fn concatenate_without_spec<const N: usize>(
-    items: &mut [[Option<RecordBatch>; N]],
-) -> Result<[Option<RecordBatch>; N]> {
-    concatenate_with_def(items, |_| &PayloadSchema::EMPTY)
+    concat_signal(items)
 }
 
 fn concatenate_signal<S: OtapBatchStore, const N: usize>(
     items: &mut [[Option<RecordBatch>; N]],
 ) -> Result<[Option<RecordBatch>; N]> {
-    concatenate_with_def(items, |i| {
-        let payload_type = S::payload_type_at_idx(i);
-        payloads::get(payload_type)
-    })
-}
-
-fn concatenate_with_def<const N: usize>(
-    items: &mut [[Option<RecordBatch>; N]],
-    get_def: impl Fn(usize) -> &'static PayloadSchema,
-) -> Result<[Option<RecordBatch>; N]> {
     let mut result = [const { None }; N];
 
     #[allow(clippy::needless_range_loop)]
     for i in 0..N {
-        let payload_def = get_def(i);
+        let payload_def = payloads::get(S::payload_type_at_idx(i));
 
-        let index = index_records(select_all(items, i))?;
+        let index = index_records(select_all(items, i), payload_def)?;
         if index.batch_count == 0 {
             continue;
         }
 
-        let new_schema = Arc::from(select_schema(&index, payload_def)?);
+        let selected = select_schema(&index)?;
+        let new_schema: Arc<Schema> = Arc::from(selected.schema);
         let mut batcher = arrow::compute::BatchCoalescer::new(new_schema.clone(), index.row_count);
         for payload in select_all_mut(items, i) {
             let Some(rb) = payload.take() else {
@@ -139,8 +133,14 @@ fn concatenate_with_def<const N: usize>(
             };
 
             let (curr_schema, columns, num_rows) = rb.into_parts();
-            let converted_columns =
-                convert(columns, num_rows, &curr_schema.fields, &new_schema.fields)?;
+            let converted_columns = convert(
+                columns,
+                num_rows,
+                &curr_schema.fields,
+                &new_schema.fields,
+                payload_def,
+                &selected.slot_to_target,
+            )?;
 
             // safety: Unless we have a bug, we've satisfied all the preconditions
             // for try_new and push_batch by converting everything to a unified
@@ -166,136 +166,179 @@ fn concatenate_with_def<const N: usize>(
     Ok(result)
 }
 
-/// Convert the columns from one schema to another. The arguments deal in
-/// fields and columns rather than schemas and record batches so that this
-/// code can work with either struct arrays or record batches.
+/// Convert the columns of a single input batch to the unified `target_fields`.
+///
+/// The input batch conforms to `payload_def`, so instead of scanning
+/// `target_fields` for every current field (an O(fields^2) search), we look each
+/// current field up in the payload spec to get its slot, then map that slot to
+/// its position in the target schema via `slot_to_target`. Fields present in the
+/// target but absent from this batch are filled with nulls afterward.
 fn convert(
     columns: Vec<Arc<dyn Array>>,
     num_rows: usize,
     curr_fields: &Fields,
     target_fields: &Fields,
+    payload_def: &PayloadSchema,
+    slot_to_target: &[i16; MAX_SLOTS],
 ) -> Result<Vec<Arc<dyn Array>>> {
     assert_eq!(columns.len(), curr_fields.len());
 
-    let mut new_columns: Vec<Arc<dyn Array>> = Vec::with_capacity(target_fields.len());
+    // Pre-fill so every target position is initialized; positions not written
+    // by an input column are missing fields and are null-padded below.
+    let mut new_columns: Vec<Option<Arc<dyn Array>>> = vec![None; target_fields.len()];
 
-    for target_field in target_fields.iter() {
-        // TODO: We can probably eliminate this find call by adding a map from
-        // batch number -> field position for every field to the index.
-        match curr_fields.find(target_field.name()) {
-            Some((curr_idx, curr_field)) => {
-                if curr_field.data_type() != target_field.data_type() {
-                    if let DataType::Struct(target_struct_fields) = target_field.data_type() {
-                        let struct_array = columns[curr_idx].clone();
-                        // TODO: Figure out how to avoid the clone here. as_any just returns a
-                        // ref, so we cannot downcast_mut. Since we can't downcast_mut, we can't
-                        // break into parts. The clone isn't that bad for now since it's only a
-                        // Vec<ArrayRef>.
-                        let struct_array = struct_array
-                            .as_any()
-                            .downcast_ref::<StructArray>()
-                            .expect("Struct array")
-                            .clone();
+    for (curr_idx, curr_field) in curr_fields.iter().enumerate() {
+        let slot = payload_def
+            .slot_of(curr_field.name())
+            .ok_or_else(|| Error::ColumnNotFound {
+                name: curr_field.name().clone(),
+            })?;
+        let target_idx = slot_to_target[slot];
+        debug_assert!(target_idx >= 0, "indexed field must have a target position");
+        let target_idx = target_idx as usize;
+        let target_field = &target_fields[target_idx];
 
-                        let (struct_fields, struct_columns, nulls) = struct_array.into_parts();
+        let converted = if curr_field.data_type() == target_field.data_type() {
+            columns[curr_idx].clone()
+        } else if let DataType::Struct(target_struct_fields) = target_field.data_type() {
+            let sub_def = payload_def
+                .fields()
+                .get(slot)
+                .and_then(|f| f.data_type.as_struct_schema())
+                .expect("struct field must have a struct sub-schema");
+            let sub_map = struct_slot_map(sub_def, target_struct_fields);
 
-                        // Recursively convert the struct, depth is bounded to 1
-                        // since we don't support nested structs which is checked
-                        // by [index_fields].
-                        let struct_columns = convert(
-                            struct_columns,
-                            num_rows,
-                            &struct_fields,
-                            target_struct_fields,
-                        )?;
+            // TODO: Figure out how to avoid the clone here. as_any just returns
+            // a ref, so we cannot downcast_mut and break into parts. The clone
+            // is only a Vec<ArrayRef>.
+            let struct_array = columns[curr_idx]
+                .as_any()
+                .downcast_ref::<StructArray>()
+                .expect("Struct array")
+                .clone();
+            let (struct_fields, struct_columns, nulls) = struct_array.into_parts();
 
-                        // safety: Unless we have a bug, we've satisfied all
-                        // the preconditions laid out in this function and
-                        // the columns, schema, and row count are valid.
-                        let struct_array = StructArray::try_new_with_length(
-                            target_struct_fields.clone(),
-                            struct_columns,
-                            nulls,
-                            num_rows,
-                        )
-                        .expect("valid struct array");
+            // Recursively convert the struct; depth is bounded to 1 since valid
+            // OTAP batches do not have nested structs.
+            let struct_columns = convert(
+                struct_columns,
+                num_rows,
+                &struct_fields,
+                target_struct_fields,
+                sub_def,
+                &sub_map,
+            )?;
 
-                        new_columns.push(Arc::new(struct_array))
-                    } else {
-                        // safety: Unless we have a bug, we've satisfied all
-                        // the preconditions laid out in this function and
-                        // the columns, schema, and row count are valid.
-                        let new_data = cast(columns[curr_idx].as_ref(), target_field.data_type())
-                            .expect("Compatible types");
-
-                        new_columns.push(new_data)
-                    }
-                } else {
-                    new_columns.push(columns[curr_idx].clone());
-                }
-            }
-            None => {
-                // TODO: Can we optimize here with REE support?
-                new_columns.push(arrow::array::new_null_array(
-                    target_field.data_type(),
+            // safety: preconditions satisfied by construction above.
+            Arc::new(
+                StructArray::try_new_with_length(
+                    target_struct_fields.clone(),
+                    struct_columns,
+                    nulls,
                     num_rows,
-                ))
-            }
-        }
+                )
+                .expect("valid struct array"),
+            )
+        } else {
+            // safety: the selected type is cast-compatible by construction.
+            cast(columns[curr_idx].as_ref(), target_field.data_type()).expect("Compatible types")
+        };
+
+        new_columns[target_idx] = Some(converted);
     }
 
-    Ok(new_columns)
+    // Fill any target field that this batch did not carry with nulls, reusing
+    // the already-allocated Vec rather than collecting into a second one.
+    let out = new_columns
+        .into_iter()
+        .enumerate()
+        .map(|(idx, col)| match col {
+            Some(col) => col,
+            // TODO: Can we optimize here with REE support?
+            None => arrow::array::new_null_array(target_fields[idx].data_type(), num_rows),
+        })
+        .collect();
+
+    Ok(out)
 }
 
-/// Select a unified schema that will satisfy all fields in the
-/// RecordIndex.
-fn select_schema<'a>(index: &'a RecordIndex<'a>, payload_def: &PayloadSchema) -> Result<Schema> {
-    let mut builder = SchemaBuilder::with_capacity(index.fields.len());
-    for (field_name, field_info) in index.fields.iter() {
-        // Presence of smallest key type indicates dictionary
-        let mut typ = field_info.value_type.clone();
-        if field_info.smallest_key_type.is_some() {
-            assert!(field_info.struct_index.is_none());
-            let field_def = payload_def.get(field_name);
-            typ = select_dictionary_type(field_info, field_def)?
-        } else if let Some(ref struct_index) = field_info.struct_index {
-            typ = select_struct_type(struct_index, payload_def, field_name)?;
+/// Build the spec-slot -> target-index map for a struct sub-schema, matching
+/// child fields by name against the already-selected target struct fields.
+fn struct_slot_map(sub_def: &PayloadSchema, target_fields: &Fields) -> [i16; MAX_SLOTS] {
+    let mut map = [-1i16; MAX_SLOTS];
+    for (target_idx, field) in target_fields.iter().enumerate() {
+        if let Some(slot) = sub_def.slot_of(field.name()) {
+            map[slot] = target_idx as i16;
         }
+    }
+    map
+}
 
-        let mut new_field = Field::new(*field_name, typ, field_info.nullable);
+/// The output of schema selection: the unified schema plus a map from each
+/// payload spec slot to its index in that schema (or -1 if the field was absent
+/// from every input batch).
+struct SelectedSchema {
+    schema: Schema,
+    slot_to_target: [i16; MAX_SLOTS],
+}
+
+/// Select a unified schema in payload-spec declaration order, emitting only the
+/// fields that were present in at least one input batch.
+fn select_schema<'a>(index: &'a RecordIndex<'a>) -> Result<SelectedSchema> {
+    let payload_def = index.fields.schema;
+    let mut builder = SchemaBuilder::with_capacity(payload_def.fields().len());
+    let mut slot_to_target = [-1i16; MAX_SLOTS];
+    let mut next_target: i16 = 0;
+
+    for (slot, def_field) in payload_def.fields().iter().enumerate() {
+        let Some(info) = index.fields.slots[slot].as_ref() else {
+            continue;
+        };
+
+        let typ = select_field_type(info, Some(def_field))?;
+        let mut new_field = Field::new(def_field.name, typ, info.nullable);
         add_field_metadata(&mut new_field);
+        slot_to_target[slot] = next_target;
+        next_target += 1;
         builder.push(new_field);
     }
 
-    Ok(builder.finish())
+    Ok(SelectedSchema {
+        schema: builder.finish(),
+        slot_to_target,
+    })
 }
 
-/// Select the final data type for a struct field.
-fn select_struct_type<'a>(
-    struct_index: &'a FieldIndex<'a>,
-    payload_def: &PayloadSchema,
-    parent_name: &str,
-) -> Result<DataType> {
-    // Navigate into the sub-schema for this struct field.
-    let sub_schema = payload_def
-        .get(parent_name)
-        .and_then(|f| f.data_type.as_struct_schema());
+/// Select the final Arrow data type for an indexed field, resolving struct
+/// children and dictionary key widths.
+fn select_field_type(info: &IndexedField<'_>, field_def: Option<&SchemaField>) -> Result<DataType> {
+    if let Some(struct_index) = info.struct_index.as_ref() {
+        return select_struct_type(struct_index);
+    }
 
-    let mut fields = Vec::with_capacity(struct_index.len());
-    for (field_name, field_info) in struct_index.iter() {
-        // Presence of smallest key type indicates dictionary
-        let mut typ = field_info.value_type.clone();
-        if field_info.smallest_key_type.is_some() {
-            let field_def = sub_schema.and_then(|s| s.get(field_name));
-            typ = select_dictionary_type(field_info, field_def)?
-        }
+    if info.is_dictionary {
+        return select_dictionary_type(info, field_def);
+    }
 
-        // This should have been detected by the indexing logic
-        assert!(!matches!(field_info.value_type, DataType::Struct(_)));
+    Ok(info.value_type.clone())
+}
 
-        let mut new_field = Field::new(*field_name, typ, field_info.nullable);
+/// Select the final data type for a struct field, in sub-schema declaration
+/// order over the present children.
+fn select_struct_type(struct_index: &FieldIndex<'_>) -> Result<DataType> {
+    let sub_def = struct_index.schema;
+    let mut fields = Vec::new();
+    for (slot, def_field) in sub_def.fields().iter().enumerate() {
+        let Some(info) = struct_index.slots[slot].as_ref() else {
+            continue;
+        };
+
+        // Nested structs are rejected during indexing.
+        debug_assert!(!matches!(info.value_type, DataType::Struct(_)));
+
+        let typ = select_field_type(info, Some(def_field))?;
+        let mut new_field = Field::new(def_field.name, typ, info.nullable);
         add_field_metadata(&mut new_field);
-
         fields.push(new_field);
     }
 
@@ -316,6 +359,16 @@ fn add_field_metadata(field: &mut Field) {
     }
 }
 
+/// Upper bound on the number of fields in any OTAP payload schema, including
+/// nested struct schemas. `FieldIndex` stores one slot per spec field in a
+/// fixed-size array sized by this bound.
+///
+/// The widest schema is `spans`, with 17 top-level fields (`status` is slot 16),
+/// followed by `logs` and `exp_histogram_data_points` with 14 each. The widest
+/// struct child is the logs `body`, with 7. The `spec_index_tests` tests check
+/// that every payload schema fits and that this bound stays tight.
+pub(crate) const MAX_SLOTS: usize = 17;
+
 #[derive(Debug)]
 struct RecordIndex<'a> {
     batch_count: usize,
@@ -323,60 +376,59 @@ struct RecordIndex<'a> {
     fields: FieldIndex<'a>,
 }
 
-type FieldIndex<'a> = BTreeMap<&'a str, FieldInfo<'a>>;
-
+/// A spec-indexed set of fields. Each slot corresponds positionally to a field
+/// in `schema.fields()`; `None` means the field was absent from every batch.
 #[derive(Debug)]
-pub struct FieldInfo<'a> {
-    // The value type of the column, note that this must be some primitive or
-    // struct type, it will never be a dictionary. In the case of a struct, it
-    // is not necessarily the final struct type as we need to do more processing
-    // of the struct_index to determine the final type.
-    value_type: &'a DataType,
-    // Indicates if this is nullable, determined by if any of the values are null
-    // in any batch or if any batch is missing the field
-    nullable: bool,
-    // Set if this is a dictionary
-    smallest_key_type: Option<DataType>,
-    // Set if this is a struct
-    struct_index: Option<FieldIndex<'a>>,
-    // The number of total elements including nulls
-    total_element_count: usize,
-    // The total number of values, excluding nulls
-    total_value_count: usize,
-    // The total number of values, including nulls. This bounds the number of
-    // dictionary entries that Arrow may append while coalescing batches.
-    total_physical_value_count: usize,
-    // The size of the largest individual array in values
-    largest_value_count: usize,
-    // The values arrays for the type, some of these may come from dictionary array values.
-    values: Vec<ArrayRef>,
+struct FieldIndex<'a> {
+    schema: &'static PayloadSchema,
+    slots: [Option<IndexedField<'a>>; MAX_SLOTS],
 }
 
-impl<'a> FieldInfo<'a> {
-    pub fn new_from_array(array: &'a ArrayRef) -> Self {
+impl<'a> FieldIndex<'a> {
+    fn new(schema: &'static PayloadSchema) -> Self {
         Self {
-            value_type: array.data_type(),
-            nullable: array.nulls().is_some(),
-            smallest_key_type: None,
-            struct_index: None,
-            total_element_count: array.len(),
-            total_value_count: array.len() - array.null_count(),
-            total_physical_value_count: array.len(),
-            largest_value_count: array.len(),
-            values: vec![Arc::clone(array)],
+            schema,
+            slots: [const { None }; MAX_SLOTS],
         }
     }
 }
 
-/// Create an index of fields while checking which type corresponds to each, that the
-/// value types are compatible, and computing basic statistics for each field.
+/// Accumulated information about a single field across input batches, used to
+/// select the unified output type. Unlike the query-engine cardinality
+/// estimator this deliberately does not retain the value arrays: dictionary
+/// widths are chosen from `total_physical_value_count` and nullability from
+/// `present_count`.
+#[derive(Debug)]
+struct IndexedField<'a> {
+    // The value type of the column: a primitive/binary type, or a struct type.
+    // Never a dictionary; dictionary columns store their value type here and set
+    // `is_dictionary`.
+    value_type: &'a DataType,
+    // True if any batch was null in this column, or the column was absent from
+    // some batch (determined in the finalize pass).
+    nullable: bool,
+    // True if any batch carried this column as a dictionary.
+    is_dictionary: bool,
+    // The number of batches that carried this column.
+    present_count: usize,
+    // The total number of physical values (including nulls) contributed across
+    // all dictionary batches. Bounds the number of dictionary entries that Arrow
+    // may append while coalescing, and hence the required key width.
+    total_physical_value_count: usize,
+    // For struct columns, the recursively-indexed children.
+    struct_index: Option<Box<FieldIndex<'a>>>,
+}
+
+/// Create an index of fields, validating each against the payload spec and
+/// computing the statistics needed to select the unified schema.
 fn index_records<'a>(
     batches: impl Iterator<Item = Option<&'a RecordBatch>>,
+    payload_def: &'static PayloadSchema,
 ) -> Result<RecordIndex<'a>> {
     let mut index = RecordIndex {
         batch_count: 0,
         row_count: 0,
-        fields: BTreeMap::new(),
+        fields: FieldIndex::new(payload_def),
     };
 
     for rb in batches {
@@ -389,170 +441,129 @@ fn index_records<'a>(
 
         let fields = rb.schema_ref().fields();
         let iter = fields.iter().zip(rb.columns());
-        index_fields(&mut index.fields, iter, None)?;
+        index_fields(&mut index.fields, iter)?;
     }
 
-    // We need a final pass to see if any fields were not present in any batch
-    // and similarly for structs to see if any struct fields were missing.
-    // When we coerce to the same schema, we have to append nulls for missing fields.
-    for field in index.fields.values_mut() {
-        field.nullable = field.nullable || field.values.len() != index.batch_count;
-        if let Some(struct_index) = field.struct_index.as_mut() {
-            for struct_field in struct_index.values_mut() {
-                struct_field.nullable = struct_field.nullable
-                    || field.nullable
-                    || struct_field.values.len() != field.values.len()
-            }
-        }
-    }
+    // Finalize nullability: a field is nullable if it was null in any batch or
+    // was absent from some batch. Struct children additionally inherit the
+    // parent's nullability and are nullable if absent from some batch that
+    // carried the parent.
+    finalize_nullability(&mut index.fields, index.batch_count);
 
     Ok(index)
 }
 
-/// Index the fields for some stream columns.
+fn finalize_nullability(index: &mut FieldIndex<'_>, batch_count: usize) {
+    for slot in index.slots.iter_mut() {
+        let Some(field) = slot.as_mut() else {
+            continue;
+        };
+        field.nullable = field.nullable || field.present_count != batch_count;
+
+        if let Some(struct_index) = field.struct_index.as_mut() {
+            let parent_present = field.present_count;
+            let parent_nullable = field.nullable;
+            for child_slot in struct_index.slots.iter_mut() {
+                if let Some(child) = child_slot.as_mut() {
+                    child.nullable =
+                        child.nullable || parent_nullable || child.present_count != parent_present;
+                }
+            }
+        }
+    }
+}
+
+/// Index the fields of a single batch (or struct) into `index`.
+///
+/// Struct columns are unified recursively: different batches may carry different
+/// subsets of the optional struct children, so each child is indexed into its
+/// own sub-slot and the unified struct type is the union of the children seen
+/// across batches. A struct child whose scalar type diverges between batches is
+/// still rejected (at child granularity), as is a struct-vs-non-struct collision
+/// on the same column.
 fn index_fields<'a>(
     index: &mut FieldIndex<'a>,
     fields: impl Iterator<Item = (&'a FieldRef, &'a ArrayRef)>,
-    parent: Option<&'a str>,
 ) -> Result<()> {
+    let schema = index.schema;
+
     for (field, data) in fields {
-        let (array, value_type, key_type) = match data.data_type() {
-            DataType::Dictionary(k, v) => (
-                get_dictionary_values(data)?,
-                v.as_ref(),
-                Some(k.as_ref().clone()),
-            ),
-            x => (data, x, None),
+        let name = field.name().as_str();
+        let slot = schema.slot_of(name).ok_or_else(|| Error::ColumnNotFound {
+            name: field.name().clone(),
+        })?;
+
+        let (array, value_type, is_dict) = match data.data_type() {
+            DataType::Dictionary(_, v) => (get_dictionary_values(data)?, v.as_ref(), true),
+            x => (data, x, false),
         };
 
-        let Some(existing) = index.get_mut(field.name().as_str()) else {
-            let values_count = array.len() - array.null_count();
-
-            // If this is a struct type, we need to index its fields
+        if index.slots[slot].is_none() {
             let struct_index = if matches!(value_type, DataType::Struct(_)) {
-                // safety: we checked the type
+                let sub_def = schema.fields()[slot]
+                    .data_type
+                    .as_struct_schema()
+                    .expect("spec struct field has a struct sub-schema");
+
+                // safety: value_type is Struct
                 let struct_array = data
                     .as_any()
                     .downcast_ref::<StructArray>()
                     .expect("Struct array");
 
-                let mut struct_index = BTreeMap::new();
+                let mut sub = FieldIndex::new(sub_def);
                 let iter = struct_array.fields().iter().zip(struct_array.columns());
-                index_fields(&mut struct_index, iter, Some(field.name().as_str()))?;
-                Some(struct_index)
+                index_fields(&mut sub, iter)?;
+                Some(Box::new(sub))
             } else {
                 None
             };
 
-            let _ = index.insert(
-                field.name().as_str(),
-                FieldInfo {
-                    value_type,
-                    nullable: data.null_count() > 0,
-                    smallest_key_type: key_type,
-                    struct_index,
-                    total_element_count: data.len(),
-                    largest_value_count: values_count,
-                    total_value_count: values_count,
-                    total_physical_value_count: array.len(),
-                    values: vec![array.clone()],
-                },
-            );
+            index.slots[slot] = Some(IndexedField {
+                value_type,
+                nullable: data.null_count() > 0,
+                is_dictionary: is_dict,
+                present_count: 1,
+                total_physical_value_count: array.len(),
+                struct_index,
+            });
             continue;
-        };
+        }
 
-        let values = match (&existing.value_type, field.data_type()) {
-            // If the existing value type is a struct, the new value type
-            // must also be a struct
-            (DataType::Struct(_), x) => {
-                if let Some(parent) = parent {
-                    return Err(Error::InvalidDataTypeForStruct {
-                        parent: parent.to_string(),
-                        name: field.name().clone(),
-                        data_type: x.clone(),
-                    });
-                }
-
-                if !matches!(x, DataType::Struct(_)) {
-                    return Err(Error::ColumnDataTypeMismatch {
-                        name: field.name().clone(),
-                        expect: existing.value_type.clone(),
-                        actual: x.clone(),
-                    });
-                }
-
-                // Recursively index this struct. This has a maximum depth of 1
-                // because we forbid nested structs since valid otap batches
-                // do not have them.
-                //
-                // safety: we checked the type
-                let struct_array = data
-                    .as_any()
-                    .downcast_ref::<StructArray>()
-                    .expect("Struct array");
-
-                let struct_index = existing.struct_index.get_or_insert_with(BTreeMap::new);
-                let iter = struct_array.fields().iter().zip(struct_array.columns());
-                index_fields(struct_index, iter, Some(field.name().as_str()))?;
-
-                data
-            }
-
-            // Cannot change to struct from anything else
-            (x, DataType::Struct(_)) => {
+        let existing = index.slots[slot].as_mut().expect("slot occupied");
+        if let Some(struct_index) = existing.struct_index.as_mut() {
+            // For structs we only check if the target is a struct and validate
+            // each column when we recurse.
+            if !matches!(value_type, DataType::Struct(_)) {
                 return Err(Error::ColumnDataTypeMismatch {
                     name: field.name().clone(),
-                    expect: (*x).clone(),
-                    actual: field.data_type().clone(),
+                    expect: existing.value_type.clone(),
+                    actual: value_type.clone(),
                 });
             }
 
-            // Upgrading from a native type to a dictionary is allowed
-            // as long as the value type matches.
-            (v1, DataType::Dictionary(k2, v2)) => {
-                if **v1 != **v2 {
-                    return Err(Error::DictionaryValueTypeMismatch {
-                        name: field.name().clone(),
-                        expect: (*v1).clone(),
-                        actual: v2.as_ref().clone(),
-                    });
-                }
-
-                match **k2 {
-                    DataType::UInt8 => {
-                        existing.smallest_key_type = Some(DataType::UInt8);
-                    }
-                    DataType::UInt16 => {}
-                    _ => {
-                        return Err(Error::UnsupportedDictionaryKeyType {
-                            expect_oneof: vec![DataType::UInt8, DataType::UInt16],
-                            actual: k2.as_ref().clone(),
-                        });
-                    }
-                }
-
-                get_dictionary_values(data)?
+            // safety: value_type is Struct (checked above)
+            let struct_array = data
+                .as_any()
+                .downcast_ref::<StructArray>()
+                .expect("Struct array");
+            let iter = struct_array.fields().iter().zip(struct_array.columns());
+            index_fields(struct_index, iter)?;
+        } else {
+            if existing.value_type != value_type {
+                return Err(Error::ColumnDataTypeMismatch {
+                    name: field.name().clone(),
+                    expect: existing.value_type.clone(),
+                    actual: value_type.clone(),
+                });
             }
 
-            (v1, v2) => {
-                if **v1 != *v2 {
-                    return Err(Error::ColumnDataTypeMismatch {
-                        name: field.name().clone(),
-                        expect: (*v1).clone(),
-                        actual: v2.clone(),
-                    });
-                }
-                data
-            }
-        };
+            existing.is_dictionary = existing.is_dictionary || is_dict;
+        }
 
-        existing.values.push(values.clone());
-        let values_count = values.len() - values.null_count();
         existing.nullable = existing.nullable || data.null_count() > 0;
-        existing.total_element_count += data.len();
-        existing.total_value_count += values_count;
-        existing.total_physical_value_count += values.len();
-        existing.largest_value_count = existing.largest_value_count.max(values_count);
+        existing.present_count += 1;
+        existing.total_physical_value_count += array.len();
     }
 
     Ok(())
@@ -590,52 +601,77 @@ fn get_dictionary_values(array: &ArrayRef) -> Result<&ArrayRef> {
     Ok(values)
 }
 
-fn select_dictionary_type<'a>(
-    info: &FieldInfo<'a>,
+fn select_dictionary_type(
+    info: &IndexedField<'_>,
     field_def: Option<&SchemaField>,
 ) -> Result<DataType> {
-    assert!(info.smallest_key_type.is_some());
+    debug_assert!(info.is_dictionary);
 
     // If the column is in the definition but doesn't support dictionary
     // encoding, use the native type. If not in the definition at all (None),
-    // fall through to cardinality-based selection.
+    // fall through to physical-count-based selection.
     let min_key_size = match field_def {
         Some(def) => match def.data_type.min_dict_key_size() {
             Some(min) => Some(min),
             // Column is explicitly defined as not dictionary-encodable
             None => return Ok(info.value_type.clone()),
         },
-        // Column not in definition, use cardinality-based selection with no minimum
-        // TODO: This is defensive and probably not a case that should be possible
+        // Column not in definition, select from physical count with no minimum.
         None => None,
     };
 
     // Arrow does not deduplicate all dictionary value types while coalescing,
     // and its merge path does not guarantee unique output values. The summed
     // physical values length is therefore the safe upper bound for both paths.
-    let cardinality = if info.total_physical_value_count <= MAX_U8_CARDINALITY {
-        Cardinality::WithinU8
-    } else if info.total_physical_value_count <= MAX_U16_CARDINALITY {
-        Cardinality::WithinU16
+    let total = info.total_physical_value_count;
+    let (mut dict_key_size, within_u8) = if total <= MAX_U8_CARDINALITY {
+        (DataType::UInt8, true)
+    } else if total <= MAX_U16_CARDINALITY {
+        (DataType::UInt16, false)
     } else {
-        Cardinality::GreaterThanU16
+        return Ok(info.value_type.clone());
     };
 
-    let mut dict_key_size = match cardinality {
-        Cardinality::WithinU8 => DataType::UInt8,
-        Cardinality::WithinU16 => DataType::UInt16,
-        Cardinality::GreaterThanU16 => return Ok(info.value_type.clone()),
-    };
-
-    // Upgrade key size if we have to
-    if min_key_size == Some(DictKeySize::U16) && cardinality == Cardinality::WithinU8 {
+    // Upgrade key size if the spec requires a minimum of u16.
+    if min_key_size == Some(DictKeySize::U16) && within_u8 {
         dict_key_size = DataType::UInt16;
-    };
+    }
 
     Ok(DataType::Dictionary(
         Box::new(dict_key_size),
         Box::new(info.value_type.clone()),
     ))
+}
+
+/// Accumulated information about a single field across one or more arrays, used
+/// as input to [`estimate_cardinality`].
+#[derive(Debug)]
+pub struct FieldInfo<'a> {
+    // The value type of the column. This must be some primitive type; the
+    // estimator does not support struct or dictionary value types directly.
+    value_type: &'a DataType,
+    // Set if this originated from a dictionary column. The query engine always
+    // constructs from a plain array so this is currently always `None`, but it
+    // is retained because `check_cardinality` uses it to decide when an early
+    // exit is sound.
+    smallest_key_type: Option<DataType>,
+    // The total number of values, excluding nulls
+    total_value_count: usize,
+    // The values arrays for the type, some of these may come from dictionary array values.
+    values: Vec<ArrayRef>,
+}
+
+impl<'a> FieldInfo<'a> {
+    /// Construct a [`FieldInfo`] describing a single array.
+    #[must_use]
+    pub fn new_from_array(array: &'a ArrayRef) -> Self {
+        Self {
+            value_type: array.data_type(),
+            smallest_key_type: None,
+            total_value_count: array.len() - array.null_count(),
+            values: vec![Arc::clone(array)],
+        }
+    }
 }
 
 /// Estimate of the cardinality of a field
@@ -911,144 +947,213 @@ fn select_all_mut<const N: usize>(
     batches.iter_mut().map(move |batches| &mut batches[i])
 }
 
+/// Benchmark-only accessors that expose the schema-unification stages
+/// (`index_records`, `select_schema`, and `convert`) so their cost can be
+/// measured separately from the row-copying performed by the coalescer.
+///
+/// Each stage consumes the previous stage's output, so each accessor runs a
+/// cumulative prefix of the pipeline: `bench_index_records` runs indexing,
+/// `bench_select_schema` runs indexing + selection, and `bench_convert_all`
+/// runs all three. Per-stage cost is the difference between adjacent results.
+///
+/// These are gated behind the `bench` feature and are not part of the public
+/// API. They exist purely so the `schema_unify` benchmark can attribute time to
+/// each stage.
+#[cfg(feature = "bench")]
+pub mod bench_exports {
+    use super::*;
+
+    /// Run only the field-indexing stage for payload slot `i` across `items`.
+    ///
+    /// Returns the number of distinct fields discovered so the caller can keep
+    /// the result observable and prevent the optimizer from eliding the work.
+    pub fn bench_index_records<S: OtapBatchStore, const N: usize>(
+        items: &[[Option<RecordBatch>; N]],
+        i: usize,
+    ) -> Result<usize> {
+        let payload_def = payloads::get(S::payload_type_at_idx(i));
+        let index = index_records(select_all(items, i), payload_def)?;
+        Ok(index.fields.slots.iter().filter(|s| s.is_some()).count())
+    }
+
+    /// Run the indexing and schema-selection stages for payload slot `i`. The
+    /// timing includes `index_records`, since selection consumes its output.
+    pub fn bench_select_schema<S: OtapBatchStore, const N: usize>(
+        items: &[[Option<RecordBatch>; N]],
+        i: usize,
+    ) -> Result<Schema> {
+        let payload_def = payloads::get(S::payload_type_at_idx(i));
+        let index = index_records(select_all(items, i), payload_def)?;
+        Ok(select_schema(&index)?.schema)
+    }
+
+    /// Run the full schema unification (index + select + convert) for payload
+    /// slot `i`, returning the converted columns for every input batch. The
+    /// timing includes `index_records` and `select_schema`, and isolates the
+    /// schema-unification work from the `BatchCoalescer` row copy.
+    pub fn bench_convert_all<S: OtapBatchStore, const N: usize>(
+        items: &[[Option<RecordBatch>; N]],
+        i: usize,
+    ) -> Result<Vec<Vec<ArrayRef>>> {
+        let payload_def = payloads::get(S::payload_type_at_idx(i));
+        let index = index_records(select_all(items, i), payload_def)?;
+        let selected = select_schema(&index)?;
+        let new_schema = Arc::new(selected.schema);
+
+        let mut converted = Vec::new();
+        for payload in select_all(items, i).flatten() {
+            let columns = payload.columns().to_vec();
+            let num_rows = payload.num_rows();
+            let curr_fields = payload.schema_ref().fields.clone();
+            converted.push(convert(
+                columns,
+                num_rows,
+                &curr_fields,
+                &new_schema.fields,
+                payload_def,
+                &selected.slot_to_target,
+            )?);
+        }
+        Ok(converted)
+    }
+}
+
+#[cfg(test)]
+mod batch_width_tests {
+    use super::*;
+
+    /// Scenario: call `concatenate` with a batch width (1) that matches no
+    /// signal, using zero, one, and two input batch arrays so the empty and
+    /// single-batch fast paths are exercised as well as the general path.
+    /// Guarantees: every call returns `UnsupportedBatchStoreType` carrying the
+    /// width instead of panicking or silently succeeding.
+    #[test]
+    fn unsupported_batch_width_returns_error() {
+        for num_batches in 0..=2 {
+            let mut items: Vec<[Option<RecordBatch>; 1]> = vec![[None]; num_batches];
+            let err = concatenate::<1>(&mut items).unwrap_err();
+            assert!(
+                matches!(err, Error::UnsupportedBatchStoreType { batch_width: 1 }),
+                "{num_batches} batches: unexpected error: {err:?}"
+            );
+        }
+    }
+
+    /// Scenario: compare each signal store's `COUNT` with the number of payload
+    /// types it allows.
+    /// Guarantees: they are equal for Logs, Metrics, and Traces, so
+    /// `concatenate_signal`'s `payload_type_at_idx(i)` lookup for every
+    /// `i < COUNT` can never index out of bounds.
+    #[test]
+    fn signal_counts_match_payload_types() {
+        assert_eq!(Logs::COUNT, Logs::allowed_payload_types().len());
+        assert_eq!(Metrics::COUNT, Metrics::allowed_payload_types().len());
+        assert_eq!(Traces::COUNT, Traces::allowed_payload_types().len());
+    }
+}
+
+#[cfg(test)]
+mod spec_index_tests {
+    use super::*;
+    use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+    use crate::schema::schema::DataType as SpecDataType;
+
+    /// Every `ArrowPayloadType` variant, discovered by probing the prost
+    /// `TryFrom<i32>` conversion so newly added variants are covered without
+    /// maintaining a hand-written list.
+    fn all_payload_types() -> Vec<ArrowPayloadType> {
+        (0..=i32::from(u8::MAX))
+            .filter_map(|v| ArrowPayloadType::try_from(v).ok())
+            .collect()
+    }
+
+    /// Visit `schema` and every schema nested beneath it (struct fields and
+    /// lists of structs), calling `visit` with a dotted field path and the
+    /// number of fields declared at that level.
+    fn visit_schemas(path: &str, schema: &PayloadSchema, visit: &mut impl FnMut(&str, usize)) {
+        visit(path, schema.fields().len());
+        for field in schema.fields() {
+            let nested = match &field.data_type {
+                SpecDataType::Struct(sub) => Some(*sub),
+                SpecDataType::List(SpecDataType::Struct(sub)) => Some(*sub),
+                _ => None,
+            };
+            if let Some(sub) = nested {
+                visit_schemas(&format!("{path}.{}", field.name), sub, visit);
+            }
+        }
+    }
+
+    /// Scenario: enumerate every `ArrowPayloadType` variant (including
+    /// `Unknown` and `MultivariateMetrics`) and walk its payload schema plus all
+    /// nested struct and list-of-struct schemas.
+    /// Guarantees: no schema at any nesting level declares more than
+    /// `MAX_SLOTS` fields, so every spec field has an addressable slot in the
+    /// fixed-size `FieldIndex` and no column is silently dropped.
+    #[test]
+    fn all_payload_schemas_fit_max_slots() {
+        let types = all_payload_types();
+        assert!(
+            types.len() > 20,
+            "expected to discover all payload types, found only {}",
+            types.len()
+        );
+
+        for pt in types {
+            visit_schemas(&format!("{pt:?}"), payloads::get(pt), &mut |path, len| {
+                assert!(
+                    len <= MAX_SLOTS,
+                    "{path} declares {len} fields, exceeding MAX_SLOTS {MAX_SLOTS}"
+                );
+            });
+        }
+    }
+
+    /// Scenario: compute the widest field count across every payload schema
+    /// and all nested schemas.
+    /// Guarantees: `MAX_SLOTS` equals that widest count, so the fixed-size
+    /// `FieldIndex` is not over-allocated; if schemas change, this fails and
+    /// reports the new maximum to set.
+    #[test]
+    fn max_slots_is_tight() {
+        let mut widest = (String::new(), 0usize);
+        for pt in all_payload_types() {
+            visit_schemas(&format!("{pt:?}"), payloads::get(pt), &mut |path, len| {
+                if len > widest.1 {
+                    widest = (path.to_string(), len);
+                }
+            });
+        }
+        assert_eq!(
+            widest.1, MAX_SLOTS,
+            "widest payload schema is {} with {} fields; set MAX_SLOTS to match",
+            widest.0, widest.1
+        );
+    }
+}
+
 #[cfg(test)]
 mod schema_tests {
     use super::*;
-    use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType::{LogAttrs, Logs};
+    use crate::otap::raw_batch_store::LOGS_COUNT;
+    use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType::{
+        LogAttrs, Logs, ResourceAttrs, SpanEventAttrs,
+    };
     use crate::record_batch;
-    use crate::schema::schema::{
-        DataType as SchemaDataType, DictKeySize, Field as SchemaField, Schema as PayloadSchema,
-        SimpleType,
+    use crate::schema::consts::{
+        ATTRIBUTE_INT, ATTRIBUTE_KEY, ATTRIBUTE_SER, ATTRIBUTE_STR, ATTRIBUTE_TYPE, BODY,
+        SEVERITY_TEXT, SPAN_ID, TRACE_ID,
     };
     use arrow::array::{
         Array, DictionaryArray, FixedSizeBinaryArray, Int64Array, PrimitiveArray, StringArray,
         UInt8Array, UInt16Array,
     };
     use arrow::datatypes::DataType;
-    use rand::RngExt;
     use std::sync::Arc;
 
-    /// A test-only schema definition that has a single "data" column allowing
-    /// Dict(u8). Used by the generic cardinality tests which don't test spec
-    /// enforcement behavior.
-    static TEST_DATA_DEF: PayloadSchema = PayloadSchema {
-        fields: &[SchemaField {
-            name: "data",
-            data_type: SchemaDataType::Dictionary {
-                min_key_size: DictKeySize::U8,
-                value_type: SimpleType::Utf8,
-            },
-            required: false,
-        }],
-        idx: |name| match name {
-            "data" => Some(0),
-            _ => None,
-        },
-    };
-
-    #[test]
-    fn test_empty_iterator() {
-        let records: Vec<Option<&RecordBatch>> = vec![];
-        let index = index_records(records.into_iter()).unwrap();
-        let schema = select_schema(&index, &PayloadSchema::EMPTY).unwrap();
-
-        assert_eq!(schema.fields().len(), 0);
-    }
-
-    #[test]
-    fn test_none_batches() {
-        let records: Vec<Option<&RecordBatch>> = vec![None, None, None];
-        let index = index_records(records.into_iter()).unwrap();
-        let schema = select_schema(&index, &PayloadSchema::EMPTY).unwrap();
-
-        assert_eq!(schema.fields().len(), 0);
-    }
-
-    #[test]
-    fn test_single_batch() {
-        let batch = create_all_types_batch();
-        let expected = batch.schema().clone();
-
-        let records = vec![Some(&batch)];
-        let index = index_records(records.into_iter()).unwrap();
-        let actual = select_schema(&index, &PayloadSchema::EMPTY).unwrap();
-
-        validate_schema(&actual, &expected);
-    }
-
-    #[test]
-    fn test_same_fields() {
-        let batch1 = create_all_types_batch();
-        let batch2 = create_all_types_batch();
-
-        let records = vec![Some(&batch1), Some(&batch2)];
-        let index = index_records(records.into_iter()).unwrap();
-        let actual = select_schema(&index, &PayloadSchema::EMPTY).unwrap();
-
-        let expected = batch1.schema();
-
-        validate_schema(&actual, &expected);
-    }
-
-    #[test]
-    fn test_mixed_fields_nullability() {
-        let batch1 = record_batch!(("id", Int32, [1, 2]), ("name", Utf8, ["a", "b"])).unwrap();
-        let batch2 = record_batch!(("id", Int32, [3, 4]), ("age", Int32, [25, 30])).unwrap();
-        let batch3 = record_batch!(("name", Utf8, ["c", "d"]), ("age", Int32, [35, 40])).unwrap();
-
-        let records = vec![Some(&batch1), Some(&batch2), Some(&batch3)];
-        let index = index_records(records.into_iter()).unwrap();
-        let actual = select_schema(&index, &PayloadSchema::EMPTY).unwrap();
-
-        let expected = Schema::new(vec![
-            Field::new("age", DataType::Int32, true),
-            Field::new("id", DataType::Int32, true),
-            Field::new("name", DataType::Utf8, true),
-        ]);
-
-        validate_schema(&actual, &expected);
-    }
-
-    #[test]
-    fn test_multiple_batches_one_common_field() {
-        let batch1 = record_batch!(("common", Int32, [1]), ("a", Utf8, ["x"])).unwrap();
-        let batch2 = record_batch!(("common", Int32, [2]), ("b", Utf8, ["y"])).unwrap();
-        let batch3 = record_batch!(("common", Int32, [3]), ("c", Utf8, ["z"])).unwrap();
-
-        let records = vec![Some(&batch1), Some(&batch2), Some(&batch3)];
-        let index = index_records(records.into_iter()).unwrap();
-        let actual = select_schema(&index, &PayloadSchema::EMPTY).unwrap();
-
-        let expected = Schema::new(vec![
-            Field::new("a", DataType::Utf8, true),        // in 1/3
-            Field::new("b", DataType::Utf8, true),        // in 1/3
-            Field::new("c", DataType::Utf8, true),        // in 1/3
-            Field::new("common", DataType::Int32, false), // in all
-        ]);
-
-        validate_schema(&actual, &expected);
-    }
-
-    #[test]
-    fn test_cardinality_mixed_key_types() {
-        let batch1 =
-            record_batch!(("data", (UInt8, UInt16), ([0, 1, 2], [100u16, 200, 300]))).unwrap();
-        let batch2 = record_batch!(("data", (UInt16, UInt16), ([0, 1], [100u16, 400]))).unwrap();
-        let batch3 = record_batch!(("data", (UInt8, UInt16), ([0, 1], [200u16, 300]))).unwrap();
-
-        let records = vec![Some(&batch1), Some(&batch2), Some(&batch3)];
-        let index = index_records(records.into_iter()).unwrap();
-        let actual = select_schema(&index, &PayloadSchema::EMPTY).unwrap();
-
-        let expected = Schema::new(vec![Field::new(
-            "data",
-            DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::UInt16)),
-            false,
-        )]);
-
-        validate_schema(&actual, &expected);
-    }
-
+    /// Build a single-column record batch carrying `column` as a dictionary of
+    /// the given keys/values. The column name must be a real OTAP field so the
+    /// spec-indexed `index_records` accepts it.
     fn create_dict_batch<K: arrow::datatypes::ArrowDictionaryKeyType>(
         name: &str,
         keys: PrimitiveArray<K>,
@@ -1067,25 +1172,75 @@ mod schema_tests {
         RecordBatch::try_new(schema, vec![Arc::new(dict_array)]).unwrap()
     }
 
-    fn create_fsb_dictionary_batch(start: usize, count: usize) -> RecordBatch {
-        let keys = UInt16Array::from((0..count).map(|i| i as u16).collect::<Vec<_>>());
-        let values = generate_values_for_type(start, count, &DataType::FixedSizeBinary(16));
-        create_dict_batch("data", keys, values, DataType::FixedSizeBinary(16))
+    /// Position of the root Logs table in the Logs signal store's batch array
+    /// (allowed_payload_types = [ResourceAttrs, ScopeAttrs, Logs, LogAttrs]).
+    const LOGS_ROOT_IDX: usize = 2;
+
+    /// Concatenate two root Logs batches through the real Logs signal path so the
+    /// spec (`payloads::get(Logs)`) drives schema selection, and return the root
+    /// output batch.
+    fn concat_logs_root(batch1: RecordBatch, batch2: RecordBatch) -> RecordBatch {
+        let mut a: [Option<RecordBatch>; LOGS_COUNT] = Default::default();
+        let mut b: [Option<RecordBatch>; LOGS_COUNT] = Default::default();
+        a[LOGS_ROOT_IDX] = Some(batch1);
+        b[LOGS_ROOT_IDX] = Some(batch2);
+        let mut batches = vec![a, b];
+        let result = concatenate::<LOGS_COUNT>(&mut batches).unwrap();
+        result[LOGS_ROOT_IDX]
+            .as_ref()
+            .expect("concatenated root logs batch")
+            .clone()
     }
 
-    fn create_struct_fsb_dictionary_batch(start: usize, count: usize) -> RecordBatch {
-        let batch = create_fsb_dictionary_batch(start, count);
-        let dict_field = batch.schema().field(0).clone();
+    /// Build a `trace_id` batch (spec: Dict(u16, FixedSizeBinary(16))) using u16
+    /// keys so `count` distinct 16-byte values are physically present.
+    fn create_fsb_dictionary_batch(start: usize, count: usize) -> RecordBatch {
+        let keys = UInt16Array::from((0..count).map(|i| i as u16).collect::<Vec<_>>());
+        let values = generate_fsb16_values(start, count);
+        create_dict_batch(TRACE_ID, keys, values, DataType::FixedSizeBinary(16))
+    }
+
+    /// Build a Logs "body" struct whose `ser` child (spec: Dict(u16, Binary)) has
+    /// `count` distinct physical values. Used to exercise the nested
+    /// physical-bound / fallback path through a real struct column.
+    fn create_struct_binary_dictionary_batch(start: usize, count: usize) -> RecordBatch {
+        let keys = UInt16Array::from((0..count).map(|i| i as u16).collect::<Vec<_>>());
+        let values = generate_binary_values(start, count);
+        let dict_field = Field::new(
+            ATTRIBUTE_SER,
+            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Binary)),
+            false,
+        );
+        let dict_array = DictionaryArray::<UInt16Type>::try_new(keys, values).unwrap();
         let struct_array = StructArray::from(vec![(
             Arc::new(dict_field.clone()),
-            Arc::clone(batch.column(0)),
+            Arc::new(dict_array) as ArrayRef,
         )]);
         let schema = Arc::new(Schema::new(vec![Field::new(
-            "parent",
+            BODY,
             DataType::Struct(vec![dict_field].into()),
             false,
         )]));
         RecordBatch::try_new(schema, vec![Arc::new(struct_array)]).unwrap()
+    }
+
+    fn generate_fsb16_values(start: usize, count: usize) -> Arc<dyn Array> {
+        use arrow::buffer::Buffer;
+        let values: Vec<u8> = (start..start + count)
+            .flat_map(|i| expected_fsb_16(i as u64))
+            .collect();
+        let buffer = Buffer::from_vec(values);
+        Arc::new(FixedSizeBinaryArray::try_new(16, buffer, None).unwrap())
+    }
+
+    fn generate_binary_values(start: usize, count: usize) -> Arc<dyn Array> {
+        use arrow::array::BinaryArray;
+        let owned: Vec<[u8; 8]> = (start..start + count)
+            .map(|i| (i as u64).to_le_bytes())
+            .collect();
+        Arc::new(BinaryArray::from_iter_values(
+            owned.iter().map(|b| b.as_slice()),
+        ))
     }
 
     fn expected_fsb_16(value: u64) -> [u8; 16] {
@@ -1111,279 +1266,8 @@ mod schema_tests {
         }
     }
 
-    /// Scenario: Two FixedSizeBinary dictionaries overlap enough for their distinct
-    /// values to fit u16, but their summed physical value arrays exceed the u16 limit.
-    /// Guarantees: Concatenation falls back to plain values instead of overflowing
-    /// Arrow's dictionary keys or panicking.
-    #[test]
-    fn test_overlapping_fsb_dictionaries_fall_back_to_plain() {
-        let count = (MAX_U16_CARDINALITY / 2) + 1;
-        let overlap = count / 2;
-        let batch1 = create_fsb_dictionary_batch(0, count);
-        let batch2 = create_fsb_dictionary_batch(overlap, count);
-        let mut batches = vec![[Some(batch1)], [Some(batch2)]];
-
-        let result = concatenate::<1>(&mut batches).unwrap();
-        let batch = result[0].as_ref().expect("concatenated batch");
-
-        assert_eq!(batch.num_rows(), 2 * count);
-        assert_eq!(
-            batch.schema().field(0).data_type(),
-            &DataType::FixedSizeBinary(16)
-        );
-        assert_overlapping_fsb_values(batch.column(0), count, overlap);
-    }
-
-    /// Scenario: A FixedSizeBinary dictionary nested in a supported struct has
-    /// overlapping values whose summed physical length exceeds the u16 limit.
-    /// Guarantees: Nested dictionary selection uses the same physical bound and
-    /// concatenation produces a plain nested field without panicking.
-    #[test]
-    fn test_nested_overlapping_fsb_dictionaries_fall_back_to_plain() {
-        let count = (MAX_U16_CARDINALITY / 2) + 1;
-        let overlap = count / 2;
-        let batch1 = create_struct_fsb_dictionary_batch(0, count);
-        let batch2 = create_struct_fsb_dictionary_batch(overlap, count);
-        let mut batches = vec![[Some(batch1)], [Some(batch2)]];
-
-        let result = concatenate::<1>(&mut batches).unwrap();
-        let batch = result[0].as_ref().expect("concatenated batch");
-        let schema = batch.schema();
-        let DataType::Struct(fields) = schema.field(0).data_type() else {
-            panic!("expected struct field");
-        };
-
-        assert_eq!(batch.num_rows(), 2 * count);
-        assert_eq!(fields[0].data_type(), &DataType::FixedSizeBinary(16));
-        let struct_array = batch
-            .column(0)
-            .as_any()
-            .downcast_ref::<StructArray>()
-            .expect("struct array");
-        assert_overlapping_fsb_values(struct_array.column(0), count, overlap);
-    }
-
-    /// Scenario: Dictionary value arrays contain one more physical slot than the
-    /// u8 limit, but only that limit's number of non-null values.
-    /// Guarantees: Key selection counts the null slot and selects u16 rather than
-    /// underestimating the physical dictionary length as fitting u8.
-    #[test]
-    fn test_dictionary_physical_bound_includes_null_slots() {
-        let physical_count = MAX_U8_CARDINALITY + 1;
-        let first_count = physical_count / 2;
-        let second_count = physical_count - first_count;
-        let raw1 = (0..first_count)
-            .map(|i| (i as u64).to_le_bytes())
-            .collect::<Vec<_>>();
-        let values1 = FixedSizeBinaryArray::try_from_sparse_iter_with_size(
-            raw1.iter()
-                .enumerate()
-                .map(|(i, value)| (i != 0).then_some(value.as_slice())),
-            8,
-        )
-        .unwrap();
-        let raw2 = (first_count..physical_count)
-            .map(|i| (i as u64).to_le_bytes())
-            .collect::<Vec<_>>();
-        let values2 =
-            FixedSizeBinaryArray::try_from_iter(raw2.iter().map(|value| value.as_slice())).unwrap();
-        let keys1 = UInt8Array::from((0..first_count).map(|i| i as u8).collect::<Vec<_>>());
-        let keys2 = UInt8Array::from((0..second_count).map(|i| i as u8).collect::<Vec<_>>());
-        let batch1 = create_dict_batch(
-            "data",
-            keys1,
-            Arc::new(values1),
-            DataType::FixedSizeBinary(8),
-        );
-        let batch2 = create_dict_batch(
-            "data",
-            keys2,
-            Arc::new(values2),
-            DataType::FixedSizeBinary(8),
-        );
-
-        let records = vec![Some(&batch1), Some(&batch2)];
-        let index = index_records(records.into_iter()).unwrap();
-        let schema = select_schema(&index, &TEST_DATA_DEF).unwrap();
-
-        assert_eq!(
-            schema.field(0).data_type(),
-            &DataType::Dictionary(
-                Box::new(DataType::UInt16),
-                Box::new(DataType::FixedSizeBinary(8))
-            )
-        );
-    }
-
-    fn validate_schema(actual: &Schema, expected: &Schema) {
-        let merged = Schema::try_merge(vec![actual.clone(), expected.clone()])
-            .expect("schemas have compatible types");
-
-        assert_eq!(
-            merged.fields().len(),
-            expected.fields().len(),
-            "Merged schema has different number of fields than expected"
-        );
-    }
-
-    /// Helper to create a record batch with all supported data types
-    fn create_all_types_batch() -> RecordBatch {
-        let mut rng = rand::rng();
-        #[rustfmt::skip]
-        let batch = record_batch!(
-            ("f_int8", Int8, [1, 2, 3, rng.random()]),
-            ("f_int16", Int16, [5, 6, 7, rng.random()]),
-            ("f_int32", Int32, [-1, -2, -3, rng.random()]),
-            ("f_int64", Int64, [-5, -6, -7, rng.random()]),
-            ("f_uint8", UInt8, [0, 1, 2, rng.random()]),
-            ("f_uint16", UInt16, [4, 5, 6, rng.random()]),
-            ("f_uint32", UInt32, [8, 9, 10, rng.random()]),
-            ("f_uint64", UInt64, [12, 13, 15, rng.random()]),
-            ("f_float32", Float32, [16.0, 18.0, 19.0, rng.random()]),
-            ("f_float64", Float64, [20.0, 22.0, 23.0, rng.random()]),
-            ("f_utf8", Utf8, ["foo", "bar", "baz", "qux"]),
-            ("f_dict_u8_utf8", (UInt8, Utf8), ([0, 1, 2, 1], ["a", "b", "c"])),
-            ("f_dict_u16_i32", (UInt8, Int32), ([0, 1, 2, 0], [1000000, 0, 1, rng.random()])),
-        )
-        .unwrap();
-
-        batch
-    }
-
-    #[test]
-    fn test_above_u16_below_u32() {
-        test_cardinality_helper(&[1000], Some(DataType::UInt16));
-    }
-
-    #[test]
-    fn test_cardinality_at_u16_boundary() {
-        // TODO: This should be [30000, 35536]
-        // See: https://github.com/open-telemetry/otel-arrow/issues/1971
-        test_cardinality_helper(&[30000, 35535], Some(DataType::UInt16));
-    }
-
-    #[test]
-    fn test_cardinality_above_u16_boundary() {
-        // TODO: This should be [30000, 35537]
-        // See: https://github.com/open-telemetry/otel-arrow/issues/1971
-        test_cardinality_helper(&[30000, 35536], None);
-    }
-
-    #[test]
-    fn test_cardinality_at_u8_boundary() {
-        // TODO: This should be [128, 128]
-        // See: https://github.com/open-telemetry/otel-arrow/issues/1971
-        test_cardinality_helper(&[128, 127], Some(DataType::UInt8));
-    }
-
-    #[test]
-    fn test_cardinality_just_above_u8_boundary() {
-        // TODO: This should be [128, 128, 1]
-        // See: https://github.com/open-telemetry/otel-arrow/issues/1971
-        test_cardinality_helper(&[128, 128], Some(DataType::UInt16));
-    }
-
-    #[test]
-    fn test_cardinality_mixed_batch_sizes() {
-        test_cardinality_helper(&[250, 10], Some(DataType::UInt16));
-    }
-
-    #[test]
-    fn test_cardinality_duration_all_time_units() {
-        for unit in [
-            arrow_schema::TimeUnit::Second,
-            arrow_schema::TimeUnit::Millisecond,
-            arrow_schema::TimeUnit::Microsecond,
-            arrow_schema::TimeUnit::Nanosecond,
-        ] {
-            test_cardinality_for_type(&[250], &DataType::Duration(unit), Some(DataType::UInt8));
-        }
-    }
-
-    #[test]
-    fn test_cardinality_duration_all_time_units_above_u8_boundary() {
-        for unit in [
-            arrow_schema::TimeUnit::Second,
-            arrow_schema::TimeUnit::Millisecond,
-            arrow_schema::TimeUnit::Microsecond,
-            arrow_schema::TimeUnit::Nanosecond,
-        ] {
-            test_cardinality_for_type(
-                &[250, 10],
-                &DataType::Duration(unit),
-                Some(DataType::UInt16),
-            );
-        }
-    }
-
-    #[test]
-    fn test_cardinality_timestamp_all_time_units() {
-        for unit in [
-            arrow_schema::TimeUnit::Second,
-            arrow_schema::TimeUnit::Millisecond,
-            arrow_schema::TimeUnit::Microsecond,
-            arrow_schema::TimeUnit::Nanosecond,
-        ] {
-            test_cardinality_for_type(
-                &[250],
-                &DataType::Timestamp(unit, None),
-                Some(DataType::UInt8),
-            );
-        }
-    }
-
-    #[test]
-    fn test_cardinality_timestamp_all_time_units_above_u8_boundary() {
-        for unit in [
-            arrow_schema::TimeUnit::Second,
-            arrow_schema::TimeUnit::Millisecond,
-            arrow_schema::TimeUnit::Microsecond,
-            arrow_schema::TimeUnit::Nanosecond,
-        ] {
-            test_cardinality_for_type(
-                &[250, 10],
-                &DataType::Timestamp(unit, None),
-                Some(DataType::UInt16),
-            );
-        }
-    }
-
-    #[test]
-    fn test_cardinality_timestamp_with_timezone() {
-        test_cardinality_for_type(
-            &[250],
-            &DataType::Timestamp(
-                arrow_schema::TimeUnit::Microsecond,
-                Some(Arc::<str>::from("UTC")),
-            ),
-            Some(DataType::UInt8),
-        );
-    }
-
-    #[test]
-    fn test_cardinality_timestamp_with_timezone_above_u8_boundary() {
-        test_cardinality_for_type(
-            &[250, 10],
-            &DataType::Timestamp(
-                arrow_schema::TimeUnit::Microsecond,
-                Some(Arc::<str>::from("UTC")),
-            ),
-            Some(DataType::UInt16),
-        );
-    }
-
-    #[test]
-    fn test_generate_timestamp_values_preserves_timezone_datatype() {
-        let value_type = DataType::Timestamp(
-            arrow_schema::TimeUnit::Nanosecond,
-            Some(Arc::<str>::from("UTC")),
-        );
-
-        let values = generate_values_for_type(0, 3, &value_type);
-        assert_eq!(values.data_type(), &value_type);
-    }
-
-    /// Create a Dict(u8, Utf8) batch with low cardinality for a given column name.
+    /// Create a Dict(u8, Utf8) batch with low cardinality for a real Utf8 dict
+    /// column (e.g. "str", "key", "severity_text").
     fn create_low_cardinality_u8_utf8_batch(col_name: &str, n_values: usize) -> RecordBatch {
         assert!(n_values <= 255);
         let keys = UInt8Array::from((0..n_values).map(|i| i as u8).collect::<Vec<_>>());
@@ -1401,7 +1285,8 @@ mod schema_tests {
         RecordBatch::try_new(schema, vec![Arc::new(dict_array)]).unwrap()
     }
 
-    /// Create a Dict(u8, Int64) batch with low cardinality for a given column name.
+    /// Create a Dict(u8, Int64) batch with low cardinality for a real Int64 dict
+    /// column (e.g. "int").
     fn create_low_cardinality_u8_int64_batch(col_name: &str, n_values: usize) -> RecordBatch {
         assert!(n_values <= 255);
         let keys = UInt8Array::from((0..n_values).map(|i| i as u8).collect::<Vec<_>>());
@@ -1417,7 +1302,8 @@ mod schema_tests {
         RecordBatch::try_new(schema, vec![Arc::new(dict_array)]).unwrap()
     }
 
-    /// Create a struct batch with a Dict(u8, Utf8) sub-field inside a struct.
+    /// Create a batch with a real struct field (e.g. "body") whose named sub-field
+    /// is a Dict(u8, Utf8) column with low cardinality.
     fn create_struct_with_u8_dict_batch(
         struct_name: &str,
         field_name: &str,
@@ -1448,21 +1334,298 @@ mod schema_tests {
         RecordBatch::try_new(schema, vec![Arc::new(struct_array)]).unwrap()
     }
 
+    /// Scenario: schema selection over an empty batch iterator with a real
+    /// payload spec.
+    /// Guarantees: an index with no batches yields an empty schema and reports a
+    /// batch count of zero rather than erroring.
     #[test]
-    fn test_u16_attrs_str_column_enforces_u16_key() {
-        let def = payloads::get(LogAttrs);
+    fn test_empty_iterator() {
+        let records: Vec<Option<&RecordBatch>> = vec![];
+        let index = index_records(records.into_iter(), payloads::get(LogAttrs)).unwrap();
+        let schema = select_schema(&index).unwrap();
 
-        // Create two batches with low cardinality Dict(u8, Utf8) for the "str" column
-        let batch1 = create_low_cardinality_u8_utf8_batch("str", 10);
-        let batch2 = create_low_cardinality_u8_utf8_batch("str", 5);
+        assert_eq!(index.batch_count, 0);
+        assert_eq!(schema.schema.fields().len(), 0);
+    }
+
+    /// Scenario: schema selection when every batch slot is `None`.
+    /// Guarantees: `None` slots are skipped, producing an empty schema and a zero
+    /// batch count.
+    #[test]
+    fn test_none_batches() {
+        let records: Vec<Option<&RecordBatch>> = vec![None, None, None];
+        let index = index_records(records.into_iter(), payloads::get(LogAttrs)).unwrap();
+        let schema = select_schema(&index).unwrap();
+
+        assert_eq!(index.batch_count, 0);
+        assert_eq!(schema.schema.fields().len(), 0);
+    }
+
+    /// Scenario: a single LogAttrs batch carrying all required columns is indexed
+    /// and selected.
+    /// Guarantees: every present column appears once in the selected schema, in
+    /// payload-spec declaration order.
+    #[test]
+    fn test_single_batch() {
+        let batch = create_log_attrs_batch();
+
+        let records = vec![Some(&batch)];
+        let index = index_records(records.into_iter(), payloads::get(LogAttrs)).unwrap();
+        let actual = select_schema(&index).unwrap();
+
+        let names: Vec<&str> = actual
+            .schema
+            .fields()
+            .iter()
+            .map(|f| f.name().as_str())
+            .collect();
+        assert_eq!(names, vec!["parent_id", "key", "type"]);
+    }
+
+    /// Scenario: two identical LogAttrs batches are indexed together.
+    /// Guarantees: the shared columns are emitted exactly once and marked
+    /// non-nullable because they are present in every batch.
+    #[test]
+    fn test_same_fields() {
+        let batch1 = create_log_attrs_batch();
+        let batch2 = create_log_attrs_batch();
 
         let records = vec![Some(&batch1), Some(&batch2)];
-        let index = index_records(records.into_iter()).unwrap();
-        let schema = select_schema(&index, def).unwrap();
+        let index = index_records(records.into_iter(), payloads::get(LogAttrs)).unwrap();
+        let actual = select_schema(&index).unwrap();
 
-        // Without spec enforcement this would be Dict(u8, Utf8).
-        // With spec enforcement it must be Dict(u16, Utf8).
-        let field = schema.field_with_name("str").unwrap();
+        let names: Vec<&str> = actual
+            .schema
+            .fields()
+            .iter()
+            .map(|f| f.name().as_str())
+            .collect();
+        assert_eq!(names, vec!["parent_id", "key", "type"]);
+        for field in actual.schema.fields() {
+            assert!(
+                !field.is_nullable(),
+                "field {} present in all batches must be non-nullable",
+                field.name()
+            );
+        }
+    }
+
+    /// Scenario: real LogAttrs columns appear in different subsets across three
+    /// batches (parent_id in all, str/int in some).
+    /// Guarantees: the union of columns is emitted; columns absent from some
+    /// batch are nullable while the ever-present column is not.
+    #[test]
+    fn test_mixed_fields_nullability() {
+        let batch1 = record_batch!((ATTRIBUTE_STR, (UInt8, Utf8), ([0, 1], ["a", "b"]))).unwrap();
+        let batch2 = record_batch!((ATTRIBUTE_INT, (UInt8, Int64), ([0, 1], [10i64, 20]))).unwrap();
+        let batch3 = record_batch!(
+            (ATTRIBUTE_STR, (UInt8, Utf8), ([0, 1], ["a", "b"])),
+            (ATTRIBUTE_INT, (UInt8, Int64), ([0, 1], [10i64, 20]))
+        )
+        .unwrap();
+
+        let records = vec![Some(&batch1), Some(&batch2), Some(&batch3)];
+        let index = index_records(records.into_iter(), payloads::get(LogAttrs)).unwrap();
+        let actual = select_schema(&index).unwrap();
+
+        // str is missing from batch2, int is missing from batch1: both nullable.
+        let str_field = actual.schema.field_with_name(ATTRIBUTE_STR).unwrap();
+        let int_field = actual.schema.field_with_name(ATTRIBUTE_INT).unwrap();
+        assert!(str_field.is_nullable());
+        assert!(int_field.is_nullable());
+    }
+
+    /// Scenario: one column (key) is present in all batches while other columns
+    /// each appear in only one.
+    /// Guarantees: the common column is non-nullable and the per-batch-unique
+    /// columns are nullable, all emitted in spec order.
+    #[test]
+    fn test_multiple_batches_one_common_field() {
+        let batch1 = record_batch!(
+            (ATTRIBUTE_KEY, (UInt8, Utf8), ([0, 1], ["a", "b"])),
+            (ATTRIBUTE_STR, (UInt8, Utf8), ([0, 1], ["a", "b"]))
+        )
+        .unwrap();
+        let batch2 = record_batch!(
+            (ATTRIBUTE_KEY, (UInt8, Utf8), ([0, 1], ["a", "b"])),
+            (ATTRIBUTE_INT, (UInt8, Int64), ([0, 1], [10i64, 20]))
+        )
+        .unwrap();
+        let batch3 = record_batch!(
+            (ATTRIBUTE_KEY, (UInt8, Utf8), ([0, 1], ["a", "b"])),
+            (ATTRIBUTE_SER, (UInt8, Utf8), ([0, 1], ["a", "b"]))
+        )
+        .unwrap();
+
+        let records = vec![Some(&batch1), Some(&batch2), Some(&batch3)];
+        let index = index_records(records.into_iter(), payloads::get(LogAttrs)).unwrap();
+        let actual = select_schema(&index).unwrap();
+
+        let key_field = actual.schema.field_with_name(ATTRIBUTE_KEY).unwrap();
+        assert!(!key_field.is_nullable(), "key present in all batches");
+        assert!(
+            actual
+                .schema
+                .field_with_name(ATTRIBUTE_STR)
+                .unwrap()
+                .is_nullable()
+        );
+        assert!(
+            actual
+                .schema
+                .field_with_name(ATTRIBUTE_INT)
+                .unwrap()
+                .is_nullable()
+        );
+        assert!(
+            actual
+                .schema
+                .field_with_name(ATTRIBUTE_SER)
+                .unwrap()
+                .is_nullable()
+        );
+    }
+
+    /// Scenario: the same real dictionary column (str) is carried with u8 keys in
+    /// two batches and u16 keys in a third.
+    /// Guarantees: physical-value-count selection keeps the low-cardinality
+    /// column at the spec-required u16 key without erroring on mixed input keys.
+    #[test]
+    fn test_cardinality_mixed_key_types() {
+        let batch1 = create_low_cardinality_u8_utf8_batch(ATTRIBUTE_STR, 3);
+        let batch2 = {
+            let keys = UInt16Array::from(vec![0u16, 1]);
+            let values: Arc<dyn Array> =
+                Arc::new(StringArray::from(vec!["val_0".to_string(), "val_9".into()]));
+            create_dict_batch(ATTRIBUTE_STR, keys, values, DataType::Utf8)
+        };
+        let batch3 = create_low_cardinality_u8_utf8_batch(ATTRIBUTE_STR, 2);
+
+        let records = vec![Some(&batch1), Some(&batch2), Some(&batch3)];
+        let index = index_records(records.into_iter(), payloads::get(LogAttrs)).unwrap();
+        let actual = select_schema(&index).unwrap();
+
+        let field = actual.schema.field_with_name(ATTRIBUTE_STR).unwrap();
+        assert_eq!(
+            field.data_type(),
+            &DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+        );
+    }
+
+    /// Scenario: Two FixedSizeBinary dictionaries overlap enough for their distinct
+    /// values to fit u16, but their summed physical value arrays exceed the u16 limit.
+    /// Guarantees: Concatenation falls back to plain values instead of overflowing
+    /// Arrow's dictionary keys or panicking.
+    #[test]
+    fn test_overlapping_fsb_dictionaries_fall_back_to_plain() {
+        let count = (MAX_U16_CARDINALITY / 2) + 1;
+        let overlap = count / 2;
+        let batch1 = create_fsb_dictionary_batch(0, count);
+        let batch2 = create_fsb_dictionary_batch(overlap, count);
+
+        let batch = concat_logs_root(batch1, batch2);
+
+        assert_eq!(batch.num_rows(), 2 * count);
+        let trace_id = batch.schema().field_with_name(TRACE_ID).unwrap().clone();
+        assert_eq!(trace_id.data_type(), &DataType::FixedSizeBinary(16));
+        let column = batch.column_by_name(TRACE_ID).expect("trace_id column");
+        assert_overlapping_fsb_values(column, count, overlap);
+    }
+
+    /// Scenario: A Binary dictionary nested in the Logs "body" struct has
+    /// overlapping values whose summed physical length exceeds the u16 limit.
+    /// Guarantees: Nested dictionary selection uses the same physical bound and
+    /// concatenation produces a plain nested field without panicking.
+    #[test]
+    fn test_nested_overlapping_dictionaries_fall_back_to_plain() {
+        let count = (MAX_U16_CARDINALITY / 2) + 1;
+        let overlap = count / 2;
+        let batch1 = create_struct_binary_dictionary_batch(0, count);
+        let batch2 = create_struct_binary_dictionary_batch(overlap, count);
+
+        let batch = concat_logs_root(batch1, batch2);
+        let schema = batch.schema();
+        let body = schema.field_with_name(BODY).unwrap();
+        let DataType::Struct(fields) = body.data_type() else {
+            panic!("expected struct field");
+        };
+
+        assert_eq!(batch.num_rows(), 2 * count);
+        let ser_field = fields
+            .iter()
+            .find(|f| f.name() == ATTRIBUTE_SER)
+            .expect("ser child");
+        assert_eq!(ser_field.data_type(), &DataType::Binary);
+    }
+
+    /// Scenario: Dictionary value arrays contain one more physical slot than the
+    /// u8 limit, but only that limit's number of non-null values, in a real
+    /// FixedSizeBinary(8) column (span_id).
+    /// Guarantees: Key selection counts the null slot and selects u16 rather than
+    /// underestimating the physical dictionary length as fitting u8.
+    #[test]
+    fn test_dictionary_physical_bound_includes_null_slots() {
+        let physical_count = MAX_U8_CARDINALITY + 1;
+        let first_count = physical_count / 2;
+        let second_count = physical_count - first_count;
+        let raw1 = (0..first_count)
+            .map(|i| (i as u64).to_le_bytes())
+            .collect::<Vec<_>>();
+        let values1 = FixedSizeBinaryArray::try_from_sparse_iter_with_size(
+            raw1.iter()
+                .enumerate()
+                .map(|(i, value)| (i != 0).then_some(value.as_slice())),
+            8,
+        )
+        .unwrap();
+        let raw2 = (first_count..physical_count)
+            .map(|i| (i as u64).to_le_bytes())
+            .collect::<Vec<_>>();
+        let values2 =
+            FixedSizeBinaryArray::try_from_iter(raw2.iter().map(|value| value.as_slice())).unwrap();
+        let keys1 = UInt8Array::from((0..first_count).map(|i| i as u8).collect::<Vec<_>>());
+        let keys2 = UInt8Array::from((0..second_count).map(|i| i as u8).collect::<Vec<_>>());
+        let batch1 = create_dict_batch(
+            SPAN_ID,
+            keys1,
+            Arc::new(values1),
+            DataType::FixedSizeBinary(8),
+        );
+        let batch2 = create_dict_batch(
+            SPAN_ID,
+            keys2,
+            Arc::new(values2),
+            DataType::FixedSizeBinary(8),
+        );
+
+        let records = vec![Some(&batch1), Some(&batch2)];
+        let index = index_records(records.into_iter(), payloads::get(Logs)).unwrap();
+        let schema = select_schema(&index).unwrap();
+
+        let field = schema.schema.field_with_name(SPAN_ID).unwrap();
+        assert_eq!(
+            field.data_type(),
+            &DataType::Dictionary(
+                Box::new(DataType::UInt16),
+                Box::new(DataType::FixedSizeBinary(8))
+            )
+        );
+    }
+
+    /// Scenario: LogAttrs "str" column arrives as low-cardinality Dict(u8, Utf8)
+    /// in every batch, but the spec requires a u16 minimum key.
+    /// Guarantees: schema selection upgrades the key to u16 despite the physical
+    /// value count fitting in u8.
+    #[test]
+    fn test_u16_attrs_str_column_enforces_u16_key() {
+        let batch1 = create_low_cardinality_u8_utf8_batch(ATTRIBUTE_STR, 10);
+        let batch2 = create_low_cardinality_u8_utf8_batch(ATTRIBUTE_STR, 5);
+
+        let records = vec![Some(&batch1), Some(&batch2)];
+        let index = index_records(records.into_iter(), payloads::get(LogAttrs)).unwrap();
+        let schema = select_schema(&index).unwrap();
+
+        let field = schema.schema.field_with_name(ATTRIBUTE_STR).unwrap();
         assert_eq!(
             field.data_type(),
             &DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
@@ -1471,19 +1634,19 @@ mod schema_tests {
         );
     }
 
+    /// Scenario: ResourceAttrs "int" column arrives as low-cardinality
+    /// Dict(u8, Int64), but the spec requires a u16 minimum key.
+    /// Guarantees: schema selection upgrades the key to u16.
     #[test]
     fn test_u16_attrs_int_column_enforces_u16_key() {
-        let def =
-            payloads::get(crate::proto::opentelemetry::arrow::v1::ArrowPayloadType::ResourceAttrs);
-
-        let batch1 = create_low_cardinality_u8_int64_batch("int", 10);
-        let batch2 = create_low_cardinality_u8_int64_batch("int", 5);
+        let batch1 = create_low_cardinality_u8_int64_batch(ATTRIBUTE_INT, 10);
+        let batch2 = create_low_cardinality_u8_int64_batch(ATTRIBUTE_INT, 5);
 
         let records = vec![Some(&batch1), Some(&batch2)];
-        let index = index_records(records.into_iter()).unwrap();
-        let schema = select_schema(&index, def).unwrap();
+        let index = index_records(records.into_iter(), payloads::get(ResourceAttrs)).unwrap();
+        let schema = select_schema(&index).unwrap();
 
-        let field = schema.field_with_name("int").unwrap();
+        let field = schema.schema.field_with_name(ATTRIBUTE_INT).unwrap();
         assert_eq!(
             field.data_type(),
             &DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Int64)),
@@ -1492,19 +1655,20 @@ mod schema_tests {
         );
     }
 
+    /// Scenario: the 32-bit-parent attribute schema (SpanEventAttrs) "str" column
+    /// arrives as low-cardinality Dict(u8, Utf8).
+    /// Guarantees: the u16 minimum key requirement holds for the 32-bit-parent
+    /// attribute schema too.
     #[test]
     fn test_u32_attrs_str_column_enforces_u16_key() {
-        let def =
-            payloads::get(crate::proto::opentelemetry::arrow::v1::ArrowPayloadType::SpanEventAttrs);
-
-        let batch1 = create_low_cardinality_u8_utf8_batch("str", 10);
-        let batch2 = create_low_cardinality_u8_utf8_batch("str", 5);
+        let batch1 = create_low_cardinality_u8_utf8_batch(ATTRIBUTE_STR, 10);
+        let batch2 = create_low_cardinality_u8_utf8_batch(ATTRIBUTE_STR, 5);
 
         let records = vec![Some(&batch1), Some(&batch2)];
-        let index = index_records(records.into_iter()).unwrap();
-        let schema = select_schema(&index, def).unwrap();
+        let index = index_records(records.into_iter(), payloads::get(SpanEventAttrs)).unwrap();
+        let schema = select_schema(&index).unwrap();
 
-        let field = schema.field_with_name("str").unwrap();
+        let field = schema.schema.field_with_name(ATTRIBUTE_STR).unwrap();
         assert_eq!(
             field.data_type(),
             &DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
@@ -1513,22 +1677,23 @@ mod schema_tests {
         );
     }
 
+    /// Scenario: the Logs "body" struct carries a low-cardinality Dict(u8, Utf8)
+    /// "str" child.
+    /// Guarantees: the u16 minimum key requirement is enforced on struct children.
     #[test]
     fn test_logs_body_str_enforces_u16_key() {
-        let def = payloads::get(Logs);
-
-        let batch1 = create_struct_with_u8_dict_batch("body", "str", 10);
-        let batch2 = create_struct_with_u8_dict_batch("body", "str", 5);
+        let batch1 = create_struct_with_u8_dict_batch(BODY, ATTRIBUTE_STR, 10);
+        let batch2 = create_struct_with_u8_dict_batch(BODY, ATTRIBUTE_STR, 5);
 
         let records = vec![Some(&batch1), Some(&batch2)];
-        let index = index_records(records.into_iter()).unwrap();
-        let schema = select_schema(&index, def).unwrap();
+        let index = index_records(records.into_iter(), payloads::get(Logs)).unwrap();
+        let schema = select_schema(&index).unwrap();
 
-        let body_field = schema.field_with_name("body").unwrap();
+        let body_field = schema.schema.field_with_name(BODY).unwrap();
         if let DataType::Struct(fields) = body_field.data_type() {
             let str_field = fields
                 .iter()
-                .find(|f| f.name() == "str")
+                .find(|f| f.name() == ATTRIBUTE_STR)
                 .expect("str field should exist in body struct");
             assert_eq!(
                 str_field.data_type(),
@@ -1544,22 +1709,24 @@ mod schema_tests {
         }
     }
 
+    /// Scenario: the Logs "body" struct carries a low-cardinality Dict(u8, Utf8)
+    /// "ser" child whose spec value type is Binary.
+    /// Guarantees: struct-child selection upgrades the key to u16 while keeping
+    /// the incoming Utf8 value type recorded from the batch.
     #[test]
     fn test_logs_body_ser_enforces_u16_key() {
-        let def = payloads::get(Logs);
-
-        let batch1 = create_struct_with_u8_dict_batch("body", "ser", 10);
-        let batch2 = create_struct_with_u8_dict_batch("body", "ser", 5);
+        let batch1 = create_struct_with_u8_dict_batch(BODY, ATTRIBUTE_SER, 10);
+        let batch2 = create_struct_with_u8_dict_batch(BODY, ATTRIBUTE_SER, 5);
 
         let records = vec![Some(&batch1), Some(&batch2)];
-        let index = index_records(records.into_iter()).unwrap();
-        let schema = select_schema(&index, def).unwrap();
+        let index = index_records(records.into_iter(), payloads::get(Logs)).unwrap();
+        let schema = select_schema(&index).unwrap();
 
-        let body_field = schema.field_with_name("body").unwrap();
+        let body_field = schema.schema.field_with_name(BODY).unwrap();
         if let DataType::Struct(fields) = body_field.data_type() {
             let ser_field = fields
                 .iter()
-                .find(|f| f.name() == "ser")
+                .find(|f| f.name() == ATTRIBUTE_SER)
                 .expect("ser field should exist in body struct");
             assert_eq!(
                 ser_field.data_type(),
@@ -1575,18 +1742,19 @@ mod schema_tests {
         }
     }
 
+    /// Scenario: LogAttrs "key" column arrives as low-cardinality Dict(u8, Utf8),
+    /// and the spec permits a u8 minimum key.
+    /// Guarantees: schema selection leaves the key at u8 rather than upgrading.
     #[test]
     fn test_attrs_key_column_allows_u8() {
-        let def = payloads::get(LogAttrs);
-
-        let batch1 = create_low_cardinality_u8_utf8_batch("key", 10);
-        let batch2 = create_low_cardinality_u8_utf8_batch("key", 5);
+        let batch1 = create_low_cardinality_u8_utf8_batch(ATTRIBUTE_KEY, 10);
+        let batch2 = create_low_cardinality_u8_utf8_batch(ATTRIBUTE_KEY, 5);
 
         let records = vec![Some(&batch1), Some(&batch2)];
-        let index = index_records(records.into_iter()).unwrap();
-        let schema = select_schema(&index, def).unwrap();
+        let index = index_records(records.into_iter(), payloads::get(LogAttrs)).unwrap();
+        let schema = select_schema(&index).unwrap();
 
-        let field = schema.field_with_name("key").unwrap();
+        let field = schema.schema.field_with_name(ATTRIBUTE_KEY).unwrap();
         assert_eq!(
             field.data_type(),
             &DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
@@ -1595,18 +1763,19 @@ mod schema_tests {
         );
     }
 
+    /// Scenario: the Logs "severity_text" column arrives as low-cardinality
+    /// Dict(u8, Utf8), and the spec permits a u8 minimum key.
+    /// Guarantees: schema selection leaves the key at u8.
     #[test]
     fn test_logs_severity_text_allows_u8() {
-        let def = payloads::get(Logs);
-
-        let batch1 = create_low_cardinality_u8_utf8_batch("severity_text", 10);
-        let batch2 = create_low_cardinality_u8_utf8_batch("severity_text", 5);
+        let batch1 = create_low_cardinality_u8_utf8_batch(SEVERITY_TEXT, 10);
+        let batch2 = create_low_cardinality_u8_utf8_batch(SEVERITY_TEXT, 5);
 
         let records = vec![Some(&batch1), Some(&batch2)];
-        let index = index_records(records.into_iter()).unwrap();
-        let schema = select_schema(&index, def).unwrap();
+        let index = index_records(records.into_iter(), payloads::get(Logs)).unwrap();
+        let schema = select_schema(&index).unwrap();
 
-        let field = schema.field_with_name("severity_text").unwrap();
+        let field = schema.schema.field_with_name(SEVERITY_TEXT).unwrap();
         assert_eq!(
             field.data_type(),
             &DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
@@ -1615,18 +1784,17 @@ mod schema_tests {
         );
     }
 
+    /// Scenario: LogAttrs "type" column (spec: plain UInt8) is delivered
+    /// dictionary-encoded as Dict(u8, UInt8).
+    /// Guarantees: schema selection strips the dictionary and emits native UInt8
+    /// because the spec column is not dictionary-encodable.
     #[test]
     fn test_non_dict_column_strips_dictionary() {
-        let def = payloads::get(LogAttrs);
-
-        // "type" column is UInt8 with no dictionary support in the spec.
-        // If input has it as Dict(u8, UInt8), select_schema should strip the
-        // dictionary and return plain UInt8.
         let keys = UInt8Array::from(vec![0u8, 1, 0, 1]);
         let values: Arc<dyn Array> = Arc::new(UInt8Array::from(vec![1u8, 2]));
         let dict_array = DictionaryArray::<UInt8Type>::try_new(keys, values).unwrap();
         let schema = Arc::new(Schema::new(vec![Field::new(
-            "type",
+            ATTRIBUTE_TYPE,
             DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::UInt8)),
             false,
         )]));
@@ -1636,17 +1804,17 @@ mod schema_tests {
         let values2: Arc<dyn Array> = Arc::new(UInt8Array::from(vec![3u8, 4]));
         let dict_array2 = DictionaryArray::<UInt8Type>::try_new(keys2, values2).unwrap();
         let schema2 = Arc::new(Schema::new(vec![Field::new(
-            "type",
+            ATTRIBUTE_TYPE,
             DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::UInt8)),
             false,
         )]));
         let batch2 = RecordBatch::try_new(schema2, vec![Arc::new(dict_array2)]).unwrap();
 
         let records = vec![Some(&batch1), Some(&batch2)];
-        let index = index_records(records.into_iter()).unwrap();
-        let schema = select_schema(&index, def).unwrap();
+        let index = index_records(records.into_iter(), payloads::get(LogAttrs)).unwrap();
+        let schema = select_schema(&index).unwrap();
 
-        let field = schema.field_with_name("type").unwrap();
+        let field = schema.schema.field_with_name(ATTRIBUTE_TYPE).unwrap();
         assert_eq!(
             field.data_type(),
             &DataType::UInt8,
@@ -1655,364 +1823,194 @@ mod schema_tests {
         );
     }
 
-    /// Helper function to test cardinality selection with specified parameters
-    /// Tests all supported value types automatically, skipping types that can't
-    /// represent the required cardinality.
-    ///
-    /// # Arguments
-    /// * `cardinalities` - List of unique value counts per batch
-    /// * `expected_dict_key` - Expected dictionary key type (None for primitive output)
-    fn test_cardinality_helper(cardinalities: &[usize], expected_dict_key: Option<DataType>) {
-        let total_cardinality: usize = cardinalities.iter().sum();
+    /// Build a minimal spec-valid LogAttrs batch carrying its required columns
+    /// (parent_id, key, type).
+    fn create_log_attrs_batch() -> RecordBatch {
+        let parent_id: ArrayRef = Arc::new(UInt16Array::from(vec![0u16, 1]));
+        let key_keys = UInt8Array::from(vec![0u8, 1]);
+        let key_values: Arc<dyn Array> =
+            Arc::new(StringArray::from(vec!["k0".to_string(), "k1".into()]));
+        let key: ArrayRef =
+            Arc::new(DictionaryArray::<UInt8Type>::try_new(key_keys, key_values).unwrap());
+        let type_col: ArrayRef = Arc::new(UInt8Array::from(vec![1u8, 2]));
 
-        // Get list of value types to test based on cardinality
-        let value_types = get_testable_value_types(total_cardinality);
-
-        for value_type in value_types {
-            test_cardinality_for_type(cardinalities, &value_type, expected_dict_key.clone());
-        }
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("parent_id", DataType::UInt16, false),
+            Field::new(
+                ATTRIBUTE_KEY,
+                DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+                false,
+            ),
+            Field::new(ATTRIBUTE_TYPE, DataType::UInt8, false),
+        ]));
+        RecordBatch::try_new(schema, vec![parent_id, key, type_col]).unwrap()
     }
 
-    /// Get the list of value types that can represent the given cardinality when
-    /// used as values. One and two byte types have to stick within their limits
-    fn get_testable_value_types(cardinality: usize) -> Vec<DataType> {
-        let mut types = vec![];
-
-        // 1 byte types
-        if cardinality < MAX_U8_CARDINALITY {
-            types.push(DataType::UInt8);
-            types.push(DataType::Int8);
-        }
-
-        // 2 byte types
-        if cardinality < MAX_U16_CARDINALITY {
-            types.push(DataType::UInt16);
-            types.push(DataType::Int16);
-            types.push(DataType::Float16);
-        }
-
-        // 4+ byte types
-        types.push(DataType::UInt32);
-        types.push(DataType::UInt64);
-        types.push(DataType::Int32);
-        types.push(DataType::Int64);
-        types.push(DataType::Float32);
-        types.push(DataType::Float64);
-        types.push(DataType::FixedSizeBinary(8));
-        types.push(DataType::FixedSizeBinary(16));
-        types.push(DataType::Utf8);
-        types.push(DataType::LargeUtf8);
-        types.push(DataType::LargeBinary);
-
-        types
+    /// Build a root-Logs batch whose "body" struct carries the required "type"
+    /// child plus one optional value child. `value_child` is (name, array,
+    /// arrow_type) so callers can vary which optional body column is present.
+    fn logs_body_batch(rows: usize, value_child: (&str, ArrayRef, DataType)) -> RecordBatch {
+        let (child_name, child_array, child_dt) = value_child;
+        let type_array: ArrayRef =
+            Arc::new(UInt8Array::from((0..rows).map(|_| 1u8).collect::<Vec<_>>()));
+        let type_field = Field::new(ATTRIBUTE_TYPE, DataType::UInt8, false);
+        let value_field = Field::new(child_name, child_dt, false);
+        let struct_array = StructArray::from(vec![
+            (Arc::new(type_field.clone()), type_array),
+            (Arc::new(value_field.clone()), child_array),
+        ]);
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            BODY,
+            DataType::Struct(vec![type_field, value_field].into()),
+            false,
+        )]));
+        RecordBatch::try_new(schema, vec![Arc::new(struct_array)]).unwrap()
     }
 
-    /// Test cardinality selection for a specific value type
-    fn test_cardinality_for_type(
-        cardinalities: &[usize],
-        value_type: &DataType,
-        expected_dict_key: Option<DataType>,
-    ) {
-        let total_cardinality: usize = cardinalities.iter().sum();
-        let key_type_str = match &expected_dict_key {
-            Some(dt) => format!("{:?}", dt),
-            None => "None".to_string(),
+    /// Scenario: two root-Logs batches carry the "body" struct with divergent
+    /// optional children -- a string body ({type, str}) and an integer body
+    /// ({type, int}) -- and are concatenated end to end through the Logs signal
+    /// path.
+    /// Guarantees: concatenation succeeds (no ColumnDataTypeMismatch), the unified
+    /// body struct is the union {type, str, int} in spec order, row counts sum,
+    /// and each optional child is null-padded for the batch that lacked it.
+    #[test]
+    fn test_concatenate_divergent_body_struct_children() {
+        // batch1: string body -> body.str present, body.int absent.
+        let str_keys = UInt8Array::from(vec![0u8, 1]);
+        let str_values: Arc<dyn Array> =
+            Arc::new(StringArray::from(vec!["a".to_string(), "b".into()]));
+        let str_array: ArrayRef =
+            Arc::new(DictionaryArray::<UInt8Type>::try_new(str_keys, str_values).unwrap());
+        let batch1 = logs_body_batch(
+            2,
+            (
+                ATTRIBUTE_STR,
+                str_array,
+                DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+            ),
+        );
+
+        // batch2: integer body -> body.int present, body.str absent.
+        let int_keys = UInt8Array::from(vec![0u8, 1, 0]);
+        let int_values: Arc<dyn Array> = Arc::new(Int64Array::from(vec![10i64, 20]));
+        let int_array: ArrayRef =
+            Arc::new(DictionaryArray::<UInt8Type>::try_new(int_keys, int_values).unwrap());
+        let batch2 = logs_body_batch(
+            3,
+            (
+                ATTRIBUTE_INT,
+                int_array,
+                DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Int64)),
+            ),
+        );
+
+        let batch = concat_logs_root(batch1, batch2);
+
+        assert_eq!(batch.num_rows(), 5, "row counts should sum");
+
+        let body = batch.schema().field_with_name(BODY).unwrap().clone();
+        let DataType::Struct(fields) = body.data_type() else {
+            panic!("expected body struct, got {:?}", body.data_type());
         };
-        let test_context = format!(
-            "[value_type={:?}, total_cardinality={}, cardinalities={:?}, expected_key={}]",
-            value_type, total_cardinality, cardinalities, key_type_str
-        );
-
-        let batches = generate_batches_with_cardinality(cardinalities, value_type);
-        let batch_refs: Vec<Option<&RecordBatch>> = batches.iter().map(Some).collect();
-
-        // Test schema selection
-        let index = index_records(batch_refs.into_iter())
-            .unwrap_or_else(|e| panic!("Failed to index records {}: {:?}", test_context, e));
-        let actual_schema = select_schema(&index, &TEST_DATA_DEF)
-            .unwrap_or_else(|e| panic!("Failed to select schema {}: {:?}", test_context, e));
-
-        let expected_field_type = match expected_dict_key.clone() {
-            Some(key_type) => {
-                DataType::Dictionary(Box::new(key_type), Box::new(value_type.clone()))
-            }
-            None => value_type.clone(),
-        };
-
-        let expected_schema =
-            Schema::new(vec![Field::new("data", expected_field_type.clone(), false)]);
-
-        validate_schema(&actual_schema, &expected_schema);
-
-        // Test actual concatenation
-        let mut batches_for_concat: Vec<[Option<RecordBatch>; 1]> =
-            batches.into_iter().map(|batch| [Some(batch)]).collect();
-
-        let result = concatenate::<1>(&mut batches_for_concat)
-            .unwrap_or_else(|e| panic!("Concatenation failed {}: {:?}", test_context, e));
-
-        // Verify concatenated result
+        let names: Vec<&str> = fields.iter().map(|f| f.name().as_str()).collect();
         assert_eq!(
-            result.len(),
-            1,
-            "Should have one output batch {}",
-            test_context
-        );
-        let concatenated_batch = result[0]
-            .as_ref()
-            .unwrap_or_else(|| panic!("Output batch should exist {}", test_context));
-
-        // Verify schema matches expected
-        let output_schema = concatenated_batch.schema();
-        assert_eq!(
-            output_schema.fields().len(),
-            1,
-            "Should have exactly one field {}",
-            test_context
-        );
-        let output_field = &output_schema.fields()[0];
-        assert_eq!(
-            output_field.name(),
-            "data",
-            "Field name should be 'data' {}",
-            test_context
-        );
-        assert_eq!(
-            output_field.data_type(),
-            &expected_field_type,
-            "Output field type mismatch {}: expected {:?}, got {:?}",
-            test_context,
-            expected_field_type,
-            output_field.data_type()
+            names,
+            vec![ATTRIBUTE_TYPE, ATTRIBUTE_STR, ATTRIBUTE_INT],
+            "unified body struct should be the union of children in spec order"
         );
 
-        // Verify row count matches sum of input cardinalities
-        let expected_rows: usize = cardinalities.iter().sum();
-        assert_eq!(
-            concatenated_batch.num_rows(),
-            expected_rows,
-            "Row count mismatch {}: expected {} rows, got {}",
-            test_context,
-            expected_rows,
-            concatenated_batch.num_rows()
-        );
-    }
+        let struct_array = batch
+            .column_by_name(BODY)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StructArray>()
+            .expect("body struct array");
 
-    /// Generate record batches with specified cardinalities for a given value type
-    fn generate_batches_with_cardinality(
-        cardinalities: &[usize],
-        value_type: &DataType,
-    ) -> Vec<RecordBatch> {
-        let mut offset = 0;
-        let total_cardinality: usize = cardinalities.iter().sum();
+        // str present for the first two rows (batch1), null-padded for the last
+        // three (batch2 lacked it).
+        let str_col = struct_array.column_by_name(ATTRIBUTE_STR).unwrap();
+        assert_eq!(str_col.null_count(), 3, "str null-padded for int-body rows");
+        assert!(str_col.is_valid(0) && str_col.is_valid(1));
+        assert!(str_col.is_null(2) && str_col.is_null(3) && str_col.is_null(4));
 
-        // Use U16 keys if total cardinality exceeds what U8 can index
-        let use_u16_keys = total_cardinality > MAX_U8_CARDINALITY;
-        cardinalities
-            .iter()
-            .map(|&cardinality| {
-                let batch = if use_u16_keys {
-                    let keys: Vec<u16> = (0..cardinality).map(|i| i as u16).collect();
-                    let values = generate_values_for_type(offset, cardinality, value_type);
-
-                    create_dict_batch("data", UInt16Array::from(keys), values, value_type.clone())
-                } else {
-                    let keys: Vec<u8> = (0..cardinality).map(|i| i as u8).collect();
-                    let values = generate_values_for_type(offset, cardinality, value_type);
-
-                    create_dict_batch("data", UInt8Array::from(keys), values, value_type.clone())
-                };
-                offset += cardinality;
-                batch
-            })
-            .collect()
-    }
-
-    /// Generate an array of values for a specific type starting at a given offset
-    fn generate_values_for_type(
-        start: usize,
-        count: usize,
-        value_type: &DataType,
-    ) -> Arc<dyn Array> {
-        use arrow::array::*;
-
-        let end = start + count;
-        match value_type {
-            DataType::UInt8 => Arc::new(UInt8Array::from(
-                (start..end).map(|i| (i % 256) as u8).collect::<Vec<_>>(),
-            )),
-            DataType::Int8 => Arc::new(Int8Array::from(
-                (start..end)
-                    .map(|i| ((i % 256) as i16 - 128) as i8)
-                    .collect::<Vec<_>>(),
-            )),
-            DataType::UInt16 => Arc::new(UInt16Array::from(
-                (start..end).map(|i| (i % 65536) as u16).collect::<Vec<_>>(),
-            )),
-            DataType::Int16 => Arc::new(Int16Array::from(
-                (start..end)
-                    .map(|i| ((i % 65536) as i32 - 32768) as i16)
-                    .collect::<Vec<_>>(),
-            )),
-            DataType::Float16 => {
-                use arrow::buffer::Buffer;
-                use arrow::datatypes::Float16Type;
-                // Generate unique Float16 values
-                let values: Vec<u16> = (start..end).map(|i| (i % 65536) as u16).collect();
-                let buffer = Buffer::from_slice_ref(&values);
-                Arc::new(PrimitiveArray::<Float16Type>::new(buffer.into(), None))
-            }
-            DataType::UInt32 => Arc::new(UInt32Array::from(
-                (start..end).map(|i| i as u32).collect::<Vec<_>>(),
-            )),
-            DataType::Int32 => Arc::new(Int32Array::from(
-                (start..end).map(|i| i as i32).collect::<Vec<_>>(),
-            )),
-            DataType::Float32 => Arc::new(Float32Array::from(
-                (start..end).map(|i| i as f32 + 0.5).collect::<Vec<_>>(),
-            )),
-            DataType::UInt64 => Arc::new(UInt64Array::from(
-                (start..end).map(|i| i as u64).collect::<Vec<_>>(),
-            )),
-            DataType::Int64 => Arc::new(Int64Array::from(
-                (start..end).map(|i| i as i64).collect::<Vec<_>>(),
-            )),
-            DataType::Float64 => Arc::new(Float64Array::from(
-                (start..end).map(|i| i as f64 + 0.5).collect::<Vec<_>>(),
-            )),
-            DataType::Duration(unit) => {
-                let values = (start..end).map(|i| i as i64).collect::<Vec<_>>();
-                match unit {
-                    arrow_schema::TimeUnit::Second => Arc::new(DurationSecondArray::from(values)),
-                    arrow_schema::TimeUnit::Millisecond => {
-                        Arc::new(DurationMillisecondArray::from(values))
-                    }
-                    arrow_schema::TimeUnit::Microsecond => {
-                        Arc::new(DurationMicrosecondArray::from(values))
-                    }
-                    arrow_schema::TimeUnit::Nanosecond => {
-                        Arc::new(DurationNanosecondArray::from(values))
-                    }
-                }
-            }
-            DataType::Timestamp(unit, tz) => {
-                // The full value_type (including unit and tz) is forwarded to
-                // cast() below; binding them here documents intent.
-                let _ = (unit, tz);
-                let values = (start..end).map(|i| i as i64).collect::<Vec<_>>();
-                let values: ArrayRef = Arc::new(Int64Array::from(values));
-                cast(values.as_ref(), value_type).unwrap()
-            }
-            DataType::FixedSizeBinary(8) => {
-                use arrow::buffer::Buffer;
-                let values: Vec<u8> = (start..end)
-                    .flat_map(|i| (i as u64).to_le_bytes())
-                    .collect();
-                let buffer = Buffer::from_vec(values);
-                let array = FixedSizeBinaryArray::try_new(8, buffer, None).unwrap();
-                Arc::new(array)
-            }
-            DataType::FixedSizeBinary(16) => {
-                use arrow::buffer::Buffer;
-                let values: Vec<u8> = (start..end)
-                    .flat_map(|i| {
-                        let mut bytes = [0u8; 16];
-                        bytes[0..8].copy_from_slice(&(i as u64).to_le_bytes());
-                        bytes[8..16].copy_from_slice(&(i as u64).to_le_bytes());
-                        bytes
-                    })
-                    .collect();
-                let buffer = Buffer::from_vec(values);
-                Arc::new(FixedSizeBinaryArray::try_new(16, buffer, None).unwrap())
-            }
-            DataType::Utf8 => Arc::new(StringArray::from(
-                (start..end)
-                    .map(|i| format!("value_{}", i))
-                    .collect::<Vec<_>>(),
-            )),
-            DataType::LargeUtf8 => Arc::new(LargeStringArray::from(
-                (start..end)
-                    .map(|i| format!("value_{}", i))
-                    .collect::<Vec<_>>(),
-            )),
-            DataType::LargeBinary => {
-                use arrow::array::GenericBinaryBuilder;
-                let mut builder = GenericBinaryBuilder::<i64>::new();
-                for i in start..end {
-                    let mut bytes = format!("binary_{}", i).into_bytes();
-                    // Add index bytes to ensure uniqueness
-                    bytes.extend_from_slice(&(i as u64).to_le_bytes());
-                    builder.append_value(&bytes);
-                }
-                Arc::new(builder.finish())
-            }
-            _ => panic!("Unsupported value type for test: {:?}", value_type),
-        }
+        // int present for the last three rows (batch2), null-padded for the first
+        // two (batch1 lacked it).
+        let int_col = struct_array.column_by_name(ATTRIBUTE_INT).unwrap();
+        assert_eq!(int_col.null_count(), 2, "int null-padded for str-body rows");
+        assert!(int_col.is_null(0) && int_col.is_null(1));
+        assert!(int_col.is_valid(2) && int_col.is_valid(3) && int_col.is_valid(4));
     }
 }
 
 #[cfg(test)]
 mod index_tests {
     use super::*;
+    use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType::{LogAttrs, Logs};
     use crate::record_batch;
-    use arrow::array::{Int32Array, StructArray};
+    use crate::schema::consts::{
+        ATTRIBUTE_INT, ATTRIBUTE_STR, BODY, DROPPED_ATTRIBUTES_COUNT, FLAGS, SEVERITY_TEXT,
+    };
+    use arrow::array::{Int32Array, StructArray, UInt16Array, UInt32Array};
     use arrow::datatypes::Int32Type;
     use std::sync::Arc;
 
-    #[test]
-    fn test_struct_to_non_struct_mismatch() {
-        let struct_field = Field::new("value", DataType::Int32, true);
+    /// Look up the indexed field for a spec column by name, panicking if absent.
+    fn indexed_field<'a>(index: &'a RecordIndex<'a>, name: &str) -> &'a IndexedField<'a> {
+        let slot = index.fields.schema.slot_of(name).expect("column in spec");
+        index.fields.slots[slot]
+            .as_ref()
+            .unwrap_or_else(|| panic!("field '{}' missing from index", name))
+    }
+
+    /// Build a Logs "body" struct batch with a single Int32 "str"-ish child so we
+    /// can force a struct-vs-non-struct collision on the real "body" column.
+    fn logs_body_struct_batch() -> RecordBatch {
+        let child = Field::new(ATTRIBUTE_STR, DataType::Utf8, true);
         let struct_array = StructArray::from(vec![(
-            Arc::new(struct_field),
-            Arc::new(Int32Array::from(vec![1, 2, 3])) as ArrayRef,
+            Arc::new(child.clone()),
+            Arc::new(arrow::array::StringArray::from(vec!["a", "b", "c"])) as ArrayRef,
         )]);
-        let expected_struct_type =
-            DataType::Struct(vec![Field::new("value", DataType::Int32, true)].into());
-        let schema1 = Arc::new(Schema::new(vec![Field::new(
-            "data",
-            expected_struct_type.clone(),
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            BODY,
+            DataType::Struct(vec![child].into()),
             true,
         )]));
-        let batch1 = RecordBatch::try_new(schema1, vec![Arc::new(struct_array)]).unwrap();
-        let batch2 = record_batch!(("data", Int32, [1, 2, 3])).unwrap();
+        RecordBatch::try_new(schema, vec![Arc::new(struct_array)]).unwrap()
+    }
+
+    /// Scenario: the real Logs "body" column is a struct in one batch and a
+    /// primitive in another.
+    /// Guarantees: index_records surfaces a clean ColumnDataTypeMismatch rather
+    /// than panicking during later casting.
+    #[test]
+    fn test_struct_to_non_struct_mismatch() {
+        let batch1 = logs_body_struct_batch();
+        let batch2 = record_batch!((BODY, Int32, [1, 2, 3])).unwrap();
 
         let records = vec![Some(&batch1), Some(&batch2)];
-        let result = index_records(records.into_iter());
+        let result = index_records(records.into_iter(), payloads::get(Logs));
 
         match result {
-            Err(Error::ColumnDataTypeMismatch {
-                name,
-                expect,
-                actual,
-            }) => {
-                assert_eq!(name, "data");
-                assert_eq!(expect, expected_struct_type);
+            Err(Error::ColumnDataTypeMismatch { name, actual, .. }) => {
+                assert_eq!(name, BODY);
                 assert_eq!(actual, DataType::Int32);
             }
             _ => panic!("Expected ColumnDataTypeMismatch error, got: {:?}", result),
         }
     }
 
+    /// Scenario: the real Logs "body" column is a primitive in the first batch and
+    /// a struct in a later batch.
+    /// Guarantees: index_records surfaces a ColumnDataTypeMismatch naming the
+    /// struct as the divergent type.
     #[test]
     fn test_non_struct_to_struct_mismatch() {
-        let batch1 = record_batch!(("data", Int32, [1, 2, 3])).unwrap();
-
-        let struct_field = Field::new("value", DataType::Int32, true);
-        let struct_array = StructArray::from(vec![(
-            Arc::new(struct_field),
-            Arc::new(Int32Array::from(vec![1, 2, 3])) as ArrayRef,
-        )]);
-        let expected_struct_type =
-            DataType::Struct(vec![Field::new("value", DataType::Int32, true)].into());
-        let schema2 = Arc::new(Schema::new(vec![Field::new(
-            "data",
-            expected_struct_type.clone(),
-            true,
-        )]));
-        let batch2 = RecordBatch::try_new(schema2, vec![Arc::new(struct_array)]).unwrap();
+        let batch1 = record_batch!((BODY, Int32, [1, 2, 3])).unwrap();
+        let batch2 = logs_body_struct_batch();
 
         let records = vec![Some(&batch1), Some(&batch2)];
-        let result = index_records(records.into_iter());
+        let result = index_records(records.into_iter(), payloads::get(Logs));
 
         match result {
             Err(Error::ColumnDataTypeMismatch {
@@ -2020,7 +2018,7 @@ mod index_tests {
                 expect,
                 actual,
             }) => {
-                assert_eq!(name, "data");
+                assert_eq!(name, BODY);
                 assert_eq!(expect, DataType::Int32);
                 assert!(matches!(actual, DataType::Struct { .. }));
             }
@@ -2028,30 +2026,46 @@ mod index_tests {
         }
     }
 
+    /// Scenario: the real LogAttrs "str" column is a dictionary of Int64 values in
+    /// one batch and Utf8 values in another.
+    /// Guarantees: divergent dictionary value types are reported as
+    /// ColumnDataTypeMismatch (the new spec-indexed path compares value types).
     #[test]
     fn test_dictionary_value_type_mismatch() {
-        let batch1 =
-            record_batch!(("status", (UInt8, Int32), ([0, 1, 2], [100, 200, 300]))).unwrap();
-        let batch2 =
-            record_batch!(("status", (UInt8, Utf8), ([0, 1, 2], ["foo", "bar", "baz"]))).unwrap();
+        let batch1 = record_batch!((
+            ATTRIBUTE_STR,
+            (UInt8, Int64),
+            ([0, 1, 2], [100i64, 200, 300])
+        ))
+        .unwrap();
+        let batch2 = record_batch!((
+            ATTRIBUTE_STR,
+            (UInt8, Utf8),
+            ([0, 1, 2], ["foo", "bar", "baz"])
+        ))
+        .unwrap();
 
         let records = vec![Some(&batch1), Some(&batch2)];
-        let result = index_records(records.into_iter());
+        let result = index_records(records.into_iter(), payloads::get(LogAttrs));
 
         match result {
-            Err(Error::DictionaryValueTypeMismatch {
+            Err(Error::ColumnDataTypeMismatch {
                 name,
                 expect,
                 actual,
             }) => {
-                assert_eq!(name, "status");
-                assert_eq!(expect, DataType::Int32);
+                assert_eq!(name, ATTRIBUTE_STR);
+                assert_eq!(expect, DataType::Int64);
                 assert_eq!(actual, DataType::Utf8);
             }
-            _ => panic!("Expected ColumnValueTypeMismatch error, got: {:?}", result),
+            _ => panic!("Expected ColumnDataTypeMismatch error, got: {:?}", result),
         }
     }
 
+    /// Scenario: the real LogAttrs "str" dictionary column arrives with an
+    /// unsupported Int32 key type.
+    /// Guarantees: index_records rejects the key type with
+    /// UnsupportedDictionaryKeyType listing the allowed u8/u16 keys.
     #[test]
     fn test_unsupported_dictionary_key_type() {
         let keys = Int32Array::from(vec![0, 1, 2]);
@@ -2059,14 +2073,14 @@ mod index_tests {
         let dict_array = DictionaryArray::<Int32Type>::try_new(keys, values).unwrap();
 
         let schema = Arc::new(Schema::new(vec![Field::new(
-            "category",
+            ATTRIBUTE_STR,
             DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Utf8)),
             true,
         )]));
         let batch = RecordBatch::try_new(schema, vec![Arc::new(dict_array)]).unwrap();
 
         let records = vec![Some(&batch)];
-        let result = index_records(records.into_iter());
+        let result = index_records(records.into_iter(), payloads::get(LogAttrs));
 
         match result {
             Err(Error::UnsupportedDictionaryKeyType {
@@ -2083,13 +2097,17 @@ mod index_tests {
         }
     }
 
+    /// Scenario: the real Logs "flags" column carries Int32 in one batch and Int64
+    /// in another.
+    /// Guarantees: primitive value-type divergence is reported as
+    /// ColumnDataTypeMismatch.
     #[test]
     fn test_primitive_type_mismatch() {
-        let batch1 = record_batch!(("value", Int32, [1, 2, 3])).unwrap();
-        let batch2 = record_batch!(("value", Int64, [4, 5, 6])).unwrap();
+        let batch1 = record_batch!((FLAGS, Int32, [1, 2, 3])).unwrap();
+        let batch2 = record_batch!((FLAGS, Int64, [4, 5, 6])).unwrap();
 
         let records = vec![Some(&batch1), Some(&batch2)];
-        let result = index_records(records.into_iter());
+        let result = index_records(records.into_iter(), payloads::get(Logs));
 
         match result {
             Err(Error::ColumnDataTypeMismatch {
@@ -2097,7 +2115,7 @@ mod index_tests {
                 expect,
                 actual,
             }) => {
-                assert_eq!(name, "value");
+                assert_eq!(name, FLAGS);
                 assert_eq!(expect, DataType::Int32);
                 assert_eq!(actual, DataType::Int64);
             }
@@ -2105,13 +2123,22 @@ mod index_tests {
         }
     }
 
+    /// Scenario: the real LogAttrs "str" column is a dictionary of Int64 in the
+    /// first batch and a plain Utf8 column in the next.
+    /// Guarantees: the mismatch between the dictionary value type and the plain
+    /// type is reported as ColumnDataTypeMismatch.
     #[test]
     fn test_dictionary_to_primitive_mismatch() {
-        let batch1 = record_batch!(("data", (UInt8, Int32), ([0, 1, 2], [100, 200, 300]))).unwrap();
-        let batch2 = record_batch!(("data", Utf8, ["foo", "bar", "baz"])).unwrap();
+        let batch1 = record_batch!((
+            ATTRIBUTE_STR,
+            (UInt8, Int64),
+            ([0, 1, 2], [100i64, 200, 300])
+        ))
+        .unwrap();
+        let batch2 = record_batch!((ATTRIBUTE_STR, Utf8, ["foo", "bar", "baz"])).unwrap();
 
         let records = vec![Some(&batch1), Some(&batch2)];
-        let result = index_records(records.into_iter());
+        let result = index_records(records.into_iter(), payloads::get(LogAttrs));
 
         match result {
             Err(Error::ColumnDataTypeMismatch {
@@ -2119,83 +2146,119 @@ mod index_tests {
                 expect,
                 actual,
             }) => {
-                assert_eq!(name, "data");
-                assert_eq!(expect, DataType::Int32);
+                assert_eq!(name, ATTRIBUTE_STR);
+                assert_eq!(expect, DataType::Int64);
                 assert_eq!(actual, DataType::Utf8);
             }
             _ => panic!("Expected ColumnDataTypeMismatch error, got: {:?}", result),
         }
     }
 
+    /// Scenario: the real LogAttrs "str" column is a plain Int64 column in the
+    /// first batch and a Utf8 dictionary in the next.
+    /// Guarantees: the divergence is reported as ColumnDataTypeMismatch (the new
+    /// path no longer emits a distinct DictionaryValueTypeMismatch here).
     #[test]
     fn test_primitive_to_dictionary_mismatch() {
-        let batch1 = record_batch!(("data", Int32, [100, 200, 300])).unwrap();
-        let batch2 =
-            record_batch!(("data", (UInt8, Utf8), ([0, 1, 2], ["foo", "bar", "baz"]))).unwrap();
+        let batch1 = record_batch!((ATTRIBUTE_STR, Int64, [100i64, 200, 300])).unwrap();
+        let batch2 = record_batch!((
+            ATTRIBUTE_STR,
+            (UInt8, Utf8),
+            ([0, 1, 2], ["foo", "bar", "baz"])
+        ))
+        .unwrap();
 
         let records = vec![Some(&batch1), Some(&batch2)];
-        let result = index_records(records.into_iter());
+        let result = index_records(records.into_iter(), payloads::get(LogAttrs));
 
         match result {
-            Err(Error::DictionaryValueTypeMismatch {
+            Err(Error::ColumnDataTypeMismatch {
                 name,
                 expect,
                 actual,
             }) => {
-                assert_eq!(name, "data");
-                assert_eq!(expect, DataType::Int32);
+                assert_eq!(name, ATTRIBUTE_STR);
+                assert_eq!(expect, DataType::Int64);
                 assert_eq!(actual, DataType::Utf8);
             }
-            _ => panic!("Expected ColumnValueTypeMismatch error, got: {:?}", result),
+            _ => panic!("Expected ColumnDataTypeMismatch error, got: {:?}", result),
         }
     }
 
+    /// Scenario: the real LogAttrs "int" column arrives plain Int64 in one batch
+    /// and as a Dict(u8, Int64) in another, with matching value types.
+    /// Guarantees: index_records accepts the pair and schema selection emits a
+    /// dictionary (u16 per the "int" spec minimum) rather than erroring.
     #[test]
     fn test_primitive_to_dictionary_upgrade_success() {
-        let batch1 = record_batch!(("data", Int32, [100, 200, 300])).unwrap();
-        let batch2 = record_batch!(("data", (UInt8, Int32), ([0, 1, 2], [100, 400, 500]))).unwrap();
+        let batch1 = record_batch!((ATTRIBUTE_INT, Int64, [100i64, 200, 300])).unwrap();
+        let batch2 = record_batch!((
+            ATTRIBUTE_INT,
+            (UInt8, Int64),
+            ([0, 1, 2], [100i64, 400, 500])
+        ))
+        .unwrap();
 
         let records = vec![Some(&batch1), Some(&batch2)];
-        let index = index_records(records.into_iter()).unwrap();
-        let schema = select_schema(&index, &PayloadSchema::EMPTY).unwrap();
+        let index = index_records(records.into_iter(), payloads::get(LogAttrs)).unwrap();
+        let selected = select_schema(&index).unwrap();
 
-        let field = schema.field_with_name("data").unwrap();
+        let field = selected.schema.field_with_name(ATTRIBUTE_INT).unwrap();
         assert!(
             matches!(
                 field.data_type(),
-                DataType::Dictionary(k, v) if **k == DataType::UInt8 && **v == DataType::Int32
+                DataType::Dictionary(k, v) if **k == DataType::UInt16 && **v == DataType::Int64
             ),
-            "Expected Dictionary(UInt8, Int32), got {:?}",
+            "Expected Dictionary(UInt16, Int64), got {:?}",
             field.data_type()
         );
     }
 
+    /// Scenario: real Logs columns appear in different subsets of batches, some
+    /// with null values and some slots wholly absent (None entries).
+    /// Guarantees: the spec-indexed IndexedField accumulates present_count,
+    /// total_physical_value_count, value_type, is_dictionary, and nullability
+    /// exactly as the concatenation planner relies on.
     #[test]
     fn test_index_fields_with_mixed_types_and_none_batches() {
-        #[rustfmt::skip]
+        // batch0: severity_text (dict u8, 3 rows), flags (3 rows)
         let batch0 = record_batch!(
-            ("status", (UInt8, Utf8), ([0, 1, 2], ["ok", "error", "pending"])),
-            ("count", Int32, [10, 20, 30]),
-            ("name", Utf8, ["alice", "bob", "charlie"])
-        ).unwrap();
-
-        #[rustfmt::skip]
-        let batch2 = record_batch!(
-            ("status", (UInt16, Utf8), ([0, 1], ["ok", "error"])),
-            ("count", Int32, [5, 15]),
-            ("age", Int32, [Some(25), None])
-        ).unwrap();
-
-        #[rustfmt::skip]
-        let batch4 = record_batch!(
-            ("status", (UInt8, Utf8), ([0, 1, 2, 3], ["ok", "error", "pending", "skipped"])),
-            ("name", Utf8, ["dave", "eve", "frank", "grace"])
-        ).unwrap();
-
-        let batch6 = record_batch!(
-            ("count", Int32, [Some(100), None, Some(200)]),
-            ("age", Int32, [30, 40, 50])
+            (
+                SEVERITY_TEXT,
+                (UInt8, Utf8),
+                ([0, 1, 2], ["ok", "warn", "err"])
+            ),
+            (FLAGS, UInt32, [10u32, 20, 30])
         )
+        .unwrap();
+
+        // batch2: severity_text (dict u16, 2 rows), flags (2 rows, one null),
+        // dropped_attributes_count (2 rows)
+        let sev_keys = UInt16Array::from(vec![0u16, 1]);
+        let sev_values: Arc<dyn Array> = Arc::new(arrow::array::StringArray::from(vec![
+            "ok".to_string(),
+            "warn".into(),
+        ]));
+        let sev = Arc::new(DictionaryArray::<UInt16Type>::try_new(sev_keys, sev_values).unwrap());
+        let flags2: ArrayRef = Arc::new(UInt32Array::from(vec![Some(5u32), None]));
+        let dropped2: ArrayRef = Arc::new(UInt32Array::from(vec![1u32, 2]));
+        let schema2 = Arc::new(Schema::new(vec![
+            Field::new(
+                SEVERITY_TEXT,
+                DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+                true,
+            ),
+            Field::new(FLAGS, DataType::UInt32, true),
+            Field::new(DROPPED_ATTRIBUTES_COUNT, DataType::UInt32, true),
+        ]));
+        let batch2 = RecordBatch::try_new(schema2, vec![sev, flags2, dropped2]).unwrap();
+
+        // batch3: severity_text (dict u8, 4 rows)
+        let batch3 = record_batch!((
+            SEVERITY_TEXT,
+            (UInt8, Utf8),
+            ([0, 1, 2, 3], ["ok", "warn", "err", "dbg"])
+        ))
         .unwrap();
 
         let records = vec![
@@ -2203,136 +2266,56 @@ mod index_tests {
             None,
             Some(&batch2),
             None,
-            Some(&batch4),
+            Some(&batch3),
             None,
-            None,
-            Some(&batch6),
         ];
+        let index = index_records(records.into_iter(), payloads::get(Logs)).unwrap();
+        assert_eq!(index.batch_count, 3, "batch_count mismatch");
 
-        let result = index_records(records.into_iter()).unwrap();
-        assert_eq!(result.batch_count, 4, "batch_count mismatch");
-        assert_eq!(result.fields.len(), 4, "Expected 4 fields in index");
-
-        // Validate "status" field
-        // Present in batches 0, 2, 4 (indices 0, 2, 4)
-        // Total elements: 3 + 2 + 4 = 9
-        // Total values: 3 + 2 + 4 = 9 (no nulls)
-        // Largest value count: 4 (from batch 4)
-        // Value type: Utf8
-        // Smallest key type: UInt8 (batch 0 and 4 use UInt8, batch 2 uses UInt16)
-        let status_field = result.fields.get("status").expect("status field missing");
-        validate_field(
-            "status",
-            status_field,
-            &DataType::Utf8,
-            Some(DataType::UInt8),
-            9, // total_element_count
-            9, // total_value_count
-            4, // largest_value_count
+        // severity_text: present in all 3 batches, dictionary, Utf8 values.
+        // Physical value counts: 3 + 2 + 4 = 9 across the dictionaries.
+        let sev = indexed_field(&index, SEVERITY_TEXT);
+        assert_eq!(sev.value_type, &DataType::Utf8);
+        assert!(sev.is_dictionary);
+        assert_eq!(sev.present_count, 3);
+        assert_eq!(sev.total_physical_value_count, 9);
+        assert!(
+            !sev.nullable,
+            "severity_text present in every batch, no nulls"
         );
 
-        // Validate "count" field
-        // Present in batches 0, 2, 6 (indices 0, 2, 6)
-        // Total elements: 3 + 2 + 3 = 8
-        // Total values: 3 + 2 + 2 = 7 (one null in batch 6)
-        // Largest value count: 3 (from batch 0)
-        // Value type: Int32
-        // Smallest key type: None (not a dictionary)
-        let count_field = result.fields.get("count").expect("count field missing");
-        validate_field(
-            "count",
-            count_field,
-            &DataType::Int32,
-            None,
-            8, // total_element_count
-            7, // total_value_count
-            3, // largest_value_count
-        );
+        // flags: present in batches 0 and 2 only -> nullable (absent from batch3),
+        // and additionally has a null value in batch2.
+        let flags = indexed_field(&index, FLAGS);
+        assert_eq!(flags.value_type, &DataType::UInt32);
+        assert!(!flags.is_dictionary);
+        assert_eq!(flags.present_count, 2);
+        assert_eq!(flags.total_physical_value_count, 5);
+        assert!(flags.nullable);
 
-        // Validate "name" field
-        // Present in batches 0, 4 (indices 0, 4)
-        // Total elements: 3 + 4 = 7
-        // Total values: 3 + 4 = 7 (no nulls)
-        // Largest value count: 4 (from batch 4)
-        // Value type: Utf8
-        // Smallest key type: None (not a dictionary)
-        let name_field = result.fields.get("name").expect("name field missing");
-        validate_field(
-            "name",
-            name_field,
-            &DataType::Utf8,
-            None,
-            7, // total_element_count
-            7, // total_value_count
-            4, // largest_value_count
-        );
-
-        // Validate "age" field
-        // Present in batches 2, 6 (indices 2, 6)
-        // Total elements: 2 + 3 = 5
-        // Total values: 1 + 3 = 4 (one null in batch 2)
-        // Largest value count: 3 (from batch 6)
-        // Value type: Int32
-        // Smallest key type: None (not a dictionary)
-        let age_field = result.fields.get("age").expect("age field missing");
-        validate_field(
-            "age",
-            age_field,
-            &DataType::Int32,
-            None,
-            5, // total_element_count
-            4, // total_value_count
-            3, // largest_value_count
-        );
-    }
-
-    /// Helper function to validate a single field from the index
-    fn validate_field<'a>(
-        field_name: &str,
-        field_info: &FieldInfo<'a>,
-        expected_value_type: &DataType,
-        expected_smallest_key_type: Option<DataType>,
-        expected_total_element_count: usize,
-        expected_total_value_count: usize,
-        expected_largest_value_count: usize,
-    ) {
-        assert_eq!(
-            field_info.value_type, expected_value_type,
-            "Field '{}': value_type mismatch",
-            field_name
-        );
-        assert_eq!(
-            field_info.smallest_key_type, expected_smallest_key_type,
-            "Field '{}': smallest_key_type mismatch",
-            field_name
-        );
-        assert_eq!(
-            field_info.total_element_count, expected_total_element_count,
-            "Field '{}': total_element_count mismatch",
-            field_name
-        );
-        assert_eq!(
-            field_info.total_value_count, expected_total_value_count,
-            "Field '{}': total_value_count mismatch",
-            field_name
-        );
-        assert_eq!(
-            field_info.largest_value_count, expected_largest_value_count,
-            "Field '{}': largest_value_count mismatch",
-            field_name
-        );
+        // dropped_attributes_count: present in batch2 only -> nullable.
+        let dropped = indexed_field(&index, DROPPED_ATTRIBUTES_COUNT);
+        assert_eq!(dropped.value_type, &DataType::UInt32);
+        assert_eq!(dropped.present_count, 1);
+        assert_eq!(dropped.total_physical_value_count, 2);
+        assert!(dropped.nullable);
     }
 }
 
 #[cfg(test)]
 mod nullability_tests {
     use super::*;
+    use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType::Logs;
     use crate::record_batch;
-    use arrow::array::{Int32Array, StructArray};
+    use crate::schema::consts::{
+        DROPPED_ATTRIBUTES_COUNT, FLAGS, ID, NAME, RESOURCE, SCHEMA_URL, SCOPE, SEVERITY_TEXT,
+        VERSION,
+    };
+    use arrow::array::{StructArray, UInt16Array, UInt32Array};
     use arrow_schema::{Field, Schema};
     use std::sync::Arc;
 
-    /// Helper to assert a field's nullability in a schema
+    /// Assert a top-level field's nullability in the selected schema.
     fn assert_field_nullable(schema: &Schema, field_name: &str, expected_nullable: bool) {
         let field = schema
             .field_with_name(field_name)
@@ -2347,308 +2330,358 @@ mod nullability_tests {
         );
     }
 
-    /// Helper to create a simple struct batch
-    fn create_struct_batch(struct_name: &str, field_name: &str, values: Vec<i32>) -> RecordBatch {
-        let struct_field = Field::new(field_name, DataType::Int32, false);
-        let struct_array = StructArray::from(vec![(
-            Arc::new(struct_field),
-            Arc::new(Int32Array::from(values)) as ArrayRef,
-        )]);
+    /// Select the unified Logs schema from the given batches.
+    fn select_logs(records: Vec<Option<&RecordBatch>>) -> Schema {
+        let index = index_records(records.into_iter(), payloads::get(Logs)).unwrap();
+        select_schema(&index).unwrap().schema
+    }
+
+    /// Build a Logs "resource" struct batch carrying the named u16 "id" child and,
+    /// optionally, a u32 "dropped_attributes_count" child.
+    fn resource_struct_batch(children: &[&str]) -> RecordBatch {
+        let mut fields = Vec::new();
+        let mut arrays: Vec<ArrayRef> = Vec::new();
+        for &name in children {
+            let (dt, array): (DataType, ArrayRef) = match name {
+                ID => (DataType::UInt16, Arc::new(UInt16Array::from(vec![1u16, 2]))),
+                DROPPED_ATTRIBUTES_COUNT => (
+                    DataType::UInt32,
+                    Arc::new(UInt32Array::from(vec![10u32, 20])),
+                ),
+                SCHEMA_URL => {
+                    let keys = arrow::array::UInt8Array::from(vec![0u8, 1]);
+                    let values: Arc<dyn Array> =
+                        Arc::new(arrow::array::StringArray::from(vec!["u0", "u1"]));
+                    (
+                        DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+                        Arc::new(DictionaryArray::<UInt8Type>::try_new(keys, values).unwrap()),
+                    )
+                }
+                other => panic!("unsupported resource child '{}'", other),
+            };
+            fields.push(Field::new(name, dt, false));
+            arrays.push(array);
+        }
+        let struct_fields: Vec<(Arc<Field>, ArrayRef)> =
+            fields.iter().cloned().map(Arc::new).zip(arrays).collect();
+        let struct_array = StructArray::from(struct_fields);
         let schema = Arc::new(Schema::new(vec![Field::new(
-            struct_name,
-            DataType::Struct(vec![Field::new(field_name, DataType::Int32, false)].into()),
+            RESOURCE,
+            DataType::Struct(fields.into()),
             false,
         )]));
         RecordBatch::try_new(schema, vec![Arc::new(struct_array)]).unwrap()
     }
 
+    /// Build a Logs "scope" struct batch carrying the named children.
+    fn scope_struct_batch(children: &[&str]) -> RecordBatch {
+        let mut fields = Vec::new();
+        let mut arrays: Vec<ArrayRef> = Vec::new();
+        for &name in children {
+            let (dt, array): (DataType, ArrayRef) = match name {
+                ID => (DataType::UInt16, Arc::new(UInt16Array::from(vec![1u16]))),
+                DROPPED_ATTRIBUTES_COUNT => {
+                    (DataType::UInt32, Arc::new(UInt32Array::from(vec![10u32])))
+                }
+                NAME | VERSION => {
+                    let keys = arrow::array::UInt8Array::from(vec![0u8]);
+                    let values: Arc<dyn Array> =
+                        Arc::new(arrow::array::StringArray::from(vec!["x"]));
+                    (
+                        DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+                        Arc::new(DictionaryArray::<UInt8Type>::try_new(keys, values).unwrap()),
+                    )
+                }
+                other => panic!("unsupported scope child '{}'", other),
+            };
+            fields.push(Field::new(name, dt, false));
+            arrays.push(array);
+        }
+        let struct_fields: Vec<(Arc<Field>, ArrayRef)> =
+            fields.iter().cloned().map(Arc::new).zip(arrays).collect();
+        let struct_array = StructArray::from(struct_fields);
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            SCOPE,
+            DataType::Struct(fields.into()),
+            false,
+        )]));
+        RecordBatch::try_new(schema, vec![Arc::new(struct_array)]).unwrap()
+    }
+
+    /// Scenario: the real Logs "severity_text" column is present in two batches and
+    /// absent from a third, while "id" is present in all three.
+    /// Guarantees: a column missing from some batch is nullable, and a column
+    /// present in every batch stays non-nullable.
     #[test]
     fn test_field_nullable_when_missing_in_some_batches() {
-        let batch1 = record_batch!(("id", Int32, [1, 2]), ("name", Utf8, ["a", "b"])).unwrap();
-        let batch2 = record_batch!(("id", Int32, [3, 4])).unwrap();
-        let batch3 = record_batch!(("id", Int32, [5, 6]), ("name", Utf8, ["c", "d"])).unwrap();
+        let batch1 = record_batch!(
+            (ID, UInt16, [1u16, 2]),
+            (SEVERITY_TEXT, (UInt8, Utf8), ([0, 1], ["a", "b"]))
+        )
+        .unwrap();
+        let batch2 = record_batch!((ID, UInt16, [3u16, 4])).unwrap();
+        let batch3 = record_batch!(
+            (ID, UInt16, [5u16, 6]),
+            (SEVERITY_TEXT, (UInt8, Utf8), ([0, 1], ["c", "d"]))
+        )
+        .unwrap();
 
-        let records = vec![Some(&batch1), Some(&batch2), Some(&batch3)];
-        let index = index_records(records.into_iter()).unwrap();
-        let schema = select_schema(&index, &PayloadSchema::EMPTY).unwrap();
+        let schema = select_logs(vec![Some(&batch1), Some(&batch2), Some(&batch3)]);
 
-        assert_field_nullable(&schema, "name", true);
-        assert_field_nullable(&schema, "id", false);
+        assert_field_nullable(&schema, SEVERITY_TEXT, true);
+        assert_field_nullable(&schema, ID, false);
     }
 
+    /// Scenario: the real Logs "flags" column has a null value in one batch.
+    /// Guarantees: a column containing a null value is marked nullable even when
+    /// present in every batch.
     #[test]
     fn test_field_nullable_with_null_values_in_array() {
-        let batch1 = record_batch!(("value", Int32, [Some(1), Some(2)])).unwrap();
-        let batch2 = record_batch!(("value", Int32, [Some(3), None])).unwrap();
+        let flags1: ArrayRef = Arc::new(UInt32Array::from(vec![Some(1u32), Some(2)]));
+        let flags2: ArrayRef = Arc::new(UInt32Array::from(vec![Some(3u32), None]));
+        let schema_def = Arc::new(Schema::new(vec![Field::new(FLAGS, DataType::UInt32, true)]));
+        let batch1 = RecordBatch::try_new(schema_def.clone(), vec![flags1]).unwrap();
+        let batch2 = RecordBatch::try_new(schema_def, vec![flags2]).unwrap();
 
-        let records = vec![Some(&batch1), Some(&batch2)];
-        let index = index_records(records.into_iter()).unwrap();
-        let schema = select_schema(&index, &PayloadSchema::EMPTY).unwrap();
+        let schema = select_logs(vec![Some(&batch1), Some(&batch2)]);
 
-        assert_field_nullable(&schema, "value", true);
+        assert_field_nullable(&schema, FLAGS, true);
     }
 
+    /// Scenario: real Logs columns appear in different subsets across three
+    /// batches (id in all, flags in two, severity_text in two).
+    /// Guarantees: only the ever-present column is non-nullable; the others are
+    /// nullable.
     #[test]
     fn test_multiple_fields_nullable_combinations() {
         let batch1 = record_batch!(
-            ("a", Int32, [1, 2]),
-            ("b", Int32, [3, 4]),
-            ("c", Int32, [5, 6])
+            (ID, UInt16, [1u16, 2]),
+            (FLAGS, UInt32, [3u32, 4]),
+            (SEVERITY_TEXT, (UInt8, Utf8), ([0, 1], ["a", "b"]))
         )
         .unwrap();
-        let batch2 = record_batch!(("a", Int32, [7, 8]), ("b", Int32, [9, 10])).unwrap();
-        let batch3 = record_batch!(("a", Int32, [11, 12]), ("c", Int32, [13, 14])).unwrap();
+        let batch2 = record_batch!((ID, UInt16, [7u16, 8]), (FLAGS, UInt32, [9u32, 10])).unwrap();
+        let batch3 = record_batch!(
+            (ID, UInt16, [11u16, 12]),
+            (SEVERITY_TEXT, (UInt8, Utf8), ([0, 1], ["c", "d"]))
+        )
+        .unwrap();
 
-        let records = vec![Some(&batch1), Some(&batch2), Some(&batch3)];
-        let index = index_records(records.into_iter()).unwrap();
-        let schema = select_schema(&index, &PayloadSchema::EMPTY).unwrap();
+        let schema = select_logs(vec![Some(&batch1), Some(&batch2), Some(&batch3)]);
 
-        assert_field_nullable(&schema, "a", false);
-        assert_field_nullable(&schema, "b", true);
-        assert_field_nullable(&schema, "c", true);
+        assert_field_nullable(&schema, ID, false);
+        assert_field_nullable(&schema, FLAGS, true);
+        assert_field_nullable(&schema, SEVERITY_TEXT, true);
     }
 
+    /// Scenario: the real Logs "resource" struct is present in two batches and
+    /// absent from a third that carries only "id".
+    /// Guarantees: the struct column and its children are nullable when the struct
+    /// is missing from some batch.
     #[test]
     fn test_struct_field_nullable_when_struct_missing_from_batches() {
-        let batch1 = create_struct_batch("data", "value", vec![1, 2, 3]);
-        let batch2 = record_batch!(("other", Int32, [1, 2])).unwrap();
-        let batch3 = create_struct_batch("data", "value", vec![4, 5, 6]);
+        let batch1 = resource_struct_batch(&[ID]);
+        let batch2 = record_batch!((ID, UInt16, [1u16, 2])).unwrap();
+        let batch3 = resource_struct_batch(&[ID]);
 
-        let records = vec![Some(&batch1), Some(&batch2), Some(&batch3)];
-        let index = index_records(records.into_iter()).unwrap();
-        let schema = select_schema(&index, &PayloadSchema::EMPTY).unwrap();
+        let schema = select_logs(vec![Some(&batch1), Some(&batch2), Some(&batch3)]);
 
-        // Struct "data" is missing from batch2, so it should be nullable
-        assert_field_nullable(&schema, "data", true);
-        assert_field_nullable(&schema, "other", true);
+        assert_field_nullable(&schema, RESOURCE, true);
+        assert_field_nullable(&schema, ID, true);
 
-        // Check the struct field itself
-        let struct_field = schema.field_with_name("data").unwrap();
-        if let DataType::Struct(fields) = struct_field.data_type() {
-            let value_field = fields
+        let resource = schema.field_with_name(RESOURCE).unwrap();
+        if let DataType::Struct(fields) = resource.data_type() {
+            let id_field = fields
                 .iter()
-                .find(|f| f.name() == "value")
-                .expect("value field should exist");
+                .find(|f| f.name() == ID)
+                .expect("id child should exist");
             assert!(
-                value_field.is_nullable(),
-                "Struct field 'value' should be nullable when parent struct missing from batches"
+                id_field.is_nullable(),
+                "resource.id should be nullable when parent struct missing from batches"
             );
         } else {
-            panic!("Expected Struct type for 'data' field");
+            panic!("Expected Struct type for 'resource' field");
         }
     }
 
+    /// Scenario: a single Logs batch carries a "resource" struct with two present
+    /// children.
+    /// Guarantees: struct-child selection emits every present child in the unified
+    /// struct type.
     #[test]
     fn test_struct_field_nullability_basic() {
-        // Simple test with single batch containing struct with non-nullable fields
-        let struct_fields = vec![
-            Field::new("a", DataType::Int32, false),
-            Field::new("b", DataType::Int32, false),
-        ];
-        let struct_array = StructArray::from(vec![
-            (
-                Arc::new(struct_fields[0].clone()),
-                Arc::new(Int32Array::from(vec![1, 2])) as ArrayRef,
-            ),
-            (
-                Arc::new(struct_fields[1].clone()),
-                Arc::new(Int32Array::from(vec![3, 4])) as ArrayRef,
-            ),
-        ]);
-        let schema1 = Arc::new(Schema::new(vec![Field::new(
-            "data",
-            DataType::Struct(struct_fields.into()),
-            false,
-        )]));
-        let batch = RecordBatch::try_new(schema1, vec![Arc::new(struct_array)]).unwrap();
+        let batch = resource_struct_batch(&[ID, DROPPED_ATTRIBUTES_COUNT]);
 
-        let records = vec![Some(&batch)];
-        let index = index_records(records.into_iter()).unwrap();
-        let schema = select_schema(&index, &PayloadSchema::EMPTY).unwrap();
+        let schema = select_logs(vec![Some(&batch)]);
 
-        // Verify struct fields are present
-        let struct_field = schema.field_with_name("data").unwrap();
-        if let DataType::Struct(fields) = struct_field.data_type() {
+        let resource = schema.field_with_name(RESOURCE).unwrap();
+        if let DataType::Struct(fields) = resource.data_type() {
             assert_eq!(fields.len(), 2, "Should have 2 struct fields");
-            assert!(fields.iter().any(|f| f.name() == "a"),);
-            assert!(fields.iter().any(|f| f.name() == "b"),);
+            assert!(fields.iter().any(|f| f.name() == ID));
+            assert!(fields.iter().any(|f| f.name() == DROPPED_ATTRIBUTES_COUNT));
         } else {
-            panic!("Expected Struct type for 'data' field");
+            panic!("Expected Struct type for 'resource' field");
         }
     }
 
+    /// Scenario: the same "resource" struct with the same two children appears in
+    /// two batches.
+    /// Guarantees: struct children present in every instance stay non-nullable and
+    /// are emitted once.
     #[test]
     fn test_struct_fields_accumulated_across_batches() {
-        let struct_fields = vec![
-            Field::new("a", DataType::Int32, false),
-            Field::new("b", DataType::Int32, false),
-        ];
-        let struct_array1 = StructArray::from(vec![
-            (
-                Arc::new(struct_fields[0].clone()),
-                Arc::new(Int32Array::from(vec![1])) as ArrayRef,
-            ),
-            (
-                Arc::new(struct_fields[1].clone()),
-                Arc::new(Int32Array::from(vec![2])) as ArrayRef,
-            ),
-        ]);
-        let schema1 = Arc::new(Schema::new(vec![Field::new(
-            "data",
-            DataType::Struct(struct_fields.clone().into()),
-            false,
-        )]));
-        let batch1 = RecordBatch::try_new(schema1, vec![Arc::new(struct_array1)]).unwrap();
+        let batch1 = resource_struct_batch(&[ID, DROPPED_ATTRIBUTES_COUNT]);
+        let batch2 = resource_struct_batch(&[ID, DROPPED_ATTRIBUTES_COUNT]);
 
-        // Batch 2: same struct schema with same fields "a" and "b"
-        let struct_fields2 = struct_fields.clone();
-        let struct_array2 = StructArray::from(vec![
-            (
-                Arc::new(struct_fields2[0].clone()),
-                Arc::new(Int32Array::from(vec![3])) as ArrayRef,
-            ),
-            (
-                Arc::new(struct_fields2[1].clone()),
-                Arc::new(Int32Array::from(vec![4])) as ArrayRef,
-            ),
-        ]);
+        let index = index_records(
+            vec![Some(&batch1), Some(&batch2)].into_iter(),
+            payloads::get(Logs),
+        )
+        .unwrap();
 
-        let schema2 = Arc::new(Schema::new(vec![Field::new(
-            "data",
-            DataType::Struct(struct_fields2.into()),
-            false,
-        )]));
-        let batch2 = RecordBatch::try_new(schema2, vec![Arc::new(struct_array2)]).unwrap();
-
-        let records = vec![Some(&batch1), Some(&batch2)];
-        let index = index_records(records.into_iter()).unwrap();
-
-        // Verify internal state: struct fields should be accumulated
-        if let Some(data_field_info) = index.fields.get("data") {
-            assert_eq!(data_field_info.values.len(), 2,);
-
-            if let Some(struct_index) = &data_field_info.struct_index {
-                for (name, field_info) in struct_index.iter() {
-                    assert_eq!(
-                        field_info.values.len(),
-                        2,
-                        "Struct field '{}' should have 2 values (accumulated from both batches), but has {}",
-                        name,
-                        field_info.values.len()
-                    );
-                }
-            }
+        // The resource field should have been indexed from both batches.
+        let slot = index.fields.schema.slot_of(RESOURCE).unwrap();
+        let resource_info = index.fields.slots[slot].as_ref().expect("resource indexed");
+        assert_eq!(resource_info.present_count, 2);
+        let struct_index = resource_info
+            .struct_index
+            .as_ref()
+            .expect("resource has struct children");
+        for child in struct_index.slots.iter().flatten() {
+            assert_eq!(
+                child.present_count, 2,
+                "each present struct child should be seen in both batches"
+            );
         }
 
-        let schema = select_schema(&index, &PayloadSchema::EMPTY).unwrap();
-
-        // Both fields should be present and not nullable (present in all instances)
-        let struct_field = schema.field_with_name("data").unwrap();
-        if let DataType::Struct(fields) = struct_field.data_type() {
+        let schema = select_schema(&index).unwrap().schema;
+        let resource = schema.field_with_name(RESOURCE).unwrap();
+        if let DataType::Struct(fields) = resource.data_type() {
             assert_eq!(fields.len(), 2, "Should have 2 struct fields");
-
-            let a_field = fields.iter().find(|f| f.name() == "a").expect("a exists");
-            let b_field = fields.iter().find(|f| f.name() == "b").expect("b exists");
-
-            assert!(!a_field.is_nullable(),);
-            assert!(!b_field.is_nullable(),);
+            let id_field = fields.iter().find(|f| f.name() == ID).expect("id exists");
+            let dropped_field = fields
+                .iter()
+                .find(|f| f.name() == DROPPED_ATTRIBUTES_COUNT)
+                .expect("dropped exists");
+            assert!(!id_field.is_nullable());
+            assert!(!dropped_field.is_nullable());
         } else {
-            panic!("Expected Struct type for 'data' field");
+            panic!("Expected Struct type for 'resource' field");
         }
     }
 
+    /// Scenario: the "scope" struct carries {id, dropped_attributes_count} in one
+    /// batch and {id, name} in another, i.e. divergent subsets of its optional
+    /// children.
+    /// Guarantees: struct children are unified across batches -- the selected
+    /// struct is the union {id, dropped_attributes_count, name}, with the
+    /// ever-present child non-nullable and children absent from some batch made
+    /// nullable.
     #[test]
-    fn test_struct_field_union_behavior() {
-        // Test verifies that struct fields from different batches are properly unioned.
-        // When struct instances have different fields across batches, all fields should
-        // be included in the final schema and marked nullable when not present in all instances.
+    fn test_struct_children_unified_across_batches() {
+        let batch1 = scope_struct_batch(&[ID, DROPPED_ATTRIBUTES_COUNT]);
+        let batch2 = scope_struct_batch(&[ID, NAME]);
 
-        // Batch 1: struct with fields "a" and "b"
-        let struct_fields1 = vec![
-            Field::new("a", DataType::Int32, false),
-            Field::new("b", DataType::Int32, false),
-        ];
-        let struct_array1 = StructArray::from(vec![
-            (
-                Arc::new(struct_fields1[0].clone()),
-                Arc::new(Int32Array::from(vec![1])) as ArrayRef,
-            ),
-            (
-                Arc::new(struct_fields1[1].clone()),
-                Arc::new(Int32Array::from(vec![2])) as ArrayRef,
-            ),
-        ]);
-        let schema1 = Arc::new(Schema::new(vec![Field::new(
-            "data",
-            DataType::Struct(struct_fields1.into()),
-            false,
-        )]));
-        let batch1 = RecordBatch::try_new(schema1, vec![Arc::new(struct_array1)]).unwrap();
+        let schema = select_logs(vec![Some(&batch1), Some(&batch2)]);
 
-        // Batch 2: struct with fields "a" and "c"
-        let struct_fields2 = vec![
-            Field::new("a", DataType::Int32, false),
-            Field::new("c", DataType::Int32, false),
-        ];
-        let struct_array2 = StructArray::from(vec![
-            (
-                Arc::new(struct_fields2[0].clone()),
-                Arc::new(Int32Array::from(vec![3])) as ArrayRef,
-            ),
-            (
-                Arc::new(struct_fields2[1].clone()),
-                Arc::new(Int32Array::from(vec![4])) as ArrayRef,
-            ),
-        ]);
-        let schema2 = Arc::new(Schema::new(vec![Field::new(
-            "data",
-            DataType::Struct(struct_fields2.into()),
-            false,
-        )]));
-        let batch2 = RecordBatch::try_new(schema2, vec![Arc::new(struct_array2)]).unwrap();
-
-        let records = vec![Some(&batch1), Some(&batch2)];
-        let index = index_records(records.into_iter()).unwrap();
-        let schema = select_schema(&index, &PayloadSchema::EMPTY).unwrap();
-
-        // All three fields (a, b, c) from both batches should be present
-        let struct_field = schema.field_with_name("data").unwrap();
-        if let DataType::Struct(fields) = struct_field.data_type() {
+        let scope = schema.field_with_name(SCOPE).unwrap();
+        if let DataType::Struct(fields) = scope.data_type() {
             let field_names: Vec<&str> = fields.iter().map(|f| f.name().as_str()).collect();
+            assert_eq!(field_names.len(), 3, "expected union of children");
+            assert!(field_names.contains(&ID));
+            assert!(field_names.contains(&DROPPED_ATTRIBUTES_COUNT));
+            assert!(field_names.contains(&NAME));
 
-            // All fields should be present
-            assert_eq!(field_names.len(), 3,);
-            assert!(field_names.contains(&"a"),);
-            assert!(field_names.contains(&"b"),);
-            assert!(field_names.contains(&"c"),);
+            let id_field = fields.iter().find(|f| f.name() == ID).expect("id exists");
+            assert!(!id_field.is_nullable(), "id present in every scope struct");
 
-            // Fields b and c should be nullable since they don't appear in all struct instances
-            let b_field = fields.iter().find(|f| f.name() == "b").expect("b exists");
-            let c_field = fields.iter().find(|f| f.name() == "c").expect("c exists");
-            assert!(b_field.is_nullable(),);
-            assert!(c_field.is_nullable(),);
-
-            // Field a present in all instances should not be nullable
-            let a_field = fields.iter().find(|f| f.name() == "a").expect("a exists");
-            assert!(!a_field.is_nullable(),);
+            let dropped_field = fields
+                .iter()
+                .find(|f| f.name() == DROPPED_ATTRIBUTES_COUNT)
+                .expect("dropped exists");
+            let name_field = fields
+                .iter()
+                .find(|f| f.name() == NAME)
+                .expect("name exists");
+            assert!(dropped_field.is_nullable(), "dropped absent from batch2");
+            assert!(name_field.is_nullable(), "name absent from batch1");
         } else {
-            panic!("Expected Struct type for 'data' field");
+            panic!("Expected Struct type for 'scope' field");
         }
+    }
+
+    /// Scenario: two "scope" structs with the same children but a null value in
+    /// one child of one batch.
+    /// Guarantees: within a consistent struct shape, a null child value makes that
+    /// child nullable while its non-null sibling stays non-nullable.
+    #[test]
+    fn test_struct_child_nullability_from_null_values() {
+        let batch1 =
+            scope_struct_batch_with_nulls(&[(ID, false), (DROPPED_ATTRIBUTES_COUNT, false)]);
+        let batch2 =
+            scope_struct_batch_with_nulls(&[(ID, false), (DROPPED_ATTRIBUTES_COUNT, true)]);
+
+        let schema = select_logs(vec![Some(&batch1), Some(&batch2)]);
+
+        let scope = schema.field_with_name(SCOPE).unwrap();
+        if let DataType::Struct(fields) = scope.data_type() {
+            let id_field = fields.iter().find(|f| f.name() == ID).expect("id exists");
+            let dropped_field = fields
+                .iter()
+                .find(|f| f.name() == DROPPED_ATTRIBUTES_COUNT)
+                .expect("dropped exists");
+            assert!(!id_field.is_nullable(), "id has no null values");
+            assert!(dropped_field.is_nullable(), "dropped had a null value");
+        } else {
+            panic!("Expected Struct type for 'scope' field");
+        }
+    }
+
+    /// Build a "scope" struct where each child is present but may carry a null
+    /// value in its single row.
+    fn scope_struct_batch_with_nulls(children: &[(&str, bool)]) -> RecordBatch {
+        let mut fields = Vec::new();
+        let mut arrays: Vec<ArrayRef> = Vec::new();
+        for &(name, null_value) in children {
+            let (dt, array): (DataType, ArrayRef) = match name {
+                ID => {
+                    let v = if null_value { None } else { Some(1u16) };
+                    (DataType::UInt16, Arc::new(UInt16Array::from(vec![v])))
+                }
+                DROPPED_ATTRIBUTES_COUNT => {
+                    let v = if null_value { None } else { Some(10u32) };
+                    (DataType::UInt32, Arc::new(UInt32Array::from(vec![v])))
+                }
+                other => panic!("unsupported scope child '{}'", other),
+            };
+            fields.push(Field::new(name, dt, true));
+            arrays.push(array);
+        }
+        let struct_fields: Vec<(Arc<Field>, ArrayRef)> =
+            fields.iter().cloned().map(Arc::new).zip(arrays).collect();
+        let struct_array = StructArray::from(struct_fields);
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            SCOPE,
+            DataType::Struct(fields.into()),
+            false,
+        )]));
+        RecordBatch::try_new(schema, vec![Arc::new(struct_array)]).unwrap()
     }
 }
 
 #[cfg(test)]
 mod metadata_tests {
     use super::*;
+    use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType::{Logs, SpanEvents};
     use crate::record_batch;
     use crate::schema::consts::metadata::COLUMN_ENCODING;
     use crate::schema::consts::metadata::encodings::PLAIN;
-    use crate::schema::consts::{ID, PARENT_ID};
-    use arrow::array::{Int32Array, StructArray};
+    use crate::schema::consts::{DROPPED_ATTRIBUTES_COUNT, ID, NAME, PARENT_ID, RESOURCE};
+    use arrow::array::{StructArray, UInt16Array, UInt32Array};
     use arrow_schema::{Field, Schema};
     use std::sync::Arc;
 
-    /// Helper to assert field has expected metadata
+    /// Assert a field carries (or lacks) the expected metadata value.
     fn assert_field_metadata(
         schema: &Schema,
         field_name: &str,
@@ -2683,123 +2716,143 @@ mod metadata_tests {
         }
     }
 
+    fn select_span_events(records: Vec<Option<&RecordBatch>>) -> Schema {
+        let index = index_records(records.into_iter(), payloads::get(SpanEvents)).unwrap();
+        select_schema(&index).unwrap().schema
+    }
+
+    /// Scenario: the real SpanEvents "id" column (spec UInt32) is concatenated.
+    /// Guarantees: the "id" column is stamped with the PLAIN column-encoding
+    /// metadata that downstream transport decoding relies on.
     #[test]
     fn test_metadata_added_to_id_field() {
-        let batch1 = record_batch!(("id", Int32, [1, 2])).unwrap();
-        let batch2 = record_batch!(("id", Int32, [3, 4])).unwrap();
+        let batch1 = record_batch!((ID, UInt32, [1u32, 2])).unwrap();
+        let batch2 = record_batch!((ID, UInt32, [3u32, 4])).unwrap();
 
-        let records = vec![Some(&batch1), Some(&batch2)];
-        let index = index_records(records.into_iter()).unwrap();
-        let schema = select_schema(&index, &PayloadSchema::EMPTY).unwrap();
+        let schema = select_span_events(vec![Some(&batch1), Some(&batch2)]);
 
         assert_field_metadata(&schema, ID, COLUMN_ENCODING, Some(PLAIN));
     }
 
+    /// Scenario: the real SpanEvents "parent_id" column (spec UInt16) is
+    /// concatenated.
+    /// Guarantees: the "parent_id" column is stamped with the PLAIN encoding
+    /// metadata.
     #[test]
     fn test_metadata_added_to_parent_id_field() {
-        let batch1 = record_batch!(("parent_id", Int32, [0, 1])).unwrap();
-        let batch2 = record_batch!(("parent_id", Int32, [2, 3])).unwrap();
+        let batch1 = record_batch!((PARENT_ID, UInt16, [0u16, 1])).unwrap();
+        let batch2 = record_batch!((PARENT_ID, UInt16, [2u16, 3])).unwrap();
 
-        let records = vec![Some(&batch1), Some(&batch2)];
-        let index = index_records(records.into_iter()).unwrap();
-        let schema = select_schema(&index, &PayloadSchema::EMPTY).unwrap();
+        let schema = select_span_events(vec![Some(&batch1), Some(&batch2)]);
 
         assert_field_metadata(&schema, PARENT_ID, COLUMN_ENCODING, Some(PLAIN));
     }
 
+    /// Scenario: the real SpanEvents "name" and "dropped_attributes_count" columns
+    /// are concatenated.
+    /// Guarantees: non-ID columns carry no column-encoding metadata.
     #[test]
     fn test_metadata_not_added_to_regular_fields() {
-        let batch1 = record_batch!(("value", Int32, [1, 2]), ("name", Utf8, ["a", "b"])).unwrap();
-        let batch2 = record_batch!(("value", Int32, [3, 4]), ("name", Utf8, ["c", "d"])).unwrap();
+        let batch1 = record_batch!(
+            (NAME, (UInt8, Utf8), ([0, 1], ["a", "b"])),
+            (DROPPED_ATTRIBUTES_COUNT, UInt32, [1u32, 2])
+        )
+        .unwrap();
+        let batch2 = record_batch!(
+            (NAME, (UInt8, Utf8), ([0, 1], ["c", "d"])),
+            (DROPPED_ATTRIBUTES_COUNT, UInt32, [3u32, 4])
+        )
+        .unwrap();
 
-        let records = vec![Some(&batch1), Some(&batch2)];
-        let index = index_records(records.into_iter()).unwrap();
-        let schema = select_schema(&index, &PayloadSchema::EMPTY).unwrap();
+        let schema = select_span_events(vec![Some(&batch1), Some(&batch2)]);
 
-        assert_field_metadata(&schema, "value", COLUMN_ENCODING, None);
-        assert_field_metadata(&schema, "name", COLUMN_ENCODING, None);
+        assert_field_metadata(&schema, NAME, COLUMN_ENCODING, None);
+        assert_field_metadata(&schema, DROPPED_ATTRIBUTES_COUNT, COLUMN_ENCODING, None);
     }
 
+    /// Scenario: the real SpanEvents "id" column (spec UInt32, not dictionary
+    /// encodable) arrives dictionary-encoded.
+    /// Guarantees: the dictionary is stripped to native UInt32 and the "id" column
+    /// still receives the PLAIN encoding metadata.
     #[test]
     fn test_metadata_added_to_dictionary_id_field() {
-        let batch1 = record_batch!(("id", (UInt8, Int32), ([0, 1], [100, 200]))).unwrap();
-        let batch2 = record_batch!(("id", (UInt8, Int32), ([0, 1], [300, 400]))).unwrap();
+        let batch1 = record_batch!((ID, (UInt8, UInt32), ([0, 1], [100u32, 200]))).unwrap();
+        let batch2 = record_batch!((ID, (UInt8, UInt32), ([0, 1], [300u32, 400]))).unwrap();
 
-        let records = vec![Some(&batch1), Some(&batch2)];
-        let index = index_records(records.into_iter()).unwrap();
-        let schema = select_schema(&index, &PayloadSchema::EMPTY).unwrap();
+        let schema = select_span_events(vec![Some(&batch1), Some(&batch2)]);
 
-        // ID field should get PLAIN metadata even when dictionary-encoded
         assert_field_metadata(&schema, ID, COLUMN_ENCODING, Some(PLAIN));
+        assert_eq!(
+            schema.field_with_name(ID).unwrap().data_type(),
+            &DataType::UInt32,
+            "spec-plain id column should be stripped to native UInt32"
+        );
     }
 
+    /// Scenario: the real Logs "resource" struct contains an "id" child alongside
+    /// a regular child.
+    /// Guarantees: struct children named "id" get the PLAIN encoding metadata
+    /// while regular struct children do not.
     #[test]
     fn test_metadata_added_to_struct_id_fields() {
-        // Test verifies that "id" and "parent_id" fields within structs also get PLAIN metadata,
-        // just like top-level fields with those names.
-
-        // Create struct with "id" and "value" fields
-        let struct_fields = vec![
-            Field::new(ID, DataType::Int32, false),
-            Field::new("value", DataType::Int32, false),
-        ];
+        let id_field = Field::new(ID, DataType::UInt16, false);
+        let dropped_field = Field::new(DROPPED_ATTRIBUTES_COUNT, DataType::UInt32, false);
         let struct_array = StructArray::from(vec![
             (
-                Arc::new(struct_fields[0].clone()),
-                Arc::new(Int32Array::from(vec![1, 2])) as ArrayRef,
+                Arc::new(id_field.clone()),
+                Arc::new(UInt16Array::from(vec![1u16, 2])) as ArrayRef,
             ),
             (
-                Arc::new(struct_fields[1].clone()),
-                Arc::new(Int32Array::from(vec![10, 20])) as ArrayRef,
+                Arc::new(dropped_field.clone()),
+                Arc::new(UInt32Array::from(vec![10u32, 20])) as ArrayRef,
             ),
         ]);
         let schema1 = Arc::new(Schema::new(vec![Field::new(
-            "data",
-            DataType::Struct(struct_fields.into()),
+            RESOURCE,
+            DataType::Struct(vec![id_field, dropped_field].into()),
             false,
         )]));
         let batch = RecordBatch::try_new(schema1, vec![Arc::new(struct_array)]).unwrap();
 
-        let records = vec![Some(&batch)];
-        let index = index_records(records.into_iter()).unwrap();
-        let schema = select_schema(&index, &PayloadSchema::EMPTY).unwrap();
+        let index = index_records(vec![Some(&batch)].into_iter(), payloads::get(Logs)).unwrap();
+        let schema = select_schema(&index).unwrap().schema;
 
-        // Struct subfields named "id" should get PLAIN metadata
-        let struct_field = schema.field_with_name("data").unwrap();
-        if let DataType::Struct(fields) = struct_field.data_type() {
+        let resource = schema.field_with_name(RESOURCE).unwrap();
+        if let DataType::Struct(fields) = resource.data_type() {
             let id_field = fields
                 .iter()
                 .find(|f| f.name() == ID)
                 .expect("id field should exist");
-            let metadata_value = id_field.metadata().get(COLUMN_ENCODING);
             assert_eq!(
-                metadata_value,
+                id_field.metadata().get(COLUMN_ENCODING),
                 Some(&PLAIN.to_string()),
-                "Struct subfield 'id' should have PLAIN encoding metadata"
+                "struct subfield 'id' should have PLAIN encoding metadata"
             );
 
-            let value_field = fields
+            let dropped_field = fields
                 .iter()
-                .find(|f| f.name() == "value")
-                .expect("value field should exist");
-            let value_metadata = value_field.metadata().get(COLUMN_ENCODING);
+                .find(|f| f.name() == DROPPED_ATTRIBUTES_COUNT)
+                .expect("dropped field should exist");
             assert_eq!(
-                value_metadata, None,
-                "Struct field 'value' should not have encoding metadata"
+                dropped_field.metadata().get(COLUMN_ENCODING),
+                None,
+                "regular struct child should not have encoding metadata"
             );
         } else {
-            panic!("Expected Struct type for 'data' field");
+            panic!("Expected Struct type for 'resource' field");
         }
     }
 
+    /// Scenario: the real SpanEvents schema carries both "id" and "parent_id".
+    /// Guarantees: both ID-like columns receive the PLAIN encoding metadata.
     #[test]
     fn test_metadata_on_both_id_and_parent_id() {
-        let batch1 = record_batch!(("id", Int32, [1, 2]), ("parent_id", Int32, [0, 1])).unwrap();
-        let batch2 = record_batch!(("id", Int32, [3, 4]), ("parent_id", Int32, [2, 3])).unwrap();
+        let batch1 =
+            record_batch!((PARENT_ID, UInt16, [0u16, 1]), (ID, UInt32, [1u32, 2])).unwrap();
+        let batch2 =
+            record_batch!((PARENT_ID, UInt16, [2u16, 3]), (ID, UInt32, [3u32, 4])).unwrap();
 
-        let records = vec![Some(&batch1), Some(&batch2)];
-        let index = index_records(records.into_iter()).unwrap();
-        let schema = select_schema(&index, &PayloadSchema::EMPTY).unwrap();
+        let schema = select_span_events(vec![Some(&batch1), Some(&batch2)]);
 
         assert_field_metadata(&schema, ID, COLUMN_ENCODING, Some(PLAIN));
         assert_field_metadata(&schema, PARENT_ID, COLUMN_ENCODING, Some(PLAIN));
@@ -2809,182 +2862,164 @@ mod metadata_tests {
 #[cfg(test)]
 mod struct_field_tests {
     use super::*;
+    use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType::Logs;
     use crate::record_batch;
-    use arrow::array::{DictionaryArray, Int32Array, StringArray, StructArray, UInt8Array};
+    use crate::schema::consts::{ID, RESOURCE, SCHEMA_URL, SCOPE};
+    use arrow::array::{DictionaryArray, StringArray, StructArray, UInt8Array, UInt16Array};
     use arrow::datatypes::UInt8Type;
     use arrow_schema::{Field, Schema};
     use std::sync::Arc;
 
-    /// Helper to create a struct batch with a dictionary field
-    fn create_struct_with_dict_field(
-        struct_name: &str,
-        field_name: &str,
-        keys: Vec<u8>,
-        values: Vec<&str>,
-    ) -> RecordBatch {
-        let key_array = UInt8Array::from(keys);
+    fn select_logs(records: Vec<Option<&RecordBatch>>) -> Schema {
+        let index = index_records(records.into_iter(), payloads::get(Logs)).unwrap();
+        select_schema(&index).unwrap().schema
+    }
+
+    /// Build a Logs "resource" struct whose "schema_url" child is a Dict(u8, Utf8)
+    /// with the given values.
+    fn resource_with_schema_url(values: Vec<&str>) -> RecordBatch {
+        let key_array = UInt8Array::from((0..values.len() as u8).collect::<Vec<_>>());
         let value_array = Arc::new(StringArray::from(values));
         let dict_array = DictionaryArray::<UInt8Type>::new(key_array, value_array);
 
-        let struct_field = Field::new(
-            field_name,
+        let child = Field::new(
+            SCHEMA_URL,
             DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
             false,
         );
         let struct_array = StructArray::from(vec![(
-            Arc::new(struct_field.clone()),
+            Arc::new(child.clone()),
             Arc::new(dict_array) as ArrayRef,
         )]);
-
         let schema = Arc::new(Schema::new(vec![Field::new(
-            struct_name,
-            DataType::Struct(vec![struct_field].into()),
+            RESOURCE,
+            DataType::Struct(vec![child].into()),
             false,
         )]));
         RecordBatch::try_new(schema, vec![Arc::new(struct_array)]).unwrap()
     }
 
+    /// Build a Logs "resource" struct whose "id" child is a plain UInt16.
+    fn resource_with_id(values: Vec<u16>) -> RecordBatch {
+        let child = Field::new(ID, DataType::UInt16, false);
+        let struct_array = StructArray::from(vec![(
+            Arc::new(child.clone()),
+            Arc::new(UInt16Array::from(values)) as ArrayRef,
+        )]);
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            RESOURCE,
+            DataType::Struct(vec![child].into()),
+            false,
+        )]));
+        RecordBatch::try_new(schema, vec![Arc::new(struct_array)]).unwrap()
+    }
+
+    /// Scenario: the Logs "resource" struct carries a "schema_url" dictionary child
+    /// whose spec permits a u8 key.
+    /// Guarantees: struct-child dictionary selection keeps the u8 key type.
     #[test]
     fn test_struct_with_dictionary_field_u8() {
-        let batch1 = create_struct_with_dict_field("data", "status", vec![0, 1], vec!["a", "b"]);
-        let batch2 = create_struct_with_dict_field("data", "status", vec![0, 1], vec!["c", "d"]);
+        let batch1 = resource_with_schema_url(vec!["a", "b"]);
+        let batch2 = resource_with_schema_url(vec!["c", "d"]);
 
-        let records = vec![Some(&batch1), Some(&batch2)];
-        let index = index_records(records.into_iter()).unwrap();
-        let schema = select_schema(&index, &PayloadSchema::EMPTY).unwrap();
+        let schema = select_logs(vec![Some(&batch1), Some(&batch2)]);
 
-        // Check struct field type
-        let struct_field = schema.field_with_name("data").unwrap();
-        if let DataType::Struct(fields) = struct_field.data_type() {
-            let status_field = fields
+        let resource = schema.field_with_name(RESOURCE).unwrap();
+        if let DataType::Struct(fields) = resource.data_type() {
+            let schema_url = fields
                 .iter()
-                .find(|f| f.name() == "status")
-                .expect("status field should exist");
+                .find(|f| f.name() == SCHEMA_URL)
+                .expect("schema_url field should exist");
             assert!(
                 matches!(
-                    status_field.data_type(),
+                    schema_url.data_type(),
                     DataType::Dictionary(k, v) if **k == DataType::UInt8 && **v == DataType::Utf8
                 ),
                 "Expected Dictionary(UInt8, Utf8), got {:?}",
-                status_field.data_type()
+                schema_url.data_type()
             );
         } else {
-            panic!("Expected Struct type for 'data' field");
+            panic!("Expected Struct type for 'resource' field");
         }
     }
 
+    /// Scenario: the Logs "resource" struct carries a plain UInt16 "id" child in
+    /// two batches.
+    /// Guarantees: struct-child selection emits the native primitive type.
     #[test]
     fn test_struct_with_primitive_field() {
-        // Create struct with simple Int32 field
-        let struct_field = Field::new("value", DataType::Int32, false);
-        let struct_array = StructArray::from(vec![(
-            Arc::new(struct_field.clone()),
-            Arc::new(Int32Array::from(vec![1, 2, 3])) as ArrayRef,
-        )]);
-        let schema1 = Arc::new(Schema::new(vec![Field::new(
-            "data",
-            DataType::Struct(vec![struct_field].into()),
-            false,
-        )]));
-        let batch1 = RecordBatch::try_new(schema1, vec![Arc::new(struct_array.clone())]).unwrap();
-        let batch2 = RecordBatch::try_new(
-            Arc::new(Schema::new(vec![Field::new(
-                "data",
-                DataType::Struct(vec![Field::new("value", DataType::Int32, false)].into()),
-                false,
-            )])),
-            vec![Arc::new(struct_array)],
-        )
-        .unwrap();
+        let batch1 = resource_with_id(vec![1, 2, 3]);
+        let batch2 = resource_with_id(vec![4, 5, 6]);
 
-        let records = vec![Some(&batch1), Some(&batch2)];
-        let index = index_records(records.into_iter()).unwrap();
-        let schema = select_schema(&index, &PayloadSchema::EMPTY).unwrap();
+        let schema = select_logs(vec![Some(&batch1), Some(&batch2)]);
 
-        let struct_field = schema.field_with_name("data").unwrap();
-        if let DataType::Struct(fields) = struct_field.data_type() {
-            let value_field = fields
+        let resource = schema.field_with_name(RESOURCE).unwrap();
+        if let DataType::Struct(fields) = resource.data_type() {
+            let id_field = fields
                 .iter()
-                .find(|f| f.name() == "value")
-                .expect("value field should exist");
+                .find(|f| f.name() == ID)
+                .expect("id field should exist");
             assert_eq!(
-                value_field.data_type(),
-                &DataType::Int32,
-                "Expected Int32 type"
+                id_field.data_type(),
+                &DataType::UInt16,
+                "Expected UInt16 type"
             );
         } else {
-            panic!("Expected Struct type for 'data' field");
+            panic!("Expected Struct type for 'resource' field");
         }
     }
 
+    /// Scenario: the Logs "resource" struct is present in one batch and absent from
+    /// another that carries only "id".
+    /// Guarantees: the struct column is nullable when missing from some batch.
     #[test]
     fn test_struct_completely_missing_from_batch() {
-        // Create struct batch
-        let struct_field = Field::new("value", DataType::Int32, false);
-        let struct_array = StructArray::from(vec![(
-            Arc::new(struct_field.clone()),
-            Arc::new(Int32Array::from(vec![1, 2])) as ArrayRef,
-        )]);
-        let schema1 = Arc::new(Schema::new(vec![Field::new(
-            "data",
-            DataType::Struct(vec![struct_field].into()),
-            false,
-        )]));
-        let batch1 = RecordBatch::try_new(schema1, vec![Arc::new(struct_array)]).unwrap();
+        let batch1 = resource_with_id(vec![1, 2]);
+        let batch2 = record_batch!((ID, UInt16, [3u16, 4])).unwrap();
 
-        // Batch without struct
-        let batch2 = record_batch!(("other", Int32, [3, 4])).unwrap();
+        let schema = select_logs(vec![Some(&batch1), Some(&batch2)]);
 
-        let records = vec![Some(&batch1), Some(&batch2)];
-        let index = index_records(records.into_iter()).unwrap();
-        let schema = select_schema(&index, &PayloadSchema::EMPTY).unwrap();
-
-        // Struct field should be nullable when missing from batch
-        let struct_field = schema.field_with_name("data").unwrap();
+        let resource = schema.field_with_name(RESOURCE).unwrap();
         assert!(
-            struct_field.is_nullable(),
+            resource.is_nullable(),
             "Struct should be nullable when missing from some batches"
         );
     }
 
+    /// Scenario: a single Logs batch carries both the "resource" and "scope"
+    /// struct columns.
+    /// Guarantees: multiple struct columns are each emitted in the selected schema.
     #[test]
     fn test_multiple_struct_fields_in_schema() {
-        // Create batch with two different struct fields
-        let struct_field1 = Field::new("value", DataType::Int32, false);
-        let struct_array1 = StructArray::from(vec![(
-            Arc::new(struct_field1.clone()),
-            Arc::new(Int32Array::from(vec![1, 2])) as ArrayRef,
+        let resource_child = Field::new(ID, DataType::UInt16, false);
+        let resource_array = StructArray::from(vec![(
+            Arc::new(resource_child.clone()),
+            Arc::new(UInt16Array::from(vec![1u16, 2])) as ArrayRef,
         )]);
 
-        let struct_field2 = Field::new("name", DataType::Utf8, false);
-        let struct_array2 = StructArray::from(vec![(
-            Arc::new(struct_field2.clone()),
-            Arc::new(StringArray::from(vec!["a", "b"])) as ArrayRef,
+        let scope_child = Field::new(ID, DataType::UInt16, false);
+        let scope_array = StructArray::from(vec![(
+            Arc::new(scope_child.clone()),
+            Arc::new(UInt16Array::from(vec![3u16, 4])) as ArrayRef,
         )]);
 
-        let schema1 = Arc::new(Schema::new(vec![
+        let schema = Arc::new(Schema::new(vec![
             Field::new(
-                "struct1",
-                DataType::Struct(vec![struct_field1].into()),
+                RESOURCE,
+                DataType::Struct(vec![resource_child].into()),
                 false,
             ),
-            Field::new(
-                "struct2",
-                DataType::Struct(vec![struct_field2].into()),
-                false,
-            ),
+            Field::new(SCOPE, DataType::Struct(vec![scope_child].into()), false),
         ]));
         let batch = RecordBatch::try_new(
-            schema1,
-            vec![Arc::new(struct_array1), Arc::new(struct_array2)],
+            schema,
+            vec![Arc::new(resource_array), Arc::new(scope_array)],
         )
         .unwrap();
 
-        let records = vec![Some(&batch)];
-        let index = index_records(records.into_iter()).unwrap();
-        let schema = select_schema(&index, &PayloadSchema::EMPTY).unwrap();
+        let schema = select_logs(vec![Some(&batch)]);
 
-        assert!(schema.field_with_name("struct1").is_ok());
-        assert!(schema.field_with_name("struct2").is_ok());
+        assert!(schema.field_with_name(RESOURCE).is_ok());
+        assert!(schema.field_with_name(SCOPE).is_ok());
     }
 }
