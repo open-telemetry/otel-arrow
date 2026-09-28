@@ -1298,6 +1298,17 @@ python-dateutil==2.9.0.post0 \
     # via
     #   kubernetes
     #   pandas
+pywin32==312 ; sys_platform == "win32" \
+    --hash=sha256:5dbc35d2b520dc07f25fa31269cfb767471002b17de5eb067d03da68c7cb2db \
+    --hash=sha256:a4dd3a848290ef724347b19f30045831d8e802fa4464f491b98b1e0a081432e \
+    --hash=sha256:b457f6d628a47e8a7346ce22acb7e1a46a4a78b52e1d17e1af56871bd19a93bc \
+    --hash=sha256:c2f03a0f73f804a13c2735b99392b0d426bb4f2c4d0178e5ac966a0f21618d5 \
+    --hash=sha256:c53e878d15a1c44788082be712a905433473aa38f86375b7cf8b45e3acbaaf9 \
+    --hash=sha256:d11417d84412f89b722fad0841b3614459ed0047f7542d8362e77884f6b6e8a \
+    --hash=sha256:dc90147579a905b8635e1b0ec6514967dcb07e60d9c42f1477feef14cac23bb
+    # via
+    #   -r tools/pipeline_perf_test/orchestrator/requirements.txt
+    #   docker
 pyyaml==6.0.3 \
     --hash=sha256:00c4bdeba853cc34e7dd471f16b4114f4162dc03e6b7afcc2128711f0eca823c \
     --hash=sha256:0150219816b6a1fa26fb4699fb7daa9caf09eb1999f3b70fb6e786805e80375a \
@@ -1415,6 +1426,12 @@ typing-inspection==0.4.2 \
     --hash=sha256:4ed1cacbdc298c220f1bd249ed5287caa16f34d44ef4e9c3d0cbad5b521545e7 \
     --hash=sha256:ba561c48a67c5958007083d386c3295464928b01faa735ab8547c5692e87f464
     # via pydantic
+tzdata==2026.3 ; sys_platform == "win32" \
+    --hash=sha256:4a1518b8993086a7982523e071643f3c0e5f213e75b21318e78bcabfffd1415 \
+    --hash=sha256:dc096730c87af6cab1b171c9d532be840741ff5d459015e7f6947bd7d7e54931
+    # via
+    #   -r tools/pipeline_perf_test/orchestrator/requirements.txt
+    #   pandas
 urllib3==2.7.0 \
     --hash=sha256:231e0ec3b63ceb14667c67be60f2f2c40a518cb38b03af60abc813da26505f4c \
     --hash=sha256:9fb4c81ebbb1ce9531cce37674bbc6f1360472bc18ca9a553ede278ef7276897

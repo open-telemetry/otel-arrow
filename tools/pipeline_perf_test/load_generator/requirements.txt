@@ -1,4 +1,7 @@
 Flask==3.1.3
+# Required transitively by Click on Windows. Declare it explicitly so the
+# cross-platform hash lock includes its artifacts.
+colorama==0.4.6; sys_platform == "win32"
 grpcio==1.83.0
 opentelemetry-proto==1.44.0
 pydantic==2.13.4
