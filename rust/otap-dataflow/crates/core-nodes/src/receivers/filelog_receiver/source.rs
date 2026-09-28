@@ -226,6 +226,8 @@ impl SourceFile {
     ///
     /// Returns short reads and temporary EOF directly. Empty buffers perform no
     /// read; the range's exclusive end must fit a signed 64-bit offset.
+    /// I/O errors are returned unchanged. If WouldBlock occurs, callers should
+    /// use bounded environmental backoff rather than treat it as EOF.
     /// Cancellation is checked before I/O; completed reads are always reported.
     pub fn read_at(
         &self,
