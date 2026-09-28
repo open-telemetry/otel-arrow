@@ -55,9 +55,6 @@ pub const FLAT_FILE_USER_PASS_AUTH_URN: &str = "urn:otel:extension:flat_file_use
 /// Default refresh interval.
 const DEFAULT_BASIC_AUTH_CREDENTIAL_REFRESH_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
-/// Minimum refresh interval.
-const MINIMUM_BASIC_AUTH_CREDENTIAL_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
-
 /// Deserializes and validates the extension's user configuration.
 fn parse_config(config: &serde_json::Value) -> Result<Config, ConfigError> {
     let parsed: Config =

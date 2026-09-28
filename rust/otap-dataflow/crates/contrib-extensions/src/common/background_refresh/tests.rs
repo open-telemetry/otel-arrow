@@ -52,12 +52,19 @@ async fn ctor_validates_expiry_buffer() {
     );
 }
 
-/// Scenario: Build periodic policies immediately below and at the scheduler's minimum interval.
-/// Guarantees: Sub-ten-second polling is rejected while the ten-second boundary is accepted.
+/// Scenario: Build periodic policies around the scheduler's supported interval boundaries.
+/// Guarantees: Only intervals from ten seconds through 365 days inclusive are accepted.
 #[test]
-fn periodic_validates_minimum_interval() {
+fn periodic_validates_interval_bounds() {
     assert!(BackgroundProviderRefreshPolicy::periodic(Duration::from_secs(9)).is_err());
     assert!(BackgroundProviderRefreshPolicy::periodic(Duration::from_secs(10)).is_ok());
+    assert!(
+        BackgroundProviderRefreshPolicy::periodic(Duration::from_secs(365 * 24 * 60 * 60)).is_ok()
+    );
+    assert!(
+        BackgroundProviderRefreshPolicy::periodic(Duration::from_secs(365 * 24 * 60 * 60 + 1))
+            .is_err()
+    );
 }
 
 /// Scenario: Schedule the next refresh for a token expiring in ~1 hour with a 5m buffer.

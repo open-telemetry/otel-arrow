@@ -143,27 +143,24 @@ fn config_password_secret_file_refresh_accepts_minimum() {
     }))
     .expect("minimum refresh interval is valid");
 
-    assert_eq!(
-        cfg.password_secret_file_refresh,
-        MINIMUM_BASIC_AUTH_CREDENTIAL_REFRESH_INTERVAL
-    );
+    assert_eq!(cfg.password_secret_file_refresh, Duration::from_secs(10));
 }
 
-/// Scenario: Config validation receives a refresh interval that cannot form an `Instant` deadline.
-/// Guarantees: An unsupported refresh interval is rejected before the extension starts.
+/// Scenario: Config validation receives a refresh interval above the practical scheduler maximum.
+/// Guarantees: An interval above 365 days is rejected before the extension starts.
 #[test]
 fn config_password_secret_file_refresh_rejects_unsupported_maximum() {
     let cfg = Config {
         username: "test".into(),
         password_secret: None,
         password_secret_file: Some("<test_secret_path>".into()),
-        password_secret_file_refresh: Duration::MAX,
+        password_secret_file_refresh: Duration::from_secs(365 * 24 * 60 * 60 + 1),
     };
 
     let err = cfg
         .validate()
         .expect_err("an unsupported refresh interval must be rejected");
-    assert!(err.contains("too large for this platform"));
+    assert!(err.contains("no more than 365 days"));
 }
 
 /// Scenario: Config parsing receives an unrecognized field.

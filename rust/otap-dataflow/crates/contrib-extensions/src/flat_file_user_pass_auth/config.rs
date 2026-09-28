@@ -4,12 +4,13 @@
 //! Configuration for the flat file user pass extension.
 
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use otel_arrow_dfe_engine::capability::auth::BasicAuthCredential;
 use secrecy::SecretString;
 use serde::Deserialize;
 
+use crate::common::background_refresh::BackgroundProviderRefreshPolicy;
 use crate::flat_file_user_pass_auth::*;
 
 /// Default password secret file refresh (~1 hr).
@@ -42,7 +43,7 @@ pub struct Config {
 
     /// Refresh duration for the password secret file (if specified). Accepts
     /// human-readable durations (e.g. `5m`, `1h`, `1d`).
-    /// Default value: `1h`. Minimum value: `10s`.
+    /// Default value: `1h`. Minimum value: `10s`. Maximum value: `365d`.
     #[serde(
         with = "humantime_serde",
         default = "default_password_secret_file_refresh"
@@ -67,21 +68,9 @@ impl Config {
         }
 
         if self.password_secret_file.is_some() {
-            if self.password_secret_file_refresh < MINIMUM_BASIC_AUTH_CREDENTIAL_REFRESH_INTERVAL {
-                return Err(
-                    "`password_secret_file_refresh` must be greater than or equal to `10s`"
-                        .to_string(),
-                );
-            }
-
-            if Instant::now()
-                .checked_add(self.password_secret_file_refresh)
-                .is_none()
-            {
-                return Err(
-                    "`password_secret_file_refresh` is too large for this platform".to_string(),
-                );
-            }
+            BackgroundProviderRefreshPolicy::periodic(self.password_secret_file_refresh)
+                .map(|_| ())
+                .map_err(|error| format!("invalid `password_secret_file_refresh`: {error}"))?;
         }
 
         Ok(())

@@ -25,6 +25,9 @@ use super::metrics::{BackgroundProviderMetrics, BackgroundProviderMetricsTracker
 /// Floor between successful refreshes; avoids busy-looping on near-expired
 /// values.
 const MIN_REFRESH_INTERVAL_SECS: u64 = 10;
+/// Practical upper bound for fixed-interval refreshes. Keeping this well below
+/// the platform `Instant` limit makes constructing future deadlines infallible.
+const MAX_PERIODIC_REFRESH_INTERVAL_SECS: u64 = 365 * 24 * 60 * 60;
 /// Base reschedule delay after a failed acquisition. Consecutive failures grow
 /// this exponentially (with jitter) up to `MAX_REFRESH_RETRY_SECS`.
 const REFRESH_RETRY_SECS: u64 = 10;
@@ -171,8 +174,8 @@ impl BackgroundProviderRefreshPolicy {
         if refresh_interval < Duration::from_secs(MIN_REFRESH_INTERVAL_SECS) {
             return Err("refresh_interval should be at least 10 seconds");
         }
-        if Instant::now().checked_add(refresh_interval).is_none() {
-            return Err("refresh_interval is too large for this platform");
+        if refresh_interval > Duration::from_secs(MAX_PERIODIC_REFRESH_INTERVAL_SECS) {
+            return Err("refresh_interval should be no more than 365 days");
         }
 
         Ok(Self {
