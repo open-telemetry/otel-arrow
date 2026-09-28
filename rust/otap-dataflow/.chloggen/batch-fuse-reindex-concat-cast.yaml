@@ -20,6 +20,6 @@ issues: [4170]
 # section with the specific action consumers must take. Keep notes to 200
 # characters and subtext to 300 characters.
 subtext: |
-  Speeds up OTAP batch concatenation by up to 80% by fusing reindexing, casting, and
+  Speeds up OTAP batch concatenation by up to 78% by fusing reindexing, casting, and
   concatenation together which allows for constructing the final column data for a
   batch in place and in one pass.
