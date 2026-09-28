@@ -882,7 +882,7 @@ impl ReloadableClientCaVerifier {
         ca_file_path: PathBuf,
         include_system_cas: bool,
     ) -> Result<Arc<Self>, io::Error> {
-        // Read identity before content so a change racing the initial load is caught later.
+        // Read identity before content so the worker's initial check detects a change racing the load.
         let initial_identity = get_file_identity(&ca_file_path).unwrap_or(0);
         let ca_pem = read_file_with_limit_sync(&ca_file_path)?;
         otel_debug!(
@@ -975,6 +975,7 @@ impl ReloadableClientCaVerifier {
 
         // Capacity 1 coalesces bursts of events into a single pending check.
         let (signal_tx, signal_rx) = mpsc::sync_channel::<()>(1);
+        let initial_check = signal_tx.clone();
         let _ = std::thread::Builder::new()
             .name("tls-client-ca-reload".to_string())
             .spawn(move || state.run(signal_rx))?;
@@ -1012,6 +1013,9 @@ impl ReloadableClientCaVerifier {
         watcher
             .watch(&parent_dir, RecursiveMode::NonRecursive)
             .map_err(io::Error::other)?;
+
+        // Catches a CA change between the initial load and watch registration, which emits no event.
+        let _ = initial_check.try_send(());
 
         otel_info!(
             "tls.file_watcher.setup",
@@ -2514,6 +2518,8 @@ mod tests {
     }
 
     /// Scenario: the watcher is dropped while the worker waits out a long backoff.
+    /// Guarantees: disconnecting the signal channel stops the worker well before the pending
+    /// retry, and the worker releases its handle to the verifier state.
     #[test]
     fn ca_watcher_worker_exits_promptly_when_dropped_during_backoff() {
         crate::crypto::ensure_crypto_provider();
@@ -2546,6 +2552,8 @@ mod tests {
     }
 
     /// Scenario: the verifier (and its watcher) is dropped after a failed reload.
+    /// Guarantees: dropping the verifier shuts down the watcher and its worker, releasing the
+    /// shared verifier state.
     #[test]
     fn ca_watcher_worker_releases_state_when_verifier_dropped() {
         crate::crypto::ensure_crypto_provider();
@@ -2566,6 +2574,43 @@ mod tests {
         assert!(
             wait_until(Duration::from_secs(5), || inner.upgrade().is_none()),
             "worker still holds verifier state after the watcher was dropped"
+        );
+    }
+
+    /// Scenario: the CA file is replaced after the initial load but before the watcher is
+    /// registered, so no filesystem event is ever delivered for the change.
+    /// Guarantees: the worker's initial check reloads the replaced file without another event.
+    #[test]
+    fn ca_watcher_reloads_change_made_before_watch_registration() {
+        crate::crypto::ensure_crypto_provider();
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let ca_path = temp_dir.path().join("ca.crt");
+        fs::write(&ca_path, tls_certs::generate_ca("Test CA 1").cert_pem).expect("Write CA 1");
+
+        let stale_identity = get_file_identity(&ca_path).expect("Read CA 1 identity");
+        let initial = build_webpki_verifier(&fs::read(&ca_path).expect("Read CA 1"), false)
+            .expect("Build initial verifier");
+        let inner = Arc::new(ArcSwap::from_pointee(initial));
+        let loaded = inner.load_full();
+
+        let tmp_path = temp_dir.path().join("ca.crt.tmp");
+        fs::write(&tmp_path, tls_certs::generate_ca("Test CA 2").cert_pem).expect("Write CA 2");
+        fs::rename(&tmp_path, &ca_path).expect("Replace CA");
+
+        let _watcher = ReloadableClientCaVerifier::setup_file_watcher(
+            &ca_path,
+            Arc::clone(&inner),
+            false,
+            stale_identity,
+        )
+        .expect("Set up watcher");
+
+        assert!(
+            wait_until(Duration::from_secs(5), || !Arc::ptr_eq(
+                &inner.load_full(),
+                &loaded
+            )),
+            "change made before watch registration was not reloaded"
         );
     }
 }

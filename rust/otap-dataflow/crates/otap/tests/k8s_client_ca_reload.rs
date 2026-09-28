@@ -183,6 +183,8 @@ async fn build_acceptor(
 
 /// Scenario: a client CA mounted from a Secret/ConfigMap rotates to a new CA
 /// with the same subject name and a different key.
+/// Guarantees: without a restart, the running verifier accepts clients of the new CA and
+/// still accepts clients of the old CA while both are in the bundle.
 #[tokio::test]
 async fn client_ca_reloads_after_atomic_writer_update() {
     otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
@@ -213,6 +215,8 @@ async fn client_ca_reloads_after_atomic_writer_update() {
 }
 
 /// Scenario: a second rotation lands inside the debounce window of the first reload.
+/// Guarantees: the deferred change is applied once the window ends, so the verifier trusts
+/// only the latest CA.
 #[tokio::test]
 async fn client_ca_reloads_rotations_within_debounce_window() {
     otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
@@ -240,6 +244,8 @@ async fn client_ca_reloads_rotations_within_debounce_window() {
 
 /// Scenario: a reload fails, and the file is then fixed without any event on the
 /// watched directory (an in-place write inside the timestamped directory).
+/// Guarantees: the previous CA stays in use while the file is invalid, and a scheduled retry
+/// loads the fixed file without another filesystem event.
 #[tokio::test]
 async fn client_ca_retries_failed_reload_without_new_event() {
     otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
@@ -264,6 +270,8 @@ async fn client_ca_retries_failed_reload_without_new_event() {
 
 /// Scenario: the mounted path is missing after an update, and the file then appears
 /// without any event on the watched directory.
+/// Guarantees: the previous CA stays in use while the path is missing, and a scheduled retry
+/// loads the file once it exists, without another filesystem event.
 #[tokio::test]
 async fn client_ca_retries_missing_path_without_new_event() {
     otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
