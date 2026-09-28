@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790609723911,
+  "lastUpdate": 1790611048374,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -45675,6 +45675,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 104.23,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "29139614+renovate[bot]@users.noreply.github.com",
+            "name": "renovate[bot]",
+            "username": "renovate[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "d415aa53e6511018362942cdf0ab105381d3d494",
+          "message": "chore(deps): update rust patch versions (#4173)\n\nThis PR contains the following updates:\n\n| Package | Type | Update | Change |\n|---|---|---|---|\n| [hyper-util](https://hyper.rs)\n([source](https://redirect.github.com/hyperium/hyper-util)) |\nworkspace.dependencies | patch | `0.1.20` → `0.1.21` |\n| [thiserror](https://redirect.github.com/dtolnay/thiserror) |\nworkspace.dependencies | patch | `2.0.20` → `2.0.21` |\n| [tokio-rustls](https://redirect.github.com/rustls/tokio-rustls) |\nworkspace.dependencies | patch | `0.26.5` → `0.26.6` |\n| [xxhash-rust](https://redirect.github.com/DoumanAsh/xxhash-rust) |\nworkspace.dependencies | patch | `0.8.18` → `0.8.19` |\n\n---\n\n> [!WARNING]\n> Some dependencies could not be looked up. Check the [Dependency\nDashboard](../issues/417) for more information.\n\n---\n\n### Release Notes\n\n<details>\n<summary>hyperium/hyper-util (hyper-util)</summary>\n\n###\n[`v0.1.21`](https://redirect.github.com/hyperium/hyper-util/blob/HEAD/CHANGELOG.md#0121-2026-09-24)\n\n[Compare\nSource](https://redirect.github.com/hyperium/hyper-util/compare/v0.1.20...v0.1.21)\n\nThis release bumps the minimal supported Rust version (MSRV) from 1.64\nto 1.85.\n\nThis release bumps the rust edition from 2021 to 2024.\n\n#### Additions\n\n- Add crate-level documentation.\n([#&#8203;327](https://redirect.github.com/hyperium/hyper-util/pull/327))\n- Add `client::legacy::Builder::http2_header_table_size()` method.\n([#&#8203;274](https://redirect.github.com/hyperium/hyper-util/pull/274))\n- Add `client::legacy::Builder::http2_max_concurrent_streams()` method.\n([#&#8203;274](https://redirect.github.com/hyperium/hyper-util/pull/274))\n- Add `client::legacy::Builder::http2_max_local_error_reset_streams()`\nmethod.\n([#&#8203;277](https://redirect.github.com/hyperium/hyper-util/pull/277))\n- Add `client::legacy::connect::HttpConnector::set_mark()` method.\n([#&#8203;303](https://redirect.github.com/hyperium/hyper-util/pull/303))\n- Add `rt::tracing::WithSpanExecutor<E>`,\n`hyper_util::rt::tracing::CurrentSpanExecutor<E>`, and\n`hyper_util::rt::tracing::MkSpanExecutor<E, F>` executors.\n([#&#8203;323](https://redirect.github.com/hyperium/hyper-util/pull/323))\n\n#### Fixes\n\n- Fix `client::legacy::Client` so that it properly validates CONNECT\nresponses.\n([#&#8203;315](https://redirect.github.com/hyperium/hyper-util/pull/315))\n- Fix `client::legacy::Client` to cancel the idle interval once its pool\nempties.\n([#&#8203;292](https://redirect.github.com/hyperium/hyper-util/pull/292))\n- Fix `client::legacy::Client` to properly handle IPv6 addresses when\nusing a SOCKS proxy.\n([#&#8203;302](https://redirect.github.com/hyperium/hyper-util/pull/302))\n- Fix `client::pool::cache` to preserve readiness with clones.\n([#&#8203;297](https://redirect.github.com/hyperium/hyper-util/pull/297))\n- Fix `client::pool::cache` to wake its waiters in FIFO order.\n([#&#8203;298](https://redirect.github.com/hyperium/hyper-util/pull/298))\n- Fix `client::pool::singleton::Singleton` to properly handle\ncancellation.\n([#&#8203;299](https://redirect.github.com/hyperium/hyper-util/pull/299))\n- Fix `client::pool::singleton::Singleton` to share errors with all\nwaiters.\n([#&#8203;296](https://redirect.github.com/hyperium/hyper-util/pull/296))\n- Fix `client::proxy::matcher` handling for IP wildcards.\n([#&#8203;309](https://redirect.github.com/hyperium/hyper-util/pull/309))\n- The `tokio/net` feature is narrowed to the `client-legacy` feature\nflag, from the `client` feature flag.\n([#&#8203;276](https://redirect.github.com/hyperium/hyper-util/pull/276))\n- Various fixes to the `client::legacy::Client`'s SOCKS proxying.\n([#&#8203;302](https://redirect.github.com/hyperium/hyper-util/pull/302))\n([#&#8203;307](https://redirect.github.com/hyperium/hyper-util/pull/307))\n([#&#8203;308](https://redirect.github.com/hyperium/hyper-util/pull/308))\n([#&#8203;310](https://redirect.github.com/hyperium/hyper-util/pull/310))\n\n#### Changes\n\nThis release contains a minor behavioral change for users of the\n`tracing`\nfeature flag to be aware of.\n\nThis feature flag was introduced in v0.1.11. When enabled,\n`rt::TokioExecutor<E>` began propagating the currently active\n`tracing::Span`\nto spawned tasks when `hyper::rt::Executor::execute()` is called. This\ncaused\nissues for some users, due to background tasks keeping a span open for\nthe\nduration of a long-lived connection.\n\nThis behavior has now been removed from `rt::TokioExecutor<E>`\n\n([#&#8203;322](https://redirect.github.com/hyperium/hyper-util/pull/322))\nby default. A\ncollection of executor wrappers have been added to a new `rt::tracing`\nsubmodule, to provide facilities for instrumenting a client or server's\nspawned\ntasks. See the module-level documentation of `rt::tracing` for more\ninformation.\n\nTo temporarily preserve the previous `rt::TokioExecutor<E>` span\npropagation\nbehavior, enable the `rt-tracing-exec-force` feature. Note that this\nfeature\nflag will be removed in a future release.\n\n</details>\n\n<details>\n<summary>dtolnay/thiserror (thiserror)</summary>\n\n###\n[`v2.0.21`](https://redirect.github.com/dtolnay/thiserror/releases/tag/2.0.21)\n\n[Compare\nSource](https://redirect.github.com/dtolnay/thiserror/compare/2.0.20...2.0.21)\n\n- Fix parsing of generic unit variants in display expressions\n([#&#8203;459](https://redirect.github.com/dtolnay/thiserror/issues/459))\n\n</details>\n\n---\n\n### Configuration\n\n📅 **Schedule**: (UTC)\n\n- Branch creation\n  - \"before 8am on Monday\"\n- Automerge\n  - At any time (no schedule defined)\n\n🚦 **Automerge**: Disabled by config. Please merge this manually once you\nare satisfied.\n\n♻ **Rebasing**: Whenever PR becomes conflicted, or you tick the\nrebase/retry checkbox.\n\n👻 **Immortal**: This PR will be recreated if closed unmerged. Get\n[config\nhelp](https://redirect.github.com/renovatebot/renovate/discussions) if\nthat's undesired.\n\n---\n\n- [ ] <!-- rebase-check -->If you want to rebase/retry this PR, check\nthis box\n\n---\n\nThis PR was generated by [Mend Renovate](https://mend.io/renovate/).\nView the [repository job\nlog](https://developer.mend.io/github/open-telemetry/otel-arrow).\n\n<!--renovate-debug:eyJjcmVhdGVkSW5WZXIiOiI0NC4xMTIuMCIsInVwZGF0ZWRJblZlciI6IjQ0LjExMi4wIiwidGFyZ2V0QnJhbmNoIjoibWFpbiIsImxhYmVscyI6WyJkZXBlbmRlbmNpZXMiXX0=-->\n\nCo-authored-by: renovate[bot] <29139614+renovate[bot]@users.noreply.github.com>",
+          "timestamp": "2026-09-28T14:46:10Z",
+          "tree_id": "75c1f2b2a77faeba3cffeab559149f9852f09c0a",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/d415aa53e6511018362942cdf0ab105381d3d494"
+        },
+        "date": 1790611030982,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 84.64,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.77,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.72,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.98,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.7,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 71.95,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.85,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.54,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 116.96,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 104.29,
             "unit": "MB"
           }
         ]
