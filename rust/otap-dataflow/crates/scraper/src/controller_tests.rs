@@ -1054,13 +1054,17 @@ fn permanent_nack_preserves_checkpoint_and_releases_lease() {
                     .expect("permanent NACK");
                 if !draining {
                     assert!(
-                        tokio::time::timeout(Duration::from_millis(30), ctx.recv()).await.is_err(),
+                        tokio::time::timeout(Duration::from_millis(30), ctx.recv())
+                            .await
+                            .is_err(),
                         "paused receiver stays alive without sending another page"
                     );
                     ctx.send_control_msg(NodeControlMsg::Shutdown {
                         deadline: Instant::now() + Duration::from_secs(1),
                         reason: "stop paused source".to_owned(),
-                    }).await.expect("shutdown");
+                    })
+                    .await
+                    .expect("shutdown");
                 }
                 assert!(
                     tokio::time::timeout(Duration::from_secs(5), ctx.recv())
@@ -1199,13 +1203,17 @@ fn stale_feedback_is_counted_and_retryable_nack_still_replays() {
                 .await
                 .expect("pause");
             assert!(
-                tokio::time::timeout(Duration::from_millis(30), ctx.recv()).await.is_err(),
+                tokio::time::timeout(Duration::from_millis(30), ctx.recv())
+                    .await
+                    .is_err(),
                 "permanent rejection pauses rather than failing the receiver"
             );
             ctx.send_control_msg(NodeControlMsg::Shutdown {
                 deadline: Instant::now() + Duration::from_secs(1),
                 reason: "stop paused source".to_owned(),
-            }).await.expect("stop");
+            })
+            .await
+            .expect("stop");
             assert!(
                 ctx.recv().await.is_err(),
                 "no page after terminal rejection"

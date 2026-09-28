@@ -11,8 +11,9 @@
 
 use crate::checkpoint::{CheckpointState, CheckpointStore};
 use crate::database::{
-    CatchUpConfig, ColumnMetadata, CompiledQuery, CompositeCursor, DriverAdapter, DriverCancellation,
-    EncodedPage, OnPermanentNack, OtlpPageEncoder, parse_utc_timestamp, validate_mapping,
+    CatchUpConfig, ColumnMetadata, CompiledQuery, CompositeCursor, DriverAdapter,
+    DriverCancellation, EncodedPage, OnPermanentNack, OtlpPageEncoder, parse_utc_timestamp,
+    validate_mapping,
 };
 use crate::partition::{LeaseError, SourceLease};
 use crate::telemetry::DatabaseReceiverMetrics;
@@ -968,7 +969,9 @@ where
         {
             tokio::time::timeout_at(deadline.into(), effect_handler.notify_receiver_drained())
                 .await
-                .map_err(|error| receiver_error(&effect_handler, ReceiverErrorKind::Shutdown, error))??;
+                .map_err(|error| {
+                    receiver_error(&effect_handler, ReceiverErrorKind::Shutdown, error)
+                })??;
         }
         result
     }
@@ -986,7 +989,9 @@ struct RetryBackoff {
 
 impl Default for RetryBackoff {
     fn default() -> Self {
-        Self { next: RETRY_INITIAL }
+        Self {
+            next: RETRY_INITIAL,
+        }
     }
 }
 
