@@ -24,7 +24,7 @@ use std::os::unix::fs::{FileExt, MetadataExt};
 use nix::fcntl::{OFlag, open, openat};
 use nix::sys::stat::Mode;
 use nix::sys::statfs::{
-    CGROUP_SUPER_MAGIC, CGROUP2_SUPER_MAGIC, DEBUGFS_MAGIC, FsType, PROC_SUPER_MAGIC,
+    CGROUP_SUPER_MAGIC, CGROUP2_SUPER_MAGIC, DEBUGFS_MAGIC, FsType, NSFS_MAGIC, PROC_SUPER_MAGIC,
     SECURITYFS_MAGIC, SYSFS_MAGIC, TRACEFS_MAGIC, fstatfs,
 };
 
@@ -257,6 +257,7 @@ fn reject_kernel_control_filesystem(kind: FsType) -> Result<(), FileAccessError>
         SECURITYFS_MAGIC => "securityfs",
         CGROUP_SUPER_MAGIC => "cgroup",
         CGROUP2_SUPER_MAGIC => "cgroup2",
+        NSFS_MAGIC => "nsfs",
         _ => return Ok(()),
     };
     Err(FileAccessError::UnsupportedFilesystem { filesystem })

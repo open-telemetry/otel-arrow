@@ -545,7 +545,8 @@ while their semantic and format definitions remain normative from version 1.
 | Discovery | `follow_symlinks: true` allowed target | Admitted once |
 | Discovery | FIFO, socket, directory, or device candidate | Rejected before a normal read-open; Linux O_PATH probes do not invoke a device open or register a FIFO reader |
 | Linux source access | Final symlink rejected under O_PATH + O_NOFOLLOW | Pinned symlink is rejected as non-regular |
-| Linux source access | Direct or followed regular-looking file on procfs, sysfs, debugfs, tracefs, securityfs, or cgroup v1/v2 | Unsupported-filesystem rejection on the pin before read-open |
+| Linux source access | Direct or followed regular-looking file on procfs, sysfs, debugfs, tracefs, securityfs, cgroup v1/v2, or nsfs | Unsupported-filesystem rejection on the pin before read-open |
+| Linux source access | Followed `/proc/self/ns/net` namespace handle | Resolved nsfs object rejected before read-open despite its regular-file type |
 | Linux source access | Filesystem query fails | Original OS error; no read-open or bypass |
 | Linux source access | Regular log file on tmpfs | Filesystem check and pinned reopen succeed subject to ordinary permissions |
 | Linux source access | Read permission denied during pinned reopen | Distinct reopen error retains EACCES; all acquired descriptors closed |

@@ -764,11 +764,15 @@ an ordinary device open and rejects FIFOs without registering a reader.
 `O_PATH | O_NOFOLLOW` pins a final symlink itself; reject its non-regular type.
 
 Before a read-open, query the pinned source with `fstatfs`. Reject procfs,
-sysfs, debugfs, tracefs, securityfs, and cgroup v1/v2 as unsupported source
+sysfs, debugfs, tracefs, securityfs, cgroup v1/v2, and nsfs as unsupported source
 filesystems, even when their objects report regular-file type. Apply this rule
 to both direct candidates and followed symlinks. Process-state and kernel-control
 pseudo-files are not ordinary log files. Failure to query the filesystem rejects
 the operation with the original OS error rather than bypassing the check.
+
+Namespace handles, such as a followed `/proc/self/ns/net`, belong to nsfs even
+though they are reached through procfs and report regular-file type. Reject
+them on the pin before read-open; they are not log sources.
 
 This checks the resolved source object's filesystem, not the procfs transport
 used to reopen an eligible pin. Regular files on tmpfs remain eligible. The

@@ -808,6 +808,27 @@ fn followed_procfs_file_is_rejected_before_reopen() {
     ));
 }
 
+/// Scenario: A followed log name points to the network namespace handle at /proc/self/ns/net.
+/// Guarantees: The resolved nsfs object is rejected before read-open, despite its regular-file type.
+#[test]
+fn followed_namespace_handle_is_rejected_before_reopen() {
+    let dir = tempdir().expect("create fixture directory");
+    symlink("/proc/self/ns/net", dir.path().join("log")).expect("create namespace alias");
+    let parent = File::open(dir.path()).expect("open fixture directory");
+    let result = SourceFile::open_at_with_reopen(
+        &parent,
+        c"log",
+        SymlinkPolicy::Follow,
+        None,
+        || false,
+        |_| panic!("namespace handle must not be reopened for reading"),
+    );
+    assert!(matches!(
+        result,
+        Err(FileAccessError::UnsupportedFilesystem { filesystem: "nsfs" })
+    ));
+}
+
 /// Scenario: Procfs is selected directly, without following the final entry.
 /// Guarantees: Kernel-control filesystem rejection is independent of symlink policy and candidate path spelling.
 #[test]
@@ -846,6 +867,7 @@ fn kernel_control_filesystem_policy_is_explicit() {
         (SECURITYFS_MAGIC, "securityfs"),
         (CGROUP_SUPER_MAGIC, "cgroup"),
         (CGROUP2_SUPER_MAGIC, "cgroup2"),
+        (NSFS_MAGIC, "nsfs"),
     ] {
         assert!(matches!(reject_kernel_control_filesystem(kind),
             Err(FileAccessError::UnsupportedFilesystem { filesystem }) if filesystem == expected));
