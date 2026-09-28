@@ -12,9 +12,7 @@ use serde_json::{Map, Value};
 
 use crate::common::background_refresh::BackgroundProviderRefreshPolicy;
 use crate::flat_file_api_key_auth::*;
-
-const HTTP_HEADER_NAME_ATTRIBUTE: &str = "http.header_name";
-const HTTP_HEADER_SCHEME_ATTRIBUTE: &str = "http.header_scheme";
+use otel_arrow_dfe_engine::capability::auth::ApiKey;
 
 /// Default API key secret file refresh (~1 hr).
 pub(crate) fn default_key_secret_file_refresh() -> Duration {
@@ -55,7 +53,7 @@ impl Config {
             }
         }
 
-        match self.attributes.get(HTTP_HEADER_NAME_ATTRIBUTE) {
+        match self.attributes.get(ApiKey::HTTP_HEADER_NAME_ATTRIBUTE) {
             Some(Value::String(value)) if !value.is_empty() => {}
             Some(Value::String(_)) => {
                 return Err("`attributes.http.header_name` cannot be empty".to_string());
@@ -68,7 +66,7 @@ impl Config {
             }
         }
 
-        if let Some(value) = self.attributes.get(HTTP_HEADER_SCHEME_ATTRIBUTE)
+        if let Some(value) = self.attributes.get(ApiKey::HTTP_HEADER_SCHEME_ATTRIBUTE)
             && !value.is_string()
         {
             return Err("`attributes.http.header_scheme` must be a string".to_string());

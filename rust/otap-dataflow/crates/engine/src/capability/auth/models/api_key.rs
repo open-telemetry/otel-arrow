@@ -8,9 +8,6 @@ use serde_json::{Map, Value};
 use std::sync::Arc;
 use std::time::Instant;
 
-static HTTP_HEADER_NAME_ATTRIBUTE: &str = "http.header_name";
-static HTTP_HEADER_SCHEME_ATTRIBUTE: &str = "http.header_scheme";
-
 /// An API Key.
 ///
 /// The value is wrapped in [`SecretString`], which zeroizes on drop and masks
@@ -37,6 +34,12 @@ pub struct ApiKey {
 }
 
 impl ApiKey {
+    /// Attribute key containing the HTTP header name.
+    pub const HTTP_HEADER_NAME_ATTRIBUTE: &str = "http.header_name";
+
+    /// Attribute key containing the optional HTTP header scheme.
+    pub const HTTP_HEADER_SCHEME_ATTRIBUTE: &str = "http.header_scheme";
+
     /// Creates an API Key from its value.
     #[must_use]
     pub fn new(value: impl Into<SecretString>) -> Self {
@@ -68,7 +71,7 @@ impl ApiKey {
             .attributes
             .map(Arc::unwrap_or_clone)
             .unwrap_or_default();
-        attributes[HTTP_HEADER_NAME_ATTRIBUTE] = Value::String(header_name.into());
+        attributes[Self::HTTP_HEADER_NAME_ATTRIBUTE] = Value::String(header_name.into());
         self.attributes = Some(Arc::new(attributes));
         self
     }
@@ -80,7 +83,7 @@ impl ApiKey {
             .attributes
             .map(Arc::unwrap_or_clone)
             .unwrap_or_default();
-        attributes[HTTP_HEADER_SCHEME_ATTRIBUTE] = Value::String(header_scheme.into());
+        attributes[Self::HTTP_HEADER_SCHEME_ATTRIBUTE] = Value::String(header_scheme.into());
         self.attributes = Some(Arc::new(attributes));
         self
     }
@@ -112,7 +115,7 @@ impl ApiKey {
         if let Some(header_value) = self
             .attributes
             .as_ref()
-            .and_then(|v| v.get(HTTP_HEADER_NAME_ATTRIBUTE))
+            .and_then(|v| v.get(Self::HTTP_HEADER_NAME_ATTRIBUTE))
             && let Value::String(header_value) = header_value
         {
             return Some(header_value.as_str());
@@ -127,7 +130,7 @@ impl ApiKey {
         if let Some(scheme_value) = self
             .attributes
             .as_ref()
-            .and_then(|v| v.get(HTTP_HEADER_SCHEME_ATTRIBUTE))
+            .and_then(|v| v.get(Self::HTTP_HEADER_SCHEME_ATTRIBUTE))
             && let Value::String(scheme_value) = scheme_value
         {
             return Some(scheme_value.as_str());
