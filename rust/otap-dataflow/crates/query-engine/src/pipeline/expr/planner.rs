@@ -22,7 +22,8 @@ use datafusion::logical_expr::expr::ScalarFunction;
 use datafusion::logical_expr::simplify::{ExprSimplifyResult, SimplifyContext};
 use datafusion::logical_expr::{BinaryExpr, Expr, Operator, ScalarUDF, col, lit, not};
 use datafusion::logical_expr::{ScalarUDFImpl, cast};
-use datafusion::prelude::{binary_expr, lit_timestamp_nano};
+use datafusion::prelude::binary_expr;
+use datafusion::scalar::ScalarValue;
 use otel_arrow_contrib_data_engine_expressions::{
     BinaryMathematicalScalarExpression, BooleanValue, CaptureTextScalarExpression,
     CoalesceScalarExpression, CollectionScalarExpression, CombineScalarExpression,
@@ -34,7 +35,7 @@ use otel_arrow_contrib_data_engine_expressions::{
 };
 use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_pdata::otlp::metrics::MetricType;
-use otel_arrow_dfe_pdata::schema::consts;
+use otel_arrow_dfe_pdata::schema::{UTC_TIME_ZONE, consts};
 
 #[cfg(feature = "sha1-hash")]
 use crate::consts::SHA1_FUNC_NAME;
@@ -211,8 +212,13 @@ impl ExprPlanner {
                                 ),
                             }
                         })?;
+                        // Tag the literal with UTC so it compares against
+                        // OTAP timestamp columns, which are always UTC.
                         (
-                            lit_timestamp_nano(val),
+                            lit(ScalarValue::TimestampNanosecond(
+                                Some(val),
+                                Some(UTC_TIME_ZONE.into()),
+                            )),
                             ExprLogicalType::TimestampNanosecond,
                         )
                     }
@@ -2201,7 +2207,7 @@ fn escape_like_literals(planned: &mut PlannedOp) {
     if let ScopedExpr::Eval {
         eval:
             LeafEval::DatafusionExpr {
-                logical_expr: Expr::Literal(datafusion::scalar::ScalarValue::Utf8(Some(s)), _),
+                logical_expr: Expr::Literal(ScalarValue::Utf8(Some(s)), _),
                 ..
             },
         ..
