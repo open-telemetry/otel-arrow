@@ -885,7 +885,7 @@ capabilities:
             PropagationDefault {
                 selector: PropagationSelector {
                     selector_type: PropagationSelectorType::Named,
-                    named: Some(vec![context_name("tenant_id")]),
+                    named: Some(vec![context_name("tenant_id").into()]),
                 },
                 ..Default::default()
             },

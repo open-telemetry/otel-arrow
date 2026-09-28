@@ -1263,6 +1263,7 @@ dependencies = [
  "rdkafka",
  "roaring",
  "serde_json",
+ "serde_yaml",
  "tikv-jemallocator",
  "tokio",
  "tokio-stream",
