@@ -288,7 +288,7 @@ otel-arrow-dfe-state = { version = "0.57.0", path = 'crates/state' }
 otel-arrow-dfe-telemetry-macros = { version = "0.57.0", path = 'crates/telemetry-macros' }
 prost-build = "0.14"
 ratatui = "0.30"
-testcontainers = "0.27"
+testcontainers = "0.28"
 toml = "1.0.0"
 tonic-prost-build = "0.14"
 tracepoint = { version = "0.5.0", features = ["user_events"] }
