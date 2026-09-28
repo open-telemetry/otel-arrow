@@ -21,5 +21,5 @@ issues: [3624]
 subtext: |
   Every record_json line now parses independently. The startup banner and engine
   diagnostics now go to stderr. Queued output is bounded by bytes as well as frames,
-  so a slow console cannot retain unbounded memory, and an ACK means only that the
-  handoff finished.
+  so a slow console cannot retain unbounded memory. Console export stays
+  best-effort: an ACK does not guarantee a console write.

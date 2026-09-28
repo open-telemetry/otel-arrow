@@ -397,6 +397,7 @@ use otel_arrow_dfe_controller::{Controller, ControllerRunOptions, startup};
 
 // Side-effect imports to register components via linkme.
 use otel_arrow_dfe_core_nodes as _;
+use otel_arrow_dfe_core_nodes::exporters::console_exporter::claim_structured_stdout;
 // Bring your own contrib/custom nodes as needed.
 // Bring your own controller extension crates the same way.
 
@@ -418,10 +419,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &ControllerRunOptions::default().extensions,
     )?;
 
-    // Print diagnostics.
+    // Print diagnostics on stderr, because stdout may carry `record_json` records.
     // Pass "system" here for the minimal example; in practice, align this
     // string with your binary's allocator feature (e.g. "jemalloc", "mimalloc").
-    println!("{}", startup::system_info(&OTAP_PIPELINE_FACTORY, "system"));
+    eprintln!("{}", startup::system_info(&OTAP_PIPELINE_FACTORY, "system"));
+
+    // Reserve stdout for records before any pipeline starts; without this, a
+    // `record_json` console exporter fails when it is created.
+    claim_structured_stdout(&cfg);
 
     // Run the engine.
     let controller = Controller::new(&OTAP_PIPELINE_FACTORY);

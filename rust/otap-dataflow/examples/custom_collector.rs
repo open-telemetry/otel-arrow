@@ -25,6 +25,7 @@ use otel_arrow_dfe_contrib_nodes as _;
 use otel_arrow_dfe_controller::Controller;
 use otel_arrow_dfe_controller::startup;
 use otel_arrow_dfe_core_nodes as _;
+use otel_arrow_dfe_core_nodes::exporters::console_exporter::claim_structured_stdout;
 #[cfg(feature = "dev-tools")]
 use otel_arrow_dfe_dev_nodes as _;
 use otel_arrow_dfe_otap::OTAP_PIPELINE_FACTORY;
@@ -108,8 +109,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let args = Args::parse();
 
-    // Print system diagnostics and registered components.
-    println!(
+    // Print system diagnostics on stderr, because stdout may carry `record_json` records.
+    eprintln!(
         "{}",
         startup::system_info(&OTAP_PIPELINE_FACTORY, memory_allocator_name())
     );
@@ -131,12 +132,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
+    // Reserve stdout for records before any pipeline starts; without this, a
+    // `record_json` console exporter fails when it is created.
+    claim_structured_stdout(&engine_cfg);
+
     // Run the engine.
     let controller = Controller::new(&OTAP_PIPELINE_FACTORY);
     let result = controller.run_forever(engine_cfg);
     match result {
         Ok(_) => {
-            println!("Pipeline completed successfully");
+            eprintln!("Pipeline completed successfully");
             Ok(())
         }
         Err(e) => {

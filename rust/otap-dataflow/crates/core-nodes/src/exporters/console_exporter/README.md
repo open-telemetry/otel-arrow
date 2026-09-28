@@ -21,14 +21,13 @@ storage path.
 
 ## Acknowledgment Semantics
 
-Each payload is formatted into one complete frame and handed to the engine's
-process-wide console writer. The exporter ACKs the message once that handoff
-attempt resolves, including when the handoff fails.
-
-An ACK therefore means only "the handoff attempt finished". The attempt may have
-failed, and even a successful one does not mean the bytes reached the terminal,
-were consumed by a downstream logging agent, were persisted, or were delivered
-durably.
+The console exporter is best-effort. It ACKs each payload after its export
+attempt, including when the signal is unsupported or when formatting or the
+handoff to the process-wide console writer fails, so an ACK does not guarantee
+that the message was written to the console. For stronger delivery guarantees,
+use the experimental [file exporter](../file_exporter/README.md), which writes
+separate files per signal, core, and deployment generation and ACKs after
+`write` or `sync_data`.
 
 ## Console Output Serialization
 

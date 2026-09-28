@@ -67,7 +67,7 @@ fn terminal_status<E: std::fmt::Display>(
         return (1, Some(status));
     }
     match result {
-        Ok(()) => (0, Some("Pipeline run successfully".to_owned())),
+        Ok(()) => (0, Some("Pipeline ran successfully".to_owned())),
         Err(error) => (1, Some(format!("Pipeline failed to run: {error}"))),
     }
 }
@@ -372,7 +372,7 @@ mod tests {
         let drained = ShutdownOutcome::default();
         assert_eq!(
             terminal_status::<&str>(&Ok(()), drained),
-            (0, Some("Pipeline run successfully".to_owned()))
+            (0, Some("Pipeline ran successfully".to_owned()))
         );
         assert_eq!(
             terminal_status(&Err("engine failed"), drained),
