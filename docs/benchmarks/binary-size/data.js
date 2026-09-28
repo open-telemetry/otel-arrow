@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790608423540,
+  "lastUpdate": 1790609723911,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -45411,6 +45411,150 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/open-telemetry/otel-arrow/commit/d8aefcfa2c8d904596cbd3a72d1c9badedec1b14"
         },
         "date": 1790608404443,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 84.65,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.78,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.22,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.73,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.01,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.98,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.7,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 71.88,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.86,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.51,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 116.98,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 104.23,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "29139614+renovate[bot]@users.noreply.github.com",
+            "name": "renovate[bot]",
+            "username": "renovate[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "0a38e643dcccc6d2dfb3cab3812ae216f946a20e",
+          "message": "chore(deps): update rust crate rustls-openssl to 0.4 (#4175)\n\nThis PR contains the following updates:\n\n| Package | Type | Update | Change |\n|---|---|---|---|\n| [rustls-openssl](https://redirect.github.com/tofay/rustls-openssl) |\nworkspace.dependencies | minor | `0.3` → `0.4` |\n\n---\n\n> [!WARNING]\n> Some dependencies could not be looked up. Check the [Dependency\nDashboard](../issues/417) for more information.\n\n---\n\n### Release Notes\n\n<details>\n<summary>tofay/rustls-openssl (rustls-openssl)</summary>\n\n###\n[`v0.4.1`](https://redirect.github.com/tofay/rustls-openssl/releases/tag/0.4.1)\n\n[Compare\nSource](https://redirect.github.com/tofay/rustls-openssl/compare/0.4.0...0.4.1)\n\n#### What's Changed\n\n- fix: detect chacha availability at compile time by\n[@&#8203;tofay](https://redirect.github.com/tofay) in\n[#&#8203;38](https://redirect.github.com/tofay/rustls-openssl/pull/38)\n\n**Full Changelog**:\n<https://github.com/tofay/rustls-openssl/compare/0.4.0...0.4.1>\n\n###\n[`v0.4.0`](https://redirect.github.com/tofay/rustls-openssl/releases/tag/0.4.0)\n\n[Compare\nSource](https://redirect.github.com/tofay/rustls-openssl/compare/0.3.1...0.4.0)\n\n### Runtime availability filtering for OpenSSL algorithms\n\nPreviously, the provider could advertise algorithm families based on\ncompile-time assumptions, even when the linked OpenSSL build or active\nprovider configuration did not actually support them at runtime. This\nrelease adds runtime checks and filters to the default providers so that\nonly cipher suites, key exchange groups, and signature algorithms that\nare actually usable with the current OpenSSL runtime are selected. This\nimproves compatibility with OpenSSL builds that disable or restrict\nalgorithms, including FIPS and provider-based configurations.\n\n#### Migration guidance:\n\nNo change is required for users of `default_provider()`.\n\nIf you previously relied on the static compile-time lists\n(ALL\\_CIPHER\\_SUITES or DEFAULT\\_KX\\_GROUPS), use the new runtime helper\nfunctions instead:\n\n- `rustls_openssl::available_cipher_suites()`\n- `rustls_openssl::kx_group::available_default_groups()`\n- `rustls_openssl::kx_group::available_groups()`\n\n#### Added:\n\n- `rustls_openssl::available_cipher_suites()` lists all the cipher\nsuites available at runtime\n- `rustls_openssl::kx_group::available_default_groups()` lists the\ndefault key exchange groups available at runtime\n- `rustls_openssl::kx_group::available_groups()` lists the all the key\nexchange groups available at runtime (which may include MLKEM768, not\noffered by default)\n\n#### Changed:\n\n- default\\_provider() now uses runtime-available cipher suites and key\nexchange groups.\n- Compile-time lists (ALL\\_CIPHER\\_SUITES, DEFAULT\\_KX\\_GROUPS,\nALL\\_KX\\_GROUPS) represent the compiled superset; runtime helpers\nprovide the actually usable subset.\n\n#### Fixed\n\n- fix: use AES-256-GCM AEAD for\nTLS\\_ECDHE\\_ECDSA\\_WITH\\_AES\\_256\\_GCM\\_SHA384 by\n[@&#8203;EyeCantCU](https://redirect.github.com/EyeCantCU) in\n[#&#8203;37](https://redirect.github.com/tofay/rustls-openssl/pull/37)\n\n**Full Changelog**:\n<https://github.com/tofay/rustls-openssl/compare/0.3.1...0.4.0>\n\n</details>\n\n---\n\n### Configuration\n\n📅 **Schedule**: (UTC)\n\n- Branch creation\n  - \"before 8am on Monday\"\n- Automerge\n  - At any time (no schedule defined)\n\n🚦 **Automerge**: Disabled by config. Please merge this manually once you\nare satisfied.\n\n♻ **Rebasing**: Whenever PR becomes conflicted, or you tick the\nrebase/retry checkbox.\n\n🔕 **Ignore**: Close this PR and you won't be reminded about this update\nagain.\n\n---\n\n- [ ] <!-- rebase-check -->If you want to rebase/retry this PR, check\nthis box\n\n---\n\nThis PR was generated by [Mend Renovate](https://mend.io/renovate/).\nView the [repository job\nlog](https://developer.mend.io/github/open-telemetry/otel-arrow).\n\n<!--renovate-debug:eyJjcmVhdGVkSW5WZXIiOiI0NC4xMTIuMCIsInVwZGF0ZWRJblZlciI6IjQ0LjExMi4wIiwidGFyZ2V0QnJhbmNoIjoibWFpbiIsImxhYmVscyI6WyJkZXBlbmRlbmNpZXMiXX0=-->\n\nCo-authored-by: renovate[bot] <29139614+renovate[bot]@users.noreply.github.com>",
+          "timestamp": "2026-09-28T14:18:10Z",
+          "tree_id": "130f1bd2ac57fb5773e1e40796f9c6e1f016c30d",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/0a38e643dcccc6d2dfb3cab3812ae216f946a20e"
+        },
+        "date": 1790609709643,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
