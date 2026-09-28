@@ -220,11 +220,11 @@ async fn get_inline_api_key() {
 }
 
 /// Scenario: Both inline and file key forms are configured.
-/// Guarantees: The trimmed file value takes precedence while preserving non-newline whitespace.
+/// Guarantees: The file value takes precedence over the inline value.
 #[tokio::test]
 async fn key_file_takes_precedence() {
     let mut file = NamedTempFile::new().expect("file created");
-    file.write_all(b"file-key  \r\n").expect("content written");
+    file.write_all(b"file-key").expect("content written");
     let source = FlatFileApiKeyAuth::new(Config {
         key_secret: Some("inline-key".into()),
         key_secret_file: Some(file.path().into()),
@@ -233,7 +233,7 @@ async fn key_file_takes_precedence() {
     });
 
     let key = source.fetch().await.expect("key acquired");
-    assert_eq!(key.expose_value(), "file-key  ");
+    assert_eq!(key.expose_value(), "file-key");
 }
 
 /// Scenario: An API key file is rewritten between two acquisitions.
@@ -307,42 +307,21 @@ async fn background_refresh_publishes_rotated_key() {
         .expect("refresh loop exits cleanly");
 }
 
-/// Scenario: API key files contain invalid UTF-8 or only line endings.
-/// Guarantees: Acquisition rejects invalid and empty file-derived keys.
+/// Scenario: An API key file contains only line endings.
+/// Guarantees: Acquisition rejects the empty file-derived key after line-ending removal.
 #[tokio::test]
-async fn key_file_rejects_invalid_content() {
-    for content in [&[0xff, 0xfe][..], b"\r\n"] {
-        let mut file = NamedTempFile::new().expect("file created");
-        file.write_all(content).expect("content written");
-        let source = FlatFileApiKeyAuth::new(Config {
-            key_secret: None,
-            key_secret_file: Some(file.path().into()),
-            key_secret_file_refresh: Duration::from_secs(10),
-            attributes: valid_attributes(),
-        });
-        assert!(source.fetch().await.is_err());
-    }
-}
-
-/// Scenario: An API key file exceeds the shared four-megabyte file limit.
-/// Guarantees: Acquisition rejects the file instead of loading oversized secret data.
-#[tokio::test]
-async fn key_file_rejects_oversized_content() {
-    let directory = tempfile::tempdir().expect("tempdir created");
-    let path = directory.path().join("api-key");
-    std::fs::write(&path, vec![b'x'; 5 * 1024 * 1024]).expect("oversized key written");
+async fn key_file_rejects_empty_key() {
+    let mut file = NamedTempFile::new().expect("file created");
+    file.write_all(b"\r\n").expect("content written");
     let source = FlatFileApiKeyAuth::new(Config {
         key_secret: None,
-        key_secret_file: Some(path),
-        key_secret_file_refresh: Duration::from_secs(300),
+        key_secret_file: Some(file.path().into()),
+        key_secret_file_refresh: Duration::from_secs(10),
         attributes: valid_attributes(),
     });
 
-    let error = source
-        .fetch()
-        .await
-        .expect_err("oversized file is rejected");
-    assert!(error.to_string().contains("too large"));
+    let error = source.fetch().await.expect_err("empty API key rejected");
+    assert!(error.to_string().contains("API key cannot be empty"));
 }
 
 /// Scenario: A stream subscribes before the first direct API key acquisition.

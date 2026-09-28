@@ -11,12 +11,11 @@ use otel_arrow_dfe_engine::capability::CapabilityError;
 use otel_arrow_dfe_engine::capability::auth::ApiKey;
 use otel_arrow_dfe_engine::capability::auth::api_key_provider::ApiKeyStream;
 use otel_arrow_dfe_engine::shared::capability::auth::api_key_provider::ApiKeyProvider as SharedApiKeyProvider;
-use otel_arrow_dfe_otap::tls_utils::read_file_with_limit_async;
-use secrecy::zeroize::Zeroize;
 use secrecy::{ExposeSecret, SecretString};
 use tokio_stream::wrappers::WatchStream;
 
 use crate::common::background_refresh::BackgroundProviderSource;
+use crate::common::secret_file::{ReadSecretFileError, read_secret_file};
 use crate::flat_file_api_key_auth::FlatFileApiKeyAuthExtension;
 use crate::flat_file_api_key_auth::config::Config;
 use crate::flat_file_api_key_auth::error::Error;
@@ -34,24 +33,15 @@ impl FlatFileApiKeyAuth {
 
 async fn read_api_key(config: &Config) -> Result<SecretString, Error> {
     if let Some(path) = &config.key_secret_file {
-        let contents =
-            read_file_with_limit_async(path)
-                .await
-                .map_err(|source| Error::ReadCredentialFile {
-                    path: path.clone(),
-                    source,
-                })?;
-        let mut contents_str = String::from_utf8(contents).map_err(|error| {
-            error.into_bytes().zeroize();
-            Error::CredentialAcquisition {
+        let key = read_secret_file(path).await.map_err(|error| match error {
+            ReadSecretFileError::Read(source) => Error::ReadCredentialFile {
+                path: path.clone(),
+                source,
+            },
+            ReadSecretFileError::InvalidUtf8 => Error::CredentialAcquisition {
                 message: "`key_secret_file` does not contain valid UTF-8".to_string(),
-            }
+            },
         })?;
-        let key: SecretString = contents_str
-            .trim_end_matches(&['\r', '\n'][..])
-            .to_string()
-            .into();
-        contents_str.zeroize();
         if key.expose_secret().is_empty() {
             return Err(Error::CredentialAcquisition {
                 message: "API key cannot be empty".to_string(),
