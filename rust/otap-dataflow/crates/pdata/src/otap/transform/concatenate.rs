@@ -1,11 +1,27 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Concatenation of multiple OTAP batches into one.
+//! Concatenation of multiple OTAP batches into one. Concatenating OTAP batches
+//! is challenging because:
 //!
-//! Reindexing, casting to a unified schema, and concatenation are fused so
-//! that every output column is written exactly once, directly from the input
-//! arrays.
+//!   1. Each batch is a horizontal database slice containing foreign key
+//!      relationships that must be re-indexed for the batches to be combinable
+//!   2. OTAP batches may have different schemas for the same payload type which
+//!      need to be normalized to be merged together
+//!   3. Data is untrusted and can be malformed in a variety of ways that are
+//!      too expensive to validate for every input batch.
+//!
+//! So in order to concatenate batches we need to:
+//!
+//!   1. Reindex all payloads so the IDs are unique across batches, while also
+//!      correcting for lurking referential integrity violations.
+//!   2. Unify the schemas of each payload type for each batch and cast columns
+//!      to their final types
+//!   3. Combine the arrays for each batch into the output
+//!
+//! Individually these operations are all relatively expensive. This module
+//! fuses all three together so that every output column is written exactly
+//! once, directly from the input arrays.
 //!
 //! # Algorithm
 //!
@@ -1521,12 +1537,12 @@ fn write_dict<K: ArrowDictionaryKeyType, B: ValueBuilder>(
     // dictionary key, which the source array guarantees to be in bounds, or
     // a sequential index into the values just appended). Null keys may hold
     // arbitrary values, which Arrow permits.
-    #[allow(unsafe_code)]
+    #[expect(unsafe_code)]
     let dict = unsafe { DictionaryArray::<K>::new_unchecked(keys, values) };
     Ok(Arc::new(dict))
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn append_dict_input<Ks: ArrowDictionaryKeyType, K: ArrowDictionaryKeyType, B: ValueBuilder>(
     builder: &mut B,
     keys: &mut Vec<K::Native>,

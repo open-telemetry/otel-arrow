@@ -39,7 +39,7 @@ materialized in source order as `IdRemap::Replace`.
 # Integrity violations
 
 The second major problem with naive offsets is the potential for integrity
-violations. Suppose we have corresponding `id` and `parent_id` pairs like this:
+violations. Suppose we have corresponding `id` and `parent_id` columns like this:
 
 id: [1, 2]  parent_id: [1, 3]
 
@@ -60,8 +60,8 @@ OTAP batch, so it cannot attach to any other input's data.
 
 A corrupt input may only affect its own rows. Every surviving ID of an input
 maps into a range reserved exclusively for that input. Dangling references
-that fall inside the reserved range are kept (garbage in, garbage out).
-Dangling references that would escape it are redacted. When a row is
+that fall inside the reserved range are kept (garbage in, garbage out), but
+dangling references that would escape it are redacted. When a row is
 redacted, its own children are not re-examined. Those grandchildren still
 point inside their input's reserved range, so they are harmless orphans.
 
@@ -100,7 +100,7 @@ slot cannot overflow.
 
 # TODO
 
-- TODO(D4): Make compaction faster. Today it sorts the valid values (or their
+- TODO: Make compaction faster. Today it sorts the valid values (or their
   indices), builds range mappings, applies them in sorted order, and unsorts.
   Compaction always maps a parent id `v` to `offset + rank(v)`, where
   `rank(v)` is the number of distinct valid parent ids below `v`, so it can be
@@ -113,12 +113,6 @@ slot cannot overflow.
   4. Child replacement and violations in one pass: a child value is valid iff
      it is within `[min, max]` and present; valid values map through the
      table.
-
-  This is O(n + span) with no sort. Use it when the span is bounded (always
-  for u16; for u32 when `span <= max(4 * len, 65536)`) and keep the current
-  sort path as the fallback for sparse u32 ids. The table and bitmap can be
-  reused across batches of a relation. Compaction only happens for
-  malformed input or when the id budget overflows, so this is low priority.
 - TODO(root-decode-noop): `remove_transport_optimized_encodings` rebuilds the
   schema and record batch for root tables even when every column is already
   plain. It should return the batch untouched in that case.
