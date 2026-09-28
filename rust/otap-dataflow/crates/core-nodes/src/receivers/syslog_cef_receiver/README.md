@@ -487,7 +487,7 @@ downstream handoff, and Ack/Nack do not change this outcome.
 | Metric | Unit | Description |
 | --- | --- | --- |
 | `receiver.syslog_cef.rejections.items` | `{item}` | Number of log records rejected before pipeline admission, grouped by bounded `error.type` and `protocol`. |
-| `receiver.syslog_cef.truncations.items` | `{item}` | Number of log records whose raw message exceeded `MAX_MESSAGE_SIZE` and were truncated before parsing. For TCP, truncation is detected precisely when a newline-delimited message exceeds the size limit. For UDP, it is a heuristic - a datagram that fills the entire receive buffer is assumed truncated. |
+| `receiver.syslog_cef.truncations.items` | `{item}` | Number of log records whose raw message exceeded `MAX_MESSAGE_SIZE` and were truncated before parsing. For TCP, truncation is detected when a newline-delimited message reaches the size limit or an octet-counted frame declares a larger payload. For UDP, it is a heuristic - a datagram that fills the entire receive buffer is assumed truncated. |
 | `receiver.syslog_cef.transport.errors` | `{error}` | Number of transport-level errors, grouped by `protocol` (e.g. TLS handshake failures). |
 | `receiver.syslog_cef.connections.active` | `{connection}` | Number of active TCP connections. |
 | `receiver.syslog_cef.connections.rejected` | `{connection}` | Number of TCP connections rejected or closed. |

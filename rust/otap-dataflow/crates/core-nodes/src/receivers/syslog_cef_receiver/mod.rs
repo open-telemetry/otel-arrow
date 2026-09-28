@@ -197,7 +197,7 @@ impl Config {
 }
 
 /// Result of a bounded line read operation.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 enum BoundedReadResult {
     /// A complete line was read (ending with `\n`, which is included in the buffer).
     Complete,
@@ -205,6 +205,12 @@ enum BoundedReadResult {
     /// The message was truncated; only the first [`MAX_MESSAGE_SIZE`] bytes are
     /// in the buffer.
     Truncated,
+    /// An octet-counted frame exceeded the configured maximum.
+    /// The first `maximum` payload bytes are available for processing.
+    Oversized {
+        declared_length: usize,
+        maximum: usize,
+    },
     /// EOF was reached. The buffer may contain a partial message without trailing
     /// `\n`, or may be empty if no data was available.
     Eof,
@@ -270,10 +276,6 @@ enum TcpFrameReadError {
         declared_length: usize,
         bytes_received: usize,
     },
-    MessageTooLarge {
-        declared_length: usize,
-        maximum: usize,
-    },
 }
 
 impl TcpFrameReadError {
@@ -282,7 +284,6 @@ impl TcpFrameReadError {
             Self::Io(_) => "io",
             Self::InvalidOctetCount { .. } => "invalid_octet_count",
             Self::IncompleteOctetCount { .. } | Self::IncompleteFrame { .. } => "incomplete_frame",
-            Self::MessageTooLarge { .. } => "message_too_large",
         }
     }
 }
@@ -403,7 +404,7 @@ async fn read_tcp_frame<R: AsyncBufRead + Unpin + ?Sized>(
         let remaining = retained_length.saturating_sub(state.message.len());
         if remaining == 0 {
             if declared_length > max_size {
-                return Err(TcpFrameReadError::MessageTooLarge {
+                return Ok(BoundedReadResult::Oversized {
                     declared_length,
                     maximum: max_size,
                 });
@@ -885,6 +886,13 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                             break;
                                                         }
                                                         Ok(bounded_result) => {
+                                                            let oversized_frame = match bounded_result {
+                                                                BoundedReadResult::Oversized {
+                                                                    declared_length,
+                                                                    maximum,
+                                                                } => Some((declared_length, maximum)),
+                                                                _ => None,
+                                                            };
                                                             if discard_until_newline {
                                                                 if matches!(bounded_result, BoundedReadResult::Complete) {
                                                                     discard_until_newline = false;
@@ -893,7 +901,11 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                                 continue;
                                                             }
 
-                                                            if matches!(bounded_result, BoundedReadResult::Truncated) {
+                                                            if matches!(
+                                                                bounded_result,
+                                                                BoundedReadResult::Truncated
+                                                                    | BoundedReadResult::Oversized { .. }
+                                                            ) {
                                                                 metrics.borrow_mut().record_truncation();
                                                             }
 
@@ -905,14 +917,41 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                             // the continuation fragment so downstream consumers can associate the
                                                             // pieces. See https://github.com/open-telemetry/otel-arrow/pull/2452#discussion_r3004024837
 
-                                                            match process_syslog_message(
+                                                            let processing_result = process_syslog_message(
                                                                 &metrics,
                                                                 SyslogCefProtocol::Tcp,
                                                                 frame_state.message_for_processing(),
                                                                 &admission_state,
                                                                 &rate_limiter,
                                                                 &mut arrow_records_builder,
-                                                            ) {
+                                                            );
+                                                            if let Some((declared_length, maximum)) = oversized_frame {
+                                                                let processing_outcome = match &processing_result {
+                                                                    Ok(()) => "success",
+                                                                    Err(error_type) => match *error_type {
+                                                                        ReceiverRejectionErrorType::MemoryPressure => "memory_pressure",
+                                                                        ReceiverRejectionErrorType::ConcurrencyLimit => "concurrency_limit",
+                                                                        ReceiverRejectionErrorType::RateLimit => "rate_limit",
+                                                                        ReceiverRejectionErrorType::Authentication => "authentication",
+                                                                        ReceiverRejectionErrorType::PermissionDenied => "permission_denied",
+                                                                        ReceiverRejectionErrorType::AuthorizationUnavailable => "authorization_unavailable",
+                                                                        ReceiverRejectionErrorType::PayloadTooLarge => "payload_too_large",
+                                                                        ReceiverRejectionErrorType::InvalidRequest => "invalid_request",
+                                                                        ReceiverRejectionErrorType::Internal => "internal",
+                                                                    },
+                                                                };
+                                                                otel_warn!(
+                                                                    "syslog_cef_receiver.tcp.framing_error",
+                                                                    peer = %peer_addr,
+                                                                    error_type = "message_too_large",
+                                                                    declared_length = declared_length,
+                                                                    maximum = maximum,
+                                                                    processing_outcome = processing_outcome,
+                                                                    message = "Processed the bounded prefix of an oversized TCP frame and closed the connection"
+                                                                );
+                                                            }
+
+                                                            match processing_result {
                                                                 Err(ReceiverRejectionErrorType::MemoryPressure) => {
                                                                     otel_warn!(
                                                                         "syslog_cef_receiver.memory_pressure.disconnect",
@@ -938,17 +977,39 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                                         discard_until_newline = true;
                                                                     }
                                                                     frame_state.clear_message();
-                                                                    continue;
+                                                                    if oversized_frame.is_none() {
+                                                                        continue;
+                                                                    }
                                                                 }
                                                                 Err(ReceiverRejectionErrorType::InvalidRequest) => {
                                                                     frame_state.clear_message();
-                                                                    continue;
+                                                                    if oversized_frame.is_none() {
+                                                                        continue;
+                                                                    }
                                                                 }
                                                                 Ok(()) | Err(_) => {}
                                                             }
 
                                                             // Clear the bytes for the next iteration
                                                             frame_state.clear_message();
+
+                                                            if oversized_frame.is_some() {
+                                                                if arrow_records_builder.len() > 0 {
+                                                                    match arrow_records_builder.build() {
+                                                                        Ok(arrow_records) => {
+                                                                            let _ = effect_handler.send_message_with_source_node(
+                                                                                OtapPdata::new_todo_context(arrow_records.into()).with_peer_addr(peer_addr)
+                                                                            ).await;
+                                                                        }
+                                                                        Err(e) => {
+                                                                            otel_warn!("syslog_cef_receiver.arrow_records.build_failed", error = %e, message = "Failed to build Arrow records, dropping batch");
+                                                                        }
+                                                                    }
+                                                                }
+                                                                task_active_count.set(task_active_count.get() - 1);
+                                                                metrics.borrow_mut().record_connection_active(false);
+                                                                break;
+                                                            }
 
                                                             if arrow_records_builder.len() >= max_batch_size {
                                                                 // Build the Arrow records to send them
@@ -974,49 +1035,6 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                         }
                                                         Err(e) => {
                                                             match &e {
-                                                                TcpFrameReadError::MessageTooLarge {
-                                                                    declared_length,
-                                                                    maximum,
-                                                                } => {
-                                                                    metrics.borrow_mut().record_truncation();
-                                                                    match process_syslog_message(
-                                                                        &metrics,
-                                                                        SyslogCefProtocol::Tcp,
-                                                                        &frame_state.message,
-                                                                        &admission_state,
-                                                                        &rate_limiter,
-                                                                        &mut arrow_records_builder,
-                                                                    ) {
-                                                                        Err(ReceiverRejectionErrorType::MemoryPressure) => {
-                                                                            otel_warn!(
-                                                                                "syslog_cef_receiver.memory_pressure.disconnect",
-                                                                                peer = %peer_addr,
-                                                                                message = "Closing TCP syslog connection due to memory pressure"
-                                                                            );
-                                                                            drop_syslog_batch(
-                                                                                &metrics,
-                                                                                &mut arrow_records_builder,
-                                                                            );
-                                                                            metrics.borrow_mut().record_connection_rejection();
-                                                                        }
-                                                                        Err(ReceiverRejectionErrorType::RateLimit) => {
-                                                                            warn_tcp_rate_limit_drop_once(
-                                                                                peer_addr,
-                                                                                &mut warned_rate_limit_drop,
-                                                                            );
-                                                                        }
-                                                                        Ok(()) | Err(_) => {}
-                                                                    }
-                                                                    frame_state.clear_message();
-                                                                    otel_warn!(
-                                                                        "syslog_cef_receiver.tcp.framing_error",
-                                                                        peer = %peer_addr,
-                                                                        error_type = e.kind(),
-                                                                        declared_length = *declared_length,
-                                                                        maximum = *maximum,
-                                                                        message = "Processed the bounded prefix of an oversized TCP frame and closed the connection"
-                                                                    );
-                                                                }
                                                                 TcpFrameReadError::InvalidOctetCount {
                                                                     position,
                                                                     byte,
@@ -2079,6 +2097,7 @@ mod tests {
     fn tcp_octet_counted_scenario(
         listening_addr: SocketAddr,
         payload: Vec<u8>,
+        expect_server_close: bool,
     ) -> impl FnOnce(TestContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
         move |ctx| {
             Box::pin(async move {
@@ -2097,7 +2116,20 @@ mod tests {
                     .await
                     .expect("Failed to flush octet-counted frame");
 
-                tokio::time::sleep(Duration::from_millis(150)).await;
+                if expect_server_close {
+                    let mut byte = [0_u8; 1];
+                    let read_result = timeout(Duration::from_secs(3), stream.read(&mut byte))
+                        .await
+                        .expect("Timed out waiting for the receiver to close the connection");
+                    match read_result {
+                        Ok(0) | Err(_) => {}
+                        Ok(_) => {
+                            panic!("Receiver sent unexpected data before closing the connection")
+                        }
+                    }
+                } else {
+                    tokio::time::sleep(Duration::from_millis(150)).await;
+                }
                 drop(stream);
                 ctx.send_shutdown(Instant::now(), "Test")
                     .await
@@ -2176,6 +2208,7 @@ mod tests {
             .run_test(tcp_octet_counted_scenario(
                 listening_addr,
                 b"hello\n".to_vec(),
+                false,
             ))
             .run_validation(octet_counted_body_validation("hello\n"));
     }
@@ -2208,7 +2241,7 @@ mod tests {
 
         test_runtime
             .set_receiver(receiver_wrapper)
-            .run_test(tcp_octet_counted_scenario(listening_addr, payload))
+            .run_test(tcp_octet_counted_scenario(listening_addr, payload, true))
             .run_validation(|mut ctx| {
                 Box::pin(async move {
                     use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
@@ -2498,6 +2531,7 @@ mod tcp_frame_reader_tests {
     use super::*;
     use crate::receivers::syslog_cef_receiver::parser::parsed_message::ParsedSyslogMessage;
     use tokio::io::{AsyncWriteExt, BufReader};
+    use tokio::time::timeout;
 
     async fn make_reader(data: &[u8]) -> BufReader<tokio::io::DuplexStream> {
         let (reader_half, mut writer_half) = tokio::io::duplex(64 * 1024);
@@ -2585,6 +2619,65 @@ mod tcp_frame_reader_tests {
 
         let (result, ()) = tokio::join!(read, write);
         assert!(matches!(result.unwrap(), BoundedReadResult::Complete));
+        assert_eq!(state.message, b"hello world");
+    }
+
+    /// Scenario: An octet-count read is canceled after consuming part of the length prefix.
+    /// Guarantees: Recreating the read future resumes from the exact prefix position.
+    #[tokio::test]
+    async fn resumes_octet_counted_frame_after_prefix_read_cancellation() {
+        let (reader_half, mut writer_half) = tokio::io::duplex(64);
+        let mut reader = BufReader::new(reader_half);
+        let mut state = TcpFrameState::new(TcpFraming::OctetCounting);
+
+        writer_half.write_all(b"1").await.unwrap();
+        assert!(
+            timeout(
+                Duration::from_millis(20),
+                read_tcp_frame(&mut reader, &mut state, 64),
+            )
+            .await
+            .is_err()
+        );
+        assert!(matches!(
+            state.progress,
+            TcpFrameProgress::OctetCounting {
+                prefix_position: 1,
+                expected_octets: None,
+                ..
+            }
+        ));
+
+        writer_half.write_all(b"1 hello world").await.unwrap();
+        let result = read_tcp_frame(&mut reader, &mut state, 64).await.unwrap();
+
+        assert!(matches!(result, BoundedReadResult::Complete));
+        assert_eq!(state.message, b"hello world");
+    }
+
+    /// Scenario: An octet-count read is canceled after consuming part of the payload.
+    /// Guarantees: Recreating the read future preserves all bytes and returns the exact payload.
+    #[tokio::test]
+    async fn resumes_octet_counted_frame_after_payload_read_cancellation() {
+        let (reader_half, mut writer_half) = tokio::io::duplex(64);
+        let mut reader = BufReader::new(reader_half);
+        let mut state = TcpFrameState::new(TcpFraming::OctetCounting);
+
+        writer_half.write_all(b"11 hello").await.unwrap();
+        assert!(
+            timeout(
+                Duration::from_millis(20),
+                read_tcp_frame(&mut reader, &mut state, 64),
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(state.message, b"hello");
+
+        writer_half.write_all(b" world").await.unwrap();
+        let result = read_tcp_frame(&mut reader, &mut state, 64).await.unwrap();
+
+        assert!(matches!(result, BoundedReadResult::Complete));
         assert_eq!(state.message, b"hello world");
     }
 
@@ -2721,7 +2814,7 @@ mod tcp_frame_reader_tests {
 
         assert!(matches!(
             result,
-            Err(TcpFrameReadError::MessageTooLarge {
+            Ok(BoundedReadResult::Oversized {
                 declared_length: 65,
                 maximum: 64
             })
