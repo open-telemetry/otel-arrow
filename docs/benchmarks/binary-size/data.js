@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790555326467,
+  "lastUpdate": 1790608423540,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -45382,6 +45382,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-amd64-binary-size",
             "value": 117.02,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 104.23,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "33842784+JakeDern@users.noreply.github.com",
+            "name": "Jake Dern",
+            "username": "JakeDern"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "d8aefcfa2c8d904596cbd3a72d1c9badedec1b14",
+          "message": "perf: Optimize schema selection logic in the otap batching code (#4150)\n\n# Change summary\n\nThis PR is following on from #3782 and using some of the ideas in there\nto optimize the batch processor code. This PR is taking a look at\nselecting schemas for unification which is one of the first steps in the\nconcatenation kernel.\n\nThis code originally was written to operate over almost any collection\nof RecordBatches, however prior work in defining strict Schemas for each\npayload type is now available to make selection simpler and much faster\nbecause the problem space is bounded.\n\nThis PR:\n\n- Adds dedicated benchmarks for schema selection\n- Speeds up Schema selection up to 75% by removing BTreeMaps and other\nsources of allocation\n- Fixes up the concatenation tests to be schema compliant\n- Makes an overall impact between 5% and 16% to concatenation\nperformance for small numbers of batches\n\n## Validation\n\nSchema selection benchmarks:\n\n| Benchmark | Before | After | Diff |\n|---|---|---|---|\n| identical/spans/index_records/8 | 6.7 us | 2.1 us | -69.1% |\n| identical/spans/select_schema/8 | 9.0 us | 3.6 us | -59.7% |\n| identical/spans/convert/8 | 21.6 us | 16.8 us | -22.1% |\n| identical/log_attrs/index_records/8 | 1.1 us | 276 ns | -75.6% |\n| identical/log_attrs/select_schema/8 | 1.4 us | 635 ns | -54.6% |\n| identical/log_attrs/convert/8 | 2.4 us | 1.6 us | -30.3% |\n| optional_subset/log_attrs/index_records/8 | 1.1 us | 266 ns | -75.3% |\n| optional_subset/log_attrs/select_schema/8 | 1.4 us | 634 ns | -56.0% |\n| optional_subset/log_attrs/convert/8 | 6.3 us | 5.7 us | -10.2% |\n| permuted_order/log_attrs/index_records/8 | 782 ns | 215 ns | -72.5% |\n| permuted_order/log_attrs/select_schema/8 | 1.0 us | 408 ns | -60.3% |\n| permuted_order/log_attrs/convert/8 | 1.8 us | 1.2 us | -31.5% |\n| dict_cross_u8/log_attrs/index_records/8 | 1.1 us | 270 ns | -76.3% |\n| dict_cross_u8/log_attrs/select_schema/8 | 1.4 us | 613 ns | -57.1% |\n| dict_cross_u8/log_attrs/convert/8 | 8.7 us | 8.3 us | -5.0% |\n| dict_cross_u16/log_attrs/index_records/8 | 1.1 us | 291 ns | -74.2% |\n| dict_cross_u16/log_attrs/select_schema/8 | 1.4 us | 630 ns | -55.6% |\n| dict_cross_u16/log_attrs/convert/8 | 2.3 us | 1.6 us | -29.8% |\n| plain_and_dict/log_attrs/index_records/8 | 1.1 us | 270 ns | -75.2% |\n| plain_and_dict/log_attrs/select_schema/8 | 1.3 us | 606 ns | -53.7% |\n| plain_and_dict/log_attrs/convert/8 | 31.3 us | 29.7 us | -5.0% |\n\nConcatenate benchmarks:\n\n| Benchmark | Before | After | Diff |\n|---|---|---|---|\n| concatenate/100items/1r1s/contiguous/logs | 87.4 us | 73.3 us | -16.2%\n|\n| concatenate/100items/1r1s/contiguous/metrics | 77.8 us | 69.2 us |\n-11.1% |\n| concatenate/100items/1r1s/contiguous/traces | 181.7 us | 165.5 us |\n-8.9% |\n| concatenate/100items/1r1s/gapped/logs | 84.8 us | 72.8 us | -14.1% |\n| concatenate/100items/1r1s/gapped/metrics | 86.6 us | 74.5 us | -14.0%\n|\n| concatenate/100items/1r1s/gapped/traces | 183.4 us | 165.9 us | -9.5%\n|\n| concatenate/100items/3r2s/contiguous/logs | 93.1 us | 83.0 us | -10.8%\n|\n| concatenate/100items/3r2s/contiguous/metrics | 119.4 us | 105.8 us |\n-11.4% |\n| concatenate/100items/3r2s/contiguous/traces | 255.5 us | 220.3 us |\n-13.8% |\n| concatenate/100items/3r2s/gapped/logs | 95.5 us | 83.9 us | -12.2% |\n| concatenate/100items/3r2s/gapped/metrics | 121.4 us | 104.2 us |\n-14.2% |\n| concatenate/100items/3r2s/gapped/traces | 241.6 us | 223.7 us | -7.4%\n|\n| concatenate/1000items/1r1s/contiguous/logs | 123.1 us* | 84.6 us |\n-31.3%* |\n| concatenate/1000items/1r1s/contiguous/metrics | 95.8 us | 81.0 us |\n-15.4% |\n| concatenate/1000items/1r1s/contiguous/traces | 312.4 us | 283.4 us |\n-9.3% |\n| concatenate/1000items/1r1s/gapped/logs | 97.7 us | 83.5 us | -14.5% |\n| concatenate/1000items/1r1s/gapped/metrics | 95.4 us | 79.9 us | -16.3%\n|\n| concatenate/1000items/1r1s/gapped/traces | 328.2 us | 283.8 us |\n-13.5% |\n| concatenate/1000items/3r2s/contiguous/logs | 204.2 us | 186.4 us |\n-8.7% |\n| concatenate/1000items/3r2s/contiguous/metrics | 219.3 us | 202.6 us |\n-7.6% |\n| concatenate/1000items/3r2s/contiguous/traces | 1.369 ms | 1.285 ms |\n-6.1% |\n| concatenate/1000items/3r2s/gapped/logs | 198.8 us | 185.5 us | -6.7% |\n| concatenate/1000items/3r2s/gapped/metrics | 224.4 us | 204.6 us |\n-8.8% |\n| concatenate/1000items/3r2s/gapped/traces | 1.357 ms | 1.289 ms | -5.0%\n|\n\n## User-facing changes\n\nPerf only changes.",
+          "timestamp": "2026-09-28T14:06:52Z",
+          "tree_id": "09b4667f1c325351501c6bce26611fe832c87b47",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/d8aefcfa2c8d904596cbd3a72d1c9badedec1b14"
+        },
+        "date": 1790608404443,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 84.65,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.78,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.22,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.73,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.01,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.98,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.7,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 71.88,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.86,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.51,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 116.98,
             "unit": "MB"
           },
           {
