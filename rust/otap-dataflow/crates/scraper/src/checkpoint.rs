@@ -341,6 +341,12 @@ impl CheckpointStore {
         }
     }
 
+    /// Returns the exact source identity recorded in this store's checkpoints.
+    #[must_use]
+    pub fn source_id(&self) -> &str {
+        &self.source_id
+    }
+
     /// Returns the storage identity used to lease this checkpoint.
     ///
     /// This key includes the state directory, pipeline group, pipeline, receiver

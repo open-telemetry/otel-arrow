@@ -13,7 +13,7 @@ use crate::database::{
     CatchUpConfig, CompiledQuery, CompositeCursor, DriverAdapter, DriverCancellation, EncodedPage,
     OtlpPageEncoder, parse_utc_timestamp,
 };
-use crate::partition::SourceLease;
+use crate::partition::{LeaseError, SourceLease};
 use crate::telemetry::DatabaseReceiverMetrics;
 use async_trait::async_trait;
 use otel_arrow_dfe_channel::error::SendError;
@@ -180,17 +180,46 @@ impl<L> Drop for HeldOwnership<L> {
     }
 }
 
+/// A checkpoint store and the exclusive lease acquired for that exact store.
+///
+/// Construct this binding in the receiver factory, before entering the local
+/// async polling runtime. The source ID is derived from the store, never supplied
+/// independently. The binding is moved into the receiver and cannot be cloned.
+///
+/// Scenario: A factory attempts to combine a store with an independently acquired lease.
+/// Guarantees: Private fields prevent bypassing the store-derived acquisition.
+///
+/// ```compile_fail,E0451
+/// use otel_arrow_dfe_scraper::{CheckpointStore, SourceBinding, SourceLease};
+///
+/// fn bind_unchecked(checkpoint: CheckpointStore, lease: SourceLease) -> SourceBinding {
+///     SourceBinding { checkpoint, lease }
+/// }
+/// ```
+pub struct SourceBinding {
+    checkpoint: CheckpointStore,
+    lease: SourceLease,
+}
+
+impl SourceBinding {
+    /// Acquires ownership using the checkpoint store's native filesystem key.
+    ///
+    /// This performs blocking filesystem work and must run during factory
+    /// construction, off the pipeline's local async core. Acquisition failures
+    /// are returned to the factory; no unprotected binding is constructed.
+    pub fn acquire(checkpoint: CheckpointStore) -> Result<Self, LeaseError> {
+        let lease = SourceLease::acquire(checkpoint.lease_key())?;
+        Ok(Self { checkpoint, lease })
+    }
+}
+
 /// Executes one compiled query through a database-specific adapter.
 pub struct DatabaseReceiver<A> {
     adapter: A,
     query: CompiledQuery,
-    checkpoint: CheckpointStore,
+    source: SourceBinding,
     nack_backoff: Duration,
     max_consecutive_failures: u32,
-    source_id: String,
-    // The lease is held for the receiver lifetime so no competing receiver
-    // can advance the same durable checkpoint.
-    _lease: SourceLease,
     admission: LocalReceiverAdmissionState,
     metrics: Option<MetricSet<DatabaseReceiverMetrics>>,
 }
@@ -201,28 +230,27 @@ where
 {
     /// Creates a receiver bound to one durable checkpoint source.
     ///
+    /// Acquire `source` in the factory with [`SourceBinding::acquire`]. This
+    /// constructor performs no lease I/O and accepts no separate identity or lease.
+    ///
     /// Bootstrap `admission` from the containing pipeline's process memory state
     /// so pre-existing hard pressure and observe-only mode are honored at startup.
     #[must_use]
     pub fn new(
         adapter: A,
         query: CompiledQuery,
-        checkpoint: CheckpointStore,
-        lease: SourceLease,
+        source: SourceBinding,
         nack_backoff: Duration,
         max_consecutive_failures: u32,
-        source_id: String,
         admission: LocalReceiverAdmissionState,
         metrics: Option<MetricSet<DatabaseReceiverMetrics>>,
     ) -> Self {
         Self {
             adapter,
             query,
-            checkpoint,
+            source,
             nack_backoff,
             max_consecutive_failures,
-            source_id,
-            _lease: lease,
             admission,
             metrics,
         }
@@ -412,14 +440,14 @@ where
         let Self {
             mut adapter,
             query,
-            checkpoint,
+            source,
             nack_backoff,
             max_consecutive_failures,
-            source_id,
-            _lease: lease,
             admission,
             mut metrics,
         } = *self;
+        let SourceBinding { checkpoint, lease } = source;
+        let source_id = checkpoint.source_id().to_owned();
         let lease = HeldOwnership {
             lease: Some(lease),
             abandoned: Cell::new(false),

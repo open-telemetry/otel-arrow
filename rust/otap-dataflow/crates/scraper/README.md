@@ -20,8 +20,9 @@ The shared scraper is the database-neutral foundation for query-polling
 receivers in OTAP Dataflow. It defines common configuration, validated query
 plans, cursor and row types, and the interface that database-specific adapters
 implement. `CheckpointStore` and `SourceLease` provide concrete persistence
-and checkpoint-identity ownership. The polling component `DatabaseReceiver`
-integrates these primitives with OTLP mapping and downstream feedback.
+and checkpoint-identity ownership. `SourceBinding` acquires the store's lease
+and ties the receiver's identity to that store. The polling component
+`DatabaseReceiver` integrates this binding with OTLP mapping and downstream feedback.
 A concrete vendor receiver supplies the adapter and registers the node.
 
 | Component | Responsibility |
@@ -228,8 +229,9 @@ ordered safely as text. The polling controller compares validated UTC instants.
 ### Checkpoint Configuration
 
 This block validates a persistence and replay policy. Constructing configuration
-alone does not perform I/O. Receiver construction creates a `CheckpointStore`
-and acquires a `SourceLease`; the polling controller manages when they are used.
+alone does not perform I/O. The receiver factory creates a `CheckpointStore`
+and calls `SourceBinding::acquire(store)` before constructing the receiver;
+the polling controller manages when the store and lease are used.
 
 | Field | Type | Default | Validation / meaning |
 | --- | --- | --- | --- |
@@ -542,11 +544,35 @@ re-executes SQL and cannot reproduce rows that have changed or been deleted.
 
 #### Checkpoint Ownership Is Not Database-Source Ownership
 
+`DatabaseReceiver::new` accepts one `SourceBinding`, not independently supplied
+checkpoint, lease, and source-ID arguments. Acquire the binding in the vendor
+factory, before entering the pipeline's local async runtime:
+
+```rust,ignore
+let source = SourceBinding::acquire(store)?;
+let receiver = DatabaseReceiver::new(
+    adapter,
+    query,
+    source,
+    checkpoint_config.nack_backoff,
+    checkpoint_config.max_consecutive_failures,
+    admission,
+    metrics,
+);
+```
+
+Binding acquisition performs blocking lease filesystem work and propagates
+contention or I/O failures to the factory. The receiver derives its emitted
+OTLP and diagnostic source ID from `CheckpointStore::source_id()`. Private
+binding fields prevent combining one store with another store's lease, and the
+binding is moved into the receiver rather than cloned. No lease acquisition or
+identity-path validation is deferred to async polling.
+
 `CheckpointStore::lease_key()` returns the native filesystem path derived from
 the state directory, pipeline group, pipeline, receiver name, and `source_id`.
-Pass it directly to `SourceLease::acquire()` without converting it to a string:
-lossy text conversion can move the lock away from the checkpoint if the state
-directory contains non-UTF-8 components. `SourceLease` prevents competing
+`SourceBinding::acquire()` passes it directly to `SourceLease::acquire()` without
+converting it to a string: lossy text conversion can move the lock away from the
+checkpoint if the state directory contains non-UTF-8 components. `SourceLease` prevents competing
 owners of that same storage identity using a process-local registry and an
 advisory filesystem lock. Cross-process exclusion requires access to the same
 lock on a filesystem that honors those locking semantics.

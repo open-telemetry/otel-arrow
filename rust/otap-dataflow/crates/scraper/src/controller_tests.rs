@@ -492,8 +492,85 @@ fn equal_candidate_is_rejected_as_non_advancing() {
     ));
 }
 
-/// Scenario: Successive receiver pages use the same encoder across separate blocking jobs and matching ACKs.
-/// Guarantees: Both pages commit in order, cached encoding state survives the handoff, and cleanup precedes lease release.
+/// Scenario: Factories bind stores with the same source ID but different checkpoint locations.
+/// Guarantees: Each binding locks its own store's key, preserves the full source ID, rejects competing ownership,
+/// and releases the lease if the binding is dropped before receiver startup.
+#[test]
+fn source_binding_owns_the_exact_store_identity() {
+    let directory = tempfile::tempdir_in(".").expect("checkpoint directory");
+    let source_id = "orders-source-".repeat(8);
+    let make_store = |pipeline| {
+        CheckpointStore::new(
+            directory.path(),
+            "group",
+            pipeline,
+            "receiver",
+            &source_id,
+            "fingerprint".to_owned(),
+        )
+    };
+    let store_a = make_store("pipeline-a");
+    let store_b = make_store("pipeline-b");
+    let lease_a = SourceLease::acquire(store_a.lease_key()).expect("independent lease A");
+    assert!(matches!(
+        SourceBinding::acquire(store_a.clone()),
+        Err(LeaseError::AlreadyOwned)
+    ));
+    let binding_b = SourceBinding::acquire(store_b.clone()).expect("store B binding");
+    assert_eq!(binding_b.checkpoint.source_id(), source_id);
+    assert_eq!(binding_b.checkpoint.lease_key(), store_b.lease_key());
+    assert!(matches!(
+        SourceLease::acquire(store_b.lease_key()),
+        Err(LeaseError::AlreadyOwned)
+    ));
+    assert!(matches!(
+        SourceBinding::acquire(store_b.clone()),
+        Err(LeaseError::AlreadyOwned)
+    ));
+    let generation = binding_b.lease.generation();
+    drop(binding_b);
+    let replacement = SourceBinding::acquire(store_b).expect("binding B can be reacquired");
+    assert!(replacement.lease.generation() > generation);
+    assert!(matches!(
+        SourceLease::acquire(store_a.lease_key()),
+        Err(LeaseError::AlreadyOwned)
+    ));
+    drop(lease_a);
+}
+
+/// Scenario: Lease acquisition encounters a file where the checkpoint directory must be.
+/// Guarantees: Factory binding returns the filesystem error rather than an unprotected source,
+/// and acquisition can succeed after the path is repaired.
+#[test]
+fn source_binding_propagates_acquisition_failure() {
+    let directory = tempfile::tempdir_in(".").expect("checkpoint directory");
+    let root = directory.path().join("state");
+    std::fs::write(&root, b"not a directory").expect("block checkpoint directory");
+    let store = CheckpointStore::new(
+        &root,
+        "group",
+        "pipeline",
+        "receiver",
+        "source",
+        "fingerprint".to_owned(),
+    );
+    assert!(matches!(
+        SourceBinding::acquire(store.clone()),
+        Err(LeaseError::Io { .. })
+    ));
+    std::fs::remove_file(&root).expect("repair checkpoint directory");
+    let binding = SourceBinding::acquire(store.clone()).expect("binding after repair");
+    assert!(matches!(
+        SourceLease::acquire(store.lease_key()),
+        Err(LeaseError::AlreadyOwned)
+    ));
+    drop(binding);
+    drop(SourceLease::acquire(store.lease_key()).expect("lease released"));
+}
+
+/// Scenario: Successive receiver pages use a store-derived source identity and matching ACKs.
+/// Guarantees: OTLP identity matches the checkpoint store, both pages commit in order,
+/// cached encoding state survives the handoff, and cleanup precedes lease release.
 #[test]
 fn matching_acks_reuse_encoder_and_commit_pages_through_the_receiver_loop() {
     let directory = tempfile::tempdir_in(".").expect("checkpoint test directory");
@@ -511,7 +588,7 @@ fn matching_acks_reuse_encoder_and_commit_pages_through_the_receiver_loop() {
         "fake-source",
         "fingerprint".to_owned(),
     );
-    let lease = SourceLease::acquire(store.lease_key()).expect("source lease");
+    let source = SourceBinding::acquire(store.clone()).expect("source binding");
     let shutdown_joined = Rc::new(Cell::new(false));
     let receiver = DatabaseReceiver::new(
         FakeAdapter {
@@ -519,11 +596,9 @@ fn matching_acks_reuse_encoder_and_commit_pages_through_the_receiver_loop() {
             lease_key: store.lease_key().to_path_buf(),
         },
         fake_query(&checkpoint),
-        store.clone(),
-        lease,
+        source,
         checkpoint.nack_backoff,
         checkpoint.max_consecutive_failures,
-        "fake-source".to_owned(),
         normal_admission(),
         None,
     );
@@ -547,6 +622,23 @@ fn matching_acks_reuse_encoder_and_commit_pages_through_the_receiver_loop() {
                     .recv()
                     .await
                     .expect("receiver should emit the next page");
+                let PayloadData::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(bytes)) =
+                    pdata.clone().payload().into_data()
+                else {
+                    panic!("expected OTLP logs");
+                };
+                let logs = LogsData::decode(bytes).expect("valid OTLP logs");
+                let resource = logs.resource_logs[0].resource.as_ref().expect("resource");
+                let source_id = resource
+                    .attributes
+                    .iter()
+                    .find(|attribute| attribute.key == "receiver.database.source_id")
+                    .and_then(|attribute| attribute.value.as_ref())
+                    .and_then(|value| value.value.as_ref());
+                assert_eq!(
+                    source_id,
+                    Some(&any_value::Value::StringValue("fake-source".to_owned()))
+                );
                 let (_, ack) = next_ack(AckMsg::new(pdata)).expect("ACK subscription frame");
                 ctx.send_control_msg(NodeControlMsg::Ack(ack))
                     .await
@@ -933,7 +1025,7 @@ fn permanent_nack_preserves_checkpoint_and_releases_lease() {
             "source",
             "fingerprint".to_owned(),
         );
-        let lease = SourceLease::acquire(store.lease_key()).expect("lease");
+        let source = SourceBinding::acquire(store.clone()).expect("source binding");
         let previous = saved.then(|| {
             store
                 .write(0, &checkpoint(0, 41).cursor)
@@ -947,11 +1039,9 @@ fn permanent_nack_preserves_checkpoint_and_releases_lease() {
                 lease_key: store.lease_key().to_path_buf(),
             },
             fake_query(&config),
-            store.clone(),
-            lease,
+            source,
             config.nack_backoff,
             config.max_consecutive_failures,
-            "source".to_owned(),
             normal_admission(),
             None,
         );
@@ -1018,7 +1108,7 @@ fn stale_feedback_is_counted_and_retryable_nack_still_replays() {
         "source",
         "fingerprint".to_owned(),
     );
-    let lease = SourceLease::acquire(store.lease_key()).expect("lease");
+    let source = SourceBinding::acquire(store.clone()).expect("source binding");
     let joined = Rc::new(Cell::new(false));
     let pipeline = create_test_pipeline_context();
     let receiver = DatabaseReceiver::new(
@@ -1027,11 +1117,9 @@ fn stale_feedback_is_counted_and_retryable_nack_still_replays() {
             lease_key: store.lease_key().to_path_buf(),
         },
         fake_query(&config),
-        store.clone(),
-        lease,
+        source,
         config.nack_backoff,
         config.max_consecutive_failures,
-        "source".to_owned(),
         normal_admission(),
         Some(DatabaseReceiverMetrics::register(&pipeline)),
     );
@@ -1275,8 +1363,6 @@ fn stop_wait_timeouts_reserve_cleanup_and_release_lease() {
             "source",
             "fingerprint".to_owned(),
         );
-        let lease = SourceLease::acquire(store.lease_key()).expect("initial lease");
-        let generation = lease.generation();
         let (previous, _) = store
             .write(0, &checkpoint(0, 41).cursor)
             .expect("previous progress");
@@ -1296,6 +1382,8 @@ fn stop_wait_timeouts_reserve_cleanup_and_release_lease() {
         ) {
             store.write_control = Some(Arc::clone(&write));
         }
+        let source = SourceBinding::acquire(store.clone()).expect("source binding");
+        let generation = source.lease.generation();
         let executing = Rc::new(Cell::new(false));
         let cleanup_started = Rc::new(Cell::new(None));
         let joined = Rc::new(Cell::new(false));
@@ -1314,11 +1402,9 @@ fn stop_wait_timeouts_reserve_cleanup_and_release_lease() {
                 cleanup_started: Rc::clone(&cleanup_started),
             },
             fake_query(&config),
-            store.clone(),
-            lease,
+            source,
             config.nack_backoff,
             config.max_consecutive_failures,
-            "source".to_owned(),
             normal_admission(),
             Some(metrics),
         );
@@ -1537,7 +1623,6 @@ fn closed_control_channel_releases_lease_after_confirmed_cleanup() {
         "source",
         "fingerprint".to_owned(),
     );
-    let lease = SourceLease::acquire(store.lease_key()).expect("initial lease");
     let (previous, _) = store
         .write(0, &checkpoint(0, 41).cursor)
         .expect("previous acknowledged progress");
@@ -1548,6 +1633,7 @@ fn closed_control_channel_releases_lease_after_confirmed_cleanup() {
         completed: AtomicUsize::new(0),
     });
     store.write_control = Some(Arc::clone(&write));
+    let source = SourceBinding::acquire(store.clone()).expect("source binding");
     let shutdown_joined = Rc::new(Cell::new(false));
     let receiver = DatabaseReceiver::new(
         FakeAdapter {
@@ -1555,11 +1641,9 @@ fn closed_control_channel_releases_lease_after_confirmed_cleanup() {
             lease_key: store.lease_key().to_path_buf(),
         },
         fake_query(&config),
-        store.clone(),
-        lease,
+        source,
         config.nack_backoff,
         config.max_consecutive_failures,
-        "source".to_owned(),
         normal_admission(),
         None,
     );
@@ -1643,7 +1727,7 @@ fn checkpoint_read_failure_still_cleans_up_adapter_and_worker() {
         .write(0, &checkpoint(0, 1).cursor)
         .expect("prior configuration checkpoint");
     let store = make_store("new");
-    let lease = SourceLease::acquire(store.lease_key()).expect("source lease");
+    let source = SourceBinding::acquire(store.clone()).expect("source binding");
     let shutdown_joined = Rc::new(Cell::new(false));
     let receiver = StartupFailureProbe(DatabaseReceiver::new(
         FakeAdapter {
@@ -1651,11 +1735,9 @@ fn checkpoint_read_failure_still_cleans_up_adapter_and_worker() {
             lease_key: store.lease_key().to_path_buf(),
         },
         fake_query(&config),
-        store.clone(),
-        lease,
+        source,
         config.nack_backoff,
         config.max_consecutive_failures,
-        "source".to_owned(),
         normal_admission(),
         None,
     ));
@@ -1759,7 +1841,7 @@ fn invalid_empty_execution_metadata_fails_and_releases_lease() {
             case,
             "fingerprint".to_owned(),
         );
-        let lease = SourceLease::acquire(store.lease_key()).expect("source lease");
+        let source = SourceBinding::acquire(store.clone()).expect("source binding");
         let shutdown_joined = Rc::new(Cell::new(false));
         let executions = Rc::new(Cell::new(0));
         let receiver = StartupFailureProbe(DatabaseReceiver::new(
@@ -1772,11 +1854,9 @@ fn invalid_empty_execution_metadata_fails_and_releases_lease() {
                 executions: Rc::clone(&executions),
             },
             fake_query(&config),
-            store.clone(),
-            lease,
+            source,
             config.nack_backoff,
             config.max_consecutive_failures,
-            case.to_owned(),
             normal_admission(),
             None,
         ));
@@ -2906,7 +2986,7 @@ fn run_catch_up_loop(case: LoopCase) {
         "source",
         "fingerprint".to_owned(),
     );
-    let lease = SourceLease::acquire(store.lease_key()).expect("source lease");
+    let source = SourceBinding::acquire(store.clone()).expect("source binding");
     let fetched = Rc::new(RefCell::new(Vec::new()));
     let shutdown_joined = Rc::new(Cell::new(false));
     let process = MemoryPressureState::default();
@@ -2960,11 +3040,9 @@ fn run_catch_up_loop(case: LoopCase) {
                 },
             }),
         ),
-        store.clone(),
-        lease,
+        source,
         config.nack_backoff,
         config.max_consecutive_failures,
-        "source".to_owned(),
         admission.clone(),
         None,
     );
