@@ -233,6 +233,55 @@ fn query_with_polling(
     .expect("fake query should compile")
 }
 
+/// Scenario: Stop requests arrive with long, short, or expired remaining budgets.
+/// Guarantees: Cleanup reserves at most five seconds and half the remaining time without extending the deadline.
+#[test]
+fn stop_budget_reserves_cleanup_within_original_deadline() {
+    let now = Instant::now();
+    for (remaining, reserve) in [
+        (Duration::from_secs(30), Duration::from_secs(5)),
+        (Duration::from_secs(5), Duration::from_millis(2500)),
+        (Duration::from_millis(20), Duration::from_millis(10)),
+        (Duration::ZERO, Duration::ZERO),
+    ] {
+        let stopping = StopState::default();
+        let deadline = now + remaining;
+        let stop = stopping.record(StopRequest::Drain(deadline), now);
+        assert_eq!(stop.deadline(), deadline);
+        assert_eq!(stopping.wait_deadline.get(), Some(deadline - reserve));
+    }
+    let stopping = StopState::default();
+    let expired = now - Duration::from_secs(1);
+    _ = stopping.record(StopRequest::Shutdown(expired), now);
+    assert_eq!(stopping.wait_deadline.get(), Some(expired));
+}
+
+/// Scenario: Duplicate drain controls and a subsequent shutdown arrive after the first reservation.
+/// Guarantees: Neither cutoff can move later, earlier deadlines tighten the budget, and shutdown takes precedence.
+#[test]
+fn repeated_stops_preserve_cleanup_reservation() {
+    let now = Instant::now();
+    let stopping = StopState::default();
+    let deadline = now + Duration::from_secs(4);
+    _ = stopping.record(StopRequest::Drain(deadline), now);
+    let wait_deadline = stopping.wait_deadline.get();
+    _ = stopping.record(StopRequest::Drain(deadline), now + Duration::from_secs(1));
+    assert_eq!(stopping.wait_deadline.get(), wait_deadline);
+    let stop = stopping.record(
+        StopRequest::Shutdown(deadline + Duration::from_secs(10)),
+        now,
+    );
+    assert!(matches!(stop, StopRequest::Shutdown(value) if value == deadline));
+    assert_eq!(stopping.wait_deadline.get(), wait_deadline);
+    let earlier = now + Duration::from_secs(1);
+    let stop = stopping.record(StopRequest::Drain(earlier), now);
+    assert!(matches!(stop, StopRequest::Shutdown(value) if value == earlier));
+    assert_eq!(
+        stopping.wait_deadline.get(),
+        Some(now + Duration::from_millis(500))
+    );
+}
+
 /// Scenario: Shutdown arrives after a native database operation has started.
 /// Guarantees: Cancellation is requested and the operation is joined before termination is
 /// reported, so a replacement receiver cannot overlap an in-flight database call.
@@ -263,6 +312,7 @@ async fn stop_cancels_and_joins_active_operation() {
         &mut None,
         &Cell::new(false),
         &poll_admission(),
+        &StopState::default(),
     )
     .await
     .expect("controlled operation should finish");
@@ -301,6 +351,7 @@ async fn closed_control_channel_cancels_and_joins_active_operation() {
         &mut None,
         &Cell::new(false),
         &poll_admission(),
+        &StopState::default(),
     )
     .await;
 
@@ -609,6 +660,7 @@ async fn inactive_operation_counts_discarded_feedback() {
         &mut metrics,
         &Cell::new(false),
         &poll_admission(),
+        &StopState::default(),
     )
     .await
     .expect("operation finishes");
@@ -672,7 +724,7 @@ impl local::Receiver<OtapPdata> for DeferredFeedbackProbe {
             &effects,
             &mut state,
             &mut metrics,
-            &mut None,
+            &StopState::default(),
             &mut deferred,
             7,
             &self.admission,
@@ -760,6 +812,7 @@ impl local::Receiver<OtapPdata> for CheckpointFeedbackProbe {
         let candidate = checkpoint(0, 1).cursor;
         let abandoned = Cell::new(false);
         let admission = poll_admission();
+        let stopping = StopState::default();
         let (result, ()) = tokio::time::timeout(Duration::from_secs(4), async {
             tokio::join!(
                 commit_checkpoint(
@@ -776,7 +829,7 @@ impl local::Receiver<OtapPdata> for CheckpointFeedbackProbe {
                     &mut metrics,
                     &abandoned,
                     &mut controls,
-                    None,
+                    &stopping,
                     &admission,
                 ),
                 async {
@@ -1082,6 +1135,350 @@ fn stale_feedback_is_counted_and_retryable_nack_still_replays() {
 struct ClosedControlCleanupProbe {
     receiver: DatabaseReceiver<FakeAdapter>,
     write: Arc<WriteControl>,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum CleanupWaitCase {
+    Ack,
+    AckBeforeCutoff,
+    Send,
+    Operation,
+    Checkpoint,
+    CheckpointRetry,
+}
+
+struct CleanupBudgetAdapter {
+    inner: FakeAdapter,
+    case: CleanupWaitCase,
+    executing: Rc<Cell<bool>>,
+    cleanup_started: Rc<Cell<Option<Instant>>>,
+}
+
+#[async_trait(?Send)]
+impl DriverAdapter for CleanupBudgetAdapter {
+    type Error = TestCancellationError;
+    type Cancellation = TestCancellation;
+
+    fn system(&self) -> DatabaseSystem {
+        self.inner.system()
+    }
+
+    fn begin_operation(&mut self) -> Result<Self::Cancellation, Self::Error> {
+        self.inner.begin_operation()
+    }
+
+    async fn validate_query(
+        &mut self,
+        query: &CompiledQuery,
+    ) -> Result<Vec<ColumnMetadata>, Self::Error> {
+        self.inner.validate_query(query).await
+    }
+
+    async fn execute(
+        &mut self,
+        query: &CompiledQuery,
+        cursor: &CompositeCursor,
+    ) -> Result<QueryPage, Self::Error> {
+        self.executing.set(true);
+        if matches!(self.case, CleanupWaitCase::Operation) {
+            // Simulate an operation whose dropped wait is confirmed stopped by shutdown.
+            std::future::pending::<()>().await;
+        }
+        self.inner.execute(query, cursor).await
+    }
+
+    async fn shutdown(&mut self) -> Result<(), Self::Error> {
+        self.cleanup_started.set(Some(Instant::now()));
+        // Healthy cleanup must have time to await, not merely succeed on its first poll.
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        self.inner.shutdown().await
+    }
+}
+
+struct CleanupBudgetProbe {
+    receiver: DatabaseReceiver<CleanupBudgetAdapter>,
+    case: CleanupWaitCase,
+    deadline: Rc<Cell<Option<Instant>>>,
+    finished: Rc<Cell<bool>>,
+}
+
+#[async_trait(?Send)]
+impl local::Receiver<OtapPdata> for CleanupBudgetProbe {
+    async fn start(
+        self: Box<Self>,
+        controls: local::ControlChannel<OtapPdata>,
+        effects: local::EffectHandler<OtapPdata>,
+    ) -> Result<TerminalState, Error> {
+        let Self {
+            receiver,
+            case,
+            deadline,
+            finished,
+        } = *self;
+        if matches!(case, CleanupWaitCase::Send) {
+            // Fill the capacity-one output before starting the real controller.
+            effects
+                .send_message(OtapPdata::new_todo_context(
+                    OtlpProtoBytes::ExportLogsRequest(Vec::new().into()).into(),
+                ))
+                .await?;
+        }
+        let terminal = tokio::time::timeout(
+            Duration::from_secs(4),
+            local::Receiver::start(Box::new(receiver), controls, effects),
+        )
+        .await
+        .expect("receiver stop remains bounded")?;
+        let deadline = deadline.get().expect("stop sent");
+        assert_eq!(
+            terminal.deadline(),
+            deadline,
+            "{case:?}: preserve final deadline"
+        );
+        assert!(
+            Instant::now() < deadline,
+            "{case:?}: cleanup finishes before deadline"
+        );
+        finished.set(true);
+        Ok(terminal)
+    }
+}
+
+/// Scenario: ACK, full-output, operation, checkpoint-write, or retry waits exhaust their stop allowance,
+/// or an ACK arrives before the cutoff.
+/// Guarantees: Healthy adapter and scraper cleanup finish within the original deadline, retain ownership during cleanup,
+/// checkpoint only acknowledged progress, and allow reacquisition without a process restart.
+#[test]
+fn stop_wait_timeouts_reserve_cleanup_and_release_lease() {
+    for (case, shutdown) in [
+        (CleanupWaitCase::Ack, false),
+        (CleanupWaitCase::AckBeforeCutoff, false),
+        (CleanupWaitCase::Send, false),
+        (CleanupWaitCase::Operation, false),
+        (CleanupWaitCase::Checkpoint, false),
+        (CleanupWaitCase::CheckpointRetry, false),
+        (CleanupWaitCase::Operation, true),
+        (CleanupWaitCase::Checkpoint, true),
+    ] {
+        let directory = tempfile::tempdir_in(".").expect("checkpoint directory");
+        let config = CheckpointConfig {
+            directory: directory.path().to_string_lossy().into_owned(),
+            on_nack: OnNack::Rewind,
+            nack_backoff: Duration::from_secs(60),
+            max_consecutive_failures: 3,
+        };
+        let mut store = CheckpointStore::new(
+            directory.path(),
+            "group",
+            "pipeline",
+            "cleanup-budget",
+            "source",
+            "fingerprint".to_owned(),
+        );
+        let lease = SourceLease::acquire(store.lease_key()).expect("initial lease");
+        let generation = lease.generation();
+        let (previous, _) = store
+            .write(0, &checkpoint(0, 41).cursor)
+            .expect("previous progress");
+        // Existing fault injection runs on the real scraper worker and does not install a checkpoint.
+        let write = Arc::new(WriteControl {
+            delay: if matches!(case, CleanupWaitCase::Checkpoint) {
+                Duration::from_millis(700)
+            } else {
+                Duration::ZERO
+            },
+            attempts: AtomicUsize::new(0),
+            completed: AtomicUsize::new(0),
+        });
+        if matches!(
+            case,
+            CleanupWaitCase::Checkpoint | CleanupWaitCase::CheckpointRetry
+        ) {
+            store.write_control = Some(Arc::clone(&write));
+        }
+        let executing = Rc::new(Cell::new(false));
+        let cleanup_started = Rc::new(Cell::new(None));
+        let joined = Rc::new(Cell::new(false));
+        let deadline = Rc::new(Cell::new(None));
+        let finished = Rc::new(Cell::new(false));
+        let pipeline = create_test_pipeline_context();
+        let metrics = DatabaseReceiverMetrics::register(&pipeline);
+        let receiver = DatabaseReceiver::new(
+            CleanupBudgetAdapter {
+                inner: FakeAdapter {
+                    shutdown_joined: Rc::clone(&joined),
+                    lease_key: store.lease_key().to_path_buf(),
+                },
+                case,
+                executing: Rc::clone(&executing),
+                cleanup_started: Rc::clone(&cleanup_started),
+            },
+            fake_query(&config),
+            store.clone(),
+            lease,
+            config.nack_backoff,
+            config.max_consecutive_failures,
+            "source".to_owned(),
+            normal_admission(),
+            Some(metrics),
+        );
+        let runtime = TestRuntime::<OtapPdata>::new();
+        let mut runtime_config = runtime.config().clone();
+        runtime_config.output_pdata_channel.capacity = 1;
+        let wrapper = ReceiverWrapper::local(
+            CleanupBudgetProbe {
+                receiver,
+                case,
+                deadline: Rc::clone(&deadline),
+                finished: Rc::clone(&finished),
+            },
+            test_node(runtime_config.name.clone()),
+            Arc::new(NodeUserConfig::new_receiver_config(
+                "urn:otel:receiver:cleanup_budget",
+            )),
+            &runtime_config,
+        );
+        let observed_cleanup = Rc::clone(&cleanup_started);
+        let completion = Arc::clone(&write);
+        runtime
+            .set_receiver(wrapper)
+            .run_test(|_| async {})
+            .run_validation_concurrent(move |mut ctx| async move {
+                tokio::time::timeout(Duration::from_secs(4), async {
+                    let mut pending_ack = None;
+                    match case {
+                        CleanupWaitCase::Ack
+                        | CleanupWaitCase::AckBeforeCutoff
+                        | CleanupWaitCase::Checkpoint
+                        | CleanupWaitCase::CheckpointRetry => {
+                            let pdata = ctx.recv().await.expect("pending page");
+                            if matches!(case, CleanupWaitCase::AckBeforeCutoff) {
+                                pending_ack =
+                                    Some(next_ack(AckMsg::new(pdata)).expect("ACK subscription").1);
+                            } else if !matches!(case, CleanupWaitCase::Ack) {
+                                let (_, ack) =
+                                    next_ack(AckMsg::new(pdata)).expect("ACK subscription");
+                                ctx.send_control_msg(NodeControlMsg::Ack(ack))
+                                    .await
+                                    .expect("ACK");
+                                while if matches!(case, CleanupWaitCase::Checkpoint) {
+                                    write.attempts.load(Ordering::SeqCst) == 0
+                                } else {
+                                    write.completed.load(Ordering::SeqCst) == 0
+                                } {
+                                    tokio::task::yield_now().await;
+                                }
+                            }
+                        }
+                        CleanupWaitCase::Operation => {
+                            while !executing.get() {
+                                tokio::task::yield_now().await;
+                            }
+                        }
+                        CleanupWaitCase::Send => {
+                            // Only the blocked send defers matching feedback; earlier operation
+                            // waits count it as stale. Detect that transition without timing sleeps.
+                            loop {
+                                let calldata =
+                                    [Context8u8::from(1_u64), Context8u8::from(generation)]
+                                        .into_iter()
+                                        .collect();
+                                ctx.send_control_msg(feedback_message(true, calldata))
+                                    .await
+                                    .expect("probe feedback");
+                                // A malformed control forces a snapshot even when matching feedback
+                                // was deferred and made no counters dirty.
+                                ctx.send_control_msg(feedback_message(true, CallData::new()))
+                                    .await
+                                    .expect("stale feedback");
+                                let (reports, reporter) =
+                                    MetricsReporter::create_new_and_receiver(1);
+                                ctx.send_control_msg(NodeControlMsg::CollectTelemetry {
+                                    metrics_reporter: reporter,
+                                })
+                                .await
+                                .expect("collect telemetry");
+                                let snapshot = reports.recv_async().await.expect("metrics");
+                                let observed = snapshot_counter(&snapshot, "stale.feedback");
+                                if observed == 1 {
+                                    break;
+                                }
+                                assert_eq!(observed, 2, "operation discarded both controls");
+                            }
+                        }
+                    }
+                    let started = Instant::now();
+                    let stop_deadline = started + Duration::from_secs(1);
+                    deadline.set(Some(stop_deadline));
+                    let reason = "reserve healthy cleanup".to_owned();
+                    let message = if shutdown {
+                        NodeControlMsg::Shutdown {
+                            deadline: stop_deadline,
+                            reason,
+                        }
+                    } else {
+                        NodeControlMsg::DrainIngress {
+                            deadline: stop_deadline,
+                            reason,
+                        }
+                    };
+                    ctx.send_control_msg(message).await.expect("stop");
+                    if let Some(ack) = pending_ack {
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                        ctx.send_control_msg(NodeControlMsg::Ack(ack))
+                            .await
+                            .expect("ACK during drain");
+                    }
+                    while !finished.get() {
+                        tokio::task::yield_now().await;
+                    }
+                    let cleanup = observed_cleanup.get().expect("cleanup attempted");
+                    if matches!(case, CleanupWaitCase::AckBeforeCutoff) {
+                        assert!(
+                            cleanup < started + Duration::from_millis(500),
+                            "ACK completes drain without waiting for cutoff"
+                        );
+                    } else {
+                        assert!(
+                            cleanup >= started + Duration::from_millis(450),
+                            "{case:?}: wait allowance exhausted"
+                        );
+                    }
+                    assert!(
+                        cleanup < stop_deadline,
+                        "{case:?}: cleanup gets reserved time"
+                    );
+                    if matches!(case, CleanupWaitCase::Send) {
+                        let _ = ctx.recv().await.expect("only the queue filler was sent");
+                    }
+                    assert!(ctx.recv().await.is_err(), "{case:?}: no further pages");
+                })
+                .await
+                .expect("stop and validation complete");
+            });
+        assert!(
+            joined.get(),
+            "{case:?}: cleanup confirmed with lease still held"
+        );
+        let expected = if matches!(case, CleanupWaitCase::AckBeforeCutoff) {
+            CheckpointState {
+                revision: previous.revision + 1,
+                cursor: checkpoint(0, 42).cursor,
+            }
+        } else {
+            previous
+        };
+        assert_eq!(store.read().expect("checkpoint"), Some(expected));
+        if matches!(
+            case,
+            CleanupWaitCase::Checkpoint | CleanupWaitCase::CheckpointRetry
+        ) {
+            assert_eq!(completion.completed.load(Ordering::SeqCst), 1);
+        }
+        drop(
+            SourceLease::acquire(store.lease_key()).expect("healthy source can restart in-process"),
+        );
+    }
 }
 
 #[async_trait(?Send)]
@@ -1434,6 +1831,7 @@ async fn stuck_worker_quarantines_ownership_at_deadline() {
         &mut None,
         &abandoned,
         &poll_admission(),
+        &StopState::default(),
     )
     .await
     .expect("bounded shutdown");
@@ -1486,6 +1884,7 @@ fn scraper_worker_deadline_does_not_hold_runtime_or_release_lease() {
                 &mut None,
                 &ownership.abandoned,
                 &poll_admission(),
+                &StopState::default(),
             )
             .await
             .expect("operation stop returns");
@@ -1690,6 +2089,7 @@ async fn scraper_encoding_job_keeps_pressure_controls_responsive() {
     let admission = poll_admission();
     let abandoned = Cell::new(false);
     let mut metrics = None;
+    let stopping = StopState::default();
     let (outcome, ()) = tokio::join!(
         await_database_operation_or_stop(
             encoding,
@@ -1698,6 +2098,7 @@ async fn scraper_encoding_job_keeps_pressure_controls_responsive() {
             &mut metrics,
             &abandoned,
             &admission,
+            &stopping,
         ),
         async {
             tokio::time::timeout(Duration::from_secs(1), async {
@@ -1858,7 +2259,11 @@ impl local::Receiver<OtapPdata> for CheckpointProbe {
             // Lifecycle counters count observed messages, not successful cleanup.
             metrics.as_mut().expect("registered metrics").drains.add(1);
             self.stop_deadline
-                .set(Some(Instant::now() + Duration::from_millis(20)));
+                .set(Some(Instant::now() + Duration::from_millis(200)));
+        }
+        let stopping = StopState::default();
+        if let Some(deadline) = self.stop_deadline.get() {
+            _ = stopping.record(StopRequest::Drain(deadline), Instant::now());
         }
         let mut failures = 0;
         let outcome = tokio::time::timeout(
@@ -1881,7 +2286,7 @@ impl local::Receiver<OtapPdata> for CheckpointProbe {
                 &mut metrics,
                 &abandoned,
                 &mut controls,
-                self.stop_deadline.get(),
+                &stopping,
                 &poll_admission(),
             ),
         )
@@ -2292,6 +2697,7 @@ async fn pressure_during_empty_query_releases_encoder_scratch() {
         &mut None,
         &Cell::new(false),
         &admission,
+        &StopState::default(),
     )
     .await
     .expect("empty query completes");
@@ -2353,6 +2759,7 @@ async fn operation_wait_applies_pressure_and_retains_interruption() {
             &mut None,
             &Cell::new(false),
             &admission,
+            &StopState::default(),
         )
         .await
         .expect("operation completes");
@@ -2794,7 +3201,7 @@ impl local::Receiver<OtapPdata> for BlockedSendProbe {
             &effects,
             &mut state,
             &mut None,
-            &mut None,
+            &StopState::default(),
             &mut None,
             1,
             &self.admission,
@@ -2887,7 +3294,7 @@ impl local::Receiver<OtapPdata> for PressureCheckpointProbe {
             &mut None,
             &abandoned,
             &mut controls,
-            None,
+            &StopState::default(),
             &self.admission,
         )
         .await?;

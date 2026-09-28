@@ -429,6 +429,7 @@ where
             state: admission,
             cycle_interrupted: Cell::new(false),
         };
+        let stopping = StopState::default();
         let mut worker = None;
         // All normal and error exits confirm both workers stopped before releasing
         // ownership, including spawn/read failures. Drop quarantines the lease.
@@ -446,9 +447,10 @@ where
             &mut metrics,
             &lease.abandoned,
             &admission,
+            &stopping,
         ).await? {
             OperationOutcome::Completed(result) => result?,
-            OperationOutcome::Stopped(stop) => return finish_stop(stop, &effect_handler, &metrics).await,
+            OperationOutcome::Stopped(stop) => return Ok(stopped_state(stop, &metrics)),
         };
         let mut state = ReceiverState::new(
             loaded.unwrap_or_else(|| CheckpointState {
@@ -484,6 +486,7 @@ where
             &mut metrics,
             &lease.abandoned,
             &admission,
+            &stopping,
         )
         .await?
         {
@@ -491,7 +494,7 @@ where
                 receiver_error(&effect_handler, A::classify_error(&error), error)
             })?,
             OperationOutcome::Stopped(stop) => {
-                return finish_stop(stop, &effect_handler, &metrics).await;
+                return Ok(stopped_state(stop, &metrics));
             }
         };
         let mut encoder = OtlpPageEncoder::new(
@@ -501,7 +504,6 @@ where
         })?;
 
         let mut consecutive_checkpoint_failures = 0_u32;
-        let mut drain_deadline: Option<Instant> = None;
         let mut deferred_feedback = None;
 
         loop {
@@ -514,16 +516,16 @@ where
             tokio::select! {
                 biased;
 
-                () = deadline_elapsed(drain_deadline), if drain_deadline.is_some() => {
-                    let Some(deadline) = drain_deadline else { continue };
+                () = deadline_elapsed(stopping.wait_deadline.get()), if stopping.request.get().is_some() => {
+                    let Some(stop) = stopping.request.get() else { continue };
                     if state.pending.is_some() {
                         otel_warn!(
-                            "database_receiver.drain_deadline_reached",
+                            "database_receiver.drain_wait_expired",
                             source_id = source_id.as_str(),
-                            message = "Drain deadline reached while a page awaited ACK/NACK; the checkpoint was not advanced"
+                            message = "Delivery wait ended to reserve worker cleanup time; the checkpoint was not advanced"
                         );
                     }
-                    return finish_stop(StopRequest::Drain(deadline), &effect_handler, &metrics).await;
+                    return Ok(stopped_state(stop, &metrics));
                 }
 
                 control = async {
@@ -564,14 +566,14 @@ where
                                 &mut metrics,
                                 &lease.abandoned,
                                 &mut ctrl_msg_recv,
-                                drain_deadline,
+                                &stopping,
                                 &admission,
                             )
                             .await?;
                             let committed = match committed {
                                 CommitOutcome::Committed(committed) => committed,
                                 CommitOutcome::Stopped(stop) => {
-                                    return finish_stop(stop, &effect_handler, &metrics).await;
+                                    return Ok(stopped_state(stop, &metrics));
                                 }
                             };
                             // In-memory state advances only after the durable write.
@@ -584,14 +586,8 @@ where
                                 Instant::now(),
                                 admission.cycle_interrupted.get(),
                             );
-                            if state.draining {
-                                let deadline = drain_deadline.unwrap_or_else(Instant::now);
-                                return finish_stop(
-                                    StopRequest::Drain(deadline),
-                                    &effect_handler,
-                                    &metrics,
-                                )
-                                .await;
+                            if let Some(stop) = stopping.request.get() {
+                                return Ok(stopped_state(stop, &metrics));
                             }
                         }
                         NodeControlMsg::Nack(nack) => {
@@ -636,39 +632,21 @@ where
                                     backoff_millis = nack_backoff.as_millis() as u64,
                                     message = "Database receiver retained its checkpoint and will replay the page"
                                 );
-                                if state.draining {
-                                    let deadline = drain_deadline.unwrap_or_else(Instant::now);
-                                    return finish_stop(
-                                        StopRequest::Drain(deadline),
-                                        &effect_handler,
-                                        &metrics,
-                                    )
-                                    .await;
+                                if let Some(stop) = stopping.request.get() {
+                                    return Ok(stopped_state(stop, &metrics));
                                 }
                             }
                         }
                         NodeControlMsg::DrainIngress { deadline, .. } => {
                             state.begin_drain();
-                            // Honor the earliest deadline when drain is requested twice.
-                            let deadline = drain_deadline
-                                .map_or(deadline, |current| current.min(deadline));
-                            drain_deadline = Some(deadline);
+                            let stop = stopping.record(StopRequest::Drain(deadline), Instant::now());
                             if state.pending.is_none() {
-                                return finish_stop(
-                                    StopRequest::Drain(deadline),
-                                    &effect_handler,
-                                    &metrics,
-                                )
-                                .await;
+                                return Ok(stopped_state(stop, &metrics));
                             }
                         }
                         NodeControlMsg::Shutdown { deadline, .. } => {
-                            return finish_stop(
-                                StopRequest::Shutdown(deadline),
-                                &effect_handler,
-                                &metrics,
-                            )
-                            .await;
+                            let stop = stopping.record(StopRequest::Shutdown(deadline), Instant::now());
+                            return Ok(stopped_state(stop, &metrics));
                         }
                         _ => {}
                     }
@@ -702,12 +680,13 @@ where
                         &mut metrics,
                         &lease.abandoned,
                         &admission,
+                        &stopping,
                     )
                     .await?
                     {
                         OperationOutcome::Completed(result) => result,
                         OperationOutcome::Stopped(stop) => {
-                            return finish_stop(stop, &effect_handler, &metrics).await;
+                            return Ok(stopped_state(stop, &metrics));
                         }
                     };
                     let page = match page {
@@ -738,10 +717,10 @@ where
                         &effect_handler, ReceiverErrorKind::Other, error,
                     ))?;
                     let (returned_encoder, encoded) = match await_database_operation_or_stop(
-                        encoding, NonInterruptible, &mut ctrl_msg_recv, &mut metrics, &lease.abandoned, &admission,
+                        encoding, NonInterruptible, &mut ctrl_msg_recv, &mut metrics, &lease.abandoned, &admission, &stopping,
                     ).await? {
                         OperationOutcome::Completed(result) => result,
-                        OperationOutcome::Stopped(stop) => return finish_stop(stop, &effect_handler, &metrics).await,
+                        OperationOutcome::Stopped(stop) => return Ok(stopped_state(stop, &metrics)),
                     }.map_err(|error| receiver_error(
                         &effect_handler, ReceiverErrorKind::Other, error,
                     ))?;
@@ -788,7 +767,7 @@ where
                         &effect_handler,
                         &mut state,
                         &mut metrics,
-                        &mut drain_deadline,
+                        &stopping,
                         &mut deferred_feedback,
                         lease.generation(),
                         &admission,
@@ -797,7 +776,7 @@ where
                     {
                         SendOutcome::Sent => {}
                         SendOutcome::Stopped(stop) => {
-                            return finish_stop(stop, &effect_handler, &metrics).await;
+                            return Ok(stopped_state(stop, &metrics));
                         }
                     }
                     // Recording after the successful send keeps the pending
@@ -831,9 +810,9 @@ where
             }
         }
         }.await;
-        let deadline = worker_stop_deadline(result.as_ref().map_or_else(
-            |_| Instant::now() + WORKER_STOP_TIMEOUT,
-            TerminalState::deadline,
+        let deadline = worker_stop_deadline(stopping.request.get().map_or_else(
+            || Instant::now() + WORKER_STOP_TIMEOUT,
+            StopRequest::deadline,
         ));
         // Both cleanup paths get the same budget and are polled even when it
         // has expired. Never block this core on a std::thread::JoinHandle.
@@ -874,6 +853,15 @@ where
                 WorkerStopDeadline,
             ));
         }
+        // Notification can itself wait on the runtime control channel. Complete
+        // cleanup first so a blocked notification cannot consume its reservation.
+        if result.is_ok()
+            && let Some(StopRequest::Drain(deadline)) = stopping.request.get()
+        {
+            tokio::time::timeout_at(deadline.into(), effect_handler.notify_receiver_drained())
+                .await
+                .map_err(|error| receiver_error(&effect_handler, ReceiverErrorKind::Shutdown, error))??;
+        }
         result
     }
 }
@@ -904,17 +892,46 @@ impl StopRequest {
             Self::Drain(deadline) | Self::Shutdown(deadline) => deadline,
         }
     }
+}
 
-    fn bounded(self) -> Self {
-        let deadline = worker_stop_deadline(self.deadline());
-        match self {
-            Self::Drain(_) => Self::Drain(deadline),
-            Self::Shutdown(_) => Self::Shutdown(deadline),
-        }
+/// One fixed wait cutoff shared by every local stop phase, including error exits.
+#[derive(Default)]
+struct StopState {
+    request: Cell<Option<StopRequest>>,
+    wait_deadline: Cell<Option<Instant>>,
+}
+
+impl StopState {
+    fn record(&self, request: StopRequest, now: Instant) -> StopRequest {
+        let deadline = request.deadline();
+        // Keep short deadlines useful for both delivery and cleanup, while
+        // reserving no more than the existing five-second worker stop allowance.
+        let reserve = WORKER_STOP_TIMEOUT.min(deadline.saturating_duration_since(now) / 2);
+        let wait_deadline = deadline - reserve;
+        self.wait_deadline.set(Some(
+            self.wait_deadline
+                .get()
+                .map_or(wait_deadline, |current| current.min(wait_deadline)),
+        ));
+        let request = match self.request.get() {
+            Some(current) => {
+                let deadline = deadline.min(current.deadline());
+                if matches!(current, StopRequest::Shutdown(_))
+                    || matches!(request, StopRequest::Shutdown(_))
+                {
+                    StopRequest::Shutdown(deadline)
+                } else {
+                    StopRequest::Drain(deadline)
+                }
+            }
+            None => request,
+        };
+        self.request.set(Some(request));
+        request
     }
 }
 
-/// Waits until the drain deadline, or forever when no drain is pending.
+/// Waits until the phase cutoff, or forever when no stop is pending.
 async fn deadline_elapsed(deadline: Option<Instant>) {
     match deadline {
         Some(deadline) => {
@@ -966,14 +983,16 @@ async fn commit_checkpoint(
     metrics: &mut Option<MetricSet<DatabaseReceiverMetrics>>,
     abandoned: &Cell<bool>,
     ctrl_msg_recv: &mut local::ControlChannel<OtapPdata>,
-    mut drain_deadline: Option<Instant>,
+    stopping: &StopState,
     admission: &PollAdmission,
 ) -> Result<CommitOutcome, Error> {
-    // An already-active drain also bounds filesystem work and its retries.
-    drain_deadline = drain_deadline.map(worker_stop_deadline);
+    // Cap checkpoint stop waits without resetting an inherited cleanup reservation.
+    let mut wait_deadline = stopping.wait_deadline.get().map(worker_stop_deadline);
     loop {
-        if let Some(deadline) = drain_deadline.filter(|deadline| Instant::now() >= *deadline) {
-            return Ok(CommitOutcome::Stopped(StopRequest::Drain(deadline)));
+        if wait_deadline.is_some_and(|deadline| Instant::now() >= deadline)
+            && let Some(stop) = stopping.request.get()
+        {
+            return Ok(CommitOutcome::Stopped(stop));
         }
         let store = store.clone();
         let cursor = candidate.clone();
@@ -983,16 +1002,15 @@ async fn commit_checkpoint(
         let mut write = worker
             .run(move || store.write(revision, &cursor))
             .map_err(|error| receiver_error(effect_handler, ReceiverErrorKind::Other, error))?;
-        let mut stop = drain_deadline.map(StopRequest::Drain);
         let result = loop {
             tokio::select! {
                 biased;
                 result = &mut write => {
                     break result.map_err(|error| receiver_error(effect_handler, ReceiverErrorKind::Other, error))?;
                 }
-                () = deadline_elapsed(drain_deadline), if drain_deadline.is_some() => {
+                () = deadline_elapsed(wait_deadline), if wait_deadline.is_some() => {
                     abandoned.set(true);
-                    if let Some(stop) = stop { return Ok(CommitOutcome::Stopped(stop)); }
+                    if let Some(stop) = stopping.request.get() { return Ok(CommitOutcome::Stopped(stop)); }
                 }
                 control = ctrl_msg_recv.recv() => {
                     match control {
@@ -1001,12 +1019,12 @@ async fn commit_checkpoint(
                             else { continue };
                             count_discarded_feedback(&control, metrics);
                             if let Some(request) = stop_request(&control) {
-                                let request = request.bounded();
-                                let deadline = request.deadline();
-                                if drain_deadline.is_none_or(|current| deadline < current) {
-                                    drain_deadline = Some(deadline);
-                                    stop = Some(request);
-                                }
+                                _ = stopping.record(request, Instant::now());
+                                let deadline = stopping.wait_deadline.get().map(worker_stop_deadline);
+                                wait_deadline = match (wait_deadline, deadline) {
+                                    (Some(current), Some(deadline)) => Some(current.min(deadline)),
+                                    (_, deadline) => deadline,
+                                };
                             }
                         }
                         Err(error) => {
@@ -1040,18 +1058,18 @@ async fn commit_checkpoint(
                     batch_id = batch_id,
                     revision = checkpoint.revision
                 );
-                if let Some(stop) = stop {
+                if let Some(stop) = stopping.request.get() {
                     return Ok(CommitOutcome::Stopped(stop));
                 }
                 return Ok(CommitOutcome::Committed(checkpoint));
             }
             Err(error) => {
                 admission.interrupt_cycle();
-                if let Some(stop @ StopRequest::Shutdown(_)) = stop {
+                if let Some(stop @ StopRequest::Shutdown(_)) = stopping.request.get() {
                     return Ok(CommitOutcome::Stopped(stop));
                 }
-                if let Some(stop) = stop
-                    && drain_deadline.is_some_and(|deadline| Instant::now() >= deadline)
+                if let Some(stop) = stopping.request.get()
+                    && wait_deadline.is_some_and(|deadline| Instant::now() >= deadline)
                 {
                     return Ok(CommitOutcome::Stopped(stop));
                 }
@@ -1081,9 +1099,9 @@ async fn commit_checkpoint(
                     tokio::select! {
                         biased;
 
-                        () = deadline_elapsed(drain_deadline), if drain_deadline.is_some() => {
-                            if let Some(deadline) = drain_deadline {
-                                return Ok(CommitOutcome::Stopped(StopRequest::Drain(deadline)));
+                        () = deadline_elapsed(wait_deadline), if wait_deadline.is_some() => {
+                            if let Some(stop) = stopping.request.get() {
+                                return Ok(CommitOutcome::Stopped(stop));
                             }
                         }
                         control = ctrl_msg_recv.recv() => {
@@ -1091,16 +1109,16 @@ async fn commit_checkpoint(
                                 control.map_err(Error::ChannelRecvError)?, metrics, admission,
                             ) else { continue };
                             count_discarded_feedback(&control, metrics);
-                            match stop_request(&control) {
-                                Some(stop @ StopRequest::Shutdown(_)) => {
-                                    return Ok(CommitOutcome::Stopped(stop.bounded()));
+                            if let Some(request) = stop_request(&control) {
+                                let stop = stopping.record(request, Instant::now());
+                                if matches!(stop, StopRequest::Shutdown(_)) {
+                                    return Ok(CommitOutcome::Stopped(stop));
                                 }
-                                Some(StopRequest::Drain(deadline)) => {
-                                    let deadline = worker_stop_deadline(deadline);
-                                    drain_deadline = Some(drain_deadline
-                                        .map_or(deadline, |current| current.min(deadline)));
-                                }
-                                None => {}
+                                let deadline = stopping.wait_deadline.get().map(worker_stop_deadline);
+                                wait_deadline = match (wait_deadline, deadline) {
+                                    (Some(current), Some(deadline)) => Some(current.min(deadline)),
+                                    (_, deadline) => deadline,
+                                };
                             }
                         }
                         () = &mut retry => break,
@@ -1123,6 +1141,7 @@ async fn await_database_operation_or_stop<F, T, C>(
     metrics: &mut Option<MetricSet<DatabaseReceiverMetrics>>,
     abandoned: &Cell<bool>,
     admission: &PollAdmission,
+    stopping: &StopState,
 ) -> Result<OperationOutcome<T>, Error>
 where
     F: Future<Output = T>,
@@ -1140,11 +1159,11 @@ where
                         else { continue };
                         count_discarded_feedback(&control, metrics);
                         if let Some(stop) = stop_request(&control) {
-                            let stop = stop.bounded();
+                            let stop = stopping.record(stop, Instant::now());
                             if let Some(metrics) = metrics.as_mut() {
                                 metrics.cancellations.add(1);
                             }
-                            let deadline = stop.deadline();
+                            let deadline = stopping.wait_deadline.get().expect("stop recorded");
                             if !cancel_and_join(operation.as_mut(), &cancellation, deadline).await {
                                 abandoned.set(true);
                             }
@@ -1200,7 +1219,7 @@ async fn send_or_stop(
     effect_handler: &local::EffectHandler<OtapPdata>,
     state: &mut ReceiverState,
     metrics: &mut Option<MetricSet<DatabaseReceiverMetrics>>,
-    drain_deadline: &mut Option<Instant>,
+    stopping: &StopState,
     deferred_feedback: &mut Option<NodeControlMsg<OtapPdata>>,
     generation: u64,
     admission: &PollAdmission,
@@ -1221,13 +1240,13 @@ async fn send_or_stop(
         tokio::select! {
             biased;
 
-            () = deadline_elapsed(*drain_deadline), if drain_deadline.is_some() => {
-                let Some(deadline) = *drain_deadline else { continue };
+            () = deadline_elapsed(stopping.wait_deadline.get()), if stopping.request.get().is_some() => {
+                let Some(stop) = stopping.request.get() else { continue };
                 otel_warn!(
-                    "database_receiver.drain_deadline_reached",
-                    message = "Database receiver drain deadline reached while sending downstream"
+                    "database_receiver.drain_wait_expired",
+                    message = "Downstream send wait ended to reserve worker cleanup time"
                 );
-                return Ok(SendOutcome::Stopped(StopRequest::Drain(deadline)));
+                return Ok(SendOutcome::Stopped(stop));
             }
             control = ctrl_msg_recv.recv() => {
                 let Some(control) = handle_common_control(
@@ -1236,11 +1255,11 @@ async fn send_or_stop(
                 match control {
                     NodeControlMsg::DrainIngress { deadline, .. } => {
                         state.begin_drain();
-                        *drain_deadline =
-                            Some(drain_deadline.map_or(deadline, |current| current.min(deadline)));
+                        _ = stopping.record(StopRequest::Drain(deadline), Instant::now());
                     }
                     NodeControlMsg::Shutdown { deadline, .. } => {
-                        return Ok(SendOutcome::Stopped(StopRequest::Shutdown(deadline)));
+                        let stop = stopping.record(StopRequest::Shutdown(deadline), Instant::now());
+                        return Ok(SendOutcome::Stopped(stop));
                     }
                     control @ (NodeControlMsg::Ack(_) | NodeControlMsg::Nack(_)) => {
                         let calldata = match &control {
@@ -1325,22 +1344,15 @@ fn stop_request(control: &NodeControlMsg<OtapPdata>) -> Option<StopRequest> {
     }
 }
 
-async fn finish_stop(
+fn stopped_state(
     stop: StopRequest,
-    effect_handler: &local::EffectHandler<OtapPdata>,
     metrics: &Option<MetricSet<DatabaseReceiverMetrics>>,
-) -> Result<TerminalState, Error> {
-    let deadline = match stop {
-        StopRequest::Drain(deadline) => {
-            effect_handler.notify_receiver_drained().await?;
-            deadline
-        }
-        StopRequest::Shutdown(deadline) => deadline,
-    };
-    Ok(match metrics {
+) -> TerminalState {
+    let deadline = stop.deadline();
+    match metrics {
         Some(metrics) => TerminalState::new(deadline, [metrics.snapshot()]),
         None => TerminalState::new::<[MetricSetSnapshot; 0]>(deadline, []),
-    })
+    }
 }
 
 fn observed_time_unix_nano() -> Result<u64, ObservationTimeError> {

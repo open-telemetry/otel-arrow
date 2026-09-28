@@ -577,13 +577,19 @@ a capacity-one request queue and nonblocking submission. This keeps large-page
 encoding and filesystem calls off the pipeline's async thread without creating
 per-page threads or using Tokio's runtime-owned blocking pool.
 
-The controller continues processing control messages while work runs.
-Checkpoint retries inherit an already-active drain deadline rather than waiting
-for a new stop message. Active-operation cancellation and checkpoint stop waits
-use the earlier supplied deadline and a five-second cap. Final adapter and
-scraper-worker cleanup are attempted concurrently within the remaining stop
-budget; ordinary error exits receive a five-second cleanup budget. A drain may
-still wait for downstream feedback until its supplied deadline; this is not a
+The controller continues processing control messages while work runs. On a stop
+request it reserves up to five seconds for cleanup, capped at half the remaining
+time before the supplied deadline. ACK, blocked-send, operation, and checkpoint
+waits end before that reservation starts. Checkpoint retries inherit the same
+cutoff; phase changes and repeated stop requests cannot extend it. Unacknowledged
+progress is not checkpointed and may replay after restart.
+
+Active-operation cancellation and checkpoint stop waits also retain their
+five-second cap. Final adapter and scraper-worker cleanup run concurrently,
+bounded by the original stop deadline and a five-second cap. Error exits during
+a stop retain that deadline; ordinary error exits receive a five-second cleanup
+budget. A drain is reported complete only after worker cleanup is confirmed, and
+the notification is also bounded by the original deadline. This is not a
 universal five-second bound on the entire drain.
 
 Worker completion requires an explicit exit acknowledgement, not merely a
