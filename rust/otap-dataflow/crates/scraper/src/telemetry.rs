@@ -10,7 +10,7 @@
 //! instead attached to the structured `otel_*` events emitted alongside these
 //! counters, keeping the metric set bounded.
 
-use otel_arrow_dfe_telemetry::instrument::Counter;
+use otel_arrow_dfe_telemetry::instrument::{Counter, Gauge};
 use otel_arrow_dfe_telemetry_macros::metric_set;
 
 /// Lifecycle, delivery, and checkpoint metrics shared by database receivers.
@@ -47,7 +47,10 @@ pub struct DatabaseReceiverMetrics {
     /// Downstream negative acknowledgements matching an in-flight page.
     #[metric(unit = "{nack}")]
     pub nacks: Counter<u64>,
-    /// Pages re-queried after a negative acknowledgement.
+    /// One while polling is paused by permanent rejection, otherwise zero.
+    #[metric(unit = "1")]
+    pub rejection_paused: Gauge<u64>,
+    /// Replay schedules created after a NACK, not completed query attempts.
     #[metric(unit = "{replay}")]
     pub replays: Counter<u64>,
     /// ACK/NACK feedback discarded as malformed, wrong-generation, stale, or duplicate.

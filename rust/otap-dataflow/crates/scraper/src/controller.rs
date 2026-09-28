@@ -6,12 +6,13 @@
 //! Delivery is at least once. A page is emitted with a unique batch ID, and the
 //! durable cursor advances only after a matching ACK is followed by a
 //! successful checkpoint write. A retryable NACK replays from the durable cursor
-//! after a fixed backoff; a permanent NACK stops collection without skipping rows.
+//! after a fixed backoff; a permanent NACK pauses this source by default or
+//! uses explicitly configured, capped retry without skipping rows.
 
 use crate::checkpoint::{CheckpointState, CheckpointStore};
 use crate::database::{
     CatchUpConfig, ColumnMetadata, CompiledQuery, CompositeCursor, DriverAdapter, DriverCancellation,
-    EncodedPage, OtlpPageEncoder, parse_utc_timestamp, validate_mapping,
+    EncodedPage, OnPermanentNack, OtlpPageEncoder, parse_utc_timestamp, validate_mapping,
 };
 use crate::partition::{LeaseError, SourceLease};
 use crate::telemetry::DatabaseReceiverMetrics;
@@ -34,8 +35,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::oneshot;
 
 const WORKER_STOP_TIMEOUT: Duration = Duration::from_secs(5);
-const DATABASE_RETRY_INITIAL: Duration = Duration::from_secs(1);
-const DATABASE_RETRY_MAX: Duration = Duration::from_secs(30);
+const RETRY_INITIAL: Duration = Duration::from_secs(1);
+const RETRY_MAX: Duration = Duration::from_secs(30);
 
 type ScraperJob = Box<dyn FnOnce() + Send>;
 
@@ -272,6 +273,12 @@ struct PollCycle {
     pages_started: usize,
 }
 
+#[derive(Clone, Debug)]
+struct RejectionState {
+    policy: OnPermanentNack,
+    backoff: RetryBackoff,
+}
+
 /// Committed cursor plus in-flight and scheduling state.
 #[derive(Clone, Debug)]
 struct ReceiverState {
@@ -281,6 +288,7 @@ struct ReceiverState {
     next_batch_id: u64,
     next_poll: Instant,
     draining: bool,
+    rejection: Option<RejectionState>,
     catch_up: CatchUpConfig,
     cycle: Option<PollCycle>,
 }
@@ -317,6 +325,7 @@ impl ReceiverState {
             next_batch_id: 1,
             next_poll: now,
             draining: false,
+            rejection: None,
             catch_up,
             cycle: None,
         }
@@ -326,8 +335,31 @@ impl ReceiverState {
     ///
     /// At most one page is in flight per source, so a pending ACK/NACK blocks
     /// the next poll and prevents overlapping database work.
-    const fn can_poll(&self) -> bool {
-        !self.draining && self.pending.is_none()
+    fn can_poll(&self) -> bool {
+        !self.draining && self.pending.is_none() && !self.rejection_paused()
+    }
+
+    fn rejection_paused(&self) -> bool {
+        self.rejection
+            .as_ref()
+            .is_some_and(|rejection| rejection.policy == OnPermanentNack::Pause)
+    }
+
+    fn reject(&mut self, policy: OnPermanentNack, now: Instant) -> Option<Duration> {
+        self.pending = None;
+        self.cycle = None;
+        let rejection = self.rejection.get_or_insert_with(|| RejectionState {
+            policy,
+            backoff: RetryBackoff::default(),
+        });
+        match rejection.policy {
+            OnPermanentNack::Pause => None,
+            OnPermanentNack::Retry => {
+                let delay = rejection.backoff.next_delay();
+                self.next_poll = now + delay;
+                Some(delay)
+            }
+        }
     }
 
     fn schedule_after(&mut self, delay: Duration, now: Instant) {
@@ -381,6 +413,7 @@ impl ReceiverState {
         self.committed = checkpoint.cursor;
         self.revision = checkpoint.revision;
         self.pending = None;
+        self.rejection = None;
     }
 
     /// Rewinds to the committed cursor when the feedback matches; else no-op.
@@ -534,6 +567,9 @@ where
         let mut deferred_feedback = None;
 
         loop {
+            if let Some(metrics) = metrics.as_mut() {
+                metrics.rejection_paused.set(u64::from(state.rejection_paused()));
+            }
             // I/O helpers may have consumed pressure updates, including on an
             // empty query. Reconcile pressure whenever encoder ownership is local.
             let pressure_paused = pause_for_pressure(
@@ -604,7 +640,15 @@ where
                                 }
                             };
                             // In-memory state advances only after the durable write.
+                            let rejection_recovered = state.rejection.is_some();
                             state.commit(committed);
+                            if rejection_recovered {
+                                otel_info!(
+                                    "database_receiver.rejection_recovered",
+                                    source_id = source_id.as_str(),
+                                    message = "Downstream accepted the retried page; acknowledged progress committed"
+                                );
+                            }
                             if admission.state.should_shed_ingress() {
                                 encoder.release_scratch();
                             }
@@ -631,19 +675,35 @@ where
                             if let Some(metrics) = metrics.as_mut() {
                                 metrics.nacks.add(1);
                             }
-                            if nack.permanent {
+                            if nack.permanent || state.rejection.is_some() {
+                                let delay = state.reject(query.on_permanent_nack(), Instant::now());
+                                encoder.release_scratch();
+                                admission.interrupt_cycle();
                                 // Downstream reasons may contain customer data; report only fixed context.
-                                otel_warn!(
-                                    "database_receiver.page_rejected",
-                                    source_id = source_id.as_str(),
-                                    batch_id = batch_id,
-                                    message = "Downstream permanently rejected the page; collection stopped without advancing the checkpoint"
-                                );
-                                return Err(receiver_error(
-                                    &effect_handler,
-                                    ReceiverErrorKind::Transport,
-                                    PermanentNack,
-                                ));
+                                match delay {
+                                    None => otel_warn!(
+                                        "database_receiver.source_paused",
+                                        source_id = source_id.as_str(),
+                                        batch_id = batch_id,
+                                        message = "Downstream permanently rejected the page; source paused with checkpoint unchanged. Repair downstream and restart this source to resume"
+                                    ),
+                                    Some(delay) => {
+                                        if let Some(metrics) = metrics.as_mut() {
+                                            metrics.replays.add(1);
+                                        }
+                                        otel_warn!(
+                                            "database_receiver.rejection_retry_scheduled",
+                                            source_id = source_id.as_str(),
+                                            batch_id = batch_id,
+                                            backoff_millis = delay.as_millis() as u64,
+                                            message = "Rejected page retained as uncommitted progress; explicit retry policy will re-query after backoff"
+                                        );
+                                    }
+                                }
+                                if let Some(stop) = stopping.request.get() {
+                                    return Ok(stopped_state(stop, &metrics));
+                                }
+                                continue;
                             }
                             let replay_at = Instant::now()
                                 .checked_add(nack_backoff)
@@ -919,27 +979,36 @@ enum OperationOutcome<T> {
     Stopped(StopRequest),
 }
 
+#[derive(Clone, Debug)]
+struct RetryBackoff {
+    next: Duration,
+}
+
+impl Default for RetryBackoff {
+    fn default() -> Self {
+        Self { next: RETRY_INITIAL }
+    }
+}
+
+impl RetryBackoff {
+    fn next_delay(&mut self) -> Duration {
+        let delay = self.next;
+        self.next = delay.saturating_mul(2).min(RETRY_MAX);
+        delay
+    }
+}
+
+#[derive(Default)]
 struct DatabaseRetry {
-    delay: Duration,
+    backoff: RetryBackoff,
     retry_at: Option<Instant>,
     failures: u64,
 }
 
-impl Default for DatabaseRetry {
-    fn default() -> Self {
-        Self {
-            delay: DATABASE_RETRY_INITIAL,
-            retry_at: None,
-            failures: 0,
-        }
-    }
-}
-
 impl DatabaseRetry {
     fn schedule(&mut self, now: Instant) -> Duration {
-        let delay = self.delay;
+        let delay = self.backoff.next_delay();
         self.retry_at = Some(now + delay);
-        self.delay = delay.saturating_mul(2).min(DATABASE_RETRY_MAX);
         self.failures = self.failures.saturating_add(1);
         delay
     }
@@ -1101,10 +1170,6 @@ enum SendOutcome {
     Sent,
     Stopped(StopRequest),
 }
-
-#[derive(Debug, thiserror::Error)]
-#[error("downstream permanently rejected the database page; checkpoint unchanged")]
-struct PermanentNack;
 
 #[derive(Clone, Copy)]
 enum StopRequest {

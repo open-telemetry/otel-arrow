@@ -236,7 +236,8 @@ the polling controller manages when the store and lease are used.
 | Field | Type | Default | Validation / meaning |
 | --- | --- | --- | --- |
 | `directory` | string | **required** | Non-empty path without `..` path components, as interpreted by the host platform. |
-| `on_nack` | string | **required** | Only `rewind` for retryable NACKs; permanent NACKs terminate collection without advancing the checkpoint. |
+| `on_nack` | string | **required** | Only `rewind` for retryable NACKs; permanent rejection uses the separate policy below. |
+| `on_permanent_nack` | string | `pause` | `pause` stops polling this source until repair and restart; opt-in `retry` uses capped backoff without advancing the checkpoint. |
 | `nack_backoff` | duration string | **required** | Between `1ms` and `5m`, inclusive. Fixed delay before replay. |
 | `max_consecutive_failures` | integer | **required** | Between `1` and `1000`. Consecutive checkpoint-write failure limit, not a limit on all query or NACK retries. |
 
@@ -244,6 +245,7 @@ the polling controller manages when the store and lease are used.
 # A CheckpointConfig value.
 directory: ./state/database
 on_nack: rewind
+on_permanent_nack: pause
 nack_backoff: 1s
 max_consecutive_failures: 5
 ```
@@ -448,7 +450,7 @@ Acquire source ownership and load committed position
   -> Receive matching ACK/NACK
   -> ACK: durably commit only acknowledged progress
   -> Retryable NACK: retain committed progress and replay after backoff
-  -> Permanent NACK: retain committed progress and stop with an error
+  -> Permanent NACK: retain committed progress and pause this source (or explicitly retry)
 ```
 
 | Condition | Required runtime behavior |
@@ -456,8 +458,8 @@ Acquire source ownership and load committed position
 | Downstream backpressure | Stop admitting more work rather than accumulating unbounded pages. |
 | Matching ACK | Advance progress only after checkpoint installation succeeds, subject to the filesystem guarantees below. |
 | Matching retryable NACK | Retain the checkpoint and replay after `nack_backoff`. |
-| Matching permanent NACK | Report a terminal error, retain the checkpoint, and clean up workers before releasing ownership. |
-| Stale, malformed, or duplicate ACK/NACK | Discard and count as `stale_feedback`; stale permanent NACKs cannot terminate collection. |
+| Matching permanent NACK | Apply `on_permanent_nack`: pause by default or retry with capped backoff; keep the receiver alive, checkpoint unchanged, and lease held. |
+| Stale, malformed, or duplicate ACK/NACK | Discard and count as `stale_feedback`; stale permanent NACKs cannot pause collection or schedule replay. |
 | Crash after destination acceptance but before checkpoint commit | Allow replay; do not claim exactly-once delivery. |
 | Invalid or incompatible checkpoint | Fail explicitly rather than silently assume a fresh position. |
 | Transient database failure | Retain source ownership and checkpoint; reconnect and revalidate locally with capped backoff. |
@@ -467,6 +469,42 @@ Acquire source ownership and load committed position
 The runtime keeps one page pending per source. Multiple
 in-flight batches would additionally require a contiguous acknowledgement
 frontier; a later ACK must never skip an earlier unresolved batch.
+
+### Permanent Rejection and Recovery
+
+`checkpoint.on_permanent_nack` is an explicit source-local policy, separate from
+transient database recovery and retryable NACK handling. The default is `pause`,
+including when older configurations omit this field. A matching permanent NACK
+no longer returns a receiver error that can repeatedly trigger pipeline recovery.
+It never advances the checkpoint or skips the rejected rows.
+
+- **`pause` (default):** Stop new queries and retries, discard the rejected
+  attempt's feedback identity, and retain source ownership. The receiver stays
+  alive to process telemetry, memory-pressure updates, drain, and shutdown.
+  Repair the downstream routing/validation problem, then stop and recreate the
+  affected receiver (or redeploy its containing pipeline). The replacement
+  replays from the saved cursor after the old workers confirm cleanup and release
+  ownership. Normal memory-pressure updates and late ACKs do not resume a pause.
+  No live resume command or automatic readiness integration is provided.
+- **`retry` (opt-in):** Re-query the committed cursor after 1, 2, 4, 8, 16, then
+  30 seconds, capped at 30 seconds thereafter. Each send receives a fresh attempt
+  ID; stale ACKs cannot commit a rejected attempt. Subsequent retryable NACKs also
+  retain this slower schedule until an ACK is durably committed. Only that commit
+  resets rejection backoff; successful queries alone do not. Attempts are
+  sequential, stop-responsive, and gated by enforced memory pressure.
+
+`retry` continues until delivery succeeds or the source is stopped; permanent
+rejections are not implicitly treated as transient failures. Both policies retain
+only bounded controller state, not an encoded-page replay buffer. Replay still
+requires the documented source-retention and stable-row guarantees.
+
+The `database_receiver.source_paused` event explains operator recovery, and the
+`rejection_paused` gauge remains `1` on successive scrapes while paused (`0`
+otherwise). Retry scheduling and recovery emit
+`database_receiver.rejection_retry_scheduled` and
+`database_receiver.rejection_recovered`. These events never include downstream
+rejection text, which may contain customer data. During drain, either policy
+stops without replaying rejected progress and performs the existing bounded cleanup.
 
 ### Transient Database Recovery
 
@@ -500,7 +538,7 @@ telemetry remain responsive during recovery. Structured `retry_scheduled` and
 `recovered` events report the source, retry count, and schedule without exposing
 native error text.
 
-Permanent errors still fail explicitly. This policy does not change NACK handling,
+Permanent adapter errors still fail explicitly. Database recovery is separate from NACK handling,
 checkpoint-write retries, or the adapter's native-call timeout into a whole-poll
 deadline. Oracle-specific error classification, reconnect implementation, and
 live outage qualification belong to the vendor integration.
@@ -523,8 +561,9 @@ There is no separate opt-in or legacy scheduling mode; unresolved feedback still
 blocks another fetch.
 
 A retryable NACK ends the burst and uses `nack_backoff` without advancing the
-committed cursor. A permanent NACK stops collection with an error and no cursor
-advancement; it does not schedule a replay. Transient query errors end immediate
+committed cursor, unless already recovering from a permanent rejection. A
+permanent NACK ends the burst and follows the configured pause/retry policy above.
+Transient query errors end immediate
 catch-up and use the local database recovery policy above. A checkpoint write failure ends immediate
 catch-up, but the existing checkpoint retry policy must first finish committing
 the ACKed page (or reach its terminal failure limit).
@@ -696,9 +735,12 @@ leases do not emit these runtime metrics by themselves.
 | `reconnects` | Reconnect operations started after transient errors; not successful reconnections or scheduled retries. |
 | `batches_sent`, `rows_sent`, `encoded_bytes_sent` | Admitted pages, records, and encoded bytes. |
 | `event_time_fallbacks` | Records whose event time cannot fit the OTLP timestamp range. |
-| `acks`, `nacks`, `replays`, `stale_feedback` | Matched downstream outcomes, replay, and rejected stale feedback. |
+| `acks`, `nacks`, `replays`, `stale_feedback` | Matched downstream outcomes, scheduled NACK replays (not completed attempts), and rejected stale feedback. |
 | `checkpoint_commits`, `checkpoint_failures`, `checkpoint_cleanup_failures` | Durable progress and persistence/cleanup failures. |
 | `cancellations`, `drains`, `shutdowns` | Cancellation attempts and received drain/shutdown requests, including during checkpoint writes and retries; not counts of successful cleanup. |
+
+The `rejection_paused` gauge is `1` while permanent rejection has paused the source
+and `0` otherwise. It remains observable even after counters have been scraped.
 
 Measurement attributes are intentionally omitted to keep cardinality bounded.
 The RFC's duration histograms, lag gauges, and broader health signals are not
@@ -708,7 +750,7 @@ error messages must not become metric dimensions.
 ## Limits
 
 - This is not a runnable generic receiver, SQL Agent binary, installer, or exporter.
-- Only composite cursor configuration and `on_nack: rewind` are accepted.
+- Only composite cursor configuration and `on_nack: rewind` are accepted; permanent rejection separately supports `on_permanent_nack: pause | retry`.
 - File checkpoints, leases, scheduling, mapping, and feedback are shared library functionality; database I/O and node registration remain vendor responsibilities.
 - Multiple named queries, jitter, snapshot/scalar polling, richer output mapping, collection of database metrics as an output signal, and CDC are not implemented. Internal runtime counters are implemented.
 - Byte-limit validation does not bound RSS or native allocations. Local memory-pressure state gates new fetches, but full global `MemoryAdmission` accounting is not implemented.

@@ -4,7 +4,8 @@
 //! Validated, database-neutral query plans.
 
 use super::config::{
-    CatchUpConfig, CheckpointConfig, ConfigError, OutputConfig, PollingConfig, WatermarkConfig,
+    CatchUpConfig, CheckpointConfig, ConfigError, OnPermanentNack, OutputConfig, PollingConfig,
+    WatermarkConfig,
 };
 use super::page::CompositeCursor;
 use std::fmt;
@@ -37,6 +38,7 @@ pub struct CompiledQuery {
     max_rows: usize,
     max_batch_bytes: u64,
     catch_up: CatchUpConfig,
+    on_permanent_nack: OnPermanentNack,
     watermark: CompositeWatermark,
     output: OutputConfig,
 }
@@ -77,6 +79,7 @@ impl CompiledQuery {
             max_rows: config.max_rows_per_poll,
             max_batch_bytes: config.max_batch_bytes,
             catch_up: config.catch_up,
+            on_permanent_nack: checkpoint.on_permanent_nack,
             watermark: CompositeWatermark {
                 timestamp_column: timestamp.column.clone(),
                 timestamp_bind: timestamp.bind.clone(),
@@ -130,6 +133,12 @@ impl CompiledQuery {
         self.catch_up
     }
 
+    /// Returns the source-local policy for permanent downstream rejection.
+    #[must_use]
+    pub const fn on_permanent_nack(&self) -> OnPermanentNack {
+        self.on_permanent_nack
+    }
+
     /// Returns the normalized-row ceiling using the existing batch byte setting.
     ///
     /// Normalized storage and encoded payloads are checked separately against
@@ -163,6 +172,7 @@ impl fmt::Debug for CompiledQuery {
             .field("max_rows", &self.max_rows)
             .field("max_batch_bytes", &self.max_batch_bytes)
             .field("catch_up", &self.catch_up)
+            .field("on_permanent_nack", &self.on_permanent_nack)
             .field("watermark", &self.watermark)
             .field("output", &self.output)
             .finish()

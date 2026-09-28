@@ -16,12 +16,12 @@ fn database_backoff_is_capped_and_resets_after_recovery() {
         assert_eq!(retry.retry_at, Some(now + Duration::from_secs(seconds)));
     }
     retry.failures = u64::MAX;
-    assert_eq!(retry.schedule(now), DATABASE_RETRY_MAX);
+    assert_eq!(retry.schedule(now), RETRY_MAX);
     assert_eq!(retry.failures, u64::MAX);
     retry.recovered("test-source");
     assert_eq!(retry.failures, 0);
     assert!(retry.retry_at.is_none());
-    assert_eq!(retry.schedule(now), DATABASE_RETRY_INITIAL);
+    assert_eq!(retry.schedule(now), RETRY_INITIAL);
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -319,6 +319,7 @@ fn run_recovery(case: Case) {
     let config = CheckpointConfig {
         directory: directory.path().to_string_lossy().into_owned(),
         on_nack: OnNack::Rewind,
+        on_permanent_nack: OnPermanentNack::Pause,
         nack_backoff: Duration::from_millis(10),
         // Database recovery must not consume the checkpoint failure budget.
         max_consecutive_failures: 1,
@@ -544,7 +545,7 @@ fn run_recovery(case: Case) {
     assert_eq!(store.read().expect("checkpoint"), Some(expected));
     drop(SourceBinding::acquire(store).expect("lease released after confirmed cleanup"));
     let calls = calls.borrow();
-    let mut delay = DATABASE_RETRY_INITIAL;
+    let mut delay = RETRY_INITIAL;
     let script = case.script();
     for index in 0..calls.len() {
         if calls[index].0 == Phase::Reconnect {
@@ -552,10 +553,10 @@ fn run_recovery(case: Case) {
                 calls[index].1.duration_since(calls[index - 1].1) >= delay,
                 "{case:?}: backoff is not skipped"
             );
-            delay = delay.saturating_mul(2).min(DATABASE_RETRY_MAX);
+            delay = delay.saturating_mul(2).min(RETRY_MAX);
         }
         if script[index] == (Phase::Execute, Action::Success) {
-            delay = DATABASE_RETRY_INITIAL;
+            delay = RETRY_INITIAL;
         }
     }
 }

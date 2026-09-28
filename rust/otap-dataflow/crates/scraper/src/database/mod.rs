@@ -15,7 +15,7 @@ mod query;
 mod row;
 
 pub use config::{
-    CatchUpConfig, CheckpointConfig, ConfigError, OnNack, OutputConfig, PollingConfig,
+    CatchUpConfig, CheckpointConfig, ConfigError, OnNack, OnPermanentNack, OutputConfig, PollingConfig,
     TieBreakerCursorConfig, TimestampCursorConfig, WatermarkConfig,
 };
 pub use driver::{DatabaseSystem, DriverAdapter, DriverCancellation};

@@ -48,6 +48,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 #[path = "controller_recovery_tests.rs"]
 mod recovery_tests;
 
+#[path = "controller_rejection_tests.rs"]
+mod rejection_tests;
+
 fn control_channel(message: NodeControlMsg<OtapPdata>) -> local::ControlChannel<OtapPdata> {
     let (sender, receiver) = Channel::new(1);
     sender
@@ -588,6 +591,7 @@ fn matching_acks_reuse_encoder_and_commit_pages_through_the_receiver_loop() {
     let checkpoint = CheckpointConfig {
         directory: directory.path().to_string_lossy().into_owned(),
         on_nack: OnNack::Rewind,
+        on_permanent_nack: OnPermanentNack::Pause,
         nack_backoff: Duration::from_millis(10),
         max_consecutive_failures: 3,
     };
@@ -674,43 +678,6 @@ fn matching_acks_reuse_encoder_and_commit_pages_through_the_receiver_loop() {
 }
 
 struct StartupFailureProbe<A: DriverAdapter>(DatabaseReceiver<A>);
-
-struct PermanentNackProbe(DatabaseReceiver<FakeAdapter>);
-
-#[async_trait(?Send)]
-impl local::Receiver<OtapPdata> for PermanentNackProbe {
-    async fn start(
-        self: Box<Self>,
-        controls: local::ControlChannel<OtapPdata>,
-        effects: local::EffectHandler<OtapPdata>,
-    ) -> Result<TerminalState, Error> {
-        let result = tokio::time::timeout(
-            Duration::from_secs(5),
-            local::Receiver::start(Box::new(self.0), controls, effects),
-        )
-        .await
-        .expect("permanent rejection must terminate, not replay forever");
-        let Err(Error::ReceiverError {
-            kind,
-            error,
-            source_detail,
-            ..
-        }) = result
-        else {
-            panic!("permanent rejection must return a receiver error");
-        };
-        assert_eq!(kind, ReceiverErrorKind::Transport);
-        assert_eq!(
-            error,
-            "downstream permanently rejected the database page; checkpoint unchanged"
-        );
-        assert!(
-            source_detail.is_empty(),
-            "do not expose downstream rejection details"
-        );
-        Ok(TerminalState::default())
-    }
-}
 
 fn snapshot_counter(snapshot: &MetricSetSnapshot, name: &str) -> u64 {
     let index = snapshot
@@ -1016,8 +983,8 @@ fn checkpoint_write_and_retry_count_discarded_feedback() {
 }
 
 /// Scenario: A matching permanent NACK arrives on a fresh or resumed source, including during drain.
-/// Guarantees: Collection exits without another page or checkpoint advancement, hides rejection details,
-/// and joins workers before releasing the lease for an in-process restart.
+/// Guarantees: Collection pauses without another page or checkpoint advancement,
+/// and explicit stop joins workers before releasing the lease for an in-process restart.
 #[test]
 fn permanent_nack_preserves_checkpoint_and_releases_lease() {
     for (saved, draining) in [(false, false), (true, false), (true, true)] {
@@ -1025,6 +992,7 @@ fn permanent_nack_preserves_checkpoint_and_releases_lease() {
         let config = CheckpointConfig {
             directory: directory.path().to_string_lossy().into_owned(),
             on_nack: OnNack::Rewind,
+            on_permanent_nack: OnPermanentNack::Pause,
             nack_backoff: Duration::from_millis(1),
             max_consecutive_failures: 3,
         };
@@ -1058,7 +1026,7 @@ fn permanent_nack_preserves_checkpoint_and_releases_lease() {
         );
         let runtime = TestRuntime::<OtapPdata>::new();
         let wrapper = ReceiverWrapper::local(
-            PermanentNackProbe(receiver),
+            receiver,
             test_node(runtime.config().name.clone()),
             Arc::new(NodeUserConfig::new_receiver_config(
                 "urn:otel:receiver:permanent_nack_test",
@@ -1084,6 +1052,16 @@ fn permanent_nack_preserves_checkpoint_and_releases_lease() {
                 ctx.send_control_msg(NodeControlMsg::Nack(nack))
                     .await
                     .expect("permanent NACK");
+                if !draining {
+                    assert!(
+                        tokio::time::timeout(Duration::from_millis(30), ctx.recv()).await.is_err(),
+                        "paused receiver stays alive without sending another page"
+                    );
+                    ctx.send_control_msg(NodeControlMsg::Shutdown {
+                        deadline: Instant::now() + Duration::from_secs(1),
+                        reason: "stop paused source".to_owned(),
+                    }).await.expect("shutdown");
+                }
                 assert!(
                     tokio::time::timeout(Duration::from_secs(5), ctx.recv())
                         .await
@@ -1108,6 +1086,7 @@ fn stale_feedback_is_counted_and_retryable_nack_still_replays() {
     let config = CheckpointConfig {
         directory: directory.path().to_string_lossy().into_owned(),
         on_nack: OnNack::Rewind,
+        on_permanent_nack: OnPermanentNack::Pause,
         nack_backoff: Duration::from_millis(1),
         max_consecutive_failures: 3,
     };
@@ -1136,7 +1115,7 @@ fn stale_feedback_is_counted_and_retryable_nack_still_replays() {
     );
     let runtime = TestRuntime::<OtapPdata>::new();
     let wrapper = ReceiverWrapper::local(
-        PermanentNackProbe(receiver),
+        receiver,
         test_node(runtime.config().name.clone()),
         Arc::new(NodeUserConfig::new_receiver_config(
             "urn:otel:receiver:feedback_test",
@@ -1218,7 +1197,15 @@ fn stale_feedback_is_counted_and_retryable_nack_still_replays() {
                 next_nack(NackMsg::new_permanent("terminal", next)).expect("permanent NACK");
             ctx.send_control_msg(NodeControlMsg::Nack(nack))
                 .await
-                .expect("stop");
+                .expect("pause");
+            assert!(
+                tokio::time::timeout(Duration::from_millis(30), ctx.recv()).await.is_err(),
+                "permanent rejection pauses rather than failing the receiver"
+            );
+            ctx.send_control_msg(NodeControlMsg::Shutdown {
+                deadline: Instant::now() + Duration::from_secs(1),
+                reason: "stop paused source".to_owned(),
+            }).await.expect("stop");
             assert!(
                 ctx.recv().await.is_err(),
                 "no page after terminal rejection"
@@ -1371,6 +1358,7 @@ fn stop_wait_timeouts_reserve_cleanup_and_release_lease() {
         let config = CheckpointConfig {
             directory: directory.path().to_string_lossy().into_owned(),
             on_nack: OnNack::Rewind,
+            on_permanent_nack: OnPermanentNack::Pause,
             nack_backoff: Duration::from_secs(60),
             max_consecutive_failures: 3,
         };
@@ -1631,6 +1619,7 @@ fn closed_control_channel_releases_lease_after_confirmed_cleanup() {
     let config = CheckpointConfig {
         directory: directory.path().to_string_lossy().into_owned(),
         on_nack: OnNack::Rewind,
+        on_permanent_nack: OnPermanentNack::Pause,
         nack_backoff: Duration::from_millis(10),
         max_consecutive_failures: 3,
     };
@@ -1729,6 +1718,7 @@ fn checkpoint_read_failure_still_cleans_up_adapter_and_worker() {
     let config = CheckpointConfig {
         directory: directory.path().to_string_lossy().into_owned(),
         on_nack: OnNack::Rewind,
+        on_permanent_nack: OnPermanentNack::Pause,
         nack_backoff: Duration::from_millis(10),
         max_consecutive_failures: 3,
     };
@@ -1857,6 +1847,7 @@ fn invalid_empty_execution_metadata_fails_and_releases_lease() {
         let config = CheckpointConfig {
             directory: directory.path().to_string_lossy().into_owned(),
             on_nack: OnNack::Rewind,
+            on_permanent_nack: OnPermanentNack::Pause,
             nack_backoff: Duration::from_millis(10),
             max_consecutive_failures: 3,
         };
@@ -3010,6 +3001,7 @@ fn run_catch_up_loop(case: LoopCase) {
     let config = CheckpointConfig {
         directory: directory.path().to_string_lossy().into_owned(),
         on_nack: OnNack::Rewind,
+        on_permanent_nack: OnPermanentNack::Pause,
         nack_backoff: Duration::from_millis(50),
         max_consecutive_failures: 3,
     };

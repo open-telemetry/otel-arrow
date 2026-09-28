@@ -36,8 +36,61 @@ fn checkpoint_config() -> CheckpointConfig {
     CheckpointConfig {
         directory: "${engine.state_dir}/oracle".to_owned(),
         on_nack: OnNack::Rewind,
+        on_permanent_nack: OnPermanentNack::Pause,
         nack_backoff: Duration::from_secs(1),
         max_consecutive_failures: 5,
+    }
+}
+
+/// Scenario: Permanent-rejection policy is omitted or explicitly selects pause or retry.
+/// Guarantees: Existing configurations default to source-local pause and compilation preserves explicit retry.
+#[test]
+fn permanent_rejection_policy_defaults_and_compiles() {
+    for (configured, expected) in [
+        (None, OnPermanentNack::Pause),
+        (Some("pause"), OnPermanentNack::Pause),
+        (Some("retry"), OnPermanentNack::Retry),
+    ] {
+        let mut value = serde_json::json!({
+            "directory": "./state",
+            "on_nack": "rewind",
+            "nack_backoff": "1s",
+            "max_consecutive_failures": 3
+        });
+        if let Some(configured) = configured {
+            value["on_permanent_nack"] = serde_json::json!(configured);
+        }
+        let checkpoint: CheckpointConfig =
+            serde_json::from_value(value).expect("checkpoint config");
+        assert_eq!(checkpoint.on_permanent_nack, expected);
+        let query = CompiledQuery::compile(
+            "SELECT EVENT_TS, EVENT_ID FROM EVENTS".to_owned(),
+            polling(),
+            &watermark(),
+            &checkpoint,
+            OutputConfig::default(),
+        )
+        .expect("compiled rejection policy");
+        assert_eq!(query.on_permanent_nack(), expected);
+    }
+}
+
+/// Scenario: Permanent-rejection policy contains an unsupported value or null.
+/// Guarantees: Invalid policies fail deserialization rather than silently enabling replay or dropping progress.
+#[test]
+fn invalid_permanent_rejection_policy_is_rejected() {
+    for policy in [
+        serde_json::json!("fail"),
+        serde_json::json!("drop"),
+        serde_json::json!("rewind"),
+        serde_json::Value::Null,
+        serde_json::json!(true),
+    ] {
+        let value = serde_json::json!({
+            "directory": "./state", "on_nack": "rewind",
+            "on_permanent_nack": policy, "nack_backoff": "1s", "max_consecutive_failures": 3
+        });
+        assert!(serde_json::from_value::<CheckpointConfig>(value).is_err());
     }
 }
 

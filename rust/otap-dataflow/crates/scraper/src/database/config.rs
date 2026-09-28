@@ -126,13 +126,24 @@ impl fmt::Debug for TieBreakerCursorConfig {
 
 /// Behavior applied when a downstream node negatively acknowledges a page.
 ///
-/// Only `rewind` is configurable for retryable feedback. Permanent NACKs
-/// terminate collection without advancing the checkpoint regardless of this policy.
+/// Only `rewind` is configurable for retryable feedback. Permanent rejection
+/// is governed separately by [`OnPermanentNack`].
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum OnNack {
     /// Retain the durable cursor and re-query after a retryable NACK and backoff.
     Rewind,
+}
+
+/// Source-local containment policy for a permanently rejected page.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum OnPermanentNack {
+    /// Stop polling until this source is repaired and restarted; retain its checkpoint and lease.
+    #[default]
+    Pause,
+    /// Re-query committed progress with capped backoff until downstream accepts it or the source stops.
+    Retry,
 }
 
 /// Durable checkpoint policy.
@@ -143,6 +154,9 @@ pub struct CheckpointConfig {
     pub directory: String,
     /// Behavior on a negative acknowledgement.
     pub on_nack: OnNack,
+    /// Permanent rejection policy; omitted configuration pauses only this source.
+    #[serde(default)]
+    pub on_permanent_nack: OnPermanentNack,
     /// Fixed delay before replaying a negatively acknowledged page.
     #[serde(with = "humantime_serde")]
     pub nack_backoff: Duration,
