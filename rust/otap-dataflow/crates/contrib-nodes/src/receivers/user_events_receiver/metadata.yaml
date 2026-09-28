@@ -1,0 +1,6 @@
+type: user_events
+status:
+  class: receiver
+  codeowners:
+    active:
+      - lalitb

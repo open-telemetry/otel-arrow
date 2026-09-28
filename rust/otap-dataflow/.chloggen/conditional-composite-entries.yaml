@@ -1,0 +1,6 @@
+change_type: enhancement
+component: engine
+note: "Support conditional composite entries in named transport header propagation."
+issues: [4135]
+subtext: |
+  Composite header bindings now propagate only when every configured transport_header_match condition has an exact matching captured value.

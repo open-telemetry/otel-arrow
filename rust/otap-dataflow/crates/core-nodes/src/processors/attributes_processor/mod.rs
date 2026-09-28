@@ -563,6 +563,7 @@ pub static ATTRIBUTES_PROCESSOR_FACTORY: otel_arrow_dfe_engine::ProcessorFactory
              _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities| {
                 create_attributes_processor(pipeline_ctx, node, node_config, proc_cfg)
             },
+        context_declarations: None,
         wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
         validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<Config>,
     };

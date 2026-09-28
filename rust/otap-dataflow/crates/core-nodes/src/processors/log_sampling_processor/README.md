@@ -5,7 +5,7 @@
 ## Metadata
 
 - Type: `processor:log_sampling` (`urn:otel:processor:log_sampling`)
-- Feature gate: Default
+- Feature gate: Always enabled
 - Stability: Experimental
 
 ## Overview

@@ -1,0 +1,6 @@
+type: extensions
+status:
+  class: library
+  codeowners:
+    active:
+      - gouslu

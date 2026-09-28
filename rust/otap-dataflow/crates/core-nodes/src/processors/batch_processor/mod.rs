@@ -1292,7 +1292,7 @@ pub fn create_otap_batch_processor(
     node_config: Arc<NodeUserConfig>,
     processor_config: &ProcessorConfig,
 ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
-    let metrics = pipeline_ctx.register_metrics::<BatchProcessorMetrics>();
+    let metrics = BatchProcessorMetrics::register(&pipeline_ctx);
     let proc = BatchProcessor::build_from_json(&node_config.config, metrics)?;
     Ok(ProcessorWrapper::local(
         proc,
@@ -1663,6 +1663,7 @@ pub static OTAP_BATCH_PROCESSOR_FACTORY: otel_arrow_dfe_engine::ProcessorFactory
              _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities| {
                 create_otap_batch_processor(pipeline_ctx, node, node_config, proc_cfg)
             },
+        context_declarations: None,
         wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
         validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<Config>,
     };

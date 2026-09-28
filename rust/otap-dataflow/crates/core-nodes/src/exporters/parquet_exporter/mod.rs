@@ -112,6 +112,7 @@ pub static PARQUET_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
             exporter_config,
         ))
     },
+    context_declarations: None,
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<config::Config>,
 };
@@ -1068,6 +1069,7 @@ mod test {
                     pipeline_completion_msg_tx,
                     metrics_reporter,
                     Interests::empty(),
+                    otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
                 )
                 .await
                 .map(|_| ())
@@ -1230,6 +1232,7 @@ mod test {
                     pipeline_completion_msg_tx,
                     metrics_reporter,
                     Interests::empty(),
+                    otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
                 )
                 .await
                 .map(|_| ())
@@ -1673,6 +1676,7 @@ mod test {
                     pipeline_completion_msg_tx,
                     metrics_reporter,
                     Interests::empty(),
+                    otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
                 )
                 .await
                 .map(|_| ())

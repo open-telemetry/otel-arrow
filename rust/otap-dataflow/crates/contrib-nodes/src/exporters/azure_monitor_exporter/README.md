@@ -3,7 +3,7 @@
 ## Metadata
 
 - Type: `urn:microsoft:exporter:azure_monitor`
-- Feature gate: `azure-monitor-exporter`
+- Feature gate: `azure-monitor`
 - Stability: Alpha; supports logs only
 
 ## Overview
@@ -62,7 +62,7 @@ directory:
 
 ```bash
 cargo build --release \
-  --features azure-monitor-exporter,azure-identity-auth-extension
+  --features azure-monitor,azure-identity-auth
 ```
 
 The extension also requires a `rustls` crypto provider feature; see

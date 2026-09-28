@@ -128,6 +128,7 @@ groups:
                   - input_size
                   - output_items
                   - output_size
+                duration_distribution: basic
                 purpose: manual_test
         nodes:
           generator:

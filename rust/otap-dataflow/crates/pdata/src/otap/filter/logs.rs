@@ -145,7 +145,7 @@ impl LogFilter {
         {
             include_config.create_filters(&logs_payload, false)?
         } else {
-            // both include and exclude is none
+            // Both include and exclude are absent, so every log record is kept.
             let num_rows = logs_payload
                 .get(ArrowPayloadType::Logs)
                 // Safety: We check at the top of this function whether the
@@ -153,7 +153,7 @@ impl LogFilter {
                 // root record batch is present.
                 .expect("Logs payload has a root record")
                 .num_rows() as u64;
-            return Ok((logs_payload, num_rows, num_rows));
+            return Ok((logs_payload, num_rows, 0));
         };
 
         let (log_record_filter, child_record_batch_filters) = self.sync_up_filters(
@@ -655,6 +655,41 @@ mod test {
             }],
         }));
 
+        assert_equivalent(&[otap_to_otlp(&result)], &[otap_to_otlp(&expected)]);
+    }
+
+    /// Scenario: A log filter has neither an include nor an exclude rule.
+    /// Guarantees: All records pass through and the reported filtered count is zero.
+    #[test]
+    fn test_filter_pass_through_reports_no_filtered_records() {
+        let filter = LogFilter::new(None, None, Vec::new());
+        let log_records = vec![
+            LogRecord::build().severity_text("WARN").finish(),
+            LogRecord::build().severity_text("INFO").finish(),
+        ];
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(LogsData {
+            resource_logs: vec![ResourceLogs {
+                scope_logs: vec![ScopeLogs {
+                    log_records: log_records.clone(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        }));
+
+        let (result, logs_consumed, logs_filtered) = filter.filter(input).unwrap();
+
+        assert_eq!(logs_consumed, 2);
+        assert_eq!(logs_filtered, 0);
+        let expected = otlp_to_otap(&OtlpProtoMessage::Logs(LogsData {
+            resource_logs: vec![ResourceLogs {
+                scope_logs: vec![ScopeLogs {
+                    log_records,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        }));
         assert_equivalent(&[otap_to_otlp(&result)], &[otap_to_otlp(&expected)]);
     }
 }

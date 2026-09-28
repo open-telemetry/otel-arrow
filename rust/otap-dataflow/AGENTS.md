@@ -89,15 +89,16 @@ Examples:
 receiver.journald
 receiver.host_metrics
 processor.transform
-processor.filter.pdata
+processor.filter
 exporter.topic
 exporter.azure_monitor
 ```
 
-Use established component-specific prefixes or suffixes only when they already
-exist for that component family, such as `.pdata` for pdata-specific metrics or
-existing `otap.*` component families. Do not introduce reversed or redundant
-names such as `journald.receiver.metrics`.
+## Metric instrumentation
+
+When adding or changing metrics, follow the
+[system metrics guide](docs/telemetry/metrics-guide.md) and
+[item attributes guide](docs/telemetry/item-attributes.md).
 
 ## After every Rust code change
 

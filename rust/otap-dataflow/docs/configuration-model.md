@@ -493,7 +493,8 @@ engine:
 ## Policy Hierarchy
 
 Policies include channel capacity, health, runtime telemetry, resources
-controls, runtime recovery, and transport headers:
+controls, runtime recovery, transport headers, and authorized identity claim
+capture:
 
 ```yaml
 policies:
@@ -543,10 +544,35 @@ policies:
       default:
         selector:
           type: all_captured
+  authorized_identity:
+    - claim: sub
+      store_as: customer_id
+    - claim: groups
+      store_as: access_groups
 ```
 
 For full transport header policy documentation, see
 [transport-headers.md](transport-headers.md).
+
+`authorized_identity` selects verified authorization claims for storage in
+pdata context. It can be configured at top-level, group, or pipeline policy
+scope. The nearest configured scope replaces the complete broader policy list;
+entries are not merged across scopes. An empty list at a narrower scope
+disables inherited identity capture.
+
+Only OTLP HTTP and gRPC receivers currently produce authorized identity
+entries, and only when the receiver binds a `bearer_token_authorizer`
+capability. Configuring the policy on another receiver, or on an OTLP receiver
+without an authorizer, captures no entries. Missing claims are omitted without
+rejecting the request. Single- and multi-valued claims retain their original
+cardinality.
+
+Authorized identity entries remain distinct from transport headers. The
+current policy does not propagate claims as outbound headers or provide
+routing, predicates, composites, required-entry enforcement, or generic
+context consumers. See the
+[OTLP receiver documentation](../crates/core-nodes/src/receivers/otlp_receiver/README.md)
+for the supported authorization path.
 
 Resolution order:
 
@@ -573,6 +599,7 @@ Defaults at top-level:
 - `runtime_recovery.startup_timeout = 30s`
 - `runtime_recovery.reset_after = 60s`
 - `transport_headers = not set` (opt-in; no headers captured or propagated)
+- `authorized_identity = not set` (opt-in; no verified claims captured)
 
 ### Core Allocation
 
