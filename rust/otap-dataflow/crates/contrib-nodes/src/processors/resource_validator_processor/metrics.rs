@@ -61,3 +61,54 @@ impl ResourceValidatorMetrics {
         reporter.report_measurement(&mut self.validation_failures)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use otel_arrow_dfe_engine::context::ControllerContext;
+    use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
+    use std::collections::HashSet;
+
+    /// Scenario: Every resource validation failure reason is recorded and reported.
+    /// Guarantees: The failure metric exports one batch under each stable error.type value.
+    #[test]
+    fn reports_validation_failures_by_error_type() {
+        let registry = TelemetryRegistryHandle::new();
+        let controller = ControllerContext::new(registry);
+        let pipeline_ctx =
+            controller.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let mut metrics = ResourceValidatorMetrics::new(&pipeline_ctx);
+        let (receiver, mut reporter) = MetricsReporter::create_new_and_receiver(4);
+
+        for failure in [
+            ValidationFailure::MissingAttribute,
+            ValidationFailure::InvalidAttributeType,
+            ValidationFailure::NotInAllowedList,
+            ValidationFailure::ConversionError,
+        ] {
+            metrics.record_failure(failure);
+        }
+        metrics.report(&mut reporter).expect("metrics report");
+
+        let snapshots = receiver.try_iter().collect::<Vec<_>>();
+        assert_eq!(snapshots.len(), 4);
+        assert!(snapshots.iter().all(|snapshot| {
+            snapshot.descriptor().name == "processor.resource_validator"
+                && snapshot.descriptor().metrics[0].name == "failures"
+                && snapshot.descriptor().metrics[0].unit == "{batch}"
+                && snapshot.get_metrics()[0].to_u64_lossy() == 1
+        }));
+        assert_eq!(
+            snapshots
+                .iter()
+                .filter_map(|snapshot| snapshot.measurement_attribute_value("error.type"))
+                .collect::<HashSet<_>>(),
+            HashSet::from([
+                "missing_attribute",
+                "invalid_attribute_type",
+                "not_in_allowed_list",
+                "conversion_error",
+            ])
+        );
+    }
+}
