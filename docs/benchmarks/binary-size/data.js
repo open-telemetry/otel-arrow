@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790611048374,
+  "lastUpdate": 1790612271692,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -45819,6 +45819,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 104.29,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "mmaratov@microsoft.com",
+            "name": "Maksat Maratov",
+            "username": "maksmara"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "37b6fc220baad2bb5636ff0982c24ff481beebe0",
+          "message": "feat(context): add conditional composite context propagation (#4155)\n\n# Change summary\n\nAdds conditional propagation for transport-header members selected from\ncomposite context entries using `transport_header_match`.\n\nThe change includes:\n\n- Startup compilation and validation of qualified selectors.\n- Qualified-selector resolution during `--validate-and-exit`.\n- Canonical condition ordering for stable live-update comparisons.\n- Per-propagation caching of condition results shared across bindings.\n- CRD admission validation aligned with Serde configuration rules.\n- Delivery-level tests and working configuration examples.\n- Criterion benchmarks using the packed header representation used by\nreceivers.\n\n## Related issues\n\n- Closes #4135\n- Follow-up to #4089\n- Compiled propagation policy follow-up: #4171\n- Part of #3919\n\n## Validation\n\n- Focused configuration, propagation, delivery, live-update, and CRD\ntests pass.\n- Strict Clippy and formatting checks pass.\n- The shared `request_context` benchmark harness compiles and runs\nsuccessfully.\n- Regression coverage verifies:\n  - qualified selectors are resolved by `--validate-and-exit`;\n  - reordering conditions does not change compiled bindings;\n  - string-backed context references produce the expected CRD schema;\n  - bindings with identical conditions reuse one cached evaluation.\n\n## Benchmark results\n\nRepresentative Criterion results using headers captured into the packed\nstorage representation used by receivers:\n\n| Scenario | Time |\n|---|---:|\n| 32 unqualified headers | ~0.84 us |\n| 32 headers with four matching conditions | ~3.54 us |\n| 28 duplicate selected-source occurrences, match | ~3.97 us |\n| 28 duplicate selected-source occurrences, miss | ~3.98 us |\n| 4 bindings sharing four conditions, match / miss | ~0.91 / 0.94 us |\n| 5 bindings sharing four conditions, match / miss | ~1.03 / 1.07 us |\n| 32 bindings sharing four conditions, match / miss | ~6.53 / 7.93 us |\n\nCondition results are cached by canonical condition set, allowing\ndistinct bindings with identical conditions to reuse one evaluation per\npropagation operation. For 32 shared-condition bindings, this reduced\nmatch time from ~81.8 us to ~6.5 us and miss time from ~83.2 us to ~7.9\nus.\n\nBecause cache entries represent unique condition sets rather than\nindividual bindings, bindings that share conditions do not consume\nseparate inline cache slots.\n\nStandard, duplicate-source, and multi-binding scenarios are reported in\nseparate Criterion groups because they vary different workload\ndimensions.\n\n## User-facing changes\n\nComposite transport-header members can now be propagated conditionally\nbased on the exact value of another captured transport header. A\nchangelog entry is included.\n\n## Reviewer notes\n\nPlease focus review on:\n\n- Qualified selectors are resolved and compiled both at engine startup\nand during `--validate-and-exit`.\n- Condition lists are canonicalized so semantically equivalent\nreordering does not require a pipeline restart.\n- Repeated unqualified selectors are accepted, while collisions\ninvolving qualified selectors are rejected because they may have\ndifferent conditions or output aliases.\n- The flat CRD schema uses Kubernetes CEL validation to enforce the same\nvariant-specific fields as Serde.\n- Condition results are cached once per unique condition set during each\npropagation operation.",
+          "timestamp": "2026-09-28T15:09:41Z",
+          "tree_id": "68eacd611e306e99ee4b558c55b566133b7e1fb3",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/37b6fc220baad2bb5636ff0982c24ff481beebe0"
+        },
+        "date": 1790612254481,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 84.8,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.78,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.29,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.73,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.98,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.7,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 71.99,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.88,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 117.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 104.41,
             "unit": "MB"
           }
         ]
