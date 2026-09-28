@@ -23,9 +23,12 @@ pub struct DatabaseReceiverMetrics {
     /// Bounded page polls attempted against the database.
     #[metric(unit = "{poll}")]
     pub polls: Counter<u64>,
-    /// Query executions that failed.
+    /// Query-page attempts that failed, including operation setup.
     #[metric(unit = "{failure}")]
     pub query_failures: Counter<u64>,
+    /// Reconnect operations started after transient database failures.
+    #[metric(unit = "{attempt}")]
+    pub reconnects: Counter<u64>,
     /// Pages sent downstream.
     #[metric(unit = "{batch}")]
     pub batches_sent: Counter<u64>,

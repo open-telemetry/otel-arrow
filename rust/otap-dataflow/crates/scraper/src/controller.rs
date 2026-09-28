@@ -10,8 +10,8 @@
 
 use crate::checkpoint::{CheckpointState, CheckpointStore};
 use crate::database::{
-    CatchUpConfig, CompiledQuery, CompositeCursor, DriverAdapter, DriverCancellation, EncodedPage,
-    OtlpPageEncoder, parse_utc_timestamp,
+    CatchUpConfig, ColumnMetadata, CompiledQuery, CompositeCursor, DriverAdapter, DriverCancellation,
+    EncodedPage, OtlpPageEncoder, parse_utc_timestamp, validate_mapping,
 };
 use crate::partition::{LeaseError, SourceLease};
 use crate::telemetry::DatabaseReceiverMetrics;
@@ -34,6 +34,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::oneshot;
 
 const WORKER_STOP_TIMEOUT: Duration = Duration::from_secs(5);
+const DATABASE_RETRY_INITIAL: Duration = Duration::from_secs(1);
+const DATABASE_RETRY_MAX: Duration = Duration::from_secs(30);
 
 type ScraperJob = Box<dyn FnOnce() + Send>;
 
@@ -502,15 +504,14 @@ where
             ownership_generation = lease.generation()
         );
 
-        // Prepare the live query before entering the ingestion loop. Selecting
-        // over control messages keeps slow database startup drainable.
-        let cancellation = adapter
-            .begin_operation()
-            .map_err(|error| receiver_error(&effect_handler, A::classify_error(&error), error))?;
-        let columns = match await_database_operation_or_stop(
-            adapter.validate_query(&query),
-            cancellation,
+        let mut database_retry = DatabaseRetry::default();
+        let columns = match prepare_database(
+            &mut adapter,
+            &query,
+            &mut database_retry,
+            &source_id,
             &mut ctrl_msg_recv,
+            &effect_handler,
             &mut metrics,
             &lease.abandoned,
             &admission,
@@ -518,9 +519,7 @@ where
         )
         .await?
         {
-            OperationOutcome::Completed(result) => result.map_err(|error| {
-                receiver_error(&effect_handler, A::classify_error(&error), error)
-            })?,
+            OperationOutcome::Completed(columns) => columns,
             OperationOutcome::Stopped(stop) => {
                 return Ok(stopped_state(stop, &metrics));
             }
@@ -694,40 +693,61 @@ where
                         admission.cycle_interrupted.set(false);
                     }
                     state.begin_poll(now);
-                    if let Some(metrics) = metrics.as_mut() {
-                        metrics.polls.add(1);
-                    }
                     let cursor = state.committed.clone();
-                    let cancellation = adapter.begin_operation().map_err(|error| {
-                        receiver_error(&effect_handler, A::classify_error(&error), error)
-                    })?;
-                    let page = match await_database_operation_or_stop(
-                        adapter.execute(&query, &cursor),
-                        cancellation,
-                        &mut ctrl_msg_recv,
-                        &mut metrics,
-                        &lease.abandoned,
-                        &admission,
-                        &stopping,
-                    )
-                    .await?
-                    {
-                        OperationOutcome::Completed(result) => result,
-                        OperationOutcome::Stopped(stop) => {
+                    let page = loop {
+                        if database_retry.failures > 0
+                            && let Some(stop) = wait_database_retry(
+                                Instant::now(), &mut ctrl_msg_recv, &mut metrics,
+                                &admission, &stopping,
+                            ).await?
+                        {
                             return Ok(stopped_state(stop, &metrics));
                         }
-                    };
-                    let page = match page {
-                        Ok(page) => page,
-                        Err(error) => {
-                            if let Some(metrics) = metrics.as_mut() {
-                                metrics.query_failures.add(1);
+                        if let Some(metrics) = metrics.as_mut() {
+                            metrics.polls.add(1);
+                        }
+                        let page = match adapter.begin_operation() {
+                            Ok(cancellation) => match await_database_operation_or_stop(
+                                adapter.execute(&query, &cursor),
+                                cancellation,
+                                &mut ctrl_msg_recv,
+                                &mut metrics,
+                                &lease.abandoned,
+                                &admission,
+                                &stopping,
+                            ).await? {
+                                OperationOutcome::Completed(result) => result,
+                                OperationOutcome::Stopped(stop) => {
+                                    return Ok(stopped_state(stop, &metrics));
+                                }
+                            },
+                            Err(error) => Err(error),
+                        };
+                        match page {
+                            Ok(page) => {
+                                database_retry.recovered(&source_id);
+                                break page;
                             }
-                            return Err(receiver_error(
-                                &effect_handler,
-                                A::classify_error(&error),
-                                error,
-                            ));
+                            Err(error) => {
+                                if let Some(metrics) = metrics.as_mut() {
+                                    metrics.query_failures.add(1);
+                                }
+                                database_retry.failed::<A>(
+                                    error, "execute", &source_id, &effect_handler,
+                                )?;
+                                admission.interrupt_cycle();
+                                encoder.release_scratch();
+                                match prepare_database(
+                                    &mut adapter, &query, &mut database_retry, &source_id,
+                                    &mut ctrl_msg_recv, &effect_handler, &mut metrics,
+                                    &lease.abandoned, &admission, &stopping,
+                                ).await? {
+                                    OperationOutcome::Completed(_) => {}
+                                    OperationOutcome::Stopped(stop) => {
+                                        return Ok(stopped_state(stop, &metrics));
+                                    }
+                                }
+                            }
                         }
                     };
                     let observed_time = observed_time_unix_nano().map_err(|error| {
@@ -897,6 +917,184 @@ where
 enum OperationOutcome<T> {
     Completed(T),
     Stopped(StopRequest),
+}
+
+struct DatabaseRetry {
+    delay: Duration,
+    retry_at: Option<Instant>,
+    failures: u64,
+}
+
+impl Default for DatabaseRetry {
+    fn default() -> Self {
+        Self {
+            delay: DATABASE_RETRY_INITIAL,
+            retry_at: None,
+            failures: 0,
+        }
+    }
+}
+
+impl DatabaseRetry {
+    fn schedule(&mut self, now: Instant) -> Duration {
+        let delay = self.delay;
+        self.retry_at = Some(now + delay);
+        self.delay = delay.saturating_mul(2).min(DATABASE_RETRY_MAX);
+        self.failures = self.failures.saturating_add(1);
+        delay
+    }
+
+    fn failed<A: DriverAdapter>(
+        &mut self,
+        error: A::Error,
+        phase: &'static str,
+        source_id: &str,
+        effects: &local::EffectHandler<OtapPdata>,
+    ) -> Result<(), Error> {
+        if !A::is_retryable(&error) {
+            return Err(receiver_error(effects, A::classify_error(&error), error));
+        }
+        let delay = self.schedule(Instant::now());
+        // Native errors can contain credentials or query values. Recovery logs
+        // describe the phase and schedule without copying driver diagnostics.
+        otel_warn!(
+            "database_receiver.retry_scheduled",
+            source_id = source_id,
+            phase = phase,
+            consecutive_failures = self.failures,
+            backoff_millis = delay.as_millis() as u64,
+            message = "Transient database failure; checkpoint retained while retrying locally"
+        );
+        Ok(())
+    }
+
+    fn recovered(&mut self, source_id: &str) {
+        if self.failures > 0 {
+            otel_info!(
+                "database_receiver.recovered",
+                source_id = source_id,
+                consecutive_failures = self.failures,
+                message = "Database polling recovered without restarting the receiver"
+            );
+        }
+        *self = Self::default();
+    }
+}
+
+async fn wait_database_retry(
+    retry_at: Instant,
+    controls: &mut local::ControlChannel<OtapPdata>,
+    metrics: &mut Option<MetricSet<DatabaseReceiverMetrics>>,
+    admission: &PollAdmission,
+    stopping: &StopState,
+) -> Result<Option<StopRequest>, Error> {
+    loop {
+        tokio::select! {
+            biased;
+            control = controls.recv() => {
+                let Some(control) = handle_common_control(
+                    control.map_err(Error::ChannelRecvError)?, metrics, admission,
+                ) else { continue };
+                count_discarded_feedback(&control, metrics);
+                if let Some(stop) = stop_request(&control) {
+                    return Ok(Some(stopping.record(stop, Instant::now())));
+                }
+            }
+            () = poll_due(retry_at, !admission.state.should_shed_ingress()) => {
+                return Ok(None);
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn prepare_database<A: DriverAdapter>(
+    adapter: &mut A,
+    query: &CompiledQuery,
+    retry: &mut DatabaseRetry,
+    source_id: &str,
+    controls: &mut local::ControlChannel<OtapPdata>,
+    effects: &local::EffectHandler<OtapPdata>,
+    metrics: &mut Option<MetricSet<DatabaseReceiverMetrics>>,
+    abandoned: &Cell<bool>,
+    admission: &PollAdmission,
+    stopping: &StopState,
+) -> Result<OperationOutcome<Vec<ColumnMetadata>>, Error> {
+    loop {
+        if let Some(stop) = wait_database_retry(
+            retry.retry_at.unwrap_or_else(Instant::now),
+            controls,
+            metrics,
+            admission,
+            stopping,
+        )
+        .await?
+        {
+            return Ok(OperationOutcome::Stopped(stop));
+        }
+        if retry.retry_at.is_some() {
+            let result = match adapter.begin_operation() {
+                Ok(cancellation) => {
+                    if let Some(metrics) = metrics.as_mut() {
+                        metrics.reconnects.add(1);
+                    }
+                    match await_database_operation_or_stop(
+                        adapter.reconnect(query),
+                        cancellation,
+                        controls,
+                        metrics,
+                        abandoned,
+                        admission,
+                        stopping,
+                    )
+                    .await?
+                    {
+                        OperationOutcome::Completed(result) => result,
+                        OperationOutcome::Stopped(stop) => {
+                            return Ok(OperationOutcome::Stopped(stop));
+                        }
+                    }
+                }
+                Err(error) => Err(error),
+            };
+            if let Err(error) = result {
+                retry.failed::<A>(error, "reconnect", source_id, effects)?;
+                continue;
+            }
+            retry.retry_at = None;
+            if let Some(stop) =
+                wait_database_retry(Instant::now(), controls, metrics, admission, stopping).await?
+            {
+                return Ok(OperationOutcome::Stopped(stop));
+            }
+        }
+        let result = match adapter.begin_operation() {
+            Ok(cancellation) => match await_database_operation_or_stop(
+                adapter.validate_query(query),
+                cancellation,
+                controls,
+                metrics,
+                abandoned,
+                admission,
+                stopping,
+            )
+            .await?
+            {
+                OperationOutcome::Completed(result) => result,
+                OperationOutcome::Stopped(stop) => return Ok(OperationOutcome::Stopped(stop)),
+            },
+            Err(error) => Err(error),
+        };
+        match result {
+            Ok(columns) => {
+                validate_mapping(&columns, query.output()).map_err(|error| {
+                    receiver_error(effects, ReceiverErrorKind::Configuration, error)
+                })?;
+                return Ok(OperationOutcome::Completed(columns));
+            }
+            Err(error) => retry.failed::<A>(error, "validate", source_id, effects)?,
+        }
+    }
 }
 
 enum SendOutcome {

@@ -460,11 +460,50 @@ Acquire source ownership and load committed position
 | Stale, malformed, or duplicate ACK/NACK | Discard and count as `stale_feedback`; stale permanent NACKs cannot terminate collection. |
 | Crash after destination acceptance but before checkpoint commit | Allow replay; do not claim exactly-once delivery. |
 | Invalid or incompatible checkpoint | Fail explicitly rather than silently assume a fresh position. |
+| Transient database failure | Retain source ownership and checkpoint; reconnect and revalidate locally with capped backoff. |
+| Terminal database failure | Return an explicit receiver error after cleanup; do not retry invalid SQL, metadata, or authorization failures. |
 | Shutdown/cancellation | Stop admitting work and coordinate native cleanup before permitting a competing source owner. |
 
 The runtime keeps one page pending per source. Multiple
 in-flight batches would additionally require a contiguous acknowledgement
 frontier; a later ACK must never skip an earlier unresolved batch.
+
+### Transient Database Recovery
+
+`DriverAdapter::is_retryable` explicitly classifies adapter errors. A transient
+failure during operation setup, startup validation, query execution, or reconnect
+stays inside the receiver instead of exhausting pipeline/controller recovery.
+Retries continue until the database recovers or the receiver stops. Delays are
+1, 2, 4, 8, 16, then 30 seconds between attempts, capped at 30 seconds thereafter.
+These are shared runtime defaults, not configurable fields in this slice.
+The delay resets only after a successful query page, including an empty result,
+not merely after reconnect succeeds.
+
+Each retry calls the adapter's cancellable `reconnect` once, then revalidates SQL,
+cursor metadata, and output mapping before another execution. The source lease
+stays held and every execution uses the last committed cursor; no partial page
+or failed progress is checkpointed. There is one operation at a time, constant
+retry state, and no queue of retry tasks or retained failed result pages.
+
+Adapters must stop failed native work before reporting a retryable error and
+replace failed session/statement state without overlapping unjoined operations.
+They must isolate blocking reconnect and cleanup work off the pipeline core,
+honor native timeouts and cancellation, and leave retry scheduling to the shared
+controller. Factories must defer transient connection work until runtime query
+validation so startup outages use the same recovery path.
+
+Drain/shutdown interrupt backoff immediately and cancel an active reconnect
+using the shared stop/cleanup budget. Hard memory pressure in Enforce mode
+blocks new reconnect, validation, and retry execution attempts; stale pressure
+updates and observe-only mode retain their existing semantics. Controls and
+telemetry remain responsive during recovery. Structured `retry_scheduled` and
+`recovered` events report the source, retry count, and schedule without exposing
+native error text.
+
+Permanent errors still fail explicitly. This policy does not change NACK handling,
+checkpoint-write retries, or the adapter's native-call timeout into a whole-poll
+deadline. Oracle-specific error classification, reconnect implementation, and
+live outage qualification belong to the vendor integration.
 
 ### Bounded Catch-Up and Admission
 
@@ -485,8 +524,8 @@ blocks another fetch.
 
 A retryable NACK ends the burst and uses `nack_backoff` without advancing the
 committed cursor. A permanent NACK stops collection with an error and no cursor
-advancement; it does not schedule a replay. Native query errors still fail the
-receiver rather than gaining a new retry policy. A checkpoint write failure ends immediate
+advancement; it does not schedule a replay. Transient query errors end immediate
+catch-up and use the local database recovery policy above. A checkpoint write failure ends immediate
 catch-up, but the existing checkpoint retry policy must first finish committing
 the ACKed page (or reach its terminal failure limit).
 
@@ -653,7 +692,8 @@ leases do not emit these runtime metrics by themselves.
 
 | Counter fields | Purpose |
 | --- | --- |
-| `starts`, `polls`, `query_failures` | Receiver starts, attempted page polls, and failed query executions. |
+| `starts`, `polls`, `query_failures` | Receiver starts, attempted page polls including retries, and failed page attempts including operation setup. |
+| `reconnects` | Reconnect operations started after transient errors; not successful reconnections or scheduled retries. |
 | `batches_sent`, `rows_sent`, `encoded_bytes_sent` | Admitted pages, records, and encoded bytes. |
 | `event_time_fallbacks` | Records whose event time cannot fit the OTLP timestamp range. |
 | `acks`, `nacks`, `replays`, `stale_feedback` | Matched downstream outcomes, replay, and rejected stale feedback. |

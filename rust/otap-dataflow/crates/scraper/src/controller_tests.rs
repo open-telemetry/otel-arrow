@@ -45,6 +45,9 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+#[path = "controller_recovery_tests.rs"]
+mod recovery_tests;
+
 fn control_channel(message: NodeControlMsg<OtapPdata>) -> local::ControlChannel<OtapPdata> {
     let (sender, receiver) = Channel::new(1);
     sender
@@ -139,6 +142,14 @@ impl DriverAdapter for FakeAdapter {
         Ok(TestCancellation {
             cancelled: Rc::new(Cell::new(false)),
         })
+    }
+
+    fn is_retryable(_error: &Self::Error) -> bool {
+        false
+    }
+
+    async fn reconnect(&mut self, _query: &CompiledQuery) -> Result<(), Self::Error> {
+        panic!("non-retryable fake adapter must not reconnect");
     }
 
     async fn validate_query(
@@ -1255,6 +1266,14 @@ impl DriverAdapter for CleanupBudgetAdapter {
         self.inner.begin_operation()
     }
 
+    fn is_retryable(error: &Self::Error) -> bool {
+        FakeAdapter::is_retryable(error)
+    }
+
+    async fn reconnect(&mut self, query: &CompiledQuery) -> Result<(), Self::Error> {
+        self.inner.reconnect(query).await
+    }
+
     async fn validate_query(
         &mut self,
         query: &CompiledQuery,
@@ -1778,6 +1797,14 @@ impl DriverAdapter for EmptyMetadataAdapter {
 
     fn begin_operation(&mut self) -> Result<Self::Cancellation, Self::Error> {
         self.inner.begin_operation()
+    }
+
+    fn is_retryable(error: &Self::Error) -> bool {
+        FakeAdapter::is_retryable(error)
+    }
+
+    async fn reconnect(&mut self, query: &CompiledQuery) -> Result<(), Self::Error> {
+        self.inner.reconnect(query).await
     }
 
     async fn validate_query(
@@ -2873,6 +2900,14 @@ impl DriverAdapter for BacklogAdapter {
 
     fn begin_operation(&mut self) -> Result<Self::Cancellation, Self::Error> {
         self.inner.begin_operation()
+    }
+
+    fn is_retryable(error: &Self::Error) -> bool {
+        FakeAdapter::is_retryable(error)
+    }
+
+    async fn reconnect(&mut self, query: &CompiledQuery) -> Result<(), Self::Error> {
+        self.inner.reconnect(query).await
     }
 
     async fn validate_query(

@@ -365,7 +365,7 @@ fn rejects_invalid_composite_watermarks() {
 
 /// Scenario: a NACK policy or checkpoint bound outside the supported contract is configured.
 /// Guarantees: only the implemented rewind policy is accepted, and backoff and failure budgets
-/// remain explicit and finite so a receiver cannot retry forever.
+/// remain explicit and finite for checkpoint-write retries.
 #[test]
 fn rejects_unsupported_checkpoint_policy_and_bounds() {
     assert!(serde_json::from_value::<OnNack>(serde_json::json!("fail")).is_err());

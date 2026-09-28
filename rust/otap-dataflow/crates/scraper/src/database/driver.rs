@@ -53,7 +53,32 @@ pub trait DriverAdapter {
     fn system(&self) -> DatabaseSystem;
 
     /// Resets cancellation state before one native operation starts.
+    ///
+    /// This must also work while disconnected so reconnect can be cancelled.
+    /// An error must leave no operation running.
     fn begin_operation(&mut self) -> Result<Self::Cancellation, Self::Error>;
+
+    /// Returns whether a failed operation can be retried after reconnecting.
+    ///
+    /// Only classify transient availability failures as retryable, never invalid
+    /// SQL, incompatible metadata, authorization failures, or unconfirmed worker
+    /// cleanup. A retryable error must confirm that the failed operation stopped
+    /// and released partial results. The controller retains ownership and retries
+    /// indefinitely with bounded backoff; it does not restart the pipeline.
+    fn is_retryable(error: &Self::Error) -> bool;
+
+    /// Replaces failed connection/session state in one bounded, cancellable attempt.
+    ///
+    /// The controller calls `begin_operation` first, then this method, then
+    /// revalidates the query before executing it again. Stop old connection and
+    /// statement work before replacement; never overlap sessions with unjoined
+    /// native work. Keep blocking cleanup/connect calls on the adapter-owned
+    /// worker and honor cancellation and `query.timeout()` for native calls.
+    /// Do not retry internally: return errors for shared retry classification.
+    ///
+    /// Factories must defer transient connection work to `validate_query` or this
+    /// method so startup outages can also be recovered inside the receiver.
+    async fn reconnect(&mut self, query: &CompiledQuery) -> Result<(), Self::Error>;
 
     /// Validates SQL and cursor metadata before polling starts.
     ///
