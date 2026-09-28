@@ -1,0 +1,6 @@
+change_type: breaking
+component: observability
+note: "Migrate resource_validator_processor metrics to enum attributes"
+issues: [3530, 4082]
+subtext: |
+  Migration: Replace batches_accepted, items_accepted and batches_rejected scalar metrics with processor.resource_validator.batches and processor.resource_validator.items enum attributes.

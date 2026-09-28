@@ -3,42 +3,126 @@
 
 //! Metrics for the Resource Validator Processor
 
+use otel_arrow_dfe_engine::context::PipelineContext;
+use otel_arrow_dfe_telemetry::common_attributes::{Outcome, OutcomeAttributes};
+use otel_arrow_dfe_telemetry::error::Error;
 use otel_arrow_dfe_telemetry::instrument::Counter;
-use otel_arrow_dfe_telemetry_macros::metric_set;
+use otel_arrow_dfe_telemetry::metrics::MeasurementMetricSet;
+use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
+use otel_arrow_dfe_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
 
-/// Metrics collected by the Resource Validator Processor.
-///
-/// Tracks both batch-level and item-level counts. Validation is pass/fail for
-/// the entire batch -- if any resource fails, the whole batch is NACKed. Item
-/// counts capture the magnitude of data loss on rejection.
-#[metric_set(name = "processor.resource_validator")]
+/// Reason for a batch rejection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, AttributeEnum)]
+pub enum RejectReason {
+    #[attribute_value = ""]
+    None,
+    Missing,
+    NotAllowed,
+    InvalidType,
+    ConversionError,
+}
+
+/// Batch attributes (outcome and reason)
+#[attribute_set(item, measurement)]
+#[derive(Debug, Clone, Copy)]
+pub struct ValidatorBatchAttributes {
+    pub outcome: Outcome,
+    #[attribute_key = "reason"]
+    pub reason: RejectReason,
+}
+
+#[metric_set(
+    name = "processor.resource_validator.batches",
+    measurement_attributes = ValidatorBatchAttributes
+)]
 #[derive(Debug, Default, Clone)]
+pub struct ValidatorBatchMetrics {
+    #[metric(unit = "{batch}")]
+    pub batches: Counter<u64>,
+}
+
+#[metric_set(
+    name = "processor.resource_validator.items",
+    measurement_attributes = OutcomeAttributes
+)]
+#[derive(Debug, Default, Clone)]
+pub struct ValidatorItemMetrics {
+    #[metric(unit = "{item}")]
+    pub items: Counter<u64>,
+}
+
+/// Container for Resource Validator metrics
 pub struct ResourceValidatorMetrics {
-    /// Number of batches that passed validation
-    #[metric(unit = "{batch}")]
-    pub batches_accepted: Counter<u64>,
+    /// Batch level metrics
+    pub batch_metrics: MeasurementMetricSet<ValidatorBatchMetrics>,
+    /// Item level metrics
+    pub item_metrics: MeasurementMetricSet<ValidatorItemMetrics>,
+}
 
-    /// Number of batches rejected due to missing required attribute
-    #[metric(unit = "{batch}")]
-    pub batches_rejected_missing: Counter<u64>,
+impl ResourceValidatorMetrics {
+    /// Creates a new ResourceValidatorMetrics instance
+    pub fn new(pipeline_ctx: &PipelineContext) -> Self {
+        Self {
+            batch_metrics: ValidatorBatchMetrics::register(pipeline_ctx),
+            item_metrics: ValidatorItemMetrics::register(pipeline_ctx),
+        }
+    }
 
-    /// Number of batches rejected due to value not in allowed list
-    #[metric(unit = "{batch}")]
-    pub batches_rejected_not_allowed: Counter<u64>,
+    /// Reports the metrics
+    pub fn report(&mut self, reporter: &mut MetricsReporter) -> Result<(), Error> {
+        reporter
+            .report_measurement(&mut self.batch_metrics)
+            .and_then(|()| reporter.report_measurement(&mut self.item_metrics))
+    }
 
-    /// Number of batches rejected due to invalid attribute type (not a string)
-    #[metric(unit = "{batch}")]
-    pub batches_rejected_invalid_type: Counter<u64>,
+    /// Records a batch outcome
+    pub fn record_batch(&mut self, outcome: Outcome, reason: Option<RejectReason>) {
+        self.batch_metrics
+            .with(ValidatorBatchAttributes {
+                outcome,
+                reason: reason.unwrap_or(RejectReason::None),
+            })
+            .batches
+            .inc();
+    }
 
-    /// Number of batches rejected due to internal conversion error
-    #[metric(unit = "{batch}")]
-    pub batches_rejected_conversion_error: Counter<u64>,
+    /// Records items outcome
+    pub fn record_items(&mut self, outcome: Outcome, count: u64) {
+        self.item_metrics
+            .with(OutcomeAttributes { outcome })
+            .items
+            .add(count);
+    }
+}
 
-    /// Number of telemetry items accepted
-    #[metric(unit = "{item}")]
-    pub items_accepted: Counter<u64>,
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    /// Number of telemetry items rejected
-    #[metric(unit = "{item}")]
-    pub items_rejected: Counter<u64>,
+    #[test]
+    fn test_reject_reason() {
+        assert_eq!(RejectReason::None, RejectReason::None);
+        assert_eq!(RejectReason::Missing, RejectReason::Missing);
+        assert_eq!(RejectReason::NotAllowed, RejectReason::NotAllowed);
+        assert_eq!(RejectReason::InvalidType, RejectReason::InvalidType);
+        assert_eq!(RejectReason::ConversionError, RejectReason::ConversionError);
+    }
+
+    #[test]
+    fn test_validator_batch_attributes() {
+        let attr = ValidatorBatchAttributes {
+            outcome: Outcome::Success,
+            reason: RejectReason::None,
+        };
+        assert_eq!(attr.outcome, Outcome::Success);
+        assert_eq!(attr.reason, RejectReason::None);
+    }
+
+    #[test]
+    fn test_outcome_attributes() {
+        let attr = OutcomeAttributes {
+            outcome: Outcome::Failure,
+        };
+        assert_eq!(attr.outcome, Outcome::Failure);
+    }
 }
