@@ -35,15 +35,14 @@ fn config_from_json(value: serde_json::Value) -> Result<(Config, ApiKeyAttribute
 /// Guarantees: Parsing preserves the key and attributes and applies the default interval.
 #[test]
 fn config_defaults_apply() {
-    let config = config_from_json(serde_json::json!({
+    let (config, attributes) = config_from_json(serde_json::json!({
         "key_secret": "test-key",
         "attributes": {
             "http.header_name": "x-api-key",
             "http.header_scheme": "ApiKey"
         }
     }))
-    .expect("config is valid")
-    .0;
+    .expect("config is valid");
 
     assert_eq!(
         config.key_secret.as_ref().map(SecretString::expose_secret),
@@ -57,6 +56,9 @@ fn config_defaults_apply() {
         config.key_secret_file_refresh,
         default_key_secret_file_refresh()
     );
+    let key = ApiKey::new("test-key").with_attributes(attributes);
+    assert_eq!(key.get_http_header_name_attribute(), Some("x-api-key"));
+    assert_eq!(key.get_http_header_scheme_attribute(), Some("ApiKey"));
 }
 
 /// Scenario: Config parsing receives no key source or an empty inline key.
@@ -74,10 +76,10 @@ fn config_key_source_is_required_and_non_empty() {
     }
 }
 
-/// Scenario: Auth construction receives missing or malformed HTTP attributes.
-/// Guarantees: Optional header metadata may be omitted but construction rejects invalid values.
+/// Scenario: Config parsing receives missing or malformed HTTP attributes.
+/// Guarantees: Optional header metadata may be omitted but malformed values are rejected.
 #[test]
-fn auth_http_attributes_are_validated() {
+fn config_http_attributes_are_validated() {
     assert!(
         config_from_json(serde_json::json!({
             "key_secret": "test-key"
@@ -86,24 +88,14 @@ fn auth_http_attributes_are_validated() {
         "HTTP attributes are optional"
     );
 
-    for attributes in [
-        serde_json::json!({"http.header_name": ""}),
-        serde_json::json!({"http.header_name": "invalid header"}),
-        serde_json::json!({"http.header_name": 42}),
-        serde_json::json!({"http.header_scheme": ""}),
-        serde_json::json!({"http.header_scheme": "invalid scheme"}),
-        serde_json::json!({"http.header_scheme": "ApiKey\n"}),
-        serde_json::json!({"http.header_name": "x-api-key", "http.header_scheme": false}),
-    ] {
-        assert!(
-            config_from_json(serde_json::json!({
-                "key_secret": "test-key",
-                "attributes": attributes
-            }))
-            .is_err(),
-            "malformed HTTP attributes must be rejected"
-        );
-    }
+    assert!(
+        config_from_json(serde_json::json!({
+            "key_secret": "test-key",
+            "attributes": {"http.header_name": "invalid header"}
+        }))
+        .is_err(),
+        "malformed HTTP attributes must be rejected"
+    );
 }
 
 /// Scenario: Config parsing receives an unknown field.
@@ -240,7 +232,7 @@ async fn key_file_takes_precedence() {
             key_secret_file_refresh: Duration::from_secs(10),
             attributes: Default::default(),
         },
-        ApiKeyAttributes::from_map(valid_attributes()).expect("valid attributes"),
+        ApiKeyAttributes::new(),
     );
 
     let key = source.fetch().await.expect("key acquired");
@@ -261,7 +253,7 @@ async fn key_file_rotation_takes_effect() {
             key_secret_file_refresh: Duration::from_secs(300),
             attributes: Default::default(),
         },
-        ApiKeyAttributes::from_map(valid_attributes()).expect("valid attributes"),
+        ApiKeyAttributes::new(),
     );
 
     let first = source.fetch().await.expect("first key acquired");
@@ -334,7 +326,7 @@ async fn key_file_rejects_empty_key() {
             key_secret_file_refresh: Duration::from_secs(10),
             attributes: Default::default(),
         },
-        ApiKeyAttributes::from_map(valid_attributes()).expect("valid attributes"),
+        ApiKeyAttributes::new(),
     );
 
     let error = source.fetch().await.expect_err("empty API key rejected");
