@@ -20,6 +20,7 @@ use crate::context::{ControllerContext, ExtensionContext, PipelineContext};
 use crate::control::NodeControlMsg;
 use crate::runtime_services::PipelineRuntimeServices;
 use otel_arrow_dfe_channel::mpsc;
+use otel_arrow_dfe_config::ExtensionId;
 use otel_arrow_dfe_config::engine::{
     ResolvedOtelDataflowSpec, ResolvedPipelineConfig, ResolvedPipelineRole,
 };
@@ -133,6 +134,18 @@ pub fn test_extension_ctx() -> (ExtensionContext, TelemetryRegistryHandle) {
         ..PipelineAttributeSet::default()
     });
     (ExtensionContext::new(controller, scope), registry)
+}
+
+/// Create a minimal extension effect handler for tests that run an extension directly.
+#[cfg(any(test, feature = "test-utils"))]
+#[must_use]
+pub fn test_extension_effect_handler(name: ExtensionId) -> crate::extension::EffectHandler {
+    let (tx, _rx) = flume::bounded(1);
+    crate::extension::EffectHandler::new(
+        name,
+        otel_arrow_dfe_telemetry::reporter::MetricsReporter::new(tx),
+        None,
+    )
 }
 
 /// A test message type used in component tests.

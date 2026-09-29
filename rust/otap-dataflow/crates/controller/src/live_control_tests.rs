@@ -449,7 +449,7 @@ static RECOVERY_TEST_PIPELINE_FACTORY: PipelineFactory<()> = PipelineFactory::ne
     &[],
 );
 
-fn test_runtime(config: &OtelDataflowSpec) -> Arc<ControllerRuntime<()>> {
+pub(super) fn test_runtime(config: &OtelDataflowSpec) -> Arc<ControllerRuntime<()>> {
     test_runtime_with_factory_and_topology(config, &TEST_PIPELINE_FACTORY, NumaTopology::unknown())
 }
 
@@ -7589,4 +7589,147 @@ fn rollout_planning_cancels_scheduled_runtime_recovery() {
     );
     assert_eq!(state.active_instances, 0);
     assert!(state.first_error.is_none());
+}
+
+/// Scenario: reconciliation or rollout preparation changes state_dir.
+/// Guarantees: addition, removal, and replacement fail before state changes.
+#[test]
+fn state_dir_changes_rejected_by_control_plane_entry_points() {
+    let root_a = std::path::PathBuf::from(if cfg!(windows) {
+        r"C:\otel\a"
+    } else {
+        "/var/lib/otel/a"
+    });
+    let root_b = std::path::PathBuf::from(if cfg!(windows) {
+        r"C:\otel\b"
+    } else {
+        "/var/lib/otel/b"
+    });
+    for (current, desired) in [
+        (None, Some(root_a.clone())),
+        (Some(root_a.clone()), None),
+        (Some(root_a), Some(root_b)),
+    ] {
+        for delete_missing in [false, true] {
+            let mut config = engine_config_with_pipeline(simple_pipeline_yaml());
+            config.engine.state_dir = current.clone();
+            let runtime = test_runtime(&config);
+            register_existing_pipeline(&runtime, &config);
+            let mut candidate = config.clone();
+            candidate.engine.state_dir = desired.clone();
+            let revision = runtime.state.lock().unwrap().config_revision;
+            let request = ReconfigureRequest {
+                pipeline: candidate.groups[&PipelineGroupId::from("g1")].pipelines
+                    [&PipelineId::from("p1")]
+                    .clone(),
+                step_timeout_secs: 60,
+                drain_timeout_secs: 60,
+            };
+            let rollout_error = match runtime.prepare_rollout_plan_for_engine_operation(
+                "g1",
+                "p1",
+                &request,
+                Some(&candidate),
+                None,
+                None,
+                None,
+            ) {
+                Err(error) => error,
+                Ok(_) => panic!("rollout must reject state directory mutation"),
+            };
+            let reconcile_error = runtime
+                .reconcile_engine_config(reconcile_request(candidate, delete_missing))
+                .expect_err("reconciliation must reject state directory mutation");
+            for error in [rollout_error, reconcile_error] {
+                assert!(
+                    matches!(error, ControlPlaneError::InvalidRequest { ref message } if message.contains("engine.state_dir")),
+                    "{error:?}"
+                );
+            }
+            assert_eq!(runtime.engine_config_snapshot(), config);
+            let state = runtime.state.lock().unwrap();
+            assert_eq!(state.config_revision, revision);
+            assert!(state.active_rollouts.is_empty());
+            assert!(state.active_shutdowns.is_empty());
+        }
+    }
+}
+
+/// Scenario: reconciliation and rollout retain the configured root.
+/// Guarantees: unchanged state_dir permits ordinary live control.
+#[test]
+fn unchanged_state_dir_allows_control_plane_operations() {
+    let mut config = engine_config_with_pipeline(&format!(
+        "        policies:\n          resources:\n            core_allocation:\n              type: core_count\n              count: 1\n{}",
+        simple_pipeline_yaml(),
+    ));
+    config.engine.state_dir = Some(
+        if cfg!(windows) {
+            r"C:\otel\state"
+        } else {
+            "/var/lib/otel/state"
+        }
+        .into(),
+    );
+    let runtime = test_runtime(&config);
+    register_existing_pipeline(&runtime, &config);
+    let _rx =
+        register_runtime_instance(&runtime, "g1", "p1", 0, 0, RuntimeInstanceLifecycle::Active);
+    let status = runtime
+        .reconcile_engine_config(reconcile_request(config.clone(), true))
+        .unwrap();
+    assert_eq!(status.state, EngineConfigReconcileState::Succeeded);
+    let request = ReconfigureRequest {
+        pipeline: config.groups[&PipelineGroupId::from("g1")].pipelines[&PipelineId::from("p1")]
+            .clone(),
+        step_timeout_secs: 60,
+        drain_timeout_secs: 60,
+    };
+    let plan = runtime.prepare_rollout_plan("g1", "p1", &request).unwrap();
+    assert_eq!(plan.action, RolloutAction::NoOp);
+    assert_eq!(runtime.engine_config_snapshot(), config);
+}
+
+/// Scenario: startup configures a root on an unsupported platform.
+/// Guarantees: startup rejects it before starting consumers.
+#[cfg(not(target_os = "linux"))]
+#[test]
+fn state_dir_unsupported_platform_rejected_at_startup() {
+    let mut config = empty_engine_config();
+    config.engine.state_dir = Some(
+        if cfg!(windows) {
+            r"C:\otel\state"
+        } else {
+            "/var/lib/otel/state"
+        }
+        .into(),
+    );
+    let error = Controller::new(&TEST_PIPELINE_FACTORY)
+        .run_till_shutdown(config)
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        Error::StateDirectory(
+            otel_arrow_dfe_engine::state_dir::StateDirectoryError::UnsupportedPlatform { .. }
+        )
+    ));
+}
+
+/// Scenario: startup encounters an untrusted ancestor.
+/// Guarantees: startup fails without creating child state.
+#[cfg(target_os = "linux")]
+#[test]
+fn state_dir_untrusted_ancestor_rejected_at_startup() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("state");
+    // The test deliberately uses a writable ancestor independent of /tmp policy.
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(temp.path(), std::fs::Permissions::from_mode(0o777)).unwrap();
+    let mut config = empty_engine_config();
+    config.engine.state_dir = Some(path.clone());
+    let error = Controller::new(&TEST_PIPELINE_FACTORY)
+        .run_till_shutdown(config)
+        .unwrap_err();
+    assert!(matches!(error, Error::StateDirectory(_)));
+    assert!(!path.exists());
 }
