@@ -5,7 +5,7 @@
 ## Metadata
 
 - Type: `processor:temporal_reaggregation` (`urn:otel:processor:temporal_reaggregation`)
-- Feature gate: Default
+- Feature gate: Always enabled
 - Stability: Experimental
 
 ## Overview

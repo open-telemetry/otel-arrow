@@ -5,7 +5,7 @@
 ## Metadata
 
 - URN: `urn:microsoft:extension:azure_identity_auth`
-- Feature gate: `azure-identity-auth-extension` (or the aggregate `contrib-extensions`)
+- Feature gate: `azure-identity-auth` (or the aggregate `contrib-extensions`)
 - Capability provided: `bearer_token_provider`
 - Execution model: Active + Shared
 - Stability: Draft
@@ -75,7 +75,7 @@ From the `otap-dataflow` directory:
 
 ```bash
 cargo build --release \
-  --features azure-identity-auth-extension,azure-monitor-exporter
+  --features azure-identity-auth,azure-monitor
 ```
 
 The extension talks to Azure over TLS through the Azure SDK's `reqwest`/`rustls`
@@ -83,7 +83,7 @@ client, which requires a process-wide `rustls` crypto provider. The deployed
 binary **must** enable exactly one `crypto-*` feature (`crypto-ring`,
 `crypto-aws-lc`, `crypto-openssl`, or `crypto-symcrypt`, forwarded to
 `otel-arrow-dfe-otap`); the workspace binary's default build includes `crypto-ring`. A
-build that enables `azure-identity-auth-extension` without any `crypto-*` feature
+build that enables `azure-identity-auth` without any `crypto-*` feature
 installs no provider, and token acquisition panics at runtime with "No provider
 set".
 

@@ -56,6 +56,9 @@ pub mod otlp_grpc;
 /// OTLP/HTTP receiver support.
 pub mod otlp_http;
 
+/// Shared OTLP exporter utilities.
+pub mod otlp_exporter;
+
 /// Cloud specific auth utilities
 pub mod cloud_auth;
 

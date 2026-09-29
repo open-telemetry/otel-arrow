@@ -449,7 +449,7 @@ static RECOVERY_TEST_PIPELINE_FACTORY: PipelineFactory<()> = PipelineFactory::ne
     &[],
 );
 
-fn test_runtime(config: &OtelDataflowSpec) -> Arc<ControllerRuntime<()>> {
+pub(super) fn test_runtime(config: &OtelDataflowSpec) -> Arc<ControllerRuntime<()>> {
     test_runtime_with_factory_and_topology(config, &TEST_PIPELINE_FACTORY, NumaTopology::unknown())
 }
 
@@ -696,6 +696,43 @@ groups:
 "#
     ))
     .expect("engine config should parse")
+}
+
+fn engine_config_with_context_entries(
+    engine_entries: Option<&str>,
+    group_entries: Option<&str>,
+) -> OtelDataflowSpec {
+    let mut yaml = "version: otel_dataflow/v1\n".to_owned();
+    if let Some(entries) = engine_entries {
+        yaml.push_str(&format!("policies:\n  context:\n    entries: {entries}\n"));
+    }
+    yaml.push_str("groups:\n  g1:\n");
+    if let Some(entries) = group_entries {
+        yaml.push_str(&format!(
+            "    policies:\n      context:\n        entries: {entries}\n"
+        ));
+    }
+    yaml.push_str(
+        r#"    pipelines:
+      p1:
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 1
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#,
+    );
+    OtelDataflowSpec::from_yaml(&yaml).expect("context engine config should parse")
 }
 
 fn empty_engine_config() -> OtelDataflowSpec {
@@ -4710,6 +4747,40 @@ fn reconcile_engine_config_reports_noop_for_matching_live_config() {
     );
 }
 
+/// Scenario: full-config reconciliation adds, edits, and moves an unused context declaration.
+/// Guarantees: every declaration-only change is a no-op that preserves the active generation.
+#[test]
+fn reconcile_engine_config_preserves_generation_for_context_declaration_changes() {
+    let config = engine_config_with_context_entries(None, None);
+    let runtime = test_runtime(&config);
+    register_existing_pipeline(&runtime, &config);
+    let _rx =
+        register_runtime_instance(&runtime, "g1", "p1", 0, 0, RuntimeInstanceLifecycle::Active);
+    let first = "{tenant: [{type: transport_header, name: tenant_id}]}";
+    let edited = "{tenant: [{type: transport_header, name: customer_id}]}";
+
+    for desired in [
+        engine_config_with_context_entries(Some(first), None),
+        engine_config_with_context_entries(Some(edited), None),
+        engine_config_with_context_entries(None, Some(edited)),
+    ] {
+        let status = runtime
+            .reconcile_engine_config(reconcile_request(desired, true))
+            .expect("declaration-only change should reconcile");
+
+        assert_eq!(status.state, EngineConfigReconcileState::Succeeded);
+        assert_eq!(status.changes.len(), 1);
+        assert_eq!(status.changes[0].action, ConfigChangeAction::Noop);
+        let state = runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let pipeline_key = PipelineKey::new("g1".into(), "p1".into());
+        assert_eq!(state.logical_pipelines[&pipeline_key].active_generation, 0);
+        assert_eq!(state.generation_counters[&pipeline_key], 1);
+    }
+}
+
 /// Scenario: successful full-config reconciliation changes the configured log level.
 /// Guarantees: the shared runtime filter follows warn -> info -> warn without restart.
 #[test]
@@ -7956,4 +8027,147 @@ fn request_shutdown_all_waits_for_late_registered_instance_before_stopping_obser
         "the phased shutdown coordinator should complete after observability exits"
     );
     assert!(runtime.all_instances_exited());
+}
+
+/// Scenario: reconciliation or rollout preparation changes state_dir.
+/// Guarantees: addition, removal, and replacement fail before state changes.
+#[test]
+fn state_dir_changes_rejected_by_control_plane_entry_points() {
+    let root_a = std::path::PathBuf::from(if cfg!(windows) {
+        r"C:\otel\a"
+    } else {
+        "/var/lib/otel/a"
+    });
+    let root_b = std::path::PathBuf::from(if cfg!(windows) {
+        r"C:\otel\b"
+    } else {
+        "/var/lib/otel/b"
+    });
+    for (current, desired) in [
+        (None, Some(root_a.clone())),
+        (Some(root_a.clone()), None),
+        (Some(root_a), Some(root_b)),
+    ] {
+        for delete_missing in [false, true] {
+            let mut config = engine_config_with_pipeline(simple_pipeline_yaml());
+            config.engine.state_dir = current.clone();
+            let runtime = test_runtime(&config);
+            register_existing_pipeline(&runtime, &config);
+            let mut candidate = config.clone();
+            candidate.engine.state_dir = desired.clone();
+            let revision = runtime.state.lock().unwrap().config_revision;
+            let request = ReconfigureRequest {
+                pipeline: candidate.groups[&PipelineGroupId::from("g1")].pipelines
+                    [&PipelineId::from("p1")]
+                    .clone(),
+                step_timeout_secs: 60,
+                drain_timeout_secs: 60,
+            };
+            let rollout_error = match runtime.prepare_rollout_plan_for_engine_operation(
+                "g1",
+                "p1",
+                &request,
+                Some(&candidate),
+                None,
+                None,
+                None,
+            ) {
+                Err(error) => error,
+                Ok(_) => panic!("rollout must reject state directory mutation"),
+            };
+            let reconcile_error = runtime
+                .reconcile_engine_config(reconcile_request(candidate, delete_missing))
+                .expect_err("reconciliation must reject state directory mutation");
+            for error in [rollout_error, reconcile_error] {
+                assert!(
+                    matches!(error, ControlPlaneError::InvalidRequest { ref message } if message.contains("engine.state_dir")),
+                    "{error:?}"
+                );
+            }
+            assert_eq!(runtime.engine_config_snapshot(), config);
+            let state = runtime.state.lock().unwrap();
+            assert_eq!(state.config_revision, revision);
+            assert!(state.active_rollouts.is_empty());
+            assert!(state.active_shutdowns.is_empty());
+        }
+    }
+}
+
+/// Scenario: reconciliation and rollout retain the configured root.
+/// Guarantees: unchanged state_dir permits ordinary live control.
+#[test]
+fn unchanged_state_dir_allows_control_plane_operations() {
+    let mut config = engine_config_with_pipeline(&format!(
+        "        policies:\n          resources:\n            core_allocation:\n              type: core_count\n              count: 1\n{}",
+        simple_pipeline_yaml(),
+    ));
+    config.engine.state_dir = Some(
+        if cfg!(windows) {
+            r"C:\otel\state"
+        } else {
+            "/var/lib/otel/state"
+        }
+        .into(),
+    );
+    let runtime = test_runtime(&config);
+    register_existing_pipeline(&runtime, &config);
+    let _rx =
+        register_runtime_instance(&runtime, "g1", "p1", 0, 0, RuntimeInstanceLifecycle::Active);
+    let status = runtime
+        .reconcile_engine_config(reconcile_request(config.clone(), true))
+        .unwrap();
+    assert_eq!(status.state, EngineConfigReconcileState::Succeeded);
+    let request = ReconfigureRequest {
+        pipeline: config.groups[&PipelineGroupId::from("g1")].pipelines[&PipelineId::from("p1")]
+            .clone(),
+        step_timeout_secs: 60,
+        drain_timeout_secs: 60,
+    };
+    let plan = runtime.prepare_rollout_plan("g1", "p1", &request).unwrap();
+    assert_eq!(plan.action, RolloutAction::NoOp);
+    assert_eq!(runtime.engine_config_snapshot(), config);
+}
+
+/// Scenario: startup configures a root on an unsupported platform.
+/// Guarantees: startup rejects it before starting consumers.
+#[cfg(not(target_os = "linux"))]
+#[test]
+fn state_dir_unsupported_platform_rejected_at_startup() {
+    let mut config = empty_engine_config();
+    config.engine.state_dir = Some(
+        if cfg!(windows) {
+            r"C:\otel\state"
+        } else {
+            "/var/lib/otel/state"
+        }
+        .into(),
+    );
+    let error = Controller::new(&TEST_PIPELINE_FACTORY)
+        .run_till_shutdown(config)
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        Error::StateDirectory(
+            otel_arrow_dfe_engine::state_dir::StateDirectoryError::UnsupportedPlatform { .. }
+        )
+    ));
+}
+
+/// Scenario: startup encounters an untrusted ancestor.
+/// Guarantees: startup fails without creating child state.
+#[cfg(target_os = "linux")]
+#[test]
+fn state_dir_untrusted_ancestor_rejected_at_startup() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("state");
+    // The test deliberately uses a writable ancestor independent of /tmp policy.
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(temp.path(), std::fs::Permissions::from_mode(0o777)).unwrap();
+    let mut config = empty_engine_config();
+    config.engine.state_dir = Some(path.clone());
+    let error = Controller::new(&TEST_PIPELINE_FACTORY)
+        .run_till_shutdown(config)
+        .unwrap_err();
+    assert!(matches!(error, Error::StateDirectory(_)));
+    assert!(!path.exists());
 }

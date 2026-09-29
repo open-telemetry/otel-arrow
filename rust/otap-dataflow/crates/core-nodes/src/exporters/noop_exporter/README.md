@@ -5,7 +5,7 @@
 ## Metadata
 
 - Type: `exporter:noop` (`urn:otel:exporter:noop`)
-- Feature gate: Default
+- Feature gate: Always enabled
 - Stability: Experimental
 
 ## Overview

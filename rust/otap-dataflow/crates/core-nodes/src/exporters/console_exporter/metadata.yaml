@@ -1,0 +1,7 @@
+type: console
+status:
+  class: exporter
+  codeowners:
+    active:
+      - jmacd
+      - lquerel

@@ -1552,7 +1552,7 @@ impl ChildBatchFilterIdHelper for UInt32Type {
 /// Reads the filtered parent from `output` to determine surviving IDs, reads
 /// the original child rows from `input`, and writes the filtered child into
 /// `output`.
-fn filter_child_batch<T: ChildBatchFilterIdHelper>(
+pub fn filter_child_batch<T: ChildBatchFilterIdHelper>(
     input: &OtapArrowRecords,
     output: &mut OtapArrowRecords,
     child_payload_type: ArrowPayloadType,

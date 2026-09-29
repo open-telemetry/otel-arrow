@@ -98,6 +98,7 @@ pub mod process_duration;
 mod route_admission;
 pub mod runtime_pipeline;
 pub mod shared;
+pub mod state_dir;
 pub mod terminal_state;
 pub mod testing;
 pub mod topic;
@@ -1001,6 +1002,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                 telemetry_policy.runtime_metrics,
                 node_config,
             ));
+            base_ctx.set_node_duration_distribution(node_config.duration_distribution());
             let invalid_binding = |error: String| {
                 Error::ConfigError(Box::new(
                     otel_arrow_dfe_config::error::Error::InvalidUserConfig {
@@ -1970,6 +1972,10 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             .compiled_context_bindings()
             .header_capture_policy(&pipeline_ctx.pipeline_key(), &pipeline_ctx.node_id())
             .cloned();
+        let authorized_identity_policy = pipeline_ctx
+            .compiled_context_bindings()
+            .authorized_identity_policy(&pipeline_ctx.pipeline_key(), &pipeline_ctx.node_id())
+            .cloned();
 
         let receiver = create(
             (*pipeline_ctx).clone(),
@@ -1979,7 +1985,8 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             capabilities,
         )
         .map_err(|e| Error::ConfigError(Box::new(e)))?
-        .with_capture_policy(capture_policy);
+        .with_capture_policy(capture_policy)
+        .with_authorized_identity_policy(authorized_identity_policy);
         pipeline_ctx
             .admission()
             .validate_factory_consumption(normalized.as_str())
@@ -2700,6 +2707,7 @@ mod test {
                 messages: true,
                 completion_duration: true,
                 duration: true,
+                duration_distribution: otel_arrow_dfe_config::policy::DistributionTier::Detailed,
                 item_counts: true,
                 size: true,
             }),
@@ -2723,6 +2731,7 @@ mod test {
                 messages: true,
                 completion_duration: true,
                 duration: true,
+                duration_distribution: otel_arrow_dfe_config::policy::DistributionTier::Detailed,
                 item_counts: true,
                 size: true,
             }),

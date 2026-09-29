@@ -1,0 +1,4 @@
+change_type: enhancement
+component: engine
+note: "Add policies.context.entries configuration for composite context entries."
+issues: [3925]
