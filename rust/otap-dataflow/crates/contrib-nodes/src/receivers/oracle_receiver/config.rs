@@ -4,16 +4,19 @@
 //! Oracle receiver configuration.
 //!
 //! The customer supplies the complete SQL statement. This module validates that
-//! the statement is a single read-only `SELECT`, references both configured
-//! named binds as real bind markers, and ends with the required outer
-//! `ORDER BY <timestamp> ASC, <tie_breaker> ASC`. String literals, comments,
+//! the statement is a single read-only `SELECT`, references the configured
+//! named binds as real bind markers, and ends with the mode-specific outer
+//! ascending ordering. String literals, comments,
 //! bind-name prefixes, and orderings nested inside parentheses never satisfy
 //! that requirement.
 
-use super::adapter::{OracleAdapter, OracleAdapterConfig, normalize_cursor_timestamp};
+use super::adapter::{
+    OracleAdapter, OracleAdapterConfig, normalize_cursor_timestamp, validate_scalar_value,
+};
 use otel_arrow_dfe_engine::local::capability::auth::basic_auth_provider::BasicAuthProvider;
 use otel_arrow_dfe_scraper::database::{
-    CatchUpConfig, CheckpointConfig, CompiledQuery, OutputConfig, PollingConfig, WatermarkConfig,
+    CatchUpConfig, CheckpointConfig, CompiledQuery, OutputConfig, PollingConfig, ScalarValue,
+    WatermarkConfig,
 };
 use secrecy::zeroize::Zeroizing;
 use serde::de::Error as DeError;
@@ -38,7 +41,7 @@ const fn default_fetch_size_rows() -> usize {
     300
 }
 
-/// Validated configuration for one Oracle composite-watermark query.
+/// Validated configuration for one Oracle scalar or composite watermark query.
 pub struct OracleReceiverConfig {
     source_id: String,
     connection: OracleConnectionConfig,
@@ -140,46 +143,82 @@ impl TryFrom<RawOracleConfig> for OracleReceiverConfig {
         config.query.polling().validate()?;
         config.watermark.validate()?;
         config.checkpoint.validate()?;
-        validate_oracle_identifier(
-            "watermark.timestamp.column",
-            &config.watermark.timestamp().column,
-        )?;
-        validate_oracle_identifier(
-            "watermark.tie_breaker.column",
-            &config.watermark.tie_breaker().column,
-        )?;
-        let initial = normalize_cursor_timestamp(&config.watermark.timestamp().initial).map_err(|_| {
-            OracleConfigError::new(
-                "watermark.timestamp.initial must be a valid Oracle timestamp with at most nine digits per numeric component",
-            )
-        })?;
-        let WatermarkConfig::Composite { timestamp, .. } = &mut config.watermark;
-        timestamp.initial = initial;
+        let output = match &mut config.watermark {
+            WatermarkConfig::Composite {
+                timestamp,
+                tie_breaker,
+            } => {
+                validate_oracle_identifier("watermark.timestamp.column", &timestamp.column)?;
+                validate_oracle_identifier("watermark.tie_breaker.column", &tie_breaker.column)?;
+                timestamp.initial = normalize_cursor_timestamp(&timestamp.initial)
+                    .map_err(|_| OracleConfigError::new("watermark.timestamp.initial must be a valid Oracle timestamp with at most nine digits per numeric component"))?;
+                OutputConfig {
+                    timestamp_column: Some(timestamp.column.clone()),
+                    validation_columns: vec![tie_breaker.column.clone()],
+                }
+            }
+            WatermarkConfig::Scalar {
+                column, initial, ..
+            } => {
+                validate_oracle_identifier("watermark.column", column)?;
+                validate_scalar_value(initial).map_err(|_| OracleConfigError::new(
+                    "invalid Oracle scalar initial value: strings must be nonempty without NUL; timestamps must have supported precision; text is bounded to 1024 bytes",
+                ))?;
+                let timestamp_column = if let ScalarValue::Timestamp(text) = initial {
+                    *text = normalize_cursor_timestamp(text)
+                        .map_err(|_| OracleConfigError::new("invalid Oracle scalar timestamp"))?;
+                    Some(column.clone())
+                } else {
+                    None
+                };
+                OutputConfig {
+                    timestamp_column,
+                    validation_columns: vec![column.clone()],
+                }
+            }
+        };
         let statement = validate_statement(&config.query.statement, &config.watermark)?;
         let query = CompiledQuery::compile(
             statement,
             config.query.polling(),
             &config.watermark,
             &config.checkpoint,
-            OutputConfig {
-                timestamp_column: Some(config.watermark.timestamp().column.clone()),
-                validation_columns: vec![config.watermark.tie_breaker().column.clone()],
-            },
+            output,
         )?;
 
-        let fingerprint = FingerprintInput {
-            source_id: &config.source_id,
-            connect_string: &config.connection.connect_string,
-            statement: query.sql(),
-            timestamp_column: &config.watermark.timestamp().column,
-            timestamp_bind: &config.watermark.timestamp().bind,
-            timestamp_initial: &config.watermark.timestamp().initial,
-            tie_breaker_column: &config.watermark.tie_breaker().column,
-            tie_breaker_bind: &config.watermark.tie_breaker().bind,
-            tie_breaker_initial: config.watermark.tie_breaker().initial,
+        // Preserve the exact composite fingerprint schema and field ordering.
+        // A scalar fingerprint has a separate mode and an explicitly typed initial value.
+        let fingerprint = match &config.watermark {
+            WatermarkConfig::Composite {
+                timestamp,
+                tie_breaker,
+            } => serde_json::to_vec(&FingerprintInput {
+                source_id: &config.source_id,
+                connect_string: &config.connection.connect_string,
+                statement: query.sql(),
+                timestamp_column: &timestamp.column,
+                timestamp_bind: &timestamp.bind,
+                timestamp_initial: &timestamp.initial,
+                tie_breaker_column: &tie_breaker.column,
+                tie_breaker_bind: &tie_breaker.bind,
+                tie_breaker_initial: tie_breaker.initial,
+            }),
+            WatermarkConfig::Scalar {
+                column,
+                bind,
+                initial,
+            } => serde_json::to_vec(&ScalarFingerprintInput {
+                source_id: &config.source_id,
+                connect_string: &config.connection.connect_string,
+                statement: query.sql(),
+                mode: "scalar",
+                column,
+                bind,
+                initial,
+            }),
         };
         let fingerprint_bytes =
-            Zeroizing::new(serde_json::to_vec(&fingerprint).map_err(|_| {
+            Zeroizing::new(fingerprint.map_err(|_| {
                 OracleConfigError::new("failed to fingerprint Oracle configuration")
             })?);
         let config_fingerprint = blake3::hash(&fingerprint_bytes).to_hex().to_string();
@@ -192,6 +231,17 @@ impl TryFrom<RawOracleConfig> for OracleReceiverConfig {
             config_fingerprint,
         })
     }
+}
+
+#[derive(Serialize)]
+struct ScalarFingerprintInput<'a> {
+    source_id: &'a str,
+    connect_string: &'a str,
+    statement: &'a str,
+    mode: &'static str,
+    column: &'a str,
+    bind: &'a str,
+    initial: &'a ScalarValue,
 }
 
 /// Semantic fields identifying one checkpoint stream.
@@ -306,8 +356,25 @@ fn validate_statement(
             "query.statement must be a single SELECT without subqueries or set operations",
         ));
     }
-    let timestamp = watermark.timestamp();
-    let tie_breaker = watermark.tie_breaker();
+    let (timestamp, tie_breaker) = match watermark {
+        WatermarkConfig::Composite {
+            timestamp,
+            tie_breaker,
+        } => (timestamp, tie_breaker),
+        WatermarkConfig::Scalar {
+            column,
+            bind,
+            initial,
+        } => {
+            validate_scalar_statement(
+                &tokens,
+                column,
+                bind,
+                matches!(initial, ScalarValue::String(_)),
+            )?;
+            return Ok(statement);
+        }
+    };
     // Exact token equality, so ':last_ts_extra' never satisfies ':last_ts' and
     // a bind marker inside a string literal is not a token at all.
     for bind in [&timestamp.bind, &tie_breaker.bind] {
@@ -403,6 +470,72 @@ fn validate_statement(
         })
     }
     Ok(statement)
+}
+
+/// Requires one strict scalar keyset predicate and a matching outer ordering.
+fn validate_scalar_statement(
+    tokens: &[SqlToken],
+    column: &str,
+    bind: &str,
+    string_key: bool,
+) -> Result<(), OracleConfigError> {
+    let column = column.to_ascii_uppercase();
+    let bind = format!(":{}", bind.to_ascii_uppercase());
+    let where_index = tokens
+        .iter()
+        .position(|token| token.depth == 0 && token.text == "WHERE")
+        .ok_or_else(|| OracleConfigError::new("scalar query requires a top-level WHERE"))?;
+    let order = tokens
+        .windows(2)
+        .rposition(|pair| {
+            pair[0].depth == 0
+                && pair[1].depth == 0
+                && pair[0].text == "ORDER"
+                && pair[1].text == "BY"
+        })
+        .ok_or_else(|| OracleConfigError::new("scalar query requires an outer ORDER BY"))?;
+    if order <= where_index {
+        return Err(OracleConfigError::new(
+            "scalar predicate must precede ORDER BY",
+        ));
+    }
+    let predicate: Vec<&str> = tokens[where_index + 1..order]
+        .iter()
+        .map(|token| token.text.as_str())
+        .collect();
+    let predicate = if predicate.first() == Some(&"(") && predicate.last() == Some(&")") {
+        &predicate[1..predicate.len() - 1]
+    } else {
+        &predicate[..]
+    };
+    let expected_predicate = if string_key {
+        vec![
+            column.as_str(),
+            "COLLATE",
+            "BINARY",
+            ">",
+            bind.as_str(),
+            "COLLATE",
+            "BINARY",
+        ]
+    } else {
+        vec![column.as_str(), ">", bind.as_str()]
+    };
+    let expected_order = if string_key {
+        vec!["ORDER", "BY", column.as_str(), "COLLATE", "BINARY", "ASC"]
+    } else {
+        vec!["ORDER", "BY", column.as_str(), "ASC"]
+    };
+    let actual_order: Vec<&str> = tokens[order..]
+        .iter()
+        .map(|token| token.text.as_str())
+        .collect();
+    if predicate != expected_predicate || actual_order != expected_order {
+        return Err(OracleConfigError::new(
+            "scalar query requires exactly key > :bind and ORDER BY key ASC; string keys require explicit COLLATE BINARY on both predicate operands and the ordering key",
+        ));
+    }
+    Ok(())
 }
 
 struct SqlToken {

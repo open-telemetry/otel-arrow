@@ -427,7 +427,7 @@ macro_rules! oracle_module_tests {
                     _ = adapter.begin_operation()?;
                     _ = adapter.validate_query(&query).await?;
                     _ = adapter.begin_operation()?;
-                    let page = adapter.execute(&query, &query.watermark().initial).await?;
+                    let page = adapter.execute(&query, &query.watermark().initial()).await?;
                     let cursor = page.rows.last().ok_or("fixture must contain one row")?.cursor.clone();
                     let writer = oracle::Connection::connect(
                         credential.expose_username(),
@@ -462,7 +462,7 @@ macro_rules! oracle_module_tests {
                     row: otel_arrow_dfe_scraper::database::Row {
                         values: vec![CellValue::String("x".repeat(bytes))],
                     },
-                    cursor: CompositeCursor::new("2026-01-01 00:00:00".to_owned(), id),
+                    cursor: CompositeCursor::new("2026-01-01 00:00:00".to_owned(), id).into(),
                 }
             }
 
@@ -488,7 +488,7 @@ macro_rules! oracle_module_tests {
                     .iter()
                     .map(|row| {
                         row.row.normalized_size() - size_of::<otel_arrow_dfe_scraper::database::Row>() as u64
-                            + row.cursor.timestamp.capacity() as u64
+                            + super::cursor_heap_bytes(&row.cursor)
                     })
                     .sum::<u64>();
                 assert_eq!(payload, measured);
@@ -513,7 +513,7 @@ macro_rules! oracle_module_tests {
                                         .iter()
                                         .map(|row| {
                                             row.row.normalized_size() - size_of::<Row>() as u64
-                                                + row.cursor.timestamp.capacity() as u64
+                                                + super::cursor_heap_bytes(&row.cursor)
                                         })
                                         .sum::<u64>();
                                 assert!(actual <= limit, "{actual} exceeds {limit}");
@@ -1435,6 +1435,8 @@ fn normalizes_all_accepted_initial_timestamp_spellings() {
         let plan = parsed(config).expect("Oracle timestamp").query();
         assert!(
             plan.watermark()
+                .as_composite()
+                .expect("composite fixture")
                 .initial
                 .timestamp
                 .starts_with("1970-01-01 00:00:00")
@@ -1520,9 +1522,31 @@ fn accepts_the_documented_composite_configuration() {
     assert_eq!(config.checkpoint().on_nack, OnNack::Rewind);
     assert_eq!(config.checkpoint().nack_backoff, Duration::from_secs(1));
     let query = config.query();
-    assert_eq!(query.watermark().timestamp_bind, "last_timestamp");
-    assert_eq!(query.watermark().tie_breaker_bind, "last_tie_breaker");
-    assert_eq!(query.watermark().initial.tie_breaker, 0);
+    assert_eq!(
+        query
+            .watermark()
+            .as_composite()
+            .expect("composite fixture")
+            .timestamp_bind,
+        "last_timestamp"
+    );
+    assert_eq!(
+        query
+            .watermark()
+            .as_composite()
+            .expect("composite fixture")
+            .tie_breaker_bind,
+        "last_tie_breaker"
+    );
+    assert_eq!(
+        query
+            .watermark()
+            .as_composite()
+            .expect("composite fixture")
+            .initial
+            .tie_breaker,
+        0
+    );
 }
 
 /// Scenario: Permanent-NACK policy is omitted or explicitly configured for shared local retries.
@@ -2042,8 +2066,8 @@ fn equivalent_initial_offsets_share_checkpoint_identity() {
     offset["watermark"]["timestamp"]["initial"] = serde_json::json!("2026-01-01 12:00:00 +05:30");
     let offset = parsed(offset).expect("offset initial");
     assert_eq!(
-        utc.query().watermark().initial,
-        offset.query().watermark().initial
+        utc.query().watermark().initial(),
+        offset.query().watermark().initial()
     );
     assert_eq!(utc.config_fingerprint(), offset.config_fingerprint());
     assert_eq!(
@@ -2099,7 +2123,10 @@ fn factory_owns_shared_checkpoint_identity() {
         config.source_id(),
         config.config_fingerprint().to_owned(),
     );
-    let cursor = CompositeCursor::new("2026-01-01 00:00:00".to_owned(), 42);
+    let cursor = otel_arrow_dfe_scraper::database::Cursor::Composite(CompositeCursor::new(
+        "2026-01-01 00:00:00".to_owned(),
+        42,
+    ));
     let (committed, _) = store.write(0, &cursor).expect("seed committed progress");
     let before = store
         .read()
@@ -2232,3 +2259,6 @@ fn emits_oracle_rows_when_live_test_is_enabled() {
             emitted.send(()).expect("signal emission");
         });
 }
+
+#[path = "scalar_config_tests.rs"]
+mod scalar_tests;
