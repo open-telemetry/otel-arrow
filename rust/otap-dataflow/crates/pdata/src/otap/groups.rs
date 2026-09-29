@@ -3,6 +3,7 @@
 
 //! Support for splitting and merging sequences of `OtapArrowRecords` in support of batching.
 use std::num::{NonZeroU32, NonZeroU64};
+use std::ops::RangeInclusive;
 
 use crate::{
     otap::{
@@ -31,11 +32,44 @@ use super::transform::{
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum RecordsGroup {
     /// OTAP logs
-    Logs(Vec<[Option<RecordBatch>; Logs::COUNT]>),
+    Logs(Tracked<{ Logs::COUNT }>),
     /// OTAP metrics
-    Metrics(Vec<[Option<RecordBatch>; Metrics::COUNT]>),
+    Metrics(Tracked<{ Metrics::COUNT }>),
     /// OTAP traces
-    Traces(Vec<[Option<RecordBatch>; Traces::COUNT]>),
+    Traces(Tracked<{ Traces::COUNT }>),
+}
+
+/// A sequence of batches together with, for each batch, the index of the
+/// original input (as passed to `separate_*`) that it was derived from.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub(crate) struct Tracked<const N: usize> {
+    pub(crate) batches: Vec<[Option<RecordBatch>; N]>,
+    pub(crate) sources: Vec<usize>,
+}
+
+impl<const N: usize> Tracked<N> {
+    fn with_capacity(n: usize) -> Self {
+        Self {
+            batches: Vec::with_capacity(n),
+            sources: Vec::with_capacity(n),
+        }
+    }
+
+    fn push(&mut self, batch: [Option<RecordBatch>; N], source: usize) {
+        self.batches.push(batch);
+        self.sources.push(source);
+    }
+
+    const fn is_empty(&self) -> bool {
+        self.batches.is_empty()
+    }
+}
+
+/// One output of [`RecordsGroup::concatenate`]: the batch and the inclusive
+/// range of original input indices it was built from.
+pub(crate) struct GroupOutput {
+    pub(crate) records: OtapArrowRecords,
+    pub(crate) inputs: RangeInclusive<usize>,
 }
 
 impl RecordsGroup {
@@ -46,15 +80,15 @@ impl RecordsGroup {
     #[must_use]
     fn separate_by_type(records: Vec<OtapArrowRecords>) -> [Self; 3] {
         let log_count = signal_count(&records, SignalType::Logs);
-        let mut log_records = Vec::with_capacity(log_count);
+        let mut log_records = Tracked::with_capacity(log_count);
 
         let metric_count = signal_count(&records, SignalType::Metrics);
-        let mut metric_records = Vec::with_capacity(metric_count);
+        let mut metric_records = Tracked::with_capacity(metric_count);
 
         let trace_count = signal_count(&records, SignalType::Traces);
-        let mut trace_records = Vec::with_capacity(trace_count);
+        let mut trace_records = Tracked::with_capacity(trace_count);
 
-        for records in records {
+        for (idx, records) in records.into_iter().enumerate() {
             match records {
                 OtapArrowRecords::Logs(logs) => {
                     let batches = logs.into_batches();
@@ -62,7 +96,7 @@ impl RecordsGroup {
                         .map(|batch| batch.num_rows() > 0)
                         .unwrap_or(false)
                     {
-                        log_records.push(batches);
+                        log_records.push(batches, idx);
                     }
                 }
                 OtapArrowRecords::Metrics(metrics) => {
@@ -71,7 +105,7 @@ impl RecordsGroup {
                         .map(|batch| batch.num_rows() > 0)
                         .unwrap_or(false)
                     {
-                        metric_records.push(batches);
+                        metric_records.push(batches, idx);
                     }
                 }
                 OtapArrowRecords::Traces(traces) => {
@@ -80,7 +114,7 @@ impl RecordsGroup {
                         .map(|batch| batch.num_rows() > 0)
                         .unwrap_or(false)
                     {
-                        trace_records.push(batches);
+                        trace_records.push(batches, idx);
                     }
                 }
             }
@@ -129,15 +163,9 @@ impl RecordsGroup {
         let max_items = NonZeroU32::new(max_items.get() as u32)
             .unwrap_or(NonZeroU32::try_from(u32::MAX).expect("u32::MAX is not 0"));
         Ok(match self {
-            RecordsGroup::Logs(mut items) => {
-                RecordsGroup::Logs(split::split::<{ Logs::COUNT }>(&mut items, max_items)?)
-            }
-            RecordsGroup::Metrics(mut items) => {
-                RecordsGroup::Metrics(split::split::<{ Metrics::COUNT }>(&mut items, max_items)?)
-            }
-            RecordsGroup::Traces(mut items) => {
-                RecordsGroup::Traces(split::split::<{ Traces::COUNT }>(&mut items, max_items)?)
-            }
+            RecordsGroup::Logs(items) => RecordsGroup::Logs(generic_split(items, max_items)?),
+            RecordsGroup::Metrics(items) => RecordsGroup::Metrics(generic_split(items, max_items)?),
+            RecordsGroup::Traces(items) => RecordsGroup::Traces(generic_split(items, max_items)?),
         })
     }
 
@@ -145,43 +173,24 @@ impl RecordsGroup {
     ///
     /// TODO: The maximum is optional, but there is usually an ID- or
     /// PARENT_ID-width that imposes some kind of limit.
-    pub(crate) fn concatenate(self, max_items: Option<NonZeroU64>) -> Result<Self> {
-        Ok(match self {
-            RecordsGroup::Logs(items) => RecordsGroup::Logs(generic_concatenate(items, max_items)?),
-            RecordsGroup::Metrics(items) => {
-                RecordsGroup::Metrics(generic_concatenate(items, max_items)?)
-            }
-            RecordsGroup::Traces(items) => {
-                RecordsGroup::Traces(generic_concatenate(items, max_items)?)
-            }
-        })
-    }
-
-    // FIXME: replace this with an Extend impl to avoid unnecessary allocations
-    /// Convert into a sequence of `OtapArrowRecords`
-    pub(crate) fn into_otap_arrow_records(self) -> Result<Vec<OtapArrowRecords>> {
+    ///
+    /// Each output carries the inclusive range of original input indices it
+    /// was built from, so callers can correlate outputs with inputs without
+    /// counting items.
+    pub(crate) fn concatenate(self, max_items: Option<NonZeroU64>) -> Result<Vec<GroupOutput>> {
         match self {
-            RecordsGroup::Logs(items) => items
-                .into_iter()
-                .map(|batches| {
-                    let raw = raw_batch_store::RawLogsStore::from_batches(batches);
-                    Logs::try_from(raw).map(OtapArrowRecords::Logs)
-                })
-                .collect(),
-            RecordsGroup::Metrics(items) => items
-                .into_iter()
-                .map(|batches| {
-                    let raw = raw_batch_store::RawMetricsStore::from_batches(batches);
-                    Metrics::try_from(raw).map(OtapArrowRecords::Metrics)
-                })
-                .collect(),
-            RecordsGroup::Traces(items) => items
-                .into_iter()
-                .map(|batches| {
-                    let raw = raw_batch_store::RawTracesStore::from_batches(batches);
-                    Traces::try_from(raw).map(OtapArrowRecords::Traces)
-                })
-                .collect(),
+            RecordsGroup::Logs(items) => generic_concatenate(items, max_items, |b| {
+                Logs::try_from(raw_batch_store::RawLogsStore::from_batches(b))
+                    .map(OtapArrowRecords::Logs)
+            }),
+            RecordsGroup::Metrics(items) => generic_concatenate(items, max_items, |b| {
+                Metrics::try_from(raw_batch_store::RawMetricsStore::from_batches(b))
+                    .map(OtapArrowRecords::Metrics)
+            }),
+            RecordsGroup::Traces(items) => generic_concatenate(items, max_items, |b| {
+                Traces::try_from(raw_batch_store::RawTracesStore::from_batches(b))
+                    .map(OtapArrowRecords::Traces)
+            }),
         }
     }
 
@@ -241,41 +250,64 @@ fn assert_all_empty<const N: usize>(data: &[[Option<RecordBatch>; N]]) {
 // Code for merging batches (concatenation)
 // *************************************************************************************************
 
+fn generic_split<const N: usize>(
+    mut items: Tracked<N>,
+    max_items: NonZeroU32,
+) -> Result<Tracked<N>> {
+    let mut pieces = Vec::new();
+    let batches = split::split_tracked::<N>(&mut items.batches, max_items, &mut pieces)?;
+    // Map piece -> index into `items` -> original input index.
+    let sources = pieces.into_iter().map(|i| items.sources[i]).collect();
+    Ok(Tracked { batches, sources })
+}
+
 fn generic_concatenate<const N: usize>(
-    batches: Vec<[Option<RecordBatch>; N]>,
+    items: Tracked<N>,
     max_items: Option<NonZeroU64>,
-) -> Result<Vec<[Option<RecordBatch>; N]>> {
+    build: impl Fn([Option<RecordBatch>; N]) -> Result<OtapArrowRecords>,
+) -> Result<Vec<GroupOutput>> {
     let mut result = Vec::new();
 
     let mut current = Vec::new();
     let mut current_num_items = 0;
+    let mut first_source = 0;
+    let mut last_source = 0;
 
-    for input in batches {
+    for (input, source) in items.batches.into_iter().zip(items.sources) {
         let blen = num_items(&input);
 
         if !current.is_empty() && size_over_limit(max_items, current_num_items + blen) {
-            concatenate_emitter(&mut current, &mut result)?;
+            result.push(GroupOutput {
+                records: build(concatenate_emitter(&mut current)?)?,
+                inputs: first_source..=last_source,
+            });
             current_num_items = 0;
         }
 
+        if current.is_empty() {
+            first_source = source;
+        }
+        last_source = source;
         current_num_items += blen;
         current.push(input);
     }
 
     if !current.is_empty() {
-        concatenate_emitter(&mut current, &mut result)?;
+        result.push(GroupOutput {
+            records: build(concatenate_emitter(&mut current)?)?,
+            inputs: first_source..=last_source,
+        });
     }
     Ok(result)
 }
 
 fn concatenate_emitter<const N: usize>(
     current: &mut Vec<[Option<RecordBatch>; N]>,
-    result: &mut Vec<[Option<RecordBatch>; N]>,
-) -> Result<()> {
-    result.push(concatenate(current, ConcatOptions::reindex())?);
+) -> Result<[Option<RecordBatch>; N]> {
+    let out = concatenate(current, ConcatOptions::reindex())?;
     assert_all_empty(current);
     current.clear();
-    Ok(())
+    Ok(out)
 }
 
 fn size_over_limit(max_items: Option<NonZeroU64>, size: usize) -> bool {

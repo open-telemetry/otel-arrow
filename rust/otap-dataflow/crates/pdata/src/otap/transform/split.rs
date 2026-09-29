@@ -58,6 +58,18 @@ pub fn split<const N: usize>(
     batches: &mut [[Option<RecordBatch>; N]],
     max_items: NonZeroU32,
 ) -> SplitResult<N> {
+    let mut sources = Vec::new();
+    split_tracked(batches, max_items, &mut sources)
+}
+
+/// Like [`split`], but also records in `sources[k]` the index (into
+/// `batches`) of the input that output piece `k` came from.
+pub(crate) fn split_tracked<const N: usize>(
+    batches: &mut [[Option<RecordBatch>; N]],
+    max_items: NonZeroU32,
+    sources: &mut Vec<usize>,
+) -> SplitResult<N> {
+    sources.clear();
     if batches.is_empty() {
         return Ok(vec![]);
     }
@@ -100,6 +112,7 @@ pub fn split<const N: usize>(
 
         // Execute
         execute_split(batch, root_type, &ranges, &mut output)?;
+        sources.resize(output.len(), i);
     }
 
     Ok(output)

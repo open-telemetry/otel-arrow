@@ -193,8 +193,21 @@ pub enum BatchingFormat {
 /// apportion Ack/Nack subscribers by ownership and attribute every fragment of
 /// a split input back to that input.
 struct BatchingOutput<T> {
-    batches: Vec<(T, usize)>,
+    batches: Vec<(T, Attribution)>,
     budget_fallbacks: u64,
+}
+
+/// How an output batch is attributed back to the pending inputs it was built
+/// from, for Ack/Nack routing.
+#[derive(Debug, Clone, PartialEq)]
+enum Attribution {
+    /// The output owns `weight` units of the pending inputs, consumed
+    /// front-to-back (bytes batching, where fragments duplicate headers).
+    Weight(usize),
+    /// The output was built from exactly these pending inputs (item
+    /// batching). This is exact even when malformed rows are dropped, since
+    /// it does not rely on output sizes summing to input sizes.
+    Inputs(std::ops::RangeInclusive<usize>),
 }
 
 /// The common signature of the batching methods
@@ -487,6 +500,11 @@ struct BatchPortion {
     peer_addr: Option<SocketAddr>,
     /// Weight of this portion in the active sizer's unit.
     weight: usize,
+    /// True if this portion is a residual retained from an earlier flush.
+    /// The retained portion holds one `outbound` reference on its inbound
+    /// slot while buffered, so the input is not completed while part of its
+    /// data has not been sent. The hold is released on the next flush.
+    retained: bool,
 }
 
 struct Inputs<T: OtapPayloadHelpers> {
@@ -838,15 +856,12 @@ impl Batcher<OtapArrowRecords> for SignalBuffer<OtapArrowRecords> {
         // OTAP only supports Sizer::Items (checked in validate)
         debug_assert_eq!(fmtcfg.sizer, Sizer::Items);
         let batches = make_item_batches(signal, nzu_to_nz64(fmtcfg.max_size), pending)?;
-        // Item batches never duplicate content, so each output's ownership
-        // weight is simply its item count.
+        // Item batches report exactly which inputs each output was built
+        // from, so no item counting is needed to route Ack/Nack.
         let batches = batches
             .into_iter()
-            .map(|b| {
-                let weight = fmtcfg.sizer.batch_size(&b)?;
-                Ok((b, weight))
-            })
-            .collect::<Result<Vec<_>, PDataError>>()?;
+            .map(|b| (b.records, Attribution::Inputs(b.inputs)))
+            .collect();
         Ok(BatchingOutput {
             batches,
             budget_fallbacks: 0,
@@ -890,7 +905,10 @@ impl Batcher<OtlpProtoBytes> for SignalBuffer<OtlpProtoBytes> {
             pending,
         )?;
         Ok(BatchingOutput {
-            batches,
+            batches: batches
+                .into_iter()
+                .map(|(b, w)| (b, Attribution::Weight(w)))
+                .collect(),
             budget_fallbacks,
         })
     }
@@ -1102,13 +1120,15 @@ where
             let sizer = self.fmtcfg.sizer;
             match sizer {
                 Sizer::Items => {
-                    // This property holds because item-based batches never batches
-                    // short of min_size.
+                    // For logs and traces, item-based batches never close
+                    // short of min_size. Metrics split at metric boundaries
+                    // and may close a bin early, so this does not hold there.
                     debug_assert!(
-                        sizer
-                            .batch_size(&output_batches[0].0)
-                            .expect("first over lower_limit")
-                            >= self.fmtcfg.lower_limit()
+                        self.signal == SignalType::Metrics
+                            || sizer
+                                .batch_size(&output_batches[0].0)
+                                .expect("first over lower_limit")
+                                >= self.fmtcfg.lower_limit()
                     );
                 }
                 Sizer::Requests => unreachable!("requests sizer not implemented"),
@@ -1118,10 +1138,15 @@ where
                 }
             };
 
-            let (last_payload, last_ownership) = &output_batches[num_output - 1];
+            let (last_payload, last_attribution) = &output_batches[num_output - 1];
             // The retention threshold uses the batch's *real* encoded size, not
             // its ownership weight.
             let last_batch_size = self.fmtcfg.sizer.batch_size(last_payload)?;
+            let whole = match last_attribution {
+                Attribution::Weight(w) => *w == last_batch_size,
+                // Item outputs are never byte fragments.
+                Attribution::Inputs(_) => true,
+            };
 
             // Only retain (re-buffer) the last output when it represents a whole
             // input (ownership weight == real size). A split fragment has an
@@ -1131,7 +1156,7 @@ where
             // Ack/Nack context. Such a trailing fragment is instead emitted as
             // is. For the items sizer ownership always equals real size, so this
             // guard never changes OTAP behavior.
-            if last_batch_size < self.fmtcfg.lower_limit() && *last_ownership == last_batch_size {
+            if last_batch_size < self.fmtcfg.lower_limit() && whole {
                 self.buffer
                     .take_remaining(self.fmtcfg.sizer, &mut inputs, &mut output_batches);
 
@@ -1152,16 +1177,21 @@ where
 
         let mut input_context = inputs.take_context();
 
-        for (records, ownership) in output_batches {
-            // Apportion ack/nack subscribers by the batch's ownership weight
-            // (input units it represents), not its own encoded size, so every
-            // fragment of a split input is attributed back to that input.
-            let weight = ownership;
+        for (records, attribution) in output_batches {
             let mut pdata = OtapPdata::new(Context::default(), records.into());
 
             // If any inputs require completion tracking, get an outbound slot
             // and subscribe so their contexts can unwind after this output.
-            let (routed_ctxs, merged_peer) = self.buffer.drain_context(weight, &mut input_context);
+            let (routed_ctxs, merged_peer) = match attribution {
+                // Apportion ack/nack subscribers by the batch's ownership
+                // weight (input units it represents), not its own encoded
+                // size, so every fragment of a split input is attributed back
+                // to that input.
+                Attribution::Weight(weight) => {
+                    self.buffer.drain_context(weight, &mut input_context)
+                }
+                Attribution::Inputs(range) => self.buffer.attribute_inputs(range, &input_context),
+            };
             // Forward the receiver-observed peer address only when every
             // input merged into this output batch came from the same peer
             // (see Context::merge_peer_addr). Mixed-peer batches leave
@@ -1205,6 +1235,12 @@ where
 
             effect.send_message_with_source_node(pdata).await?;
         }
+
+        // Release residual holds and complete inputs that no output
+        // references (e.g., every row was malformed and dropped).
+        self.buffer
+            .settle_inputs(self.signal, effect, &input_context.inputs)
+            .await?;
 
         if !retained_partial {
             self.buffer.arrival = None;
@@ -1415,6 +1451,7 @@ impl BatchPortion {
             inkey,
             peer_addr,
             weight,
+            retained: false,
         }
     }
 }
@@ -1478,7 +1515,7 @@ fn known_total_bytes<T: OtapPayloadHelpers>(payloads: &[T]) -> Option<usize> {
 
 /// Like [`known_total_bytes`] but over output batches paired with ownership
 /// weights (the weight is ignored; only the real encoded size is summed).
-fn known_total_output_bytes<T: OtapPayloadHelpers>(payloads: &[(T, usize)]) -> Option<usize> {
+fn known_total_output_bytes<T: OtapPayloadHelpers>(payloads: &[(T, Attribution)]) -> Option<usize> {
     payloads.iter().try_fold(0usize, |total, (payload, _own)| {
         payload.num_bytes().map(|bytes| total + bytes)
     })
@@ -1506,7 +1543,7 @@ where
         &mut self,
         sizer: Sizer,
         from_inputs: &mut Inputs<T>,
-        output_batches: &mut Vec<(T, usize)>,
+        output_batches: &mut Vec<(T, Attribution)>,
     ) {
         // SAFETY: protected by output_batches.len() > 1. The caller only retains
         // a whole-input partial (ownership weight == real size), so recomputing
@@ -1531,7 +1568,16 @@ where
                 break;
             }
         }
-        let new_part = BatchPortion::new(last_input.inkey, peer_merger.finish(), last_weight);
+        let mut new_part = BatchPortion::new(last_input.inkey, peer_merger.finish(), last_weight);
+
+        // Hold the input open while its residual is buffered; released by
+        // `settle_inputs` on the flush that consumes the residual.
+        if let Some(inkey) = new_part.inkey
+            && let Some(batch) = self.inbound.get_mut(inkey)
+        {
+            batch.outbound += 1;
+            new_part.retained = true;
+        }
 
         from_inputs.weight -= last_weight;
 
@@ -1582,6 +1628,69 @@ where
         let merged_peer = peer_merger.finish();
         let routed = (!out.is_empty()).then_some(out);
         (routed, merged_peer)
+    }
+
+    /// Attribute an output built from exactly the pending inputs in `range`.
+    ///
+    /// Unlike [`Self::drain_context`] this does not count items, so it stays
+    /// exact when batching drops malformed rows. Each tracked input gets one
+    /// `outbound` reference for this output.
+    fn attribute_inputs(
+        &mut self,
+        range: std::ops::RangeInclusive<usize>,
+        contexts: &MultiContext,
+    ) -> (Option<Vec<BatchPortion>>, Option<SocketAddr>) {
+        let mut out = Vec::new();
+        let mut peer_merger = PeerAddrMerger::new();
+        let portions = contexts.inputs.get(range).unwrap_or_default();
+
+        for bp in portions {
+            peer_merger.push(bp.peer_addr);
+            if let Some(inkey) = bp.inkey
+                && let Some(batch) = self.inbound.get_mut(inkey)
+            {
+                batch.outbound += 1;
+                out.push(BatchPortion::new(Some(inkey), bp.peer_addr, bp.weight));
+            }
+        }
+
+        let merged_peer = peer_merger.finish();
+        let routed = (!out.is_empty()).then_some(out);
+        (routed, merged_peer)
+    }
+
+    /// After a flush's outputs are attributed: release the hold of every
+    /// retained residual portion, then Ack every tracked input that no
+    /// output references. Such inputs had all of their rows dropped as
+    /// malformed; Acking (rather than Nacking) avoids inviting a retry of
+    /// data that can never be delivered.
+    async fn settle_inputs(
+        &mut self,
+        signal: SignalType,
+        effect: &mut local::EffectHandler<OtapPdata>,
+        portions: &[BatchPortion],
+    ) -> Result<(), EngineError> {
+        for bp in portions.iter().filter(|bp| bp.retained) {
+            if let Some(inkey) = bp.inkey
+                && let Some(batch) = self.inbound.get_mut(inkey)
+            {
+                batch.outbound = batch.outbound.saturating_sub(1);
+            }
+        }
+
+        for bp in portions {
+            let Some(inkey) = bp.inkey else { continue };
+            let unreferenced = self
+                .inbound
+                .get_mut(inkey)
+                .is_some_and(|batch| batch.outbound == 0);
+            if unreferenced && let Some(mut batch) = self.inbound.take(inkey) {
+                let rdata =
+                    OtapPdata::new(std::mem::take(&mut batch.ctx), OtapPayload::empty(signal));
+                effect.notify_ack(AckMsg::new(rdata)).await?;
+            }
+        }
+        Ok(())
     }
 
     /// Handles a response, returning an Ack or Nack conditionally when
