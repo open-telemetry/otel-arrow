@@ -79,6 +79,10 @@ pub(crate) struct DlqSource {
     pub(crate) partition: i32,
     /// Original source offset.
     pub(crate) offset: i64,
+    /// Kafka ownership generation of the partition when the message was consumed.
+    /// Used to reject a stale completion whose partition was revoked and
+    /// reassigned before the asynchronous DLQ workflow finished.
+    pub(crate) ownership_generation: u64,
 }
 
 /// Common context shared by every dead-letter job, independent of how the bytes

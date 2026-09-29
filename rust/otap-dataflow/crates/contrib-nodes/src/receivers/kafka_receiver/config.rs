@@ -2,9 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::error::KafkaReceiverError;
-use super::receiver::topics::{
-    compile_exclude_regexes, compile_topic_regexes, matches_any_exclude, matches_any_topic,
-};
+use super::receiver::topics::{compile_topic_regexes, matches_any_topic};
 use crate::common::kafka::auth::Auth;
 use crate::common::kafka::security::apply_security;
 use crate::common::kafka::{
@@ -171,10 +169,13 @@ pub(crate) const DLQ_MAX_IN_FLIGHT: usize = 5;
 // DLQ-PHASE-2 (Remove): application-level guardrail for the in-receiver
 // producer/re-read; gone once the DLQ becomes an output port.
 /// Fixed application-level bound (milliseconds) on a single DLQ operation: the
-/// producer send-await and the re-read fetch. This is intentionally independent
-/// of librdkafka's own `message.timeout.ms` (which the producer leaves at its
-/// default) so a stalled broker can never hold a source offset uncommitted for
-/// longer than this before the message is counted as `dlq.loss` and advanced.
+/// producer send-await and the re-read fetch. A stalled broker can never hold a
+/// source offset uncommitted for longer than this before the message is counted
+/// as `dlq.loss` and advanced. The DLQ producer's librdkafka `message.timeout.ms`
+/// is pinned to this same value so the broker-side delivery deadline matches the
+/// application deadline: a record that misses this bound is dropped by the
+/// producer queue rather than delivered later (which would contradict the
+/// recorded loss) or accumulated across DLQ outages.
 pub(crate) const DLQ_OP_TIMEOUT_MS: u64 = 10_000;
 
 /// A failure category that can be dead-lettered.
@@ -916,9 +917,14 @@ impl TryFrom<KafkaReceiverConfigBuilder> for KafkaReceiverConfig {
     }
 }
 
-/// Returns `true` when two `bootstrap.servers` strings name the same broker
-/// set, comparing trimmed, non-empty `host:port` entries as unordered sets so
-/// reordered or differently-spaced broker lists still count as one cluster.
+/// Returns `true` when two `bootstrap.servers` strings may name the same Kafka
+/// cluster. Broker lists are bootstrap hints, not cluster identity: a client may
+/// list any non-empty subset of a cluster's brokers, so `b1` and `b1,b2` are the
+/// same cluster. This compares trimmed, non-empty `host:port` entries as
+/// unordered sets and treats the clusters as the same when the sets overlap in
+/// any entry. Loop prevention is a safety check, so it errs toward "same
+/// cluster" (overlap) rather than requiring exact equality; only fully disjoint
+/// broker lists are treated as distinct clusters.
 fn same_kafka_cluster(a: &str, b: &str) -> bool {
     let set = |s: &str| -> HashSet<String> {
         s.split(',')
@@ -927,15 +933,21 @@ fn same_kafka_cluster(a: &str, b: &str) -> bool {
             .map(str::to_string)
             .collect()
     };
-    set(a) == set(b)
+    let (a, b) = (set(a), set(b));
+    // Two empty lists cannot be shown distinct; overlap covers the non-empty case.
+    (a.is_empty() && b.is_empty()) || !a.is_disjoint(&b)
 }
 
-/// Compiled include/exclude matchers for one ingest signal, mirroring the
-/// runtime router so config-time loop prevention respects exclude patterns.
+/// Compiled include matchers for one ingest signal. Loop prevention mirrors the
+/// Kafka *subscription*, not the runtime router: librdkafka subscribes to the
+/// raw include patterns and delivers every matching topic, so an `exclude_topics`
+/// entry does not unsubscribe the topic (it is still consumed and then routed to
+/// no signal). A DLQ topic that matches any include pattern would therefore be
+/// consumed by the receiver even if excluded, so the exclude patterns are
+/// intentionally not consulted here.
 struct IngestMatcher {
     topics: Vec<String>,
     regexes: Vec<Option<Regex>>,
-    excludes: Vec<Regex>,
 }
 
 /// Validate a [`DlqConfig`] against the surrounding receiver config and resolve
@@ -947,8 +959,11 @@ struct IngestMatcher {
 /// - a DLQ topic must resolve for every captured signal (either the global
 ///   `topic` or a `per_signal` entry);
 /// - every DLQ topic must be a legal Kafka topic name and, when the DLQ reuses
-///   the source cluster, must not be an ingest topic the consumer subscribes to
-///   (loop prevention, mirroring the runtime include/exclude routing);
+///   the source cluster, must not match any ingest include pattern the consumer
+///   subscribes to (loop prevention). `exclude_topics` does not unsubscribe a
+///   topic from Kafka -- an excluded topic is still consumed and then routed to
+///   no signal -- so a DLQ topic matched by an include pattern is rejected even
+///   when an exclude pattern would also match it;
 /// - `capture` must be non-empty.
 fn resolve_dlq(
     builder: &KafkaReceiverConfigBuilder,
@@ -1008,11 +1023,14 @@ fn resolve_dlq(
         .and_then(|c| c.brokers.as_deref())
         .is_none_or(|b| same_kafka_cluster(b, &builder.brokers));
 
-    // Loop prevention: on the same cluster a DLQ topic must not be one the
-    // consumer actually subscribes to. Mirror the runtime router exactly --
-    // per-signal include patterns minus exclude patterns -- so an excluded
-    // topic is not a false-positive overlap. Compile each signal's patterns
-    // once, then test every resolved DLQ topic against all three signals.
+    // Loop prevention: on the same cluster a DLQ topic must not match any topic
+    // the consumer subscribes to. This mirrors the Kafka subscription (the raw
+    // include patterns), NOT the runtime router: librdkafka delivers every topic
+    // matching an include pattern, and `exclude_topics` only drops it during
+    // routing (the record is still consumed). A DLQ topic matched by an include
+    // pattern would therefore be consumed and re-dead-lettered even if excluded,
+    // so excludes are deliberately ignored here. Compile each signal's include
+    // patterns once, then test every resolved DLQ topic against all three signals.
     let ingest_matchers = if same_cluster {
         let compile = |signal: &SignalConfig| -> Result<IngestMatcher, KafkaReceiverError> {
             let regexes = compile_topic_regexes(&signal.topics).map_err(|e| {
@@ -1021,16 +1039,9 @@ fn resolve_dlq(
                     message: e.to_string(),
                 }
             })?;
-            let excludes = compile_exclude_regexes(&signal.exclude_topics).map_err(|e| {
-                KafkaReceiverError::ConfigInvalidDlqTopic {
-                    topic: String::new(),
-                    message: e.to_string(),
-                }
-            })?;
             Ok(IngestMatcher {
                 topics: signal.topics.clone(),
                 regexes,
-                excludes,
             })
         };
         Some([
@@ -1044,10 +1055,9 @@ fn resolve_dlq(
 
     let is_ingest_topic = |topic: &str| -> bool {
         ingest_matchers.as_ref().is_some_and(|matchers| {
-            matchers.iter().any(|m| {
-                matches_any_topic(&m.topics, &m.regexes, topic)
-                    && !matches_any_exclude(&m.excludes, topic)
-            })
+            matchers
+                .iter()
+                .any(|m| matches_any_topic(&m.topics, &m.regexes, topic))
         })
     };
 
@@ -1637,10 +1647,14 @@ impl KafkaReceiverConfig {
     ///
     /// Connection (brokers/auth/tls) defaults to the source consumer's, with
     /// any `dlq.connection` overrides applied. The `client.id` is auto-derived
-    /// as `{client_id}-dlq`. No producer tuning is set here, so librdkafka's
-    /// own defaults apply (compression `none`, `acks=all`, `message.timeout.ms`
-    /// 300000). The DLQ send is separately bounded by
-    /// [`DLQ_OP_TIMEOUT_MS`](crate::receivers::kafka_receiver::config::DLQ_OP_TIMEOUT_MS).
+    /// as `{client_id}-dlq`. The only tuning applied is `message.timeout.ms`,
+    /// pinned to [`DLQ_OP_TIMEOUT_MS`] so librdkafka abandons a record at the
+    /// same deadline the application counts it as `dlq.loss`: otherwise a record
+    /// that missed the application deadline could still linger in librdkafka's
+    /// queue (default `message.timeout.ms` is 300000) and deliver later,
+    /// contradicting the recorded loss or accumulating across DLQ outages despite
+    /// the in-flight bound. All other settings use librdkafka's defaults
+    /// (compression `none`, `acks=all`).
     // DLQ-PHASE-2 (Remove): the receiver no longer builds a producer client
     // config; the downstream exporter owns the DLQ connection.
     #[must_use]
@@ -1655,6 +1669,7 @@ impl KafkaReceiverConfig {
             .unwrap_or(&self.inner.brokers);
         _ = config.set("bootstrap.servers", brokers);
         _ = config.set("client.id", format!("{}-dlq", self.inner.client_id));
+        _ = config.set("message.timeout.ms", DLQ_OP_TIMEOUT_MS.to_string());
 
         self.apply_dlq_security(&mut config, dlq);
         Some(config)

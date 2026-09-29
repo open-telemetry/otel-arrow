@@ -311,13 +311,18 @@ DLQ consumers must tolerate duplicates.
 | `connection` | object | source connection | Optional `brokers`/`auth`/`tls` overrides for the DLQ producer; defaults to the source consumer's connection. The re-read consumer always uses the source connection. |
 
 Every DLQ topic must be a valid Kafka topic name and, when the DLQ reuses the
-source cluster, disjoint from all configured ingest topics (and ingest regex
-patterns) so the receiver cannot consume its own output. The producer
+source cluster, must not match any configured ingest topic or ingest regex
+pattern so the receiver cannot consume its own output. Note that
+`exclude_topics` does not unsubscribe a topic from Kafka -- an excluded topic is
+still consumed and then routed to no signal -- so a DLQ topic matched by an
+ingest include pattern is rejected even when an exclude pattern would also match
+it. The producer
 `client.id` is auto-derived as `{client_id}-dlq`. The DLQ producer is not
-tunable: it runs on librdkafka's defaults (compression `none`, `acks=all`,
-`message.timeout.ms` 300000), and each DLQ operation is separately bounded by a
-fixed internal timeout so a stalled broker never wedges ingestion. In-flight
-bounding is fixed and not user-configurable.
+tunable: it runs on librdkafka's defaults (compression `none`, `acks=all`) except
+that its `message.timeout.ms` is pinned to the same fixed internal timeout that
+bounds each DLQ operation, so a record that misses that deadline is dropped by
+the producer rather than delivered later, and a stalled broker never wedges
+ingestion. In-flight bounding is fixed and not user-configurable.
 
 Each dead-lettered record carries error-context headers: `dlq.error`,
 `dlq.reason`, `dlq.source.topic`, `dlq.source.partition`, `dlq.source.offset`,

@@ -135,28 +135,24 @@ fn dlq_topic_overlap_on_different_cluster_ok() {
     assert!(cfg.dlq().is_some());
 }
 
-/// Scenario: a DLQ topic is matched by an ingest regex but is explicitly
-/// excluded from that signal via `exclude_topics`, so the consumer never
-/// subscribes to it.
-/// Guarantees: validation succeeds -- an excluded topic is not a loop-prevention
-/// overlap, mirroring the runtime include/exclude router.
+/// Scenario: a DLQ topic is matched by an ingest regex and is also listed in
+/// `exclude_topics` for that signal on the same cluster.
+/// Guarantees: validation fails (loop prevention). `exclude_topics` does not
+/// unsubscribe the topic from Kafka -- the receiver still consumes it and would
+/// re-dead-letter it -- so an include-pattern match is rejected regardless of
+/// exclusion.
 #[test]
-fn dlq_topic_excluded_from_ingest_regex_ok() {
-    let cfg = parse(json!({
+fn dlq_topic_excluded_but_included_fails() {
+    let json = json!({
         "brokers": "b:9092",
         "group_id": "g",
         "client_id": "c",
         "commit": {"mode": "manual"},
         "traces": {"topics": ["^otlp_.*$"], "exclude_topics": ["^otlp_dlq$"]},
         "dlq": {"topic": "otlp_dlq"},
-    }))
-    .expect("an excluded ingest topic may be reused as the DLQ topic");
-    assert_eq!(
-        cfg.dlq()
-            .expect("dlq enabled")
-            .topic_for(SignalType::Traces),
-        Some("otlp_dlq")
-    );
+    });
+    let msg = expect_dlq_error(json);
+    assert!(msg.contains("overlaps"), "unexpected: {msg}");
 }
 
 /// Scenario: the DLQ connection names the same brokers as the source but in a
@@ -178,6 +174,49 @@ fn dlq_same_cluster_reordered_brokers_overlap_fails() {
     });
     let msg = expect_dlq_error(json);
     assert!(msg.contains("overlaps"), "unexpected: {msg}");
+}
+
+/// Scenario: the DLQ connection lists a subset of the source brokers (`b1` vs
+/// `b1,b2`) on what is really the same cluster, with an overlapping topic.
+/// Guarantees: validation fails -- broker lists are bootstrap hints, so any
+/// shared endpoint is treated as the same cluster to prevent a self-consuming
+/// loop.
+#[test]
+fn dlq_same_cluster_subset_brokers_overlap_fails() {
+    let json = json!({
+        "brokers": "b1:9092,b2:9092",
+        "group_id": "g",
+        "client_id": "c",
+        "commit": {"mode": "manual"},
+        "traces": {"topics": ["otlp_spans"]},
+        "dlq": {
+            "topic": "otlp_spans",
+            "connection": {"brokers": "b1:9092"},
+        },
+    });
+    let msg = expect_dlq_error(json);
+    assert!(msg.contains("overlaps"), "unexpected: {msg}");
+}
+
+/// Scenario: the DLQ connection brokers are fully disjoint from the source
+/// brokers, with a topic name that equals a source ingest topic.
+/// Guarantees: validation succeeds -- with no shared endpoint the DLQ cannot be
+/// the source cluster, so no loop is possible.
+#[test]
+fn dlq_disjoint_cluster_overlap_ok() {
+    let cfg = parse(json!({
+        "brokers": "b1:9092,b2:9092",
+        "group_id": "g",
+        "client_id": "c",
+        "commit": {"mode": "manual"},
+        "traces": {"topics": ["otlp_spans"]},
+        "dlq": {
+            "topic": "otlp_spans",
+            "connection": {"brokers": "other1:9092,other2:9092"},
+        },
+    }))
+    .expect("fully disjoint brokers cannot form a loop");
+    assert!(cfg.dlq().is_some());
 }
 
 /// Scenario: an explicit empty capture list is provided.
@@ -230,18 +269,24 @@ fn dlq_invalid_connection_tls_fails() {
 
 /// Scenario: the DLQ producer client config is built for a valid DLQ.
 /// Guarantees: the producer `client.id` is auto-derived as `{client_id}-dlq`,
-/// and no producer tuning is set so librdkafka's own defaults apply.
+/// `message.timeout.ms` matches the DLQ operation deadline, and no other
+/// producer tuning is set so librdkafka's own defaults apply elsewhere.
 #[test]
-fn dlq_producer_client_id_auto_derived_and_no_tuning() {
+fn dlq_producer_client_id_auto_derived_and_timeout_aligned() {
+    use crate::receivers::kafka_receiver::config::DLQ_OP_TIMEOUT_MS;
     let cfg = parse(manual_with_dlq(json!({"topic": "otel_dlq"}))).expect("valid");
     let producer = cfg
         .build_dlq_producer_config()
         .expect("dlq present implies producer config");
     assert_eq!(producer.get("client.id"), Some("c-dlq"));
-    // No producer tuning is set -> librdkafka defaults apply.
+    // Delivery deadline is aligned with the application operation deadline.
+    assert_eq!(
+        producer.get("message.timeout.ms"),
+        Some(DLQ_OP_TIMEOUT_MS.to_string().as_str())
+    );
+    // No other producer tuning is set -> librdkafka defaults apply.
     assert_eq!(producer.get("compression.type"), None);
     assert_eq!(producer.get("request.required.acks"), None);
-    assert_eq!(producer.get("message.timeout.ms"), None);
 }
 
 /// Scenario: no `dlq` block is present.

@@ -47,17 +47,20 @@ pub(crate) enum DlqSendOutcome {
 /// Thin wrapper over the shared future producer used exclusively for the DLQ.
 pub(crate) struct DlqProducer {
     producer: ExporterFutureProducer<DefaultClientContext>,
-    /// Fixed per-send delivery deadline ([`DLQ_OP_TIMEOUT_MS`]), independent of
-    /// librdkafka's own `message.timeout.ms`.
+    /// Fixed per-send delivery deadline ([`DLQ_OP_TIMEOUT_MS`]). The producer's
+    /// librdkafka `message.timeout.ms` is pinned to the same value, so a record
+    /// that misses this deadline is also abandoned by the producer queue rather
+    /// than delivered later.
     send_timeout: Duration,
 }
 
 impl DlqProducer {
     /// Build a DLQ producer from a resolved client config.
     ///
-    /// The producer sets no tuning, so librdkafka's own defaults apply. The
-    /// per-send wait is bounded by [`DLQ_OP_TIMEOUT_MS`] so a stalled broker
-    /// never holds a DLQ delivery (and its source offset) indefinitely.
+    /// The per-send wait is bounded by [`DLQ_OP_TIMEOUT_MS`] so a stalled broker
+    /// never holds a DLQ delivery (and its source offset) indefinitely; the
+    /// caller pins librdkafka's `message.timeout.ms` to the same value so the
+    /// broker-side deadline cannot outlast it.
     ///
     /// Fails when the producer cannot be constructed (e.g. an unreachable or
     /// misconfigured DLQ connection), so the receiver can fail fast at startup.

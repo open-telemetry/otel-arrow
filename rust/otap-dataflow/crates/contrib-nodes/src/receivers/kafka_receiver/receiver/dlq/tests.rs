@@ -39,6 +39,7 @@ fn source() -> DlqSource {
         topic: Arc::from("otlp_spans"),
         partition: 1,
         offset: 7,
+        ownership_generation: 1,
     }
 }
 

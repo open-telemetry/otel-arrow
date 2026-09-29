@@ -19,6 +19,8 @@ issues: [3940]
 # section with the specific action consumers must take. Keep notes to 200
 # characters and subtext to 300 characters.
 subtext: |
-  Add a `dlq` block (manual commit only) to forward the original bytes of messages that fail to decode,
-  target an unknown topic, or are permanently rejected to a Kafka topic, with `dlq.*` context headers.
-  The source offset advances only after delivery; failures are counted and dropped so ingestion never stalls.
+  Add a `dlq` block (manual commit only) forwarding original bytes of messages that fail to decode, hit an
+  unknown topic, or are permanently rejected to a Kafka topic with `dlq.*` headers. Source offset advances
+  only after delivery; failures are counted and dropped so ingestion never stalls. A DLQ topic on the source
+  cluster must not match any ingest topic or include pattern (excludes do not unsubscribe it), and a stalled
+  DLQ broker drops the record at the operation deadline instead of delivering it later.

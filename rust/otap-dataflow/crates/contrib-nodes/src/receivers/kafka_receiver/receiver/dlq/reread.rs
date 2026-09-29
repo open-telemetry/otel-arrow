@@ -25,7 +25,7 @@ use rdkafka::message::{Message, OwnedHeaders, OwnedMessage};
 use rdkafka::topic_partition_list::{Offset, TopicPartitionList};
 use rdkafka::util::Timeout;
 use rdkafka::{ClientConfig, error::KafkaError};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// The recovered original bytes and headers for a dead-letter.
@@ -50,7 +50,7 @@ pub(crate) enum RereadOutcome {
 /// jobs and services a keep-warm poll so the broker connection does not go
 /// cold.
 pub(crate) struct RereadConsumer {
-    consumer: Arc<BaseConsumer>,
+    consumer: Arc<Mutex<BaseConsumer>>,
     /// Per-job fetch deadline.
     fetch_timeout: Duration,
 }
@@ -64,7 +64,7 @@ impl RereadConsumer {
     ) -> Result<Self, KafkaError> {
         let consumer: BaseConsumer = client_config.create()?;
         Ok(Self {
-            consumer: Arc::new(consumer),
+            consumer: Arc::new(Mutex::new(consumer)),
             fetch_timeout,
         })
     }
@@ -73,7 +73,9 @@ impl RereadConsumer {
     ///
     /// Runs the blocking assign/poll/unassign on `spawn_blocking` so the
     /// single-threaded receive loop is never blocked; a join failure is folded
-    /// into [`RereadOutcome::NotFound`].
+    /// into [`RereadOutcome::NotFound`]. The mutex is acquired inside the blocking
+    /// task and held for the whole assign/poll/unassign critical section, so
+    /// concurrent recoveries run strictly one at a time.
     pub(crate) async fn recover(&self, source: &DlqSource) -> RereadOutcome {
         let consumer = Arc::clone(&self.consumer);
         let fetch_timeout = self.fetch_timeout;
@@ -81,6 +83,11 @@ impl RereadConsumer {
         let partition = source.partition;
         let offset = source.offset;
         tokio::task::spawn_blocking(move || {
+            // Serialize the whole critical section; a poisoned lock (a prior
+            // recovery panicked mid-section) is treated as unrecoverable.
+            let Ok(consumer) = consumer.lock() else {
+                return RereadOutcome::NotFound;
+            };
             reread_blocking(&consumer, &topic, partition, offset, fetch_timeout)
         })
         .await
@@ -88,10 +95,18 @@ impl RereadConsumer {
     }
 
     /// Service a keep-warm poll so the idle consumer stays connected and its
-    /// event queue is drained. Must not have any assignment when called.
+    /// event queue is drained.
+    ///
+    /// Skips the poll when a recovery currently holds the consumer (the guard is
+    /// contended): the in-progress recovery is already assigned and polling, so
+    /// polling here would race it and could discard its target record. This only
+    /// `try_lock`s, so it never blocks the receive loop.
     pub(crate) fn keep_warm(&self) {
+        let Ok(consumer) = self.consumer.try_lock() else {
+            return;
+        };
         // Zero-timeout poll: serves queued events without blocking.
-        let _ = self.consumer.poll(Timeout::After(Duration::ZERO));
+        let _ = consumer.poll(Timeout::After(Duration::ZERO));
     }
 }
 

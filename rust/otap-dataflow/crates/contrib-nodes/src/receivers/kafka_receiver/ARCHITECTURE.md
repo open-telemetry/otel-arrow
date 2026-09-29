@@ -436,10 +436,11 @@ Highlights:
   timeout-bounded: the producer polls on its own background thread and awaits a
   bounded delivery future; the re-read runs on `spawn_blocking`. The receive loop
   only polls the manager's completion future (`select!` branch 6). A stalled
-  broker or slow re-read cannot block ingestion. The producer itself runs on
-  librdkafka defaults (no tuning); the producer send-await and the re-read fetch
-  are bounded by a fixed internal timeout (`DLQ_OP_TIMEOUT_MS`) that is
-  independent of librdkafka's `message.timeout.ms`.
+  broker or slow re-read cannot block ingestion. The producer send-await and the
+  re-read fetch are bounded by a fixed internal timeout (`DLQ_OP_TIMEOUT_MS`), and
+  the producer's librdkafka `message.timeout.ms` is pinned to the same value so a
+  record that misses the deadline is dropped by the producer queue rather than
+  delivered later (which would contradict the recorded loss).
 - **Offset gating.** A dead-lettered message's source offset stays tracked
   (uncommittable) until its delivery completes, then advances through the same
   `advance_offset_and_commit` path (and generation guard) as terminal feedback.

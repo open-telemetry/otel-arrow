@@ -281,7 +281,7 @@ impl KafkaReceiver {
     /// `resource_attrs_from_headers` separately controls resource attributes.
     fn process_kafka(
         &mut self,
-        kafka_message: BorrowedMessage<'_>,
+        kafka_message: &BorrowedMessage<'_>,
         capture_policy: Option<&CompiledHeaderCapturePolicy>,
     ) -> Result<OtapPdata, KafkaReceiverError> {
         let topic = kafka_message.topic();
@@ -302,13 +302,13 @@ impl KafkaReceiver {
         let mut pdata = match self.signal_type_for_topic(topic) {
             Some(signal) => {
                 let message_format = detect_message_format(
-                    &kafka_message,
+                    kafka_message,
                     self.config.message_format_header(),
                     self.config.encoding_for(signal),
                 );
                 SignalDecoder::decode_signal_with_extractions(
                     signal,
-                    &kafka_message,
+                    kafka_message,
                     extractors,
                     data,
                     message_format,
@@ -323,7 +323,7 @@ impl KafkaReceiver {
             )),
         }?;
 
-        capture_transport_headers(&kafka_message, capture_policy, &mut pdata);
+        capture_transport_headers(kafka_message, capture_policy, &mut pdata);
 
         Ok(pdata)
     }
@@ -854,16 +854,7 @@ impl KafkaReceiver {
                                 continue;
                             }
 
-                            // When the DLQ may dead-letter this message on a
-                            // decode / unknown-topic failure, capture the raw
-                            // bytes and source headers before `process_kafka`
-                            // consumes the borrowed message. Cheap no-op when the
-                            // DLQ is disabled or does not capture these
-                            // categories.
-                            let dlq_capture =
-                                Self::dlq_inline_capture_snapshot(dlq.as_ref(), &data);
-
-                            match self.process_kafka(data, capture_policy) {
+                            match self.process_kafka(&data, capture_policy) {
                                 Ok(mut otap_data) => {
                                     let signal = otap_data.signal_type();
                                     self.metrics
@@ -1002,6 +993,11 @@ impl KafkaReceiver {
                                                 offset,
                                                 ownership_generation_raw,
                                             );
+                                        let dlq_capture = Self::dlq_inline_capture_snapshot(
+                                            dlq.as_ref(),
+                                            dlq_reason,
+                                            &data,
+                                        );
                                         // Try to dead-letter the raw bytes. When
                                         // the DLQ accepts the message the offset
                                         // advance is deferred until the delivery
@@ -1015,6 +1011,7 @@ impl KafkaReceiver {
                                             &topic,
                                             partition,
                                             offset,
+                                            ownership_generation_raw,
                                             dlq_capture,
                                         );
                                         if !deferred {
@@ -1172,18 +1169,21 @@ impl local::Receiver<OtapPdata> for KafkaReceiver {
 }
 
 impl KafkaReceiver {
-    /// Capture the raw payload bytes and source headers of a message that may
-    /// need to be dead-lettered on a decode / unknown-topic failure.
+    /// Capture the raw payload bytes and source headers of a message that is
+    /// being dead-lettered on a decode / unknown-topic failure.
     ///
-    /// Returns `None` (skipping the copy) when the DLQ is disabled or does not
-    /// capture inline (decode / unknown-topic) failures. This keeps the steady
-    /// state -- successful decodes -- free of any extra allocation.
+    /// Returns `None` (skipping the copy) when the DLQ is disabled, the failure
+    /// is not dead-letterable (`reason` is `None`), or the DLQ does not capture
+    /// this failure category. Callers invoke this only after a decode /
+    /// unknown-topic failure, so the successful-decode hot path never copies.
     fn dlq_inline_capture_snapshot(
         dlq: Option<&DlqManager>,
+        reason: Option<DlqReason>,
         message: &BorrowedMessage<'_>,
     ) -> Option<(Vec<u8>, Option<rdkafka::message::OwnedHeaders>)> {
         let dlq = dlq?;
-        if !dlq.captures(DlqReason::Decode) && !dlq.captures(DlqReason::UnknownTopic) {
+        let reason = reason?;
+        if !dlq.captures(reason) {
             return None;
         }
         let payload = message.payload().map(<[u8]>::to_vec).unwrap_or_default();
@@ -1216,6 +1216,7 @@ impl KafkaReceiver {
         topic: &str,
         partition: i32,
         offset: i64,
+        ownership_generation: u64,
         capture: Option<(Vec<u8>, Option<rdkafka::message::OwnedHeaders>)>,
     ) -> bool {
         // Internal/config errors never dead-letter.
@@ -1235,6 +1236,7 @@ impl KafkaReceiver {
             topic: Arc::from(topic),
             partition,
             offset,
+            ownership_generation,
         };
         let immediate =
             manager.submit_inline(reason, source, signal, error, payload, original_headers);
@@ -1265,6 +1267,7 @@ impl KafkaReceiver {
             topic: Arc::clone(&feedback.topic),
             partition: feedback.partition,
             offset: feedback.offset,
+            ownership_generation: feedback.ownership_generation.raw(),
         };
         // The replay (if this offset was a rewind record) is done regardless of
         // the DLQ outcome, so clear replay state now.
@@ -1379,6 +1382,19 @@ impl KafkaReceiver {
                 reason = completion.reason_str(),
                 permanent = completion.permanent_failure,
             );
+        }
+        if !self.dlq_completion_is_current(
+            &completion.source.topic,
+            completion.source.partition,
+            completion.source.ownership_generation,
+        ) {
+            otel_debug!(
+                "kafka.dlq.completion.stale",
+                topic = %completion.source.topic,
+                partition = completion.source.partition,
+                offset = completion.source.offset,
+            );
+            return;
         }
         // Advance the source offset past the dead-lettered message.
         self.advance_offset_and_commit(
