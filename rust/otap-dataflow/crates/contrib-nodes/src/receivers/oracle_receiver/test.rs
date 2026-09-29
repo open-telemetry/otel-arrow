@@ -772,10 +772,13 @@ macro_rules! oracle_module_tests {
                         -7,
                     ),
                 ] {
-                    let cursor = extract_normalized_cursor(&Row { values }, 1, 2)
+                    let row = Row { values };
+                    let unchanged = row.clone();
+                    let cursor = extract_normalized_cursor(&row, 1, 2)
                         .expect("valid normalized cursor");
                     assert_eq!(cursor.timestamp, expected_timestamp);
                     assert_eq!(cursor.tie_breaker, expected_id);
+                    assert_eq!(row, unchanged, "cursor extraction must not alter emitted values");
                 }
             }
 
