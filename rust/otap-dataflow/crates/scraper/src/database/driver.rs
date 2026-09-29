@@ -33,7 +33,11 @@ pub trait DriverCancellation: Clone {
     /// Adapter error returned when cancellation cannot be requested.
     type Error: Error + 'static;
 
-    /// Requests cancellation of the current native database operation.
+    /// Requests cancellation of the whole current operation, not just one native call.
+    ///
+    /// Set an operation-scoped cancellation flag before interrupting native work.
+    /// Any potentially uninterruptible native cancellation call must run outside
+    /// the pipeline's Tokio blocking pool so runtime teardown cannot join it indefinitely.
     async fn cancel(&self) -> Result<(), Self::Error>;
 }
 
@@ -49,7 +53,32 @@ pub trait DriverAdapter {
     fn system(&self) -> DatabaseSystem;
 
     /// Resets cancellation state before one native operation starts.
+    ///
+    /// This must also work while disconnected so reconnect can be cancelled.
+    /// An error must leave no operation running.
     fn begin_operation(&mut self) -> Result<Self::Cancellation, Self::Error>;
+
+    /// Returns whether a failed operation can be retried after reconnecting.
+    ///
+    /// Only classify transient availability failures as retryable, never invalid
+    /// SQL, incompatible metadata, authorization failures, or unconfirmed worker
+    /// cleanup. A retryable error must confirm that the failed operation stopped
+    /// and released partial results. The controller retains ownership and retries
+    /// indefinitely with bounded backoff; it does not restart the pipeline.
+    fn is_retryable(error: &Self::Error) -> bool;
+
+    /// Replaces failed connection/session state in one bounded, cancellable attempt.
+    ///
+    /// The controller calls `begin_operation` first, then this method, then
+    /// revalidates the query before executing it again. Stop old connection and
+    /// statement work before replacement; never overlap sessions with unjoined
+    /// native work. Keep blocking cleanup/connect calls on the adapter-owned
+    /// worker and honor cancellation and `query.timeout()` for native calls.
+    /// Do not retry internally: return errors for shared retry classification.
+    ///
+    /// Factories must defer transient connection work to `validate_query` or this
+    /// method so startup outages can also be recovered inside the receiver.
+    async fn reconnect(&mut self, query: &CompiledQuery) -> Result<(), Self::Error>;
 
     /// Validates SQL and cursor metadata before polling starts.
     ///
@@ -81,6 +110,12 @@ pub trait DriverAdapter {
     /// Callers must successfully validate this same query with
     /// [`Self::validate_query`] before its first execution. Substitute cursor
     /// values through parameter binding, never SQL string concatenation.
+    ///
+    /// Check operation cancellation before and after each native fetch and between
+    /// native calls made during value conversion. A successful interruption of one
+    /// call must not let the loop start another call for the same cancelled operation.
+    /// Keep blocking driver work on an adapter-owned bounded worker, not on the
+    /// pipeline thread or its runtime-owned blocking pool.
     async fn execute(
         &mut self,
         query: &CompiledQuery,
@@ -88,6 +123,10 @@ pub trait DriverAdapter {
     ) -> Result<QueryPage, Self::Error>;
 
     /// Stops the worker and destroys native resources off the pipeline thread.
+    ///
+    /// Success must confirm that operation work and native cleanup have stopped.
+    /// Dropping or timing out this future does not prove the worker stopped; the
+    /// receiver retains ownership when cleanup cannot be confirmed.
     async fn shutdown(&mut self) -> Result<(), Self::Error> {
         Ok(())
     }

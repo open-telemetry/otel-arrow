@@ -95,6 +95,7 @@ pub struct ControllerContext {
     /// Container identifier, when available (e.g. Docker or containerd container ID).
     container_id: Cow<'static, str>,
     memory_pressure_state: MemoryPressureState,
+    state_directory: Option<crate::state_dir::StateDirectory>,
 }
 
 /// Parameters required to create a pipeline context.
@@ -158,6 +159,20 @@ pub struct EntityMetricSetRegistrar<'a> {
 }
 
 impl ControllerContext {
+    /// Installs the startup-provisioned root before contexts are distributed.
+    #[must_use]
+    pub fn with_state_directory(mut self, root: crate::state_dir::StateDirectory) -> Self {
+        self.state_directory = Some(root);
+        self
+    }
+
+    /// Returns the engine [StateDirectory](crate::state_dir::StateDirectory),
+    /// or `None` when no state root is configured.
+    #[must_use]
+    pub fn state_directory(&self) -> Option<&crate::state_dir::StateDirectory> {
+        self.state_directory.as_ref()
+    }
+
     /// Creates a new `ControllerContext`.
     #[must_use]
     pub fn new(telemetry_registry_handle: TelemetryRegistryHandle) -> Self {
@@ -167,6 +182,7 @@ impl ControllerContext {
             host_id: HOST_ID.clone(),
             container_id: CONTAINER_ID.clone(),
             memory_pressure_state: MemoryPressureState::default(),
+            state_directory: None,
         }
     }
 
@@ -188,6 +204,7 @@ impl ControllerContext {
             host_id: host_id.into(),
             container_id: container_id.into(),
             memory_pressure_state: MemoryPressureState::default(),
+            state_directory: None,
         }
     }
 
@@ -312,6 +329,13 @@ impl From<&PipelineContextParams> for PipelineKey {
 }
 
 impl PipelineContext {
+    /// Returns the engine [StateDirectory](crate::state_dir::StateDirectory),
+    /// or `None` when no state root is configured.
+    #[must_use]
+    pub fn state_directory(&self) -> Option<&crate::state_dir::StateDirectory> {
+        self.controller_context.state_directory()
+    }
+
     /// Creates a new `PipelineContext`.
     #[allow(dead_code)]
     pub(crate) fn new(
@@ -1119,6 +1143,25 @@ mod tests {
     use otel_arrow_dfe_config::pipeline::telemetry::AttributeValue;
     use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
     use std::collections::HashMap;
+
+    /// Scenario: contexts across cores and generations have no configured root.
+    /// Guarantees: contexts have no state capability or fallback directory.
+    #[test]
+    fn state_directory_is_optional_across_generations() {
+        let controller = ControllerContext::new(TelemetryRegistryHandle::new());
+        assert!(controller.state_directory().is_none());
+        for generation in [0, 1, 2] {
+            let context = controller.pipeline_context_with_generation(
+                "g".into(),
+                "p".into(),
+                generation as usize,
+                3,
+                generation as usize,
+                generation,
+            );
+            assert!(context.state_directory().is_none());
+        }
+    }
 
     /// Scenario: explicit process, host, and container identities are available.
     /// Guarantees: resource attributes map all identities to stable semantic-convention keys.
