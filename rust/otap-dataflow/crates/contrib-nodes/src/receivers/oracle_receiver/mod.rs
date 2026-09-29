@@ -8,6 +8,11 @@ otel_arrow_dfe_telemetry::otel_component_scope!(
     target = "otel.receiver.oracle",
 );
 
+#[cfg(test)]
+#[macro_use]
+#[path = "test.rs"]
+mod tests;
+
 mod adapter;
 mod config;
 mod worker;
@@ -117,6 +122,3 @@ pub static ORACLE_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
     context_declarations: None,
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
 };
-
-#[cfg(test)]
-mod tests;

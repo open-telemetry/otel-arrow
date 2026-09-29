@@ -1310,5 +1310,4 @@ impl std::fmt::Debug for OracleAdapterError {
 }
 
 #[cfg(test)]
-#[path = "adapter_tests.rs"]
-mod tests;
+oracle_module_tests!(adapter);

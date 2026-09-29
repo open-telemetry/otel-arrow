@@ -84,5 +84,4 @@ fn stopped() -> io::Error {
 }
 
 #[cfg(test)]
-#[path = "worker_tests.rs"]
-mod tests;
+oracle_module_tests!(worker);
