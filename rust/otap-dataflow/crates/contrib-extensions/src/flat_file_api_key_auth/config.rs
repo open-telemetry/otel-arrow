@@ -12,7 +12,6 @@ use serde_json::{Map, Value};
 
 use crate::common::background_refresh::BackgroundProviderRefreshPolicy;
 use crate::flat_file_api_key_auth::*;
-use otel_arrow_dfe_engine::capability::auth::ApiKey;
 
 /// Default API key secret file refresh (~1 hr).
 pub(crate) fn default_key_secret_file_refresh() -> Duration {
@@ -51,30 +50,6 @@ impl Config {
                     return Err("either `key_secret` or `key_secret_file` must be set".to_string());
                 }
             }
-        }
-
-        match self.attributes.get(ApiKey::HTTP_HEADER_NAME_ATTRIBUTE) {
-            Some(Value::String(value)) if !value.is_empty() => {}
-            Some(Value::String(_)) => {
-                return Err("`attributes.http.header_name` cannot be empty".to_string());
-            }
-            Some(_) => {
-                return Err("`attributes.http.header_name` must be a string".to_string());
-            }
-            None => {
-                // Note: ApiKey::HTTP_HEADER_NAME_ATTRIBUTE is not required by
-                // design. Some consumers may not use HTTP or may use a known
-                // header which may not be changed by users.
-                // ApiKey::HTTP_HEADER_NAME_ATTRIBUTE is meant to allow users to
-                // configure a header where it is needed/supported (OTLP
-                // exporters for example).
-            }
-        }
-
-        if let Some(value) = self.attributes.get(ApiKey::HTTP_HEADER_SCHEME_ATTRIBUTE)
-            && !value.is_string()
-        {
-            return Err("`attributes.http.header_scheme` must be a string".to_string());
         }
 
         if self.key_secret_file.is_some() {

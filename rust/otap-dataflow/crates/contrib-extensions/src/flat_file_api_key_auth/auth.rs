@@ -8,8 +8,8 @@ use std::time::Instant;
 use async_trait::async_trait;
 use futures::StreamExt;
 use otel_arrow_dfe_engine::capability::CapabilityError;
-use otel_arrow_dfe_engine::capability::auth::ApiKey;
 use otel_arrow_dfe_engine::capability::auth::api_key_provider::ApiKeyStream;
+use otel_arrow_dfe_engine::capability::auth::*;
 use otel_arrow_dfe_engine::shared::capability::auth::api_key_provider::ApiKeyProvider as SharedApiKeyProvider;
 use secrecy::{ExposeSecret, SecretString};
 use tokio_stream::wrappers::WatchStream;
@@ -23,11 +23,15 @@ use crate::flat_file_api_key_auth::error::Error;
 #[derive(Clone)]
 pub struct FlatFileApiKeyAuth {
     config: Config,
+    attributes: ApiKeyAttributes,
 }
 
 impl FlatFileApiKeyAuth {
-    pub fn new(config: Config) -> Self {
-        Self { config }
+    pub fn new(config: Config) -> Result<Self, String> {
+        let attributes =
+            ApiKeyAttributes::from_map(config.attributes.clone()).map_err(|e| e.to_string())?;
+
+        Ok(Self { config, attributes })
     }
 }
 
@@ -64,7 +68,7 @@ impl BackgroundProviderSource<ApiKey> for FlatFileApiKeyAuth {
 
     async fn fetch(&self) -> Result<ApiKey, Error> {
         let key = read_api_key(&self.config).await?;
-        Ok(ApiKey::new(key).with_attributes(self.config.attributes.clone()))
+        Ok(ApiKey::new(key).with_attributes(self.attributes.clone()))
     }
 
     fn log_refresh_failure(&self, error: &Error) {

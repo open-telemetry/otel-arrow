@@ -87,7 +87,11 @@ fn config_http_attributes_are_validated() {
 
     for attributes in [
         serde_json::json!({"http.header_name": ""}),
+        serde_json::json!({"http.header_name": "invalid header"}),
         serde_json::json!({"http.header_name": 42}),
+        serde_json::json!({"http.header_scheme": ""}),
+        serde_json::json!({"http.header_scheme": "invalid scheme"}),
+        serde_json::json!({"http.header_scheme": "ApiKey\n"}),
         serde_json::json!({"http.header_name": "x-api-key", "http.header_scheme": false}),
     ] {
         assert!(
@@ -188,7 +192,7 @@ fn make_extension(config: Config) -> FlatFileApiKeyAuthExtension {
     let metric_set = registry.register_metric_set::<FlatFileApiKeyAuthMetrics>(EmptyAttributes());
     FlatFileApiKeyAuthExtension::new(
         "test-ext",
-        FlatFileApiKeyAuth::new(config),
+        FlatFileApiKeyAuth::new(config).expect("valid auth"),
         refresh_policy,
         tx,
         BackgroundProviderMetricsTracker::new(metric_set),
@@ -230,7 +234,8 @@ async fn key_file_takes_precedence() {
         key_secret_file: Some(file.path().into()),
         key_secret_file_refresh: Duration::from_secs(10),
         attributes: valid_attributes(),
-    });
+    })
+    .expect("valid auth");
 
     let key = source.fetch().await.expect("key acquired");
     assert_eq!(key.expose_value(), "file-key");
@@ -248,7 +253,8 @@ async fn key_file_rotation_takes_effect() {
         key_secret_file: Some(path.clone()),
         key_secret_file_refresh: Duration::from_secs(300),
         attributes: valid_attributes(),
-    });
+    })
+    .expect("valid auth");
 
     let first = source.fetch().await.expect("first key acquired");
     std::fs::write(&path, "key-2").expect("rotated key written");
@@ -318,7 +324,8 @@ async fn key_file_rejects_empty_key() {
         key_secret_file: Some(file.path().into()),
         key_secret_file_refresh: Duration::from_secs(10),
         attributes: valid_attributes(),
-    });
+    })
+    .expect("valid auth");
 
     let error = source.fetch().await.expect_err("empty API key rejected");
     assert!(error.to_string().contains("API key cannot be empty"));

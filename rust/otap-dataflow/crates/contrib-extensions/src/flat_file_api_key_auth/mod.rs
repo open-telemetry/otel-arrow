@@ -99,7 +99,9 @@ fn create(
 
     let extension = FlatFileApiKeyAuthExtension::new(
         &name,
-        FlatFileApiKeyAuth::new(config),
+        FlatFileApiKeyAuth::new(config).map_err(|e| ConfigError::InvalidUserConfig {
+            error: format!("failed to initialize flat file api key auth: {e}"),
+        })?,
         refresh_policy,
         tx,
         tracker,
