@@ -7,7 +7,7 @@
 //!   1. Each batch is a horizontal database slice containing foreign key
 //!      relationships that must be re-indexed for the batches to be combinable
 //!   2. OTAP batches may have different schemas for the same payload type which
-//!      need to be normalized to be merged together
+//!      need to be unified to be merged together
 //!   3. Data is untrusted and can be malformed in a variety of ways that are
 //!      too expensive to validate for every input batch.
 //!
