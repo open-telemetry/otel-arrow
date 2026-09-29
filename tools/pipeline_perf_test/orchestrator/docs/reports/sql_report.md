@@ -73,29 +73,6 @@ hooks:
                 console: {}
 ```
 
-## Scenario container metrics
-
-Set `scope_container_metrics_to_scenario: true` in the report definition
-(alongside `queries`, including in an external report YAML file) to exclude
-Docker measurements from previous scenarios. The benchmark reports enable this
-option for CPU, memory, allocated-core counts, and network calculations.
-
-The Docker monitor records a `container_monitor_start` event with its component
-name and shortened container ID. The report uses events from the current test
-execution to filter the `metrics` table before running SQL. This works after
-containers have been removed and with OpenTelemetry SDK versions that continue
-exporting the last gauge value with a fresh collection timestamp.
-
-Measurements without a container ID, such as process and Prometheus metrics,
-are preserved. Network window functions must also partition by
-`"metric_attributes.container_id"` to avoid subtracting counters from different
-containers. That nullable column is available even for process-only scenarios.
-
-The option defaults to false for existing custom and suite-wide reports.
-Enabling it requires `test.name` and `test.start` metadata and Docker monitor
-events from the same run; historical data without these events cannot identify
-the current scenario's containers.
-
 ## Supported Aggregations
 
 *None.*

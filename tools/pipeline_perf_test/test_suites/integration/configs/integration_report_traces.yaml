@@ -1,5 +1,3 @@
-scope_container_metrics_to_scenario: true
-
 queries:
   - name: Filter superflous metadata
     sql: |
@@ -56,8 +54,8 @@ queries:
         ),
         with_lag AS (
             SELECT *,
-                  LAG(value) OVER (PARTITION BY metric_name, component_name, "metric_attributes.container_id" ORDER BY timestamp) AS prev_value,
-                  LAG(timestamp) OVER (PARTITION BY metric_name, component_name, "metric_attributes.container_id" ORDER BY timestamp) AS prev_timestamp
+                  LAG(value) OVER (PARTITION BY metric_name, component_name  ORDER BY timestamp) AS prev_value,
+                  LAG(timestamp) OVER (PARTITION BY metric_name, component_name ORDER BY timestamp) AS prev_timestamp
             FROM metrics_filtered
         ),
         -- Calculate deltas and rate

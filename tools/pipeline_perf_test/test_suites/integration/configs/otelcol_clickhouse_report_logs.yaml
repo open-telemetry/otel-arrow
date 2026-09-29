@@ -1,5 +1,3 @@
-scope_container_metrics_to_scenario: true
-
 load_tables:
   clickhouse_validation:
     path: results/otelcol_clickhouse/validation.csv

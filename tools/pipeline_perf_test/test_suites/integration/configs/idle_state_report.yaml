@@ -1,5 +1,3 @@
-scope_container_metrics_to_scenario: true
-
 queries:
   - name: Calculate observation window for this test
     sql: |

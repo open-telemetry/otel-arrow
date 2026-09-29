@@ -49,10 +49,6 @@ from ....core.component.component import (
 )
 
 
-# Recorded in the scenario trace so reporting can identify its container instances.
-CONTAINER_MONITOR_START_EVENT = "container_monitor_start"
-
-
 class ComponentDockerRuntime(BaseModel):
     """Base Model for component (container level) docker runtime information."""
 
