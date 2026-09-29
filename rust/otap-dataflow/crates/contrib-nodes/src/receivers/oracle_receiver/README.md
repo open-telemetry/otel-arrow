@@ -266,6 +266,18 @@ non-finite floating-point values fail explicitly rather than using a lossy
 fallback. There is no configurable per-column mapping or separate metrics/traces
 output in this receiver.
 
+### Schema Changes
+
+Changing the query's result schema while the receiver is running is unsupported.
+The Oracle driver caches column metadata on reused statements, so the per-poll
+metadata comparison may not detect changed column names or types.
+
+Stop the receiver instance before making these schema changes, then restart it
+to create a new connection, prepare the query, and validate fresh metadata.
+Restarting does not make unsupported types valid. If SQL or cursor definitions
+also change, resolve checkpoint-compatibility errors explicitly; do not delete
+checkpoints to bypass validation.
+
 ## Delivery guarantees
 
 Delivery is **at least once only when all requirements below hold**. Replays and

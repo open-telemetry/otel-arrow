@@ -60,6 +60,7 @@ struct OraclePreparedQuery {
     types: Vec<OracleType>,
     timestamp_index: usize,
     tie_breaker_index: usize,
+    timestamp_bind_type: OracleType,
 }
 
 impl OracleAdapter {
@@ -489,7 +490,13 @@ fn execute_blocking(
     let (mut session, _active) = prepare_session(session, config, query, cancellation)?;
     ensure_prepared(&mut session, query, cursor, cancellation)?;
     let prepared = session.prepared.as_mut().expect("query was prepared");
-    let mut result_set = bind_cursor(&mut prepared.statement, query, cursor, cancellation)?;
+    let mut result_set = bind_cursor(
+        &mut prepared.statement,
+        query,
+        cursor,
+        &prepared.timestamp_bind_type,
+        cancellation,
+    )?;
     if !metadata_matches(result_set.column_info(), &prepared.columns, &prepared.types) {
         return Err(OracleAdapterError::ResultMetadataChanged);
     }
@@ -585,23 +592,20 @@ fn push_bounded_row(
 
 /// Binds the committed cursor through Oracle named parameters.
 ///
-/// The cursor is never interpolated into SQL text, and the timestamp bind uses
-/// an explicit timezone-aware type so its source offset survives round trips.
+/// The cursor is never interpolated into SQL text. Normal polling binds the
+/// exact cursor-column type discovered from Oracle metadata, preserving both
+/// timezone semantics and index-compatible comparisons.
 fn bind_cursor<'a>(
     statement: &'a mut oracle::Statement,
     query: &CompiledQuery,
     cursor: &CompositeCursor,
+    timestamp_type: &OracleType,
     cancellation: &OracleCancellation,
 ) -> Result<oracle::ResultSet<'a, OracleRow>, OracleAdapterError> {
     cancellation.ensure_not_requested()?;
     let watermark = query.watermark();
     let timestamp = parse_cursor_timestamp(&cursor.timestamp)?;
-    // Bind with timezone information even for DATE and timezone-naive
-    // TIMESTAMP columns. The session is UTC, so a naive cursor binds as
-    // +00:00, while a TIMESTAMP WITH TIME ZONE cursor retains its source
-    // offset instead of silently shifting the checkpoint boundary.
-    let timestamp_type = cursor_bind_type();
-    let timestamp_bind = (&timestamp, &timestamp_type);
+    let timestamp_bind = (&timestamp, timestamp_type);
     let tie_breaker = cursor.tie_breaker;
     let result = statement
         .query_named(&[
@@ -631,9 +635,20 @@ pub(super) fn parse_cursor_timestamp(text: &str) -> Result<Timestamp, OracleAdap
     Timestamp::from_str(text).map_err(|_| OracleAdapterError::InvalidCursorTimestamp)
 }
 
-/// Uses a timezone-aware bind so checkpoint offsets survive round trips.
-fn cursor_bind_type() -> OracleType {
+/// Uses a lossless universal bind only for the one metadata-discovery execution.
+fn discovery_cursor_bind_type() -> OracleType {
     OracleType::TimestampTZ(9)
+}
+
+/// Reuses Oracle's exact cursor-column type and precision for normal polling.
+fn cursor_bind_type(source_type: &OracleType) -> Result<OracleType, OracleAdapterError> {
+    match source_type {
+        OracleType::Date
+        | OracleType::Timestamp(_)
+        | OracleType::TimestampTZ(_)
+        | OracleType::TimestampLTZ(_) => Ok(source_type.clone()),
+        _ => Err(OracleAdapterError::UnsupportedCursorTimestamp),
+    }
 }
 
 /// Builds and caches the statement and decode plan once per connection.
@@ -657,10 +672,18 @@ fn ensure_prepared(
         .prefetch_rows(0)
         .build()
         .map_err(|error| OracleAdapterError::Prepare(error.into()))?;
-    let result_set = bind_cursor(&mut discovery, query, cursor, cancellation)?;
+    let discovery_type = discovery_cursor_bind_type();
+    let result_set = bind_cursor(
+        &mut discovery,
+        query,
+        cursor,
+        &discovery_type,
+        cancellation,
+    )?;
     let (columns, types) = result_metadata(result_set.column_info())?;
     let (timestamp_index, tie_breaker_index) =
         validate_cursor_columns(result_set.column_info(), query)?;
+    let timestamp_bind_type = cursor_bind_type(&types[timestamp_index])?;
     drop(result_set);
     drop(discovery);
 
@@ -681,6 +704,7 @@ fn ensure_prepared(
         types,
         timestamp_index,
         tie_breaker_index,
+        timestamp_bind_type,
     });
     Ok(())
 }
@@ -871,7 +895,11 @@ fn validate_column_names<'a>(
     Ok(())
 }
 
-/// Detects result-shape changes before applying a cached decode plan.
+/// Checks driver-reported result metadata against the cached decode plan.
+///
+/// oracle driver caches column metadata on reused statements, so this check
+/// cannot reliably detect live schema changes. Such changes are unsupported;
+/// restart the receiver instance to rebuild and validate the prepared query.
 fn metadata_matches(
     columns: &[oracle::ColumnInfo],
     metadata: &[ColumnMetadata],
