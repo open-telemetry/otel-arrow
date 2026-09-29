@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790711358359,
+  "lastUpdate": 1790720560007,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -47684,6 +47684,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-amd64-binary-size",
             "value": 117.29,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 104.48,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "289780372+otelbot-arrow[bot]@users.noreply.github.com",
+            "name": "otelbot-arrow[bot]",
+            "username": "otelbot-arrow[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e5b3056dffafdd9bd9778349dcd7c8b439038e0e",
+          "message": "chore(release) Prepare Release v0.58.0 (#4192)\n\n## Release v0.58.0\n\nThis PR prepares the repository for release v0.58.0.\n\n### Changes included:\n- Rendered pending chloggen entries into `go/CHANGELOG.md` and\n`rust/otap-dataflow/CHANGELOG.md`\n- Bumped Rust workspace crates to 0.58.0\n- Include `otel-arrow-dfe-pdata-views` in this release: false\n\n## What's Changed (Go :hamster:)\n\n### :bulb: Enhancements :bulb:\n\n- `pkg/arrow`: OTAP timestamp columns are now required to be in\nnanoseconds with a time zone\nset to either 'UTC', '+00:00', or no timezone. In the future no timezone\nwill also be rejected.\n ([#2369](https://github.com/open-telemetry/otel-arrow/issues/2369))\n\n## What's Changed (Rust :crab:)\n\n### :stop_sign: Breaking changes :stop_sign:\n\n- `engine`: `AgentFedCredentialProvider` capability now supports a\nstream API for fetching\ncredentials, allowing for more efficient and continuous credential\nretrieval\nin scenarios where credentials may change over time.\n ([#3901](https://github.com/open-telemetry/otel-arrow/issues/3901))\n\n- `pipeline`: Replace resource validator outcome counters with a\nvalidation failure metric partitioned by error.type.\n([#3530](https://github.com/open-telemetry/otel-arrow/issues/3530))\n\n### :rocket: New components :rocket:\n\n- `pipeline`: Add the `flat_file_user_pass_auth` extension, a\n`BasicAuthProvider` backed by flat files.\n([#3901](https://github.com/open-telemetry/otel-arrow/issues/3901))\n\n- `pipeline`: Add a dedicated log parser processor for configurable\nregex, JSON, and headerless CSV parsing of framed log bodies.\n([#2844](https://github.com/open-telemetry/otel-arrow/issues/2844))\n\n### :bulb: Enhancements :bulb:\n\n- `dependencies`: Upgrade various Rust dependencies.\n([#4120](https://github.com/open-telemetry/otel-arrow/issues/4120),\n[#4173](https://github.com/open-telemetry/otel-arrow/issues/4173),\n[#4174](https://github.com/open-telemetry/otel-arrow/issues/4174),\n[#4175](https://github.com/open-telemetry/otel-arrow/issues/4175),\n[#4176](https://github.com/open-telemetry/otel-arrow/issues/4176),\n[#4184](https://github.com/open-telemetry/otel-arrow/issues/4184))\n- `engine`: Support conditional composite entries in named transport\nheader propagation.\n([#4135](https://github.com/open-telemetry/otel-arrow/issues/4135))\n\n- `engine`: Add policies.context.entries configuration for composite\ncontext entries.\n([#3925](https://github.com/open-telemetry/otel-arrow/issues/3925))\n- `engine`: Add optional engine.state_dir for a secure, durable absolute\nstate root on Linux.\n([#2844](https://github.com/open-telemetry/otel-arrow/issues/2844))\n\n- `observability`: Allow receiver and exporter local duration metrics to\nselect basic, normal, or detailed aggregation per node.\n([#3670](https://github.com/open-telemetry/otel-arrow/issues/3670))\n- `pdata`: OTAP timestamp columns are now required to be in nanoseconds\nwith a time zone\nset to either 'UTC', '+00:00', or no timezone. In the future no timezone\nwill also be rejected.\n ([#2369](https://github.com/open-telemetry/otel-arrow/issues/2369))\n\n- `pdata`: Optimize the schema selection part of the otap concatenation\nkernel.\n([#4150](https://github.com/open-telemetry/otel-arrow/issues/4150))\n\n- `pipeline`: Support `BasicAuthProvider` and `ApiKeyProvider`\ncapabilities in OTLP exporters. Support `AgentFedCredentialProvider`\ncapability in gRPC OTLP exporter.\n([#3901](https://github.com/open-telemetry/otel-arrow/issues/3901))\n\n- `pipeline`: Allow the Syslog CEF receiver to ingest RFC 6587\noctet-counted TCP messages.\n([#4098](https://github.com/open-telemetry/otel-arrow/issues/4098))\n- `query-engine`: Adds basic support for filtering metric datapoints to\ntransform processor.\n([#3722](https://github.com/open-telemetry/otel-arrow/issues/3722))\n\n### :toolbox: Bug fixes :toolbox:\n\n- `engine`: Fix Quiver silently skipping new telemetry after completed\nsegments were cleaned up and the process restarted.\n([#4024](https://github.com/open-telemetry/otel-arrow/issues/4024))\n\n- `otap`: Decode Map and Slice attributes in the OTAP views. The `ser`\ncolumn is now read as CBOR, so `as_kvlist` and `as_array` return the\nreal entries instead of an empty value.\n([#4117](https://github.com/open-telemetry/otel-arrow/issues/4117))\n\n- `otap`: Reload receiver client CA files mounted from Kubernetes\nSecrets and ConfigMaps when `watch_client_ca` is enabled.\n([#4165](https://github.com/open-telemetry/otel-arrow/issues/4165))\n\n- `otap`: Decode omitted scalar attribute columns as their type default,\nso int, double, bool, string and bytes read back as 0, 0.0, false, empty\nstring and empty bytes instead of Empty\n([#4111](https://github.com/open-telemetry/otel-arrow/issues/4111))\n- `otap`: Read the span id column optionally so a spans-only OTAP batch\nthat omits the id column ingests instead of failing the whole view build\n([#4115](https://github.com/open-telemetry/otel-arrow/issues/4115))\n- `otap`: Decode Map and Slice log record bodies from the CBOR ser\ncolumn instead of returning Empty, so structured log bodies are no\nlonger silently dropped in the OTAP views.\n([#4106](https://github.com/open-telemetry/otel-arrow/issues/4106))\n- `otap`: Produce the smallest valid OTAP parent ID column type for the\ndecoded parent_id, sizing the dictionary key to its cardinality and\nusing a primitive array only when the IDs overflow a u16 key\n([#4143](https://github.com/open-telemetry/otel-arrow/issues/4143))\n\n### Checklist:\n- [ ] Verify both CHANGELOG.md files render the expected entries\n- [ ] Verify Rust crate versions updated\n- [ ] Confirm all tests pass\n- [ ] Ready to merge and tag release\n\nAfter merging this PR, run the **Push Release** workflow to create git\ntags and publish the GitHub release.\n\nCo-authored-by: otelbot-arrow[bot] <289780372+otelbot-arrow[bot]@users.noreply.github.com>",
+          "timestamp": "2026-09-29T21:27:07Z",
+          "tree_id": "8f711b64f3353bb8a43ce9cc5cf6c15f465414b5",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/e5b3056dffafdd9bd9778349dcd7c8b439038e0e"
+        },
+        "date": 1790720543015,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 84.88,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.77,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.73,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.01,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.98,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.7,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 72.11,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.87,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.59,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 117.27,
             "unit": "MB"
           },
           {
