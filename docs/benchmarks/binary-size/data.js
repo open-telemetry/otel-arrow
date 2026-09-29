@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790699978403,
+  "lastUpdate": 1790703185431,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -46705,6 +46705,150 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/open-telemetry/otel-arrow/commit/00b1e070b84a7291a8afc6cecbc78988d313ba3c"
         },
         "date": 1790699963690,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 84.82,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.79,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.72,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.98,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.7,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 72.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.89,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.54,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 117.2,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 104.35,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "222020+pmariani@users.noreply.github.com",
+            "name": "pmariani",
+            "username": "pmariani"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "f374c4ac533f4cff00e51aea0dbc3a12162c9a2e",
+          "message": "[1/2] chore test: add bench and allocation unit-test (own binary) in preparation … (#4113)\n\n…of refactor of OtlpProtoBytes num_items() [1/2] (#2883)\n\n# Change summary\n\nThis PR is the first half of changes to address #2883. \nThe second PR is #4114.\nIt makes two test-related changes: \n\n- Augments an existing benchmark to capture performance data for\nOtlpProtoBytes.num_items() for Logs, Traces and Metrics.\n- Adds an independent unit test file to prove that num_items() doesn't\nallocate. It relies on DHAT allocator and HeapStats. The test is\ndisabled in this commit. It gets enabled in #4114 along with the updated\nimplementation of num_items().\n\n## Related issue\n\n* Partially addresses #2883\n\n## Validation\n\n- Ensured that the DHAT-based test was behaving correctly and reporting\nallocated memory as expected, before disabling it.\n- Ensured that the updated benchmark generated results correctly. \n- Ran `cargo xtask check`, `cargo xtask check-benches`. There seems to\nbe a flaky test related to the Kafka contrib node\n(`recovers_across_broker_restart_and_leader_reassignment`) and behaviors\nof this and main branches are similar in that respect.\n- I am capturing benchmark results (`cargo bench -p benchmarks --bench\npayload_measurements -- \"PData OTLP num_items overhead\" --save-baseline\nWITH-ALLOC`) in preparation of #4114.\n\n## User-facing changes\n\nNone",
+          "timestamp": "2026-09-29T16:39:00Z",
+          "tree_id": "df9daefd3d50102695384d7fba0bcce91e60991f",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/f374c4ac533f4cff00e51aea0dbc3a12162c9a2e"
+        },
+        "date": 1790703168731,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
