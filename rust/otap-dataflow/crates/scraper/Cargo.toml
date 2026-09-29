@@ -16,17 +16,31 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+otel-arrow-dfe-channel.workspace = true
 otel-arrow-dfe-engine.workspace = true
+otel-arrow-dfe-otap.workspace = true
+otel-arrow-dfe-pdata.workspace = true
+otel-arrow-dfe-telemetry.workspace = true
+otel-arrow-dfe-telemetry-macros.workspace = true
+
 async-trait.workspace = true
 blake3.workspace = true
+chrono.workspace = true
 fs2.workspace = true
 humantime-serde.workspace = true
+prost.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+tokio.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+otel-arrow-dfe-config.workspace = true
+otel-arrow-dfe-engine = { workspace = true, features = ["test-utils"] }
+otel-arrow-dfe-otap = { workspace = true, features = ["test-utils"] }
+otel-arrow-dfe-pdata = { workspace = true, features = ["testing"] }
+tokio = { workspace = true, features = ["test-util"] }

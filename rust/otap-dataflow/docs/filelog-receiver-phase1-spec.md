@@ -331,6 +331,13 @@ not search for, import, or migrate a direct-`checkpoint.id` sibling directory.
 
 ### Stable engine state root
 
+The engine facility is configured by `engine.state_dir` and exposed as an
+optional handle-backed `StateDirectory` through pipeline contexts. See
+[Engine state directory](state-directory.md) for its Linux provisioning policy,
+path validation, live-update invariant, and legacy-consumer adoption boundary.
+Filelog namespace storage must adopt the capability in its integration task;
+the engine facility alone does not provide checkpoint storage or recovery.
+
 `${engine.state_dir}` denotes a root supplied by the engine, not a Filelog
 string-expansion rule. The engine state-root configuration/API, provisioning
 implementation, and platform qualification are explicit Phase 1 release
