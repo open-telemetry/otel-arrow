@@ -249,6 +249,7 @@ pub static CONSOLE_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
                 exporter_config,
             ))
         },
+    context_declarations: None,
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<
         ConsoleExporterConfig,
@@ -272,15 +273,22 @@ impl Exporter<OtapPdata> for ConsoleExporter {
                 Message::Control(NodeControlMsg::Shutdown { deadline, .. }) => {
                     return Ok(self.terminal_state(deadline));
                 }
-                Message::PData(data) => {
-                    let export_start = Instant::now();
+                Message::PData(mut data) => {
                     let signal = data.signal_type();
-                    match self.export(data.payload_ref()).await {
-                        Ok(()) => self.metrics.record_success(signal, export_start.elapsed()),
-                        Err(error_type) => {
-                            self.metrics
-                                .record_failure(signal, error_type, export_start.elapsed())
-                        }
+                    let completed = self
+                        .metrics
+                        .boundary
+                        .attempt(signal)
+                        .run(async |attempt| {
+                            attempt.set_item_count_with(|| data.num_items() as u64);
+                            self.export(data.payload_ref())
+                                .await
+                                .map_err(|error| attempt.failed(error))
+                        })
+                        .await;
+                    let result = self.metrics.boundary.record(completed);
+                    if let Err(error_type) = result {
+                        self.metrics.record_error(signal, error_type);
                     }
                     effect_handler.notify_ack(AckMsg::new(data)).await?;
                 }
@@ -1671,7 +1679,7 @@ mod tests {
     }
 
     /// Scenario: equivalent logs are viewed from OTLP bytes and OTAP Arrow records.
-    /// Guarantees: record JSON matches for record and attribute data preserved by both backends.
+    /// Guarantees: record JSON matches for record, attribute, resource, and scope data.
     #[test]
     fn record_json_matches_otlp_and_otap_views() {
         let logs_data = logs_with_full_resource_and_scope();
@@ -1679,14 +1687,7 @@ mod tests {
             resource: true,
             ..RecordJsonConfig::default()
         });
-        let mut otlp_values = format_record_json(&logs_data, &formatter);
-
-        // OTAP scope views do not currently expose scope name or version.
-        for value in &mut otlp_values {
-            let scope = value["scope"].as_object_mut().expect("scope object");
-            _ = scope.remove("name");
-            _ = scope.remove("version");
-        }
+        let otlp_values = format_record_json(&logs_data, &formatter);
 
         let otap_records = encode_logs_otap_batch(&logs_data).expect("encode OTAP logs");
         let otap_view = OtapLogsView::try_from(&otap_records).expect("OTAP logs view");

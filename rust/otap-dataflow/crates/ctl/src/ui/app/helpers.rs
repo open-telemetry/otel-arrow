@@ -159,10 +159,10 @@ where
     if items.is_empty() {
         return None;
     }
-    if let Some(selected) = selected {
-        if items.iter().any(|item| map(item) == selected) {
-            return Some(selected);
-        }
+    if let Some(selected) = selected
+        && items.iter().any(|item| map(item) == selected)
+    {
+        return Some(selected);
     }
     Some(map(&items[0]))
 }

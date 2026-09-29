@@ -166,8 +166,14 @@ type_check_expression = {
   | rel_expression ~ (type_check_op ~ ident)?
 }
 
+type_cast_op = @{ "as" }
+
+type_cast_expression = {
+    type_check_expression ~ (type_cast_op ~ ident)?
+}
+
 and_expression = {
-    type_check_expression ~ ("and" ~ and_expression)*
+    type_cast_expression ~ ("and" ~ and_expression)*
 }
 
 or_expression = {

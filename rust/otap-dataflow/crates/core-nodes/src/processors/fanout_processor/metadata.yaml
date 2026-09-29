@@ -1,0 +1,6 @@
+type: fanout
+status:
+  class: processor
+  codeowners:
+    active:
+      - lalitb

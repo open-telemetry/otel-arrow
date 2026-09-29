@@ -126,7 +126,9 @@ use bytes::Bytes;
 use otel_arrow_dfe_config::pipeline::telemetry::AttributeValue as ConfigAttributeValue;
 use otel_arrow_dfe_expohisto::HistogramView;
 use otel_arrow_dfe_pdata::OtlpProtoBytes;
-use otel_arrow_dfe_pdata::otlp::common::{BoundedBuf, Dropped, MAX_OTLP_SIZE_LIMIT, ProtoBuffer};
+use otel_arrow_dfe_pdata::otlp::common::{
+    BoundedBuf, EncodeFailure, MAX_OTLP_SIZE_LIMIT, ProtoBuffer,
+};
 use otel_arrow_dfe_pdata::proto::consts::field_num::common::{
     ANY_VALUE_BOOL_VALUE, ANY_VALUE_DOUBLE_VALUE, ANY_VALUE_INT_VALUE, ANY_VALUE_KVLIST_VALUE,
     ANY_VALUE_STRING_VALUE, INSTRUMENTATION_SCOPE_ATTRIBUTES, INSTRUMENTATION_SCOPE_NAME,
@@ -212,8 +214,8 @@ pub enum Error {
     },
 }
 
-impl From<Dropped> for Error {
-    fn from(_: Dropped) -> Self {
+impl From<EncodeFailure> for Error {
+    fn from(_: EncodeFailure) -> Self {
         Self::RequestTooLarge {
             limit: MAX_OTLP_SIZE_LIMIT,
         }
@@ -1276,7 +1278,7 @@ mod tests {
     #[test]
     fn request_too_large_error_reports_the_buffer_limit() {
         assert_eq!(
-            Error::from(Dropped).to_string(),
+            Error::from(EncodeFailure::Dropped).to_string(),
             format!(
                 "internal telemetry metrics request exceeded the OTLP size limit of \
                  {MAX_OTLP_SIZE_LIMIT} bytes"

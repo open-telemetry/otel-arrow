@@ -1,0 +1,264 @@
+# Demonstrates node and flow telemetry with three pipelines:
+#   - `full`: detailed node metrics including `node.completion.duration`, a
+#     one-processor flow around `sampler`, and processor compute duration.
+#   - `opt_in`: each per-node opt-in is assigned to a different node at the
+#     basic level.
+#   - `no_output`: a filter drops every log batch without sending.
+#
+# Distinguish them by the `pipeline.id` attribute on each metric set.
+#
+# Run with:
+#   cargo run -- --config configs/trafficgen-node-metrics.yaml
+
+version: otel_dataflow/v1
+engine:
+  telemetry:
+    reporting_interval: 1s
+  observability:
+    pipeline:
+      policies:
+        telemetry:
+          pipeline_metrics: false
+          tokio_metrics: false
+          runtime_metrics: none
+      nodes:
+        telemetry:
+          type: receiver:internal_telemetry
+          config:
+            signals: [metrics]
+            metrics:
+              interval: 1s
+        node_and_flow_metrics:
+          type: processor:filter
+          config:
+            metrics:
+              include:
+                match_type: strict
+                metric_names:
+                  - messages
+                  - items
+                  - size
+                  - duration
+        metrics_debug:
+          type: processor:debug
+          config:
+            verbosity: normal
+            mode: batch
+            signals: [metrics]
+        noop:
+          type: exporter:noop
+          config: {}
+      connections:
+        - from: telemetry
+          to: node_and_flow_metrics
+        - from: node_and_flow_metrics
+          to: metrics_debug
+        - from: metrics_debug
+          to: noop
+groups:
+  default:
+    pipelines:
+      full:
+        policies:
+          channel_capacity:
+            control:
+              node: 100
+              pipeline: 100
+            pdata: 128
+          telemetry:
+            # Detailed runtime metrics enables item counts and logical payload
+            # size for every node in the pipeline.
+            runtime_metrics: detailed
+            flow_metrics:
+              - id: sampler
+                bounds:
+                  start_node: sampler
+                  end_node: sampler
+                metrics:
+                  - input_messages
+                  - input_items
+                  - input_size
+                  - output_messages
+                  - output_items
+                  - output_size
+                  - compute_duration
+                  - dropped_items
+
+        nodes:
+          receiver:
+            type: receiver:traffic_generator
+            config:
+              traffic_config:
+                max_batch_size: 10
+                signals_per_second: 30
+                # Emit all three signals in roughly equal proportion so the
+                # per-signal breakdown on every node is populated.
+                log_weight: 50
+                metric_weight: 30
+                trace_weight: 20
+              # Synthetic data source emits deterministic log records. The
+              # sampler below keeps a predictable fraction of LOG records;
+              # metrics and traces are unaffected.
+              data_source: synthetic
+
+          # Keeps ~1/3 of log records and drops the rest. Only logs are affected,
+          # so the sampler's node.output.items{signal="logs"} is lower than its
+          # node.input.items{signal="logs"}, while the metrics and traces buckets
+          # stay equal.
+          sampler:
+            type: processor:log_sampling
+            config:
+              policy:
+                ratio:
+                  emit: 1
+                  out_of: 3
+
+          pass_through:
+            type: processor:filter
+            config: {}
+
+          noop:
+            type: exporter:noop
+            config:
+
+        connections:
+          - from: receiver
+            to: sampler
+          - from: sampler
+            to: pass_through
+          - from: pass_through
+            to: noop
+
+      # Each node opts into one measurement at the basic runtime metric level.
+      # This demonstrates that the policies are independent of the level and
+      # of one another.
+      opt_in:
+        policies:
+          channel_capacity:
+            control:
+              node: 100
+              pipeline: 100
+            pdata: 128
+          telemetry:
+            runtime_metrics: basic
+
+        nodes:
+          messages_probe:
+            type: receiver:traffic_generator
+            policies:
+              telemetry:
+                messages: true
+            config:
+              traffic_config:
+                max_batch_size: 10
+                signals_per_second: 30
+                log_weight: 50
+                metric_weight: 30
+                trace_weight: 20
+              data_source: synthetic
+
+          items_probe:
+            type: processor:log_sampling
+            policies:
+              telemetry:
+                item_counts: true
+            config:
+              policy:
+                ratio:
+                  emit: 1
+                  out_of: 3
+
+          completion_duration_probe:
+            type: processor:filter
+            policies:
+              telemetry:
+                completion_duration: true
+            config: {}
+
+          duration_probe:
+            type: processor:filter
+            policies:
+              telemetry:
+                duration: true
+            config: {}
+
+          size_probe:
+            type: exporter:noop
+            policies:
+              telemetry:
+                size: true
+            config:
+
+        connections:
+          - from: messages_probe
+            to: items_probe
+          - from: items_probe
+            to: completion_duration_probe
+          - from: completion_duration_probe
+            to: duration_probe
+          - from: duration_probe
+            to: size_probe
+
+      # Every generated log is dropped. This exercises a processor that opts
+      # into local duration and ACKs without sending an output message.
+      no_output:
+        policies:
+          channel_capacity:
+            control:
+              node: 100
+              pipeline: 100
+            pdata: 128
+          telemetry:
+            runtime_metrics: normal
+            flow_metrics:
+              - id: drop_all
+                bounds:
+                  start_node: drop_all
+                  end_node: drop_all
+                metrics:
+                  - input_messages
+                  - input_items
+                  - input_size
+                  - output_messages
+                  - output_items
+                  - output_size
+                  - compute_duration
+                  - dropped_items
+
+        nodes:
+          receiver:
+            type: receiver:traffic_generator
+            config:
+              traffic_config:
+                max_batch_size: 10
+                signals_per_second: 30
+                log_weight: 100
+                metric_weight: 0
+                trace_weight: 0
+              data_source: synthetic
+
+          drop_all:
+            type: processor:filter
+            policies:
+              telemetry:
+                completion_duration: true
+                duration: true
+                item_counts: true
+                size: true
+            config:
+              logs:
+                include:
+                  match_type: strict
+                  record_attributes:
+                    - key: sample.keep
+                      value: "true"
+
+          noop:
+            type: exporter:noop
+            config: {}
+
+        connections:
+          - from: receiver
+            to: drop_all
+          - from: drop_all
+            to: noop

@@ -378,10 +378,10 @@ impl<PData, Meta> Inner<PData, Meta> {
 
         // Once the completion burst budget is exhausted, force one pending
         // normal event before emitting more completion traffic.
-        if self.completion_burst_len >= self.config.completion_burst_limit {
-            if let Some(event) = self.take_next_normal_event() {
-                return Some(event);
-            }
+        if self.completion_burst_len >= self.config.completion_burst_limit
+            && let Some(event) = self.take_next_normal_event()
+        {
+            return Some(event);
         }
 
         // Otherwise, prefer completion traffic until the burst limit says one
@@ -411,11 +411,11 @@ impl<PData, Meta> Inner<PData, Meta> {
             return;
         }
 
-        if let Some(deadline) = self.shutdown_deadline {
-            if now >= deadline {
-                self.shutdown_forced = true;
-                self.bump_version();
-            }
+        if let Some(deadline) = self.shutdown_deadline
+            && now >= deadline
+        {
+            self.shutdown_forced = true;
+            self.bump_version();
         }
     }
 

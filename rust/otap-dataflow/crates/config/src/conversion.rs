@@ -10,7 +10,7 @@ use std::num::NonZeroUsize;
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
 #[serde(deny_unknown_fields)]
 pub struct ConversionOptions {
-    /// default applies.
+    /// Maximum size of an encoded OTLP protobuf message.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub otlp_size_limit: Option<NonZeroUsize>,
 }

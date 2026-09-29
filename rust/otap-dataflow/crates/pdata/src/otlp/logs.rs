@@ -122,7 +122,7 @@ pub(crate) struct LogBodyArrays<'a> {
 }
 
 impl<'a> LogBodyArrays<'a> {
-    fn is_valid(&self, idx: usize) -> bool {
+    pub(crate) fn is_valid(&self, idx: usize) -> bool {
         self.body.is_valid(idx)
     }
 }
@@ -324,10 +324,10 @@ impl LogsProtoBytesEncoder {
         }
 
         // encode schema url
-        if let Some(col) = &logs_data_arrays.resource_arrays.schema_url {
-            if let Some(val) = col.str_at(index) {
-                result_buf.encode_string(RESOURCE_LOGS_SCHEMA_URL, val)?;
-            }
+        if let Some(col) = &logs_data_arrays.resource_arrays.schema_url
+            && let Some(val) = col.str_at(index)
+        {
+            result_buf.encode_string(RESOURCE_LOGS_SCHEMA_URL, val)?;
         }
 
         Ok(())
@@ -382,10 +382,10 @@ impl LogsProtoBytesEncoder {
         }
 
         // encode schema url
-        if let Some(col) = &logs_data_arrays.log_arrays.schema_url {
-            if let Some(val) = col.str_at(index) {
-                result_buf.encode_string(SCOPE_LOGS_SCHEMA_URL, val)?;
-            }
+        if let Some(col) = &logs_data_arrays.log_arrays.schema_url
+            && let Some(val) = col.str_at(index)
+        {
+            result_buf.encode_string(SCOPE_LOGS_SCHEMA_URL, val)?;
         }
 
         Ok(())
@@ -403,92 +403,89 @@ impl LogsProtoBytesEncoder {
 
         let log_arrays = &logs_data_arrays.log_arrays;
 
-        if let Some(col) = log_arrays.time_unix_nano {
-            if let Some(val) = col.value_at(index) {
-                result_buf.encode_field_tag(LOG_RECORD_TIME_UNIX_NANO, wire_types::FIXED64)?;
-                result_buf.extend_from_slice(&val.to_le_bytes())?;
+        if let Some(col) = log_arrays.time_unix_nano
+            && let Some(val) = col.value_at(index)
+        {
+            result_buf.encode_field_tag(LOG_RECORD_TIME_UNIX_NANO, wire_types::FIXED64)?;
+            result_buf.extend_from_slice(&val.to_le_bytes())?;
+        }
+
+        if let Some(col) = &log_arrays.severity_number
+            && let Some(val) = col.value_at(index)
+        {
+            result_buf.encode_field_tag(LOG_RECORD_SEVERITY_NUMBER, wire_types::VARINT)?;
+            result_buf.encode_varint(val as u64)?;
+        }
+
+        if let Some(col) = &log_arrays.severity_text
+            && let Some(val) = col.str_at(index)
+        {
+            result_buf.encode_string(LOG_RECORD_SEVERITY_TEXT, val)?;
+        }
+
+        if let Some(log_body_arrays) = &logs_data_arrays.log_arrays.body
+            && log_body_arrays.is_valid(index)
+        {
+            let anyval_arrays = &log_body_arrays.anyval_arrays;
+            if let Some(value_type) = anyval_arrays.attr_type.value_at(index)
+                && let Ok(value_type) = AttributeValueType::try_from(value_type)
+            {
+                result_buf.encode_len_delimited(LOG_RECORD_BODY, |result_buf| {
+                    encode_any_value(anyval_arrays, index, value_type, result_buf)
+                })?;
             }
         }
 
-        if let Some(col) = &log_arrays.severity_number {
-            if let Some(val) = col.value_at(index) {
-                result_buf.encode_field_tag(LOG_RECORD_SEVERITY_NUMBER, wire_types::VARINT)?;
-                result_buf.encode_varint(val as u64)?;
+        if let Some(log_attrs) = logs_data_arrays.log_attrs.as_ref()
+            && let Some(id_array) = log_arrays.id
+            && let Some(id) = id_array.value_at(index)
+        {
+            let attrs_index_iter =
+                ChildIndexIter::new(id, &log_attrs.parent_id, &mut self.log_attrs_cursor);
+            for attr_index in attrs_index_iter {
+                result_buf.encode_len_delimited(LOG_RECORD_ATTRIBUTES, |result_buf| {
+                    encode_key_value(log_attrs, attr_index, result_buf)
+                })?;
             }
         }
 
-        if let Some(col) = &log_arrays.severity_text {
-            if let Some(val) = col.str_at(index) {
-                result_buf.encode_string(LOG_RECORD_SEVERITY_TEXT, val)?;
-            }
+        if let Some(col) = log_arrays.dropped_attributes_count
+            && let Some(val) = col.value_at(index)
+        {
+            result_buf.encode_field_tag(LOG_RECORD_DROPPED_ATTRIBUTES_COUNT, wire_types::VARINT)?;
+            result_buf.encode_varint(val as u64)?;
         }
 
-        if let Some(log_body_arrays) = &logs_data_arrays.log_arrays.body {
-            if log_body_arrays.is_valid(index) {
-                let anyval_arrays = &log_body_arrays.anyval_arrays;
-                if let Some(value_type) = anyval_arrays.attr_type.value_at(index) {
-                    if let Ok(value_type) = AttributeValueType::try_from(value_type) {
-                        result_buf.encode_len_delimited(LOG_RECORD_BODY, |result_buf| {
-                            encode_any_value(anyval_arrays, index, value_type, result_buf)
-                        })?;
-                    }
-                }
-            }
+        if let Some(col) = &log_arrays.flags
+            && let Some(val) = col.value_at(index)
+        {
+            result_buf.encode_field_tag(LOG_RECORD_FLAGS, wire_types::FIXED32)?;
+            result_buf.extend_from_slice(&val.to_le_bytes())?;
         }
 
-        if let Some(log_attrs) = logs_data_arrays.log_attrs.as_ref() {
-            if let Some(id_array) = log_arrays.id {
-                if let Some(id) = id_array.value_at(index) {
-                    let attrs_index_iter =
-                        ChildIndexIter::new(id, &log_attrs.parent_id, &mut self.log_attrs_cursor);
-                    for attr_index in attrs_index_iter {
-                        result_buf.encode_len_delimited(LOG_RECORD_ATTRIBUTES, |result_buf| {
-                            encode_key_value(log_attrs, attr_index, result_buf)
-                        })?;
-                    }
-                }
-            }
+        if let Some(col) = &log_arrays.trace_id
+            && let Some(val) = col.slice_at(index)
+        {
+            result_buf.encode_bytes(LOG_RECORD_TRACE_ID, val)?;
         }
 
-        if let Some(col) = log_arrays.dropped_attributes_count {
-            if let Some(val) = col.value_at(index) {
-                result_buf
-                    .encode_field_tag(LOG_RECORD_DROPPED_ATTRIBUTES_COUNT, wire_types::VARINT)?;
-                result_buf.encode_varint(val as u64)?;
-            }
+        if let Some(col) = &log_arrays.span_id
+            && let Some(val) = col.slice_at(index)
+        {
+            result_buf.encode_bytes(LOG_RECORD_SPAN_ID, val)?;
         }
 
-        if let Some(col) = &log_arrays.flags {
-            if let Some(val) = col.value_at(index) {
-                result_buf.encode_field_tag(LOG_RECORD_FLAGS, wire_types::FIXED32)?;
-                result_buf.extend_from_slice(&val.to_le_bytes())?;
-            }
+        if let Some(col) = log_arrays.observed_time_unix_nano
+            && let Some(val) = col.value_at(index)
+        {
+            result_buf.encode_field_tag(LOG_RECORD_OBSERVED_TIME_UNIX_NANO, wire_types::FIXED64)?;
+            result_buf.extend_from_slice(&val.to_le_bytes())?;
         }
 
-        if let Some(col) = &log_arrays.trace_id {
-            if let Some(val) = col.slice_at(index) {
-                result_buf.encode_bytes(LOG_RECORD_TRACE_ID, val)?;
-            }
-        }
-
-        if let Some(col) = &log_arrays.span_id {
-            if let Some(val) = col.slice_at(index) {
-                result_buf.encode_bytes(LOG_RECORD_SPAN_ID, val)?;
-            }
-        }
-
-        if let Some(col) = log_arrays.observed_time_unix_nano {
-            if let Some(val) = col.value_at(index) {
-                result_buf
-                    .encode_field_tag(LOG_RECORD_OBSERVED_TIME_UNIX_NANO, wire_types::FIXED64)?;
-                result_buf.extend_from_slice(&val.to_le_bytes())?;
-            }
-        }
-
-        if let Some(col) = &log_arrays.event_name {
-            if let Some(val) = col.str_at(index) {
-                result_buf.encode_string(LOG_RECORD_EVENT_NAME, val)?;
-            }
+        if let Some(col) = &log_arrays.event_name
+            && let Some(val) = col.str_at(index)
+        {
+            result_buf.encode_string(LOG_RECORD_EVENT_NAME, val)?;
         }
 
         self.root_cursor.advance();
@@ -499,6 +496,7 @@ impl LogsProtoBytesEncoder {
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::schema::UTC_TIME_ZONE;
 
     use arrow::array::{
         RecordBatch, StringArray, StructArray, TimestampNanosecondArray, UInt8Array, UInt16Array,
@@ -549,7 +547,7 @@ mod test {
                 Field::new(consts::ID, DataType::UInt16, true).with_plain_encoding(),
                 Field::new(
                     consts::TIME_UNIX_NANO,
-                    DataType::Timestamp(TimeUnit::Nanosecond, None),
+                    DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                     false,
                 ),
                 Field::new(consts::SEVERITY_TEXT, DataType::Utf8, true),
@@ -576,7 +574,10 @@ mod test {
                     None,
                 )),
                 Arc::new(UInt16Array::from_iter_values(vec![0, 1, 2])),
-                Arc::new(TimestampNanosecondArray::from_iter_values([1, 2, 3])),
+                Arc::new(
+                    TimestampNanosecondArray::from_iter_values([1, 2, 3])
+                        .with_timezone(UTC_TIME_ZONE),
+                ),
                 Arc::new(StringArray::from_iter_values(vec![
                     "ERROR", "INFO", "DEBUG",
                 ])),
@@ -789,7 +790,7 @@ mod test {
                 ),
                 Field::new(
                     consts::TIME_UNIX_NANO,
-                    DataType::Timestamp(TimeUnit::Nanosecond, None),
+                    DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                     false,
                 ),
                 Field::new(consts::SEVERITY_TEXT, DataType::Utf8, true),
@@ -816,7 +817,10 @@ mod test {
                     ],
                     None,
                 )),
-                Arc::new(TimestampNanosecondArray::from_iter_values([100, 200])),
+                Arc::new(
+                    TimestampNanosecondArray::from_iter_values([100, 200])
+                        .with_timezone(UTC_TIME_ZONE),
+                ),
                 Arc::new(StringArray::from_iter_values(vec!["ERROR", "INFO"])),
                 Arc::new(StructArray::new(
                     body_struct_fields.clone(),
@@ -988,7 +992,7 @@ mod test {
                 Field::new(consts::ID, DataType::UInt16, true).with_plain_encoding(),
                 Field::new(
                     consts::TIME_UNIX_NANO,
-                    DataType::Timestamp(TimeUnit::Nanosecond, None),
+                    DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                     false,
                 ),
                 Field::new(consts::SEVERITY_TEXT, DataType::Utf8, true),
@@ -1015,7 +1019,10 @@ mod test {
                     None,
                 )),
                 Arc::new(UInt16Array::from_iter_values(vec![0, 1, 2])),
-                Arc::new(TimestampNanosecondArray::from_iter_values([1, 2, 3])),
+                Arc::new(
+                    TimestampNanosecondArray::from_iter_values([1, 2, 3])
+                        .with_timezone(UTC_TIME_ZONE),
+                ),
                 Arc::new(StringArray::from_iter_values(vec![
                     "ERROR", "INFO", "DEBUG",
                 ])),

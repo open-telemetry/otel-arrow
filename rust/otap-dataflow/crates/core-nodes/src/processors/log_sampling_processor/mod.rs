@@ -66,6 +66,7 @@ static LOG_SAMPLING_PROCESSOR_FACTORY: otel_arrow_dfe_engine::ProcessorFactory<O
                 create_log_sampling_processor(pipeline_ctx, node, node_config, proc_cfg)
             },
         validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<Config>,
+        context_declarations: None,
         wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
     };
 

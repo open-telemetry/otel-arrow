@@ -38,7 +38,7 @@ does not apply to commands invoked from elsewhere via `--manifest-path`.
 
 To move to a new toolchain, open a dedicated pull request that bumps `channel`
 in both `rust/otap-dataflow/rust-toolchain.toml` and
-`rust/experimental/data_engine/rust-toolchain.toml`, and include any lint or
+`rust/contrib/data_engine/rust-toolchain.toml`, and include any lint or
 compile fixes the new version requires. `rustup` installs the pinned toolchain
 automatically on the next `cargo` invocation.
 

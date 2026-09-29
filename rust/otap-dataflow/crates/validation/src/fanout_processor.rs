@@ -47,7 +47,7 @@ pub static FANOUT_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFact
          node_config: Arc<NodeUserConfig>,
          processor_config: &ProcessorConfig,
          _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities| {
-            let metrics = pipeline_ctx.register_metrics::<FanoutMetrics>();
+            let metrics = FanoutMetrics::register(&pipeline_ctx);
             Ok(ProcessorWrapper::local(
                 FanoutProcessor { metrics },
                 node,
@@ -55,6 +55,7 @@ pub static FANOUT_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFact
                 processor_config,
             ))
         },
+    context_declarations: None,
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract {
         output_fanout: otel_arrow_dfe_engine::wiring_contract::OutputFanoutRule::AtMostPerOutput(1),
     },

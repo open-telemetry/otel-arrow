@@ -5,8 +5,11 @@ use std::sync::Arc;
 
 use crate::error::{Error, Result};
 use crate::pipeline::PipelineStage;
+use crate::pipeline::expr::eval::EvalContext;
+use crate::pipeline::expr::types::MetricDataPointType;
+use crate::pipeline::expr::{ChildRecordKind, RecordScope};
 use crate::pipeline::expr::{DataScope, ScopedExpr, ScopedValue, eval::resolve_attrs_payload_type};
-use crate::pipeline::planner::AttributesIdentifier;
+use crate::pipeline::planner::{AttributesIdentifier, RecordType};
 use crate::pipeline::state::ExecutionState;
 
 use arrow::array::{
@@ -28,9 +31,8 @@ use otel_arrow_dfe_pdata::otap::filter::{
     ChildBatchFilterIdHelper, IdBitmapPool, filter_otap_batch,
 };
 
-// TODO - need to wire this back into the expression evaluation
-#[allow(dead_code)]
 pub(crate) mod compare;
+pub(crate) mod data_points;
 
 /// This stage evaluates a `ScopedExpr` tree to produce a root-aligned boolean selection
 /// vector, then filters the OTAP batch using that vector.
@@ -68,7 +70,7 @@ impl PipelineStage for FilterPipelineStage {
         // Evaluate the ScopedExpr tree to produce a boolean result, then align to root.
         let result = self
             .predicate
-            .execute_as_value(&otap_batch, session_context)?;
+            .execute_as_value(&otap_batch, &EvalContext::new(session_context))?;
 
         // Convert the result to a root-aligned BooleanArray selection vector.
         let selection_vec = match result {
@@ -78,7 +80,7 @@ impl PipelineStage for FilterPipelineStage {
             }
             Some(scoped_value) => {
                 // if not root-scoped, align to root
-                if scoped_value.scope != DataScope::Root
+                if scoped_value.scope != DataScope::Record(RecordScope::Signal)
                     && !(matches!(scoped_value.scope, DataScope::RootParent(_)))
                     && scoped_value.scope != DataScope::StaticScalar
                 {
@@ -112,7 +114,7 @@ impl PipelineStage for FilterPipelineStage {
     ) -> Result<RecordBatch> {
         let result = self
             .predicate
-            .evaluate_on_batch(session_context, &attrs_record_batch)?;
+            .evaluate_on_batch(&attrs_record_batch, &EvalContext::new(session_context))?;
 
         let selection_vec = scoped_value_to_boolean_array(result, attrs_record_batch.num_rows())?;
         let new_batch = filter_record_batch(&attrs_record_batch, &selection_vec)?;
@@ -120,8 +122,126 @@ impl PipelineStage for FilterPipelineStage {
         Ok(new_batch)
     }
 
-    fn supports_exec_on_attributes(&self) -> bool {
-        true
+    async fn execute_on_metric_data_points(
+        &mut self,
+        mut otap_batch: OtapArrowRecords,
+        session_ctx: &SessionContext,
+        _config_options: &ConfigOptions,
+        _task_context: Arc<TaskContext>,
+        _exec_options: &mut ExecutionState,
+    ) -> Result<OtapArrowRecords> {
+        for metric_data_point_type in MetricDataPointType::all() {
+            let dp_payload_type = metric_data_point_type.payload_type();
+            if otap_batch.get(dp_payload_type).is_some() {
+                let predicate_eval_value = self.predicate.execute_as_value(
+                    &otap_batch,
+                    &EvalContext::new_for_metrics_data_points(metric_data_point_type, session_ctx),
+                )?;
+                match predicate_eval_value {
+                    Some(value) => {
+                        self.filter_metric_data_points(
+                            value,
+                            &metric_data_point_type,
+                            &mut otap_batch,
+                        )?;
+                    }
+                    None => {
+                        // the expression evaluated to None, which we will treat as false.
+                        // this may happen in the case of a predicate involving a field that
+                        // does not exist, in which case the predicate should fail (unless the
+                        // planner specifically planned it to pass, in which case null wouldn't
+                        // have been returned here).
+                        data_points::remove_all_metric_data_points(
+                            &mut otap_batch,
+                            &metric_data_point_type,
+                        );
+                    }
+                }
+            }
+        }
+
+        Ok(otap_batch)
+    }
+
+    fn supports_exec_on(&self, record_type: &RecordType) -> bool {
+        match record_type {
+            RecordType::Signal => true,
+            RecordType::Attributes => true,
+            RecordType::Child(ChildRecordKind::DataPoint) => true,
+        }
+    }
+}
+
+impl FilterPipelineStage {
+    fn filter_metric_data_points(
+        &mut self,
+        predicate_eval_value: ScopedValue,
+        metric_data_point_type: &MetricDataPointType,
+        otap_batch: &mut OtapArrowRecords,
+    ) -> Result<()> {
+        let is_aligned = matches!(
+            predicate_eval_value.scope,
+            DataScope::Record(RecordScope::Child(ChildRecordKind::DataPoint)),
+        );
+
+        match predicate_eval_value.values {
+            ColumnarValue::Scalar(scalar) => {
+                match scalar {
+                    ScalarValue::Boolean(Some(true)) => {
+                        // all rows pass, nothing to be filtered
+                        Ok(())
+                    }
+                    ScalarValue::Boolean(_) => {
+                        // no rows pass, data points must be removed
+                        data_points::remove_all_metric_data_points(
+                            otap_batch,
+                            metric_data_point_type,
+                        );
+                        Ok(())
+                    }
+                    _ => Err(Error::ExecutionError {
+                        cause: format!(
+                            "Received scalar of type {:?} when filtering metric data points. expected boolean",
+                            scalar.data_type(),
+                        ),
+                    }),
+                }
+            }
+            ColumnarValue::Array(arr) => {
+                // get a selection vector (boolean array of rows passing predicate) that is aligned
+                // with the row order of the data point record batch
+                let arr_aligned = if is_aligned {
+                    arr
+                } else {
+                    // the normal course of action here would be to align this to the row order of
+                    // the data point batch via a join, but currently we don't support this. the
+                    // planner actually should have returned an Error::NotYetSupported for exprs
+                    // that would end up here, so this error is just here for being defensive.
+                    return Err(Error::ExecutionError {
+                        cause: "misaligned expression predicate result when filtering data points"
+                            .into(),
+                    });
+                };
+
+                let selection_vec =
+                    as_boolean_array(&arr_aligned).map_err(|_| Error::ExecutionError {
+                        cause: format!(
+                            "expected boolean array for filter selection, found {}",
+                            arr_aligned.data_type()
+                        ),
+                    })?;
+
+                let mut id_bitmap = self.id_bitmap_pool.acquire();
+                let result = data_points::filter_metric_data_points(
+                    otap_batch,
+                    metric_data_point_type,
+                    selection_vec,
+                    &mut id_bitmap,
+                );
+                self.id_bitmap_pool.release(id_bitmap);
+                result
+            }
+        }
     }
 }
 
@@ -164,8 +284,8 @@ pub(crate) fn scoped_value_to_boolean_array(
     }
 }
 
-/// Align a predicate evaluation result to the root scope and produce a `BooleanArray`
-/// selection vector.
+/// Align a predicate evaluation result to the root signal batch and produce a `BooleanArray`
+/// selection vector
 ///
 /// This is the standard way for filter and conditional consumers to convert a `ScopedValue`
 /// (which may be in any scope) into a root-aligned boolean selection vector:
@@ -186,7 +306,7 @@ pub(crate) fn align_selection_to_root(
     match result {
         None => Ok(BooleanArray::new(BooleanBuffer::new_unset(num_rows), None)),
         Some(scoped_value) => {
-            let aligned = if scoped_value.scope != DataScope::Root
+            let aligned = if !matches!(scoped_value.scope, DataScope::Record(RecordScope::Signal))
                 && scoped_value.scope != DataScope::StaticScalar
             {
                 // copy out the attrs_id before moving value, since AttributesIdentifier is Copy
@@ -199,7 +319,7 @@ pub(crate) fn align_selection_to_root(
 
                 match maybe_attrs_id {
                     Some(attrs_id) => {
-                        align_selection_vec_from_atts(scoped_value, &attrs_id, otap_batch)
+                        align_selection_vec_from_attrs(scoped_value, &attrs_id, otap_batch)
                     }
                     _ => Err(Error::NotYetSupportedError {
                         message: format!(
@@ -221,7 +341,7 @@ pub(crate) fn align_selection_to_root(
 /// Uses the parent_id column from the child result and the id column on the root batch
 /// to map each child row to its corresponding root row. Root rows with no matching child
 /// row get null values.
-fn align_selection_vec_from_atts(
+fn align_selection_vec_from_attrs(
     value: ScopedValue,
     attrs_id: &AttributesIdentifier,
     otap_batch: &OtapArrowRecords,
@@ -264,7 +384,7 @@ fn align_selection_vec_from_atts(
             // no ID column means no attributes exist -- return all-null for the root
             return Ok(ScopedValue::new(
                 null_columnar_value_for_rows(&value.values, num_rows)?,
-                DataScope::Root,
+                DataScope::Record(RecordScope::Signal),
                 root_rb,
             ));
         }
@@ -294,7 +414,7 @@ fn align_selection_vec_from_atts(
             let all_false = BooleanArray::new(BooleanBuffer::new_unset(num_rows), None);
             return Ok(ScopedValue::new(
                 ColumnarValue::Array(Arc::new(all_false)),
-                DataScope::Root,
+                DataScope::Record(RecordScope::Signal),
                 root_rb,
             ));
         }
@@ -346,7 +466,7 @@ fn align_selection_vec_from_atts(
 
         return Ok(ScopedValue::new(
             ColumnarValue::Array(aligned_values),
-            DataScope::Root,
+            DataScope::Record(RecordScope::Signal),
             root_rb,
         ));
     }
@@ -377,7 +497,7 @@ fn align_selection_vec_from_atts(
 
     Ok(ScopedValue::new(
         ColumnarValue::Array(aligned_values),
-        DataScope::Root,
+        DataScope::Record(RecordScope::Signal),
         root_rb,
     ))
 }

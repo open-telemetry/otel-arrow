@@ -563,10 +563,10 @@ impl MetricsProtoBytesEncoder {
         }
 
         // encode schema url
-        if let Some(col) = &metrics_data_arrays.resource_arrays.schema_url {
-            if let Some(val) = col.str_at(index) {
-                result_buf.encode_string(RESOURCE_METRICS_SCHEMA_URL, val)?;
-            }
+        if let Some(col) = &metrics_data_arrays.resource_arrays.schema_url
+            && let Some(val) = col.str_at(index)
+        {
+            result_buf.encode_string(RESOURCE_METRICS_SCHEMA_URL, val)?;
         }
 
         Ok(())
@@ -623,10 +623,10 @@ impl MetricsProtoBytesEncoder {
         }
 
         // encode the schema url
-        if let Some(col) = &metrics_data_arrays.metrics_arrays.schema_url {
-            if let Some(val) = col.str_at(index) {
-                result_buf.encode_string(SCOPE_METRICS_SCHEMA_URL, val)?;
-            }
+        if let Some(col) = &metrics_data_arrays.metrics_arrays.schema_url
+            && let Some(val) = col.str_at(index)
+        {
+            result_buf.encode_string(SCOPE_METRICS_SCHEMA_URL, val)?;
         }
 
         Ok(())
@@ -648,16 +648,16 @@ impl MetricsProtoBytesEncoder {
             result_buf.encode_string(METRIC_NAME, val)?;
         }
 
-        if let Some(col) = &metrics_arrays.description {
-            if let Some(val) = col.str_at(index) {
-                result_buf.encode_string(METRIC_DESCRIPTION, val)?;
-            }
+        if let Some(col) = &metrics_arrays.description
+            && let Some(val) = col.str_at(index)
+        {
+            result_buf.encode_string(METRIC_DESCRIPTION, val)?;
         }
 
-        if let Some(col) = &metrics_arrays.unit {
-            if let Some(val) = col.str_at(index) {
-                result_buf.encode_string(METRIC_UNIT, val)?;
-            }
+        if let Some(col) = &metrics_arrays.unit
+            && let Some(val) = col.str_at(index)
+        {
+            result_buf.encode_string(METRIC_UNIT, val)?;
         }
 
         if let Some(metric_type_val) = &metrics_arrays.metric_type.value_at(index) {
@@ -692,18 +692,15 @@ impl MetricsProtoBytesEncoder {
             }
         }
 
-        if let Some(metrics_attrs) = metrics_data_arrays.metrics_attrs.as_ref() {
-            if let Some(id) = metrics_arrays.id.value_at(index) {
-                let attrs_index_iter = ChildIndexIter::new(
-                    id,
-                    &metrics_attrs.parent_id,
-                    &mut self.metrics_attrs_cursor,
-                );
-                for attr_index in attrs_index_iter {
-                    result_buf.encode_len_delimited(METRIC_METADATA, |result_buf| {
-                        encode_key_value(metrics_attrs, attr_index, result_buf)
-                    })?
-                }
+        if let Some(metrics_attrs) = metrics_data_arrays.metrics_attrs.as_ref()
+            && let Some(id) = metrics_arrays.id.value_at(index)
+        {
+            let attrs_index_iter =
+                ChildIndexIter::new(id, &metrics_attrs.parent_id, &mut self.metrics_attrs_cursor);
+            for attr_index in attrs_index_iter {
+                result_buf.encode_len_delimited(METRIC_METADATA, |result_buf| {
+                    encode_key_value(metrics_attrs, attr_index, result_buf)
+                })?
             }
         }
 
@@ -860,6 +857,7 @@ impl MetricsProtoBytesEncoder {
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::schema::UTC_TIME_ZONE;
 
     use arrow::array::{
         ArrayRef, FixedSizeBinaryArray, Float64Array, Int32Array, Int64Array, ListArray,
@@ -1001,7 +999,7 @@ mod test {
             Field::new(consts::PARENT_ID, DataType::UInt32, false).with_plain_encoding(),
             Field::new(
                 consts::TIME_UNIX_NANO,
-                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                 false,
             ),
             Field::new(consts::INT_VALUE, DataType::Int64, true),
@@ -1045,12 +1043,12 @@ mod test {
                 Field::new(consts::PARENT_ID, DataType::UInt16, true).with_plain_encoding(),
                 Field::new(
                     consts::START_TIME_UNIX_NANO,
-                    DataType::Timestamp(TimeUnit::Nanosecond, None),
+                    DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                     true,
                 ),
                 Field::new(
                     consts::TIME_UNIX_NANO,
-                    DataType::Timestamp(TimeUnit::Nanosecond, None),
+                    DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                     true,
                 ),
                 Field::new(consts::INT_VALUE, DataType::Int64, true),
@@ -1060,8 +1058,14 @@ mod test {
             vec![
                 Arc::new(UInt32Array::from_iter_values([0, 1, 2, 3])),
                 Arc::new(UInt16Array::from_iter_values([0, 0, 1, 1])),
-                Arc::new(TimestampNanosecondArray::from_iter_values([1i64, 2, 3, 4])),
-                Arc::new(TimestampNanosecondArray::from_iter_values([5i64, 6, 7, 8])),
+                Arc::new(
+                    TimestampNanosecondArray::from_iter_values([1i64, 2, 3, 4])
+                        .with_timezone(UTC_TIME_ZONE),
+                ),
+                Arc::new(
+                    TimestampNanosecondArray::from_iter_values([5i64, 6, 7, 8])
+                        .with_timezone(UTC_TIME_ZONE),
+                ),
                 Arc::new(Int64Array::from_iter([None, Some(2), None, None])),
                 Arc::new(Float64Array::from_iter([Some(1.0), None, Some(3.0), None])),
                 Arc::new(UInt32Array::from_iter_values([5, 4, 3, 2])),
@@ -1087,7 +1091,10 @@ mod test {
             vec![
                 Arc::new(UInt32Array::from_iter_values([0])),
                 Arc::new(UInt32Array::from_iter_values([1])),
-                Arc::new(TimestampNanosecondArray::from_iter_values([101i64])),
+                Arc::new(
+                    TimestampNanosecondArray::from_iter_values([101i64])
+                        .with_timezone(UTC_TIME_ZONE),
+                ),
                 Arc::new(Int64Array::from_iter([None])),
                 Arc::new(Float64Array::from_iter([None])),
                 Arc::new(FixedSizeBinaryArray::try_from_iter(vec![[2u8; 16]].into_iter()).unwrap()),
@@ -1128,12 +1135,12 @@ mod test {
                 Field::new(consts::PARENT_ID, DataType::UInt16, true).with_plain_encoding(),
                 Field::new(
                     consts::START_TIME_UNIX_NANO,
-                    DataType::Timestamp(TimeUnit::Nanosecond, None),
+                    DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                     true,
                 ),
                 Field::new(
                     consts::TIME_UNIX_NANO,
-                    DataType::Timestamp(TimeUnit::Nanosecond, None),
+                    DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                     true,
                 ),
                 Field::new(consts::SUMMARY_COUNT, DataType::UInt64, true),
@@ -1147,8 +1154,14 @@ mod test {
             vec![
                 Arc::new(UInt32Array::from_iter_values([0, 1])),
                 Arc::new(UInt16Array::from_iter_values([2, 2])),
-                Arc::new(TimestampNanosecondArray::from_iter_values([11i64, 12])),
-                Arc::new(TimestampNanosecondArray::from_iter_values([15i64, 16])),
+                Arc::new(
+                    TimestampNanosecondArray::from_iter_values([11i64, 12])
+                        .with_timezone(UTC_TIME_ZONE),
+                ),
+                Arc::new(
+                    TimestampNanosecondArray::from_iter_values([15i64, 16])
+                        .with_timezone(UTC_TIME_ZONE),
+                ),
                 Arc::new(UInt64Array::from_iter([None, Some(42)])),
                 Arc::new(Float64Array::from_iter([None, Some(123.456)])),
                 Arc::new(ListArray::new(
@@ -1191,12 +1204,12 @@ mod test {
                 Field::new(consts::PARENT_ID, DataType::UInt16, true).with_plain_encoding(),
                 Field::new(
                     consts::START_TIME_UNIX_NANO,
-                    DataType::Timestamp(TimeUnit::Nanosecond, None),
+                    DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                     true,
                 ),
                 Field::new(
                     consts::TIME_UNIX_NANO,
-                    DataType::Timestamp(TimeUnit::Nanosecond, None),
+                    DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                     true,
                 ),
                 Field::new(consts::HISTOGRAM_COUNT, DataType::UInt64, true),
@@ -1218,8 +1231,14 @@ mod test {
             vec![
                 Arc::new(UInt32Array::from_iter_values([0])),
                 Arc::new(UInt16Array::from_iter_values([3])),
-                Arc::new(TimestampNanosecondArray::from_iter_values([21i64])),
-                Arc::new(TimestampNanosecondArray::from_iter_values([25i64])),
+                Arc::new(
+                    TimestampNanosecondArray::from_iter_values([21i64])
+                        .with_timezone(UTC_TIME_ZONE),
+                ),
+                Arc::new(
+                    TimestampNanosecondArray::from_iter_values([25i64])
+                        .with_timezone(UTC_TIME_ZONE),
+                ),
                 Arc::new(UInt64Array::from_iter([Some(10)])),
                 Arc::new(Float64Array::from_iter([Some(55.5)])),
                 Arc::new(ListArray::new(
@@ -1268,7 +1287,10 @@ mod test {
             vec![
                 Arc::new(UInt32Array::from_iter_values([0, 1])),
                 Arc::new(UInt32Array::from_iter_values([0, 0])),
-                Arc::new(TimestampNanosecondArray::from_iter_values([26i64, 27])),
+                Arc::new(
+                    TimestampNanosecondArray::from_iter_values([26i64, 27])
+                        .with_timezone(UTC_TIME_ZONE),
+                ),
                 Arc::new(Int64Array::from_iter([Some(123), None])),
                 Arc::new(Float64Array::from_iter([None, Some(456.789)])),
                 Arc::new(
@@ -1308,12 +1330,12 @@ mod test {
                 Field::new(consts::PARENT_ID, DataType::UInt16, true).with_plain_encoding(),
                 Field::new(
                     consts::START_TIME_UNIX_NANO,
-                    DataType::Timestamp(TimeUnit::Nanosecond, None),
+                    DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                     true,
                 ),
                 Field::new(
                     consts::TIME_UNIX_NANO,
-                    DataType::Timestamp(TimeUnit::Nanosecond, None),
+                    DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                     true,
                 ),
                 Field::new(consts::HISTOGRAM_COUNT, DataType::UInt64, true),
@@ -1342,8 +1364,14 @@ mod test {
             vec![
                 Arc::new(UInt32Array::from_iter_values([0])),
                 Arc::new(UInt16Array::from_iter_values([4])),
-                Arc::new(TimestampNanosecondArray::from_iter_values([31i64])),
-                Arc::new(TimestampNanosecondArray::from_iter_values([35i64])),
+                Arc::new(
+                    TimestampNanosecondArray::from_iter_values([31i64])
+                        .with_timezone(UTC_TIME_ZONE),
+                ),
+                Arc::new(
+                    TimestampNanosecondArray::from_iter_values([35i64])
+                        .with_timezone(UTC_TIME_ZONE),
+                ),
                 Arc::new(UInt64Array::from_iter([Some(20)])),
                 Arc::new(Float64Array::from_iter([Some(155.5)])),
                 Arc::new(Int32Array::from_iter([3])),
@@ -1404,7 +1432,9 @@ mod test {
             vec![
                 Arc::new(UInt32Array::from_iter_values([0])),
                 Arc::new(UInt32Array::from_iter_values([0])),
-                Arc::new(TimestampNanosecondArray::from_iter_values([1])),
+                Arc::new(
+                    TimestampNanosecondArray::from_iter_values([1]).with_timezone(UTC_TIME_ZONE),
+                ),
                 Arc::new(Int64Array::from_iter([1])),
                 Arc::new(Float64Array::from_iter([1.0])),
                 Arc::new(

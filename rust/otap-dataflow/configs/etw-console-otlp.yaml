@@ -15,7 +15,7 @@
 # to local Parquet files as a durable fallback.
 #
 # Usage (run as Administrator for ETW access):
-#   cargo run --features etw-receiver -- -c configs/etw-console-otlp.yaml
+#   cargo run --features etw -- -c configs/etw-console-otlp.yaml
 
 version: otel_dataflow/v1
 engine: {}

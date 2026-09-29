@@ -5,7 +5,7 @@
 ## Metadata
 
 - Type: `receiver:host_metrics` (`urn:otel:receiver:host_metrics`)
-- Feature gate: Default
+- Feature gate: `host-metrics`
 - Stability: Experimental
 
 ## Overview

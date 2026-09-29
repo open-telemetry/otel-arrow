@@ -174,58 +174,57 @@ pub(crate) fn proto_encode_exp_hist_data_point(
     exemplar_attrs_cursor: &mut SortedBatchCursor,
     result_buf: &mut ProtoBuffer,
 ) -> Result<()> {
-    if let Some(attrs) = attrs {
-        if let Some(id) = exp_hist_dp_arrays.id.value_at(index) {
-            let attrs_index_iter = ChildIndexIter::new(id, &attrs.parent_id, attrs_cursor);
-            for attrs_index in attrs_index_iter {
-                result_buf.encode_len_delimited(EXP_HISTOGRAM_DP_ATTRIBUTES, |result_buf| {
-                    encode_key_value(attrs, attrs_index, result_buf)
-                })?;
-            }
+    if let Some(attrs) = attrs
+        && let Some(id) = exp_hist_dp_arrays.id.value_at(index)
+    {
+        let attrs_index_iter = ChildIndexIter::new(id, &attrs.parent_id, attrs_cursor);
+        for attrs_index in attrs_index_iter {
+            result_buf.encode_len_delimited(EXP_HISTOGRAM_DP_ATTRIBUTES, |result_buf| {
+                encode_key_value(attrs, attrs_index, result_buf)
+            })?;
         }
     }
 
-    if let Some(col) = exp_hist_dp_arrays.start_time_unix_nano {
-        if let Some(val) = col.value_at(index) {
-            result_buf
-                .encode_field_tag(EXP_HISTOGRAM_DP_START_TIME_UNIX_NANO, wire_types::FIXED64)?;
-            result_buf.extend_from_slice(&val.to_le_bytes())?;
-        }
+    if let Some(col) = exp_hist_dp_arrays.start_time_unix_nano
+        && let Some(val) = col.value_at(index)
+    {
+        result_buf.encode_field_tag(EXP_HISTOGRAM_DP_START_TIME_UNIX_NANO, wire_types::FIXED64)?;
+        result_buf.extend_from_slice(&val.to_le_bytes())?;
     }
 
-    if let Some(col) = exp_hist_dp_arrays.time_unix_nano {
-        if let Some(val) = col.value_at(index) {
-            result_buf.encode_field_tag(EXP_HISTOGRAM_DP_TIME_UNIX_NANO, wire_types::FIXED64)?;
-            result_buf.extend_from_slice(&val.to_le_bytes())?;
-        }
+    if let Some(col) = exp_hist_dp_arrays.time_unix_nano
+        && let Some(val) = col.value_at(index)
+    {
+        result_buf.encode_field_tag(EXP_HISTOGRAM_DP_TIME_UNIX_NANO, wire_types::FIXED64)?;
+        result_buf.extend_from_slice(&val.to_le_bytes())?;
     }
 
-    if let Some(col) = exp_hist_dp_arrays.histogram_count {
-        if let Some(val) = col.value_at(index) {
-            result_buf.encode_field_tag(EXP_HISTOGRAM_DP_COUNT, wire_types::FIXED64)?;
-            result_buf.extend_from_slice(&val.to_le_bytes())?;
-        }
+    if let Some(col) = exp_hist_dp_arrays.histogram_count
+        && let Some(val) = col.value_at(index)
+    {
+        result_buf.encode_field_tag(EXP_HISTOGRAM_DP_COUNT, wire_types::FIXED64)?;
+        result_buf.extend_from_slice(&val.to_le_bytes())?;
     }
 
-    if let Some(col) = exp_hist_dp_arrays.histogram_sum {
-        if let Some(val) = col.value_at(index) {
-            result_buf.encode_field_tag(EXP_HISTOGRAM_DP_SUM, wire_types::FIXED64)?;
-            result_buf.extend_from_slice(&val.to_le_bytes())?;
-        }
+    if let Some(col) = exp_hist_dp_arrays.histogram_sum
+        && let Some(val) = col.value_at(index)
+    {
+        result_buf.encode_field_tag(EXP_HISTOGRAM_DP_SUM, wire_types::FIXED64)?;
+        result_buf.extend_from_slice(&val.to_le_bytes())?;
     }
 
-    if let Some(col) = exp_hist_dp_arrays.exp_histogram_scale {
-        if let Some(val) = col.value_at(index) {
-            result_buf.encode_field_tag(EXP_HISTOGRAM_DP_SCALE, wire_types::VARINT)?;
-            result_buf.encode_sint32(val)?;
-        }
+    if let Some(col) = exp_hist_dp_arrays.exp_histogram_scale
+        && let Some(val) = col.value_at(index)
+    {
+        result_buf.encode_field_tag(EXP_HISTOGRAM_DP_SCALE, wire_types::VARINT)?;
+        result_buf.encode_sint32(val)?;
     }
 
-    if let Some(col) = exp_hist_dp_arrays.exp_histogram_zero_count {
-        if let Some(val) = col.value_at(index) {
-            result_buf.encode_field_tag(EXP_HISTOGRAM_DP_ZERO_COUNT, wire_types::FIXED64)?;
-            result_buf.extend_from_slice(&val.to_le_bytes())?;
-        }
+    if let Some(col) = exp_hist_dp_arrays.exp_histogram_zero_count
+        && let Some(val) = col.value_at(index)
+    {
+        result_buf.encode_field_tag(EXP_HISTOGRAM_DP_ZERO_COUNT, wire_types::FIXED64)?;
+        result_buf.extend_from_slice(&val.to_le_bytes())?;
     }
 
     if let Some(bucket_arrays) = exp_hist_dp_arrays.exp_histogram_positive.as_ref() {
@@ -240,50 +239,50 @@ pub(crate) fn proto_encode_exp_hist_data_point(
         })?;
     }
 
-    if let Some(exemplar_arrays) = exemplar_arrays {
-        if let Some(id) = exp_hist_dp_arrays.id.value_at(index) {
-            let exemplar_index_iter =
-                ChildIndexIter::new(id, &exemplar_arrays.parent_id, exemplar_cursor);
-            for exemplar_index in exemplar_index_iter {
-                result_buf.encode_len_delimited(EXP_HISTOGRAM_DP_EXEMPLARS, |result_buf| {
-                    proto_encode_exemplar(
-                        exemplar_index,
-                        exemplar_arrays,
-                        exemplar_attr_arrays,
-                        exemplar_attrs_cursor,
-                        result_buf,
-                    )
-                })?;
-            }
+    if let Some(exemplar_arrays) = exemplar_arrays
+        && let Some(id) = exp_hist_dp_arrays.id.value_at(index)
+    {
+        let exemplar_index_iter =
+            ChildIndexIter::new(id, &exemplar_arrays.parent_id, exemplar_cursor);
+        for exemplar_index in exemplar_index_iter {
+            result_buf.encode_len_delimited(EXP_HISTOGRAM_DP_EXEMPLARS, |result_buf| {
+                proto_encode_exemplar(
+                    exemplar_index,
+                    exemplar_arrays,
+                    exemplar_attr_arrays,
+                    exemplar_attrs_cursor,
+                    result_buf,
+                )
+            })?;
         }
     }
 
-    if let Some(col) = exp_hist_dp_arrays.flags {
-        if let Some(val) = col.value_at(index) {
-            result_buf.encode_field_tag(EXP_HISTOGRAM_DP_FLAGS, wire_types::VARINT)?;
-            result_buf.encode_varint(val as u64)?;
-        }
+    if let Some(col) = exp_hist_dp_arrays.flags
+        && let Some(val) = col.value_at(index)
+    {
+        result_buf.encode_field_tag(EXP_HISTOGRAM_DP_FLAGS, wire_types::VARINT)?;
+        result_buf.encode_varint(val as u64)?;
     }
 
-    if let Some(col) = exp_hist_dp_arrays.histogram_min {
-        if let Some(val) = col.value_at(index) {
-            result_buf.encode_field_tag(EXP_HISTOGRAM_DP_MIN, wire_types::FIXED64)?;
-            result_buf.extend_from_slice(&val.to_le_bytes())?;
-        }
+    if let Some(col) = exp_hist_dp_arrays.histogram_min
+        && let Some(val) = col.value_at(index)
+    {
+        result_buf.encode_field_tag(EXP_HISTOGRAM_DP_MIN, wire_types::FIXED64)?;
+        result_buf.extend_from_slice(&val.to_le_bytes())?;
     }
 
-    if let Some(col) = exp_hist_dp_arrays.histogram_max {
-        if let Some(val) = col.value_at(index) {
-            result_buf.encode_field_tag(EXP_HISTOGRAM_DP_MAX, wire_types::FIXED64)?;
-            result_buf.extend_from_slice(&val.to_le_bytes())?;
-        }
+    if let Some(col) = exp_hist_dp_arrays.histogram_max
+        && let Some(val) = col.value_at(index)
+    {
+        result_buf.encode_field_tag(EXP_HISTOGRAM_DP_MAX, wire_types::FIXED64)?;
+        result_buf.extend_from_slice(&val.to_le_bytes())?;
     }
 
-    if let Some(col) = exp_hist_dp_arrays.zero_threshold {
-        if let Some(val) = col.value_at(index) {
-            result_buf.encode_field_tag(EXP_HISTOGRAM_DP_ZERO_THRESHOLD, wire_types::FIXED64)?;
-            result_buf.extend_from_slice(&val.to_le_bytes())?;
-        }
+    if let Some(col) = exp_hist_dp_arrays.zero_threshold
+        && let Some(val) = col.value_at(index)
+    {
+        result_buf.encode_field_tag(EXP_HISTOGRAM_DP_ZERO_THRESHOLD, wire_types::FIXED64)?;
+        result_buf.extend_from_slice(&val.to_le_bytes())?;
     }
 
     Ok(())

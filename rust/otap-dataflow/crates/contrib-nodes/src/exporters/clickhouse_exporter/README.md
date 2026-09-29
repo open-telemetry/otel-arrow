@@ -1,5 +1,9 @@
 # ClickHouse Exporter
 
+- Type: `exporter:clickhouse` (`urn:otel:exporter:clickhouse`)
+- Feature gate: `clickhouse`
+- Stability: Experimental
+
 This exporter accepts OTAP Arrow payloads and serialized OTLP requests,
 reshapes them into ClickHouse-compatible Arrow `RecordBatch`es, and inserts
 them into ClickHouse over HTTP using the official ClickHouse Rust client
@@ -52,7 +56,7 @@ Run from the `rust/otap-dataflow` workspace directory.
 
 ```bash
 cd rust/otap-dataflow
-cargo run --features clickhouse-exporter -- --config configs/trafficgen-clickhouse.yaml
+cargo run --features clickhouse -- --config configs/trafficgen-clickhouse.yaml
 ```
 
 ### 3. Query ClickHouse
@@ -337,8 +341,8 @@ DDL snapshot coverage currently lives in `table_snapshots/` and covers:
 The recommended validation loop for intentional DDL changes is:
 
 ```bash
-cargo test -p otel-arrow-dfe-contrib-nodes --features clickhouse-exporter
-INSTA_UPDATE=always cargo test -p otel-arrow-dfe-contrib-nodes --features clickhouse-exporter
+cargo test -p otel-arrow-dfe-contrib-nodes --features clickhouse
+INSTA_UPDATE=always cargo test -p otel-arrow-dfe-contrib-nodes --features clickhouse
 ```
 
 ## Important Files
