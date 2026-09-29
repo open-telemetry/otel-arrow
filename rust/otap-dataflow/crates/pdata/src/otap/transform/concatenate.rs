@@ -239,7 +239,7 @@ fn concatenate_signal<S: OtapBatchStore, const N: usize>(
 ) -> Result<[Option<RecordBatch>; N]> {
     let mut result = [const { None }; N];
 
-    // P1 + P3: decode transport encodings and plan the ID rewrites. Nothing
+    // Decode transport encodings and plan the ID rewrites. Nothing
     // is copied here apart from decoding encoded columns and the scratch
     // values of compacted ID columns.
     let mut id_plan = if opts.reindex {
@@ -253,14 +253,12 @@ fn concatenate_signal<S: OtapBatchStore, const N: usize>(
     for i in 0..N {
         let payload_def = payloads::get(S::payload_type_at_idx(i));
 
-        // P2: index fields and select the unified schema.
         let index = index_records(select_all(items, i), payload_def)?;
         if index.batch_count == 0 {
             continue;
         }
         let selected = select_schema(&index)?;
 
-        // P5: write every output column once.
         let mut batches: Vec<&RecordBatch> = Vec::with_capacity(index.batch_count);
         let mut plans: Vec<InputPlan> = Vec::with_capacity(index.batch_count);
         for (j, group) in items.iter().enumerate() {
@@ -468,7 +466,6 @@ pub(crate) const MAX_SLOTS: usize = 17;
 #[derive(Debug)]
 struct RecordIndex<'a> {
     batch_count: usize,
-    row_count: usize,
     fields: FieldIndex<'a>,
 }
 
@@ -527,7 +524,6 @@ fn index_records<'a>(
 ) -> Result<RecordIndex<'a>> {
     let mut index = RecordIndex {
         batch_count: 0,
-        row_count: 0,
         fields: FieldIndex::new(payload_def),
     };
 
@@ -537,7 +533,6 @@ fn index_records<'a>(
         };
 
         index.batch_count += 1;
-        index.row_count += rb.num_rows();
 
         let fields = rb.schema_ref().fields();
         let iter = fields.iter().zip(rb.columns());
