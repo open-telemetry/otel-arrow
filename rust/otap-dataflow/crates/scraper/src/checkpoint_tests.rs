@@ -89,17 +89,6 @@ fn store(root: &Path, fingerprint: &str) -> CheckpointStore {
     )
 }
 
-fn write_legacy_checkpoint(
-    store: &CheckpointStore,
-    prefix: &Path,
-    value: &CompositeCursor,
-) -> CheckpointState {
-    let mut legacy = store.clone();
-    legacy.prefix = prefix.to_path_buf();
-    legacy.directory_ready = Arc::new(AtomicBool::new(false));
-    legacy.write(0, value).expect("legacy commit").0
-}
-
 /// Scenario: A source ID makes the serialized checkpoint exceed the read ceiling.
 /// Guarantees: The write fails before creating directories or installing unreadable state.
 #[test]
@@ -557,94 +546,28 @@ fn long_source_uses_bounded_checkpoint_filenames() {
     );
 }
 
-/// Scenario: an earlier build wrote a long source ID under the readable legacy filename.
-/// Guarantees: startup validates and resumes that checkpoint, then the next acknowledged cursor
-/// is installed under the bounded digest name without replaying from the initial cursor.
+/// Scenario: Two current-layout stores use the same source identity under different state roots.
+/// Guarantees: Each root starts and advances independently without adopting or modifying the other's progress.
 #[test]
-fn long_source_resumes_legacy_checkpoint_before_migration() {
+fn checkpoint_roots_have_independent_progress() {
     let directory = tempfile::tempdir().expect("temporary directory");
-    let source_id = "s".repeat(150);
-    let store = CheckpointStore::new(
-        directory.path(),
-        "group",
-        "pipeline",
-        "oracle-audit",
-        &source_id,
-        "fingerprint".to_owned(),
-    );
-    let legacy = write_legacy_checkpoint(
-        &store,
-        store
-            .older_legacy_prefix
-            .as_ref()
-            .expect("long source should have an older legacy path"),
-        &cursor("2026-01-01 00:00:00", 1),
-    );
-    let legacy_revision = legacy.revision;
-
-    assert_eq!(store.read().expect("read legacy checkpoint"), Some(legacy));
-
-    let (migrated, _) = store
-        .write(legacy_revision, &cursor("2026-01-01 00:00:01", 2))
-        .expect("write bounded checkpoint");
-    assert!(revision_path(&store.prefix, migrated.revision).exists());
-    assert_eq!(
-        store.read().expect("read bounded checkpoint"),
-        Some(migrated)
-    );
-}
-
-/// Scenario: a previous build wrote a short source ID under its readable filename.
-/// Guarantees: upgrade reads that checkpoint and writes subsequent progress to the case-safe layout.
-#[test]
-fn short_source_resumes_legacy_checkpoint_before_migration() {
-    let directory = tempfile::tempdir().expect("temporary directory");
+    let other_store = store(&directory.path().join("other"), "fingerprint");
     let store = store(directory.path(), "fingerprint");
-    let legacy = write_legacy_checkpoint(
-        &store,
-        &store.legacy_prefix,
-        &cursor("2026-01-01 00:00:00", 1),
-    );
+    let (other_state, _) = other_store
+        .write(0, &cursor("2026-01-01 00:00:00", 42))
+        .expect("other root checkpoint");
 
+    assert_eq!(store.read().expect("supported namespace"), None);
+    let (state, _) = store
+        .write(0, &cursor("2026-01-01 00:00:01", 1))
+        .expect("fresh checkpoint");
+    assert_eq!(state.revision, 1);
+    assert!(store.prefix.starts_with(directory.path().join("@v1")));
+    assert_eq!(store.read().expect("new checkpoint"), Some(state));
     assert_eq!(
-        store.read().expect("read old checkpoint"),
-        Some(legacy.clone())
+        other_store.read().expect("other root checkpoint unchanged"),
+        Some(other_state)
     );
-    let (migrated, _) = store
-        .write(legacy.revision, &cursor("2026-01-01 00:00:01", 2))
-        .expect("write to new namespace");
-    assert!(revision_path(&store.prefix, migrated.revision).exists());
-    assert_eq!(store.read().expect("read new checkpoint"), Some(migrated));
-}
-
-/// Scenario: a prior build wrote a long source ID under its bounded digest name.
-/// Guarantees: the versioned namespace can resume the current legacy format before migration.
-#[test]
-fn long_source_resumes_digest_legacy_checkpoint() {
-    let directory = tempfile::tempdir().expect("temporary directory");
-    let source_id = "s".repeat(150);
-    let store = CheckpointStore::new(
-        directory.path(),
-        "group",
-        "pipeline",
-        "oracle-audit",
-        &source_id,
-        "fingerprint".to_owned(),
-    );
-    let legacy = write_legacy_checkpoint(
-        &store,
-        &store.legacy_prefix,
-        &cursor("2026-01-01 00:00:00", 1),
-    );
-
-    assert_eq!(
-        store.read().expect("read digest checkpoint"),
-        Some(legacy.clone())
-    );
-    let (migrated, _) = store
-        .write(legacy.revision, &cursor("2026-01-01 00:00:01", 2))
-        .expect("write to versioned namespace");
-    assert_eq!(store.read().expect("read new checkpoint"), Some(migrated));
 }
 
 /// Scenario: identity segments differ only by ASCII case on a case-insensitive filesystem.
@@ -692,70 +615,6 @@ fn case_variants_use_distinct_checkpoint_and_lease_names() {
         assert_eq!(first.read().expect("read first"), Some(first_state.clone()));
     }
     drop(first_lease);
-}
-
-/// Scenario: old source filenames differ only by case on a case-insensitive filesystem.
-/// Guarantees: an unrelated source cannot mistake legacy progress for absent state or adopt it.
-#[test]
-fn case_variant_legacy_checkpoint_fails_closed() {
-    let directory = tempfile::tempdir().expect("temporary directory");
-    let first = CheckpointStore::new(
-        directory.path(),
-        "group",
-        "pipeline",
-        "receiver",
-        "Orders",
-        "fingerprint".to_owned(),
-    );
-    _ = write_legacy_checkpoint(
-        &first,
-        &first.legacy_prefix,
-        &cursor("2026-01-01 00:00:00", 1),
-    );
-    let other = CheckpointStore::new(
-        directory.path(),
-        "group",
-        "pipeline",
-        "receiver",
-        "orders",
-        "fingerprint".to_owned(),
-    );
-    assert!(matches!(
-        other.read(),
-        Err(CheckpointError::LegacyNamespaceCollision { .. })
-    ));
-}
-
-/// Scenario: old pipeline directories differ only by case and cannot identify their owner.
-/// Guarantees: legacy recovery refuses to adopt a different pipeline's cursor.
-#[test]
-fn case_variant_legacy_directory_fails_closed() {
-    let directory = tempfile::tempdir().expect("temporary directory");
-    let first = CheckpointStore::new(
-        directory.path(),
-        "Group",
-        "pipeline",
-        "receiver",
-        "orders",
-        "fingerprint".to_owned(),
-    );
-    _ = write_legacy_checkpoint(
-        &first,
-        &first.legacy_prefix,
-        &cursor("2026-01-01 00:00:00", 1),
-    );
-    let other = CheckpointStore::new(
-        directory.path(),
-        "group",
-        "pipeline",
-        "receiver",
-        "orders",
-        "fingerprint".to_owned(),
-    );
-    assert!(matches!(
-        other.read(),
-        Err(CheckpointError::LegacyNamespaceCollision { .. })
-    ));
 }
 
 /// Scenario: two receivers in one process target the same canonical checkpoint source.

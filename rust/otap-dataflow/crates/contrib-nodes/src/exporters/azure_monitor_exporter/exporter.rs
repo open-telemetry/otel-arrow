@@ -12,6 +12,7 @@ use otel_arrow_dfe_engine::local::capability::auth::bearer_token_provider::Beare
 use otel_arrow_dfe_engine::local::exporter::{EffectHandler, Exporter};
 use otel_arrow_dfe_engine::message::{ExporterInbox, Message};
 use otel_arrow_dfe_engine::terminal_state::TerminalState;
+use otel_arrow_dfe_otap::http_client_auth::*;
 use otel_arrow_dfe_pdata::otlp::OtlpProtoBytes;
 use otel_arrow_dfe_pdata::views::otap::OtapLogsView;
 use otel_arrow_dfe_pdata::views::otlp::bytes::logs::RawLogsData;
@@ -27,29 +28,30 @@ use super::in_flight_exports::{CompletedExport, InFlightExports};
 use super::metrics::AzureMonitorExporterMetricsRc;
 use super::state::AzureMonitorExporterState;
 use super::transformer::Transformer;
-use otel_arrow_dfe_otap::bearer_auth::{BearerAuth, BearerAuthEvents};
 use otel_arrow_dfe_otap::pdata::{Context, OtapPdata};
 
 use otel_arrow_dfe_telemetry::common_attributes::{HttpResponse, Outcome};
 
 use bytes::Bytes;
 use std::cell::RefCell;
+use std::future::poll_fn;
 use std::rc::Rc;
 
 /// Max concurrent HTTP requests in flight to the Logs Ingestion API.
 const MAX_IN_FLIGHT_EXPORTS: usize = 16;
 const PERIODIC_EXPORT_INTERVAL: u64 = 3;
 
-/// Raises shared bearer-auth warnings under the Azure Monitor event namespace.
-const AZURE_MONITOR_BEARER_AUTH_EVENTS: BearerAuthEvents = BearerAuthEvents {
-    invalid_token: |error| {
-        otel_warn!("azure_monitor_exporter.auth.invalid_bearer_token", error = %error);
+/// Raises shared auth warnings under the Azure Monitor event namespace.
+const AZURE_MONITOR_AUTH_EVENTS: HttpClientAuthProviderEvents = HttpClientAuthProviderEvents {
+    validate_header_name: |_| Ok(()),
+    on_invalid: |source, error| {
+        otel_warn!("azure_monitor_exporter.auth.invalid", source = %source, error = %error);
     },
-    token_stream_closed: || {
+    on_stream_closed: |source| {
         otel_warn!(
-            "azure_monitor_exporter.auth.token_stream_closed",
-            message =
-                "bearer token provider closed its stream; no further token refreshes will arrive"
+            "azure_monitor_exporter.auth.stream_closed",
+            source = %source,
+            message = "auth provider closed its stream; no further auth refreshes will arrive"
         );
     },
 };
@@ -140,7 +142,7 @@ impl AzureMonitorExporter {
     async fn finalize_export(
         &mut self,
         effect_handler: &EffectHandler<OtapPdata>,
-        auth: &mut BearerAuth,
+        auth: &mut impl HttpClientAuthProvider,
         completed_export: CompletedExport,
     ) -> Result<(), EngineError> {
         let CompletedExport {
@@ -258,7 +260,7 @@ impl AzureMonitorExporter {
     async fn queue_pending_batch(
         &mut self,
         effect_handler: &EffectHandler<OtapPdata>,
-        auth: &mut BearerAuth,
+        auth: &mut impl HttpClientAuthProvider,
     ) -> Result<(), EngineError> {
         let pending_batch = match self.gzip_batcher.take_pending_batch() {
             Some(batch) => batch,
@@ -276,7 +278,7 @@ impl AzureMonitorExporter {
                 .await?;
         }
 
-        let Some((auth_header, token_generation)) = auth.header() else {
+        let Some((_, auth_header, token_generation)) = auth.header() else {
             let reason = auth.not_ready_reason();
             let attempt = self.metrics.borrow().boundary.attempt(SignalType::Logs);
             let completed = attempt
@@ -321,7 +323,7 @@ impl AzureMonitorExporter {
         payload: OtapPayload,
         log_entries: Vec<Bytes>,
         msg_id: u64,
-        auth: &mut BearerAuth,
+        auth: &mut impl HttpClientAuthProvider,
     ) -> Result<(), EngineError> {
         if context.may_return_payload() {
             self.state.add_msg_to_data(msg_id, context, payload);
@@ -398,7 +400,7 @@ impl AzureMonitorExporter {
     async fn drain_in_flight_exports(
         &mut self,
         effect_handler: &EffectHandler<OtapPdata>,
-        auth: &mut BearerAuth,
+        auth: &mut impl HttpClientAuthProvider,
     ) -> Result<(), EngineError> {
         let completed_exports = self.in_flight_exports.drain().await;
         for completed_export in completed_exports {
@@ -411,7 +413,7 @@ impl AzureMonitorExporter {
     async fn queue_current_batch(
         &mut self,
         effect_handler: &EffectHandler<OtapPdata>,
-        auth: &mut BearerAuth,
+        auth: &mut impl HttpClientAuthProvider,
     ) -> Result<(), EngineError> {
         match self.gzip_batcher.finalize() {
             Ok(FinalizeResult::Ok) => {
@@ -427,7 +429,7 @@ impl AzureMonitorExporter {
     async fn handle_shutdown(
         &mut self,
         effect_handler: &EffectHandler<OtapPdata>,
-        auth: &mut BearerAuth,
+        auth: &mut impl HttpClientAuthProvider,
     ) -> Result<(), EngineError> {
         if auth.is_ready() {
             self.queue_current_batch(effect_handler, auth).await?;
@@ -457,7 +459,7 @@ impl AzureMonitorExporter {
         effect_handler: &EffectHandler<OtapPdata>,
         msg: Result<Message<OtapPdata>, RecvError>,
         msg_id: &mut u64,
-        auth: &mut BearerAuth,
+        auth: &mut impl HttpClientAuthProvider,
     ) -> Result<(), EngineError> {
         match msg {
             Ok(Message::PData(pdata)) => {
@@ -543,11 +545,10 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
 
         let mut msg_id = 0;
 
-        let mut auth = BearerAuth::new(
+        let mut auth = new_http_client_auth_provider_from_bearer_token_provider(
             self.token_provider
                 .take()
                 .expect("bearer token provider is present before startup"),
-            AZURE_MONITOR_BEARER_AUTH_EVENTS,
         );
 
         self.client_pool
@@ -590,14 +591,14 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                     continue;
                 }
 
-                () = auth.poll_refresh(), if auth.is_active() => {
+                () = async {_ = poll_fn(|cx| auth.poll_refresh(cx, &AZURE_MONITOR_AUTH_EVENTS)).await;}, if auth.is_active() => {
                     continue;
                 }
 
                 _ = tokio::time::sleep_until(next_heartbeat_send), if has_token && self.heartbeat.is_some() => {
                     next_heartbeat_send = tokio::time::Instant::now() + self.config.heartbeat.frequency;
                     if let Some(ref mut hb) = self.heartbeat {
-                        let (header, generation) = auth
+                        let (_, header, generation) = auth
                             .header()
                             .expect("heartbeat is gated on a usable bearer token");
                         hb.update_auth(header);
@@ -685,7 +686,6 @@ mod tests {
     use bytes::Bytes;
     use futures::StreamExt;
     use http::StatusCode;
-    use http::header::HeaderValue;
     use otel_arrow_dfe_channel::mpsc;
     use otel_arrow_dfe_engine::Interests;
     use otel_arrow_dfe_engine::capability::CapabilityError;
@@ -825,12 +825,10 @@ mod tests {
         exporter
     }
 
-    async fn auth_with_cached_token() -> BearerAuth {
-        let mut auth = BearerAuth::new(
-            Box::new(MockTokenProvider),
-            AZURE_MONITOR_BEARER_AUTH_EVENTS,
-        );
-        auth.poll_refresh().await;
+    async fn auth_with_cached_token() -> impl HttpClientAuthProvider {
+        let mut auth =
+            new_http_client_auth_provider_from_bearer_token_provider(Box::new(MockTokenProvider));
+        assert!(poll_fn(|cx| auth.poll_refresh(cx, &AZURE_MONITOR_AUTH_EVENTS)).await);
         assert!(auth.is_ready());
         auth
     }
@@ -993,12 +991,10 @@ mod tests {
         let pipeline_ctx = create_test_pipeline_ctx();
         let mut exporter =
             AzureMonitorExporter::new(pipeline_ctx, config, Box::new(MockTokenProvider)).unwrap();
-        let mut auth = BearerAuth::new(
-            Box::new(MockTokenProvider),
-            AZURE_MONITOR_BEARER_AUTH_EVENTS,
-        );
-        auth.poll_refresh().await;
-        let (_, token_generation) = auth.header().expect("mock provider publishes a token");
+        let mut auth =
+            new_http_client_auth_provider_from_bearer_token_provider(Box::new(MockTokenProvider));
+        assert!(poll_fn(|cx| auth.poll_refresh(cx, &AZURE_MONITOR_AUTH_EVENTS)).await);
+        let (_, _, token_generation) = auth.header().expect("mock provider publishes a token");
 
         let (_, reporter) = MetricsReporter::create_new_and_receiver(10);
         let effect_handler = EffectHandler::new(
@@ -1172,10 +1168,8 @@ mod tests {
             Interests::NODE_INPUT_METRICS,
         )
         .await;
-        let mut auth = BearerAuth::new(
-            Box::new(MockTokenProvider),
-            AZURE_MONITOR_BEARER_AUTH_EVENTS,
-        );
+        let mut auth =
+            new_http_client_auth_provider_from_bearer_token_provider(Box::new(MockTokenProvider));
         assert!(!auth.is_ready(), "no token has been polled yet");
         let effect_handler = test_effect_handler();
 
@@ -1220,10 +1214,8 @@ mod tests {
     #[tokio::test]
     async fn pdata_is_refused_while_no_bearer_token_is_cached() {
         let mut exporter = exporter_targeting("http://localhost".to_string()).await;
-        let mut auth = BearerAuth::new(
-            Box::new(MockTokenProvider),
-            AZURE_MONITOR_BEARER_AUTH_EVENTS,
-        );
+        let mut auth =
+            new_http_client_auth_provider_from_bearer_token_provider(Box::new(MockTokenProvider));
         assert!(!auth.is_ready(), "no token has been polled yet");
         assert!(!auth.not_ready_reason().is_empty());
 
@@ -1397,10 +1389,8 @@ mod tests {
     #[tokio::test]
     async fn shutdown_without_a_token_releases_buffered_messages() {
         let mut exporter = exporter_targeting("http://localhost".to_string()).await;
-        let mut auth = BearerAuth::new(
-            Box::new(MockTokenProvider),
-            AZURE_MONITOR_BEARER_AUTH_EVENTS,
-        );
+        let mut auth =
+            new_http_client_auth_provider_from_bearer_token_provider(Box::new(MockTokenProvider));
         assert!(!auth.is_ready(), "no token has been polled yet");
 
         exporter
@@ -1413,17 +1403,6 @@ mod tests {
             .unwrap();
 
         assert!(exporter.state.msg_to_data.is_empty());
-    }
-
-    /// Scenario: the bearer-auth adapter reports an unusable token and a closed
-    /// token stream.
-    /// Guarantees: both hooks are wired to Azure Monitor's event namespace and
-    /// can be raised without panicking.
-    #[test]
-    fn bearer_auth_events_are_reportable() {
-        let invalid = HeaderValue::from_str("\n").expect_err("control chars are invalid");
-        (AZURE_MONITOR_BEARER_AUTH_EVENTS.invalid_token)(&invalid);
-        (AZURE_MONITOR_BEARER_AUTH_EVENTS.token_stream_closed)();
     }
 
     // Azure Monitor can temporarily stop accepting new pdata while it is at

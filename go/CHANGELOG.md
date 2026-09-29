@@ -11,6 +11,19 @@ changes. See [`RELEASING.md`](../RELEASING.md) for the versioning policy.
 
 <!-- next version -->
 
+## v0.58.0
+
+### :bulb: Enhancements :bulb:
+
+- `pkg/arrow`: OTAP timestamp columns are now required to be in nanoseconds with a time zone
+set to either 'UTC', '+00:00', or no timezone. In the future no timezone will also be rejected.
+ ([#2369](https://github.com/open-telemetry/otel-arrow/issues/2369))
+  Data produced by this library already used UTC nanosecond timestamps, so no
+  action is needed. Received data that omits the time zone is still accepted and
+  read as UTC, so upgrading senders and receivers in any order is safe.
+
+<!-- previous-version -->
+
 ## v0.57.0
 
 ### :bulb: Enhancements :bulb:

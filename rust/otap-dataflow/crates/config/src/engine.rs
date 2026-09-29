@@ -5,6 +5,7 @@
 
 mod io;
 mod resolve;
+pub mod state_dir;
 mod validate;
 
 use crate::ExtensionId;
@@ -145,6 +146,11 @@ struct ContextPolicyLayer<'a> {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct EngineConfig {
+    /// Optional absolute state root. Linux only; immutable until engine restart.
+    /// No default or implicit environment lookup. Legacy checkpoints are not migrated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_dir: Option<std::path::PathBuf>,
+
     /// Optional HTTP admin server configuration.
     pub http_admin: Option<HttpAdminSettings>,
 
@@ -3503,6 +3509,46 @@ groups: {}
         let json = serde_json::to_value(&crd).expect("serialize");
         let _parsed: CustomResourceDefinition =
             serde_json::from_value(json).expect("CRD should be valid according to k8s-openapi");
+    }
+
+    /// Scenario: context entry variants use CEL rules for their variant-specific fields.
+    /// Guarantees: kube-rs preserves the rules in the generated Kubernetes CRD.
+    #[test]
+    fn context_entry_part_validation_rules_survive_crd_generation() {
+        let rendered =
+            serde_json::to_string(&OtelDataflow::crd()).expect("CRD should serialize to JSON");
+
+        assert!(rendered.contains(
+            "self.type == 'transport_header_match' ? has(self.value) : !has(self.value)"
+        ));
+        assert!(rendered.contains("self.type != 'transport_header_match' || !has(self.store_as)"));
+    }
+
+    /// Scenario: the generated CRD includes named context entry selectors.
+    /// Guarantees: Kubernetes admission accepts the string references consumed by serde.
+    #[test]
+    fn context_entry_references_are_strings_in_crd() {
+        fn contains_named_string_items(value: &Value) -> bool {
+            match value {
+                Value::Object(object) => {
+                    object
+                        .get("named")
+                        .and_then(|named| named.get("items"))
+                        .and_then(|items| items.get("type"))
+                        .is_some_and(|schema_type| schema_type == "string")
+                        || object.values().any(contains_named_string_items)
+                }
+                Value::Array(values) => values.iter().any(contains_named_string_items),
+                _ => false,
+            }
+        }
+
+        let crd = serde_json::to_value(OtelDataflow::crd()).expect("CRD should serialize to JSON");
+
+        assert!(
+            contains_named_string_items(&crd),
+            "named context entry references should be string items"
+        );
     }
 
     #[test]
