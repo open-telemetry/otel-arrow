@@ -2610,10 +2610,10 @@ mod tests {
         );
     }
 
-    /// Scenario: a reload fails, the file is fixed in place (same identity), and checks run
-    /// before and after the scheduled retry is due, as when file events keep arriving.
-    /// Guarantees: the failed file is not retried before its deadline, and a due retry is never
-    /// skipped, so the fixed file is loaded.
+    /// Scenario: a reload fails and the file stays unchanged, then checks run before and after
+    /// the scheduled retry is due, as when file events keep arriving.
+    /// Guarantees: the failed file is not retried before its deadline, a due retry is never
+    /// skipped, and the previous CA stays in use while retries fail.
     #[test]
     fn ca_watcher_runs_due_retry_even_when_events_trigger_the_check() {
         crate::crypto::ensure_crypto_provider();
@@ -2628,28 +2628,33 @@ mod tests {
         .expect("Build initial verifier");
         let inner = Arc::new(ArcSwap::from_pointee(initial));
         let loaded = inner.load_full();
-        let mut state = CaWatcherState::new(Arc::clone(&inner), ca_path.clone(), false, 0);
+        let mut state = CaWatcherState::new(Arc::clone(&inner), ca_path, false, 0);
 
         state.check();
-        assert!(
-            state.retry_at.is_some(),
-            "failed reload should schedule a retry"
-        );
-        assert!(Arc::ptr_eq(&inner.load_full(), &loaded));
+        let scheduled = state
+            .retry_at
+            .expect("failed reload should schedule a retry");
+        assert_eq!(state.retry_delay, CA_RELOAD_RETRY_MIN * 2);
 
-        fs::write(&ca_path, tls_certs::generate_ca("Test CA 2").cert_pem).expect("Fix CA");
+        // The file is never modified, so its identity stays that of the failed candidate on
+        // every platform (Windows identity is the last write time).
         state.check();
-        assert!(
-            Arc::ptr_eq(&inner.load_full(), &loaded),
+        assert_eq!(
+            state.retry_at,
+            Some(scheduled),
             "failed file was retried before its deadline"
         );
+        assert_eq!(state.retry_delay, CA_RELOAD_RETRY_MIN * 2);
 
-        state.retry_at = Some(Instant::now());
+        let due = Instant::now();
+        state.retry_at = Some(due);
         state.check();
-        assert!(
-            !Arc::ptr_eq(&inner.load_full(), &loaded),
+        assert_eq!(
+            state.retry_delay,
+            CA_RELOAD_RETRY_MIN * 4,
             "due retry was skipped"
         );
-        assert!(state.retry_at.is_none());
+        assert!(state.retry_at.is_some_and(|at| at > due));
+        assert!(Arc::ptr_eq(&inner.load_full(), &loaded));
     }
 }
