@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790641563156,
+  "lastUpdate": 1790648378454,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -46288,6 +46288,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
             "value": 4.29,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.73,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.98,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.7,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 72.03,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.88,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 117.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 104.41,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "43687093+athomas9195@users.noreply.github.com",
+            "name": "Tina Tan",
+            "username": "athomas9195"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "7bf52999bf769e5901e77786b694060e24f075b8",
+          "message": "chore(scraper): add shared polling, OTLP mapping, and delivery [3/4] (#4161)\n\n## Summary\n \nAdds the shared database polling runtime to `otel-arrow-dfe-scraper`,\nbuilding on the checkpoint store and source lease from part 2.\n \nThe runtime executes bounded pages through a database adapter, maps rows\nto OTLP logs, handles downstream backpressure and ACK/NACK feedback, and\ncommits acknowledged progress. It also adds bounded backlog catch-up,\ncached mapping plans, and dedicated worker isolation for encoding and\ncheckpoint I/O.\n \nThis is **part 3 of 4** of the split from\nopen-telemetry/otel-arrow#3969, following the shared-runtime boundary in\nopen-telemetry/otel-arrow#3918. It does not complete the entire RFC.\n \nThis PR does **not** add an Oracle driver, receiver registration,\ndatabase credentials, or a runnable database receiver. Those remain\nvendor-specific responsibilities.\n \n ## Stack / delivery sequence\n \n | Part | Scope | PR |\n | --- | --- | --- |\n| 1/4 | Shared database contracts and validation |\nopen-telemetry/otel-arrow#4093 |\n| 2/4 | Checkpointing and source ownership |\nopen-telemetry/otel-arrow#4110 |\n | 3/4 | Shared polling, mapping, and delivery | This PR |\n | 4/4 | Oracle adapter and receiver registration | Separate follow-up |\n \n ## Included\n \n- `DatabaseReceiver<A>`: reusable local async receiver integrating\n`DriverAdapter`, `CheckpointStore`, and `SourceLease`.\n- Sequential polling with one pending page per source. Feedback is\ncorrelated using batch ID and ownership generation.\n- ACK-gated checkpoint commits, NACK replay, bounded checkpoint retries,\nand control-responsive drain/shutdown handling.\n- Bounded catch-up enabled by default, with configurable page-count and\nelapsed admission-time budgets.\n- Receiver-local memory-pressure admission, including startup pressure,\nstale-update rejection, and observe-only behavior.\n- Typed OTLP log encoding with exact serialized-byte accounting and the\ncursor of the last emitted row.\n- Per-receiver cached schema mappings, event-time column indices, and\nresource/scope envelope sizes. Schema changes trigger revalidation.\n - Owned string/byte moves and bounded reuse of empty encoding storage.\n- One dedicated worker per receiver for encoding and checkpoint I/O,\nwith a capacity-one queue and explicit worker-exit acknowledgement.\n - Receiver lifecycle, delivery, replay, and checkpoint counters.\n- Shared configuration, lifecycle, mapping, and failure-path coverage\nplus README updates.\n \nThe emitted representation remains OTLP protobuf. Existing pipeline\nexporters handle transport; this crate does not implement another\nexporter.\n \n ## Delivery and scheduling behavior\n \n ```text\n Load committed cursor\n   -> Fetch a bounded page\n   -> Encode and send downstream\n   -> Matching ACK: install checkpoint, then advance committed progress\n   -> Retryable NACK: retain committed progress and replay after backoff\n   -> Permanent NACK: retain committed progress and stop with an error\n ```\n \nA subsequent page starts only after the preceding page is acknowledged\nand its checkpoint is successfully installed. While cycle budget\nremains, polling continues without waiting a full interval between\npages.\n \nAn empty result, exhausted budget, backpressure, or enforced hard memory\npressure ends or pauses catch-up. Short nonempty pages are not treated\nas proof that the source is caught up. The normal interval starts when a\ncycle ends.\n \nDelivery is conditionally at least once, not exactly once. It requires\ncommit-visible ordering, stable cursor/row values, sufficient source\nretention, and an appropriate downstream acknowledgement boundary.\nCheckpoint durability retains the platform-specific guarantees\ndocumented in part 2.\n \n ## Configuration\n \n Example shared polling configuration:\n \n ```yaml\n interval: 5m\n timeout: 2m\n max_rows_per_poll: 10000\n fetch_size_rows: 1000\n max_batch_bytes: 10485760\n catch_up:\n   max_pages: 32\n   max_duration: 10s\n ```\n \nThe `catch_up` values shown are the defaults; the block and individual\noverrides may be omitted. Set `max_pages: 1` for single-page cycles.\n \n`max_duration` controls admission of another page, not cancellation of\nan in-flight operation or an ACK deadline. Existing row and byte limits\nremain per-page limits.\n \n This is not a complete vendor receiver configuration.\n \n ## Resource and shutdown guarantees\n \nEncoding and checkpoint filesystem work execute outside the pipeline\nthread. The controller continues handling controls while waiting.\n \nCancellation, checkpoint stop waits, and cleanup use bounded deadlines.\nOwnership is released only after adapter and scraper-worker cleanup are\nconfirmed. Unconfirmed work causes an explicit failure and retains the\nlease until process exit; a supervisor restart may be required.\n \nAdapters must check cancellation between native calls and isolate\npotentially uninterruptible work, including cancellation calls, from the\npipeline runtime's blocking pool. Live Oracle cancellation is not\nqualified by this shared-runtime PR.\n \n`max_batch_bytes` separately bounds accounted normalized-row storage and\nserialized OTLP payloads, not total RSS. The README includes an isolated\nlarge-page memory measurement and explicitly excludes native database\nand downstream transport buffers.\n \n ## Validation\n \n- Locked scraper compilation, formatting, and all-target scraper Clippy\npass.\n- 120 tests on Windows and 122 on Linux, plus one compile-fail doctest\non each platform, passed for the NACK fix; two manual profiling tests\nare ignored by default.\n- Coverage includes real filesystem checkpoints, replay/restart, schema\nchanges, exact byte ceilings, catch-up budgets, memory-pressure\ntransitions, slow checkpoint writes, active drain deadlines, worker\nfailures, and ownership retention.\n- A subprocess regression verifies that a non-returning scraper worker\ndoes not prevent Tokio runtime destruction or prematurely release its\nlease.\n- An isolated 10,000-row memory profile was run in three fresh Windows\nprocesses; methodology and limitations are documented in the README.\n - Targeted documentation and source sanity checks pass.\n \nThese results are not live database-to-destination qualification or a\nproduction throughput guarantee. The full workspace suite was not rerun\nfor the final dedicated-worker changes.\n \n ## Follow-up work\n \n- Oracle adapter integration, registration, configuration, and live\nqualification in part 4.\n- Additional database adapters and broader adapter conformance coverage.\n- Multiple named queries, snapshot/scalar modes, and richer output\nmapping.\n - Whole-poll and normal-operation ACK deadlines.\n- Full memory-admission accounting, distributed logical-source\nownership, and coordinated live replacement.\n- Authentication capabilities, credential rotation, and explicit vendor\nTLS integration.\n \n ## User-facing changes\n \nNo independently runnable receiver is introduced. This is shared-library\nintegration for the subsequent vendor receiver PR; no user-facing\nchangelog entry is included in this slice.\n \n## Related issue\n\n- [Shared runtime\nsubissue](https://github.com/open-telemetry/otel-arrow/issues/4162)\n- [RFC: Shared runtime and vendor-specific database polling\nreceivers](https://github.com/open-telemetry/otel-arrow/issues/3918)\n- [Original foundation and Oracle receiver\nimplementation](https://github.com/open-telemetry/otel-arrow/pull/3969)\n\n---------\n\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>\nCo-authored-by: Juan Salazar <100889614+juanjosalco@users.noreply.github.com>",
+          "timestamp": "2026-09-29T01:21:00Z",
+          "tree_id": "04286d1579ae700da870288e648c38cea81fb143",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/7bf52999bf769e5901e77786b694060e24f075b8"
+        },
+        "date": 1790648360786,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 84.8,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.78,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.25,
             "unit": "MB"
           },
           {
