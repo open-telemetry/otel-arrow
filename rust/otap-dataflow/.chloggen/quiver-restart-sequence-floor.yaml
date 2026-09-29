@@ -1,0 +1,17 @@
+# One of 'breaking', 'deprecation', 'new_component', 'enhancement', 'bug_fix'
+change_type: bug_fix
+
+# The name of the component, or a single word describing the area of concern.
+component: engine
+
+# A brief description of the change. Surround your text with quotes ("") if it
+# needs to start with a backtick (`).
+note: Fix Quiver silently skipping new telemetry after completed segments were cleaned up and the process restarted.
+
+# Mandatory: One or more tracking issues related to the change.
+issues: [4024]
+
+# (Optional) One or more lines of additional information to render under the
+# main note.
+subtext: |
+  On restart, new segments are now numbered above every segment still referenced by saved subscriber progress, so stale acknowledgements can no longer mark new data as delivered.

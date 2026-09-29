@@ -1,0 +1,5 @@
+change_type: bug_fix
+component: otap
+note: Produce the smallest valid OTAP parent ID column type for the decoded parent_id, sizing the dictionary key to its cardinality and using a primitive array only when the IDs overflow a u16 key
+issues: [4143]
+subtext:

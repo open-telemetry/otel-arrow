@@ -88,15 +88,15 @@ pub(crate) fn encode_key_value<T: ArrowPrimitiveType>(
         result_buf.encode_string(KEY_VALUE_KEY, key)?;
     }
 
-    if let Some(value_type) = attr_arrays.anyval_arrays.attr_type.value_at(index) {
-        if let Ok(value_type) = AttributeValueType::try_from(value_type) {
-            // TODO try to compute the length of the value here. This would probably be
-            // straight forward for most types for all cases except map/slice, and even then
-            // we could maybe guess order of magnitude by looking at the CBOR representation
-            result_buf.encode_len_delimited(KEY_VALUE_VALUE, |result_buf| {
-                encode_any_value(&attr_arrays.anyval_arrays, index, value_type, result_buf)
-            })?;
-        }
+    if let Some(value_type) = attr_arrays.anyval_arrays.attr_type.value_at(index)
+        && let Ok(value_type) = AttributeValueType::try_from(value_type)
+    {
+        // TODO try to compute the length of the value here. This would probably be
+        // straight forward for most types for all cases except map/slice, and even then
+        // we could maybe guess order of magnitude by looking at the CBOR representation
+        result_buf.encode_len_delimited(KEY_VALUE_VALUE, |result_buf| {
+            encode_any_value(&attr_arrays.anyval_arrays, index, value_type, result_buf)
+        })?;
     }
 
     Ok(())
@@ -120,11 +120,11 @@ pub(crate) fn encode_any_value(
         AttributeValueType::Bool => {
             // TODO handle case when bool column is missing we correct the default value handling
             // https://github.com/open-telemetry/otel-arrow/issues/1449
-            if let Some(attr_bool) = &attr_arrays.attr_bool {
-                if let Some(val) = attr_bool.value_at(index) {
-                    result_buf.encode_field_tag(ANY_VALUE_BOOL_VALUE, wire_types::VARINT)?;
-                    result_buf.encode_varint(val as u64)?;
-                }
+            if let Some(attr_bool) = &attr_arrays.attr_bool
+                && let Some(val) = attr_bool.value_at(index)
+            {
+                result_buf.encode_field_tag(ANY_VALUE_BOOL_VALUE, wire_types::VARINT)?;
+                result_buf.encode_varint(val as u64)?;
             }
         }
         AttributeValueType::Int => {
@@ -154,10 +154,10 @@ pub(crate) fn encode_any_value(
             result_buf.encode_bytes(ANY_VALUE_BYTES_VALUE, val)?;
         }
         AttributeValueType::Map | AttributeValueType::Slice => {
-            if let Some(ser_bytes) = &attr_arrays.attr_ser {
-                if let Some(val) = ser_bytes.slice_at(index) {
-                    proto_encode_cbor_bytes(val, result_buf)?;
-                }
+            if let Some(ser_bytes) = &attr_arrays.attr_ser
+                && let Some(val) = ser_bytes.slice_at(index)
+            {
+                proto_encode_cbor_bytes(val, result_buf)?;
             }
         }
         AttributeValueType::Empty => {
@@ -222,15 +222,15 @@ mod test {
         let mut protobuf = ProtoBuffer::default();
 
         for i in 0..rb.num_rows() {
-            if let Some(value_type) = any_val_arrays.attr_type.value_at(i) {
-                if let Ok(value_type) = AttributeValueType::try_from(value_type) {
-                    protobuf
-                        .encode_len_delimited(
-                            1, // the values field in ArrayValue message
-                            |protobuf| encode_any_value(&any_val_arrays, i, value_type, protobuf),
-                        )
-                        .unwrap();
-                }
+            if let Some(value_type) = any_val_arrays.attr_type.value_at(i)
+                && let Ok(value_type) = AttributeValueType::try_from(value_type)
+            {
+                protobuf
+                    .encode_len_delimited(
+                        1, // the values field in ArrayValue message
+                        |protobuf| encode_any_value(&any_val_arrays, i, value_type, protobuf),
+                    )
+                    .unwrap();
             }
         }
 

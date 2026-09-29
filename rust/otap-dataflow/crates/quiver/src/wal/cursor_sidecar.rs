@@ -285,10 +285,10 @@ impl CursorSidecar {
         // Sync parent directory for durability (on Unix)
         #[cfg(unix)]
         {
-            if let Some(parent) = path.parent() {
-                if let Ok(dir) = std::fs::File::open(parent) {
-                    let _ = dir.sync_data();
-                }
+            if let Some(parent) = path.parent()
+                && let Ok(dir) = std::fs::File::open(parent)
+            {
+                let _ = dir.sync_data();
             }
         }
         Ok(())

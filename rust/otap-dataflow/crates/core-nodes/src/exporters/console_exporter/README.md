@@ -5,7 +5,7 @@
 ## Metadata
 
 - Type: `exporter:console` (`urn:otel:exporter:console`)
-- Feature gate: Default
+- Feature gate: Always enabled
 - Stability: Experimental
 
 ## Overview

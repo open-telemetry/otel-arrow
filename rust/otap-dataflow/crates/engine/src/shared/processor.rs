@@ -41,7 +41,7 @@ use crate::effect_handler::{
 use crate::error::{Error, TypedError};
 use crate::flow_metrics::{
     DecisionFlowMetrics, EndFlowMetrics, FLOW_SIGNALS, FlowDroppedItemsMetrics,
-    FlowDurationMetrics, FlowInputItemsMetrics, FlowInputMessageMetrics, FlowInputSizeMetrics,
+    FlowDurationMetricSet, FlowInputItemsMetrics, FlowInputMessageMetrics, FlowInputSizeMetrics,
     FlowOutputItemsMetrics, FlowOutputMessageMetrics, FlowOutputSizeMetrics, InputFlowMetrics,
     SharedFlowMetricState, flow_signal_index, nanos_u64,
 };
@@ -49,13 +49,14 @@ use crate::message::Message;
 use crate::node::NodeId;
 use crate::output_router::OutputRouter;
 use crate::processor::ProcessorRuntimeRequirements;
+use crate::runtime_services::{CodecEffectHandler, PipelineRuntimeServices};
 use crate::shared::message::SharedSender;
 use crate::{WakeupError, WakeupSetOutcome};
 use async_trait::async_trait;
 use otel_arrow_dfe_config::{PortName, SignalType};
+use otel_arrow_dfe_pdata_codec::CodecService;
 use otel_arrow_dfe_telemetry::common_attributes::SignalAttributes;
 use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
-use otel_arrow_dfe_telemetry::instrument::HistogramNormal;
 use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSet, MetricSetHandler};
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use std::collections::HashMap;
@@ -144,15 +145,17 @@ pub struct EffectHandler<PData> {
 
 /// Implementation for the `Send` effect handler.
 impl<PData> EffectHandler<PData> {
-    /// Creates a new shared (Send) `EffectHandler` with the given processor name and pdata sender.
+    /// Creates a new shared (Send) `EffectHandler` with the given processor configuration and
+    /// pipeline runtime services.
     #[must_use]
     pub fn new(
         node_id: NodeId,
         msg_senders: HashMap<PortName, SharedSender<PData>>,
         default_port: Option<PortName>,
         metrics_reporter: MetricsReporter,
+        runtime_services: PipelineRuntimeServices,
     ) -> Self {
-        let core = EffectHandlerCore::new(node_id.clone(), metrics_reporter);
+        let core = EffectHandlerCore::new(node_id.clone(), metrics_reporter, runtime_services);
         let router = OutputRouter::new(node_id, msg_senders, default_port);
         EffectHandler {
             core,
@@ -205,7 +208,7 @@ impl<PData> EffectHandler<PData> {
         input_message_metric: Option<MeasurementMetricSet<FlowInputMessageMetrics>>,
         input_items_metric: Option<MeasurementMetricSet<FlowInputItemsMetrics>>,
         input_size_metric: Option<MeasurementMetricSet<FlowInputSizeMetrics>>,
-        duration_metric: Option<MeasurementMetricSet<FlowDurationMetrics>>,
+        duration_metric: Option<FlowDurationMetricSet>,
         output_items_metric: Option<MeasurementMetricSet<FlowOutputItemsMetrics>>,
         output_message_metric: Option<MeasurementMetricSet<FlowOutputMessageMetrics>>,
         output_size_metric: Option<MeasurementMetricSet<FlowOutputSizeMetrics>>,
@@ -257,14 +260,9 @@ impl<PData> EffectHandler<PData> {
             input_size: input_size_metric.map(|metrics| (metrics, Arc::new(Mutex::new([0; 3])))),
         };
         self.flow.end = EndFlowMetrics {
-            duration: duration_metric.map(|metrics| {
-                (
-                    metrics,
-                    Arc::new(Mutex::new(std::array::from_fn(|_| {
-                        HistogramNormal::default()
-                    }))),
-                )
-            }),
+            duration: duration_metric
+                .map(FlowDurationMetricSet::into_measurement)
+                .map(|measurement| Arc::new(Mutex::new(measurement))),
             output_messages: output_message_metric
                 .map(|metrics| (metrics, Arc::new(Mutex::new([0; 3])))),
             output_items: output_items_metric
@@ -340,13 +338,13 @@ impl<PData> EffectHandler<PData> {
 
     /// Record `total` nanoseconds as seconds into the shared flow metric histogram.
     pub fn record_flow_duration(&self, signal: SignalType, total: u64) {
-        let Some((_, acc_mutex)) = self.flow.end.duration.as_ref() else {
+        let Some(measurement) = self.flow.end.duration.as_ref() else {
             return;
         };
-        let mut acc = acc_mutex
+        let mut measurement = measurement
             .lock()
             .expect("flow duration accumulator poisoned");
-        acc[flow_signal_index(signal)].record(total as f64 / 1_000_000_000.0);
+        measurement.record(signal, total as f64 / 1_000_000_000.0);
     }
 
     /// Record input items into the shared flow accumulator.
@@ -486,22 +484,11 @@ impl<PData> EffectHandler<PData> {
             }
             let _ = self.core.metrics_reporter.report_measurement(metrics);
         }
-        if let Some((metrics, acc_mutex)) = self.flow.end.duration.as_mut() {
-            let drained = {
-                let mut guard = acc_mutex
-                    .lock()
-                    .expect("flow duration accumulator poisoned");
-                std::mem::take(&mut *guard)
-            };
-            for (duration, signal) in drained.into_iter().zip(FLOW_SIGNALS) {
-                if !duration.is_empty() {
-                    metrics
-                        .with(SignalAttributes { signal })
-                        .duration
-                        .merge(duration);
-                }
-            }
-            let _ = self.core.metrics_reporter.report_measurement(metrics);
+        if let Some(measurement) = self.flow.end.duration.as_mut() {
+            measurement
+                .lock()
+                .expect("flow duration accumulator poisoned")
+                .report(&mut self.core.metrics_reporter);
         }
         if let Some((metrics, acc_mutex)) = self.flow.end.output_messages.as_mut() {
             let drained = {
@@ -631,24 +618,18 @@ impl<PData> EffectHandler<PData> {
                 .report_measurement_reliably_until(metrics, deadline)
                 .await?;
         }
-        if let Some((metrics, acc_mutex)) = self.flow.end.duration.as_mut() {
-            let drained = {
-                let mut guard = acc_mutex
+        if let Some(measurement) = self.flow.end.duration.as_mut() {
+            let snapshots = {
+                let mut measurement = measurement
                     .lock()
                     .expect("flow duration accumulator poisoned");
-                std::mem::take(&mut *guard)
+                measurement.terminal_snapshots()
             };
-            for (duration, signal) in drained.into_iter().zip(FLOW_SIGNALS) {
-                if !duration.is_empty() {
-                    metrics
-                        .with(SignalAttributes { signal })
-                        .duration
-                        .merge(duration);
-                }
+            for snapshot in snapshots {
+                let _ = reporter
+                    .report_snapshot_reliably_until(snapshot, deadline)
+                    .await?;
             }
-            let _ = reporter
-                .report_measurement_reliably_until(metrics, deadline)
-                .await?;
         }
         if let Some((metrics, acc_mutex)) = self.flow.end.output_messages.as_mut() {
             let drained = {
@@ -895,6 +876,12 @@ impl<PData> EffectHandler<PData> {
     }
 }
 
+impl<PData> CodecEffectHandler for EffectHandler<PData> {
+    fn codec_service(&self) -> &CodecService {
+        self.core.runtime_services.codecs()
+    }
+}
+
 impl<PData> crate::processor::FlowMetricEffectHandler for EffectHandler<PData> {
     #[inline]
     fn is_flow_start(&self) -> bool {
@@ -957,7 +944,9 @@ impl<PData: crate::Unwindable> crate::_private::AckNackRouting<PData> for Effect
 mod tests {
     #![allow(missing_docs)]
     use super::*;
-    use crate::flow_metrics::{FlowAttributeSet, FlowOutputItemsMetrics};
+    use crate::flow_metrics::{
+        FlowAttributeSet, FlowDurationNormalMetrics, FlowOutputItemsMetrics,
+    };
     use crate::shared::message::SharedSender;
     use crate::testing::{test_node, test_pipeline_ctx};
     use otel_arrow_dfe_channel::error::SendError;
@@ -980,6 +969,7 @@ mod tests {
             senders,
             Some("out".into()),
             metrics_reporter,
+            crate::testing::test_pipeline_runtime_services(),
         );
 
         // Should succeed when channel has capacity
@@ -1000,6 +990,7 @@ mod tests {
             senders,
             Some("out".into()),
             metrics_reporter,
+            crate::testing::test_pipeline_runtime_services(),
         );
 
         // First send should succeed
@@ -1024,7 +1015,13 @@ mod tests {
 
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         // No default port specified with multiple ports = ambiguous
-        let eh = EffectHandler::new(test_node("proc"), senders, None, metrics_reporter);
+        let eh = EffectHandler::new(
+            test_node("proc"),
+            senders,
+            None,
+            metrics_reporter,
+            crate::testing::test_pipeline_runtime_services(),
+        );
 
         // Should return configuration error when no default sender
         let result = eh.try_send_message(99);
@@ -1041,7 +1038,13 @@ mod tests {
         let _ = senders.insert("b".into(), SharedSender::mpsc(b_tx));
 
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let eh = EffectHandler::new(test_node("proc"), senders, None, metrics_reporter);
+        let eh = EffectHandler::new(
+            test_node("proc"),
+            senders,
+            None,
+            metrics_reporter,
+            crate::testing::test_pipeline_runtime_services(),
+        );
 
         // Should succeed when sending to a specific port
         assert!(eh.try_send_message_to("b", 42).is_ok());
@@ -1057,7 +1060,13 @@ mod tests {
         let _ = senders.insert("out".into(), SharedSender::mpsc(tx));
 
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let eh = EffectHandler::new(test_node("proc"), senders, None, metrics_reporter);
+        let eh = EffectHandler::new(
+            test_node("proc"),
+            senders,
+            None,
+            metrics_reporter,
+            crate::testing::test_pipeline_runtime_services(),
+        );
 
         // First send should succeed
         assert!(eh.try_send_message_to("out", 1).is_ok());
@@ -1076,7 +1085,13 @@ mod tests {
         let _ = senders.insert("out".into(), SharedSender::mpsc(tx));
 
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let eh = EffectHandler::new(test_node("proc"), senders, None, metrics_reporter);
+        let eh = EffectHandler::new(
+            test_node("proc"),
+            senders,
+            None,
+            metrics_reporter,
+            crate::testing::test_pipeline_runtime_services(),
+        );
 
         // Should return error for unknown port
         let result = eh.try_send_message_to("unknown", 99);
@@ -1086,8 +1101,13 @@ mod tests {
     #[test]
     fn flow_metric_marker_accumulates_after_begin_process_timing_shared() {
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let mut eh =
-            EffectHandler::<u64>::new(test_node("proc"), HashMap::new(), None, metrics_reporter);
+        let mut eh = EffectHandler::<u64>::new(
+            test_node("proc"),
+            HashMap::new(),
+            None,
+            metrics_reporter,
+            crate::testing::test_pipeline_runtime_services(),
+        );
         eh.set_flow_roles(
             true, false, None, None, None, None, None, None, None, None, true, true,
         );
@@ -1115,8 +1135,13 @@ mod tests {
     #[test]
     fn flow_metric_marker_not_armed_when_timing_disabled_shared() {
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let mut eh =
-            EffectHandler::<u64>::new(test_node("proc"), HashMap::new(), None, metrics_reporter);
+        let mut eh = EffectHandler::<u64>::new(
+            test_node("proc"),
+            HashMap::new(),
+            None,
+            metrics_reporter,
+            crate::testing::test_pipeline_runtime_services(),
+        );
         // active = true, needs_timing = false.
         eh.set_flow_roles(
             true, false, None, None, None, None, None, None, None, None, true, false,
@@ -1147,19 +1172,24 @@ mod tests {
             .register_entity(FlowAttributeSet::default());
         let registrar = ctx.metric_set_registrar_for_entity(entity_key);
         let start_metric_set = FlowInputItemsMetrics::register(&registrar);
-        let duration_metric_set = FlowDurationMetrics::register(&registrar);
+        let duration_metric_set = FlowDurationNormalMetrics::register(&registrar);
         let outgoing_metric_set = FlowOutputItemsMetrics::register(&registrar);
 
         let (metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(5);
-        let mut eh =
-            EffectHandler::<u64>::new(test_node("proc"), HashMap::new(), None, metrics_reporter);
+        let mut eh = EffectHandler::<u64>::new(
+            test_node("proc"),
+            HashMap::new(),
+            None,
+            metrics_reporter,
+            crate::testing::test_pipeline_runtime_services(),
+        );
         eh.set_flow_roles(
             true,
             true,
             None,
             Some(start_metric_set),
             None,
-            Some(duration_metric_set),
+            Some(duration_metric_set.into()),
             Some(outgoing_metric_set),
             None,
             None,
@@ -1189,8 +1219,8 @@ mod tests {
             .unwrap();
         assert_eq!(*start_before_report, [0, 20, 10]);
 
-        let before_report = eh.flow.end.duration.as_ref().unwrap().1.lock().unwrap();
-        let (count, sum, _, _) = before_report[2].get().summary();
+        let before_report = eh.flow.end.duration.as_ref().unwrap().lock().unwrap();
+        let (count, sum, _, _) = before_report.pending_summary(SignalType::Logs);
         assert_eq!(count, 3);
         assert!((sum - 0.000_006).abs() < f64::EPSILON);
         drop(before_report);
@@ -1215,9 +1245,9 @@ mod tests {
             "start accumulator should be drained"
         );
 
-        let drained = eh.flow.end.duration.as_ref().unwrap().1.lock().unwrap();
+        let drained = eh.flow.end.duration.as_ref().unwrap().lock().unwrap();
         assert_eq!(
-            drained[2].get().summary().0,
+            drained.pending_summary(SignalType::Logs).0,
             0,
             "duration accumulator should be drained"
         );
@@ -1293,8 +1323,13 @@ mod tests {
         let output_messages = FlowOutputMessageMetrics::register(&registrar);
         let output_size = FlowOutputSizeMetrics::register(&registrar);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(16);
-        let mut handler =
-            EffectHandler::<u64>::new(test_node("proc"), HashMap::new(), None, metrics_reporter);
+        let mut handler = EffectHandler::<u64>::new(
+            test_node("proc"),
+            HashMap::new(),
+            None,
+            metrics_reporter,
+            crate::testing::test_pipeline_runtime_services(),
+        );
         handler.set_flow_roles(
             true,
             true,

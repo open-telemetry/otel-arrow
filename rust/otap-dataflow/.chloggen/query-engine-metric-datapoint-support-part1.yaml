@@ -1,0 +1,5 @@
+change_type: enhancement
+component: query-engine
+note: Adds basic support for filtering metric datapoints to transform processor.
+issues: [3722]
+

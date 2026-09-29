@@ -563,6 +563,7 @@ pub static ATTRIBUTES_PROCESSOR_FACTORY: otel_arrow_dfe_engine::ProcessorFactory
              _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities| {
                 create_attributes_processor(pipeline_ctx, node, node_config, proc_cfg)
             },
+        context_declarations: None,
         wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
         validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<Config>,
     };
@@ -1338,7 +1339,11 @@ mod tests {
         let input = ExportLogsServiceRequest {
             resource_logs: vec![ResourceLogs {
                 scope_logs: vec![ScopeLogs {
-                    log_records: vec![LogRecord::build().finish(), LogRecord::build().finish()],
+                    log_records: vec![
+                        LogRecord::build().finish(),
+                        LogRecord::build().finish(),
+                        LogRecord::build().finish(),
+                    ],
                     ..Default::default()
                 }],
                 ..Default::default()
@@ -1397,6 +1402,12 @@ mod tests {
                 let log_1 = &decoded.resource_logs[0].scope_logs[0].log_records[1];
                 assert_eq!(
                     log_1.attributes,
+                    vec![KeyValue::new("b", AnyValue::new_string("val"))]
+                );
+
+                let log_2 = &decoded.resource_logs[0].scope_logs[0].log_records[2];
+                assert_eq!(
+                    log_2.attributes,
                     vec![KeyValue::new("b", AnyValue::new_string("val"))]
                 );
             })

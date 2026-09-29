@@ -397,17 +397,17 @@ pub(super) fn build_detail_header_line(app: &AppState, header: &DetailHeader) ->
         ));
     }
 
-    if let Some(subtitle) = header.subtitle.as_deref() {
-        if !subtitle.is_empty() {
-            spans.push(Span::styled(
-                TAB_SEPARATOR,
-                separator_style(app.color_enabled),
-            ));
-            spans.push(Span::styled(
-                subtitle.to_string(),
-                muted_style(app.color_enabled),
-            ));
-        }
+    if let Some(subtitle) = header.subtitle.as_deref()
+        && !subtitle.is_empty()
+    {
+        spans.push(Span::styled(
+            TAB_SEPARATOR,
+            separator_style(app.color_enabled),
+        ));
+        spans.push(Span::styled(
+            subtitle.to_string(),
+            muted_style(app.color_enabled),
+        ));
     }
 
     Line::from(spans)

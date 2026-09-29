@@ -70,6 +70,9 @@ config:
     log_body_size_bytes: 1024
 ```
 
+Transport-header names preserve their configured spelling. Names that differ
+only by case remain distinct stored context entries.
+
 ## Purpose
 
 Verify that a **single traffic-gen sender core can saturate a single

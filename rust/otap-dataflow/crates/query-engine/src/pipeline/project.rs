@@ -14,6 +14,7 @@ use datafusion::error::DataFusionError;
 use datafusion::functions::core::getfield::GetFieldFunc;
 use datafusion::logical_expr::Expr;
 use datafusion::scalar::ScalarValue;
+use otel_arrow_dfe_pdata::arrays::sanitize::sanitize_column;
 
 use crate::error::Result;
 
@@ -24,6 +25,14 @@ pub struct ProjectionOptions {
     /// Whether or not to downcast dictionary arrays to the native type. Some types of expressions,
     /// arithmetic operations for example, do not work on dictionary encoded columns.
     pub downcast_dicts: bool,
+
+    /// Whether or not to sanitize dictionaries. Often we may filter a record batch containing
+    /// dictionary columns and then evaluate an expression on the result. The filtering operation
+    /// may leave orphaned keys in dictionary column's values array. If there's some kind of
+    /// operation that operates directly on dictionary values indiscriminantly of whether they are
+    /// orphaned and it may fail for the orphaned keys in particular, set this option to remove
+    /// sanitize the columns before evaluation
+    pub sanitize_dicts: bool,
 
     /// Whether to create null placeholders when some column does not exist. A column not being
     /// present means it is optional in the OTAP model, or it represents the value of an attribute
@@ -75,6 +84,10 @@ impl Projection {
 
         if options.downcast_dicts {
             Self::try_downcast_dicts(&mut fields, &mut columns)?;
+        }
+
+        if options.sanitize_dicts {
+            Self::try_sanitize_columns(&mut columns)?;
         }
 
         // safety: `try_new` should not return an error here unless the columns do not match the
@@ -208,6 +221,16 @@ impl Projection {
 
         Ok(())
     }
+
+    fn try_sanitize_columns(columns: &mut [ArrayRef]) -> Result<()> {
+        for column in columns.iter_mut() {
+            if let Some(new_column) = sanitize_column(column.as_ref()) {
+                *column = new_column;
+            }
+        }
+
+        Ok(())
+    }
 }
 
 /// Defines that the record batch should be projected as when the filter is applied.
@@ -253,38 +276,37 @@ impl<'a> TreeNodeVisitor<'a> for ProjectedSchemaExprVisitor {
         // column. The way we reference these in the plans we build is using an expression like
         // `col("scope").field("name")` which produces a ScalarFunction expression invoking the
         // `GetFieldFunc` function with arguments ("scope", "name").
-        if let Expr::ScalarFunction(scalar_udf) = node {
-            if scalar_udf
+        if let Expr::ScalarFunction(scalar_udf) = node
+            && scalar_udf
                 .func
                 .as_ref()
                 .inner()
                 .as_any()
                 .is::<GetFieldFunc>()
-            {
-                let source = scalar_udf.args.first();
-                let field = scalar_udf.args.get(1);
-                match (source, field) {
-                    (
-                        Some(Expr::Column(col)),
-                        Some(Expr::Literal(ScalarValue::Utf8(Some(nested_col)), _)),
-                    ) => {
-                        let struct_fields = self
-                            .struct_columns
-                            .entry(col.name.clone())
-                            .or_insert(HashSet::new());
-                        _ = struct_fields.insert(nested_col.clone());
+        {
+            let source = scalar_udf.args.first();
+            let field = scalar_udf.args.get(1);
+            match (source, field) {
+                (
+                    Some(Expr::Column(col)),
+                    Some(Expr::Literal(ScalarValue::Utf8(Some(nested_col)), _)),
+                ) => {
+                    let struct_fields = self
+                        .struct_columns
+                        .entry(col.name.clone())
+                        .or_insert(HashSet::new());
+                    _ = struct_fields.insert(nested_col.clone());
 
-                        // don't continue as we've found a column. Otherwise this will continue
-                        // down the expression tree and we'll visit the Column expression twice.
-                        return Ok(TreeNodeRecursion::Jump);
-                    }
-                    unexpected_args => {
-                        let err_msg = format!(
-                            "Found unexpected arguments to `GetFieldFunc`. Expected (Col, Literal(Utf8)) found {:?}",
-                            unexpected_args
-                        );
-                        return Err(DataFusionError::Plan(err_msg));
-                    }
+                    // don't continue as we've found a column. Otherwise this will continue
+                    // down the expression tree and we'll visit the Column expression twice.
+                    return Ok(TreeNodeRecursion::Jump);
+                }
+                unexpected_args => {
+                    let err_msg = format!(
+                        "Found unexpected arguments to `GetFieldFunc`. Expected (Col, Literal(Utf8)) found {:?}",
+                        unexpected_args
+                    );
+                    return Err(DataFusionError::Plan(err_msg));
                 }
             }
         }

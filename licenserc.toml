@@ -2,14 +2,16 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Note, to run this locally, use:
-# 1. cargo install hawkeye
-# 2. hawkeye (check | format)
-# Check shows files that do not conform with expectation
-# Format updates those files with the inlineHeader below
+# 1. cargo binstall hawkeye@7.0.1
+# 2. hawkeye check
+# Check shows files that do not conform with expectation.
+# hawkeye format updates those files with the header.text below.
 
-inlineHeader = """Copyright The OpenTelemetry Authors
+[header]
+text = """Copyright The OpenTelemetry Authors
 SPDX-License-Identifier: Apache-2.0"""
 
+[files]
 includes = [
     "*.go",
     "*.rs"

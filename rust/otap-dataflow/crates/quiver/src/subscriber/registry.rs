@@ -35,7 +35,7 @@
 //! layer should call `flush_progress()` periodically (e.g., every 25ms) to
 //! write dirty subscribers to disk.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -70,6 +70,8 @@ use crate::record_bundle::SlotId;
 pub struct BundleMetadata {
     /// Number of logical data items in this bundle.
     pub item_count: u64,
+    /// Authoritative logical payload bytes in this bundle, when available.
+    pub byte_count: Option<u64>,
     /// All populated slot IDs for this bundle.
     ///
     /// The consumer is responsible for interpreting these IDs.  For
@@ -157,6 +159,8 @@ pub struct SubscriberRegistry<P: SegmentProvider> {
     segment_provider: Arc<P>,
     /// Async notification for waking waiting subscribers when new segments arrive.
     bundle_available: Arc<Notify>,
+    /// Highest segment sequence referenced by progress files loaded at open.
+    highest_progress_segment: Option<SegmentSeq>,
 }
 
 impl<P: SegmentProvider> SubscriberRegistry<P> {
@@ -171,16 +175,36 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
     pub fn open(config: RegistryConfig, segment_provider: Arc<P>) -> Result<Arc<Self>> {
         // Load existing state from progress files
         let mut subscribers = HashMap::new();
+        let mut highest_progress_segment: Option<SegmentSeq> = None;
 
         // Scan for existing progress files
         if config.data_dir.exists() {
             let subscriber_ids = scan_progress_files(&config.data_dir)?;
+            let available_segments = if subscriber_ids.is_empty() {
+                Vec::new()
+            } else {
+                segment_provider
+                    .available_segments()
+                    .into_iter()
+                    .map(|segment_seq| {
+                        segment_provider
+                            .bundle_count(segment_seq)
+                            .map(|bundle_count| (segment_seq, bundle_count))
+                    })
+                    .collect::<Result<Vec<_>>>()?
+            };
 
             for sub_id in subscriber_ids {
                 let path = progress_file_path(&config.data_dir, &sub_id);
                 match read_progress_file(&path) {
-                    Ok((_oldest_incomplete, entries)) => {
+                    Ok((oldest_incomplete, entries)) => {
                         let mut state = SubscriberState::new(sub_id.clone());
+                        let highest_persisted = entries.iter().map(|entry| entry.seg_seq).max();
+                        let header_floor =
+                            (oldest_incomplete.raw() != 0).then_some(oldest_incomplete);
+                        highest_progress_segment = highest_progress_segment
+                            .max(highest_persisted)
+                            .max(header_floor);
 
                         // Restore segment progress from entries
                         for entry in entries {
@@ -192,6 +216,26 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
                                         BundleRef::new(entry.seg_seq, BundleIndex::new(bundle_idx));
                                     let _ = state.record_outcome(bundle_ref, AckOutcome::Acked);
                                 }
+                            }
+                        }
+
+                        // Segments may finalize after the last progress flush. Restore
+                        // those as unresolved before startup retention runs. Missing
+                        // segments below the persisted boundary were already completed.
+                        for &(segment_seq, bundle_count) in &available_segments {
+                            if state.segments().contains_key(&segment_seq) {
+                                continue;
+                            }
+
+                            // Zero also represents a real segment. Persisted entries
+                            // define the covered range when the boundary is ambiguous.
+                            let completed_before_snapshot = if oldest_incomplete.raw() == 0 {
+                                highest_persisted.is_some_and(|highest| segment_seq <= highest)
+                            } else {
+                                segment_seq < oldest_incomplete
+                            };
+                            if !completed_before_snapshot {
+                                state.add_segment(segment_seq, bundle_count);
                             }
                         }
 
@@ -217,9 +261,20 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
             dirty_subscribers: Mutex::new(HashSet::new()),
             segment_provider,
             bundle_available: Arc::new(Notify::new()),
+            highest_progress_segment,
         });
 
         Ok(registry)
+    }
+
+    /// Returns the highest segment sequence referenced by any progress file
+    /// loaded when the registry was opened, including inactive subscribers.
+    ///
+    /// New segments must be numbered above this value so that restored
+    /// acknowledgements cannot apply to them.
+    #[must_use]
+    pub(crate) const fn highest_progress_segment(&self) -> Option<SegmentSeq> {
+        self.highest_progress_segment
     }
 
     /// Returns the registry configuration.
@@ -494,10 +549,10 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
 
         loop {
             // Check for cancellation first
-            if let Some(token) = cancel {
-                if token.is_cancelled() {
-                    return Err(SubscriberError::cancelled("shutdown requested"));
-                }
+            if let Some(token) = cancel
+                && token.is_cancelled()
+            {
+                return Err(SubscriberError::cancelled("shutdown requested"));
             }
 
             // IMPORTANT: Register for notification BEFORE checking for bundles.
@@ -897,12 +952,18 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
     /// Returns the list of segment sequences that were force-completed and
     /// can be safely deleted from disk.
     pub fn force_drop_oldest_pending_segments(&self) -> Vec<SegmentSeq> {
+        self.force_drop_oldest_pending_segments_with_unresolved().0
+    }
+
+    /// Force-drops the oldest eligible segment and returns its logical loss set.
+    pub(crate) fn force_drop_oldest_pending_segments_with_unresolved(
+        &self,
+    ) -> (Vec<SegmentSeq>, BTreeMap<SegmentSeq, BTreeSet<BundleIndex>>) {
         let subscribers = self.subscribers.read();
 
         // Build a set of all pending (incomplete) segments across all subscribers
         // and track which segments have claimed bundles
-        let mut pending_segments: std::collections::BTreeSet<SegmentSeq> =
-            std::collections::BTreeSet::new();
+        let mut pending_segments: BTreeSet<SegmentSeq> = BTreeSet::new();
         let mut segments_with_readers: HashSet<SegmentSeq> = HashSet::new();
 
         for state_lock in subscribers.values() {
@@ -930,11 +991,12 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
             .collect();
 
         if droppable.is_empty() {
-            return Vec::new();
+            return (Vec::new(), BTreeMap::new());
         }
 
         // Take only the oldest segment to drop (be conservative)
         let to_drop = vec![droppable[0]];
+        let mut unresolved = BTreeMap::from([(droppable[0], BTreeSet::new())]);
 
         // Force-complete these segments for all subscribers
         for state_lock in subscribers.values() {
@@ -943,6 +1005,17 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
 
             // Process all segments before releasing the lock
             for &segment_seq in &to_drop {
+                if let Some(progress) = state.segments().get(&segment_seq) {
+                    let unresolved_for_segment = unresolved
+                        .get_mut(&segment_seq)
+                        .expect("the selected segment has an unresolved set");
+                    for bundle_index in 0..progress.bundle_count() {
+                        let bundle_index = BundleIndex::new(bundle_index);
+                        if !progress.is_resolved(bundle_index) {
+                            let _ = unresolved_for_segment.insert(bundle_index);
+                        }
+                    }
+                }
                 if state.force_complete_segment(segment_seq) {
                     any_completed = true;
                 }
@@ -957,7 +1030,7 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
             }
         }
 
-        to_drop
+        (to_drop, unresolved)
     }
 
     /// Force-completes the specified segments for all subscribers.
@@ -969,17 +1042,54 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
     /// Any bundles that were claimed but not yet resolved will be abandoned.
     /// Subscribers will see these segments as completed and move on.
     pub fn force_complete_segments(&self, segments: &[SegmentSeq]) {
+        let _ = self.force_complete_segments_with_unresolved(segments);
+    }
+
+    /// Snapshots unresolved bundles, then force-completes the specified segments.
+    ///
+    /// The returned set is the union of bundles unresolved by any subscriber.
+    /// A bundle needed by multiple subscribers appears only once because loss
+    /// accounting describes the stored data, not per-subscriber deliveries.
+    ///
+    /// Returns `None` when no subscribers are registered. Callers can use this
+    /// distinction to preserve physical-segment accounting when there is no
+    /// subscriber progress from which to derive logical loss.
+    pub(crate) fn force_complete_segments_with_unresolved(
+        &self,
+        segments: &[SegmentSeq],
+    ) -> Option<BTreeMap<SegmentSeq, BTreeSet<BundleIndex>>> {
         if segments.is_empty() {
-            return;
+            return Some(BTreeMap::new());
         }
 
         let subscribers = self.subscribers.read();
+        if subscribers.is_empty() {
+            return None;
+        }
+
+        let mut unresolved = segments
+            .iter()
+            .copied()
+            .map(|segment_seq| (segment_seq, BTreeSet::new()))
+            .collect::<BTreeMap<_, _>>();
 
         for state_lock in subscribers.values() {
             let mut state = state_lock.write();
             let mut any_completed = false;
 
             for &segment_seq in segments {
+                if let Some(progress) = state.segments().get(&segment_seq) {
+                    let unresolved_for_segment = unresolved
+                        .get_mut(&segment_seq)
+                        .expect("all requested segments have an unresolved set");
+                    for bundle_index in 0..progress.bundle_count() {
+                        let bundle_index = BundleIndex::new(bundle_index);
+                        if !progress.is_resolved(bundle_index) {
+                            let _ = unresolved_for_segment.insert(bundle_index);
+                        }
+                    }
+                }
+
                 if state.force_complete_segment(segment_seq) {
                     any_completed = true;
                 }
@@ -992,6 +1102,8 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
                 let _ = dirty_set.insert(id);
             }
         }
+
+        Some(unresolved)
     }
 }
 
@@ -1028,6 +1140,7 @@ mod tests {
     use std::sync::Mutex;
     use tempfile::tempdir;
 
+    use crate::subscriber::progress::SegmentProgressEntry;
     use crate::subscriber::types::BundleIndex;
 
     /// Per-segment metadata stored in the mock.
@@ -1106,6 +1219,7 @@ mod tests {
             Ok((0..info.bundle_count)
                 .map(|_| BundleMetadata {
                     item_count: info.items_per_bundle,
+                    byte_count: None,
                     slot_ids: Vec::new(),
                 })
                 .collect())
@@ -1311,6 +1425,81 @@ mod tests {
             assert_eq!(handle.bundle_ref().bundle_index, BundleIndex::new(1));
             handle.ack();
         }
+    }
+
+    /// Scenario: A segment finalizes after a subscriber's last progress snapshot.
+    /// Guarantees: Recovery tracks the later segment as unresolved without restoring completed segments below the persisted boundary.
+    #[tokio::test]
+    async fn recovery_reconciles_segments_missing_from_progress_snapshot() {
+        let dir = tempdir().unwrap();
+        let config = RegistryConfig::new(dir.path());
+        let provider = Arc::new(MockSegmentProvider::new());
+        provider.add_segment(1, 1);
+        provider.add_segment(2, 1);
+        provider.add_segment(3, 2);
+
+        let id = SubscriberId::new("test-sub").unwrap();
+        let persisted = SegmentProgressEntry::new(SegmentSeq::new(2), 1);
+        write_progress_file(
+            dir.path(),
+            &id,
+            SegmentSeq::new(2),
+            std::slice::from_ref(&persisted),
+        )
+        .await
+        .unwrap();
+
+        let registry = SubscriberRegistry::open(config, provider).unwrap();
+        let progress = registry.pending_segment_progress(&id).unwrap();
+
+        assert!(
+            !progress.contains_key(&SegmentSeq::new(1)),
+            "segments below the persisted boundary were already completed"
+        );
+        assert_eq!(
+            progress[&SegmentSeq::new(2)].bundle_count(),
+            1,
+            "persisted progress should be restored"
+        );
+        assert_eq!(
+            progress[&SegmentSeq::new(3)].resolved_count(),
+            0,
+            "segments absent beyond the persisted snapshot should be unresolved"
+        );
+        assert_eq!(progress[&SegmentSeq::new(3)].bundle_count(), 2);
+    }
+
+    /// Scenario: Segment zero is genuinely incomplete in a persisted progress snapshot.
+    /// Guarantees: Recovery preserves segment zero and treats only later unrecorded segments as unresolved.
+    #[tokio::test]
+    async fn recovery_reconciles_with_real_segment_zero_boundary() {
+        let dir = tempdir().unwrap();
+        let config = RegistryConfig::new(dir.path());
+        let provider = Arc::new(MockSegmentProvider::new());
+        provider.add_segment(0, 1);
+        provider.add_segment(1, 1);
+        provider.add_segment(2, 2);
+
+        let id = SubscriberId::new("test-sub").unwrap();
+        let segment_zero = SegmentProgressEntry::new(SegmentSeq::new(0), 1);
+        let mut segment_one = SegmentProgressEntry::new(SegmentSeq::new(1), 1);
+        segment_one.mark_acked(0);
+        write_progress_file(
+            dir.path(),
+            &id,
+            SegmentSeq::new(0),
+            &[segment_zero, segment_one],
+        )
+        .await
+        .unwrap();
+
+        let registry = SubscriberRegistry::open(config, provider).unwrap();
+        let progress = registry.pending_segment_progress(&id).unwrap();
+
+        assert_eq!(progress[&SegmentSeq::new(0)].resolved_count(), 0);
+        assert_eq!(progress[&SegmentSeq::new(1)].resolved_count(), 1);
+        assert_eq!(progress[&SegmentSeq::new(2)].resolved_count(), 0);
+        assert_eq!(progress[&SegmentSeq::new(2)].bundle_count(), 2);
     }
 
     #[tokio::test]
@@ -1902,6 +2091,42 @@ mod tests {
         handle2.ack();
         next1.ack();
         next2.ack();
+    }
+
+    /// Scenario: Force-completing a segment snapshots the union of unresolved bundles across subscribers.
+    /// Guarantees: Each stored bundle index appears once if any subscriber has not resolved it.
+    #[test]
+    fn force_complete_segments_with_unresolved_unions_subscriber_progress() {
+        let (registry, _dir) = setup_registry();
+        let provider = registry.segment_provider.clone();
+        provider.add_segment(1, 2);
+
+        let id1 = SubscriberId::new("sub-1").unwrap();
+        let id2 = SubscriberId::new("sub-2").unwrap();
+        for id in [&id1, &id2] {
+            registry.register(id.clone()).unwrap();
+            registry.activate(id).unwrap();
+        }
+
+        let sub1_bundle0 = registry.poll_next_bundle(&id1).unwrap().unwrap();
+        sub1_bundle0.ack();
+        let sub1_bundle1 = registry.poll_next_bundle(&id1).unwrap().unwrap();
+
+        let sub2_bundle0 = registry.poll_next_bundle(&id2).unwrap().unwrap();
+        let sub2_bundle1 = registry.poll_next_bundle(&id2).unwrap().unwrap();
+        sub2_bundle1.ack();
+
+        let unresolved = registry
+            .force_complete_segments_with_unresolved(&[SegmentSeq::new(1)])
+            .expect("registered subscribers");
+        assert_eq!(
+            unresolved[&SegmentSeq::new(1)],
+            BTreeSet::from([BundleIndex::new(0), BundleIndex::new(1)]),
+            "each stored bundle should be counted once when any subscriber still needs it"
+        );
+
+        sub1_bundle1.ack();
+        sub2_bundle0.ack();
     }
 
     #[test]

@@ -246,20 +246,34 @@ mod tests {
             DataType::Float64 => Arc::new(Float64Array::from_iter(
                 (0..num_rows).map(|_| r.random::<f64>()),
             )) as Arc<_>,
-            DataType::Timestamp(unit, _) => match unit {
-                TimeUnit::Second => Arc::new(TimestampSecondArray::from_iter(
-                    &Int64Array::from_iter((0..num_rows).map(|_| r.random::<i64>())),
-                )) as Arc<_>,
-                TimeUnit::Millisecond => Arc::new(TimestampMillisecondArray::from_iter(
-                    &Int64Array::from_iter((0..num_rows).map(|_| r.random::<i64>())),
-                )) as Arc<_>,
-                TimeUnit::Microsecond => Arc::new(TimestampMicrosecondArray::from_iter(
-                    &Int64Array::from_iter((0..num_rows).map(|_| r.random::<i64>())),
-                )) as Arc<_>,
+            // Preserve the column's time zone so the generated array matches
+            // the schema it is generated for.
+            DataType::Timestamp(unit, time_zone) => match unit {
+                TimeUnit::Second => Arc::new(
+                    TimestampSecondArray::from_iter(&Int64Array::from_iter(
+                        (0..num_rows).map(|_| r.random::<i64>()),
+                    ))
+                    .with_timezone_opt(time_zone.clone()),
+                ) as Arc<_>,
+                TimeUnit::Millisecond => Arc::new(
+                    TimestampMillisecondArray::from_iter(&Int64Array::from_iter(
+                        (0..num_rows).map(|_| r.random::<i64>()),
+                    ))
+                    .with_timezone_opt(time_zone.clone()),
+                ) as Arc<_>,
+                TimeUnit::Microsecond => Arc::new(
+                    TimestampMicrosecondArray::from_iter(&Int64Array::from_iter(
+                        (0..num_rows).map(|_| r.random::<i64>()),
+                    ))
+                    .with_timezone_opt(time_zone.clone()),
+                ) as Arc<_>,
 
-                TimeUnit::Nanosecond => Arc::new(TimestampNanosecondArray::from_iter(
-                    &Int64Array::from_iter((0..num_rows).map(|_| r.random::<i64>())),
-                )) as Arc<_>,
+                TimeUnit::Nanosecond => Arc::new(
+                    TimestampNanosecondArray::from_iter(&Int64Array::from_iter(
+                        (0..num_rows).map(|_| r.random::<i64>()),
+                    ))
+                    .with_timezone_opt(time_zone.clone()),
+                ) as Arc<_>,
             },
             DataType::Binary | DataType::LargeBinary => Arc::new(BinaryArray::from_iter(
                 (0..num_rows).map(|_| Some(Alphanumeric.sample_string(&mut r, 10))),

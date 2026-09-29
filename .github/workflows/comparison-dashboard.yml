@@ -26,7 +26,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
           egress-policy: audit
 
@@ -37,6 +37,7 @@ jobs:
         with:
           ref: main
           path: source
+          persist-credentials: false
 
       # The benchmarks branch holds the published per-suite data and is the
       # push target. Check it out into ./target/.
@@ -47,15 +48,17 @@ jobs:
           path: target
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
+          # zizmor: ignore[artipacked] Credentials are required by the branch push below.
+          persist-credentials: true
 
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.14"
           cache: pip
-          cache-dependency-path: source/tools/comparison_dashboard/requirements.txt
+          cache-dependency-path: source/tools/comparison_dashboard/requirements.lock.txt
 
       - name: Install dashboard dependencies
-        run: pip install -r source/tools/comparison_dashboard/requirements.txt
+        run: python -m pip install --require-hashes -r source/tools/comparison_dashboard/requirements.lock.txt
 
       # Build directly into the target tree: read data from
       # target/docs/comparison_data, write site to target/docs/compare.

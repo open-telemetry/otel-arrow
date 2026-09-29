@@ -235,13 +235,14 @@ fn validate_grpc_endpoint(endpoint: &str) -> Result<(), String> {
         .map_err(|e| format!("invalid grpc_endpoint \"{trimmed}\": {e}"))?;
 
     // Reject unsupported schemes.
-    if let Some(scheme) = uri.scheme_str() {
-        if scheme != "http" && scheme != "https" {
-            return Err(format!(
-                "unsupported scheme \"{scheme}\" in grpc_endpoint \"{trimmed}\"; \
+    if let Some(scheme) = uri.scheme_str()
+        && scheme != "http"
+        && scheme != "https"
+    {
+        return Err(format!(
+            "unsupported scheme \"{scheme}\" in grpc_endpoint \"{trimmed}\"; \
                  expected \"http\" or \"https\""
-            ));
-        }
+        ));
     }
 
     Ok(())

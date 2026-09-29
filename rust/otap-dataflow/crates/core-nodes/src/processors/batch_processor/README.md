@@ -5,7 +5,7 @@
 ## Metadata
 
 - Type: `processor:batch` (`urn:otel:processor:batch`)
-- Feature gate: Default
+- Feature gate: Always enabled
 - Stability: Experimental
 
 ## Overview

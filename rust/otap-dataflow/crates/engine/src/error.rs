@@ -175,6 +175,10 @@ impl<T: Sized> From<TypedError<T>> for Error {
 /// All errors that can occur in the pipeline engine infrastructure.
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
+    /// The linked pdata codec registry is invalid.
+    #[error("PData codec initialization failed: {0}")]
+    PdataCodecRegistry(#[from] otel_arrow_dfe_pdata_codec::RegistryError),
+
     /// A wrapper for the config errors.
     #[error("A config error occurred: {0}")]
     ConfigError(#[from] Box<otel_arrow_dfe_config::error::Error>),
@@ -576,6 +580,24 @@ pub enum Error {
         /// Execution model requested by the caller: `"local"` or `"shared"`.
         execution_model: &'static str,
     },
+
+    /// A capability is bound, but its extension cannot provide the execution
+    /// model requested by the node.
+    #[error(
+        "capability '{capability}' is bound to extension '{extension}', but the node requested the \
+         {requested_execution_model} execution model and the extension provides only the \
+         {available_execution_model} execution model"
+    )]
+    CapabilityExecutionModelMismatch {
+        /// The capability name.
+        capability: String,
+        /// The extension selected by the node's binding.
+        extension: ExtensionId,
+        /// Execution model requested by the node: `"local"` or `"shared"`.
+        requested_execution_model: &'static str,
+        /// Execution model provided by the bound extension.
+        available_execution_model: &'static str,
+    },
 }
 
 impl Error {
@@ -583,6 +605,7 @@ impl Error {
     #[must_use]
     pub fn variant_name(&self) -> String {
         match self {
+            Error::PdataCodecRegistry(_) => "PdataCodecRegistry",
             Error::ChannelRecvError(_) => "ChannelRecvError",
             Error::ChannelSendError { .. } => "ChannelSendError",
             Error::ConfigError(_) => "ConfigError",
@@ -632,6 +655,7 @@ impl Error {
             Error::SubscriptionClosed => "SubscriptionClosed",
             Error::CapabilityAlreadyConsumed { .. } => "CapabilityAlreadyConsumed",
             Error::CapabilityNotBound { .. } => "CapabilityNotBound",
+            Error::CapabilityExecutionModelMismatch { .. } => "CapabilityExecutionModelMismatch",
         }
         .to_owned()
     }

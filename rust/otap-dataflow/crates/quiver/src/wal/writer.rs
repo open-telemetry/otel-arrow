@@ -1431,10 +1431,10 @@ impl WalCoordinator {
         cursor: &WalConsumerCursor,
     ) -> WalResult<()> {
         // Validate sequence monotonicity
-        if let Some(last_seq) = self.last_cursor_sequence {
-            if cursor.safe_sequence < last_seq {
-                return Err(WalError::InvalidConsumerCursor("safe sequence regressed"));
-            }
+        if let Some(last_seq) = self.last_cursor_sequence
+            && cursor.safe_sequence < last_seq
+        {
+            return Err(WalError::InvalidConsumerCursor("safe sequence regressed"));
         }
 
         // Validate WAL position monotonicity

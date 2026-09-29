@@ -1,37 +1,30 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Protocol-neutral transport header abstraction for end-to-end header
-//! propagation through the pipeline.
-//!
-//! Core types and engines are defined in [`otel_arrow_dfe_config::transport_headers`]
-//! and re-exported here for backward compatibility and convenience.
-
-// Re-export all public items from the config crate's transport_headers module.
-pub use otel_arrow_dfe_config::transport_headers::{TransportHeader, TransportHeaders, ValueKind};
-// Re-export policy types that include capture and propagation logic.
-pub use otel_arrow_dfe_config::transport_headers_policy::{
-    CaptureStats, HeaderCapturePolicy, HeaderPropagationPolicy, PropagatedHeader,
-};
-
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use otel_arrow_dfe_config::ContextEntryName;
+    use otel_arrow_dfe_config::transport_headers::{TransportHeaders, ValueKind};
     use otel_arrow_dfe_config::transport_headers_policy::{
-        CaptureDefaults, CaptureRule, PropagationAction, PropagationDefault, PropagationMatch,
+        CaptureDefaults, CaptureRule, CompiledHeaderCapturePolicy, HeaderCapturePolicy,
+        HeaderPropagationPolicy, PropagationAction, PropagationDefault, PropagationMatch,
         PropagationOverride, PropagationSelector, PropagationSelectorType,
     };
 
     // -- Helper functions for tests ------------------------------------------
 
-    fn make_capture_policy(rules: Vec<CaptureRule>) -> HeaderCapturePolicy {
-        HeaderCapturePolicy::new(CaptureDefaults::default(), rules)
+    fn make_capture_policy(rules: Vec<CaptureRule>) -> CompiledHeaderCapturePolicy {
+        HeaderCapturePolicy::new(CaptureDefaults::default(), rules).compile(|_| true)
+    }
+
+    fn context_name(raw: &str) -> ContextEntryName {
+        ContextEntryName::try_from(raw).expect("valid test context entry name")
     }
 
     fn rule(names: &[&str], store_as: Option<&str>) -> CaptureRule {
         CaptureRule {
-            match_names: names.iter().map(|s| s.to_string()).collect(),
-            store_as: store_as.map(|s| s.to_string()),
+            match_names: names.iter().map(|name| context_name(name)).collect(),
+            store_as: store_as.map(context_name),
             sensitive: false,
             value_kind: None,
         }
@@ -78,11 +71,26 @@ mod tests {
             3,
             "should capture exactly 3 matching headers"
         );
-        assert_eq!(captured.as_slice()[0].name, "tenant_id");
-        assert_eq!(captured.as_slice()[0].wire_name, "X-Tenant-Id");
-        assert_eq!(captured.as_slice()[0].value, b"tenant-abc-123");
-        assert_eq!(captured.as_slice()[1].name, "x-request-id");
-        assert_eq!(captured.as_slice()[2].name, "authorization");
+        assert_eq!(
+            captured.get(0).expect("tenant header").name.as_str(),
+            "tenant_id"
+        );
+        assert_eq!(
+            captured.get(0).expect("tenant header").wire_name(),
+            "X-Tenant-Id"
+        );
+        assert_eq!(
+            captured.get(0).expect("tenant header").value.bytes,
+            b"tenant-abc-123"
+        );
+        assert_eq!(
+            captured.get(1).expect("request header").name.as_str(),
+            "x-request-id"
+        );
+        assert_eq!(
+            captured.get(2).expect("authorization header").name.as_str(),
+            "authorization"
+        );
 
         // ========== Step 2: Attach to OtapPdata context ==========
 
@@ -101,9 +109,22 @@ mod tests {
         );
         let headers_after = pdata_after_processor.transport_headers().unwrap();
         assert_eq!(headers_after.len(), 3);
-        assert_eq!(headers_after.as_slice()[0].name, "tenant_id");
-        assert_eq!(headers_after.as_slice()[1].name, "x-request-id");
-        assert_eq!(headers_after.as_slice()[2].name, "authorization");
+        assert_eq!(
+            headers_after.get(0).expect("tenant header").name.as_str(),
+            "tenant_id"
+        );
+        assert_eq!(
+            headers_after.get(1).expect("request header").name.as_str(),
+            "x-request-id"
+        );
+        assert_eq!(
+            headers_after
+                .get(2)
+                .expect("authorization header")
+                .name
+                .as_str(),
+            "authorization"
+        );
 
         // ========== Step 4: Simulate exporter propagation ==========
 
@@ -117,7 +138,7 @@ mod tests {
             },
             vec![PropagationOverride {
                 match_rule: PropagationMatch {
-                    stored_names: vec!["authorization".to_string()],
+                    stored_names: vec![context_name("authorization")],
                 },
                 action: PropagationAction::Drop,
                 name: None,
@@ -204,8 +225,14 @@ mod tests {
         let stats = capture_policy.capture_from_pairs(inbound.into_iter(), &mut captured);
         assert!(stats.is_none());
         assert_eq!(captured.len(), 1);
-        assert_eq!(captured.as_slice()[0].value_kind, ValueKind::Binary);
-        assert_eq!(captured.as_slice()[0].value, binary_value);
+        assert_eq!(
+            captured.get(0).expect("binary header").value.value_kind,
+            ValueKind::Binary
+        );
+        assert_eq!(
+            captured.get(0).expect("binary header").value.bytes,
+            binary_value
+        );
 
         let pdata = crate::testing::create_test_pdata().with_transport_headers(captured);
         let pdata_after = pdata.clone_without_context();
@@ -223,7 +250,7 @@ mod tests {
         );
         let propagated: Vec<_> = propagation_policy.propagate(headers).collect();
 
-        assert_eq!(*propagated[0].value_kind, ValueKind::Binary);
+        assert_eq!(propagated[0].value_kind, ValueKind::Binary);
         assert_eq!(propagated[0].value, binary_value.as_slice());
     }
 }

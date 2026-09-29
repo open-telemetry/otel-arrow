@@ -1,5 +1,0 @@
-change_type: bug_fix
-component: observability
-note: Honor the shutdown deadline when draining internal logs into a backpressured observability pipeline.
-issues: [3843]
-subtext:

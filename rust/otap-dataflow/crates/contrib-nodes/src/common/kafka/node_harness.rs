@@ -14,19 +14,33 @@
 //! Each wrapper is gated by its node feature so it only compiles when that node
 //! (and its `rdkafka`) is present.
 
-#[cfg(any(feature = "kafka-exporter", feature = "kafka-receiver"))]
+#[cfg(feature = "kafka")]
 use otel_arrow_dfe_engine::context::ControllerContext;
-#[cfg(any(feature = "kafka-exporter", feature = "kafka-receiver"))]
+#[cfg(feature = "kafka")]
 use otel_arrow_dfe_engine::context::PipelineContext;
-#[cfg(any(feature = "kafka-exporter", feature = "kafka-receiver"))]
+#[cfg(feature = "kafka")]
 use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
 
 /// Builds a deterministic single-core pipeline context for the wrappers.
-#[cfg(any(feature = "kafka-exporter", feature = "kafka-receiver"))]
+#[cfg(feature = "kafka")]
 fn test_pipeline_context() -> PipelineContext {
+    test_pipeline_context_with_generation(0)
+}
+
+/// Builds a deterministic single-core pipeline context at an explicit deployment
+/// generation, so a cutover test can model an old vs new pipeline instance.
+#[cfg(feature = "kafka")]
+fn test_pipeline_context_with_generation(deployment_generation: u64) -> PipelineContext {
     let registry = TelemetryRegistryHandle::new();
     let controller_ctx = ControllerContext::new(registry);
-    controller_ctx.pipeline_context_with("test-group".into(), "test-pipeline".into(), 0, 1, 0)
+    controller_ctx.pipeline_context_with_generation(
+        "test-group".into(),
+        "test-pipeline".into(),
+        0,
+        1,
+        0,
+        deployment_generation,
+    )
 }
 
 /// Metric-observation helpers shared by the exporter and receiver harnesses.
@@ -42,7 +56,7 @@ fn test_pipeline_context() -> PipelineContext {
 /// `_` to `.` before lookup.
 // Consumed by the Kafka validation test branch; helpers may be unused on the
 // branch that only finalizes the test suite.
-#[cfg(any(feature = "kafka-exporter", feature = "kafka-receiver"))]
+#[cfg(feature = "kafka")]
 #[allow(dead_code)]
 pub(crate) mod node_metrics {
     use std::collections::HashMap;
@@ -207,7 +221,7 @@ pub(crate) mod node_metrics {
 // Exporter wrapper
 // ---------------------------------------------------------------------------
 
-#[cfg(feature = "kafka-exporter")]
+#[cfg(feature = "kafka")]
 mod exporter_harness {
     use super::test_pipeline_context;
     use crate::common::kafka::test::cluster::KafkaTestCluster;
@@ -299,6 +313,7 @@ mod exporter_harness {
                         completion_tx,
                         metrics_reporter,
                         Interests::empty(),
+                        otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
                     )
                     .await
             });
@@ -451,19 +466,51 @@ mod exporter_harness {
                 Err(e) => panic!("kafka-test: exporter task panicked: {e}"),
             }
         }
+
+        /// Awaits the spawned exporter task, then drains and counts every
+        /// Ack/Nack unwind message that was buffered on the (never-consumed)
+        /// completion channel, returning both the [`TerminalState`] and the
+        /// buffered count.
+        ///
+        /// Awaiting the task first guarantees the node has dropped its completion
+        /// sender, so the drain sees exactly the messages the node managed to
+        /// report (bounded by channel capacity) and then observes the closed
+        /// channel -- letting a test distinguish "buffered at capacity" from
+        /// "reports abandoned at the shutdown deadline".
+        ///
+        /// # Panics
+        ///
+        /// Panics if the task panicked or the exporter node returned an error
+        /// instead of a terminal state.
+        pub(crate) async fn await_terminal_state_draining_completions(
+            mut self,
+        ) -> (TerminalState, usize) {
+            let terminal_state = match self.join.await {
+                Ok(Ok(terminal_state)) => terminal_state,
+                Ok(Err(e)) => panic!("kafka-test: exporter node returned an error: {e:?}"),
+                Err(e) => panic!("kafka-test: exporter task panicked: {e}"),
+            };
+            let mut buffered = 0usize;
+            // The node has exited and dropped its sender, so `recv` yields every
+            // buffered message and then `Err` (closed) -- a bounded drain.
+            while self.completion_rx.recv().await.is_ok() {
+                buffered += 1;
+            }
+            (terminal_state, buffered)
+        }
     }
 }
 
-#[cfg(feature = "kafka-exporter")]
+#[cfg(feature = "kafka")]
 pub(crate) use exporter_harness::KafkaExporterHarness;
 
 // ---------------------------------------------------------------------------
 // Receiver wrapper
 // ---------------------------------------------------------------------------
 
-#[cfg(feature = "kafka-receiver")]
+#[cfg(feature = "kafka")]
 mod receiver_harness {
-    use super::test_pipeline_context;
+    use super::test_pipeline_context_with_generation;
     use crate::common::kafka::test::cluster::KafkaTestCluster;
     use crate::receivers::kafka_receiver::config::{KafkaReceiverConfig, SignalConfig};
     use crate::receivers::kafka_receiver::rebalance::RebalanceState;
@@ -520,11 +567,24 @@ mod receiver_harness {
         /// installed on the effect handler before start. Spawns onto the
         /// current `LocalSet`.
         pub(crate) fn start_with_capture(
-            _cluster: &KafkaTestCluster,
+            cluster: &KafkaTestCluster,
             cfg: KafkaReceiverConfig,
             capture_policy: Option<HeaderCapturePolicy>,
         ) -> Self {
-            let pipeline_ctx = test_pipeline_context();
+            Self::start_with_capture_and_generation(cluster, cfg, capture_policy, 0)
+        }
+
+        /// Like [`start_with_capture`] but builds the receiver at an explicit
+        /// deployment `generation`, so a cutover test can model an old vs new
+        /// pipeline instance (the generation is folded into a static
+        /// `group.instance.id` by `KafkaReceiver::new`).
+        pub(crate) fn start_with_capture_and_generation(
+            _cluster: &KafkaTestCluster,
+            cfg: KafkaReceiverConfig,
+            capture_policy: Option<HeaderCapturePolicy>,
+            generation: u64,
+        ) -> Self {
+            let pipeline_ctx = test_pipeline_context_with_generation(generation);
             let node_config = Arc::new(NodeUserConfig::new_receiver_config(KAFKA_RECEIVER_URN));
             let receiver =
                 KafkaReceiver::new(pipeline_ctx, cfg).expect("kafka receiver config is valid");
@@ -549,8 +609,10 @@ mod receiver_harness {
                 node_config.default_output.clone(),
                 pipeline_ctrl_msg_tx,
                 metrics_reporter,
+                otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
             );
-            effect_handler.set_capture_policy(capture_policy);
+            effect_handler
+                .set_capture_policy(capture_policy.map(|policy| policy.compile(|_| true)));
 
             let keep_alive =
                 KeepAlive(vec![Box::new(control_sender.clone()), Box::new(metrics_rx)]);
@@ -572,6 +634,17 @@ mod receiver_harness {
         /// Starts the receiver with an explicit `cfg` and no capture policy.
         pub(crate) fn start(cluster: &KafkaTestCluster, cfg: KafkaReceiverConfig) -> Self {
             Self::start_with_capture(cluster, cfg, None)
+        }
+
+        /// Starts the receiver with an explicit `cfg` at deployment `generation`
+        /// (no capture policy). Used by cutover tests to model the old and new
+        /// pipeline instances as distinct deployment generations.
+        pub(crate) fn start_with_generation(
+            cluster: &KafkaTestCluster,
+            cfg: KafkaReceiverConfig,
+            generation: u64,
+        ) -> Self {
+            Self::start_with_capture_and_generation(cluster, cfg, None, generation)
         }
 
         /// Starts the receiver with a default OTLP-proto config for `topics`.
@@ -656,6 +729,40 @@ mod receiver_harness {
             );
         }
 
+        /// Returns whether the receiver currently owns `(topic, partition)`.
+        ///
+        /// Non-panicking point-in-time check (unlike
+        /// [`wait_for_partition_assignment`]); lets a test assert a draining
+        /// receiver has released a partition and does not re-acquire it, or
+        /// observe which of several partitions a newly started receiver has
+        /// acquired without knowing in advance which one the rebalance grants.
+        pub(crate) fn is_partition_assigned(&self, topic: &str, partition: i32) -> bool {
+            self.rebalance_state.is_assigned(topic, partition)
+        }
+
+        /// Waits until the receiver's rebalance callback has assigned a partition.
+        ///
+        /// # Panics
+        ///
+        /// Panics if the partition is not assigned when `timeout` elapses.
+        pub(crate) async fn wait_for_partition_assignment(
+            &self,
+            topic: &str,
+            partition: i32,
+            timeout: Duration,
+        ) {
+            let assigned = crate::common::kafka::test::wait::poll_until_async(
+                timeout,
+                Duration::from_millis(25),
+                || async { self.rebalance_state.is_assigned(topic, partition) },
+            )
+            .await;
+            assert!(
+                assigned,
+                "kafka-test: receiver did not acquire {topic}/{partition} before timeout"
+            );
+        }
+
         /// Acknowledges a consumed `pdata`, folding `next_ack` + `AckMsg` +
         /// control-channel send so manual-commit offsets advance.
         pub(crate) fn ack(&self, pdata: OtapPdata) {
@@ -669,7 +776,7 @@ mod receiver_harness {
         /// Negatively-acknowledges a consumed `pdata` with a permanent (terminal)
         /// nack, folding `next_nack` + `NackMsg` + control-channel send. Mirrors
         /// [`ack`](Self::ack); used to exercise the receiver's terminal-nack
-        /// contract (a Nack advances past the message).
+        /// contract (a permanent Nack advances past the message).
         pub(crate) fn nack_permanent(&self, reason: impl Into<String>, pdata: OtapPdata) {
             if let Some((_node_id, nack)) = next_nack(NackMsg::new_permanent(reason.into(), pdata))
             {
@@ -682,16 +789,27 @@ mod receiver_harness {
         /// Negatively-acknowledges a consumed `pdata` with a transient
         /// (non-permanent) nack, folding `next_nack` + `NackMsg::new` +
         /// control-channel send. Mirrors [`nack_permanent`](Self::nack_permanent)
-        /// but leaves `permanent = false`; used to prove the receiver treats a
-        /// transient nack as terminal (advances past the message) identically to
-        /// a permanent nack, since transient retry is delegated to a downstream
-        /// `processor:retry` node.
+        /// but leaves `permanent = false`; receiver tests use it for both the
+        /// explicit commit-and-skip policy and default Kafka replay policy.
         pub(crate) fn nack_transient(&self, reason: impl Into<String>, pdata: OtapPdata) {
             if let Some((_node_id, nack)) = next_nack(NackMsg::new(reason.into(), pdata)) {
                 self.control_tx
                     .send(NodeControlMsg::Nack(nack))
                     .expect("send nack to receiver");
             }
+        }
+
+        /// Waits until the receiver has processed every control message queued
+        /// before this call by collecting one metrics snapshot as a FIFO barrier.
+        pub(crate) async fn wait_for_control_barrier(&self) {
+            let (snapshot_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(64);
+            self.control_tx
+                .send(NodeControlMsg::CollectTelemetry { metrics_reporter })
+                .expect("send metrics barrier to receiver");
+            let _ = tokio::time::timeout(Duration::from_secs(5), snapshot_rx.recv_async())
+                .await
+                .expect("timed out waiting for receiver control barrier")
+                .expect("receiver control barrier channel closed");
         }
 
         /// Requests a graceful shutdown with the given `deadline` from now.
@@ -754,7 +872,7 @@ mod receiver_harness {
     }
 }
 
-#[cfg(feature = "kafka-receiver")]
+#[cfg(feature = "kafka")]
 pub(crate) use receiver_harness::KafkaReceiverHarness;
 
 // ---------------------------------------------------------------------------
@@ -762,7 +880,7 @@ pub(crate) use receiver_harness::KafkaReceiverHarness;
 // ---------------------------------------------------------------------------
 
 /// Per-signal topic/format layout used by the `start_for` wrapper variants.
-#[cfg(any(feature = "kafka-exporter", feature = "kafka-receiver"))]
+#[cfg(feature = "kafka")]
 #[derive(Debug, Clone, Default)]
 pub(crate) struct KafkaTopics {
     /// Optional traces topic + encoding.
@@ -773,7 +891,7 @@ pub(crate) struct KafkaTopics {
     pub(crate) logs: Option<(String, crate::common::kafka::MessageFormat)>,
 }
 
-#[cfg(any(feature = "kafka-exporter", feature = "kafka-receiver"))]
+#[cfg(feature = "kafka")]
 impl KafkaTopics {
     /// A logs-only layout.
     pub(crate) fn logs(topic: impl Into<String>, fmt: crate::common::kafka::MessageFormat) -> Self {

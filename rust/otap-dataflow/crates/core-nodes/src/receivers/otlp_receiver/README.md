@@ -5,7 +5,7 @@
 ## Metadata
 
 - Type: `receiver:otlp` (`urn:otel:receiver:otlp`)
-- Feature gate: Default
+- Feature gate: `otlp`
 - Stability: Experimental
 
 ## Overview
@@ -44,6 +44,66 @@ config:
       wait_for_result: true
       timeout: 30s
 ```
+
+Authorization is optional. Binding the `bearer_token_authorizer` capability
+makes the receiver require a bearer token for OTLP export requests accepted on
+the configured gRPC and HTTP export endpoints. The receiver bounds each
+authorization call with that protocol's existing `timeout`. When the gRPC
+timeout is unset, authorization still has a `10s` limit; HTTP already defaults
+to a `30s` request timeout. Provider operation timeouts, such as a Kubernetes
+review timeout, remain independently configurable:
+
+```yaml
+extensions:
+  k8s_authz:
+    type: extension:k8s_service_account_token_auth
+    config:
+      audiences:
+        - audience: "otlp-collector"
+
+policies:
+  authorized_identity:
+    - claim: sub
+      store_as: customer_id
+    - claim: groups
+      store_as: access_groups
+
+nodes:
+  otlp_in:
+    type: receiver:otlp
+    capabilities:
+      bearer_token_authorizer: k8s_authz
+    config:
+      protocols:
+        grpc:
+          listening_addr: "127.0.0.1:4317"
+```
+
+The authorizer validates the token before the receiver reads or forwards the
+request payload. Authentication failures return `UNAUTHENTICATED`/HTTP 401 and
+policy denials return `PERMISSION_DENIED`/HTTP 403. An authorizer that cannot
+reach a decision fails closed with `UNAVAILABLE`/HTTP 503.
+
+Receivers with no `bearer_token_authorizer` binding accept traffic unchanged
+and produce no authorized identity entries. Only this OTLP receiver's HTTP and
+gRPC protocols currently honor `policies.authorized_identity`, and capture
+requires a bound `bearer_token_authorizer`.
+
+The policy can be configured at top-level, group, or pipeline scope. The
+nearest configured scope replaces the complete broader identity policy; entries
+are not merged across scopes. An empty list at a narrower scope disables
+inherited identity capture.
+
+Each listed verified claim is copied into pdata context under its `store_as`
+name. The `sub` claim is the authorized subject. Single- and multi-valued
+claims remain distinct, and an absent claim is omitted without rejecting the
+request. Configuring this policy on an unsupported receiver, or without an
+authorizer, captures nothing.
+
+Authorization-derived context entries are strongly typed and separate from
+transport headers. This policy only captures entries for downstream use; it
+does not propagate them as outbound headers or add routing, predicates,
+composites, required-entry enforcement, or generic context consumers.
 
 Common gRPC protocol fields include:
 
@@ -109,32 +169,28 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 
 ### Metric Sets
 
+#### `receiver.received`
+
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `receiver.received.messages` | `{message}` | `signal`, `outcome` | Number of classified OTLP messages whose receiver-local handling terminated. |
+| `receiver.received.payload.size` | `By` | `signal`, `outcome` | Encoded application payload bytes observed at the receiver boundary. |
+
+#### `receiver.processing`
+
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `receiver.processing.duration` | `s` | `signal` | Receiver-local processing time before downstream handoff. Emitted when component duration is enabled. |
+
 #### `receiver.otlp.requests`
 
 | Metric | Unit | Attributes | Description |
 | --- | --- | --- | --- |
-| `receiver.otlp.requests.started` | `{request}` | `signal`, `protocol` | Number of requests admitted to the pipeline send path. |
-| `receiver.otlp.requests.completed` | `{request}` | `signal`, `protocol` | Number of admitted requests whose receiver work terminated. |
-| `receiver.otlp.requests.payload_size` | `By` | `signal`, `protocol` | Decompressed payload bytes for requests admitted to the pipeline send path. |
+| `receiver.otlp.requests.accepted` | `{request}` | `signal`, `protocol` | Number of OTLP requests admitted to the pipeline send path. |
+| `receiver.otlp.requests.rejected` | `{request}` | `protocol`, `error.type` | Number of requests rejected before pipeline admission. |
 
-#### `receiver.otlp.rejections`
-
-| Metric | Unit | Attributes | Description |
-| --- | --- | --- | --- |
-| `receiver.otlp.rejections.requests` | `{request}` | `protocol`, `error.type` | Number of requests rejected before pipeline admission. |
-
-Rate-admission outcomes are reported by the engine metric set
-`admission.rate_limiter`. Its `refusals` counter uses the bounded attributes
-`dimension=bytes` and `refusal=would_throttle|throttle|oversized`. The metric is
-scoped to the configured node entity, but tenant or request identities are
-never measurement attributes. Protocol-specific enforced rejections remain in
-`receiver.otlp.rejections`.
-
-#### `receiver.otlp.acknowledgements`
-
-| Metric | Unit | Attributes | Description |
-| --- | --- | --- | --- |
-| `receiver.otlp.acknowledgements.responses` | `{response}` | `signal`, `outcome` | Number of routed or invalid acknowledgement responses. |
+The shared `receiver.received` metrics report terminal outcome and payload size
+for classified requests.
 
 #### `receiver.otlp.transport`
 
@@ -142,10 +198,25 @@ never measurement attributes. Protocol-specific enforced rejections remain in
 | --- | --- | --- | --- |
 | `receiver.otlp.transport.errors` | `{error}` | `protocol` | Number of transport-level server errors. |
 
+Rate-admission outcomes are reported by the engine metric set
+`admission.rate_limiter`. Its `refusals` counter uses the bounded attributes
+`dimension=bytes` and `refusal=would_throttle|throttle|oversized`. The metric is
+scoped to the configured node entity, but tenant or request identities are
+never measurement attributes. Protocol-specific enforced rejections remain in
+`receiver.otlp.requests.rejected`.
+
+#### `receiver.otlp.acknowledgements`
+
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `receiver.otlp.acknowledgements.responses` | `{response}` | `signal`, `outcome` | Number of routed or invalid acknowledgement responses. |
+
 Attribute values are bounded: `signal` is `traces`, `metrics`, or `logs`;
 `protocol` is `grpc` or `http`; `outcome` is `success`, `failure`, or
 `refused`; and `error.type` is `memory_pressure`, `concurrency_limit`,
-`rate_limit`, `payload_too_large`, `invalid_request`, or `internal`.
+`rate_limit`, `authentication`, `permission_denied`,
+`authorization_unavailable`, `payload_too_large`, `invalid_request`, or
+`internal`.
 
 ### Events
 

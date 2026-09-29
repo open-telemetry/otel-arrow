@@ -25,14 +25,16 @@ elements in the OpenTelemetry data model, by signal. The OTAP pipeline
 also supports passing through OTLP bytes as literal data, with
 **direct conversion** between the OTAP records and OTLP bytes models.
 
-## Experimental
+## Contrib
 
-Here, find our experimental projects. They include general-purpose data-engine
-capabilities as well as integrations developed for the OTel-Arrow Phase 2
-project scope ([project-phases](../docs/project-phases.md)).
+The `contrib` directory contains independently scoped projects maintained in
+this repository. Each project documents its own maturity and release policy.
+They include general-purpose data-engine capabilities developed for the
+OTel-Arrow Phase 2 project scope
+([project-phases](../docs/project-phases.md)).
 
 - [Data engine: expression, parsing, and evaluation
-  primitives](./experimental/data_engine/README.md)
+  primitives](./contrib/data_engine/README.md)
 - [Parquet query examples: querying OTel-Arrow data in Parquet
   files using DataFusion](./parquet-query-examples/README.md)
 

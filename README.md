@@ -48,8 +48,8 @@ Arrow](https://arrow.apache.org/), and our Parquet exporter for OTAP
 makes OpenTelemetry data directly accessible to a wide range of tools,
 thanks to the [Apache Parquet](https://parquet.apache.org/) ecosystem.
 
-The transform and query primitives are developed in the experimental
-[Data Engine](./rust/experimental/data_engine/README.md) workspace. Although
+The transform and query primitives are developed in the contrib
+[Data Engine](./rust/contrib/data_engine/README.md) workspace. Although
 the OTAP Dataflow Engine consumes these crates, the Data Engine is
 general-purpose and has no architectural dependency on OTAP or OpenTelemetry
 data. Its published crates use the `otel-arrow-contrib-data-engine-*` prefix
@@ -137,18 +137,14 @@ examples.
 ### OTAP Dataflow Engine example
 
 **We are not at this time providing pre-built OTAP Dataflow Engine
-releases.** Developers can build the OTAP Dataflow Engine in a minimal
-configuration with the following:
+releases.** Developers can build the OTAP Dataflow Engine with the
+following:
 
 ```bash
 git clone https://github.com/open-telemetry/otel-arrow.git
 cd otel-arrow/rust/otap-dataflow
-cargo build --bin df_engine --no-default-features --features crypto-ring
+cargo build --bin df_engine
 ```
-
-Minimal builds using `--no-default-features` should enable exactly one
-`crypto-*` provider feature. `crypto-ring` is the default-compatible
-provider used by the standard feature set.
 
 A [directory of example configurations][EXAMPLE-CONFIGS] provides a
 number of examples (e.g.,
@@ -210,7 +206,9 @@ participate!
 
 - [Contribution guidelines](CONTRIBUTING.md)
 - [Meeting notes](https://docs.google.com/document/d/1z8_Ra-ALDaYNa88mMj1gOZtOpLZLRk0-dZEmDjPmcUs)
-- [CNCF Slack `#otel-arrow`](https://cloud-native.slack.com/archives/C07S4Q67LTF)
+- CNCF Slack:
+  [`#otel-arrow`](https://cloud-native.slack.com/archives/C07S4Q67LTF).
+  New users can [create an account](https://slack.cncf.io/).
 
 ### Maintainers
 
@@ -227,6 +225,7 @@ repository](https://github.com/open-telemetry/community/blob/main/guides/contrib
 
 ### Approvers
 
+- [Aaron Marten](https://github.com/AaronRM), Microsoft
 - [Cijo Thomas](https://github.com/cijothomas), Microsoft
 
 For more information about the approver role, see the [community
@@ -234,10 +233,7 @@ repository](https://github.com/open-telemetry/community/blob/main/guides/contrib
 
 ### Triagers
 
-- [Aaron Marten](https://github.com/AaronRM), Microsoft
-- [Tom Tan](https://github.com/ThomsonTan), Microsoft
-
-For more information about the approver role, see the [community
+For more information about the triager role, see the [community
 repository](https://github.com/open-telemetry/community/blob/main/guides/contributor/membership.md#triager).
 
 ### Emeritus
@@ -245,6 +241,7 @@ repository](https://github.com/open-telemetry/community/blob/main/guides/contrib
 - [Alex Boten](https://github.com/codeboten), Approver
 - [Lei Huang](https://github.com/v0y4g3r), Approver
 - [Moh Osman](https://github.com/moh-osman3), Approver
+- [Tom Tan](https://github.com/ThomsonTan), Triager
 
 ### Thanks to all of our contributors
 

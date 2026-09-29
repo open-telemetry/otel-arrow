@@ -1,5 +1,8 @@
 # otel-arrow-dfe-pdata-views
 
+This crate is currently pre-1.0. Its public API may evolve between minor
+releases.
+
 Zero-dependency, backend-agnostic view traits for OTLP/OTAP telemetry data.
 
 ## Overview
@@ -40,9 +43,16 @@ fn resource_group_count(metrics: &impl MetricsView) -> usize {
 }
 ```
 
-This crate is currently pre-1.0. Its public API may evolve between minor
-releases.
-
 ## Dependencies
 
 Intentionally none.
+
+## Release policy
+
+This crate is versioned independently from the rest of the OTAP Dataflow
+workspace and is not bumped during normal releases. Version changes must be
+coordinated with external consumers such as `geneva-uploader`.
+
+Cargo treats traits from different versions of a crate as distinct types, so
+an uncoordinated version bump can prevent those consumers from accepting the
+workspace's view implementations.

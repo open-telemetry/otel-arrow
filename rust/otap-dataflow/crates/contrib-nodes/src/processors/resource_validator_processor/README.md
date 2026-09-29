@@ -3,7 +3,7 @@
 ## Metadata
 
 - Type: `processor:resource_validator` (`urn:otel:processor:resource_validator`)
-- Feature gate: `resource-validator-processor`
+- Feature gate: `resource-validator`
 - Stability: Experimental
 
 ## Overview
@@ -97,12 +97,12 @@ config:
 
 ## Feature Flag
 
-This processor is experimental and requires the `resource-validator-processor`
+This processor is experimental and requires the `resource-validator`
 feature flag:
 
 ```toml
 [dependencies]
-otel-arrow-dfe-otap = { version = "...", features = ["resource-validator-processor"] }
+otel-arrow-dfe-otap = { version = "...", features = ["resource-validator"] }
 ```
 
 ## Extensibility for Dynamic Auth Context
