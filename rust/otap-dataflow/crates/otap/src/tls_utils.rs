@@ -671,26 +671,20 @@ impl CaWatcherState {
     /// Every wait returns as soon as the watcher (and its signal sender) is dropped.
     fn run(mut self, signals: mpsc::Receiver<()>) {
         loop {
-            let woke_by_signal = match self.retry_at {
-                None => match signals.recv() {
-                    Ok(()) => true,
-                    Err(_) => return,
-                },
-                Some(at) => {
-                    match signals.recv_timeout(at.saturating_duration_since(Instant::now())) {
-                        Ok(()) => true,
-                        Err(RecvTimeoutError::Timeout) => false,
-                        Err(RecvTimeoutError::Disconnected) => return,
-                    }
-                }
+            let received = match self.retry_at {
+                None => signals.recv().map_err(|_| RecvTimeoutError::Disconnected),
+                Some(at) => signals.recv_timeout(at.saturating_duration_since(Instant::now())),
             };
+            if let Err(RecvTimeoutError::Disconnected) = received {
+                return;
+            }
 
             // Let atomic renames settle; on macOS, kqueue events can precede stat() visibility.
             let settle_until = Instant::now() + Duration::from_millis(FS_EVENT_SETTLE_DELAY_MS);
             if !Self::absorb_signals_until(&signals, settle_until) {
                 return;
             }
-            self.check(woke_by_signal);
+            self.check();
         }
     }
 
@@ -706,7 +700,7 @@ impl CaWatcherState {
     }
 
     /// Reloads if the configured file changed, updating `retry_at` when a follow-up is needed.
-    fn check(&mut self, woke_by_signal: bool) {
+    fn check(&mut self) {
         let identity = match get_file_identity(&self.reload_path) {
             Ok(id) => Some(id),
             Err(e) => {
@@ -720,8 +714,10 @@ impl CaWatcherState {
             return;
         }
 
-        // Signals for a candidate that already failed wait for the scheduled retry.
-        if woke_by_signal && self.retry_at.is_some() && self.failed_candidate == Some(identity) {
+        // A candidate that already failed waits for its scheduled retry, but never past the deadline.
+        if self.failed_candidate == Some(identity)
+            && self.retry_at.is_some_and(|at| Instant::now() < at)
+        {
             return;
         }
 
@@ -2612,5 +2608,48 @@ mod tests {
             )),
             "change made before watch registration was not reloaded"
         );
+    }
+
+    /// Scenario: a reload fails, the file is fixed in place (same identity), and checks run
+    /// before and after the scheduled retry is due, as when file events keep arriving.
+    /// Guarantees: the failed file is not retried before its deadline, and a due retry is never
+    /// skipped, so the fixed file is loaded.
+    #[test]
+    fn ca_watcher_runs_due_retry_even_when_events_trigger_the_check() {
+        crate::crypto::ensure_crypto_provider();
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let ca_path = temp_dir.path().join("ca.crt");
+        fs::write(&ca_path, "not a certificate\n").expect("Write invalid CA");
+
+        let initial = build_webpki_verifier(
+            tls_certs::generate_ca("Test CA 1").cert_pem.as_bytes(),
+            false,
+        )
+        .expect("Build initial verifier");
+        let inner = Arc::new(ArcSwap::from_pointee(initial));
+        let loaded = inner.load_full();
+        let mut state = CaWatcherState::new(Arc::clone(&inner), ca_path.clone(), false, 0);
+
+        state.check();
+        assert!(
+            state.retry_at.is_some(),
+            "failed reload should schedule a retry"
+        );
+        assert!(Arc::ptr_eq(&inner.load_full(), &loaded));
+
+        fs::write(&ca_path, tls_certs::generate_ca("Test CA 2").cert_pem).expect("Fix CA");
+        state.check();
+        assert!(
+            Arc::ptr_eq(&inner.load_full(), &loaded),
+            "failed file was retried before its deadline"
+        );
+
+        state.retry_at = Some(Instant::now());
+        state.check();
+        assert!(
+            !Arc::ptr_eq(&inner.load_full(), &loaded),
+            "due retry was skipped"
+        );
+        assert!(state.retry_at.is_none());
     }
 }

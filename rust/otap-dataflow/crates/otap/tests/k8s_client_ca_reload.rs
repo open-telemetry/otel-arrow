@@ -244,8 +244,8 @@ async fn client_ca_reloads_rotations_within_debounce_window() {
 
 /// Scenario: a reload fails, and the file is then fixed without any event on the
 /// watched directory (an in-place write inside the timestamped directory).
-/// Guarantees: the previous CA stays in use while the file is invalid, and a scheduled retry
-/// loads the fixed file without another filesystem event.
+/// Guarantees: the previous CA stays in use while the file is invalid, and the fixed file is
+/// loaded without another filesystem event.
 #[tokio::test]
 async fn client_ca_retries_failed_reload_without_new_event() {
     otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
@@ -270,8 +270,8 @@ async fn client_ca_retries_failed_reload_without_new_event() {
 
 /// Scenario: the mounted path is missing after an update, and the file then appears
 /// without any event on the watched directory.
-/// Guarantees: the previous CA stays in use while the path is missing, and a scheduled retry
-/// loads the file once it exists, without another filesystem event.
+/// Guarantees: the previous CA stays in use while the path is missing, and the file is loaded
+/// once it exists, without another filesystem event.
 #[tokio::test]
 async fn client_ca_retries_missing_path_without_new_event() {
     otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
