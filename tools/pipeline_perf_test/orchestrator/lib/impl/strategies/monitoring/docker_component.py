@@ -61,6 +61,7 @@ from ....core.component.component import Component
 from ....core.context.framework_element_contexts import StepContext, ScenarioContext
 from ..common.docker import (
     ComponentDockerRuntime,
+    CONTAINER_MONITOR_START_EVENT,
     get_or_create_docker_client,
 )
 from ....core.strategies.monitoring_strategy import MonitoringStrategy
@@ -181,6 +182,13 @@ components:
                 "Error getting container ID from the docker deployment runtime...is it running?"
             )
             raise RuntimeError("can't find docker container id in deployment runtime.")
+        # Container names are reused between scenarios, but IDs are not.
+        # Keep this identity in the scenario trace after the container is removed.
+        ctx.record_event(
+            CONTAINER_MONITOR_START_EVENT,
+            component_name=component.name,
+            container_id=docker_runtime.container_id[:12],
+        )
         monitor_args = {
             "container_id": docker_runtime.container_id,
             "component_name": component.name,

@@ -68,6 +68,7 @@ from .....core.telemetry.telemetry_client import TelemetryClient
 from .....runner.registry import hook_registry, PluginMeta, ReportMeta
 from .....runner.schema.reporting_hook_config import StandardReportingHookStrategyConfig
 from .standard_reporting_strategy import StandardReportingStrategy
+from ...common.docker import CONTAINER_MONITOR_START_EVENT
 
 
 STRATEGY_NAME = "sql_report"
@@ -121,6 +122,10 @@ class ResultTable(BaseModel):
 
 
 class SQLReportDetails(BaseModel):
+    scope_container_metrics_to_scenario: bool = Field(
+        default=False,
+        description="Only include container IDs monitored in the current scenario.",
+    )
     load_tables: Optional[Dict[str, LoadTableConfig]] = Field(default_factory=dict)
     queries: List[QueryConfig] = Field(default_factory=list)
     result_tables: List[ResultTable] = Field(default_factory=list)
@@ -313,6 +318,48 @@ hooks:
             logger.debug("Running sql query %s", query.name)
             self.conn.execute(query.sql)
 
+    def _scope_container_metrics(self, metrics, events, metadata):
+        """Exclude retained measurements from containers in earlier scenarios.
+
+        Gauge collection timestamps advance even after a container stops. Use
+        monitor-start events, which keep their original scenario and timestamp,
+        to select container identities before any SQL aggregation or rate query.
+        Metrics without a container ID (e.g. process and Prometheus metrics) are
+        preserved. Suite-wide reports can leave this option disabled.
+        """
+        test_name = metadata.get("test.name")
+        test_start = metadata.get("test.start")
+        if not test_name or not test_start:
+            raise ValueError(
+                "Container metric scoping requires test.name and test.start metadata"
+            )
+
+        start_ns = pd.Timestamp(test_start).value
+        report_ns = pd.Timestamp(metadata["report.time"]).value
+        containers = set()
+        for event in events.itertuples(index=False):
+            if (
+                event.name == CONTAINER_MONITOR_START_EVENT
+                and start_ns <= event.timestamp <= report_ns
+                and event.attributes.get("test.name") == test_name
+            ):
+                containers.add(
+                    (
+                        event.attributes["component_name"],
+                        event.attributes["container_id"],
+                    )
+                )
+
+        if metrics.empty:
+            return metrics
+        keep = metrics["metric_attributes"].map(
+            lambda attrs: "container_id" not in attrs
+            or (attrs.get("component_name"), attrs["container_id"]) in containers
+        )
+        # Flattening attributes concatenates frames by index, so reindex after
+        # removing stale rows to keep attributes attached to the right values.
+        return metrics.loc[keep].reset_index(drop=True)
+
     def _register_in_memory_tables(self, metrics, spans, events):
         """Flatten and register in-memory telemetry tables and regaister in duckdb
 
@@ -325,6 +372,12 @@ hooks:
         # Coerce 'value' to numeric so DuckDB doesn't infer it as VARCHAR
         # when the column contains mixed types (e.g., dicts from Histogram metrics).
         metrics["value"] = pd.to_numeric(metrics["value"], errors="coerce")
+        # Keep the schema stable for process-only scenarios whose network
+        # queries still partition by container identity.
+        if "metric_attributes.container_id" not in metrics:
+            metrics["metric_attributes.container_id"] = pd.Series(
+                pd.NA, index=metrics.index, dtype="string"
+            )
         self.conn.register("metrics", metrics)
 
         # Flatten and register spans
@@ -432,6 +485,8 @@ hooks:
         events = tc.spans.query_span_events(
             where=lambda df: df[df["name"] != "log"].reset_index(drop=True)
         )
+        if self.config.report_config.scope_container_metrics_to_scenario:
+            metrics = self._scope_container_metrics(metrics, events, report.metadata)
         self._register_in_memory_tables(metrics, spans, events)
 
         self._run_sql_queries(logger)
