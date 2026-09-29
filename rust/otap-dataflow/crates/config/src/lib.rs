@@ -22,6 +22,8 @@ pub mod byte_units;
 pub mod config_provider;
 /// Context entry names.
 pub mod context;
+/// Compiled context-entry identities and presence bindings.
+pub mod context_layout;
 /// Declarative context entry policies.
 pub mod context_policy;
 pub mod conversion;

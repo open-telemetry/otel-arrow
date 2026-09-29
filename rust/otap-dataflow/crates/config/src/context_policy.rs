@@ -176,6 +176,29 @@ enum ContextEntryPartKind {
     AuthorizedIdentity,
 }
 
+impl ContextEntryPart {
+    /// Returns the exact source reference of a member or condition.
+    #[must_use]
+    pub fn source(&self) -> &ContextEntryRef {
+        match self {
+            Self::TransportHeader { name, .. }
+            | Self::AuthorizedIdentity { name, .. }
+            | Self::TransportHeaderMatch { name, .. } => name,
+        }
+    }
+
+    /// Returns the resulting value-member name after applying `store_as`.
+    #[must_use]
+    pub fn member_name(&self) -> Option<&ContextEntryName> {
+        match self {
+            Self::TransportHeader { name, store_as }
+            | Self::AuthorizedIdentity { name, store_as } => {
+                Some(store_as.as_ref().unwrap_or_else(|| name.name()))
+            }
+            Self::TransportHeaderMatch { .. } => None,
+        }
+    }
+}
 // Most config types derive JsonSchema. This enum is manual only because the
 // config crate's test-only kube CRD generation requires a structural schema:
 // kube rejects the derived internally tagged enum when each variant gives the
