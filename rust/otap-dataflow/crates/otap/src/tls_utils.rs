@@ -12,10 +12,10 @@ use rustls::RootCertStore;
 use rustls::pki_types::CertificateDer;
 use rustls::server::danger::{ClientCertVerified, ClientCertVerifier};
 use rustls::server::{ClientHello, ResolvesServerCert, WantsServerCert, WebPkiClientVerifier};
-use rustls::sign::CertifiedKey;
+use rustls::sign::{CertifiedKey, SigningKey};
 use rustls::{
-    ConfigBuilder, DigitallySignedStruct, DistinguishedName, ServerConfig, SignatureScheme,
-    WantsVerifier,
+    ConfigBuilder, DigitallySignedStruct, DistinguishedName, Error as RustlsError,
+    InconsistentKeys, ServerConfig, SignatureScheme, WantsVerifier,
 };
 use rustls_native_certs::load_native_certs;
 use rustls_pki_types::pem::PemObject;
@@ -377,13 +377,13 @@ pub(crate) async fn build_tonic_client_tls(
     tls = add_system_trust_anchors_if_enabled(tls, material.include_system_ca).await?;
 
     for ca in &material.ca_pems {
-        tls = tls.ca_certificate(Certificate::from_pem(ca.clone()));
+        tls = tls.ca_certificate(Certificate::from_pem(ca.as_slice()));
     }
 
     if let Some(identity) = &material.client_identity {
         tls = tls.identity(Identity::from_pem(
-            identity.cert_pem.clone(),
-            identity.key_pem.clone(),
+            identity.cert_pem.as_slice(),
+            identity.key_pem.as_slice(),
         ));
     }
 
@@ -392,16 +392,15 @@ pub(crate) async fn build_tonic_client_tls(
 
 /// Validates that a client certificate and private key form a matching pair.
 ///
-/// The check is provider-independent: it signs a fixed probe message with the
-/// configured private key and verifies that signature against the leaf
-/// certificate's public key. This works even with crypto providers whose
-/// signing keys do not expose their public half (for example `ring`, where
-/// rustls's own `CertifiedKey::keys_match` returns `Unknown`).
+/// The check first uses rustls's direct public-key comparison. For providers
+/// whose signing keys do not expose their public half, it signs a fixed probe
+/// message and verifies that signature against the leaf certificate's public
+/// key.
 ///
-/// When no crypto provider is installed, or the key cannot produce a signature
-/// with a verifiable scheme, the check is skipped rather than failing, so it
-/// never introduces a new startup failure mode on its own. A signature that the
-/// certificate's public key rejects is treated as a definitive mismatch.
+/// When no crypto provider is installed, certificate parsing is unsupported,
+/// or the key cannot produce a verifiable signature, the check is skipped
+/// rather than failing. Only a direct public-key mismatch or a rejected probe
+/// signature is treated as a definitive mismatch.
 pub(crate) fn validate_client_keys_match(cert_pem: &[u8], key_pem: &[u8]) -> Result<(), io::Error> {
     use std::io::BufReader;
 
@@ -434,7 +433,31 @@ pub(crate) fn validate_client_keys_match(cert_pem: &[u8], key_pem: &[u8]) -> Res
         .load_private_key(key)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
-    // Sign a fixed probe with a scheme the provider can also verify.
+    let certified_key = CertifiedKey::new(vec![leaf.clone()], Arc::clone(&signing_key));
+    match certified_key.keys_match() {
+        Ok(()) => return Ok(()),
+        Err(RustlsError::InconsistentKeys(InconsistentKeys::KeyMismatch)) => {
+            return Err(client_key_mismatch_error());
+        }
+        Err(RustlsError::InconsistentKeys(InconsistentKeys::Unknown)) => {}
+        Err(error) => {
+            otel_debug!(
+                "tls.client_keys_match.skipped",
+                error = %error,
+                message = "rustls could not compare client cert/key; skipping match check"
+            );
+            return Ok(());
+        }
+    }
+
+    validate_client_key_with_probe(&leaf, signing_key.as_ref(), provider)
+}
+
+fn validate_client_key_with_probe(
+    leaf: &CertificateDer<'_>,
+    signing_key: &dyn SigningKey,
+    provider: &rustls::crypto::CryptoProvider,
+) -> Result<(), io::Error> {
     let algorithms = &provider.signature_verification_algorithms;
     let Some(signer) = signing_key.choose_scheme(&algorithms.supported_schemes()) else {
         otel_debug!(
@@ -450,25 +473,46 @@ pub(crate) fn validate_client_keys_match(cert_pem: &[u8], key_pem: &[u8]) -> Res
         .sign(PROBE)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
-    // Verify the probe signature against the certificate's public key. A cert
-    // and key from the same pair verify; any other combination is rejected.
-    let cert = webpki::EndEntityCert::try_from(&leaf)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-    let verified = algorithms
+    let cert = match webpki::EndEntityCert::try_from(leaf) {
+        Ok(cert) => cert,
+        Err(error) => {
+            otel_debug!(
+                "tls.client_keys_match.skipped",
+                error = ?error,
+                message = "WebPKI could not parse client certificate; skipping match check"
+            );
+            return Ok(());
+        }
+    };
+    let matching_algorithms = algorithms
         .mapping
         .iter()
         .filter(|(mapped_scheme, _)| *mapped_scheme == scheme)
-        .flat_map(|(_, algs)| algs.iter())
-        .any(|alg| cert.verify_signature(*alg, PROBE, &signature).is_ok());
-
-    if verified {
-        Ok(())
-    } else {
-        Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "TLS configuration error: client certificate and private key do not match",
-        ))
+        .flat_map(|(_, algs)| algs.iter());
+    let mut attempted_verification = false;
+    for algorithm in matching_algorithms {
+        attempted_verification = true;
+        if cert.verify_signature(*algorithm, PROBE, &signature).is_ok() {
+            return Ok(());
+        }
     }
+
+    if !attempted_verification {
+        otel_debug!(
+            "tls.client_keys_match.skipped",
+            message = "provider has no verification algorithm for the probe; skipping cert/key match check"
+        );
+        return Ok(());
+    }
+
+    Err(client_key_mismatch_error())
+}
+
+fn client_key_mismatch_error() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidInput,
+        "TLS configuration error: client certificate and private key do not match",
+    )
 }
 
 async fn add_system_trust_anchors_if_enabled(
@@ -2705,6 +2749,38 @@ mod tests {
         let err = validate_client_keys_match(cert.cert_pem.as_bytes(), other.key_pem.as_bytes())
             .expect_err("mismatched cert/key pair must be rejected");
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    /// Scenario: probe a matching cert/key pair whose unknown critical extension
+    /// WebPKI cannot parse.
+    /// Guarantees: an inconclusive WebPKI parse does not reject client TLS
+    /// material that the configured transport provider may support.
+    #[test]
+    fn validate_client_key_with_probe_accepts_inconclusive_webpki_parse() {
+        use std::io::BufReader;
+
+        crate::crypto::ensure_crypto_provider();
+        let leaf = tls_certs::generate_self_signed_cert_with_unknown_critical_extension("client");
+        let cert = CertificateDer::pem_reader_iter(&mut BufReader::new(leaf.cert_pem.as_bytes()))
+            .next()
+            .expect("certificate PEM must contain a certificate")
+            .expect("certificate PEM must parse");
+        assert!(
+            webpki::EndEntityCert::try_from(&cert).is_err(),
+            "test certificate must exercise WebPKI's unsupported-extension path"
+        );
+
+        let provider = rustls::crypto::CryptoProvider::get_default()
+            .expect("crypto provider must be installed");
+        let key = PrivateKeyDer::from_pem_reader(&mut BufReader::new(leaf.key_pem.as_bytes()))
+            .expect("private key PEM must parse");
+        let signing_key = provider
+            .key_provider
+            .load_private_key(key)
+            .expect("private key must load");
+
+        validate_client_key_with_probe(&cert, signing_key.as_ref(), provider)
+            .expect("inconclusive WebPKI parsing must preserve prior behavior");
     }
 
     /// Scenario: load client TLS material whose cert and key do not match.
