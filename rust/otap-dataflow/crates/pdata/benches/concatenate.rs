@@ -17,7 +17,7 @@
 //!   triggers for logs and traces at the largest shape, so it is only run
 //!   there.
 
-use std::num::NonZeroU32;
+use std::num::NonZeroU64;
 use std::ops::Mul;
 use std::sync::Arc;
 
@@ -27,8 +27,8 @@ use arrow::array::{
 use arrow::buffer::ScalarBuffer;
 use arrow::datatypes::{ArrowPrimitiveType, DataType, UInt16Type, UInt32Type};
 use criterion::{BatchSize, BenchmarkId, Criterion, criterion_group, criterion_main};
+use otel_arrow_dfe_pdata::otap::batching::make_item_batches;
 use otel_arrow_dfe_pdata::otap::transform::concatenate::{ConcatOptions, concatenate};
-use otel_arrow_dfe_pdata::otap::transform::split::split;
 use otel_arrow_dfe_pdata::otap::{Logs, Metrics, OtapArrowRecords, OtapBatchStore, Traces};
 use otel_arrow_dfe_pdata::schema::consts::{ID, PARENT_ID};
 use otel_arrow_dfe_pdata::testing::fixtures::{
@@ -108,26 +108,26 @@ fn bench_all(c: &mut Criterion) {
 /// Split every input into slices of roughly a third of its root rows. This mimics
 /// the batch processor, where concatenation inputs are zero-copy slices whose
 /// dictionary values arrays are shared with other slices.
-fn presplit<T: OtapBatchStore<BatchArray = [Option<RecordBatch>; N]>, const N: usize>(
-    batches: &[T],
-) -> Vec<T> {
-    // Root payload is at index 2 for every signal.
-    let items = batches[0]
+fn presplit<T>(batches: &[T]) -> Vec<T>
+where
+    T: OtapBatchStore + TryFrom<OtapArrowRecords>,
+    OtapArrowRecords: From<T>,
+{
+    // Root payload is at index 2 for every signal. As before, the limit is a
+    // third of the root rows, which for metrics is compared to data points.
+    let rows = batches[0]
         .get(T::payload_type_at_idx(2))
         .map_or(3, RecordBatch::num_rows);
-    let max = NonZeroU32::new((items / 3).max(1) as u32).expect("non-zero");
-    let mut raw: Vec<_> = batches.iter().cloned().map(|b| b.into_batches()).collect();
-    split::<N>(&mut raw, max)
-        .expect("split failed")
-        .into_iter()
-        .map(|b| {
-            let mut t = T::default();
-            for (i, rb) in b.into_iter().enumerate() {
-                if let Some(rb) = rb {
-                    t.set(T::payload_type_at_idx(i), rb).expect("valid");
-                }
-            }
-            t
+    let max = NonZeroU64::new((rows / 3).max(1) as u64).expect("non-zero");
+    batches
+        .iter()
+        .flat_map(|b| {
+            make_item_batches(T::SIGNAL_TYPE, Some(max), vec![b.clone().into()])
+                .expect("split failed")
+        })
+        .map(|out| match T::try_from(out.records) {
+            Ok(t) => t,
+            Err(_) => unreachable!("same signal"),
         })
         .collect()
 }

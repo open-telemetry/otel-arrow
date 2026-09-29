@@ -3,7 +3,10 @@
 
 //! Batching for `OtapArrowRecords`
 
-use super::{OtapArrowRecords, error::Result, groups::RecordsGroup};
+use super::error::{Error, Result};
+use super::transform::batch::batch_items;
+use super::{Logs, Metrics, OtapArrowRecords, OtapBatchStore, Traces};
+use arrow::array::RecordBatch;
 use otel_arrow_dfe_config::SignalType;
 use std::num::NonZeroU64;
 use std::ops::RangeInclusive;
@@ -34,26 +37,50 @@ pub fn make_item_batches(
     max_items: Option<NonZeroU64>,
     records: Vec<OtapArrowRecords>,
 ) -> Result<Vec<ItemBatch>> {
-    // Separate by signal type.
-    let mut records = match signal {
-        SignalType::Logs => RecordsGroup::separate_logs(records),
-        SignalType::Metrics => RecordsGroup::separate_metrics(records),
-        SignalType::Traces => RecordsGroup::separate_traces(records),
-    }?;
-
-    // Split large batches so they can be reassembled into
-    // limited-size batches.
-    if let Some(limit) = max_items {
-        records = records.split(limit)?;
+    let max = max_items.map(|m| usize::try_from(m.get()).unwrap_or(usize::MAX));
+    match signal {
+        SignalType::Logs => batch_signal::<Logs, { Logs::COUNT }>(records, max, |r| match r {
+            OtapArrowRecords::Logs(l) => Some(l.into_batches()),
+            _ => None,
+        }),
+        SignalType::Metrics => {
+            batch_signal::<Metrics, { Metrics::COUNT }>(records, max, |r| match r {
+                OtapArrowRecords::Metrics(m) => Some(m.into_batches()),
+                _ => None,
+            })
+        }
+        SignalType::Traces => {
+            batch_signal::<Traces, { Traces::COUNT }>(records, max, |r| match r {
+                OtapArrowRecords::Traces(t) => Some(t.into_batches()),
+                _ => None,
+            })
+        }
     }
+}
 
-    // Join batches in sequence.
-    Ok(records
-        .concatenate(max_items)?
+fn batch_signal<S: OtapBatchStore, const N: usize>(
+    records: Vec<OtapArrowRecords>,
+    max: Option<usize>,
+    unwrap: impl Fn(OtapArrowRecords) -> Option<[Option<RecordBatch>; N]>,
+) -> Result<Vec<ItemBatch>> {
+    let inputs = records
         .into_iter()
-        .map(|o| ItemBatch {
-            records: o.records,
-            inputs: o.inputs,
+        .map(|r| unwrap(r).ok_or(Error::MixedSignals))
+        .collect::<Result<Vec<_>>>()?;
+    batch_items::<S, N>(inputs, max)?
+        .into_iter()
+        .map(|out| {
+            // `set` validates each payload against the OTAP schema spec.
+            let mut store = S::default();
+            for (i, rb) in out.batches.into_iter().enumerate() {
+                if let Some(rb) = rb {
+                    store.set(S::payload_type_at_idx(i), rb)?;
+                }
+            }
+            Ok(ItemBatch {
+                records: store.into(),
+                inputs: out.inputs,
+            })
         })
-        .collect())
+        .collect()
 }

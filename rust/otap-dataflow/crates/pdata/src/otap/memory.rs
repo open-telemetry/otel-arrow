@@ -14,7 +14,7 @@
 //!
 //! Buffer allocations are deduped by [`arrow::buffer::Buffer::data_ptr`], which
 //! returns the allocation base and ignores slice offsets. This matters because
-//! OTAP transforms such as `otap::transform::split` use
+//! OTAP transforms such as batching (`otap::transform::batch`) use
 //! [`RecordBatch::slice`](arrow::array::RecordBatch::slice), so multiple slices
 //! can share the same parent allocation.
 //!

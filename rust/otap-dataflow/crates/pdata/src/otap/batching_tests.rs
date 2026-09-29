@@ -3,6 +3,7 @@
 
 //! This module tests batching.rs logic.
 
+use crate::OtapPayloadHelpers;
 use crate::otap::OtapArrowRecords;
 use crate::otap::batching::{ItemBatch, make_item_batches};
 use crate::proto::OtlpProtoMessage;
