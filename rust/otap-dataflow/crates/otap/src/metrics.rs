@@ -556,16 +556,33 @@ impl ExporterMetrics {
     #[must_use]
     pub fn register(pipeline_ctx: &PipelineContext) -> Self {
         let interests = pipeline_ctx.node_interests();
+        Self::register_with_distribution(
+            pipeline_ctx,
+            interests,
+            pipeline_ctx.node_duration_distribution(),
+        )
+    }
+
+    /// Registers the shared exporter metric sets with an entity-bound registrar.
+    #[must_use]
+    pub fn register_with(registrar: &impl MetricSetRegistrar, interests: Interests) -> Self {
+        Self::register_with_distribution(registrar, interests, DistributionTier::Normal)
+    }
+
+    /// Registers the shared exporter metric sets with an entity-bound registrar and duration tier.
+    #[must_use]
+    pub fn register_with_distribution(
+        registrar: &impl MetricSetRegistrar,
+        interests: Interests,
+        duration_distribution: DistributionTier,
+    ) -> Self {
         Self {
-            attempted: ExporterAttemptedMetrics::register(pipeline_ctx),
+            attempted: ExporterAttemptedMetrics::register(registrar),
             duration: interests.contains(Interests::NODE_LOCAL_DURATION).then(|| {
-                ExporterAttemptedDurationMetricSet::register(
-                    pipeline_ctx,
-                    pipeline_ctx.node_duration_distribution(),
-                )
+                ExporterAttemptedDurationMetricSet::register(registrar, duration_distribution)
             }),
-            payload: ExporterAttemptedPayloadMetrics::register(pipeline_ctx),
-            items: ExporterAttemptedItemsMetrics::register(pipeline_ctx),
+            payload: ExporterAttemptedPayloadMetrics::register(registrar),
+            items: ExporterAttemptedItemsMetrics::register(registrar),
             interests,
         }
     }
