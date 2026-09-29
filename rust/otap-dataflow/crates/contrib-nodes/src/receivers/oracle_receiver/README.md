@@ -266,6 +266,14 @@ non-finite floating-point values fail explicitly rather than using a lossy
 fallback. There is no configurable per-column mapping or separate metrics/traces
 output in this receiver.
 
+**Database text limitation:** the Oracle driver's character-to-`String`
+conversion can replace invalid UTF-8 sequences with replacement characters
+instead of returning an error. The adapter propagates conversion errors that
+the driver reports, but does not independently detect or reject these
+replacements. Strict invalid-UTF-8 rejection for database text remains follow-up
+work. Credential files are handled separately and require valid UTF-8; invalid
+credential bytes are rejected.
+
 ### Schema Changes
 
 Changing the query's result schema while the receiver is running is unsupported.

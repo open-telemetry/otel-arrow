@@ -1194,8 +1194,8 @@ fn normalize_cell(
     index: usize,
     source_type: &OracleType,
 ) -> Result<CellValue, OracleAdapterError> {
-    // rust-oracle returns conversion failures, including invalid text decoding,
-    // as explicit errors. The receiver's query error policy then scopes them.
+    // Driver conversion errors are propagated. Character-to-String decoding
+    // can replace invalid UTF-8; this adapter does not independently reject it.
     macro_rules! optional {
         ($rust_type:ty, $variant:expr) => {
             row.get::<_, Option<$rust_type>>(index)
