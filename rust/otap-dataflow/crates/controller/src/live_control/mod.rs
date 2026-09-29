@@ -114,6 +114,31 @@ pub(super) struct ControllerRuntime<PData: 'static + Clone + Send + Sync + std::
     state_changed: Condvar,
 }
 
+/// Keeps observability alive until controller-owned telemetry has been handed off.
+///
+/// The existing runtime mutex and condition variable synchronize the controller
+/// with the global shutdown coordinator; dropping the guard also releases error paths.
+pub(super) struct ControllerTelemetryGuard<
+    'a,
+    PData: 'static + Clone + Send + Sync + std::fmt::Debug,
+> {
+    runtime: &'a ControllerRuntime<PData>,
+}
+
+impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Drop
+    for ControllerTelemetryGuard<'_, PData>
+{
+    fn drop(&mut self) {
+        let mut state = self
+            .runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.controller_telemetry_pending = false;
+        self.runtime.state_changed.notify_all();
+    }
+}
+
 /// Thin adapter that exposes `ControllerRuntime` through the admin trait.
 struct ControllerControlPlane<PData: 'static + Clone + Send + Sync + std::fmt::Debug> {
     runtime: Arc<ControllerRuntime<PData>>,
@@ -205,6 +230,7 @@ impl<
                 instance_wait_released: false,
                 global_shutdown_requested: false,
                 global_shutdown_coordinators: 0,
+                controller_telemetry_pending: false,
             }),
             state_changed: Condvar::new(),
         }

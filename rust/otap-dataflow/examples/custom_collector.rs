@@ -139,14 +139,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Run the engine.
     let controller = Controller::new(&OTAP_PIPELINE_FACTORY);
     let result = controller.run_forever(engine_cfg);
-    match result {
-        Ok(_) => {
-            eprintln!("Pipeline completed successfully");
-            Ok(())
-        }
-        Err(e) => {
-            eprintln!("Pipeline failed: {e}");
-            std::process::exit(1);
-        }
-    }
+    // This binary owns the console writers, so it stops them before it reports the
+    // result and exits; a stalled or closed stderr cannot hang the exit.
+    startup::shutdown_console_and_exit(&result)
 }

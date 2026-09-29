@@ -1707,6 +1707,17 @@ impl<
             return;
         }
 
+        let controller_deadline =
+            pipeline_shutdown_completion_deadline(Instant::now() + shutdown_timeout);
+        if !self.wait_for_controller_telemetry(controller_deadline) {
+            self.restore_observability_senders(&observability_senders);
+            self.record_async_global_shutdown_failure(
+                "system observability remains active because controller telemetry shutdown timed out"
+                    .to_owned(),
+            );
+            return;
+        }
+
         // Observability is a distinct shutdown phase. Give it the same budget
         // selected by the caller instead of collapsing that phase to one second
         // after producers have consumed their own drain budget.
@@ -1934,8 +1945,38 @@ impl<
         }
     }
 
+    /// Holds the observability shutdown phase until controller reporting completes.
+    pub(crate) fn hold_controller_telemetry(&self) -> ControllerTelemetryGuard<'_, PData> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert!(!state.controller_telemetry_pending);
+        state.controller_telemetry_pending = true;
+        ControllerTelemetryGuard { runtime: self }
+    }
+
+    /// Waits at most until `deadline` for the controller's terminal metrics handoff.
+    pub(super) fn wait_for_controller_telemetry(&self, deadline: Instant) -> bool {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        while state.controller_telemetry_pending {
+            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                return false;
+            };
+            let (next_state, _) = self
+                .state_changed
+                .wait_timeout(state, remaining)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            state = next_state;
+        }
+        true
+    }
+
     /// Blocks until an explicit global shutdown has been requested and every
-    /// runtime instance has exited, or until the wait is released after a fatal
+    /// producer instance has exited, or until the wait is released after a fatal
     /// controller failure.
     ///
     /// Unlike [`wait_until_all_instances_exit`](Self::wait_until_all_instances_exit),
@@ -1948,7 +1989,12 @@ impl<
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         while !state.instance_wait_released
-            && (!state.global_shutdown_requested || state.active_instances > 0)
+            && (!state.global_shutdown_requested
+                || state.runtime_instances.iter().any(|(key, instance)| {
+                    matches!(instance.lifecycle, RuntimeInstanceLifecycle::Active)
+                        && !(key.pipeline_group_id.as_ref() == SYSTEM_PIPELINE_GROUP_ID
+                            && key.pipeline_id.as_ref() == SYSTEM_OBSERVABILITY_PIPELINE_ID)
+                }))
         {
             state = self
                 .state_changed

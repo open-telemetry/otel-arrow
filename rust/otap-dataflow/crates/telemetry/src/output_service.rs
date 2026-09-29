@@ -30,7 +30,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, TryAcquireError};
 
 /// Default bounded queue capacity, in frames, for the stdout writer.
 pub const DEFAULT_STDOUT_QUEUE_CAPACITY: usize = 1024;
@@ -68,6 +68,12 @@ const ENQUEUE_SETTLE_POLL: Duration = Duration::from_micros(200);
 /// Slower than [`ENQUEUE_SETTLE_POLL`], because an enqueue that is never polled
 /// again keeps a failed writer waiting for as long as the process runs.
 const ABANDONED_SETTLE_POLL: Duration = Duration::from_millis(10);
+
+/// Queue slots reserved for `Barrier` and `Stop`, so a queued frame always finds room.
+const CONTROL_SLOTS: usize = 2;
+
+/// Pause before retrying a write that a nonblocking stream refused.
+const WOULD_BLOCK_RETRY_DELAY: Duration = Duration::from_millis(1);
 
 /// Set when stdout carries machine-readable records instead of prose.
 static STRUCTURED_STDOUT: AtomicBool = AtomicBool::new(false);
@@ -191,6 +197,9 @@ pub enum SubmitError {
 /// Destination for frames drained by a writer thread.
 pub trait OutputSink: Send {
     /// Writes one complete frame.
+    ///
+    /// Any error stops the writer, so a sink retries a transient `WouldBlock`
+    /// itself: only the sink knows how much of the frame already went out.
     fn write_frame(&mut self, frame: &[u8]) -> io::Result<()>;
 
     /// Flushes buffered bytes to the operating system.
@@ -207,11 +216,11 @@ impl OutputSink for StdoutSink {
         // cannot interleave with another producer.
         let stdout = io::stdout();
         let mut locked = stdout.lock();
-        locked.write_all(frame)
+        write_all_retrying(&mut locked, frame)
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        io::stdout().flush()
+        flush_retrying(&mut io::stdout().lock())
     }
 }
 
@@ -223,21 +232,54 @@ impl OutputSink for StderrSink {
     fn write_frame(&mut self, frame: &[u8]) -> io::Result<()> {
         let stderr = io::stderr();
         let mut locked = stderr.lock();
-        locked.write_all(frame)
+        write_all_retrying(&mut locked, frame)
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        io::stderr().flush()
+        flush_retrying(&mut io::stderr().lock())
+    }
+}
+
+/// Writes the whole frame, resuming after `WouldBlock` at the byte it stopped at.
+///
+/// A nonblocking stream refuses writes while its reader catches up. `write_all`
+/// would report that as a failure without saying how much of the frame went out,
+/// so the frame could neither be abandoned safely nor retried without a duplicate.
+fn write_all_retrying(writer: &mut impl Write, frame: &[u8]) -> io::Result<()> {
+    let mut offset = 0;
+    while offset < frame.len() {
+        match writer.write(&frame[offset..]) {
+            Ok(0) => return Err(io::Error::from(io::ErrorKind::WriteZero)),
+            Ok(written) => offset += written,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                thread::sleep(WOULD_BLOCK_RETRY_DELAY);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
+/// Flushes, retrying while a nonblocking stream refuses the buffered bytes.
+///
+/// A buffered writer keeps whatever the stream refused, so retrying never repeats bytes.
+fn flush_retrying(writer: &mut impl Write) -> io::Result<()> {
+    loop {
+        match writer.flush() {
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                thread::sleep(WOULD_BLOCK_RETRY_DELAY);
+            }
+            result => return result,
+        }
     }
 }
 
 /// Point-in-time snapshot of one stream's counters.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct OutputStats {
-    /// Frames whose enqueue the producer observed succeeding.
-    ///
-    /// A submit that is cancelled after the queue took its frame is written
-    /// without being counted here, so this is a lower bound on frames accepted.
+    /// Frames accepted into the queue.
     pub frames_submitted: u64,
     /// Frames rejected because the queue was closed, full, or unavailable.
     pub frames_enqueue_failed: u64,
@@ -245,7 +287,8 @@ pub struct OutputStats {
     pub frames_written: u64,
     /// Bytes written to the sink.
     pub bytes_written: u64,
-    /// Failed sink writes. Any failure stops the writer.
+    /// Failed sink writes. Any failure stops the writer; a transient `WouldBlock`
+    /// is retried instead of counted.
     pub write_errors: u64,
     /// Best-effort diagnostics dropped because the queue was full.
     pub diagnostics_dropped: u64,
@@ -330,22 +373,26 @@ impl Default for OutputServiceConfig {
 
 /// Queue item. `Stop` ends the writer loop once every admitted enqueue has
 /// landed and everything queued has drained.
+///
+/// Control commands hold one of the [`CONTROL_SLOTS`] until the writer takes
+/// them, so they can never fill the room a frame's slot reserved.
 enum Command {
     Frame(QueuedFrame),
     /// Flush everything queued ahead of this barrier, then acknowledge.
-    Barrier(flume::Sender<()>),
-    Stop,
+    Barrier(flume::Sender<()>, OwnedSemaphorePermit),
+    Stop(OwnedSemaphorePermit),
 }
 
-/// A queued frame and the byte reservation it holds.
+/// A queued frame and the reservations it holds.
 ///
-/// The reservation is pure accounting: it never copies the payload. It travels
-/// with the frame into the queue so the bytes are returned to the budget on the
-/// writer thread, once the frame has been written or abandoned, rather than
-/// when the producer finished enqueuing it.
+/// The reservations are pure accounting: they never copy the payload. They
+/// travel with the frame into the queue. The queue slot returns when the writer
+/// takes the frame, and the bytes return once it has been written or abandoned,
+/// rather than when the producer finished enqueuing it.
 struct QueuedFrame {
     frame: Frame,
-    _bytes: OwnedSemaphorePermit,
+    bytes: OwnedSemaphorePermit,
+    slot: OwnedSemaphorePermit,
 }
 
 /// Why a writer thread stopped.
@@ -362,7 +409,8 @@ enum WriterExit {
 struct StreamShared {
     /// Packed [`ADMISSION_CLOSED`] flag plus the count of unresolved enqueues.
     admission: AtomicU64,
-    unavailable: AtomicBool,
+    /// Set when the writer stopped on an I/O error or a panic, never on a clean exit.
+    writer_failed: AtomicBool,
     queue_depth_high_water: AtomicU64,
     frames_submitted: AtomicU64,
     frames_enqueue_failed: AtomicU64,
@@ -411,6 +459,18 @@ impl StreamShared {
         self.admission.load(Ordering::Acquire) & !ADMISSION_CLOSED
     }
 
+    /// Classifies a stream that no longer admits frames.
+    ///
+    /// A failure is recorded before admission closes, so a caller that saw the
+    /// stream closed also sees why.
+    fn closed_error(&self) -> SubmitError {
+        if self.writer_failed.load(Ordering::Acquire) {
+            SubmitError::WriterUnavailable
+        } else {
+            SubmitError::QueueClosed
+        }
+    }
+
     /// Returns the frames the writer accepted but has not written yet.
     ///
     /// Counted from the write side rather than the queue, so a frame the writer
@@ -443,20 +503,32 @@ struct QueuedHandle {
     /// One permit per byte currently queued but not yet written.
     bytes: Arc<Semaphore>,
     byte_capacity: usize,
+    /// One permit per queue slot a frame may occupy, shared with the writer thread.
+    frame_slots: Arc<Semaphore>,
 }
 
 impl QueuedHandle {
     /// Admits one enqueue attempt, failing fast when the stream no longer accepts frames.
     fn admit(&self) -> Result<Admission<'_>, SubmitError> {
-        if self.shared.unavailable.load(Ordering::Acquire) {
-            return Err(SubmitError::WriterUnavailable);
-        }
-        if !self.shared.enter() {
-            return Err(SubmitError::QueueClosed);
+        if self.shared.writer_failed.load(Ordering::Acquire) || !self.shared.enter() {
+            return Err(self.shared.closed_error());
         }
         Ok(Admission {
             shared: &self.shared,
         })
+    }
+
+    /// Counts the frame and hands it to the writer with no await in between.
+    ///
+    /// A cancelled submit therefore either queued and counted its frame, or did
+    /// neither. The frame's slot guarantees room, so only a retired writer refuses it.
+    fn enqueue(&self, admission: &Admission<'_>, frame: QueuedFrame) -> Result<(), SubmitError> {
+        admission.commit();
+        if self.sender.try_send(Command::Frame(frame)).is_ok() {
+            return Ok(());
+        }
+        admission.uncommit();
+        Err(self.rejected(SubmitError::QueueClosed))
     }
 
     /// Converts a frame length into a byte reservation size.
@@ -513,6 +585,11 @@ impl Admission<'_> {
             .queue_depth_high_water
             .fetch_max(submitted.saturating_sub(written), Ordering::Relaxed);
     }
+
+    /// Takes back a frame counted by [`Self::commit`] that never reached the queue.
+    fn uncommit(&self) {
+        let _ = self.shared.frames_submitted.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 impl Drop for Admission<'_> {
@@ -564,20 +641,10 @@ impl StreamHandle {
         else {
             return Err(queued.rejected(SubmitError::QueueClosed));
         };
-        match queued
-            .sender
-            .send_async(Command::Frame(QueuedFrame {
-                frame,
-                _bytes: bytes,
-            }))
-            .await
-        {
-            Ok(()) => {
-                admission.commit();
-                Ok(())
-            }
-            Err(_) => Err(queued.rejected(SubmitError::QueueClosed)),
-        }
+        let Ok(slot) = Arc::clone(&queued.frame_slots).acquire_owned().await else {
+            return Err(queued.rejected(SubmitError::QueueClosed));
+        };
+        queued.enqueue(&admission, QueuedFrame { frame, bytes, slot })
     }
 
     /// Submits a frame without ever blocking the calling thread.
@@ -603,21 +670,10 @@ impl StreamHandle {
         let Ok(bytes) = Arc::clone(&queued.bytes).try_acquire_many_owned(reservation) else {
             return Err(queued.dropped_diagnostic(SubmitError::WouldBlock));
         };
-        match queued.sender.try_send(Command::Frame(QueuedFrame {
-            frame,
-            _bytes: bytes,
-        })) {
-            Ok(()) => {
-                admission.commit();
-                Ok(())
-            }
-            Err(flume::TrySendError::Full(_)) => {
-                Err(queued.dropped_diagnostic(SubmitError::WouldBlock))
-            }
-            Err(flume::TrySendError::Disconnected(_)) => {
-                Err(queued.rejected(SubmitError::QueueClosed))
-            }
-        }
+        let Ok(slot) = Arc::clone(&queued.frame_slots).try_acquire_owned() else {
+            return Err(queued.dropped_diagnostic(SubmitError::WouldBlock));
+        };
+        queued.enqueue(&admission, QueuedFrame { frame, bytes, slot })
     }
 
     /// Returns a snapshot of this stream's counters.
@@ -640,21 +696,37 @@ fn write_direct(id: StreamId, frame: &Frame) -> Result<(), SubmitError> {
 
 /// Retires the stream once its writer thread exits, including on panic.
 ///
-/// The stream stops admitting frames and fails byte waiters, and frames left in
-/// the queue are dropped until no admitted enqueue remains, returning their bytes.
+/// The stream stops admitting frames and fails byte and queue-slot waiters, and
+/// frames left in the queue are dropped until no admitted enqueue remains,
+/// returning their bytes.
 struct TeardownGuard {
     shared: Arc<StreamShared>,
     bytes: Arc<Semaphore>,
+    frame_slots: Arc<Semaphore>,
     receiver: flume::Receiver<Command>,
+    /// Set only after the writer drained cleanly, so a panic counts as a failure.
+    drained: bool,
 }
 
 impl Drop for TeardownGuard {
     fn drop(&mut self) {
-        self.shared.unavailable.store(true, Ordering::Release);
+        // Recorded before admission closes; see `StreamShared::closed_error`.
+        if !self.drained {
+            self.shared.writer_failed.store(true, Ordering::Release);
+        }
         self.shared.close_admission();
         self.bytes.close();
+        self.frame_slots.close();
         discard_until_settled(&self.receiver, &self.shared);
     }
+}
+
+/// Why a control command could not be queued.
+enum ControlSendError {
+    /// Every control slot stayed taken until the deadline.
+    Timeout,
+    /// The writer thread is gone.
+    Disconnected,
 }
 
 /// Owner of one stream's bounded queue and dedicated writer thread.
@@ -662,6 +734,8 @@ pub struct OutputStream {
     handle: StreamHandle,
     shared: Arc<StreamShared>,
     sender: flume::Sender<Command>,
+    /// Queue slots for `Barrier` and `Stop`; drain and shutdown run on any thread.
+    control_slots: Arc<Semaphore>,
     done: flume::Receiver<WriterExit>,
     // Behind a lock so the process-wide service, which only ever holds a shared
     // reference, can still join the writer during terminal shutdown.
@@ -683,23 +757,30 @@ impl OutputStream {
         flush_on_idle: bool,
         sink: Box<dyn OutputSink>,
     ) -> io::Result<Self> {
-        let (sender, receiver) = flume::bounded::<Command>(capacity.max(1));
+        let capacity = capacity.max(1);
+        // Frames and control commands each hold a slot, so the queue can never be full for either.
+        let (sender, receiver) = flume::bounded::<Command>(capacity + CONTROL_SLOTS);
         let (done_tx, done) = flume::bounded::<WriterExit>(1);
         // Permits are counted in bytes, and one acquire is capped at u32.
         let byte_capacity = byte_capacity.clamp(1, u32::MAX as usize);
         let bytes = Arc::new(Semaphore::new(byte_capacity));
+        let frame_slots = Arc::new(Semaphore::new(capacity));
         let shared = Arc::new(StreamShared::default());
         let worker_shared = Arc::clone(&shared);
         let worker_bytes = Arc::clone(&bytes);
+        let worker_frame_slots = Arc::clone(&frame_slots);
         let worker = thread::Builder::new()
             .name(id.thread_name().to_owned())
             .spawn(move || {
-                let guard = TeardownGuard {
+                let mut guard = TeardownGuard {
                     shared: Arc::clone(&worker_shared),
                     bytes: worker_bytes,
+                    frame_slots: worker_frame_slots,
                     receiver,
+                    drained: false,
                 };
                 let exit = run_writer(id, &guard.receiver, sink, &worker_shared, flush_on_idle);
+                guard.drained = exit == WriterExit::Drained;
                 // Retire first, so shutdown never joins a writer still discarding frames.
                 drop(guard);
                 // A panic instead drops this sender, which callers read as a failed drain.
@@ -714,10 +795,12 @@ impl OutputStream {
                     shared: Arc::clone(&shared),
                     bytes,
                     byte_capacity,
+                    frame_slots,
                 }),
             },
             shared,
             sender,
+            control_slots: Arc::new(Semaphore::new(CONTROL_SLOTS)),
             done,
             worker: Mutex::new(Some(worker)),
         })
@@ -744,10 +827,10 @@ impl OutputStream {
     pub fn drain(&self, deadline: Duration) -> ShutdownOutcome {
         let started = Instant::now();
         let (ack_tx, ack_rx) = flume::bounded::<()>(1);
-        match self.sender.send_timeout(Command::Barrier(ack_tx), deadline) {
+        match self.send_control(started, deadline, |slot| Command::Barrier(ack_tx, slot)) {
             Ok(()) => {}
-            Err(flume::SendTimeoutError::Timeout(_)) => return self.pending_outcome(true),
-            Err(flume::SendTimeoutError::Disconnected(_)) => return self.pending_outcome(false),
+            Err(ControlSendError::Timeout) => return self.pending_outcome(true),
+            Err(ControlSendError::Disconnected) => return self.pending_outcome(false),
         }
         let remaining = deadline.saturating_sub(started.elapsed());
         match ack_rx.recv_timeout(remaining) {
@@ -768,8 +851,7 @@ impl OutputStream {
         while self.shared.enqueues_in_flight() > 0 && started.elapsed() < deadline {
             thread::sleep(ENQUEUE_SETTLE_POLL);
         }
-        let remaining = deadline.saturating_sub(started.elapsed());
-        let _ = self.sender.send_timeout(Command::Stop, remaining);
+        let _ = self.send_control(started, deadline, Command::Stop);
         let remaining = deadline.saturating_sub(started.elapsed());
         let exit = self.done.recv_timeout(remaining);
         let deadline_expired = matches!(exit, Err(flume::RecvTimeoutError::Timeout));
@@ -801,10 +883,36 @@ impl OutputStream {
     fn pending_outcome(&self, deadline_expired: bool) -> ShutdownOutcome {
         ShutdownOutcome {
             drained: false,
-            writer_failed: self.shared.unavailable.load(Ordering::Acquire),
+            writer_failed: self.shared.writer_failed.load(Ordering::Acquire),
             deadline_expired,
             frames_pending: self.shared.frames_pending(),
         }
+    }
+
+    /// Queues a control command once a control slot frees up, giving up at the deadline.
+    ///
+    /// A barrier left behind by a timed-out drain keeps its slot until the writer
+    /// takes it, so repeated drains behind a stalled writer stay bounded.
+    fn send_control(
+        &self,
+        started: Instant,
+        deadline: Duration,
+        command: impl FnOnce(OwnedSemaphorePermit) -> Command,
+    ) -> Result<(), ControlSendError> {
+        let slot = loop {
+            match Arc::clone(&self.control_slots).try_acquire_owned() {
+                Ok(slot) => break slot,
+                Err(TryAcquireError::Closed) => return Err(ControlSendError::Disconnected),
+                Err(TryAcquireError::NoPermits) if started.elapsed() >= deadline => {
+                    return Err(ControlSendError::Timeout);
+                }
+                Err(TryAcquireError::NoPermits) => thread::sleep(ENQUEUE_SETTLE_POLL),
+            }
+        };
+        // The slot guarantees room, so only a retired writer refuses the command.
+        self.sender
+            .try_send(command(slot))
+            .map_err(|_| ControlSendError::Disconnected)
     }
 }
 
@@ -856,14 +964,16 @@ fn run_writer(
         let mut next = Some(first);
         while let Some(command) = next.take() {
             match command {
-                Command::Frame(queued) => {
-                    if !write_one(id, sink.as_mut(), &queued.frame, shared) {
+                Command::Frame(QueuedFrame { frame, bytes, slot }) => {
+                    // The frame has left the queue, so its slot can admit the next one.
+                    drop(slot);
+                    if !write_one(id, sink.as_mut(), &frame, shared) {
                         return WriterExit::Failed;
                     }
-                    pending_bytes = pending_bytes.saturating_add(queued.frame.len());
+                    pending_bytes = pending_bytes.saturating_add(frame.len());
                     pending_frames += 1;
-                    // Dropping `queued` here returns its bytes to the budget.
-                    drop(queued);
+                    // Dropping the reservation returns the frame's bytes to the budget.
+                    drop(bytes);
                     // A saturated queue never goes idle, so flush on volume too.
                     if pending_bytes >= FLUSH_BYTES_THRESHOLD
                         || pending_frames >= FLUSH_FRAMES_THRESHOLD
@@ -875,7 +985,8 @@ fn run_writer(
                         pending_frames = 0;
                     }
                 }
-                Command::Barrier(ack) => {
+                Command::Barrier(ack, slot) => {
+                    drop(slot);
                     if !flush_sink(id, sink.as_mut(), shared) {
                         return WriterExit::Failed;
                     }
@@ -884,7 +995,7 @@ fn run_writer(
                     let _ = ack.send(());
                 }
                 // Shutdown closes admission before it queues Stop, so the stream settles.
-                Command::Stop => stopping = true,
+                Command::Stop(_slot) => stopping = true,
             }
             next = receiver.try_recv().ok();
         }
@@ -962,10 +1073,10 @@ fn flush_sink(id: StreamId, sink: &mut dyn OutputSink, shared: &StreamShared) ->
     }
 }
 
-/// Latches the stream as unavailable and reports the failure off the failed stream.
+/// Latches the stream as failed and reports the failure off the failed stream.
 fn report_failure(id: StreamId, shared: &StreamShared, error: &io::Error) {
     let _ = shared.write_errors.fetch_add(1, Ordering::Relaxed);
-    shared.unavailable.store(true, Ordering::Release);
+    shared.writer_failed.store(true, Ordering::Release);
     match id {
         // The self-tracing layer routes errors to stderr, so this cannot
         // recurse into the stream that just failed.
@@ -1138,8 +1249,11 @@ impl OutputService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::VecDeque;
+    use std::future::Future;
     use std::sync::Mutex;
     use std::sync::atomic::AtomicU32;
+    use std::task::{Context, Waker};
 
     /// Chunk size used to simulate an operating system that accepts partial writes.
     const PARTIAL_WRITE_CHUNK: usize = 64 * 1024;
@@ -1152,6 +1266,7 @@ mod tests {
         flushes: Arc<AtomicU32>,
         delay: Option<Duration>,
         fail_after: Option<Arc<AtomicU32>>,
+        fail_on: Option<Vec<u8>>,
         flush_fails: bool,
         stalled: Option<Arc<AtomicBool>>,
         flush_stalled: Option<Arc<AtomicBool>>,
@@ -1165,6 +1280,7 @@ mod tests {
                 flushes: Arc::new(AtomicU32::new(0)),
                 delay: None,
                 fail_after: None,
+                fail_on: None,
                 flush_fails: false,
                 stalled: None,
                 flush_stalled: None,
@@ -1179,6 +1295,11 @@ mod tests {
 
         fn failing_after(mut self, writes: u32) -> Self {
             self.fail_after = Some(Arc::new(AtomicU32::new(writes)));
+            self
+        }
+
+        fn failing_on(mut self, frame: &[u8]) -> Self {
+            self.fail_on = Some(frame.to_vec());
             self
         }
 
@@ -1231,6 +1352,9 @@ mod tests {
                     })
                     .is_err()
             {
+                return Err(io::Error::other("simulated console failure"));
+            }
+            if self.fail_on.as_deref() == Some(frame) {
                 return Err(io::Error::other("simulated console failure"));
             }
             if let Some(delay) = self.delay {
@@ -2084,7 +2208,7 @@ mod tests {
             .submit(Frame::line("stuck"))
             .await
             .expect("frame is accepted");
-        stream.shared.unavailable.store(true, Ordering::Release);
+        stream.shared.writer_failed.store(true, Ordering::Release);
 
         let outcome = stream.shutdown(Duration::from_millis(200));
 
@@ -2303,5 +2427,329 @@ mod tests {
     #[should_panic(expected = "must end with a newline")]
     fn record_json_frame_requires_a_trailing_newline() {
         let _ = Frame::new_record_json(b"{\"body\":\"no newline\"}".to_vec());
+    }
+
+    /// One scripted outcome of a [`ScriptedWriter`] write call.
+    enum Step {
+        /// Accepts at most this many bytes.
+        Accept(u8),
+        /// Fails the call with this error kind.
+        Refuse(io::ErrorKind),
+    }
+
+    /// Writer that plays scripted write and flush outcomes, then accepts everything.
+    struct ScriptedWriter {
+        writes: VecDeque<Step>,
+        flushes: VecDeque<io::ErrorKind>,
+        written: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl Write for ScriptedWriter {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            let accepted = match self.writes.pop_front() {
+                Some(Step::Refuse(kind)) => return Err(io::Error::from(kind)),
+                Some(Step::Accept(limit)) => usize::from(limit).min(buf.len()),
+                None => buf.len(),
+            };
+            self.written
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .extend_from_slice(&buf[..accepted]);
+            Ok(accepted)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            self.flushes
+                .pop_front()
+                .map_or(Ok(()), |kind| Err(io::Error::from(kind)))
+        }
+    }
+
+    /// Sink that writes through the same retry helpers as the standard-stream sinks.
+    struct RetryingSink(ScriptedWriter);
+
+    impl OutputSink for RetryingSink {
+        fn write_frame(&mut self, frame: &[u8]) -> io::Result<()> {
+            write_all_retrying(&mut self.0, frame)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            flush_retrying(&mut self.0)
+        }
+    }
+
+    /// Scenario: a nonblocking stream takes part of a frame, then refuses writes and a flush with
+    /// `WouldBlock`, and interrupts one write, before its reader catches up.
+    /// Guarantees: the writer resumes the frame at the byte it stopped at, so every frame is
+    /// written exactly once, later frames still go out, and the stream is not marked failed.
+    #[tokio::test]
+    async fn would_block_resumes_the_frame_where_it_stopped() {
+        let written = Arc::new(Mutex::new(Vec::new()));
+        let writer = ScriptedWriter {
+            writes: VecDeque::from([
+                Step::Accept(3),
+                Step::Refuse(io::ErrorKind::WouldBlock),
+                Step::Refuse(io::ErrorKind::Interrupted),
+                Step::Accept(2),
+                Step::Refuse(io::ErrorKind::WouldBlock),
+            ]),
+            flushes: VecDeque::from([io::ErrorKind::WouldBlock]),
+            written: Arc::clone(&written),
+        };
+        let stream = OutputStream::start(
+            StreamId::Stdout,
+            4,
+            TEST_BYTE_CAPACITY,
+            true,
+            Box::new(RetryingSink(writer)),
+        )
+        .expect("writer thread spawns");
+        let handle = stream.handle();
+
+        handle
+            .submit(Frame::line("first frame"))
+            .await
+            .expect("frame is accepted");
+        handle
+            .submit(Frame::line("second frame"))
+            .await
+            .expect("frame is accepted");
+        let outcome = stream.shutdown(Duration::from_secs(5));
+
+        assert!(outcome.drained);
+        assert!(!outcome.writer_failed);
+        assert_eq!(stream.stats().write_errors, 0);
+        let contents = written
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        assert_eq!(contents, b"first frame\nsecond frame\n");
+    }
+
+    /// Scenario: a stream fails a write, then a flush, with an error other than `WouldBlock`
+    /// or `Interrupted`.
+    /// Guarantees: the retry helpers return that error without retrying, so a real console
+    /// failure still stops the writer.
+    #[test]
+    fn errors_other_than_would_block_are_not_retried() {
+        let written = Arc::new(Mutex::new(Vec::new()));
+        let mut writer = ScriptedWriter {
+            writes: VecDeque::from([Step::Accept(2), Step::Refuse(io::ErrorKind::BrokenPipe)]),
+            flushes: VecDeque::from([io::ErrorKind::BrokenPipe]),
+            written: Arc::clone(&written),
+        };
+
+        let error = write_all_retrying(&mut writer, b"frame\n").expect_err("the write fails");
+        assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
+        assert_eq!(
+            written
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .as_slice(),
+            b"fr"
+        );
+        let error = flush_retrying(&mut writer).expect_err("the flush fails");
+        assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
+    }
+
+    /// Polls `done` every millisecond for up to five seconds.
+    fn wait_until(mut done: impl FnMut() -> bool) -> bool {
+        let started = Instant::now();
+        while started.elapsed() < Duration::from_secs(5) {
+            if done() {
+                return true;
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+        false
+    }
+
+    /// Scenario: a submit parked on a full one-frame queue is cancelled after the writer frees
+    /// the slot it waited for, then a later accepted frame fails to write.
+    /// Guarantees: the cancelled submit neither queues nor counts its frame, so the frame
+    /// whose write failed is still reported as pending instead of being hidden by a count
+    /// that fell behind the frames actually written.
+    #[tokio::test]
+    async fn cancelled_parked_submit_never_hides_a_later_lost_frame() {
+        let stalled = Arc::new(AtomicBool::new(true));
+        let sink = TestSink::new()
+            .stalling(Arc::clone(&stalled))
+            .failing_on(b"lost\n");
+        // stderr keeps the failure report away from the stream under test.
+        let stream =
+            OutputStream::start(StreamId::Stderr, 1, TEST_BYTE_CAPACITY, true, sink.boxed())
+                .expect("writer thread spawns");
+        let handle = stream.handle();
+
+        // One frame reaches the stalled writer, the next fills the only queue slot.
+        handle
+            .submit(Frame::line("in-writer"))
+            .await
+            .expect("frame is accepted");
+        handle
+            .submit(Frame::line("queued"))
+            .await
+            .expect("frame is accepted");
+        // Parked on the full queue, and never polled again once the writer makes room.
+        let mut parked = Box::pin(handle.submit(Frame::line("cancelled")));
+        let mut cx = Context::from_waker(Waker::noop());
+        assert!(parked.as_mut().poll(&mut cx).is_pending());
+
+        stalled.store(false, Ordering::Release);
+        assert!(wait_until(|| stream.stats().frames_written >= 2));
+        // Leaves time for any frame the parked submit handed over to be written as well.
+        thread::sleep(Duration::from_millis(50));
+        drop(parked);
+        let after_cancel = stream.stats();
+        assert_eq!(
+            after_cancel.frames_written, after_cancel.frames_submitted,
+            "a cancelled submit must not leave an uncounted frame behind"
+        );
+
+        handle
+            .submit(Frame::line("lost"))
+            .await
+            .expect("the frame is accepted before its write fails");
+        assert!(wait_until(|| stream.stats().write_errors == 1));
+        let outcome = stream.shutdown(Duration::from_secs(5));
+
+        assert!(outcome.writer_failed);
+        assert_eq!(
+            outcome.frames_pending, 1,
+            "the frame whose write failed must be reported"
+        );
+    }
+
+    /// Scenario: a shutdown deadline expires while one frame is inside a stalled write, one
+    /// is queued behind it, and one submit is parked on the full queue.
+    /// Guarantees: the outcome reports the two accepted frames as pending but not the parked
+    /// submit, whose frame never reached the queue, and that submit still lands once the
+    /// writer resumes.
+    #[tokio::test]
+    async fn deadline_snapshot_counts_queued_frames_but_not_parked_submits() {
+        let stalled = Arc::new(AtomicBool::new(true));
+        let sink = TestSink::new().stalling(Arc::clone(&stalled));
+        let stream = start(&sink, 1);
+        let handle = stream.handle();
+
+        handle
+            .submit(Frame::line("in-writer"))
+            .await
+            .expect("frame is accepted");
+        handle
+            .submit(Frame::line("queued"))
+            .await
+            .expect("frame is accepted");
+        let parked = tokio::spawn({
+            let handle = handle.clone();
+            async move { handle.submit(Frame::line("parked")).await }
+        });
+        wait_for_admitted_enqueue(&stream).await;
+
+        let outcome = stream.shutdown(Duration::from_millis(100));
+        assert!(outcome.deadline_expired);
+        assert_eq!(outcome.frames_pending, 2);
+
+        stalled.store(false, Ordering::Release);
+        tokio::time::timeout(Duration::from_secs(5), parked)
+            .await
+            .expect("the parked submit gets a slot once the writer resumes")
+            .expect("submit task completes")
+            .expect("the parked frame is accepted");
+        assert!(wait_until(|| stream.stats().frames_written == 3));
+    }
+
+    /// Scenario: drains keep timing out behind a stalled writer, and then a producer submits
+    /// a frame.
+    /// Guarantees: barriers left behind by timed-out drains never take more than the control
+    /// slots, so the frame still finds room in the queue instead of waiting behind them.
+    #[tokio::test]
+    async fn timed_out_drains_cannot_fill_the_queue_for_frames() {
+        let stalled = Arc::new(AtomicBool::new(true));
+        let sink = TestSink::new().stalling(Arc::clone(&stalled));
+        let stream = start(&sink, 1);
+        let handle = stream.handle();
+
+        handle
+            .submit(Frame::line("in-writer"))
+            .await
+            .expect("frame is accepted");
+        let frame_slots = &handle.queued.as_ref().expect("queued handle").frame_slots;
+        // The writer took the frame, so the queue holds only what the drains leave behind.
+        assert!(wait_until(|| frame_slots.available_permits() == 1));
+        for _ in 0..CONTROL_SLOTS + 2 {
+            let outcome = stream.drain(Duration::from_millis(20));
+            assert!(outcome.deadline_expired);
+        }
+        assert_eq!(
+            stream.sender.len(),
+            CONTROL_SLOTS,
+            "only the control slots may hold stale barriers"
+        );
+
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            handle.submit(Frame::line("after-drains")),
+        )
+        .await
+        .expect("a frame must not wait behind stale barriers")
+        .expect("frame is accepted");
+
+        stalled.store(false, Ordering::Release);
+        assert!(stream.shutdown(Duration::from_secs(5)).drained);
+        assert_eq!(stream.stats().frames_written, 2);
+    }
+
+    /// Scenario: a stream shuts down cleanly, then is drained, shut down again, and sent a
+    /// late frame through both submit paths.
+    /// Guarantees: none of the later outcomes reports a writer failure and the late frame is
+    /// refused as a closed queue, so a clean exit is never mistaken for a failed writer.
+    #[tokio::test]
+    async fn clean_shutdown_is_not_reported_as_a_writer_failure() {
+        let sink = TestSink::new();
+        let stream = start(&sink, 4);
+        let handle = stream.handle();
+
+        handle
+            .submit(Frame::line("before shutdown"))
+            .await
+            .expect("frame is accepted");
+        assert!(stream.shutdown(Duration::from_secs(5)).drained);
+
+        assert!(!stream.drain(Duration::from_secs(1)).writer_failed);
+        assert!(!stream.shutdown(Duration::from_secs(1)).writer_failed);
+        assert_eq!(
+            handle.submit(Frame::line("late")).await,
+            Err(SubmitError::QueueClosed)
+        );
+        assert_eq!(
+            handle.try_submit(Frame::line("late")),
+            Err(SubmitError::QueueClosed)
+        );
+        assert_eq!(stream.stats().write_errors, 0);
+    }
+
+    /// Scenario: a writer stops on a write error, then the stream is shut down, drained, shut
+    /// down again, and sent a late frame.
+    /// Guarantees: every later outcome still reports the failure and the late frame is refused
+    /// as an unavailable writer, so separating closure from failure hides no real failure.
+    #[tokio::test]
+    async fn failed_writer_stays_reported_after_shutdown() {
+        let sink = TestSink::new().failing_after(0);
+        // stderr keeps the failure report away from the stream under test.
+        let stream =
+            OutputStream::start(StreamId::Stderr, 4, TEST_BYTE_CAPACITY, true, sink.boxed())
+                .expect("writer thread spawns");
+        let handle = stream.handle();
+
+        let _ = handle.submit(Frame::line("doomed")).await;
+        assert!(stream.shutdown(Duration::from_secs(5)).writer_failed);
+
+        assert!(stream.drain(Duration::from_secs(1)).writer_failed);
+        assert!(stream.shutdown(Duration::from_secs(1)).writer_failed);
+        assert_eq!(
+            handle.submit(Frame::line("late")).await,
+            Err(SubmitError::WriterUnavailable)
+        );
     }
 }

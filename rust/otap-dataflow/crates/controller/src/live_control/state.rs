@@ -566,6 +566,8 @@ pub(super) struct ControllerRuntimeState {
     pub(super) global_shutdown_requested: bool,
     /// Number of phased global-shutdown coordinators still running.
     pub(super) global_shutdown_coordinators: usize,
+    /// Holds observability open while the controller hands off terminal telemetry.
+    pub(super) controller_telemetry_pending: bool,
     /// Active engine-scoped live operation, if any.
     pub(super) active_engine_operation: Option<String>,
     /// Monotonic full-config reconciliation id suffix.

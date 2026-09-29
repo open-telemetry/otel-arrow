@@ -100,6 +100,27 @@ pub enum Error {
         source: Box<Error>,
     },
 
+    /// Diagnostic drops were not covered by a confirmed final metrics sample.
+    #[error(
+        "Console dropped {diagnostics_dropped} diagnostic(s) without a confirmed final metrics sample"
+    )]
+    ConsoleDiagnosticsDropped {
+        /// Diagnostic frames since the last confirmed snapshot, or since run start on early failure.
+        diagnostics_dropped: u64,
+    },
+
+    /// The run failed and diagnostic drops lack a confirmed final metrics sample.
+    #[error(
+        "{source}; additionally, {diagnostics_dropped} console diagnostic(s) lack a confirmed final metrics sample"
+    )]
+    RunFailedWithConsoleDiagnosticsLoss {
+        /// Diagnostic frames since the last confirmed snapshot, or since run start on early failure.
+        diagnostics_dropped: u64,
+        /// The earlier engine or console error.
+        #[source]
+        source: Box<Error>,
+    },
+
     /// A topic declaration requests a backend this runtime does not provide.
     #[error("Unsupported topic backend `{backend}` for topic `{topic}`")]
     #[diagnostic(code(data_plane::unsupported_topic_backend), url(docsrs))]
