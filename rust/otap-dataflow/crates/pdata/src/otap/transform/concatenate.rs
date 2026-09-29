@@ -92,6 +92,11 @@
 //!   stamp them with some id or change the signature), or try to fuse split
 //!   and concat together. We can also (2) under-allocate if we're escalating
 //!   to a standard type and have to grow the array a bunch.
+//! - TODO(dict-trim): `write_dict` shares values arrays only between adjacent
+//!   inputs with pointer-identical values, and otherwise appends each
+//!   dictionary input's whole values array. Values not referenced by the
+//!   selected keys are never trimmed, which inflates the output dictionary
+//!   and can push the column to a wider key or to native encoding.
 //! - TODO(fused-decode): Fuse transport delta decoding into the ID statistics
 //!   and write passes instead of decoding in a separate pre-pass.
 //! - TODO(single-input): Pass a payload through unchanged (Arc reuse) when
@@ -189,11 +194,13 @@ impl Default for ConcatOptions {
 /// removed and ID columns are rewritten so that IDs from different inputs
 /// cannot collide.
 ///
-/// Reindexing behavior can be disabled by setting [`ConcatOptions::reindex`] to
-/// `false`. Be careful when doing this, as the resulting otap batch will most
-/// likely have corrupted id columns unless you can guarantee that the input IDs
-/// are decoded and non-overlapping. The most common valid scenario is when all
+/// Reindexing behavior can be disabled with [`ConcatOptions::preserve_ids`].
+/// Be careful when doing this, as the resulting otap batch will most likely
+/// have corrupted id columns unless you can guarantee that the input IDs are
+/// decoded and non-overlapping. The most common valid scenario is when all
 /// input batches are pieces of the same original otap batch.
+///
+/// The inputs are consumed: every slot in `items` is `None` on success.
 ///
 /// # Errors
 ///
@@ -248,7 +255,6 @@ fn concatenate_signal<S: OtapBatchStore, const N: usize>(
         None
     };
 
-    #[allow(clippy::needless_range_loop)]
     let mut batches: Vec<&RecordBatch> = Vec::new();
     let mut plans: Vec<InputPlan> = Vec::new();
     for i in 0..N {
@@ -275,7 +281,7 @@ fn concatenate_signal<S: OtapBatchStore, const N: usize>(
         result[i] = Some(write_payload(&batches, &plans, payload_def, selected)?);
 
         // We can't just clear batches because of the lifetime, hence the
-        // `reuse_vec` trick to transmute to a new lifetime.
+        // `reuse_vec` trick to reuse the allocation.
         batches = reuse_vec(batches);
         plans.clear();
 
@@ -1249,7 +1255,9 @@ pub(crate) fn write_column(
             DataType::UInt16 => {
                 dispatch_value::<DictDriver<UInt16Type>>(value, inputs, rows, id_col)
             }
-            _ => write_fallback(target.data_type(), inputs, rows),
+            // Other key types are rejected when indexing and are never
+            // selected as an output type.
+            k => Err(unsupported_key(k)),
         },
         value => dispatch_value::<NativeDriver>(value, inputs, rows, id_col),
     };
@@ -1715,8 +1723,10 @@ fn write_struct(
     Ok(Arc::new(array))
 }
 
-/// Generic fallback using `MutableArrayData`. Used for List columns. Inputs of
-/// a different type are cast to `target` first.
+/// Generic fallback using `MutableArrayData` for native value types without a
+/// specialized builder. In valid OTAP batches this is only List columns.
+/// Inputs of a different type (e.g. dictionary encoded) are cast to `target`
+/// first.
 fn write_fallback(target: &DataType, inputs: &[Input<'_>], rows: usize) -> Result<ArrayRef> {
     let mut casted: Vec<ArrayRef> = Vec::with_capacity(inputs.len());
     for inp in inputs {
