@@ -444,7 +444,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                     }
                     return Ok(TerminalState::new(
                         deadline,
-                        self.metrics.terminal_snapshots(),
+                        self.metrics.terminal_snapshots(auth.as_deref()),
                     ));
                 }
                 Message::Control(NodeControlMsg::CollectTelemetry {

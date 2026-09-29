@@ -174,9 +174,13 @@ impl OtlpGrpcExporterMetrics {
             })
     }
 
-    /// Takes terminal snapshots of all touched metric buckets.
+    /// Takes terminal snapshots after synchronizing authentication readiness.
     #[must_use]
-    pub(super) fn terminal_snapshots(&mut self) -> Vec<MetricSetSnapshot> {
+    pub(super) fn terminal_snapshots(
+        &mut self,
+        auth: Option<&dyn HttpClientAuthProvider>,
+    ) -> Vec<MetricSetSnapshot> {
+        self.record_auth_readiness(auth.is_none_or(HttpClientAuthProvider::is_ready));
         let mut snapshots = self.boundary.terminal_snapshots();
         snapshots.extend(self.failures.terminal_snapshots());
         if let Some(auth) = self.auth.as_mut() {
@@ -189,6 +193,7 @@ impl OtlpGrpcExporterMetrics {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::future::poll_fn;
     use otel_arrow_dfe_engine::Interests;
     use otel_arrow_dfe_engine::testing::test_pipeline_ctx_with_interests;
     use otel_arrow_dfe_otap::http_client_auth::test_support::MockHttpClientAuthProvider;
@@ -199,30 +204,37 @@ mod tests {
         OtlpGrpcExporterMetrics::register(&pipeline_ctx, None)
     }
 
-    /// Scenario: a gRPC exporter's bound auth provider changes readiness.
-    /// Guarantees: the provider-specific gauge reports whether authenticated
-    /// progress is currently possible as 0 or 1.
+    /// Scenario: a bound auth provider becomes ready and is then invalidated
+    /// before the gRPC exporter's terminal snapshot.
+    /// Guarantees: terminal snapshots resample the provider and report its
+    /// current readiness rather than the last value observed by the main loop.
     #[test]
-    fn bound_auth_provider_records_authentication_readiness() {
+    fn terminal_snapshot_resamples_authentication_readiness() {
         let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(Interests::NODE_INPUT_METRICS);
-        let auth = MockHttpClientAuthProvider::never_publishes();
+        let mut auth = MockHttpClientAuthProvider::new(
+            http::header::AUTHORIZATION,
+            vec![("Bearer token".into(), None)],
+        );
         let mut metrics = OtlpGrpcExporterMetrics::register(&pipeline_ctx, Some(&auth));
 
-        let snapshots = metrics.terminal_snapshots();
-        let auth_snapshot = snapshots
-            .iter()
-            .find(|snapshot| snapshot.descriptor().name == "exporter.otlp_grpc.authentication")
-            .expect("bound auth must register its authentication metric set");
-        assert_eq!(auth_snapshot.get_metrics()[0].to_u64_lossy(), 0);
-
-        metrics.record_auth_readiness(true);
-
-        let snapshots = metrics.terminal_snapshots();
+        assert!(futures::executor::block_on(poll_fn(|cx| {
+            auth.poll_refresh(cx, &super::super::GRPC_AUTH_EVENTS)
+        })));
+        let snapshots = metrics.terminal_snapshots(Some(&auth));
         let auth_snapshot = snapshots
             .iter()
             .find(|snapshot| snapshot.descriptor().name == "exporter.otlp_grpc.authentication")
             .expect("bound auth must register its authentication metric set");
         assert_eq!(auth_snapshot.get_metrics()[0].to_u64_lossy(), 1);
+
+        auth.invalidate(1);
+
+        let snapshots = metrics.terminal_snapshots(Some(&auth));
+        let auth_snapshot = snapshots
+            .iter()
+            .find(|snapshot| snapshot.descriptor().name == "exporter.otlp_grpc.authentication")
+            .expect("bound auth must register its authentication metric set");
+        assert_eq!(auth_snapshot.get_metrics()[0].to_u64_lossy(), 0);
     }
 
     /// Scenario: Every gRPC status is classified into a bounded actionable category.

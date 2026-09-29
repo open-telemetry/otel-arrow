@@ -438,7 +438,7 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                     }
                     return Ok(TerminalState::new(
                         deadline,
-                        self.metrics.terminal_snapshots(),
+                        self.metrics.terminal_snapshots(auth.as_deref()),
                     ));
                 }
                 Message::Control(NodeControlMsg::CollectTelemetry {
@@ -2965,7 +2965,7 @@ mod test {
             &mut metrics,
         ));
 
-        let snapshots = metrics.terminal_snapshots();
+        let snapshots = metrics.terminal_snapshots(None);
         assert!(snapshots.iter().any(|snapshot| {
             snapshot.descriptor().name == "exporter.attempted"
                 && snapshot.measurement_attribute_value("signal") == Some("logs")
@@ -3050,7 +3050,7 @@ mod test {
             }
         }
 
-        let snapshots = metrics.terminal_snapshots();
+        let snapshots = metrics.terminal_snapshots(None);
         assert!(snapshots.iter().any(|snapshot| {
             snapshot.descriptor().name == "exporter.attempted"
                 && snapshot.measurement_attribute_value("signal") == Some("logs")
@@ -3111,7 +3111,7 @@ mod test {
             &mut metrics,
         ));
 
-        let snapshots = metrics.terminal_snapshots();
+        let snapshots = metrics.terminal_snapshots(None);
         assert!(snapshots.iter().any(|snapshot| {
             snapshot.descriptor().name == "exporter.attempted"
                 && snapshot.measurement_attribute_value("signal") == Some("logs")
