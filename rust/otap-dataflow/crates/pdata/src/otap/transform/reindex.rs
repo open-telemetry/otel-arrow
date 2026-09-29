@@ -483,15 +483,38 @@ fn id_column_min_max_selected<T: IdType>(
         _ => {
             let array = materialize_id_values::<T>(col)?;
             let values = array.values();
-            let nulls = array.nulls().filter(|n| n.null_count() > 0);
-            sel.for_each_row(len, |r| {
-                if nulls.is_none_or(|n| n.is_valid(r)) {
-                    visit(values[r]);
+            match array.nulls().filter(|n| n.null_count() > 0) {
+                // Walk contiguous runs as slices so the fold vectorizes.
+                None => {
+                    for r in sel.ranges(len) {
+                        let slice = &values[r];
+                        count += slice.len();
+                        if let Some((lo, hi)) = slice_min_max(slice) {
+                            acc = Some(match acc {
+                                None => (lo, hi),
+                                Some((a, b)) => (a.min(lo), b.max(hi)),
+                            });
+                        }
+                    }
                 }
-            });
+                Some(nulls) => sel.for_each_row(len, |r| {
+                    if nulls.is_valid(r) {
+                        visit(values[r]);
+                    }
+                }),
+            }
         }
     }
     Ok(acc.map(|(lo, hi)| (lo, hi, count)))
+}
+
+/// (min, max) of a slice, or `None` if empty.
+fn slice_min_max<T: Ord + Copy>(values: &[T]) -> Option<(T, T)> {
+    let (&first, rest) = values.split_first()?;
+    Some(
+        rest.iter()
+            .fold((first, first), |(lo, hi), &v| (lo.min(v), hi.max(v))),
+    )
 }
 
 /// Returns the primitive array holding the ID values of `array`. For

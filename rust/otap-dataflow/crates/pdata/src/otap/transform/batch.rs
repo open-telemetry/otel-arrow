@@ -61,8 +61,6 @@
 //! - TODO(nested-keyset): KeySets for nested relations (span events, data
 //!   points) sort their keys; a bitmap over the parent's id span would avoid
 //!   the sort.
-//! - TODO(metrics-sizing): Metric item counts binary search the data points
-//!   join per metric row; a merge walk would be linear.
 //! - TODO(split-metric): A metric with more data points than the limit is
 //!   not divided across outputs.
 
@@ -262,12 +260,16 @@ impl<S: OtapBatchStore, const N: usize> Batcher<S, N> {
         let rows = self.root_rows[input];
         let mut row = c.row;
         let mut force_one = force_one;
+        // Metric ids are usually ascending in row order, so each data point
+        // table is searched forward from where the previous metric's points
+        // ended (see `Join::count_from`).
+        let mut hints = [0usize; DATA_POINT_TYPES.len()];
         while row < rows {
-            let points = match (ids.get(row), dp_payload_for(types.value(row))) {
-                (Some(id), Some(dp)) => self
+            let points = match (ids.get(row), dp_slot_for(types.value(row))) {
+                (Some(id), Some(slot)) => self
                     .joins
-                    .get(input, payload_to_idx(dp))
-                    .map_or(0, |j| j.count(id)),
+                    .get(input, payload_to_idx(DATA_POINT_TYPES[slot]))
+                    .map_or(0, |j| j.count_from(id, &mut hints[slot])),
                 _ => 0,
             };
             // Metrics without data points cost nothing and ride along with
@@ -409,12 +411,13 @@ const DATA_POINT_TYPES: [ArrowPayloadType; 4] = [
     ArrowPayloadType::ExpHistogramDataPoints,
 ];
 
-fn dp_payload_for(metric_type: u8) -> Option<ArrowPayloadType> {
+/// Index into [DATA_POINT_TYPES] of the data points table of a metric type.
+fn dp_slot_for(metric_type: u8) -> Option<usize> {
     match MetricType::try_from(metric_type).ok()? {
-        MetricType::Gauge | MetricType::Sum => Some(ArrowPayloadType::NumberDataPoints),
-        MetricType::Histogram => Some(ArrowPayloadType::HistogramDataPoints),
-        MetricType::ExponentialHistogram => Some(ArrowPayloadType::ExpHistogramDataPoints),
-        MetricType::Summary => Some(ArrowPayloadType::SummaryDataPoints),
+        MetricType::Gauge | MetricType::Sum => Some(0),
+        MetricType::Summary => Some(1),
+        MetricType::Histogram => Some(2),
+        MetricType::ExponentialHistogram => Some(3),
         MetricType::Empty => None,
     }
 }
@@ -457,6 +460,12 @@ fn derive_selections<'j, S: OtapBatchStore, const N: usize>(
                 continue;
             };
             let set = keys.build(&col, &sel[parent_idx], parent_rb.num_rows());
+            if set.is_empty() {
+                for child in present {
+                    queue.push(child);
+                }
+                continue;
+            }
             for child in present {
                 let idx = payload_to_idx(child);
                 sel[idx] = match joins[idx].as_ref() {
@@ -637,25 +646,33 @@ impl KeySetScratch {
                     match nulls {
                         None => {
                             let vals = &values[r];
-                            // Dense ids in row order (each key one more than
-                            // the previous) form a single run: check that
-                            // with a tight loop and push it at once.
-                            if let (Some(&first), Some(&last)) = (vals.first(), vals.last())
-                                && vals
-                                    .windows(2)
-                                    .all(|w| u32::from(w[1]) == u32::from(w[0]) + 1)
-                                && push_run(&mut self.runs, u32::from(first))
-                            {
-                                let top = self.runs.last_mut().expect("just pushed");
-                                *top = *top.start()..=u32::from(last);
+                            let Some(&first) = vals.first() else {
+                                return;
+                            };
+                            if !push_run(&mut self.runs, u32::from(first)) {
+                                sorted = false;
                                 return;
                             }
-                            for &v in vals {
-                                if !push_run(&mut self.runs, u32::from(v)) {
+                            // Tight loop over the rest: a key that repeats or
+                            // steps by one extends the run, a jump forward
+                            // starts a new run, and a step back means the
+                            // keys are not sorted.
+                            let mut end = *self.runs.last().expect("pushed").end();
+                            for &v in &vals[1..] {
+                                let v = u32::from(v);
+                                if v < end {
                                     sorted = false;
                                     return;
                                 }
+                                if v > end.saturating_add(1) {
+                                    let top = self.runs.last_mut().expect("pushed");
+                                    *top = *top.start()..=end;
+                                    self.runs.push(v..=v);
+                                }
+                                end = v;
                             }
+                            let top = self.runs.last_mut().expect("pushed");
+                            *top = *top.start()..=end;
                         }
                         Some(n) => {
                             for i in r {
@@ -839,9 +856,58 @@ impl Join {
         }
     }
 
-    /// Number of child rows with parent key `key`.
-    fn count(&self, key: u32) -> usize {
-        self.span(&(key..=key)).len()
+    /// Number of child rows with parent key `key`, searching forward from
+    /// position `*hint` (updated to the end of the key's rows). Queries with
+    /// ascending keys therefore cost amortized O(log gap) each. Falls back
+    /// to a full search when `key` precedes the hint.
+    fn count_from(&self, key: u32, hint: &mut usize) -> usize {
+        let key_at = |i: usize| -> u32 {
+            match &self.mode {
+                JoinMode::Sorted(SortedKeys::U16(v)) => u32::from(v[i]),
+                JoinMode::Sorted(SortedKeys::U32(v)) => v[i],
+                JoinMode::Argsort => self.keys[i],
+            }
+        };
+        let len = match &self.mode {
+            JoinMode::Sorted(SortedKeys::U16(v)) => v.len(),
+            JoinMode::Sorted(SortedKeys::U32(v)) => v.len(),
+            JoinMode::Argsort => self.keys.len(),
+        };
+        let from = if *hint <= len && (*hint == 0 || key_at(*hint - 1) < key) {
+            *hint
+        } else {
+            0
+        };
+        // Gallop to bracket the first position with a key > `key`.
+        let first_after = |from: usize, bound: u32| -> usize {
+            let mut lo = from;
+            let mut step = 1;
+            let mut hi = from;
+            while hi < len && key_at(hi) <= bound {
+                lo = hi + 1;
+                hi = (hi + step).min(len);
+                step *= 2;
+            }
+            // Binary search in [lo, hi).
+            let (mut a, mut b) = (lo, hi);
+            while a < b {
+                let m = a + (b - a) / 2;
+                if key_at(m) <= bound {
+                    a = m + 1;
+                } else {
+                    b = m;
+                }
+            }
+            a
+        };
+        let start = if key == 0 {
+            from
+        } else {
+            first_after(from, key - 1)
+        };
+        let end = first_after(start, key);
+        *hint = end;
+        end - start
     }
 
     /// Child rows whose parent key is in `keys`.
@@ -1737,6 +1803,29 @@ mod tests {
         let sizes: Vec<_> = out.iter().map(|o| num_items(&o.batches)).collect();
         assert_eq!(sizes, vec![90, 90]);
         assert!(out.iter().all(|o| num_items(&o.batches).is_multiple_of(30)));
+    }
+
+    /// Scenario: `Join::count_from` is queried with ascending, repeated,
+    /// missing, and descending keys over sorted and argsorted joins.
+    /// Guarantees: every answer equals a plain count of the key, regardless
+    /// of the hint left by the previous query.
+    #[test]
+    #[rustfmt::skip]
+    fn test_join_count_from_matches_plain_count() {
+        let pids: Vec<u16> = vec![0, 0, 1, 3, 3, 3, 7, 9, 9];
+        let sorted = record_batch!(("parent_id", UInt16, pids.clone())).unwrap();
+        let mut rev = pids.clone();
+        rev.reverse();
+        let unsorted = record_batch!(("parent_id", UInt16, rev)).unwrap();
+        for rb in [sorted, unsorted] {
+            let mut join = Join::default();
+            join.build(&rb).unwrap();
+            let mut hint = 0;
+            for key in [0u32, 1, 2, 3, 3, 7, 8, 9, 10, 1, 0, 9, 3] {
+                let expected = pids.iter().filter(|&&p| u32::from(p) == key).count();
+                assert_eq!(join.count_from(key, &mut hint), expected, "key {key}");
+            }
+        }
     }
 
     /// Scenario: transport-optimized logs inputs (delta-encoded ids, attrs
