@@ -6,12 +6,13 @@ macro_rules! oracle_module_tests {
     (adapter) => {
         mod tests {
             use super::{
-                CellValue, OracleAdapterError, OracleType, bounded_connect_string, cursor_bind_type,
-                finite_float, parse_cursor_timestamp, read_credential, validate_described_cursor_columns,
-                validate_types,
+                CellValue, OracleAdapterError, OracleType, bounded_connect_string,
+                cursor_bind_timestamp, cursor_bind_type, discovery_cursor_bind_type,
+                extract_normalized_cursor, finite_float, parse_cursor_timestamp, read_credential,
+                validate_described_cursor_columns, validate_types,
             };
             use oracle::sql_type::Timestamp;
-            use otel_arrow_dfe_scraper::database::{CompositeCursor, CompositeWatermark};
+            use otel_arrow_dfe_scraper::database::{CompositeCursor, CompositeWatermark, Row};
             use secrecy::ExposeSecret;
             use std::fs;
             use std::str::FromStr;
@@ -639,17 +640,160 @@ macro_rules! oracle_module_tests {
                 assert_eq!(rebound.nanosecond(), 123_456_789);
             }
 
-            /// Scenario: a committed timezone-aware cursor is rebound after restart.
-            /// Guarantees: the bind type retains the cursor's UTC offset instead of coercing it to a
-            /// timezone-naive timestamp and moving the polling boundary.
+            /// Scenario: Metadata discovery has not yet revealed the cursor column's Oracle type.
+            /// Guarantees: The single discovery execution uses a lossless zoned, nanosecond bind.
             #[test]
-            fn timezone_aware_cursor_uses_a_timezone_aware_bind() {
+            fn metadata_discovery_uses_a_lossless_cursor_bind() {
+                assert!(matches!(
+                    discovery_cursor_bind_type(),
+                    OracleType::TimestampTZ(9)
+                ));
+            }
+
+            /// Scenario: Oracle metadata reports each supported cursor timestamp family and precision.
+            /// Guarantees: Normal polling binds that exact type instead of universally using TimestampTZ.
+            #[test]
+            fn normal_polling_matches_the_cursor_column_type() {
+                for source_type in [
+                    OracleType::Date,
+                    OracleType::Timestamp(0),
+                    OracleType::Timestamp(9),
+                    OracleType::TimestampTZ(6),
+                    OracleType::TimestampLTZ(3),
+                ] {
+                    assert_eq!(
+                        cursor_bind_type(&source_type).expect("supported cursor"),
+                        source_type
+                    );
+                }
+                assert!(matches!(
+                    cursor_bind_type(&OracleType::Varchar2(32)),
+                    Err(OracleAdapterError::UnsupportedCursorTimestamp)
+                ));
+                assert!(matches!(
+                    cursor_bind_type(&OracleType::Timestamp(10)),
+                    Err(OracleAdapterError::UnsupportedCursorTimestamp)
+                ));
+            }
+
+            /// Scenario: A timezone-aware checkpoint is rebound to a zoned Oracle cursor column.
+            /// Guarantees: Matching the source metadata retains the cursor offset and precision.
+            #[test]
+            fn timezone_aware_cursor_retains_its_offset() {
                 let committed = Timestamp::from_str("2026-01-01 12:34:56.123456789 +05:30")
                     .expect("timezone-aware cursor should parse");
-
                 assert!(committed.with_tz());
                 assert_eq!(committed.tz_offset(), 19_800);
-                assert!(matches!(cursor_bind_type(), OracleType::TimestampTZ(9)));
+                assert_eq!(
+                    cursor_bind_type(&OracleType::TimestampTZ(9)).expect("zoned cursor"),
+                    OracleType::TimestampTZ(9)
+                );
+            }
+
+            /// Scenario: An initial or checkpoint cursor has a non-UTC offset and crosses a UTC date boundary.
+            /// Guarantees: Every supported source type binds the same UTC instant with its own precision and zone semantics.
+            #[test]
+            fn cursor_bind_values_are_normalized_to_utc_and_source_precision() {
+                for (input, target, expected, with_tz) in [
+                    (
+                        "2026-01-01 00:15:30.123456789 +05:30",
+                        OracleType::Date,
+                        "2025-12-31 18:45:30",
+                        false,
+                    ),
+                    (
+                        "2026-01-01 00:15:30.123456789 +05:30",
+                        OracleType::Timestamp(6),
+                        "2025-12-31 18:45:30.123456",
+                        false,
+                    ),
+                    (
+                        "2024-03-01 01:00:00.987654321 +14:00",
+                        OracleType::Timestamp(6),
+                        "2024-02-29 11:00:00.987654",
+                        false,
+                    ),
+                    (
+                        "2026-01-01 23:30:00.123456789 -12:00",
+                        OracleType::TimestampTZ(9),
+                        "2026-01-02 11:30:00.123456789 +00:00",
+                        true,
+                    ),
+                    (
+                        "2026-01-01 00:15:30.123456789 +05:30",
+                        OracleType::TimestampLTZ(3),
+                        "2025-12-31 18:45:30.123 +00:00",
+                        true,
+                    ),
+                ] {
+                    let source = Timestamp::from_str(input).expect("offset cursor");
+                    let bound =
+                        cursor_bind_timestamp(source, &target).expect("supported source type");
+                    assert_eq!(bound.to_string(), expected);
+                    assert_eq!(bound.with_tz(), with_tz);
+                }
+            }
+
+            /// Scenario: A timezone-naive cursor already represents UTC for a plain source column.
+            /// Guarantees: Type matching changes precision only and never shifts its wall-clock value.
+            #[test]
+            fn naive_cursor_is_already_utc() {
+                let source = Timestamp::from_str("2026-01-01 00:15:30.123456789")
+                    .expect("naive cursor");
+                let bound = cursor_bind_timestamp(source, &OracleType::Timestamp(6))
+                    .expect("timestamp");
+                assert_eq!(bound.to_string(), "2026-01-01 00:15:30.123456");
+                assert!(!bound.with_tz());
+            }
+
+            /// Scenario: Normalized Oracle output contains plain/zoned timestamps and number/int tie-breakers.
+            /// Guarantees: The composite cursor reuses those values without another native row decode.
+            #[test]
+            fn cursor_is_derived_from_normalized_output() {
+                for (values, expected_timestamp, expected_id) in [
+                    (
+                        vec![
+                            CellValue::String("payload".to_owned()),
+                            CellValue::Timestamp("2026-01-01T00:00:00.123456000".to_owned()),
+                            CellValue::Decimal("42".to_owned()),
+                        ],
+                        "2026-01-01T00:00:00.123456000",
+                        42,
+                    ),
+                    (
+                        vec![
+                            CellValue::String("payload".to_owned()),
+                            CellValue::TimestampTz(
+                                "2025-12-31T18:30:00.123456789+00:00".to_owned(),
+                            ),
+                            CellValue::Int64(-7),
+                        ],
+                        "2025-12-31T18:30:00.123456789+00:00",
+                        -7,
+                    ),
+                ] {
+                    let cursor = extract_normalized_cursor(&Row { values }, 1, 2)
+                        .expect("valid normalized cursor");
+                    assert_eq!(cursor.timestamp, expected_timestamp);
+                    assert_eq!(cursor.tie_breaker, expected_id);
+                }
+            }
+
+            /// Scenario: Normalized cursor cells are NULL, malformed, out of range, or the wrong value type.
+            /// Guarantees: The receiver fails the page rather than advancing with a fabricated cursor.
+            #[test]
+            fn invalid_normalized_cursor_fails_closed() {
+                for values in [
+                    vec![CellValue::Null, CellValue::Int64(1)],
+                    vec![CellValue::Timestamp("2026-01-01T00:00:00".to_owned()), CellValue::Null],
+                    vec![
+                        CellValue::Timestamp("2026-01-01T00:00:00".to_owned()),
+                        CellValue::Decimal("9223372036854775808".to_owned()),
+                    ],
+                    vec![CellValue::String("not a timestamp".to_owned()), CellValue::Int64(1)],
+                ] {
+                    assert!(extract_normalized_cursor(&Row { values }, 0, 1).is_err());
+                }
             }
 
             /// Scenario: a checkpoint file holds a cursor timestamp Oracle cannot parse.
@@ -1653,6 +1797,28 @@ fn fingerprint_tracks_semantics_and_ignores_credential_paths() {
     assert_ne!(
         baseline.config_fingerprint(),
         different_source.config_fingerprint()
+    );
+}
+
+/// Scenario: Equivalent configured starting instants use different offsets and timestamp spellings.
+/// Guarantees: Both compile to the same UTC cursor and checkpoint compatibility fingerprint.
+#[test]
+fn equivalent_initial_offsets_share_checkpoint_identity() {
+    let mut utc = documented_config();
+    utc["watermark"]["timestamp"]["initial"] = serde_json::json!("2026-01-01T06:30:00Z");
+    let utc = parsed(utc).expect("UTC initial");
+    let mut offset = documented_config();
+    offset["watermark"]["timestamp"]["initial"] = serde_json::json!("2026-01-01 12:00:00 +05:30");
+    let offset = parsed(offset).expect("offset initial");
+    assert_eq!(
+        utc.query().watermark().initial,
+        offset.query().watermark().initial
+    );
+    assert_eq!(utc.config_fingerprint(), offset.config_fingerprint());
+    assert_eq!(
+        adapter::normalize_cursor_timestamp("2026-01-01 12:00:00 +05:30")
+            .expect("normalized cursor"),
+        "2026-01-01 06:30:00.000000000 +00:00"
     );
 }
 

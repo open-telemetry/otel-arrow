@@ -5,6 +5,7 @@
 
 use super::worker::{NativeWorker, receive};
 use async_trait::async_trait;
+use chrono::{Datelike, NaiveDate, Timelike};
 use oracle::sql_type::{IntervalDS, IntervalYM, OracleType, Timestamp};
 use oracle::{Connection, Row as OracleRow};
 use otel_arrow_dfe_engine::error::ReceiverErrorKind;
@@ -402,7 +403,8 @@ impl DriverAdapter for OracleAdapter {
             | OracleAdapterError::Query(_)
             | OracleAdapterError::Fetch(_)
             | OracleAdapterError::Convert(_)
-            | OracleAdapterError::NullCursorValue => ReceiverErrorKind::Transport,
+            | OracleAdapterError::NullCursorValue
+            | OracleAdapterError::InvalidCursorValue => ReceiverErrorKind::Transport,
             OracleAdapterError::CancellationState
             | OracleAdapterError::CancellationWorker(_)
             | OracleAdapterError::Cancellation(_)
@@ -509,13 +511,13 @@ fn execute_blocking(
         let Some(row) = result_set.next() else { break };
         let row = row.map_err(|error| OracleAdapterError::Fetch(error.into()))?;
         cancellation.ensure_not_requested()?;
-        let cursor = extract_cursor(
-            &row,
+        let normalized = normalize_row(&row, &prepared.types, cancellation)?;
+        cancellation.ensure_not_requested()?;
+        let cursor = extract_normalized_cursor(
+            &normalized,
             prepared.timestamp_index,
             prepared.tie_breaker_index,
-            cancellation,
         )?;
-        let normalized = normalize_row(&row, &prepared.types, cancellation)?;
         if !push_bounded_row(
             &mut rows,
             &mut payload_bytes,
@@ -604,7 +606,8 @@ fn bind_cursor<'a>(
 ) -> Result<oracle::ResultSet<'a, OracleRow>, OracleAdapterError> {
     cancellation.ensure_not_requested()?;
     let watermark = query.watermark();
-    let timestamp = parse_cursor_timestamp(&cursor.timestamp)?;
+    let timestamp =
+        cursor_bind_timestamp(parse_cursor_timestamp(&cursor.timestamp)?, timestamp_type)?;
     let timestamp_bind = (&timestamp, timestamp_type);
     let tie_breaker = cursor.tie_breaker;
     let result = statement
@@ -635,6 +638,12 @@ pub(super) fn parse_cursor_timestamp(text: &str) -> Result<Timestamp, OracleAdap
     Timestamp::from_str(text).map_err(|_| OracleAdapterError::InvalidCursorTimestamp)
 }
 
+/// Canonicalizes configuration cursors so equivalent offsets share identity.
+pub(super) fn normalize_cursor_timestamp(text: &str) -> Result<String, OracleAdapterError> {
+    cursor_bind_timestamp(parse_cursor_timestamp(text)?, &OracleType::TimestampTZ(9))
+        .map(|timestamp| timestamp.to_string())
+}
+
 /// Uses a lossless universal bind only for the one metadata-discovery execution.
 fn discovery_cursor_bind_type() -> OracleType {
     OracleType::TimestampTZ(9)
@@ -643,11 +652,78 @@ fn discovery_cursor_bind_type() -> OracleType {
 /// Reuses Oracle's exact cursor-column type and precision for normal polling.
 fn cursor_bind_type(source_type: &OracleType) -> Result<OracleType, OracleAdapterError> {
     match source_type {
-        OracleType::Date
-        | OracleType::Timestamp(_)
-        | OracleType::TimestampTZ(_)
-        | OracleType::TimestampLTZ(_) => Ok(source_type.clone()),
+        OracleType::Date => Ok(source_type.clone()),
+        OracleType::Timestamp(precision)
+        | OracleType::TimestampTZ(precision)
+        | OracleType::TimestampLTZ(precision)
+            if *precision <= 9 =>
+        {
+            Ok(source_type.clone())
+        }
         _ => Err(OracleAdapterError::UnsupportedCursorTimestamp),
+    }
+}
+
+/// Normalizes offset-bearing cursors to UTC and the discovered source precision.
+fn cursor_bind_timestamp(
+    timestamp: Timestamp,
+    target_type: &OracleType,
+) -> Result<Timestamp, OracleAdapterError> {
+    let (precision, zoned) = match target_type {
+        OracleType::Date => (0, false),
+        OracleType::Timestamp(precision) if *precision <= 9 => (*precision, false),
+        OracleType::TimestampTZ(precision) | OracleType::TimestampLTZ(precision)
+            if *precision <= 9 =>
+        {
+            (*precision, true)
+        }
+        _ => return Err(OracleAdapterError::UnsupportedCursorTimestamp),
+    };
+    let (year, month, day, hour, minute, second, nanosecond) = if timestamp.with_tz() {
+        let local = NaiveDate::from_ymd_opt(timestamp.year(), timestamp.month(), timestamp.day())
+            .and_then(|date| {
+                date.and_hms_nano_opt(
+                    timestamp.hour(),
+                    timestamp.minute(),
+                    timestamp.second(),
+                    timestamp.nanosecond(),
+                )
+            })
+            .ok_or(OracleAdapterError::InvalidCursorTimestamp)?;
+        let utc = local
+            .checked_sub_signed(chrono::TimeDelta::seconds(i64::from(timestamp.tz_offset())))
+            .ok_or(OracleAdapterError::InvalidCursorTimestamp)?;
+        (
+            utc.year(),
+            utc.month(),
+            utc.day(),
+            utc.hour(),
+            utc.minute(),
+            utc.second(),
+            utc.nanosecond(),
+        )
+    } else {
+        (
+            timestamp.year(),
+            timestamp.month(),
+            timestamp.day(),
+            timestamp.hour(),
+            timestamp.minute(),
+            timestamp.second(),
+            timestamp.nanosecond(),
+        )
+    };
+    let scale = 10_u32.pow(u32::from(9 - precision));
+    let nanosecond = nanosecond / scale * scale;
+    let timestamp = Timestamp::new(year, month, day, hour, minute, second, nanosecond)
+        .and_then(|timestamp| timestamp.and_prec(precision))
+        .map_err(|_| OracleAdapterError::InvalidCursorTimestamp)?;
+    if zoned {
+        timestamp
+            .and_tz_offset(0)
+            .map_err(|_| OracleAdapterError::InvalidCursorTimestamp)
+    } else {
+        Ok(timestamp)
     }
 }
 
@@ -673,13 +749,7 @@ fn ensure_prepared(
         .build()
         .map_err(|error| OracleAdapterError::Prepare(error.into()))?;
     let discovery_type = discovery_cursor_bind_type();
-    let result_set = bind_cursor(
-        &mut discovery,
-        query,
-        cursor,
-        &discovery_type,
-        cancellation,
-    )?;
+    let result_set = bind_cursor(&mut discovery, query, cursor, &discovery_type, cancellation)?;
     let (columns, types) = result_metadata(result_set.column_info())?;
     let (timestamp_index, tie_breaker_index) =
         validate_cursor_columns(result_set.column_info(), query)?;
@@ -806,27 +876,26 @@ fn cursor_column_index(
         .ok_or(OracleAdapterError::MissingCursorColumn)
 }
 
-/// Extracts the composite cursor of one row, rejecting null components.
-fn extract_cursor(
-    row: &OracleRow,
+/// Extracts the composite cursor from values already decoded for output.
+fn extract_normalized_cursor(
+    row: &Row,
     timestamp_index: usize,
     tie_breaker_index: usize,
-    cancellation: &OracleCancellation,
 ) -> Result<CompositeCursor, OracleAdapterError> {
-    cancellation.ensure_not_requested()?;
-    let timestamp = row
-        .get::<_, Option<Timestamp>>(timestamp_index)
-        .map_err(|error| OracleAdapterError::Convert(error.into()))?
-        .ok_or(OracleAdapterError::NullCursorValue)?;
-    cancellation.ensure_not_requested()?;
-    let tie_breaker = row
-        .get::<_, Option<i64>>(tie_breaker_index)
-        .map_err(|error| OracleAdapterError::Convert(error.into()))?
-        .ok_or(OracleAdapterError::NullCursorValue)?;
-    cancellation.ensure_not_requested()?;
-    // The text form round-trips through Timestamp::from_str on the next bind,
-    // so the durable checkpoint keeps full source precision.
-    Ok(CompositeCursor::new(timestamp.to_string(), tie_breaker))
+    let timestamp = match row.values.get(timestamp_index) {
+        Some(CellValue::Timestamp(value) | CellValue::TimestampTz(value)) => value.clone(),
+        Some(CellValue::Null) => return Err(OracleAdapterError::NullCursorValue),
+        _ => return Err(OracleAdapterError::InvalidCursorValue),
+    };
+    let tie_breaker = match row.values.get(tie_breaker_index) {
+        Some(CellValue::Int64(value)) => *value,
+        Some(CellValue::Decimal(value)) => value
+            .parse::<i64>()
+            .map_err(|_| OracleAdapterError::InvalidCursorValue)?,
+        Some(CellValue::Null) => return Err(OracleAdapterError::NullCursorValue),
+        _ => return Err(OracleAdapterError::InvalidCursorValue),
+    };
+    Ok(CompositeCursor::new(timestamp, tie_breaker))
 }
 
 /// Opens or reuses the single session, publishes it for cancellation, and starts read-only work.
@@ -1350,6 +1419,9 @@ pub enum OracleAdapterError {
     /// A row's cursor component was SQL NULL.
     #[error("a watermark cursor column returned NULL; composite cursors must be non-null")]
     NullCursorValue,
+    /// A cursor value failed its already-validated timestamp/integer contract.
+    #[error("a watermark cursor value cannot be represented by the composite cursor")]
+    InvalidCursorValue,
     /// The committed cursor timestamp cannot be bound to Oracle.
     #[error("committed watermark timestamp is not a valid Oracle timestamp")]
     InvalidCursorTimestamp,

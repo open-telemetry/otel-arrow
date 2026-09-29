@@ -19,6 +19,6 @@ issues: [4163, 3918]
 # section with the specific action consumers must take. Keep notes to 200
 # characters and subtext to 300 characters.
 subtext: |
-  Requires immutable retained rows and a unique, commit-visible timestamp/integer cursor.
-  Uses shared acknowledged checkpoints and bounded polling. Transient database failures
-  retry locally; permanent downstream rejection pauses the source by default.
+  Requires retained immutable rows and a unique, commit-visible timestamp/integer cursor.
+  Polling binds the discovered Oracle cursor type; use a matching composite index.
+  Transient failures retry locally; permanent downstream rejection pauses by default.

@@ -28,6 +28,8 @@ USING (
 ON (target.EVENT_ID = source.EVENT_ID)
 WHEN NOT MATCHED THEN INSERT (EVENT_TS, EVENT_ID, PAYLOAD)
 VALUES (source.EVENT_TS, source.EVENT_ID, source.PAYLOAD)";
+const CREATE_INDEX: &str =
+    "CREATE INDEX OTAP_ORACLE_EVENTS_CURSOR ON OTAP_ORACLE_EVENTS (EVENT_TS, EVENT_ID)";
 
 struct Options {
     rows: i64,
@@ -68,6 +70,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     }
     match connection.execute(CREATE_TABLE, &[]) {
+        Ok(_) => {}
+        Err(error)
+            if error
+                .db_error()
+                .is_some_and(|db_error| db_error.code() == 955) => {}
+        Err(error) => return Err(OracleAdapterError::Query(error.into()).into()),
+    }
+    match connection.execute(CREATE_INDEX, &[]) {
         Ok(_) => {}
         Err(error)
             if error
@@ -148,6 +158,7 @@ mod tests {
         assert!(MERGE_ROW.contains("CAST(:1 AS NUMBER(18)) AS EVENT_ID"));
         assert!(!CREATE_TABLE.contains("NUMBER(19)"));
         assert!(!MERGE_ROW.contains("NUMBER(19)"));
+        assert!(CREATE_INDEX.contains("(EVENT_TS, EVENT_ID)"));
     }
 
     /// Scenario: An operator accidentally supplies sensitive text as an option or numeric value.

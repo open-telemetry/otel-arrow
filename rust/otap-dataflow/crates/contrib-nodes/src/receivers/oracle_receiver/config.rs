@@ -10,7 +10,7 @@
 //! bind-name prefixes, and orderings nested inside parentheses never satisfy
 //! that requirement.
 
-use super::adapter::{OracleAdapter, OracleAdapterConfig, parse_cursor_timestamp};
+use super::adapter::{OracleAdapter, OracleAdapterConfig, normalize_cursor_timestamp};
 use otel_arrow_dfe_scraper::database::{
     CatchUpConfig, CheckpointConfig, CompiledQuery, OutputConfig, PollingConfig, WatermarkConfig,
 };
@@ -155,13 +155,13 @@ impl TryFrom<RawOracleConfig> for OracleReceiverConfig {
             "watermark.tie_breaker.column",
             &config.watermark.tie_breaker().column,
         )?;
-        let initial = parse_cursor_timestamp(&config.watermark.timestamp().initial).map_err(|_| {
+        let initial = normalize_cursor_timestamp(&config.watermark.timestamp().initial).map_err(|_| {
             OracleConfigError::new(
                 "watermark.timestamp.initial must be a valid Oracle timestamp with at most nine digits per numeric component",
             )
         })?;
         let WatermarkConfig::Composite { timestamp, .. } = &mut config.watermark;
-        timestamp.initial = initial.to_string();
+        timestamp.initial = initial;
         let statement = validate_statement(&config.query.statement, &config.watermark)?;
         let query = CompiledQuery::compile(
             statement,

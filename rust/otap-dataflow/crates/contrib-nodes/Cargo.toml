@@ -139,6 +139,7 @@ oracle-receiver = [
     "dep:otel-arrow-dfe-scraper",
     "dep:oracle",
     "dep:blake3",
+    "dep:chrono",
     "dep:humantime-serde",
     "dep:secrecy",
 ]
