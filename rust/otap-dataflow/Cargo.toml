@@ -185,7 +185,7 @@ prost-types = "0.14"
 quote = "1.0"
 rand = "0.10.1"
 rcgen = "0.14"
-rdkafka = { version = "=0.38.0", features = ["tokio", "tracing"] }
+rdkafka = { version = "=0.39.0", features = ["tokio", "tracing"] }
 regex = "1.12"
 regex-automata = "0.4.14"
 ring = "0.17"
@@ -195,7 +195,7 @@ rustls = { version = "0.23.45", default-features = false, features = ["std", "tl
 rustls-pki-types = { version = "1.11", features = ["std"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["tls12"] }
 rustls-native-certs = "0.8.2"
-rustls-openssl = "0.3"
+rustls-openssl = "0.4"
 rustls-symcrypt = "0.2.2"
 schemars = { version = "1.0.0" }
 secrecy = { version = "0.10.3", features = ["serde"] }
@@ -289,7 +289,7 @@ otel-arrow-dfe-state = { version = "0.57.0", path = 'crates/state' }
 otel-arrow-dfe-telemetry-macros = { version = "0.57.0", path = 'crates/telemetry-macros' }
 prost-build = "0.14"
 ratatui = "0.30"
-testcontainers = "0.27"
+testcontainers = "0.28"
 toml = "1.0.0"
 tonic-prost-build = "0.14"
 tracepoint = { version = "0.5.0", features = ["user_events"] }
@@ -365,6 +365,7 @@ geneva-certificate-auth = ["geneva", "otel-arrow-dfe-contrib-nodes/geneva-certif
 # Contrib extensions.
 contrib-extensions = ["otel-arrow-dfe-contrib-extensions/contrib-extensions"]
 azure-identity-auth = ["otel-arrow-dfe-contrib-extensions/azure-identity-auth"]
+flat-file-user-pass-auth = ["otel-arrow-dfe-contrib-extensions/flat-file-user-pass-auth"]
 k8s-service-account-token-auth = ["otel-arrow-dfe-contrib-extensions/k8s-service-account-token-auth"]
 oauth2-client-auth = ["otel-arrow-dfe-contrib-extensions/oauth2-client-auth"]
 
