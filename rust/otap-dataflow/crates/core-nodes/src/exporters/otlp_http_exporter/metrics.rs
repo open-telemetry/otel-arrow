@@ -9,7 +9,7 @@ use otel_arrow_dfe_engine::context::PipelineContext;
 use otel_arrow_dfe_otap::http_client_auth::HttpClientAuthProvider;
 use otel_arrow_dfe_otap::metrics::ExporterMetrics;
 use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
-use otel_arrow_dfe_telemetry::instrument::Counter;
+use otel_arrow_dfe_telemetry::instrument::{Counter, Gauge};
 use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSet, MetricSetSnapshot};
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use otel_arrow_dfe_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
@@ -107,16 +107,16 @@ struct OtlpHttpAuthSourceAttributes {
     source: Cow<'static, str>,
 }
 
-/// Authentication failures, including failures before data admission.
+/// Current authentication readiness for a bound provider.
 #[metric_set(
     name = "exporter.otlp_http.authentication",
     registration_attributes = OtlpHttpAuthSourceAttributes,
 )]
 #[derive(Debug, Default, Clone)]
 struct OtlpHttpExporterAuthMetrics {
-    /// Number of credential operations that failed to produce a usable auth.
-    #[metric(unit = "{attempt}")]
-    failures: Counter<u64>,
+    /// Whether authenticated progress is currently possible (0=false, 1=true).
+    #[metric(unit = "{1}")]
+    ready: Gauge<u64>,
 }
 
 /// Terminal outcome and failure metrics emitted by an OTLP HTTP exporter.
@@ -137,18 +137,20 @@ impl OtlpHttpExporterMetrics {
             boundary: ExporterMetrics::register(pipeline_ctx),
             failures: OtlpHttpExporterFailureMetrics::register(pipeline_ctx),
             auth: auth.map(|a| {
-                OtlpHttpExporterAuthMetrics::register(
+                let mut metrics = OtlpHttpExporterAuthMetrics::register(
                     pipeline_ctx,
                     &OtlpHttpAuthSourceAttributes { source: a.name() },
-                )
+                );
+                metrics.ready.set(u64::from(a.is_ready()));
+                metrics
             }),
         }
     }
 
-    /// Records one auth poll failure.
-    pub(super) fn record_auth_failure(&mut self) {
+    /// Records whether authenticated progress is currently possible.
+    pub(super) fn record_auth_readiness(&mut self, ready: bool) {
         if let Some(auth) = self.auth.as_mut() {
-            auth.failures.inc();
+            auth.ready.set(u64::from(ready));
         }
     }
 
@@ -203,25 +205,30 @@ mod tests {
         OtlpHttpExporterMetrics::register(&pipeline_ctx, None)
     }
 
-    /// Scenario: an HTTP exporter with a bound auth provider records failed
-    /// credential polls.
-    /// Guarantees: the provider-specific authentication metric is emitted and
-    /// counts each failed poll exactly once.
+    /// Scenario: an HTTP exporter's bound auth provider changes readiness.
+    /// Guarantees: the provider-specific gauge reports whether authenticated
+    /// progress is currently possible as 0 or 1.
     #[test]
-    fn bound_auth_provider_records_authentication_failures() {
+    fn bound_auth_provider_records_authentication_readiness() {
         let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(Interests::NODE_INPUT_METRICS);
         let auth = MockHttpClientAuthProvider::never_publishes();
         let mut metrics = OtlpHttpExporterMetrics::register(&pipeline_ctx, Some(&auth));
-
-        metrics.record_auth_failure();
-        metrics.record_auth_failure();
 
         let snapshots = metrics.terminal_snapshots();
         let auth_snapshot = snapshots
             .iter()
             .find(|snapshot| snapshot.descriptor().name == "exporter.otlp_http.authentication")
             .expect("bound auth must register its authentication metric set");
-        assert_eq!(auth_snapshot.get_metrics()[0].to_u64_lossy(), 2);
+        assert_eq!(auth_snapshot.get_metrics()[0].to_u64_lossy(), 0);
+
+        metrics.record_auth_readiness(true);
+
+        let snapshots = metrics.terminal_snapshots();
+        let auth_snapshot = snapshots
+            .iter()
+            .find(|snapshot| snapshot.descriptor().name == "exporter.otlp_http.authentication")
+            .expect("bound auth must register its authentication metric set");
+        assert_eq!(auth_snapshot.get_metrics()[0].to_u64_lossy(), 1);
     }
 
     /// Scenario: Representative HTTP error statuses are classified by operator action.

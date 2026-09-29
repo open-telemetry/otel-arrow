@@ -317,6 +317,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
             // first publish, and its watch stream stays live while we hold the
             // provider handle -- so waiting (not dropping) is always correct here.
             let accepting_pdata = auth.as_ref().is_none_or(|a| a.is_ready());
+            self.metrics.record_auth_readiness(accepting_pdata);
 
             // Instant at which a currently-usable auth crosses the usability
             // margin. Used to wake the loop so `accepting_pdata` re-evaluates
@@ -362,13 +363,10 @@ impl Exporter<OtapPdata> for OTLPExporter {
 
                     // Pick up auth refreshes (initial + subsequent) even while pdata
                     // intake is gated, so a pending auth can arrive and unblock us.
-                    refreshed = poll_fn(|cx| match auth.as_mut() {
+                    _ = poll_fn(|cx| match auth.as_mut() {
                         Some(auth) => auth.poll_refresh(cx, &GRPC_AUTH_EVENTS),
                         None => Poll::Pending,
                     }), if auth.as_ref().is_some_and(|auth| auth.is_active()) => {
-                        if !refreshed {
-                            self.metrics.record_auth_failure();
-                        }
                         // A refresh was drained (the adapter caches it and logs any
                         // anomaly); loop to re-evaluate intake readiness.
                         continue;
