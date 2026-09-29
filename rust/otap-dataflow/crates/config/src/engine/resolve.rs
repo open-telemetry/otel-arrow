@@ -3,6 +3,7 @@
 
 //! Resolution phase for [`OtelDataflowSpec`].
 
+use crate::context_policy::ContextEntryDeclaration;
 use crate::engine::{EngineConfig, OtelDataflowSpec};
 use crate::pipeline::PipelineConfig;
 use crate::policy::{
@@ -174,6 +175,23 @@ impl OtelDataflowSpec {
                 .flatten()
                 .collect();
                 let mut policies = Policies::resolve(scopes);
+                policies.context = self
+                    .context_policy_layers(&pipeline_group_id, Some(&pipeline_id))
+                    .into_iter()
+                    .flat_map(|layer| {
+                        let scope = layer.scope;
+                        layer.context.into_iter().flat_map(move |context| {
+                            let scope = scope.clone();
+                            context.entries.iter().map(move |(name, definition)| {
+                                ContextEntryDeclaration {
+                                    scope: scope.clone(),
+                                    name: name.clone(),
+                                    definition: definition.clone(),
+                                }
+                            })
+                        })
+                    })
+                    .collect();
                 policies.rate_limiter_scope = if pipeline
                     .policies()
                     .and_then(Policies::resources)
@@ -226,6 +244,7 @@ impl OtelDataflowSpec {
         policies.resources = ResolvedResourcesPolicy::default();
         policies.transport_headers = None;
         policies.authorized_identity = None;
+        policies.context.clear();
         policies.rate_limiters.clear();
         policies.rate_limiter_scope = None;
         pipelines.push(ResolvedPipelineConfig {

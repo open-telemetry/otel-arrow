@@ -28,6 +28,9 @@ pub mod partition_processor;
 #[cfg(feature = "transform")]
 pub mod transform_processor;
 
+/// Declarative framed log parser processor.
+pub mod log_parser_processor;
+
 /// Fan-out processor.
 pub mod fanout_processor;
 

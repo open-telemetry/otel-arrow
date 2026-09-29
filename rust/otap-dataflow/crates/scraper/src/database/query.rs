@@ -3,7 +3,10 @@
 
 //! Validated, database-neutral query plans.
 
-use super::config::{CheckpointConfig, ConfigError, OutputConfig, PollingConfig, WatermarkConfig};
+use super::config::{
+    CatchUpConfig, CheckpointConfig, ConfigError, OnPermanentNack, OutputConfig, PollingConfig,
+    WatermarkConfig,
+};
 use super::page::CompositeCursor;
 use std::fmt;
 use std::time::Duration;
@@ -31,15 +34,22 @@ pub struct CompiledQuery {
     sql: String,
     interval: Duration,
     timeout: Duration,
-    fetch_size: usize,
+    fetch_size_rows: usize,
     max_rows: usize,
     max_batch_bytes: u64,
+    catch_up: CatchUpConfig,
+    on_permanent_nack: OnPermanentNack,
     watermark: CompositeWatermark,
     output: OutputConfig,
 }
 
 impl CompiledQuery {
     /// Validates and compiles one operator-authored composite watermark query.
+    ///
+    /// SQL checks here cover length and a leading SELECT keyword only.
+    /// Before execution, [`super::DriverAdapter::validate_query`] must validate
+    /// the complete vendor statement, its read-only behavior, and cursor
+    /// semantics. A compiled plan is not proof that SQL is safe to execute.
     pub fn compile(
         sql: String,
         config: PollingConfig,
@@ -65,9 +75,11 @@ impl CompiledQuery {
             sql,
             interval: config.interval,
             timeout: config.timeout,
-            fetch_size: config.fetch_size,
+            fetch_size_rows: config.fetch_size_rows,
             max_rows: config.max_rows_per_poll,
             max_batch_bytes: config.max_batch_bytes,
+            catch_up: config.catch_up,
+            on_permanent_nack: checkpoint.on_permanent_nack,
             watermark: CompositeWatermark {
                 timestamp_column: timestamp.column.clone(),
                 timestamp_bind: timestamp.bind.clone(),
@@ -85,7 +97,7 @@ impl CompiledQuery {
         &self.sql
     }
 
-    /// Returns the delay applied after a completed poll.
+    /// Returns the delay applied after a poll cycle ends.
     #[must_use]
     pub const fn interval(&self) -> Duration {
         self.interval
@@ -97,22 +109,34 @@ impl CompiledQuery {
         self.timeout
     }
 
-    /// Returns the hard row ceiling for one poll.
+    /// Returns the hard row ceiling for one fetched page.
     #[must_use]
     pub const fn max_rows(&self) -> usize {
         self.max_rows
     }
 
-    /// Returns the target native driver fetch size.
+    /// Returns the target number of rows per native driver fetch, not bytes.
     #[must_use]
-    pub const fn fetch_size(&self) -> usize {
-        self.fetch_size
+    pub const fn fetch_size_rows(&self) -> usize {
+        self.fetch_size_rows
     }
 
     /// Returns the exact serialized OTLP ceiling for one emitted page.
     #[must_use]
     pub const fn max_batch_bytes(&self) -> u64 {
         self.max_batch_bytes
+    }
+
+    /// Returns the cycle budgets without allocating or cloning the plan.
+    #[must_use]
+    pub const fn catch_up(&self) -> CatchUpConfig {
+        self.catch_up
+    }
+
+    /// Returns the source-local policy for permanent downstream rejection.
+    #[must_use]
+    pub const fn on_permanent_nack(&self) -> OnPermanentNack {
+        self.on_permanent_nack
     }
 
     /// Returns the normalized-row ceiling using the existing batch byte setting.
@@ -144,9 +168,11 @@ impl fmt::Debug for CompiledQuery {
             .field("sql", &"<redacted>")
             .field("interval", &self.interval)
             .field("timeout", &self.timeout)
-            .field("fetch_size", &self.fetch_size)
+            .field("fetch_size_rows", &self.fetch_size_rows)
             .field("max_rows", &self.max_rows)
             .field("max_batch_bytes", &self.max_batch_bytes)
+            .field("catch_up", &self.catch_up)
+            .field("on_permanent_nack", &self.on_permanent_nack)
             .field("watermark", &self.watermark)
             .field("output", &self.output)
             .finish()
@@ -154,9 +180,8 @@ impl fmt::Debug for CompiledQuery {
 }
 
 fn is_read_only(sql: &str) -> bool {
-    // Shared compile only requires a leading SELECT keyword. The RFC and
-    // design leave SQL operator-authored; a least-privileged read-only
-    // account and vendor validation own DML/locking, not a SQL parser.
+    // This is only a prefix check. DriverAdapter::validate_query must enforce
+    // single-statement, read-only SQL and cursor semantics before execution.
     sql.split_whitespace()
         .next()
         .is_some_and(|keyword| keyword.eq_ignore_ascii_case("select"))
@@ -168,7 +193,7 @@ pub enum QueryError {
     /// Shared receiver configuration is invalid.
     #[error(transparent)]
     Config(#[from] ConfigError),
-    /// Only read-only SQL is accepted.
+    /// The statement does not start with the required SELECT keyword.
     #[error("query.statement must start with SELECT")]
     NotReadOnly,
     /// The statement exceeds the supported length.

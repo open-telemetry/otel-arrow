@@ -665,7 +665,7 @@ impl<'a> OtapSpanView<'a> {
     /// Get the span's row ID from the "id" column (used for attribute/event/link matching)
     #[inline]
     fn get_span_row_id(&self) -> Option<u16> {
-        let array = &self.columns()?.id;
+        let array = self.columns()?.id?;
         if array.is_valid(self.row_idx) {
             Some(array.value(self.row_idx))
         } else {
@@ -1106,6 +1106,7 @@ impl<'a> InstrumentationScopeView for OtapTraceInstrumentationScopeView<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::schema::UTC_TIME_ZONE;
     use arrow::array::{
         ArrayRef, DurationNanosecondArray, FixedSizeBinaryArray, Int32Array, StringArray,
         StructArray, TimestampNanosecondArray, UInt16Array, UInt32Array,
@@ -1129,7 +1130,7 @@ mod tests {
             ),
             Field::new(
                 "start_time_unix_nano",
-                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                 false,
             ),
             Field::new(
@@ -1161,7 +1162,8 @@ mod tests {
         )]);
 
         let start_time =
-            TimestampNanosecondArray::from(vec![1_000_000_000, 2_000_000_000, 3_000_000_000]);
+            TimestampNanosecondArray::from(vec![1_000_000_000, 2_000_000_000, 3_000_000_000])
+                .with_timezone(UTC_TIME_ZONE);
         let duration = DurationNanosecondArray::from(vec![100_000, 200_000, 300_000]);
 
         // Create valid trace IDs (16 bytes each)
@@ -1208,6 +1210,34 @@ mod tests {
             ],
         )
         .unwrap()
+    }
+
+    /// Rebuilds a record batch without the named column, as a producer that omits it sends.
+    fn drop_column(rb: &RecordBatch, name: &str) -> RecordBatch {
+        let idx = rb.schema().index_of(name).expect("column present");
+        let mut fields = rb.schema().fields().to_vec();
+        let _ = fields.remove(idx);
+        let mut columns = rb.columns().to_vec();
+        let _ = columns.remove(idx);
+        RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).expect("rebuild batch")
+    }
+
+    /// Scenario: a spans-only batch omits the id column that nothing references.
+    /// Guarantees: the traces view still builds and exposes every span.
+    #[test]
+    fn test_spans_batch_without_id_column_builds() {
+        let spans_batch = drop_column(&create_test_spans_batch(), "id");
+        let view =
+            OtapTracesView::new(Some(&spans_batch), None, None, None, None, None, None, None)
+                .expect("view builds without an id column");
+
+        let mut span_count = 0;
+        for resource in view.resources() {
+            for scope in resource.scopes() {
+                span_count += scope.spans().count();
+            }
+        }
+        assert_eq!(span_count, 3, "all spans ingest without an id column");
     }
 
     #[test]
@@ -1293,7 +1323,7 @@ mod tests {
             ),
             Field::new(
                 "start_time_unix_nano",
-                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                 false,
             ),
             Field::new(
@@ -1318,7 +1348,8 @@ mod tests {
             Arc::new(Field::new("id", DataType::UInt16, false)),
             Arc::new(UInt16Array::from(vec![1])) as ArrayRef,
         )]);
-        let start_time = TimestampNanosecondArray::from(vec![1_000_000_000]);
+        let start_time =
+            TimestampNanosecondArray::from(vec![1_000_000_000]).with_timezone(UTC_TIME_ZONE);
 
         let status_code = Int32Array::from(vec![2]); // ERROR
         let status_message = StringArray::from(vec!["something went wrong"]);
@@ -1377,7 +1408,7 @@ mod tests {
             ),
             Field::new(
                 "start_time_unix_nano",
-                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                 false,
             ),
         ]));
@@ -1391,7 +1422,8 @@ mod tests {
             Arc::new(Field::new("id", DataType::UInt16, false)),
             Arc::new(UInt16Array::from(vec![1])) as ArrayRef,
         )]);
-        let start_time = TimestampNanosecondArray::from(vec![1_000_000_000]);
+        let start_time =
+            TimestampNanosecondArray::from(vec![1_000_000_000]).with_timezone(UTC_TIME_ZONE);
 
         let batch = RecordBatch::try_new(
             schema,
@@ -1440,7 +1472,7 @@ mod tests {
             Field::new("parent_id", DataType::UInt16, false),
             Field::new(
                 "time_unix_nano",
-                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                 true,
             ),
             Field::new("name", DataType::Utf8, true),
@@ -1450,9 +1482,10 @@ mod tests {
             events_schema,
             vec![
                 Arc::new(UInt16Array::from(vec![0, 0, 1])) as ArrayRef, // 2 events for span 0, 1 for span 1
-                Arc::new(TimestampNanosecondArray::from(vec![
-                    1_100_000, 1_200_000, 2_100_000,
-                ])) as ArrayRef,
+                Arc::new(
+                    TimestampNanosecondArray::from(vec![1_100_000, 1_200_000, 2_100_000])
+                        .with_timezone(UTC_TIME_ZONE),
+                ) as ArrayRef,
                 Arc::new(StringArray::from(vec!["event-a", "event-b", "event-c"])) as ArrayRef,
             ],
         )
@@ -1496,7 +1529,7 @@ mod tests {
             Field::new("parent_id", DataType::UInt16, false),
             Field::new(
                 "time_unix_nano",
-                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                 true,
             ),
             Field::new("name", DataType::Utf8, true),
@@ -1506,7 +1539,9 @@ mod tests {
             events_schema.clone(),
             vec![
                 Arc::new(UInt16Array::from(vec![0])) as ArrayRef,
-                Arc::new(TimestampNanosecondArray::from(vec![1_100_000])) as ArrayRef,
+                Arc::new(
+                    TimestampNanosecondArray::from(vec![1_100_000]).with_timezone(UTC_TIME_ZONE),
+                ) as ArrayRef,
                 Arc::new(StringArray::from(vec!["integration-event"])) as ArrayRef,
             ],
         )

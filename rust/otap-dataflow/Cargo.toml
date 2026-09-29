@@ -94,7 +94,7 @@ arrow-schema = { version = "58.3" }
 arrow-array = { version = "58.3" }
 arrow-cast = { version = "58.3" }
 arrow-select = { version = "58.3" }
-wasmtime = { version = "47.0", default-features = false, features = ["runtime", "component-model", "cranelift", "std"] }
+wasmtime = { version = "48.0", default-features = false, features = ["runtime", "component-model", "cranelift", "std"] }
 async-stream = "0.3.6"
 async-trait = "0.1.88"
 async-unsync = "0.3.0"
@@ -112,11 +112,13 @@ clap = { version = "4.5.42", features = ["derive"] }
 clap_complete = "4.5.55"
 core_affinity = "0.8.3"
 criterion = "0.8.0"
+csv-core = "0.1.13"
 data-encoding = "2.9.0"
 datafusion = { version = "53.0.0", default-features = false }
 dhat = "0.3.3"
 fluke-hpack = "0.3.1"
 flume = { version = "0.12.0", default-features = false, features = ["async"] }
+fs2 = "0.4.3"
 futures = "0.3.32"
 futures-core = "0.3.32"
 futures-channel = "0.3.32"
@@ -159,14 +161,14 @@ openssl = "0.10"
 # this dependency, as it means moving the derive macros used in our
 # tests upstream. This is currently used by experimental logs
 # exporters, hence the "logs" feature.
-opentelemetry-proto = { version = "0.32", default-features = false, features = ["gen-tonic-messages", "logs", "trace"]}
+opentelemetry-proto = { version = "0.33", default-features = false, features = ["gen-tonic-messages", "logs", "trace"]}
 
 # Detector-only use: opentelemetry_sdk provides the `Resource` type and `ResourceDetector` trait;
 # opentelemetry provides the `Key`/`Value` types those resources hold. These dependencies use
 # `default-features = false` to drop trace/metrics/logs. opentelemetry_sdk 0.32.1 predates the
 # slimming in opentelemetry-rust #3593 (unreleased).
-opentelemetry = { version = "0.32.0", default-features = false }
-opentelemetry_sdk = { version = "0.32.1", default-features = false }
+opentelemetry = { version = "0.33.0", default-features = false }
+opentelemetry_sdk = { version = "0.33.0", default-features = false }
 
 parking_lot = "0.12.5"
 paste = "1"
@@ -182,8 +184,9 @@ prost-types = "0.14"
 quote = "1.0"
 rand = "0.10.1"
 rcgen = "0.14"
-rdkafka = { version = "=0.38.0", features = ["tokio", "tracing"] }
+rdkafka = { version = "=0.39.0", features = ["tokio", "tracing"] }
 regex = "1.12"
+regex-automata = "0.4.14"
 ring = "0.17"
 roaring = "0.11.2"
 ryu = "1"
@@ -191,7 +194,7 @@ rustls = { version = "0.23.45", default-features = false, features = ["std", "tl
 rustls-pki-types = { version = "1.11", features = ["std"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["tls12"] }
 rustls-native-certs = "0.8.2"
-rustls-openssl = "0.3"
+rustls-openssl = "0.4"
 rustls-symcrypt = "0.2.2"
 schemars = { version = "1.0.0" }
 secrecy = { version = "0.10.3", features = ["serde"] }
@@ -285,7 +288,7 @@ otel-arrow-dfe-state = { version = "0.57.0", path = 'crates/state' }
 otel-arrow-dfe-telemetry-macros = { version = "0.57.0", path = 'crates/telemetry-macros' }
 prost-build = "0.14"
 ratatui = "0.30"
-testcontainers = "0.27"
+testcontainers = "0.28"
 toml = "1.0.0"
 tonic-prost-build = "0.14"
 tracepoint = { version = "0.5.0", features = ["user_events"] }
@@ -293,8 +296,8 @@ tracepoint_decode = "0.5.0"
 tracelogging = "1.2.4"
 tracelogging_dynamic = "1.2.4"
 urlencoding = "2"
-geneva-uploader = { version = "0.7.1", default-features = false, features = ["tls-rustls"] }
-opentelemetry-resource-detectors = "0.12.0"
+geneva-uploader = { version = "0.8.0", default-features = false, features = ["tls-rustls"] }
+opentelemetry-resource-detectors = "0.13.0"
 
 [patch.crates-io]
 otel-arrow-dfe-pdata-views = { path = "crates/pdata-views" }
@@ -361,6 +364,7 @@ geneva-certificate-auth = ["geneva", "otel-arrow-dfe-contrib-nodes/geneva-certif
 # Contrib extensions.
 contrib-extensions = ["otel-arrow-dfe-contrib-extensions/contrib-extensions"]
 azure-identity-auth = ["otel-arrow-dfe-contrib-extensions/azure-identity-auth"]
+flat-file-user-pass-auth = ["otel-arrow-dfe-contrib-extensions/flat-file-user-pass-auth"]
 k8s-service-account-token-auth = ["otel-arrow-dfe-contrib-extensions/k8s-service-account-token-auth"]
 oauth2-client-auth = ["otel-arrow-dfe-contrib-extensions/oauth2-client-auth"]
 

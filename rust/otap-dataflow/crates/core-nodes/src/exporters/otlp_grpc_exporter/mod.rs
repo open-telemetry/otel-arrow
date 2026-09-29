@@ -1398,6 +1398,9 @@ mod tests {
     use super::*;
 
     use otel_arrow_dfe_config::ContextEntryName;
+    use otel_arrow_dfe_config::context_policy::{
+        ContextEntryDeclaration, ContextPolicy, ContextScope,
+    };
     use otel_arrow_dfe_config::node::NodeUserConfig;
     use otel_arrow_dfe_otap::bearer_auth::test_support::MockTokenProvider;
     use std::collections::HashMap;
@@ -3077,6 +3080,44 @@ mod tests {
         )
     }
 
+    fn conditional_workspace_policy() -> HeaderPropagationPolicy {
+        let context: ContextPolicy = serde_json::from_value(serde_json::json!({
+            "entries": {
+                "tenant": [
+                    {
+                        "type": "transport_header",
+                        "name": "workspace",
+                        "store_as": "workspace_id"
+                    },
+                    {
+                        "type": "transport_header_match",
+                        "name": "environment",
+                        "value": "production"
+                    }
+                ]
+            }
+        }))
+        .expect("valid conditional context policy");
+        let (name, definition) = context.entries.into_iter().next().expect("declaration");
+        let policy: HeaderPropagationPolicy = serde_json::from_value(serde_json::json!({
+            "default": {
+                "selector": {
+                    "type": "named",
+                    "named": ["tenant:workspace_id"]
+                },
+                "name": "preserve"
+            }
+        }))
+        .expect("valid conditional propagation policy");
+        policy
+            .compile_context(&[ContextEntryDeclaration {
+                scope: ContextScope::Engine,
+                name,
+                definition,
+            }])
+            .expect("conditional propagation policy compiles")
+    }
+
     #[test]
     fn test_build_grpc_metadata_returns_none_without_policy() {
         let handler = make_effect_handler_with_policy(None);
@@ -3121,6 +3162,37 @@ mod tests {
             .get("x-request-id")
             .expect("x-request-id should be present");
         assert_eq!(request_id.to_str().unwrap(), "req-xyz-789");
+    }
+
+    /// Scenario: OTLP metadata is built for a conditional composite header with a retained wire name.
+    /// Guarantees: failed conditions omit the header, while a match emits the original name and value.
+    #[test]
+    fn build_grpc_metadata_applies_conditional_composite_propagation() {
+        let handler = make_effect_handler_with_policy(Some(conditional_workspace_policy()));
+        let mut failing_headers = TransportHeaders::new();
+        failing_headers.push(text_header("workspace", "x-workspace-original", b"acme"));
+        failing_headers.push(text_header("environment", "environment", b"staging"));
+        let failing_context = context_with_headers(failing_headers);
+
+        assert!(build_grpc_metadata(&handler, &failing_context, None, None).is_none());
+
+        let mut matching_headers = TransportHeaders::new();
+        matching_headers.push(text_header("workspace", "x-workspace-original", b"acme"));
+        matching_headers.push(text_header("environment", "environment", b"production"));
+        let matching_context = context_with_headers(matching_headers);
+
+        let matching = build_grpc_metadata(&handler, &matching_context, None, None)
+            .expect("matching composite produces metadata");
+        assert_eq!(
+            matching
+                .get("x-workspace-original")
+                .expect("original wire name is retained")
+                .to_str()
+                .expect("text metadata"),
+            "acme"
+        );
+        assert!(matching.get("workspace").is_none());
+        assert!(matching.get("workspace_id").is_none());
     }
 
     #[test]

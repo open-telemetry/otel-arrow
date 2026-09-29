@@ -159,6 +159,8 @@ pub struct SubscriberRegistry<P: SegmentProvider> {
     segment_provider: Arc<P>,
     /// Async notification for waking waiting subscribers when new segments arrive.
     bundle_available: Arc<Notify>,
+    /// Highest segment sequence referenced by progress files loaded at open.
+    highest_progress_segment: Option<SegmentSeq>,
 }
 
 impl<P: SegmentProvider> SubscriberRegistry<P> {
@@ -173,6 +175,7 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
     pub fn open(config: RegistryConfig, segment_provider: Arc<P>) -> Result<Arc<Self>> {
         // Load existing state from progress files
         let mut subscribers = HashMap::new();
+        let mut highest_progress_segment: Option<SegmentSeq> = None;
 
         // Scan for existing progress files
         if config.data_dir.exists() {
@@ -197,6 +200,11 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
                     Ok((oldest_incomplete, entries)) => {
                         let mut state = SubscriberState::new(sub_id.clone());
                         let highest_persisted = entries.iter().map(|entry| entry.seg_seq).max();
+                        let header_floor =
+                            (oldest_incomplete.raw() != 0).then_some(oldest_incomplete);
+                        highest_progress_segment = highest_progress_segment
+                            .max(highest_persisted)
+                            .max(header_floor);
 
                         // Restore segment progress from entries
                         for entry in entries {
@@ -253,9 +261,20 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
             dirty_subscribers: Mutex::new(HashSet::new()),
             segment_provider,
             bundle_available: Arc::new(Notify::new()),
+            highest_progress_segment,
         });
 
         Ok(registry)
+    }
+
+    /// Returns the highest segment sequence referenced by any progress file
+    /// loaded when the registry was opened, including inactive subscribers.
+    ///
+    /// New segments must be numbered above this value so that restored
+    /// acknowledgements cannot apply to them.
+    #[must_use]
+    pub(crate) const fn highest_progress_segment(&self) -> Option<SegmentSeq> {
+        self.highest_progress_segment
     }
 
     /// Returns the registry configuration.

@@ -653,203 +653,198 @@ impl<PData> ProcessorWrapper<PData> {
             .prepare_runtime(metrics_reporter.clone(), node_interests, runtime_services)
             .await?;
 
-        match runtime {
-            ProcessorWrapperRuntime::Local {
-                mut processor,
-                mut inbox,
-                mut effect_handler,
-            } => {
-                effect_handler
-                    .core
-                    .set_runtime_ctrl_msg_sender(runtime_ctrl_msg_tx);
-                effect_handler
-                    .core
-                    .set_pipeline_completion_msg_sender(pipeline_completion_msg_tx);
-                effect_handler.core.set_node_interests(node_interests);
-                effect_handler
-                    .core
-                    .set_completion_emission_metrics(completion_emission_metrics.clone());
-                effect_handler.set_flow_roles(
-                    flow_is_start,
-                    flow_is_end,
-                    flow_input_message_metric,
-                    flow_input_items_metric,
-                    flow_input_size_metric,
-                    flow_duration_metric,
-                    flow_output_items_metric,
-                    flow_output_message_metric,
-                    flow_output_size_metric,
-                    flow_dropped_items_metric,
-                    flow_metrics_active,
-                    flow_needs_timing,
-                );
+        let mut processing_error: Option<Error> = None;
+        let run = async {
+            match runtime {
+                ProcessorWrapperRuntime::Local {
+                    mut processor,
+                    mut inbox,
+                    mut effect_handler,
+                } => {
+                    effect_handler
+                        .core
+                        .set_runtime_ctrl_msg_sender(runtime_ctrl_msg_tx);
+                    effect_handler
+                        .core
+                        .set_pipeline_completion_msg_sender(pipeline_completion_msg_tx);
+                    effect_handler.core.set_node_interests(node_interests);
+                    effect_handler
+                        .core
+                        .set_completion_emission_metrics(completion_emission_metrics.clone());
+                    effect_handler.set_flow_roles(
+                        flow_is_start,
+                        flow_is_end,
+                        flow_input_message_metric,
+                        flow_input_items_metric,
+                        flow_input_size_metric,
+                        flow_duration_metric,
+                        flow_output_items_metric,
+                        flow_output_message_metric,
+                        flow_output_size_metric,
+                        flow_dropped_items_metric,
+                        flow_metrics_active,
+                        flow_needs_timing,
+                    );
 
-                // Preserve the first processing error so final metric
-                // collection can run before the error is returned.
-                let mut processing_error: Option<Error> = None;
-                while let Ok(mut msg) = inbox.recv_when(processor.accept_pdata()).await {
-                    if effect_handler.flow_metrics_active() {
-                        match &mut msg {
-                            Message::Control(NodeControlMsg::CollectTelemetry { .. })
-                                if effect_handler.is_flow_start()
-                                    || effect_handler.is_flow_end()
-                                    || effect_handler.is_flow_decision() =>
-                            {
-                                effect_handler.report_flow_metrics();
+                    // Preserve the first processing error so final metric
+                    // collection can run before the error is returned.
+                    while let Ok(mut msg) = inbox.recv_when(processor.accept_pdata()).await {
+                        if effect_handler.flow_metrics_active() {
+                            match &mut msg {
+                                Message::Control(NodeControlMsg::CollectTelemetry { .. })
+                                    if effect_handler.is_flow_start()
+                                        || effect_handler.is_flow_end()
+                                        || effect_handler.is_flow_decision() =>
+                                {
+                                    effect_handler.report_flow_metrics();
+                                }
+                                Message::PData(data) => {
+                                    data.after_processor_receive(&effect_handler);
+                                    effect_handler.begin_process_timing();
+                                }
+                                _ => {}
                             }
-                            Message::PData(data) => {
-                                data.after_processor_receive(&effect_handler);
-                                effect_handler.begin_process_timing();
-                            }
-                            _ => {}
+                        }
+                        if let Err(err) = processor.process(msg, &mut effect_handler).await {
+                            processing_error = Some(err);
+                            break;
                         }
                     }
-                    if let Err(err) = processor.process(msg, &mut effect_handler).await {
-                        processing_error = Some(err);
-                        break;
-                    }
-                }
-                // Collect final metrics before exiting
-                let terminal_metrics_deadline = terminal_metrics_deadline.get();
-                if (effect_handler.is_flow_start()
-                    || effect_handler.is_flow_end()
-                    || effect_handler.is_flow_decision())
-                    && let Err(error) = effect_handler
-                        .report_flow_metrics_reliably(terminal_metrics_deadline)
-                        .await
-                {
-                    otel_arrow_dfe_telemetry::otel_warn!(
-                        "processor.flow_metrics.final_reporting.fail",
-                        error = error.to_string()
-                    );
-                }
-                let (terminal_metrics_tx, terminal_metrics_rx) = flume::unbounded();
-                let terminal_metrics_reporter = MetricsReporter::new(terminal_metrics_tx);
-                let collect_result = processor
-                    .process(
-                        Message::Control(NodeControlMsg::CollectTelemetry {
-                            metrics_reporter: terminal_metrics_reporter,
-                        }),
-                        &mut effect_handler,
-                    )
-                    .await;
-                while let Ok(snapshot) = terminal_metrics_rx.try_recv() {
-                    if let Err(error) = metrics_reporter
-                        .report_snapshot_reliably_until(snapshot, terminal_metrics_deadline)
-                        .await
+                    // Collect final metrics before exiting
+                    let terminal_metrics_deadline = terminal_metrics_deadline.get();
+                    if (effect_handler.is_flow_start()
+                        || effect_handler.is_flow_end()
+                        || effect_handler.is_flow_decision())
+                        && let Err(error) = effect_handler
+                            .report_flow_metrics_reliably(terminal_metrics_deadline)
+                            .await
                     {
                         otel_arrow_dfe_telemetry::otel_warn!(
-                            "processor.metrics.final_reporting.fail",
+                            "processor.flow_metrics.final_reporting.fail",
                             error = error.to_string()
                         );
                     }
-                }
-                // Return the original processing error if present; otherwise
-                // surface any error from the final CollectTelemetry call.
-                if let Some(err) = processing_error {
-                    return Err(err);
-                }
-                collect_result?
-            }
-            ProcessorWrapperRuntime::Shared {
-                mut processor,
-                mut inbox,
-                mut effect_handler,
-            } => {
-                effect_handler
-                    .core
-                    .set_runtime_ctrl_msg_sender(runtime_ctrl_msg_tx);
-                effect_handler
-                    .core
-                    .set_pipeline_completion_msg_sender(pipeline_completion_msg_tx);
-                effect_handler.core.set_node_interests(node_interests);
-                effect_handler
-                    .core
-                    .set_completion_emission_metrics(completion_emission_metrics);
-                effect_handler.set_flow_roles(
-                    flow_is_start,
-                    flow_is_end,
-                    flow_input_message_metric,
-                    flow_input_items_metric,
-                    flow_input_size_metric,
-                    flow_duration_metric,
-                    flow_output_items_metric,
-                    flow_output_message_metric,
-                    flow_output_size_metric,
-                    flow_dropped_items_metric,
-                    flow_metrics_active,
-                    flow_needs_timing,
-                );
-
-                // Preserve the first processing error so final metric
-                // collection can run before the error is returned.
-                let mut processing_error: Option<Error> = None;
-                while let Ok(mut msg) = inbox.recv_when(processor.accept_pdata()).await {
-                    if effect_handler.flow_metrics_active() {
-                        match &mut msg {
-                            Message::Control(NodeControlMsg::CollectTelemetry { .. })
-                                if effect_handler.is_flow_start()
-                                    || effect_handler.is_flow_end()
-                                    || effect_handler.is_flow_decision() =>
-                            {
-                                effect_handler.report_flow_metrics();
-                            }
-                            Message::PData(data) => {
-                                data.after_processor_receive(&effect_handler);
-                                effect_handler.begin_process_timing();
-                            }
-                            _ => {}
+                    let (terminal_metrics_tx, terminal_metrics_rx) = flume::unbounded();
+                    let terminal_metrics_reporter = MetricsReporter::new(terminal_metrics_tx);
+                    let collect_result = processor
+                        .process(
+                            Message::Control(NodeControlMsg::CollectTelemetry {
+                                metrics_reporter: terminal_metrics_reporter,
+                            }),
+                            &mut effect_handler,
+                        )
+                        .await;
+                    while let Ok(snapshot) = terminal_metrics_rx.try_recv() {
+                        if let Err(error) = metrics_reporter
+                            .report_snapshot_reliably_until(snapshot, terminal_metrics_deadline)
+                            .await
+                        {
+                            otel_arrow_dfe_telemetry::otel_warn!(
+                                "processor.metrics.final_reporting.fail",
+                                error = error.to_string()
+                            );
                         }
                     }
-                    if let Err(err) = processor.process(msg, &mut effect_handler).await {
-                        processing_error = Some(err);
-                        break;
-                    }
+                    collect_result?
                 }
-                // Collect final metrics before exiting
-                let terminal_metrics_deadline = terminal_metrics_deadline.get();
-                if (effect_handler.is_flow_start()
-                    || effect_handler.is_flow_end()
-                    || effect_handler.is_flow_decision())
-                    && let Err(error) = effect_handler
-                        .report_flow_metrics_reliably(terminal_metrics_deadline)
-                        .await
-                {
-                    otel_arrow_dfe_telemetry::otel_warn!(
-                        "processor.flow_metrics.final_reporting.fail",
-                        error = error.to_string()
+                ProcessorWrapperRuntime::Shared {
+                    mut processor,
+                    mut inbox,
+                    mut effect_handler,
+                } => {
+                    effect_handler
+                        .core
+                        .set_runtime_ctrl_msg_sender(runtime_ctrl_msg_tx);
+                    effect_handler
+                        .core
+                        .set_pipeline_completion_msg_sender(pipeline_completion_msg_tx);
+                    effect_handler.core.set_node_interests(node_interests);
+                    effect_handler
+                        .core
+                        .set_completion_emission_metrics(completion_emission_metrics);
+                    effect_handler.set_flow_roles(
+                        flow_is_start,
+                        flow_is_end,
+                        flow_input_message_metric,
+                        flow_input_items_metric,
+                        flow_input_size_metric,
+                        flow_duration_metric,
+                        flow_output_items_metric,
+                        flow_output_message_metric,
+                        flow_output_size_metric,
+                        flow_dropped_items_metric,
+                        flow_metrics_active,
+                        flow_needs_timing,
                     );
-                }
-                let (terminal_metrics_tx, terminal_metrics_rx) = flume::unbounded();
-                let terminal_metrics_reporter = MetricsReporter::new(terminal_metrics_tx);
-                let collect_result = processor
-                    .process(
-                        Message::Control(NodeControlMsg::CollectTelemetry {
-                            metrics_reporter: terminal_metrics_reporter,
-                        }),
-                        &mut effect_handler,
-                    )
-                    .await;
-                while let Ok(snapshot) = terminal_metrics_rx.try_recv() {
-                    if let Err(error) = metrics_reporter
-                        .report_snapshot_reliably_until(snapshot, terminal_metrics_deadline)
-                        .await
+
+                    // Preserve the first processing error so final metric
+                    // collection can run before the error is returned.
+                    while let Ok(mut msg) = inbox.recv_when(processor.accept_pdata()).await {
+                        if effect_handler.flow_metrics_active() {
+                            match &mut msg {
+                                Message::Control(NodeControlMsg::CollectTelemetry { .. })
+                                    if effect_handler.is_flow_start()
+                                        || effect_handler.is_flow_end()
+                                        || effect_handler.is_flow_decision() =>
+                                {
+                                    effect_handler.report_flow_metrics();
+                                }
+                                Message::PData(data) => {
+                                    data.after_processor_receive(&effect_handler);
+                                    effect_handler.begin_process_timing();
+                                }
+                                _ => {}
+                            }
+                        }
+                        if let Err(err) = processor.process(msg, &mut effect_handler).await {
+                            processing_error = Some(err);
+                            break;
+                        }
+                    }
+                    // Collect final metrics before exiting
+                    let terminal_metrics_deadline = terminal_metrics_deadline.get();
+                    if (effect_handler.is_flow_start()
+                        || effect_handler.is_flow_end()
+                        || effect_handler.is_flow_decision())
+                        && let Err(error) = effect_handler
+                            .report_flow_metrics_reliably(terminal_metrics_deadline)
+                            .await
                     {
                         otel_arrow_dfe_telemetry::otel_warn!(
-                            "processor.metrics.final_reporting.fail",
+                            "processor.flow_metrics.final_reporting.fail",
                             error = error.to_string()
                         );
                     }
+                    let (terminal_metrics_tx, terminal_metrics_rx) = flume::unbounded();
+                    let terminal_metrics_reporter = MetricsReporter::new(terminal_metrics_tx);
+                    let collect_result = processor
+                        .process(
+                            Message::Control(NodeControlMsg::CollectTelemetry {
+                                metrics_reporter: terminal_metrics_reporter,
+                            }),
+                            &mut effect_handler,
+                        )
+                        .await;
+                    while let Ok(snapshot) = terminal_metrics_rx.try_recv() {
+                        if let Err(error) = metrics_reporter
+                            .report_snapshot_reliably_until(snapshot, terminal_metrics_deadline)
+                            .await
+                        {
+                            otel_arrow_dfe_telemetry::otel_warn!(
+                                "processor.metrics.final_reporting.fail",
+                                error = error.to_string()
+                            );
+                        }
+                    }
+                    collect_result?
                 }
-                // Return the original processing error if present; otherwise
-                // surface any error from the final CollectTelemetry call.
-                if let Some(err) = processing_error {
-                    return Err(err);
-                }
-                collect_result?
             }
-        }
-        Ok(())
+            Ok(())
+        };
+        let result = run.await;
+        // Return the original processing error if present; otherwise surface
+        // any error from final metrics collection.
+        processing_error.map_or(result, Err)
     }
 
     /// Takes the PData receiver from the wrapper and returns it.
