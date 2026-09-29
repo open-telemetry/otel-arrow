@@ -169,6 +169,7 @@ opentelemetry-proto = { version = "0.33", default-features = false, features = [
 # slimming in opentelemetry-rust #3593 (unreleased).
 opentelemetry = { version = "0.33.0", default-features = false }
 opentelemetry_sdk = { version = "0.33.0", default-features = false }
+oracle = "0.6.3"
 
 parking_lot = "0.12.5"
 paste = "1"
@@ -303,6 +304,7 @@ opentelemetry-resource-detectors = "0.13.0"
 otel-arrow-dfe-pdata-views = { path = "crates/pdata-views" }
 
 [features]
+oracle-receiver = ["otel-arrow-dfe-contrib-nodes/oracle-receiver"]
 default = ["core-nodes", "dev-tools", "admin-live-logs-ws", "jemalloc", "crypto-ring"]
 
 # Core-node feature forwarding. Keep these lists aligned with
