@@ -1,4 +1,5 @@
 import pytest
+import pandas as pd
 from pathlib import Path
 from pydantic import ValidationError
 import tempfile
@@ -194,3 +195,79 @@ def test_write_table_config_rejects_invalid_format():
         WriteTableConfig(path="foo.out", format="invalid")
 
     assert "Input should be 'parquet', 'json' or 'csv'" in str(exc_info.value)
+
+
+# Scenario: A required benchmark value is NaN.
+# Guarantees: SQL reporting fails instead of publishing an invalid benchmark.
+def test_result_table_rejects_non_finite_values():
+    table = ResultTable(name="gh_actions_benchmark", finite_columns=["value"])
+
+    with pytest.raises(ValueError, match="contains non-finite values"):
+        SQLReportHook._assert_finite_columns(
+            table, pd.DataFrame({"name": ["loss"], "value": [float("nan")]})
+        )
+
+
+# Scenario: Every required benchmark value is finite.
+# Guarantees: SQL reporting accepts valid benchmark output without value thresholds.
+def test_result_table_accepts_finite_values():
+    table = ResultTable(name="gh_actions_benchmark", finite_columns=["value"])
+
+    SQLReportHook._assert_finite_columns(
+        table, pd.DataFrame({"name": ["loss", "throughput"], "value": [0.0, 1.0]})
+    )
+
+
+# Scenario: A benchmark table omits a configured KPI while all emitted values are finite.
+# Guarantees: SQL reporting fails rather than publishing an incomplete benchmark set.
+def test_result_table_rejects_missing_required_values():
+    table = ResultTable(
+        name="gh_actions_benchmark",
+        required_values={"name": ["loss", "produced_rate"]},
+    )
+
+    with pytest.raises(ValueError, match=r"required values \['produced_rate'\]"):
+        SQLReportHook._assert_required_values(
+            table, pd.DataFrame({"name": ["loss"], "value": [0.0]})
+        )
+
+
+# Scenario: A benchmark table contains every configured KPI.
+# Guarantees: Required-value validation accepts complete benchmark output.
+def test_result_table_accepts_required_values():
+    table = ResultTable(
+        name="gh_actions_benchmark",
+        required_values={"name": ["loss", "produced_rate"]},
+    )
+
+    SQLReportHook._assert_required_values(
+        table,
+        pd.DataFrame({"name": ["loss", "produced_rate"], "value": [0.0, 1.0]}),
+    )
+
+
+# Scenario: A configured SQL result table contains an invalid required KPI
+# value.
+# Guarantees: Building report results invokes configured validity checks.
+def test_build_result_dataframes_validates_configured_table():
+    table = ResultTable(
+        name="gh_actions_benchmark",
+        finite_columns=["value"],
+        required_values={"name": ["loss", "produced_rate"]},
+    )
+    hook = SQLReportHook(
+        SQLReportConfig(
+            name="validated_report",
+            report_config=SQLReportDetails(result_tables=[table]),
+        )
+    )
+    hook.conn = __import__("duckdb").connect()
+    hook.conn.execute(
+        """
+        CREATE TABLE gh_actions_benchmark AS
+        SELECT 'loss' AS name, CAST('NaN' AS DOUBLE) AS value
+        """
+    )
+
+    with pytest.raises(ValueError, match=r"required values \['produced_rate'\]"):
+        hook._build_result_dataframes()

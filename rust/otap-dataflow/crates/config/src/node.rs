@@ -10,6 +10,7 @@
 
 use crate::error::Error;
 use crate::pipeline::telemetry::{AttributeValue, TelemetryAttribute};
+use crate::policy::DistributionTier;
 use crate::transport_headers_policy::{HeaderCapturePolicy, HeaderPropagationPolicy};
 use crate::{CapabilityId, Description, ExtensionId, NodeUrn, PortName};
 use schemars::JsonSchema;
@@ -213,6 +214,13 @@ pub struct NodeTelemetryPolicy {
     #[serde(default)]
     pub duration: bool,
 
+    /// Aggregation fidelity for node-local duration measurements.
+    ///
+    /// Basic preserves count, sum, min, and max without buckets. Normal and
+    /// detailed use exponential histograms with increasing resolution.
+    #[serde(default)]
+    pub duration_distribution: DistributionTier,
+
     /// Opt this node into node-implemented and per-signal input/output item
     /// counts.
     ///
@@ -351,6 +359,17 @@ impl NodeUserConfig {
             .map(|ext| &ext.identity_attributes)
             .cloned()
             .unwrap_or_default()
+    }
+
+    /// Returns the configured node-local duration distribution tier.
+    #[must_use]
+    pub fn duration_distribution(&self) -> DistributionTier {
+        self.policies
+            .as_ref()
+            .and_then(|policies| policies.telemetry.as_ref())
+            .map_or(DistributionTier::Normal, |telemetry| {
+                telemetry.duration_distribution
+            })
     }
 
     /// Validates this node's transport-header policies.
@@ -572,6 +591,7 @@ policies:
     messages: true
     completion_duration: true
     duration: true
+    duration_distribution: detailed
     item_counts: true
     size: true
 "#;
@@ -584,6 +604,8 @@ policies:
         assert!(telemetry.messages);
         assert!(telemetry.completion_duration);
         assert!(telemetry.duration);
+        assert_eq!(telemetry.duration_distribution, DistributionTier::Detailed);
+        assert_eq!(cfg.duration_distribution(), DistributionTier::Detailed);
         assert!(telemetry.item_counts);
         assert!(telemetry.size);
     }
@@ -596,6 +618,7 @@ policies:
         assert!(!telemetry.messages);
         assert!(!telemetry.completion_duration);
         assert!(!telemetry.duration);
+        assert_eq!(telemetry.duration_distribution, DistributionTier::Normal);
         assert!(!telemetry.item_counts);
         assert!(!telemetry.size);
     }

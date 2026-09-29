@@ -1709,7 +1709,9 @@ mod tests {
     use geneva_uploader::client::AgentFedCredentialSource;
     use otel_arrow_dfe_engine::Interests;
     use otel_arrow_dfe_engine::capability::auth::BearerToken;
-    use otel_arrow_dfe_engine::capability::auth::agent_fed_credential_provider::AgentFedCredentialSnapshot;
+    use otel_arrow_dfe_engine::capability::auth::agent_fed_credential_provider::{
+        AgentFedCredentialSnapshot, AgentFedCredentialSnapshotStream,
+    };
     use otel_arrow_dfe_engine::capability::registry::CapabilityRegistry;
     use otel_arrow_dfe_engine::capability::{
         CapabilityError, ExtensionCapability, LocalInstanceFactory, SharedInstanceFactory,
@@ -1931,6 +1933,10 @@ mod tests {
                 Arc::clone(&snapshot.attributes),
             )))
         }
+
+        fn credential_stream(&self) -> AgentFedCredentialSnapshotStream {
+            unreachable!()
+        }
     }
 
     #[derive(Clone)]
@@ -1943,6 +1949,10 @@ mod tests {
                 BearerToken::without_expiry("unused-token".to_owned()),
                 Arc::new(serde_json::Map::new()),
             )))
+        }
+
+        fn credential_stream(&self) -> AgentFedCredentialSnapshotStream {
+            unreachable!()
         }
     }
 
