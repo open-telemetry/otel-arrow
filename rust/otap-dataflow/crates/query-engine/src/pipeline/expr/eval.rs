@@ -872,14 +872,14 @@ fn selection_vec_for_ids(id_col: &ArrayRef, selected_ids: &IdMask) -> Result<Boo
     match id_col.data_type() {
         DataType::UInt16 => {
             let id_col = id_col.as_primitive::<UInt16Type>();
-            Ok(selection_vec_vec_from_id_iter(
+            Ok(selection_vec_from_id_iter(
                 id_col.iter().map(|i| i.map(|i| i as u32)),
                 selected_ids,
             ))
         }
         DataType::UInt32 => {
             let id_col = id_col.as_primitive::<UInt32Type>();
-            Ok(selection_vec_vec_from_id_iter(id_col.iter(), selected_ids))
+            Ok(selection_vec_from_id_iter(id_col.iter(), selected_ids))
         }
         DataType::Dictionary(k, _) => match k.as_ref() {
             DataType::UInt8 => {
@@ -890,7 +890,7 @@ fn selection_vec_for_ids(id_col: &ArrayRef, selected_ids: &IdMask) -> Result<Boo
                     }
                     .into());
                 };
-                Ok(selection_vec_vec_from_id_iter(
+                Ok(selection_vec_from_id_iter(
                     typed_dict.into_iter(),
                     selected_ids,
                 ))
@@ -903,7 +903,7 @@ fn selection_vec_for_ids(id_col: &ArrayRef, selected_ids: &IdMask) -> Result<Boo
                     }
                     .into());
                 };
-                Ok(selection_vec_vec_from_id_iter(
+                Ok(selection_vec_from_id_iter(
                     typed_dict.into_iter(),
                     selected_ids,
                 ))
@@ -922,7 +922,7 @@ fn selection_vec_for_ids(id_col: &ArrayRef, selected_ids: &IdMask) -> Result<Boo
 
 /// Creates a [`BooleanArray`] containing `true` in positions where some element of the ID iterator
 /// is present in the [`IdMask`].
-fn selection_vec_vec_from_id_iter<I: ExactSizeIterator<Item = Option<u32>>>(
+fn selection_vec_from_id_iter<I: ExactSizeIterator<Item = Option<u32>>>(
     id_iter: I,
     selected_ids: &IdMask,
 ) -> BooleanArray {
