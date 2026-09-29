@@ -17,47 +17,136 @@ macro_rules! oracle_module_tests {
             use std::str::FromStr;
             use std::time::Duration;
 
+            fn assert_redacted(error: OracleAdapterError, sentinel: &str) {
+                use otel_arrow_dfe_engine::error::{Error, error_summary_from, format_error_sources};
+                use otel_arrow_dfe_scraper::database::DriverAdapter;
+                let source_detail = format_error_sources(&error);
+                assert!(source_detail.is_empty());
+                for fragment in sentinel.split_whitespace() {
+                    assert!(!format!("{error:?}").contains(fragment));
+                }
+                let engine = Error::ReceiverError {
+                    receiver: otel_arrow_dfe_engine::testing::test_node("oracle-test"),
+                    kind: super::OracleAdapter::classify_error(&error),
+                    error: error.to_string(),
+                    source_detail,
+                };
+                for rendered in [
+                    engine.to_string(),
+                    format!("{engine:?}"),
+                    serde_json::to_string(&error_summary_from(&engine)).expect("diagnostic JSON"),
+                ] {
+                    for fragment in sentinel.split_whitespace() {
+                        assert!(!rendered.contains(fragment), "{rendered}");
+                    }
+                }
+            }
+
             /// Scenario: A native Oracle failure contains sentinel SQL, row, endpoint and nested-source text.
             /// Guarantees: Adapter formatting and the complete engine diagnostic expose no native text.
             #[test]
             fn native_error_text_is_redacted_from_engine_diagnostics() {
-                use otel_arrow_dfe_engine::error::{Error, error_summary_from, format_error_sources};
-                use otel_arrow_dfe_scraper::database::DriverAdapter;
                 const SENTINEL: &str = "secret-row SELECT-private endpoint-private checkpoint-private";
                 let constructors: [fn(oracle::Error) -> OracleAdapterError; 8] = [
-                    OracleAdapterError::Initialize,
-                    OracleAdapterError::Connect,
-                    OracleAdapterError::Configure,
-                    OracleAdapterError::Prepare,
-                    OracleAdapterError::Query,
-                    OracleAdapterError::Fetch,
-                    OracleAdapterError::Convert,
-                    OracleAdapterError::Cancellation,
+                    |error| OracleAdapterError::Initialize(error.into()),
+                    |error| OracleAdapterError::Connect(error.into()),
+                    |error| OracleAdapterError::Configure(error.into()),
+                    |error| OracleAdapterError::Prepare(error.into()),
+                    |error| OracleAdapterError::Query(error.into()),
+                    |error| OracleAdapterError::Fetch(error.into()),
+                    |error| OracleAdapterError::Convert(error.into()),
+                    |error| OracleAdapterError::Cancellation(error.into()),
                 ];
                 for constructor in constructors {
                     let native = oracle::Error::with_source(
                         oracle::ErrorKind::InvalidOperation,
                         std::io::Error::other(SENTINEL),
                     );
-                    let error = constructor(native);
-                    let source_detail = format_error_sources(&error);
-                    assert!(source_detail.is_empty());
-                    assert!(!format!("{error:?}").contains(SENTINEL));
-                    let engine = Error::ReceiverError {
-                        receiver: otel_arrow_dfe_engine::testing::test_node("oracle-test"),
-                        kind: super::OracleAdapter::classify_error(&error),
-                        error: error.to_string(),
-                        source_detail,
-                    };
-                    for rendered in [
-                        engine.to_string(),
-                        format!("{engine:?}"),
-                        serde_json::to_string(&error_summary_from(&engine)).expect("diagnostic JSON"),
-                    ] {
-                        assert!(!rendered.contains(SENTINEL), "{rendered}");
-                        assert!(!rendered.contains("endpoint-private"), "{rendered}");
+                    assert_redacted(constructor(native), SENTINEL);
+                }
+            }
+
+            /// Scenario: Credential or worker I/O errors contain custom sensitive messages.
+            /// Guarantees: Only OS categories/codes survive, with no raw source chain in engine diagnostics.
+            #[test]
+            fn io_errors_do_not_expose_messages_or_sources() {
+                const SENTINEL: &str = "PRIVATE_IO_PATH_AND_CONTENT";
+                for error in [
+                    OracleAdapterError::Credential {
+                        kind: "password",
+                        failure: std::io::Error::other(SENTINEL).into(),
+                    },
+                    OracleAdapterError::Worker(std::io::Error::other(SENTINEL).into()),
+                    OracleAdapterError::CancellationWorker(std::io::Error::other(SENTINEL).into()),
+                ] {
+                    assert_redacted(error, SENTINEL);
+                }
+            }
+
+            /// Scenario: A native error owns a sensitive nested cause.
+            /// Guarantees: Sanitization drops that cause immediately instead of merely hiding retained text.
+            #[test]
+            fn native_error_payload_is_discarded() {
+                use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+                #[derive(Debug)]
+                struct SensitiveCause(Arc<AtomicBool>);
+                impl std::fmt::Display for SensitiveCause {
+                    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                        f.write_str("PRIVATE_NATIVE_CAUSE")
                     }
                 }
+                impl std::error::Error for SensitiveCause {}
+                impl Drop for SensitiveCause {
+                    fn drop(&mut self) { self.0.store(true, Ordering::SeqCst); }
+                }
+                let dropped = Arc::new(AtomicBool::new(false));
+                let native = oracle::Error::with_source(
+                    oracle::ErrorKind::InvalidOperation, SensitiveCause(Arc::clone(&dropped)),
+                );
+                let error = OracleAdapterError::Query(native.into());
+                assert!(dropped.load(Ordering::SeqCst));
+                assert_redacted(error, "PRIVATE_NATIVE_CAUSE");
+            }
+
+            /// Scenario: Redacted native diagnostics still identify outages and authentication failures.
+            /// Guarantees: Retry classification uses retained numeric codes, not discarded messages.
+            #[test]
+            fn redaction_preserves_numeric_recovery_classification() {
+                use otel_arrow_dfe_scraper::database::DriverAdapter;
+                let outage = super::OracleErrorCodes { oci: Some(3113), dpi: None };
+                assert!(super::OracleAdapter::is_retryable(&OracleAdapterError::Query(outage)));
+                assert!(!super::OracleAdapter::is_retryable(&OracleAdapterError::Convert(outage)));
+                assert!(!super::OracleAdapter::is_retryable(&OracleAdapterError::Connect(
+                    super::OracleErrorCodes { oci: Some(1017), dpi: None },
+                )));
+                assert!(OracleAdapterError::Query(outage).to_string().contains("3113"));
+            }
+
+            /// Scenario: Cursor configuration and malformed cursor text contain sensitive values.
+            /// Guarantees: Metadata and timestamp failures do not retain or echo those values.
+            #[test]
+            fn cursor_errors_redact_supplied_values() {
+                const SENTINEL: &str = "PRIVATE_CURSOR_SENTINEL";
+                let mut watermark = watermark();
+                watermark.timestamp_column = SENTINEL.to_owned();
+                let error = validate_described_cursor_columns(
+                    &columns(OracleType::Timestamp(6), OracleType::Number(18, 0)),
+                    &watermark,
+                ).expect_err("missing configured column");
+                assert_redacted(error, SENTINEL);
+                assert_redacted(parse_cursor_timestamp(SENTINEL).expect_err("invalid timestamp"), SENTINEL);
+            }
+
+            /// Scenario: Result aliases contain case-insensitive duplicate sensitive identifiers.
+            /// Guarantees: Oracle rejects them before the shared mapper can echo the duplicate name.
+            #[test]
+            fn duplicate_column_names_are_rejected_without_echoing_them() {
+                let error = super::validate_column_names(
+                    ["PRIVATE_ALIAS", "private_alias"].into_iter(),
+                ).expect_err("duplicate aliases");
+                assert_redacted(error, "PRIVATE_ALIAS private_alias");
+                super::validate_column_names(["EVENT_TS", "EVENT_ID", "PAYLOAD"].into_iter())
+                    .expect("distinct aliases");
             }
 
             fn test_adapter() -> super::OracleAdapter {
@@ -210,8 +299,13 @@ macro_rules! oracle_module_tests {
             async fn live_timestamp_precision_change_is_rejected() -> Result<(), Box<dyn std::error::Error>> {
                 use otel_arrow_dfe_scraper::database::DriverAdapter;
 
-                let path = std::env::var("ORACLE_SCHEMA_TEST_CONFIG")?;
-                let value: serde_json::Value = serde_json::from_slice(&fs::read(path)?)?;
+                let path = std::env::var("ORACLE_SCHEMA_TEST_CONFIG")
+                    .map_err(|_| "ORACLE_SCHEMA_TEST_CONFIG is required and must contain valid Unicode")?;
+                let bytes = fs::read(path).map_err(|error| OracleAdapterError::Credential {
+                    kind: "schema test configuration", failure: error.into(),
+                })?;
+                let value: serde_json::Value = serde_json::from_slice(&bytes)
+                    .map_err(|_| "schema test configuration must contain valid JSON")?;
                 let config: super::super::OracleReceiverConfig = serde_json::from_value(value.clone())?;
                 let query = config.query();
                 let mut adapter = config.adapter();
@@ -233,21 +327,21 @@ macro_rules! oracle_module_tests {
                         username.expose_secret(),
                         password.expose_secret(),
                         value["connection"]["connect_string"].as_str().ok_or("connect string")?,
-                    )?;
+                    ).map_err(|error| OracleAdapterError::Connect(error.into()))?;
                     _ = writer.execute(
                         "ALTER TABLE OTAP_SCHEMA_DRIFT MODIFY EVENT_TS TIMESTAMP(9)",
                         &[],
-                    )?;
+                    ).map_err(|error| OracleAdapterError::Query(error.into()))?;
                     _ = writer.execute(
                         "INSERT INTO OTAP_SCHEMA_DRIFT VALUES (2, TIMESTAMP '2026-01-01 00:00:00.123456001', 'drift')",
                         &[],
-                    )?;
-                    writer.commit()?;
+                    ).map_err(|error| OracleAdapterError::Query(error.into()))?;
+                    writer.commit().map_err(|error| OracleAdapterError::Configure(error.into()))?;
                     _ = adapter.begin_operation()?;
                     match adapter.execute(&query, &cursor).await {
                         Err(OracleAdapterError::ResultMetadataChanged) => Ok(()),
                         Err(OracleAdapterError::Query(error))
-                            if error.db_error().is_some_and(|error| error.code() == 1466) => Ok(()),
+                            if error.oci_code() == Some(1466) => Ok(()),
                         Err(error) => Err(Box::new(error) as Box<dyn std::error::Error>),
                         Ok(_) => Err("schema change was not rejected before returning a page".into()),
                     }
@@ -499,21 +593,21 @@ macro_rules! oracle_module_tests {
                         &columns(OracleType::Varchar2(32), OracleType::Int64),
                         &watermark(),
                     ),
-                    Err(OracleAdapterError::UnsupportedCursorTimestamp { .. })
+                    Err(OracleAdapterError::UnsupportedCursorTimestamp)
                 ));
                 assert!(matches!(
                     validate_described_cursor_columns(
                         &columns(OracleType::Timestamp(6), OracleType::Number(38, 2)),
                         &watermark(),
                     ),
-                    Err(OracleAdapterError::UnsupportedCursorTieBreaker { .. })
+                    Err(OracleAdapterError::UnsupportedCursorTieBreaker)
                 ));
                 assert!(matches!(
                     validate_described_cursor_columns(
                         &columns(OracleType::Timestamp(6), OracleType::BinaryDouble),
                         &watermark(),
                     ),
-                    Err(OracleAdapterError::UnsupportedCursorTieBreaker { .. })
+                    Err(OracleAdapterError::UnsupportedCursorTieBreaker)
                 ));
             }
 
@@ -526,7 +620,7 @@ macro_rules! oracle_module_tests {
 
                 assert!(matches!(
                     validate_described_cursor_columns(&described, &watermark()),
-                    Err(OracleAdapterError::MissingCursorColumn(column)) if column == "EVENT_TS"
+                    Err(OracleAdapterError::MissingCursorColumn)
                 ));
             }
 
@@ -577,7 +671,7 @@ macro_rules! oracle_module_tests {
                 ] {
                     assert!(matches!(
                         parse_cursor_timestamp(&text),
-                        Err(OracleAdapterError::InvalidCursorTimestamp(_))
+                        Err(OracleAdapterError::InvalidCursorTimestamp)
                     ));
                 }
             }
@@ -597,7 +691,7 @@ macro_rules! oracle_module_tests {
             fn rejects_unsupported_vendor_type() {
                 assert!(matches!(
                     validate_types(&[OracleType::BLOB]),
-                    Err(OracleAdapterError::UnsupportedType(_))
+                    Err(OracleAdapterError::UnsupportedType)
                 ));
             }
 
@@ -1362,6 +1456,52 @@ fn configuration_errors_redact_supplied_values() {
     }
 }
 
+/// Scenario: Valid identifier-shaped secrets are supplied as cursor binds or column names.
+/// Guarantees: SQL-contract errors identify the failed rule without interpolating configured values.
+#[test]
+fn semantic_configuration_errors_redact_identifiers() {
+    const SENTINEL: &str = "PRIVATE_IDENTIFIER_SENTINEL";
+    let mut cases = Vec::new();
+    for part in ["timestamp", "tie_breaker"] {
+        for key in ["bind", "column"] {
+            let mut config = documented_config();
+            config["watermark"][part][key] = serde_json::json!(SENTINEL);
+            cases.push(config);
+        }
+    }
+    let mut order = documented_config();
+    order["watermark"]["timestamp"]["column"] = serde_json::json!(SENTINEL);
+    order["query"]["statement"] = serde_json::json!(
+        COMPOSITE_STATEMENT
+            .replace("LAST_UPDATED", SENTINEL)
+            .replace(&format!("{SENTINEL} ASC"), &format!("{SENTINEL} DESC"))
+    );
+    cases.push(order);
+    for config in cases {
+        let error = validate(&config).expect_err("invalid SQL contract");
+        assert!(!error.to_string().contains(SENTINEL));
+        assert!(!format!("{error:?}").contains(SENTINEL));
+    }
+}
+
+/// Scenario: The factory cannot create a lease beneath a sensitive checkpoint path.
+/// Guarantees: Its configuration error contains a safe I/O category rather than the supplied path.
+#[test]
+fn factory_redacts_checkpoint_lease_paths() {
+    const SENTINEL: &str = "PRIVATE_CHECKPOINT_PATH";
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let blocker = directory.path().join(SENTINEL);
+    std::fs::write(&blocker, b"not a directory").expect("blocker");
+    let mut config = documented_config();
+    config["checkpoint"]["directory"] = serde_json::json!(blocker.join("state"));
+    let error = build(&pipeline_context(), "oracle-audit", &config)
+        .err()
+        .expect("lease failure");
+    assert!(!error.to_string().contains(SENTINEL));
+    assert!(!format!("{error:?}").contains(SENTINEL));
+    assert!(error.to_string().contains("lease I/O"));
+}
+
 /// Scenario: A statement's final ordering is descending, reordered, missing, or only nested
 /// inside a subquery.
 /// Guarantees: The outer result must be ascending by timestamp then tie-breaker, so paging by the
@@ -1574,7 +1714,7 @@ fn factory_owns_shared_checkpoint_identity() {
     let receiver = build(&pipeline_context(), "oracle-audit", &value).expect("factory");
     assert!(matches!(
         SourceLease::acquire(store.lease_key()),
-        Err(otel_arrow_dfe_scraper::LeaseError::AlreadyOwned)
+        Err(LeaseError::AlreadyOwned)
     ));
     assert_eq!(
         store.read().expect("unchanged checkpoint"),

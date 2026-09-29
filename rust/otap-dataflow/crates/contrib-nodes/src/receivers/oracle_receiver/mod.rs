@@ -29,9 +29,10 @@ use otel_arrow_dfe_engine::receiver::ReceiverWrapper;
 use otel_arrow_dfe_otap::OTAP_RECEIVER_FACTORIES;
 use otel_arrow_dfe_otap::pdata::OtapPdata;
 use otel_arrow_dfe_scraper::{
-    CheckpointStore, DatabaseReceiver, DatabaseReceiverMetrics, SourceBinding,
+    CheckpointStore, DatabaseReceiver, DatabaseReceiverMetrics, LeaseError, SourceBinding,
 };
 use otel_arrow_dfe_telemetry::metrics::MetricSetRegistrar;
+use serde::Deserialize;
 use serde_json::Value;
 use std::path::Path;
 use std::sync::Arc;
@@ -45,7 +46,7 @@ pub const ORACLE_RECEIVER_URN: &str = "urn:otel:receiver:oracle";
 type Receiver = DatabaseReceiver<OracleAdapter>;
 
 fn parse(config: &Value) -> Result<OracleReceiverConfig, ConfigError> {
-    serde_json::from_value(config.clone()).map_err(invalid_config)
+    OracleReceiverConfig::deserialize(config).map_err(invalid_config)
 }
 
 /// Builds a receiver bound to one durable checkpoint source.
@@ -65,7 +66,7 @@ fn build(
         config.source_id(),
         config.config_fingerprint().to_owned(),
     );
-    let source = SourceBinding::acquire(store).map_err(invalid_config)?;
+    let source = SourceBinding::acquire(store).map_err(invalid_source_lease)?;
     let metrics = Some(pipeline.register_metric_set::<DatabaseReceiverMetrics>());
     Ok(DatabaseReceiver::new(
         config.adapter(),
@@ -86,6 +87,29 @@ fn validate(config: &Value) -> Result<(), ConfigError> {
 fn invalid_config(error: impl std::fmt::Display) -> ConfigError {
     ConfigError::InvalidUserConfig {
         error: error.to_string(),
+    }
+}
+
+fn invalid_source_lease(error: LeaseError) -> ConfigError {
+    match error {
+        LeaseError::AlreadyOwned => {
+            invalid_config("another database receiver already owns this checkpoint source")
+        }
+        LeaseError::Unavailable => {
+            invalid_config("Oracle checkpoint lease registry is unavailable")
+        }
+        LeaseError::InvalidPath { .. } => invalid_config("Oracle checkpoint lease path is invalid"),
+        LeaseError::InvalidGeneration { .. } => {
+            invalid_config("Oracle checkpoint lease generation is invalid")
+        }
+        LeaseError::GenerationOverflow { .. } => {
+            invalid_config("Oracle checkpoint lease generation overflowed")
+        }
+        LeaseError::Io { source, .. } => invalid_config(format!(
+            "Oracle checkpoint lease I/O failed (kind {:?}, OS {:?})",
+            source.kind(),
+            source.raw_os_error(),
+        )),
     }
 }
 

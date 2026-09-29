@@ -661,8 +661,18 @@ Common engine resource and node context may still accompany them.
 | `database_receiver.worker_abandoned` | `warn` | Worker cleanup could not be joined; ownership retained until process exit. |
 
 Native Oracle failures expose the operation and available numeric OCI/DPI codes,
-not raw native messages or their error-source chains. SQL and cursor values
-must not be added to logs; `source_id` must be safe to emit.
+not raw native messages or their error-source chains. Native and OS error
+payloads are discarded after extracting safe codes/categories. Oracle-specific
+validation errors do not echo configured bind or column names, and factory
+lease-acquisition errors do not echo checkpoint paths. The development load
+generator uses the same sanitized Oracle failures and does not echo unknown
+argument values.
+
+This is diagnostic redaction, not filtering of exported database rows: selected
+columns still form the intended telemetry payload. `source_id`, pipeline/node
+identifiers and checkpoint paths must be safe to expose. The unchanged shared
+runtime can include source identity and filesystem paths in its own events and
+checkpoint errors; the Oracle adapter does not rewrite those diagnostics.
 
 ## Limits
 

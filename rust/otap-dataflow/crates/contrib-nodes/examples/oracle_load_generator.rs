@@ -6,6 +6,8 @@
 #![allow(clippy::print_stdout)]
 
 use oracle::Connection;
+use otel_arrow_dfe_contrib_nodes::receivers::oracle_receiver::OracleAdapterError;
+use secrecy::{ExposeSecret, SecretString};
 use std::error::Error;
 
 const TABLE: &str = "OTAP_ORACLE_EVENTS";
@@ -34,11 +36,26 @@ struct Options {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let options = parse_options()?;
-    let username = required_env("ORACLE_USERNAME")?;
-    let password = required_env("ORACLE_PWD")?;
-    let connect_string = required_env("ORACLE_CONNECT_STRING")?;
-    let connection = Connection::connect(username, password, connect_string)?;
+    let arguments = std::env::args_os()
+        .skip(1)
+        .map(|argument| {
+            argument
+                .into_string()
+                .map_err(|_| "arguments must contain valid Unicode")
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let options = parse_options(arguments.into_iter())?;
+    let connection = {
+        let username = SecretString::from(required_env("ORACLE_USERNAME")?);
+        let password = SecretString::from(required_env("ORACLE_PWD")?);
+        let connect_string = SecretString::from(required_env("ORACLE_CONNECT_STRING")?);
+        Connection::connect(
+            username.expose_secret(),
+            password.expose_secret(),
+            connect_string.expose_secret(),
+        )
+        .map_err(|error| OracleAdapterError::Connect(error.into()))?
+    };
 
     if options.reset {
         match connection.execute(&format!("DROP TABLE {TABLE} PURGE"), &[]) {
@@ -47,7 +64,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 if error
                     .db_error()
                     .is_some_and(|db_error| db_error.code() == 942) => {}
-            Err(error) => return Err(error.into()),
+            Err(error) => return Err(OracleAdapterError::Query(error.into()).into()),
         }
     }
     match connection.execute(CREATE_TABLE, &[]) {
@@ -56,15 +73,19 @@ fn main() -> Result<(), Box<dyn Error>> {
             if error
                 .db_error()
                 .is_some_and(|db_error| db_error.code() == 955) => {}
-        Err(error) => return Err(error.into()),
+        Err(error) => return Err(OracleAdapterError::Query(error.into()).into()),
     }
 
     for event_id in 1..=options.rows {
         let timestamp_offset = (event_id - 1) / options.collision_size;
         let payload = format!("event-{event_id:012}");
-        let _ = connection.execute(MERGE_ROW, &[&event_id, &timestamp_offset, &payload])?;
+        let _ = connection
+            .execute(MERGE_ROW, &[&event_id, &timestamp_offset, &payload])
+            .map_err(|error| OracleAdapterError::Query(error.into()))?;
     }
-    connection.commit()?;
+    connection
+        .commit()
+        .map_err(|error| OracleAdapterError::Configure(error.into()))?;
 
     println!(
         "Prepared {TABLE} with {} deterministic rows and collision groups of {}",
@@ -73,11 +94,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn parse_options() -> Result<Options, Box<dyn Error>> {
+fn parse_options(mut arguments: impl Iterator<Item = String>) -> Result<Options, Box<dyn Error>> {
     let mut rows = 1_000i64;
     let mut collision_size = 10i64;
     let mut reset = false;
-    let mut arguments = std::env::args().skip(1);
     while let Some(argument) = arguments.next() {
         match argument.as_str() {
             "--rows" => {
@@ -90,7 +110,11 @@ fn parse_options() -> Result<Options, Box<dyn Error>> {
                     .parse()?;
             }
             "--reset" => reset = true,
-            _ => return Err(format!("unknown argument: {argument}").into()),
+            _ => {
+                return Err(
+                    "unknown argument; expected --rows, --collision-size or --reset".into(),
+                );
+            }
         }
     }
     if rows <= 0 {
@@ -106,9 +130,10 @@ fn parse_options() -> Result<Options, Box<dyn Error>> {
     })
 }
 
-fn required_env(name: &str) -> Result<String, Box<dyn Error>> {
-    std::env::var(name)
-        .map_err(|error| format!("environment variable {name} is required: {error}").into())
+fn required_env(name: &'static str) -> Result<String, Box<dyn Error>> {
+    std::env::var(name).map_err(|_| {
+        format!("environment variable {name} is required and must contain valid Unicode").into()
+    })
 }
 
 #[cfg(test)]
@@ -123,5 +148,23 @@ mod tests {
         assert!(MERGE_ROW.contains("CAST(:1 AS NUMBER(18)) AS EVENT_ID"));
         assert!(!CREATE_TABLE.contains("NUMBER(19)"));
         assert!(!MERGE_ROW.contains("NUMBER(19)"));
+    }
+
+    /// Scenario: An operator accidentally supplies sensitive text as an option or numeric value.
+    /// Guarantees: CLI failures describe valid options without echoing the supplied text.
+    #[test]
+    fn invalid_options_do_not_echo_values() {
+        const SENTINEL: &str = "PRIVATE_ARGUMENT_SENTINEL";
+        for args in [
+            vec![SENTINEL],
+            vec!["--rows", SENTINEL],
+            vec!["--collision-size", SENTINEL],
+        ] {
+            let error = parse_options(args.into_iter().map(str::to_owned))
+                .err()
+                .expect("invalid option");
+            assert!(!error.to_string().contains(SENTINEL));
+            assert!(!format!("{error:?}").contains(SENTINEL));
+        }
     }
 }

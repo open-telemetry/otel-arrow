@@ -91,8 +91,10 @@ impl OracleAdapter {
     {
         self.cancellation.ensure_not_requested()?;
         if self.worker.is_none() {
-            self.worker =
-                Some(NativeWorker::new("oracle-query").map_err(OracleAdapterError::Worker)?);
+            self.worker = Some(
+                NativeWorker::new("oracle-query")
+                    .map_err(|error| OracleAdapterError::Worker(error.into()))?,
+            );
         }
         let worker = self.worker.as_ref().expect("worker initialized");
         // Clone inputs so queued work owns its data and can outlive this future.
@@ -107,8 +109,10 @@ impl OracleAdapter {
                 *session = Some(next);
                 Ok(value)
             })
-            .map_err(OracleAdapterError::Worker)?;
-        let result = receive(result).await.map_err(OracleAdapterError::Worker)?;
+            .map_err(|error| OracleAdapterError::Worker(error.into()))?;
+        let result = receive(result)
+            .await
+            .map_err(|error| OracleAdapterError::Worker(error.into()))?;
         self.cancellation.ensure_not_requested()?;
         result
     }
@@ -230,7 +234,7 @@ impl DriverCancellation for OracleCancellation {
             if state.worker.is_none() {
                 state.worker = Some(
                     NativeWorker::new("oracle-cancel")
-                        .map_err(OracleAdapterError::CancellationWorker)?,
+                        .map_err(|error| OracleAdapterError::CancellationWorker(error.into()))?,
                 );
             }
             state.cancelling = true;
@@ -245,7 +249,7 @@ impl DriverCancellation for OracleCancellation {
                     let result = match connection.upgrade() {
                         Some(connection) => connection
                             .break_execution()
-                            .map_err(OracleAdapterError::Cancellation),
+                            .map_err(|error| OracleAdapterError::Cancellation(error.into())),
                         None => Ok(()),
                     };
                     cancellation_state
@@ -258,13 +262,13 @@ impl DriverCancellation for OracleCancellation {
                 Ok(result) => result,
                 Err(error) => {
                     state.cancelling = false;
-                    return Err(OracleAdapterError::CancellationWorker(error));
+                    return Err(OracleAdapterError::CancellationWorker(error.into()));
                 }
             }
         };
         receive(result)
             .await
-            .map_err(OracleAdapterError::CancellationWorker)?
+            .map_err(|error| OracleAdapterError::CancellationWorker(error.into()))?
     }
 }
 
@@ -359,8 +363,8 @@ impl DriverAdapter for OracleAdapter {
                 }
             },
         );
-        query.map_err(OracleAdapterError::Worker)?;
-        cancellation.map_err(OracleAdapterError::CancellationWorker)?;
+        query.map_err(|error| OracleAdapterError::Worker(error.into()))?;
+        cancellation.map_err(|error| OracleAdapterError::CancellationWorker(error.into()))?;
         self.worker = None;
         self.stopping_cancellation = None;
         Ok(())
@@ -383,20 +387,21 @@ impl DriverAdapter for OracleAdapter {
             | OracleAdapterError::ConnectTimeoutOverride
             | OracleAdapterError::ConnectRetryUnsupported
             | OracleAdapterError::MultipleAddressUnsupported
-            | OracleAdapterError::MissingCursorColumn(_)
+            | OracleAdapterError::MissingCursorColumn
+            | OracleAdapterError::DuplicateColumns
             | OracleAdapterError::NullableCursorColumn
-            | OracleAdapterError::UnsupportedCursorTimestamp { .. }
-            | OracleAdapterError::UnsupportedCursorTieBreaker { .. }
-            | OracleAdapterError::InvalidCursorTimestamp(_)
+            | OracleAdapterError::UnsupportedCursorTimestamp
+            | OracleAdapterError::UnsupportedCursorTieBreaker
+            | OracleAdapterError::InvalidCursorTimestamp
             | OracleAdapterError::NormalizedByteLimit { .. }
             | OracleAdapterError::ResultMetadataChanged
-            | OracleAdapterError::UnsupportedType(_) => ReceiverErrorKind::Configuration,
+            | OracleAdapterError::UnsupportedType => ReceiverErrorKind::Configuration,
             OracleAdapterError::Configure(_)
             | OracleAdapterError::Prepare(_)
             | OracleAdapterError::Query(_)
             | OracleAdapterError::Fetch(_)
             | OracleAdapterError::Convert(_)
-            | OracleAdapterError::NullCursorValue(_) => ReceiverErrorKind::Transport,
+            | OracleAdapterError::NullCursorValue => ReceiverErrorKind::Transport,
             OracleAdapterError::CancellationState
             | OracleAdapterError::CancellationWorker(_)
             | OracleAdapterError::Cancellation(_)
@@ -490,19 +495,17 @@ fn execute_blocking(
     }
     let columns = prepared.columns.clone();
 
-    let watermark = query.watermark();
     let mut rows = Vec::new();
     let mut payload_bytes = 0;
     for _ in 0..query.max_rows() {
         cancellation.ensure_not_requested()?;
         let Some(row) = result_set.next() else { break };
-        let row = row.map_err(OracleAdapterError::Fetch)?;
+        let row = row.map_err(|error| OracleAdapterError::Fetch(error.into()))?;
         cancellation.ensure_not_requested()?;
         let cursor = extract_cursor(
             &row,
             prepared.timestamp_index,
             prepared.tie_breaker_index,
-            watermark,
             cancellation,
         )?;
         let normalized = normalize_row(&row, &prepared.types, cancellation)?;
@@ -605,7 +608,7 @@ fn bind_cursor<'a>(
             (watermark.timestamp_bind.as_str(), &timestamp_bind),
             (watermark.tie_breaker_bind.as_str(), &tie_breaker),
         ])
-        .map_err(OracleAdapterError::Query)?;
+        .map_err(|error| OracleAdapterError::Query(error.into()))?;
     cancellation.ensure_not_requested()?;
     Ok(result)
 }
@@ -619,16 +622,13 @@ pub(super) fn parse_cursor_timestamp(text: &str) -> Result<Timestamp, OracleAdap
         if byte.is_ascii_digit() {
             digits += 1;
             if digits > MAX_TIMESTAMP_COMPONENT_DIGITS {
-                return Err(OracleAdapterError::InvalidCursorTimestamp(
-                    "timestamp numeric component exceeds nine digits".to_owned(),
-                ));
+                return Err(OracleAdapterError::InvalidCursorTimestamp);
             }
         } else {
             digits = 0;
         }
     }
-    Timestamp::from_str(text)
-        .map_err(|error| OracleAdapterError::InvalidCursorTimestamp(error.to_string()))
+    Timestamp::from_str(text).map_err(|_| OracleAdapterError::InvalidCursorTimestamp)
 }
 
 /// Uses a timezone-aware bind so checkpoint offsets survive round trips.
@@ -656,7 +656,7 @@ fn ensure_prepared(
         .fetch_array_size(1)
         .prefetch_rows(0)
         .build()
-        .map_err(OracleAdapterError::Prepare)?;
+        .map_err(|error| OracleAdapterError::Prepare(error.into()))?;
     let result_set = bind_cursor(&mut discovery, query, cursor, cancellation)?;
     let (columns, types) = result_metadata(result_set.column_info())?;
     let (timestamp_index, tie_breaker_index) =
@@ -673,7 +673,7 @@ fn ensure_prepared(
         // Prefetch owns a second native row buffer outside the calculated byte budget.
         .prefetch_rows(0)
         .build()
-        .map_err(OracleAdapterError::Prepare)?;
+        .map_err(|error| OracleAdapterError::Prepare(error.into()))?;
     cancellation.ensure_not_requested()?;
     session.prepared = Some(OraclePreparedQuery {
         statement,
@@ -759,20 +759,14 @@ fn validate_described_cursor_columns(
             | OracleType::TimestampTZ(_)
             | OracleType::TimestampLTZ(_)
     ) {
-        return Err(OracleAdapterError::UnsupportedCursorTimestamp {
-            column: watermark.timestamp_column.clone(),
-            data_type: timestamp_type.to_string(),
-        });
+        return Err(OracleAdapterError::UnsupportedCursorTimestamp);
     }
     let tie_breaker_type = &columns[tie_breaker_index].1;
     if !matches!(
         tie_breaker_type,
         OracleType::Int64 | OracleType::Number(1..=18, 0)
     ) {
-        return Err(OracleAdapterError::UnsupportedCursorTieBreaker {
-            column: watermark.tie_breaker_column.clone(),
-            data_type: tie_breaker_type.to_string(),
-        });
+        return Err(OracleAdapterError::UnsupportedCursorTieBreaker);
     }
     Ok((timestamp_index, tie_breaker_index))
 }
@@ -785,7 +779,7 @@ fn cursor_column_index(
     columns
         .iter()
         .position(|(column, _)| column.eq_ignore_ascii_case(name))
-        .ok_or_else(|| OracleAdapterError::MissingCursorColumn(name.to_owned()))
+        .ok_or(OracleAdapterError::MissingCursorColumn)
 }
 
 /// Extracts the composite cursor of one row, rejecting null components.
@@ -793,19 +787,18 @@ fn extract_cursor(
     row: &OracleRow,
     timestamp_index: usize,
     tie_breaker_index: usize,
-    watermark: &otel_arrow_dfe_scraper::database::CompositeWatermark,
     cancellation: &OracleCancellation,
 ) -> Result<CompositeCursor, OracleAdapterError> {
     cancellation.ensure_not_requested()?;
     let timestamp = row
         .get::<_, Option<Timestamp>>(timestamp_index)
-        .map_err(OracleAdapterError::Convert)?
-        .ok_or_else(|| OracleAdapterError::NullCursorValue(watermark.timestamp_column.clone()))?;
+        .map_err(|error| OracleAdapterError::Convert(error.into()))?
+        .ok_or(OracleAdapterError::NullCursorValue)?;
     cancellation.ensure_not_requested()?;
     let tie_breaker = row
         .get::<_, Option<i64>>(tie_breaker_index)
-        .map_err(OracleAdapterError::Convert)?
-        .ok_or_else(|| OracleAdapterError::NullCursorValue(watermark.tie_breaker_column.clone()))?;
+        .map_err(|error| OracleAdapterError::Convert(error.into()))?
+        .ok_or(OracleAdapterError::NullCursorValue)?;
     cancellation.ensure_not_requested()?;
     // The text form round-trips through Timestamp::from_str on the next bind,
     // so the durable checkpoint keeps full source precision.
@@ -833,18 +826,18 @@ fn prepare_session(
     session
         .connection
         .set_call_timeout(Some(query.timeout()))
-        .map_err(OracleAdapterError::Configure)?;
+        .map_err(|error| OracleAdapterError::Configure(error.into()))?;
     cancellation.ensure_not_requested()?;
     if new_connection {
         session
             .connection
             .ping()
-            .map_err(OracleAdapterError::Connect)?;
+            .map_err(|error| OracleAdapterError::Connect(error.into()))?;
         cancellation.ensure_not_requested()?;
         _ = session
             .connection
             .execute("ALTER SESSION SET TIME_ZONE = 'UTC'", &[])
-            .map_err(OracleAdapterError::Configure)?;
+            .map_err(|error| OracleAdapterError::Configure(error.into()))?;
         cancellation.ensure_not_requested()?;
     }
     begin_read_only(&session.connection)?;
@@ -856,13 +849,26 @@ fn prepare_session(
 fn result_metadata(
     columns: &[oracle::ColumnInfo],
 ) -> Result<(Vec<ColumnMetadata>, Vec<OracleType>), OracleAdapterError> {
-    let metadata = columns.iter().map(column_metadata).collect();
+    validate_column_names(columns.iter().map(oracle::ColumnInfo::name))?;
     let types = columns
         .iter()
         .map(|column| column.oracle_type().clone())
         .collect::<Vec<_>>();
     validate_types(&types)?;
+    let metadata = columns.iter().map(column_metadata).collect();
     Ok((metadata, types))
+}
+
+fn validate_column_names<'a>(
+    names: impl Iterator<Item = &'a str>,
+) -> Result<(), OracleAdapterError> {
+    let mut seen = std::collections::HashSet::new();
+    for name in names {
+        if !seen.insert(name.to_ascii_lowercase()) {
+            return Err(OracleAdapterError::DuplicateColumns);
+        }
+    }
+    Ok(())
 }
 
 /// Detects result-shape changes before applying a cached decode plan.
@@ -882,7 +888,9 @@ fn metadata_matches(
 
 /// Ends the read-only transaction without retaining database-side state between polls.
 fn finish_session(connection: &Connection) -> Result<(), OracleAdapterError> {
-    connection.rollback().map_err(OracleAdapterError::Configure)
+    connection
+        .rollback()
+        .map_err(|error| OracleAdapterError::Configure(error.into()))
 }
 
 /// Converts Oracle metadata into the vendor-neutral scraper representation.
@@ -914,7 +922,7 @@ fn connect(
             password.expose_secret(),
             connect_string,
         )
-        .map_err(OracleAdapterError::Connect)
+        .map_err(|error| OracleAdapterError::Connect(error.into()))
     })
 }
 
@@ -924,7 +932,7 @@ fn begin_read_only(connection: &Connection) -> Result<(), OracleAdapterError> {
     // every Oracle function; the database enforces the final read-only boundary.
     _ = connection
         .execute("SET TRANSACTION READ ONLY", &[])
-        .map_err(OracleAdapterError::Configure)?;
+        .map_err(|error| OracleAdapterError::Configure(error.into()))?;
     Ok(())
 }
 
@@ -982,7 +990,7 @@ fn initialize_client(directory: &str) -> Result<(), OracleAdapterError> {
     _ = params
         .oracle_client_lib_dir(directory)
         .and_then(|params| params.init())
-        .map_err(OracleAdapterError::Initialize)?;
+        .map_err(|error| OracleAdapterError::Initialize(error.into()))?;
     *selected = Some(directory.to_owned());
     Ok(())
 }
@@ -990,19 +998,26 @@ fn initialize_client(directory: &str) -> Result<(), OracleAdapterError> {
 /// Reads one bounded UTF-8 credential and zeroizes its storage on drop.
 fn read_credential(path: &str, kind: &'static str) -> Result<SecretString, OracleAdapterError> {
     let path = Path::new(path);
-    let metadata = std::fs::metadata(path)
-        .map_err(|source| OracleAdapterError::Credential { kind, source })?;
+    let metadata = std::fs::metadata(path).map_err(|source| OracleAdapterError::Credential {
+        kind,
+        failure: source.into(),
+    })?;
     if !metadata.is_file() {
         return Err(OracleAdapterError::CredentialNotRegularFile(kind));
     }
     if metadata.len() > MAX_CREDENTIAL_BYTES {
         return Err(OracleAdapterError::CredentialTooLarge(kind));
     }
-    let file = std::fs::File::open(path)
-        .map_err(|source| OracleAdapterError::Credential { kind, source })?;
+    let file = std::fs::File::open(path).map_err(|source| OracleAdapterError::Credential {
+        kind,
+        failure: source.into(),
+    })?;
     if !file
         .metadata()
-        .map_err(|source| OracleAdapterError::Credential { kind, source })?
+        .map_err(|source| OracleAdapterError::Credential {
+            kind,
+            failure: source.into(),
+        })?
         .is_file()
     {
         return Err(OracleAdapterError::CredentialNotRegularFile(kind));
@@ -1011,22 +1026,20 @@ fn read_credential(path: &str, kind: &'static str) -> Result<SecretString, Oracl
     _ = file
         .take(MAX_CREDENTIAL_BYTES + 1)
         .read_to_end(&mut bytes)
-        .map_err(|source| OracleAdapterError::Credential { kind, source })?;
+        .map_err(|source| OracleAdapterError::Credential {
+            kind,
+            failure: source.into(),
+        })?;
     if bytes.len() as u64 > MAX_CREDENTIAL_BYTES {
         return Err(OracleAdapterError::CredentialTooLarge(kind));
     }
-    let mut value = Zeroizing::new(
-        std::str::from_utf8(&bytes)
-            .map_err(|_| OracleAdapterError::InvalidCredentialEncoding(kind))?
-            .to_owned(),
-    );
-    while value.ends_with(['\r', '\n']) {
-        _ = value.pop();
-    }
+    let value = std::str::from_utf8(&bytes)
+        .map_err(|_| OracleAdapterError::InvalidCredentialEncoding(kind))?
+        .trim_end_matches(['\r', '\n']);
     if value.is_empty() {
         return Err(OracleAdapterError::EmptyCredential(kind));
     }
-    Ok(value.as_str().to_owned().into())
+    Ok(value.to_owned().into())
 }
 
 /// Rejects result types that lack a precision-preserving normalization path.
@@ -1054,8 +1067,8 @@ fn validate_types(types: &[OracleType]) -> Result<(), OracleAdapterError> {
             | OracleType::Int64
             | OracleType::UInt64
             | OracleType::Boolean => {}
-            unsupported => {
-                return Err(OracleAdapterError::UnsupportedType(unsupported.to_string()));
+            _ => {
+                return Err(OracleAdapterError::UnsupportedType);
             }
         }
     }
@@ -1090,7 +1103,7 @@ fn normalize_cell(
         ($rust_type:ty, $variant:expr) => {
             row.get::<_, Option<$rust_type>>(index)
                 .map(|value| value.map_or(CellValue::Null, $variant))
-                .map_err(OracleAdapterError::Convert)
+                .map_err(|error| OracleAdapterError::Convert(error.into()))
         };
     }
 
@@ -1131,7 +1144,7 @@ fn normalize_cell(
         OracleType::Int64 => optional!(i64, CellValue::Int64),
         OracleType::UInt64 => optional!(u64, CellValue::UInt64),
         OracleType::Boolean => optional!(bool, CellValue::Bool),
-        unsupported => Err(OracleAdapterError::UnsupportedType(unsupported.to_string())),
+        _ => Err(OracleAdapterError::UnsupportedType),
     }
 }
 
@@ -1166,6 +1179,50 @@ fn finite_float(value: CellValue) -> Result<CellValue, OracleAdapterError> {
     }
 }
 
+/// Numeric Oracle diagnostics without retained native messages or source chains.
+#[derive(Clone, Copy, Debug)]
+pub struct OracleErrorCodes {
+    oci: Option<i32>,
+    dpi: Option<i32>,
+}
+
+impl From<oracle::Error> for OracleErrorCodes {
+    fn from(error: oracle::Error) -> Self {
+        Self {
+            oci: error.oci_code(),
+            dpi: error.dpi_code(),
+        }
+    }
+}
+
+impl OracleErrorCodes {
+    /// Returns the Oracle database error code, when available.
+    pub const fn oci_code(&self) -> Option<i32> {
+        self.oci
+    }
+
+    /// Returns the ODPI-C error code, when available.
+    pub const fn dpi_code(&self) -> Option<i32> {
+        self.dpi
+    }
+}
+
+/// OS diagnostics without retained filenames, custom error text or source chains.
+#[derive(Clone, Copy, Debug)]
+pub struct OracleIoError {
+    kind: std::io::ErrorKind,
+    code: Option<i32>,
+}
+
+impl From<std::io::Error> for OracleIoError {
+    fn from(error: std::io::Error) -> Self {
+        Self {
+            kind: error.kind(),
+            code: error.raw_os_error(),
+        }
+    }
+}
+
 /// Oracle connection, query, or conversion failure.
 ///
 /// Native error messages may contain SQL, endpoint, row, or cursor data.
@@ -1173,13 +1230,12 @@ fn finite_float(value: CellValue) -> Result<CellValue, OracleAdapterError> {
 #[derive(thiserror::Error)]
 pub enum OracleAdapterError {
     /// A mounted credential file could not be read.
-    #[error("failed to read Oracle {kind} file")]
+    #[error("failed to read Oracle {kind} file (kind {io_kind:?}, OS {code:?})", io_kind = .failure.kind, code = .failure.code)]
     Credential {
         /// Credential kind without its configured path.
         kind: &'static str,
-        /// Underlying file error.
-        #[source]
-        source: std::io::Error,
+        /// Sanitized file error category and numeric code.
+        failure: OracleIoError,
     },
     /// A mounted credential path is not a regular file.
     #[error("Oracle {0} path must reference a regular file")]
@@ -1195,7 +1251,7 @@ pub enum OracleAdapterError {
     EmptyCredential(&'static str),
     /// Oracle client initialization failed.
     #[error("Oracle client initialization failed (OCI {oci:?}, DPI {dpi:?})", oci = .0.oci_code(), dpi = .0.dpi_code())]
-    Initialize(oracle::Error),
+    Initialize(OracleErrorCodes),
     /// Oracle was already initialized outside this adapter.
     #[error("Oracle client was initialized before instant_client_dir was applied")]
     ClientAlreadyInitialized,
@@ -1207,7 +1263,7 @@ pub enum OracleAdapterError {
     ClientInitializationLock,
     /// Connection establishment or validation failed.
     #[error("Oracle connection failed (OCI {oci:?}, DPI {dpi:?})", oci = .0.oci_code(), dpi = .0.dpi_code())]
-    Connect(oracle::Error),
+    Connect(OracleErrorCodes),
     /// The first slice cannot safely inject bounds into a connect descriptor.
     #[error("Oracle connect descriptors are not supported; use an Easy Connect string")]
     ConnectDescriptorUnsupported,
@@ -1222,60 +1278,53 @@ pub enum OracleAdapterError {
     MultipleAddressUnsupported,
     /// Session or timeout setup failed.
     #[error("Oracle session configuration failed (OCI {oci:?}, DPI {dpi:?})", oci = .0.oci_code(), dpi = .0.dpi_code())]
-    Configure(oracle::Error),
+    Configure(OracleErrorCodes),
     /// Statement preparation failed.
     #[error("Oracle query preparation failed (OCI {oci:?}, DPI {dpi:?})", oci = .0.oci_code(), dpi = .0.dpi_code())]
-    Prepare(oracle::Error),
+    Prepare(OracleErrorCodes),
     /// Query execution failed.
     #[error("Oracle query execution failed (OCI {oci:?}, DPI {dpi:?})", oci = .0.oci_code(), dpi = .0.dpi_code())]
-    Query(oracle::Error),
+    Query(OracleErrorCodes),
     /// Row fetching failed.
     #[error("Oracle row fetch failed (OCI {oci:?}, DPI {dpi:?})", oci = .0.oci_code(), dpi = .0.dpi_code())]
-    Fetch(oracle::Error),
+    Fetch(OracleErrorCodes),
     /// Native value conversion failed.
     #[error("Oracle value conversion failed (OCI {oci:?}, DPI {dpi:?})", oci = .0.oci_code(), dpi = .0.dpi_code())]
-    Convert(oracle::Error),
+    Convert(OracleErrorCodes),
     /// A floating-point result cannot be represented faithfully.
     #[error("Oracle returned a non-finite floating-point value")]
     NonFiniteFloat,
     /// The result type does not have bounded conversion support.
-    #[error("Oracle result type '{0}' is not supported")]
-    UnsupportedType(String),
+    #[error("Oracle result contains an unsupported type")]
+    UnsupportedType,
     /// A cached statement was invalidated with a different result shape.
     #[error("Oracle query result metadata changed after startup validation")]
     ResultMetadataChanged,
     /// A configured cursor column is absent from live result metadata.
-    #[error("watermark cursor column '{0}' is not present in the query result")]
-    MissingCursorColumn(String),
+    #[error("a configured watermark cursor column is not present in the query result")]
+    MissingCursorColumn,
+    /// Duplicate output names would make the shared row mapping ambiguous.
+    #[error("Oracle query result column names must be distinct, ignoring ASCII case")]
+    DuplicateColumns,
     /// Cursor nullability must be excluded by the source schema.
     #[error("watermark cursor columns must be declared NOT NULL")]
     NullableCursorColumn,
     /// The timestamp cursor column is not an Oracle date or timestamp type.
     #[error(
-        "watermark timestamp column '{column}' has unsupported type '{data_type}'; DATE and TIMESTAMP family types are required"
+        "watermark timestamp column has an unsupported type; DATE and TIMESTAMP family types are required"
     )]
-    UnsupportedCursorTimestamp {
-        /// Configured cursor column.
-        column: String,
-        /// Live Oracle type name.
-        data_type: String,
-    },
+    UnsupportedCursorTimestamp,
     /// The tie-breaker cursor column is not an integral Oracle type.
     #[error(
-        "watermark tie-breaker column '{column}' has unsupported type '{data_type}'; a scale-zero integral type is required"
+        "watermark tie-breaker column has an unsupported type; a scale-zero integral type is required"
     )]
-    UnsupportedCursorTieBreaker {
-        /// Configured cursor column.
-        column: String,
-        /// Live Oracle type name.
-        data_type: String,
-    },
+    UnsupportedCursorTieBreaker,
     /// A row's cursor component was SQL NULL.
-    #[error("watermark cursor column '{0}' returned NULL; composite cursors must be non-null")]
-    NullCursorValue(String),
+    #[error("a watermark cursor column returned NULL; composite cursors must be non-null")]
+    NullCursorValue,
     /// The committed cursor timestamp cannot be bound to Oracle.
     #[error("committed watermark timestamp is not a valid Oracle timestamp")]
-    InvalidCursorTimestamp(String),
+    InvalidCursorTimestamp,
     /// The first row alone exceeds the normalized in-memory ceiling.
     #[error(
         "the first database row normalizes to {normalized_bytes} bytes, exceeding the {limit}-byte budget from query.max_batch_bytes"
@@ -1287,17 +1336,17 @@ pub enum OracleAdapterError {
         limit: u64,
     },
     /// The Oracle query worker could not start, accept work, or confirm completion.
-    #[error("Oracle worker failed")]
-    Worker(#[source] std::io::Error),
+    #[error("Oracle worker failed (kind {kind:?}, OS {code:?})", kind = .0.kind, code = .0.code)]
+    Worker(OracleIoError),
     /// Cancellation state could not be synchronized with the blocking worker.
     #[error("Oracle cancellation state is unavailable")]
     CancellationState,
     /// The native cancellation worker could not start, accept work, or confirm completion.
-    #[error("Oracle cancellation worker failed")]
-    CancellationWorker(#[source] std::io::Error),
+    #[error("Oracle cancellation worker failed (kind {kind:?}, OS {code:?})", kind = .0.kind, code = .0.code)]
+    CancellationWorker(OracleIoError),
     /// Oracle rejected a request to interrupt the active call.
     #[error("Oracle cancellation failed (OCI {oci:?}, DPI {dpi:?})", oci = .0.oci_code(), dpi = .0.dpi_code())]
-    Cancellation(oracle::Error),
+    Cancellation(OracleErrorCodes),
     /// An operation was cancelled before it registered its connection.
     #[error("Oracle operation was cancelled")]
     Cancelled,

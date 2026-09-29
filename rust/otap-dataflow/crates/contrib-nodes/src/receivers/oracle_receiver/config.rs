@@ -14,6 +14,7 @@ use super::adapter::{OracleAdapter, OracleAdapterConfig, parse_cursor_timestamp}
 use otel_arrow_dfe_scraper::database::{
     CatchUpConfig, CheckpointConfig, CompiledQuery, OutputConfig, PollingConfig, WatermarkConfig,
 };
+use secrecy::zeroize::Zeroizing;
 use serde::de::Error as DeError;
 use serde::{Deserialize, Deserializer, Serialize};
 use std::time::Duration;
@@ -163,7 +164,7 @@ impl TryFrom<RawOracleConfig> for OracleReceiverConfig {
         timestamp.initial = initial.to_string();
         let statement = validate_statement(&config.query.statement, &config.watermark)?;
         let query = CompiledQuery::compile(
-            statement.clone(),
+            statement,
             config.query.polling(),
             &config.watermark,
             &config.checkpoint,
@@ -176,7 +177,7 @@ impl TryFrom<RawOracleConfig> for OracleReceiverConfig {
         let fingerprint = FingerprintInput {
             source_id: &config.source_id,
             connect_string: &config.connection.connect_string,
-            statement: &statement,
+            statement: query.sql(),
             timestamp_column: &config.watermark.timestamp().column,
             timestamp_bind: &config.watermark.timestamp().bind,
             timestamp_initial: &config.watermark.timestamp().initial,
@@ -184,11 +185,10 @@ impl TryFrom<RawOracleConfig> for OracleReceiverConfig {
             tie_breaker_bind: &config.watermark.tie_breaker().bind,
             tie_breaker_initial: config.watermark.tie_breaker().initial,
         };
-        let fingerprint_bytes = serde_json::to_vec(&fingerprint).map_err(|error| {
-            OracleConfigError::new(format!(
-                "failed to fingerprint Oracle configuration: {error}"
-            ))
-        })?;
+        let fingerprint_bytes =
+            Zeroizing::new(serde_json::to_vec(&fingerprint).map_err(|_| {
+                OracleConfigError::new("failed to fingerprint Oracle configuration")
+            })?);
         let config_fingerprint = blake3::hash(&fingerprint_bytes).to_hex().to_string();
 
         Ok(Self {
@@ -329,9 +329,9 @@ fn validate_statement(
     for bind in [&timestamp.bind, &tie_breaker.bind] {
         let marker = format!(":{}", bind.to_ascii_uppercase());
         if !tokens.iter().any(|token| token.text == marker) {
-            return Err(OracleConfigError::new(format!(
-                "query.statement must reference Oracle bind {marker}"
-            )));
+            return Err(OracleConfigError::new(
+                "query.statement must reference both configured Oracle cursor binds",
+            ));
         }
     }
     for (column, operator, bind) in [
@@ -340,9 +340,9 @@ fn validate_statement(
         (&tie_breaker.column, ">", &tie_breaker.bind),
     ] {
         if !contains_comparison(&tokens, column, operator, bind) {
-            return Err(OracleConfigError::new(format!(
-                "query.statement must compare {column} {operator} :{bind}"
-            )));
+            return Err(OracleConfigError::new(
+                "query.statement must compare the configured cursor columns with their binds",
+            ));
         }
     }
 
@@ -372,10 +372,9 @@ fn validate_statement(
             .eq(expected.iter().copied())
     });
     if !matches_ordering {
-        return Err(OracleConfigError::new(format!(
-            "query.statement must end with ORDER BY {} ASC, {} ASC",
-            timestamp.column, tie_breaker.column
-        )));
+        return Err(OracleConfigError::new(
+            "query.statement must end with ORDER BY timestamp ASC, tie_breaker ASC using the configured cursor columns",
+        ));
     }
     let order = last_order.expect("ordering was validated");
     let where_index = tokens
