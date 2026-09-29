@@ -1,15 +1,14 @@
-
 # Use this changelog template to create an entry for release notes.
 
 # One of 'breaking', 'deprecation', 'new_component', 'enhancement', 'bug_fix'
-change_type: enhancement
+change_type: bug_fix
 
 # The name of the component, or a single word describing the area of concern, (e.g. engine, otap).
 # Must be one of the components listed in rust/otap-dataflow/.chloggen/config.yaml.
-component: pdata
+component: pipeline
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
-note: Optimize OTAP batching by fusing splitting, reindexing, casting, and concatenation into a single copy.
+note: The batch processor no longer leaves OTAP requests unacknowledged, or acknowledges them early, when rows are dropped or a partial batch is held back.
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
 issues: [4170]
@@ -20,6 +19,6 @@ issues: [4170]
 # section with the specific action consumers must take. Keep notes to 200
 # characters and subtext to 300 characters.
 subtext: |
-  Speeds up OTAP batching by up to 38%. Metrics batches are now filled up to
-  `max_size` at metric boundaries, so expect fewer, fuller batches. Batches from
-  an OTAP receiver are now decoded before they are split, fixing corrupted IDs.
+  Requests whose rows were all malformed and dropped are now acknowledged, and a
+  request whose data is partly held for the next batch is acknowledged only after
+  that data is sent.
