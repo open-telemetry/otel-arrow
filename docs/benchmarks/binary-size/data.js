@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790709361037,
+  "lastUpdate": 1790711358359,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -47545,6 +47545,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 104.42,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "mblanchard@macrosssoftware.com",
+            "name": "Mikel Blanchard",
+            "username": "CodeBlanch"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "59b83d2eed4f221a95750fe093e1980b68721b36",
+          "message": "feat: Support ApiKeyProvider & BasicAuthProvider capabilities in OTLP exporters (#4077)\n\nRelates to #3901\nPrevious PRs: [#4034, #4072]\n\n# Changes\n\n* Introduces `HttpClientAuthProvider` trait which is more or less the\nAPI we have today for `BearerAuth`\n* There is a factory method for creating `HttpClientAuthProvider` from\nbound capabilities\n* Only 1 provider may be specified or none, specifying more than one\nleads to a config error\n  * A `bitflags` enum controls which providers are allowed\n* Refactor OTLP Exporters (gRPC + HTTP) to use `HttpClientAuthProvider`\ninstead of `BearerAuth` directly\n* Implement `HttpClientAuthProvider` for `BearerAuth`\n* Introduce `ApiKeyAuth` and `BasicAuth` implementations of\n`HttpClientAuthProvider`\n* Introduce `credential_stream` API on `AgentFedCredentialProvider`\n* Refactor `AgentFedAuth` from #3836 into `HttpClientAuthProvider` form\n* This enables `AgentFedAuth` in OTLP gRPC exporter so I stitched up the\nauth metrics there\n\n# Not planned\n\n* Doc updates. OTLP docs _should_ show how to turn on API Key or Basic\nAuth but there are no extensions yet. I'll update the docs once we have\nsome real extensions to show.\n\n---------\n\nCo-authored-by: Copilot Autofix powered by AI <175728472+Copilot@users.noreply.github.com>",
+          "timestamp": "2026-09-29T18:54:45Z",
+          "tree_id": "98b99ad5223e5dc608e28e8019b6352b5f39fa7e",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/59b83d2eed4f221a95750fe093e1980b68721b36"
+        },
+        "date": 1790711341575,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 84.88,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.77,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.73,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.98,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.7,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 72.1,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.87,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.56,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 117.29,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 104.48,
             "unit": "MB"
           }
         ]
