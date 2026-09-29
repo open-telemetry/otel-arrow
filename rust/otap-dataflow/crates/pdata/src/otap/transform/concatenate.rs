@@ -1482,10 +1482,32 @@ fn gather_dict<K: ArrowDictionaryKeyType, B: ValueBuilder>(
             // Every key must be null.
             builder.append_default(r.len());
         } else {
-            // Null keys may hold arbitrary values; clamp so the gather is
-            // always in bounds. The null buffer masks the result.
             let max = values_len - 1;
-            builder.append_gather::<K::Native>(&src, &keys[r.clone()], max);
+            let key_nulls = dict
+                .keys()
+                .nulls()
+                .map(|n| n.slice(r.start, r.len()))
+                .filter(|n| n.null_count() > 0);
+            match key_nulls {
+                None => builder.append_gather::<K::Native>(&src, &keys[r.clone()], max),
+                Some(key_nulls) => {
+                    // Null key slots may reference any value (often a large
+                    // one). Write placeholders for them instead of copying
+                    // the referenced value only for it to be masked.
+                    let mut pos = 0;
+                    for (s, e) in key_nulls.valid_slices() {
+                        if s > pos {
+                            builder.append_default(s - pos);
+                        }
+                        let keys = &keys[r.start + s..r.start + e];
+                        builder.append_gather::<K::Native>(&src, keys, max);
+                        pos = e;
+                    }
+                    if r.len() > pos {
+                        builder.append_default(r.len() - pos);
+                    }
+                }
+            }
         }
         // A null value referenced by a valid key is also null in the output.
         match values.nulls() {
@@ -1886,9 +1908,6 @@ trait ValueBuilder {
     fn append_range(&mut self, src: &Self::Src<'_>, range: Range<usize>);
 
     /// Append `src[min(k, max)]` for each dictionary key `k` in `keys`.
-    ///
-    /// Keys are clamped to `max` (the last valid index) because null keys may
-    /// hold arbitrary values; the null buffer masks those rows.
     fn append_gather<K: ArrowNativeType>(&mut self, src: &Self::Src<'_>, keys: &[K], max: usize);
 
     /// Append `n` placeholder values (masked by nulls).
@@ -1917,7 +1936,8 @@ fn u32_remap(col: IdCol) -> (IdCol, RemapFn<u32>) {
 /// Split dictionary keys into maximal runs of consecutive value indices and
 /// call `f` with each run as a range of value indices, in key order.
 ///
-/// Keys are clamped to `max` (see [ValueBuilder::append_gather]). A run of
+/// Keys are clamped to `max` as a bounds guard (see
+/// [ValueBuilder::append_gather]). A run of
 /// length 1 is a single value.
 #[inline]
 fn for_each_key_run<K: ArrowNativeType>(keys: &[K], max: usize, mut f: impl FnMut(Range<usize>)) {
