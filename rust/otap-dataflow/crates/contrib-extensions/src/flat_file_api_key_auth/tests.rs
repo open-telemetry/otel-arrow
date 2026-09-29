@@ -27,7 +27,7 @@ fn valid_attributes() -> serde_json::Map<String, serde_json::Value> {
     .expect("attributes are an object")
 }
 
-fn config_from_json(value: serde_json::Value) -> Result<Config, ConfigError> {
+fn config_from_json(value: serde_json::Value) -> Result<(Config, ApiKeyAttributes), ConfigError> {
     parse_config(&value)
 }
 
@@ -42,7 +42,8 @@ fn config_defaults_apply() {
             "http.header_scheme": "ApiKey"
         }
     }))
-    .expect("config is valid");
+    .expect("config is valid")
+    .0;
 
     assert_eq!(
         config.key_secret.as_ref().map(SecretString::expose_secret),
@@ -77,12 +78,11 @@ fn config_key_source_is_required_and_non_empty() {
 /// Guarantees: Optional header metadata may be omitted but construction rejects invalid values.
 #[test]
 fn auth_http_attributes_are_validated() {
-    let config = config_from_json(serde_json::json!({
-        "key_secret": "test-key"
-    }))
-    .expect("config structure is valid");
     assert!(
-        FlatFileApiKeyAuth::new(config).is_ok(),
+        config_from_json(serde_json::json!({
+            "key_secret": "test-key"
+        }))
+        .is_ok(),
         "HTTP attributes are optional"
     );
 
@@ -95,13 +95,12 @@ fn auth_http_attributes_are_validated() {
         serde_json::json!({"http.header_scheme": "ApiKey\n"}),
         serde_json::json!({"http.header_name": "x-api-key", "http.header_scheme": false}),
     ] {
-        let config = config_from_json(serde_json::json!({
-            "key_secret": "test-key",
-            "attributes": attributes
-        }))
-        .expect("config structure is valid");
         assert!(
-            FlatFileApiKeyAuth::new(config).is_err(),
+            config_from_json(serde_json::json!({
+                "key_secret": "test-key",
+                "attributes": attributes
+            }))
+            .is_err(),
             "malformed HTTP attributes must be rejected"
         );
     }
@@ -193,9 +192,11 @@ fn make_extension(config: Config) -> FlatFileApiKeyAuthExtension {
     };
     let registry = TelemetryRegistryHandle::new();
     let metric_set = registry.register_metric_set::<FlatFileApiKeyAuthMetrics>(EmptyAttributes());
+    let attributes =
+        ApiKeyAttributes::from_map(config.attributes.clone()).expect("valid attributes");
     FlatFileApiKeyAuthExtension::new(
         "test-ext",
-        FlatFileApiKeyAuth::new(config).expect("valid auth"),
+        FlatFileApiKeyAuth::new(config, attributes),
         refresh_policy,
         tx,
         BackgroundProviderMetricsTracker::new(metric_set),
@@ -232,13 +233,15 @@ async fn get_inline_api_key() {
 async fn key_file_takes_precedence() {
     let mut file = NamedTempFile::new().expect("file created");
     file.write_all(b"file-key").expect("content written");
-    let source = FlatFileApiKeyAuth::new(Config {
-        key_secret: Some("inline-key".into()),
-        key_secret_file: Some(file.path().into()),
-        key_secret_file_refresh: Duration::from_secs(10),
-        attributes: valid_attributes(),
-    })
-    .expect("valid auth");
+    let source = FlatFileApiKeyAuth::new(
+        Config {
+            key_secret: Some("inline-key".into()),
+            key_secret_file: Some(file.path().into()),
+            key_secret_file_refresh: Duration::from_secs(10),
+            attributes: Default::default(),
+        },
+        ApiKeyAttributes::from_map(valid_attributes()).expect("valid attributes"),
+    );
 
     let key = source.fetch().await.expect("key acquired");
     assert_eq!(key.expose_value(), "file-key");
@@ -251,13 +254,15 @@ async fn key_file_rotation_takes_effect() {
     let directory = tempfile::tempdir().expect("tempdir created");
     let path = directory.path().join("api-key");
     std::fs::write(&path, "key-1").expect("initial key written");
-    let source = FlatFileApiKeyAuth::new(Config {
-        key_secret: None,
-        key_secret_file: Some(path.clone()),
-        key_secret_file_refresh: Duration::from_secs(300),
-        attributes: valid_attributes(),
-    })
-    .expect("valid auth");
+    let source = FlatFileApiKeyAuth::new(
+        Config {
+            key_secret: None,
+            key_secret_file: Some(path.clone()),
+            key_secret_file_refresh: Duration::from_secs(300),
+            attributes: Default::default(),
+        },
+        ApiKeyAttributes::from_map(valid_attributes()).expect("valid attributes"),
+    );
 
     let first = source.fetch().await.expect("first key acquired");
     std::fs::write(&path, "key-2").expect("rotated key written");
@@ -322,13 +327,15 @@ async fn background_refresh_publishes_rotated_key() {
 async fn key_file_rejects_empty_key() {
     let mut file = NamedTempFile::new().expect("file created");
     file.write_all(b"\r\n").expect("content written");
-    let source = FlatFileApiKeyAuth::new(Config {
-        key_secret: None,
-        key_secret_file: Some(file.path().into()),
-        key_secret_file_refresh: Duration::from_secs(10),
-        attributes: valid_attributes(),
-    })
-    .expect("valid auth");
+    let source = FlatFileApiKeyAuth::new(
+        Config {
+            key_secret: None,
+            key_secret_file: Some(file.path().into()),
+            key_secret_file_refresh: Duration::from_secs(10),
+            attributes: Default::default(),
+        },
+        ApiKeyAttributes::from_map(valid_attributes()).expect("valid attributes"),
+    );
 
     let error = source.fetch().await.expect_err("empty API key rejected");
     assert!(error.to_string().contains("API key cannot be empty"));

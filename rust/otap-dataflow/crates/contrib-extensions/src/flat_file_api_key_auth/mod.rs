@@ -23,8 +23,8 @@ use linkme::distributed_slice;
 use otel_arrow_dfe_config::error::Error as ConfigError;
 use otel_arrow_dfe_config::extension::ExtensionUserConfig;
 use otel_arrow_dfe_engine::ExtensionFactory;
-use otel_arrow_dfe_engine::capability::auth::ApiKey;
 use otel_arrow_dfe_engine::capability::auth::api_key_provider::ApiKeyProvider;
+use otel_arrow_dfe_engine::capability::auth::{ApiKey, ApiKeyAttributes};
 use otel_arrow_dfe_engine::config::ExtensionConfig;
 use otel_arrow_dfe_engine::context::ExtensionContext;
 use otel_arrow_dfe_engine::extension::wrapper::ExtensionVariant;
@@ -56,7 +56,7 @@ pub const FLAT_FILE_API_KEY_AUTH_URN: &str = "urn:otel:extension:flat_file_api_k
 const DEFAULT_API_KEY_REFRESH_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
 /// Deserializes and validates the extension's user configuration.
-fn parse_config(config: &serde_json::Value) -> Result<Config, ConfigError> {
+fn parse_config(config: &serde_json::Value) -> Result<(Config, ApiKeyAttributes), ConfigError> {
     let parsed: Config =
         serde_json::from_value(config.clone()).map_err(|e| ConfigError::InvalidUserConfig {
             error: e.to_string(),
@@ -64,7 +64,12 @@ fn parse_config(config: &serde_json::Value) -> Result<Config, ConfigError> {
     parsed
         .validate()
         .map_err(|error| ConfigError::InvalidUserConfig { error })?;
-    Ok(parsed)
+    let attributes = ApiKeyAttributes::from_map(parsed.attributes.clone()).map_err(|e| {
+        ConfigError::InvalidUserConfig {
+            error: format!("failed to initialize flat file api key auth: {e}"),
+        }
+    })?;
+    Ok((parsed, attributes))
 }
 
 /// Static config validation hook for the factory.
@@ -79,7 +84,7 @@ fn create(
     ext_config: Arc<ExtensionUserConfig>,
     extension_config: &ExtensionConfig,
 ) -> Result<ExtensionBundle, ConfigError> {
-    let config = parse_config(&ext_config.config)?;
+    let (config, attributes) = parse_config(&ext_config.config)?;
 
     let entity_key = ext_ctx.register_extension_entity(name.clone(), ExtensionVariant::Shared);
     let metric_set =
@@ -99,9 +104,7 @@ fn create(
 
     let extension = FlatFileApiKeyAuthExtension::new(
         &name,
-        FlatFileApiKeyAuth::new(config).map_err(|e| ConfigError::InvalidUserConfig {
-            error: format!("failed to initialize flat file api key auth: {e}"),
-        })?,
+        FlatFileApiKeyAuth::new(config, attributes),
         refresh_policy,
         tx,
         tracker,

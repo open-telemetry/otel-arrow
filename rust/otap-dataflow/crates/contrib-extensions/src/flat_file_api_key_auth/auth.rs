@@ -27,11 +27,8 @@ pub struct FlatFileApiKeyAuth {
 }
 
 impl FlatFileApiKeyAuth {
-    pub fn new(config: Config) -> Result<Self, String> {
-        let attributes =
-            ApiKeyAttributes::from_map(config.attributes.clone()).map_err(|e| e.to_string())?;
-
-        Ok(Self { config, attributes })
+    pub fn new(config: Config, attributes: ApiKeyAttributes) -> Self {
+        Self { config, attributes }
     }
 }
 
