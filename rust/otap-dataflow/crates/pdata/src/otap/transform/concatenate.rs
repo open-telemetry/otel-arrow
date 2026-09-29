@@ -81,10 +81,6 @@
 //!   the key width, based on the least work, and possibly make it
 //!   configurable. Today a column is a dictionary if any input is, when the
 //!   summed physical value count fits.
-//! - TODO(dict-dedupe): `write_dict` appends the entire values array of
-//!   every dictionary input. Deduplicate values arrays shared between inputs
-//!   (pointer identity, e.g. slices of the same split batch) and trim values
-//!   not referenced by the selected keys.
 //! - TODO(list-writer): List columns (metrics quantiles, histogram buckets)
 //!   use the generic `MutableArrayData` fallback (`write_fallback`). Add a
 //!   specialized writer that copies offsets and child values directly.
@@ -188,13 +184,16 @@ impl Default for ConcatOptions {
 
 /// Concatenate the provided OTAP batches into a single batch.
 ///
-/// See the module documentation for the algorithm. When `opts.reindex` is
-/// set, transport optimized encodings are removed and ID columns are
-/// rewritten so that IDs from different inputs cannot collide. Otherwise ID
-/// columns are copied as-is, which is only correct when the inputs are
-/// disjoint pieces of the same original batch.
+/// See the module documentation for the algorithm. By default, this function
+/// will reindex the input batches where transport optimized encodings are
+/// removed and ID columns are rewritten so that IDs from different inputs
+/// cannot collide.
 ///
-/// The inputs are consumed: every slot in `items` is `None` on success.
+/// Reindexing behavior can be disabled by setting [`ConcatOptions::reindex`] to
+/// `false`. Be careful when doing this, as the resulting otap batch will most
+/// likely have corrupted id columns unless you can guarantee that the input IDs
+/// are decoded and non-overlapping. The most common valid scenario is when all
+/// input batches are pieces of the same original otap batch.
 ///
 /// # Errors
 ///
@@ -250,6 +249,8 @@ fn concatenate_signal<S: OtapBatchStore, const N: usize>(
     };
 
     #[allow(clippy::needless_range_loop)]
+    let mut batches: Vec<&RecordBatch> = Vec::new();
+    let mut plans: Vec<InputPlan> = Vec::new();
     for i in 0..N {
         let payload_def = payloads::get(S::payload_type_at_idx(i));
 
@@ -259,8 +260,8 @@ fn concatenate_signal<S: OtapBatchStore, const N: usize>(
         }
         let selected = select_schema(&index)?;
 
-        let mut batches: Vec<&RecordBatch> = Vec::with_capacity(index.batch_count);
-        let mut plans: Vec<InputPlan> = Vec::with_capacity(index.batch_count);
+        batches.reserve(index.batch_count);
+        plans.reserve(index.batch_count);
         for (j, group) in items.iter().enumerate() {
             if let Some(rb) = group[i].as_ref() {
                 batches.push(rb);
@@ -270,7 +271,13 @@ fn concatenate_signal<S: OtapBatchStore, const N: usize>(
                 });
             }
         }
+
         result[i] = Some(write_payload(&batches, &plans, payload_def, selected)?);
+
+        // We can't just clear batches because of the lifetime, hence the
+        // `reuse_vec` trick to transmute to a new lifetime.
+        batches = reuse_vec(batches);
+        plans.clear();
 
         for payload in select_all_mut(items, i) {
             *payload = None;
@@ -278,6 +285,11 @@ fn concatenate_signal<S: OtapBatchStore, const N: usize>(
     }
 
     Ok(result)
+}
+
+fn reuse_vec<'b, T>(mut v: Vec<&T>) -> Vec<&'b T> {
+    v.clear();
+    v.into_iter().map(|_| unreachable!()).collect()
 }
 
 /// Test helper: apply the reindex plan to every input independently, without
