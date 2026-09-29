@@ -316,7 +316,7 @@ pub(crate) fn align_selection_to_root(
             {
                 // copy out the attrs_id before moving value, since AttributesIdentifier is Copy
                 let maybe_attrs_id = match &scoped_value.scope {
-                    DataScope::Attribute(attrs_id, _) | DataScope::AttributesAll(attrs_id) => {
+                    DataScope::Attribute(attrs_id, _, _) | DataScope::AttributesAll(attrs_id) => {
                         Some(*attrs_id)
                     }
                     _ => None,
@@ -6281,6 +6281,70 @@ mod test {
                 &[expected_record],
                 "value_type={value_type}"
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_filter_by_nested_serialized_attribute() {
+        let log_records = vec![
+            LogRecord::build()
+                .attributes([KeyValue::new(
+                    "complex",
+                    AnyValue::new_kvlist(vec![
+                        KeyValue::new("name", AnyValue::new_string("a")),
+                        KeyValue::new("count", AnyValue::new_int(2)),
+                    ]),
+                )])
+                .finish(),
+            LogRecord::build()
+                .attributes([KeyValue::new(
+                    "complex",
+                    AnyValue::new_kvlist(vec![KeyValue::new("name", AnyValue::new_string("b"))]),
+                )])
+                .finish(),
+            LogRecord::build()
+                .attributes([KeyValue::new("complex", AnyValue::new_string("a"))])
+                .finish(),
+            LogRecord::build().finish(),
+            LogRecord::build()
+                .attributes([KeyValue::new(
+                    "complex",
+                    AnyValue::new_kvlist(vec![KeyValue::new("name", AnyValue::default())]),
+                )])
+                .finish(),
+        ];
+
+        let cases = [
+            (
+                r#"logs | where attributes["complex"]["name"] == "a""#,
+                vec![0],
+            ),
+            (
+                r#"logs | where attributes["complex"]["count"] > 1"#,
+                vec![0],
+            ),
+            (
+                r#"logs | where attributes["complex"]["name"] == null"#,
+                vec![2, 3, 4],
+            ),
+            (
+                r#"logs | where not(attributes["complex"]["name"] == null)"#,
+                vec![0, 1],
+            ),
+        ];
+
+        for (query, expected_indices) in cases {
+            let result =
+                exec_logs_pipeline::<OplParser>(query, to_logs_data(log_records.clone())).await;
+            let expected = expected_indices
+                .into_iter()
+                .map(|index| log_records[index].clone())
+                .collect::<Vec<_>>();
+            let actual = &result.resource_logs[0].scope_logs[0].log_records;
+            assert_eq!(actual.len(), expected.len(), "{query}");
+            for expected_record in &expected {
+                assert!(actual.contains(expected_record), "{query}");
+            }
         }
     }
 
