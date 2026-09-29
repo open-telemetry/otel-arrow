@@ -1,7 +1,0 @@
-change_type: bug_fix
-component: otap
-note: Reload receiver client CA files mounted from Kubernetes Secrets and ConfigMaps when `watch_client_ca` is enabled.
-issues: [4165]
-subtext: |
-  The watcher now rechecks the configured path on any change in its directory, and retries
-  reloads that were deferred, failed, or found the path missing, even without a new file event.
