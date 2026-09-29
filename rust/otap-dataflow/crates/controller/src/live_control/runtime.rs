@@ -1710,10 +1710,11 @@ impl<
         let controller_deadline =
             pipeline_shutdown_completion_deadline(Instant::now() + shutdown_timeout);
         if !self.wait_for_controller_telemetry(controller_deadline) {
+            // Not a run error: the controller retries this phase after it releases the guard.
             self.restore_observability_senders(&observability_senders);
-            self.record_async_global_shutdown_failure(
-                "system observability remains active because controller telemetry shutdown timed out"
-                    .to_owned(),
+            otel_warn!(
+                "controller.global_shutdown.controller_telemetry_timeout",
+                message = "Controller telemetry handoff missed the shutdown deadline; system observability shutdown is retried after the handoff"
             );
             return;
         }
@@ -1814,6 +1815,28 @@ impl<
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .active_instances
             == 0
+    }
+
+    /// Returns whether system observability is the only runtime instance still active.
+    pub(crate) fn only_observability_active(&self) -> bool {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut observability_active = false;
+        for (key, instance) in &state.runtime_instances {
+            if !matches!(instance.lifecycle, RuntimeInstanceLifecycle::Active) {
+                continue;
+            }
+            if key.pipeline_group_id.as_ref() == SYSTEM_PIPELINE_GROUP_ID
+                && key.pipeline_id.as_ref() == SYSTEM_OBSERVABILITY_PIPELINE_ID
+            {
+                observability_active = true;
+            } else {
+                return false;
+            }
+        }
+        observability_active
     }
 
     /// Restores system observability senders if the coordinator could not start.

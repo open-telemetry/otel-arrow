@@ -2035,6 +2035,8 @@ impl<
         drop(controller_telemetry_guard);
 
         if run_mode == RunMode::ShutdownWhenDone {
+            // request_shutdown_all skips observability until a timed-out coordinator returns.
+            let _ = runtime.wait_for_global_shutdown_completion();
             if let Err(error) = control_plane.shutdown_all(10) {
                 return Err(Error::PipelineRuntimeError {
                     source: Box::new(std::io::Error::other(format!(
@@ -2048,6 +2050,16 @@ impl<
 
         if run_mode == RunMode::ParkMainThread {
             let global_shutdown_requested = runtime.wait_for_global_shutdown_completion();
+            if global_shutdown_requested && runtime.only_observability_active() {
+                // A coordinator that gave up waiting for the guard left observability running.
+                if let Err(error) = control_plane.shutdown_all(10) {
+                    otel_warn!(
+                        "controller.observability_shutdown_retry_failed",
+                        error = format!("{error:?}")
+                    );
+                }
+                let _ = runtime.wait_for_global_shutdown_completion();
+            }
             let all_instances_exited = if global_shutdown_requested {
                 runtime.all_instances_exited()
             } else {
@@ -3284,6 +3296,55 @@ groups: {{}}
         )
     }
 
+    /// Registers an extension that, once cancelled, requests a 1 s global shutdown and then
+    /// keeps the controller joining it past that coordinator's telemetry guard deadline.
+    fn slow_extension_test_options() -> (
+        ControllerRunOptions,
+        std::sync::mpsc::Receiver<ControllerExtensionContext>,
+    ) {
+        let (context_tx, context_rx) = std::sync::mpsc::channel();
+        let mut extensions = ControllerExtensionRegistry::empty();
+        extensions.register(
+            "urn:test:extension:observe_shutdown".into(),
+            move |context| {
+                let context_tx = context_tx.clone();
+                Ok(Box::new(move |cancellation| {
+                    Box::pin(async move {
+                        // Sent from the task, which starts after system observability registers.
+                        let control_plane = Arc::clone(&context.control_plane);
+                        context_tx.send(context).expect("test receives context");
+                        cancellation.cancelled().await;
+                        let _ = control_plane.shutdown_all(1);
+                        // The guard deadline is the 1 s timeout plus the 1 s test grace.
+                        thread::sleep(Duration::from_secs(4));
+                        Ok(())
+                    })
+                }))
+            },
+            otel_arrow_dfe_config::validation::no_config,
+        );
+        (
+            ControllerRunOptions {
+                extensions,
+                ..Default::default()
+            },
+            context_rx,
+        )
+    }
+
+    fn assert_system_observability_stopped(context: &ControllerExtensionContext) {
+        use otel_arrow_dfe_state::phase::PipelinePhase;
+
+        let snapshot = context.observed_state.snapshot();
+        assert_eq!(snapshot.len(), 1, "only system observability is running");
+        for status in snapshot.values() {
+            assert!(!status.per_instance().is_empty());
+            for instance in status.per_instance().values() {
+                assert_eq!(instance.phase(), PipelinePhase::Stopped);
+            }
+        }
+    }
+
     /// Scenario: an unread stdout pipe times out during the final drain, and the warning
     /// cannot fit in stderr's byte budget in an isolated process with the real output service.
     /// Guarantees: the production final handoff reports the dropped warning to the registry
@@ -3639,6 +3700,68 @@ groups: {}
         let snapshot = context.observed_state.snapshot();
         assert_eq!(snapshot.len(), 1, "only system observability is running");
         assert!(snapshot.values().all(|status| status.is_terminated()));
+        std::process::exit(0);
+    }
+
+    /// Scenario: in run_forever, a global shutdown's coordinator gives up waiting for the
+    /// telemetry guard while the controller is still joining a slow extension.
+    /// Guarantees: after releasing the guard the controller retries the observability phase,
+    /// so system observability drains to Stopped and the late handoff is not a run error.
+    #[test]
+    fn run_forever_stops_observability_after_a_late_telemetry_handoff() {
+        if std::env::var_os("OTAP_CONSOLE_REPORTING_CHILD").is_none() {
+            run_console_reporting_child(
+                "tests::run_forever_stops_observability_after_a_late_telemetry_handoff",
+            );
+            return;
+        }
+        let (options, context_rx) = slow_extension_test_options();
+        let config =
+            admin_shutdown_test_config("127.0.0.1:0".parse().expect("loopback admin address"));
+        let controller = thread::spawn(move || {
+            Controller::new(test_pipeline_factory()).run_forever_with_options(config, options)
+        });
+        let context = context_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("controller extension starts");
+        context
+            .control_plane
+            .shutdown_all(1)
+            .expect("global shutdown accepted");
+        let result = controller.join().expect("controller thread finishes");
+        assert!(
+            result.is_ok(),
+            "a late telemetry handoff is retried: {result:?}"
+        );
+        assert_system_observability_stopped(&context);
+        std::process::exit(0);
+    }
+
+    /// Scenario: in run_till_shutdown, a shutdown request's coordinator gives up waiting for
+    /// the telemetry guard while the controller is still joining a slow extension.
+    /// Guarantees: the controller's own shutdown request still stops system observability
+    /// (drained to Stopped), and the late handoff is not a run error.
+    #[test]
+    fn run_till_shutdown_stops_observability_after_a_late_telemetry_handoff() {
+        if std::env::var_os("OTAP_CONSOLE_REPORTING_CHILD").is_none() {
+            run_console_reporting_child(
+                "tests::run_till_shutdown_stops_observability_after_a_late_telemetry_handoff",
+            );
+            return;
+        }
+        let (options, context_rx) = slow_extension_test_options();
+        let result = Controller::new(test_pipeline_factory()).run_till_shutdown_with_options(
+            admin_shutdown_test_config("127.0.0.1:0".parse().expect("loopback admin address")),
+            options,
+        );
+        assert!(
+            result.is_ok(),
+            "a late telemetry handoff is retried: {result:?}"
+        );
+        let context = context_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("controller extension captured observed state");
+        assert_system_observability_stopped(&context);
         std::process::exit(0);
     }
 
