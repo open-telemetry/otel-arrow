@@ -301,21 +301,120 @@ mod tests {
     }
 
     /// Scenario: HTTP header metadata contains empty or malformed token values.
-    /// Guarantees: The shared validators and builders reject invalid values.
+    /// Guarantees: The public typed builders reject invalid values.
     #[test]
-    fn http_attribute_validation_rejects_malformed_values() {
+    fn http_attribute_builders_reject_malformed_values() {
         for header_name in ["", "invalid header", "x-api-key\n"] {
             assert!(matches!(
-                ApiKeyAttributes::validate_http_header_name_attribute(header_name),
+                ApiKeyAttributes::new().with_http_header_name_attribute(header_name),
                 Err(ApiKeyAttributeError::InvalidHttpHeaderName(_))
             ));
         }
 
-        for header_scheme in ["", "invalid scheme", "ApiKey\n"] {
+        for header_scheme in [
+            "",
+            "invalid scheme",
+            "ApiKey\n",
+            "Api:Key",
+            "Api/Key",
+            "Api,Key",
+            "Api\tKey",
+            "ApiK\u{e9}y",
+        ] {
             assert!(matches!(
-                ApiKeyAttributes::validate_http_header_scheme_attribute(header_scheme),
+                ApiKeyAttributes::new().with_http_header_scheme_attribute(header_scheme),
                 Err(ApiKeyAttributeError::InvalidHttpHeaderScheme(_))
             ));
         }
+    }
+
+    /// Scenario: HTTP authentication schemes contain every permitted token character.
+    /// Guarantees: The scheme builder accepts the complete RFC token character set.
+    #[test]
+    fn http_header_scheme_builder_accepts_token_characters() {
+        for header_scheme in ["ApiKey", "A!#$%&'*+-.^_`|~9"] {
+            assert!(
+                ApiKeyAttributes::new()
+                    .with_http_header_scheme_attribute(header_scheme)
+                    .is_ok(),
+                "expected valid scheme: {header_scheme}"
+            );
+        }
+    }
+
+    /// Scenario: Reserved HTTP attributes are supplied through the generic builder.
+    /// Guarantees: The generic path enforces both value types and syntax.
+    #[test]
+    fn generic_attribute_builder_validates_reserved_attributes() {
+        for (name, value) in [
+            (
+                ApiKeyAttributes::HTTP_HEADER_NAME_ATTRIBUTE,
+                Value::Number(42.into()),
+            ),
+            (
+                ApiKeyAttributes::HTTP_HEADER_SCHEME_ATTRIBUTE,
+                Value::Bool(false),
+            ),
+            (
+                ApiKeyAttributes::HTTP_HEADER_NAME_ATTRIBUTE,
+                Value::String("invalid header".into()),
+            ),
+            (
+                ApiKeyAttributes::HTTP_HEADER_SCHEME_ATTRIBUTE,
+                Value::String("invalid scheme".into()),
+            ),
+        ] {
+            assert!(ApiKeyAttributes::new().with_attribute(name, value).is_err());
+        }
+    }
+
+    /// Scenario: A map contains custom metadata and valid reserved HTTP attributes.
+    /// Guarantees: Map conversion preserves every value for API key consumers.
+    #[test]
+    fn from_map_preserves_valid_attributes() {
+        let attributes = serde_json::from_value(serde_json::json!({
+            "tenant.id": 42,
+            "http.header_name": "x-api-key",
+            "http.header_scheme": "ApiKey"
+        }))
+        .expect("attributes are an object");
+        let key = ApiKey::new("secret")
+            .with_attributes(ApiKeyAttributes::from_map(attributes).expect("attributes are valid"));
+
+        assert_eq!(key.get_http_header_name_attribute(), Some("x-api-key"));
+        assert_eq!(key.get_http_header_scheme_attribute(), Some("ApiKey"));
+        assert_eq!(
+            key.get_attributes()
+                .and_then(|values| values.get("tenant.id")),
+            Some(&Value::Number(42.into()))
+        );
+    }
+
+    /// Scenario: An attribute collection is cloned and one copy replaces an attribute.
+    /// Guarantees: Replacement affects only the modified copy and leaves the clone isolated.
+    #[test]
+    fn cloned_attributes_replace_values_independently() {
+        let original = ApiKeyAttributes::new()
+            .with_attribute("tenant.id", 42)
+            .expect("custom attribute is valid");
+        let updated = original
+            .clone()
+            .with_attribute("tenant.id", 43)
+            .expect("replacement attribute is valid");
+        let original_key = ApiKey::new("original").with_attributes(original);
+        let updated_key = ApiKey::new("updated").with_attributes(updated);
+
+        assert_eq!(
+            original_key
+                .get_attributes()
+                .and_then(|values| values.get("tenant.id")),
+            Some(&Value::Number(42.into()))
+        );
+        assert_eq!(
+            updated_key
+                .get_attributes()
+                .and_then(|values| values.get("tenant.id")),
+            Some(&Value::Number(43.into()))
+        );
     }
 }

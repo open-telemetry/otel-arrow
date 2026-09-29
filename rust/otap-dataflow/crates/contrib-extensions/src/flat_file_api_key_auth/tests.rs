@@ -73,15 +73,16 @@ fn config_key_source_is_required_and_non_empty() {
     }
 }
 
-/// Scenario: Config parsing receives missing or incorrectly typed HTTP attributes.
-/// Guarantees: Optional header metadata may be omitted but is rejected when malformed.
+/// Scenario: Auth construction receives missing or malformed HTTP attributes.
+/// Guarantees: Optional header metadata may be omitted but construction rejects invalid values.
 #[test]
-fn config_http_attributes_are_validated() {
+fn auth_http_attributes_are_validated() {
+    let config = config_from_json(serde_json::json!({
+        "key_secret": "test-key"
+    }))
+    .expect("config structure is valid");
     assert!(
-        config_from_json(serde_json::json!({
-            "key_secret": "test-key"
-        }))
-        .is_ok(),
+        FlatFileApiKeyAuth::new(config).is_ok(),
         "HTTP attributes are optional"
     );
 
@@ -94,12 +95,14 @@ fn config_http_attributes_are_validated() {
         serde_json::json!({"http.header_scheme": "ApiKey\n"}),
         serde_json::json!({"http.header_name": "x-api-key", "http.header_scheme": false}),
     ] {
+        let config = config_from_json(serde_json::json!({
+            "key_secret": "test-key",
+            "attributes": attributes
+        }))
+        .expect("config structure is valid");
         assert!(
-            config_from_json(serde_json::json!({
-                "key_secret": "test-key",
-                "attributes": attributes
-            }))
-            .is_err()
+            FlatFileApiKeyAuth::new(config).is_err(),
+            "malformed HTTP attributes must be rejected"
         );
     }
 }
