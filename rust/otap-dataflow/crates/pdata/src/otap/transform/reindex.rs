@@ -146,7 +146,41 @@ use crate::schema::consts::{ID, PARENT_ID};
 use super::util::{IdColumnType, PrimaryIdInfo, payload_relations};
 
 /// Per-payload, per-input plans. `plans[payload_idx][input_idx]`.
-pub(crate) type IdPlan<const N: usize> = [Vec<InputPlan>; N];
+pub(crate) type IdPlan<'a, const N: usize> = [Vec<InputPlan<'a>>; N];
+
+/// One input's contribution to a concatenated output.
+#[derive(Clone, Copy)]
+pub(crate) struct Segment<'a, const N: usize> {
+    /// The input's (decoded) record batches.
+    pub(crate) batches: &'a [Option<RecordBatch>; N],
+    /// Rows of each payload that belong to this segment, or `None` if the
+    /// whole input is taken.
+    ///
+    /// Cut selections are derived by joining children to their selected
+    /// parents, so every selected child references a selected parent: they
+    /// never contain referential integrity violations.
+    pub(crate) cut: Option<&'a [Selection<'a>; N]>,
+}
+
+impl<'a, const N: usize> Segment<'a, N> {
+    /// A segment taking the whole input.
+    pub(crate) const fn whole(batches: &'a [Option<RecordBatch>; N]) -> Self {
+        Self { batches, cut: None }
+    }
+
+    fn selection(&self, idx: usize) -> Option<&'a Selection<'a>> {
+        self.cut.map(|c| &c[idx])
+    }
+
+    /// The initial plan for payload `idx`: the segment's selection with no
+    /// remaps.
+    fn initial_plan(&self, idx: usize) -> InputPlan<'a> {
+        InputPlan {
+            selection: self.selection(idx).cloned().unwrap_or_default(),
+            remaps: Default::default(),
+        }
+    }
+}
 
 /// Remove transport optimized encodings from every batch in place.
 pub(crate) fn remove_transport_encodings<S: OtapBatchStore, const N: usize>(
@@ -163,16 +197,17 @@ pub(crate) fn remove_transport_encodings<S: OtapBatchStore, const N: usize>(
     Ok(())
 }
 
-/// Plan the ID rewrites needed to concatenate `batches` without collisions.
+/// Plan the ID rewrites needed to concatenate `segments` without collisions.
 ///
 /// Transport optimized encodings must already have been removed. The inputs
 /// are not modified.
-pub(crate) fn plan_ids<S: OtapBatchStore, const N: usize>(
-    batches: &[[Option<RecordBatch>; N]],
-) -> Result<IdPlan<N>> {
-    let mut plans: IdPlan<N> = std::array::from_fn(|_| vec![InputPlan::default(); batches.len()]);
+pub(crate) fn plan_ids<'a, S: OtapBatchStore, const N: usize>(
+    segments: &[Segment<'a, N>],
+) -> Result<IdPlan<'a, N>> {
+    let mut plans: IdPlan<'a, N> =
+        std::array::from_fn(|i| segments.iter().map(|s| s.initial_plan(i)).collect());
 
-    if batches.len() <= 1 {
+    if segments.len() <= 1 {
         return Ok(plans);
     }
 
@@ -180,7 +215,7 @@ pub(crate) fn plan_ids<S: OtapBatchStore, const N: usize>(
         let info = payload_relations(payload_type);
 
         if let Some(ref primary_id_info) = info.primary_id {
-            check_primary_id_for_overflow(batches, payload_type, primary_id_info)?;
+            check_primary_id_for_overflow(segments, payload_type, primary_id_info)?;
         }
 
         for relation in info.relations {
@@ -194,8 +229,8 @@ pub(crate) fn plan_ids<S: OtapBatchStore, const N: usize>(
                 size: relation.size,
             };
             match relation.size {
-                IdColumnType::U16 => plan_relation::<UInt16Type, N>(batches, &mut plans, &ctx)?,
-                IdColumnType::U32 => plan_relation::<UInt32Type, N>(batches, &mut plans, &ctx)?,
+                IdColumnType::U16 => plan_relation::<UInt16Type, N>(segments, &mut plans, &ctx)?,
+                IdColumnType::U32 => plan_relation::<UInt32Type, N>(segments, &mut plans, &ctx)?,
             }
         }
     }
@@ -241,18 +276,31 @@ impl IdType for UInt32Type {
 // For a given primary id column, determine the count of Ids that exist across
 // every record batch and determine if it will fit in the type for that column.
 fn check_primary_id_for_overflow<const N: usize>(
-    batches: &[[Option<RecordBatch>; N]],
+    segments: &[Segment<'_, N>],
     payload_type: ArrowPayloadType,
     id_info: &PrimaryIdInfo,
 ) -> Result<()> {
     let idx = payload_to_idx(payload_type);
     let mut count: u64 = 0;
-    for rb in batches.iter().filter_map(|b| b[idx].as_ref()) {
+    for seg in segments {
+        let Some(rb) = seg.batches[idx].as_ref() else {
+            continue;
+        };
         let Ok(id_col) = extract_id_column(rb, id_info.name) else {
             continue;
         };
         // Null ids are not planned and consume no id space.
-        count += (id_col.len() - id_col.logical_null_count()) as u64;
+        count += match seg.selection(idx) {
+            None => (id_col.len() - id_col.logical_null_count()) as u64,
+            Some(sel) => {
+                let nulls = id_col.logical_nulls();
+                let mut n = 0u64;
+                sel.for_each_row(id_col.len(), |r| {
+                    n += nulls.as_ref().is_none_or(|nb| nb.is_valid(r)) as u64;
+                });
+                n
+            }
+        };
     }
 
     // TODO: Consider supporting u16::MAX + 1. The offset math is done in the
@@ -273,11 +321,11 @@ fn check_primary_id_for_overflow<const N: usize>(
 /// Plan the remaps for one ID column and all of its child `parent_id`
 /// columns, preferring a naive offset whenever possible.
 fn plan_relation<T: IdType, const N: usize>(
-    batches: &[[Option<RecordBatch>; N]],
-    plans: &mut IdPlan<N>,
+    segments: &[Segment<'_, N>],
+    plans: &mut IdPlan<'_, N>,
     ctx: &RelationCtx<'_>,
 ) -> Result<()> {
-    let stats = gather_column_stats::<T, N>(batches, ctx)?;
+    let stats = gather_column_stats::<T, N>(segments, ctx)?;
 
     // Figure out an upper bound on how many ids we will use with the optimal
     // available strategy for each input. When this exceeds the column-type
@@ -302,13 +350,15 @@ fn plan_relation<T: IdType, const N: usize>(
         let must_compact = stat.strategy == ReindexStrategy::CompactOnly
             || (need_to_save > 0 && current_saved < need_to_save);
 
-        let parent_rb = batches[i][parent_idx]
+        let seg = &segments[i];
+        let parent_rb = seg.batches[parent_idx]
             .as_ref()
             .expect("batch must exist for non-None stat");
         let id_col = extract_id_column(parent_rb, ctx.id_column_path)?;
 
         if must_compact {
-            let (replace, mappings, new_offset) = compact_parent::<T>(id_col.as_ref(), offset)?;
+            let (replace, mappings, new_offset) =
+                compact_parent::<T>(id_col.as_ref(), seg.selection(parent_idx), offset)?;
 
             // ids_consumed <= max_ids_needed always
             let ids_consumed = new_offset.as_usize() - offset.as_usize();
@@ -320,21 +370,25 @@ fn plan_relation<T: IdType, const N: usize>(
 
             for &child_payload_type in ctx.child_payload_types {
                 let child_idx = payload_to_idx(child_payload_type);
-                let Some(child_rb) = batches[i][child_idx].as_ref() else {
+                let Some(child_rb) = seg.batches[child_idx].as_ref() else {
                     continue;
                 };
                 let child_col = extract_id_column(child_rb, PARENT_ID)?;
-                let (replace, selection) = compact_child::<T>(child_col.as_ref(), &mappings)?;
+                let (replace, violations) = compact_child::<T>(child_col.as_ref(), &mappings)?;
                 let plan = &mut plans[child_idx][i];
                 plan.remaps[IdCol::ParentId as usize] = Some(T::wrap(IdRemap::Replace(replace)));
-                plan.selection = selection;
+                if let Some(keep) = violations {
+                    // Cut segments never select violating children, so this
+                    // only narrows whole inputs in practice.
+                    plan.selection = restrict_selection(&plan.selection, &keep);
+                }
             }
         } else {
             let delta = offset.sub_wrapping(stat.min);
             let remap = T::wrap(IdRemap::Offset(delta));
             for &child_payload_type in ctx.child_payload_types {
                 let child_idx = payload_to_idx(child_payload_type);
-                if batches[i][child_idx].is_some() {
+                if seg.batches[child_idx].is_some() {
                     plans[child_idx][i].remaps[IdCol::ParentId as usize] = Some(remap.clone());
                 }
             }
@@ -382,6 +436,64 @@ fn id_column_min_max<T: IdType>(col: &dyn Array) -> Result<Option<(T::Native, T:
     Ok(result)
 }
 
+/// Returns (min, max, count) over the valid values of an ID column at the
+/// selected rows. `None` if no selected row holds a valid value.
+fn id_column_min_max_selected<T: IdType>(
+    col: &dyn Array,
+    sel: &Selection<'_>,
+) -> Result<Option<(T::Native, T::Native, usize)>> {
+    let mut acc: Option<(T::Native, T::Native)> = None;
+    let mut count = 0usize;
+    let mut visit = |v: T::Native| {
+        count += 1;
+        acc = Some(match acc {
+            None => (v, v),
+            Some((lo, hi)) => (lo.min(v), hi.max(v)),
+        });
+    };
+    let len = col.len();
+    match col.data_type() {
+        DataType::Dictionary(key_type, _) => {
+            let values = materialize_id_values::<T>(col)?.values();
+            macro_rules! walk {
+                ($k:ty) => {{
+                    let dict = col.as_dictionary::<$k>();
+                    let keys = dict.keys();
+                    let kv = keys.values();
+                    sel.for_each_row(len, |r| {
+                        if keys.is_valid(r) {
+                            if let Some(&v) = values.get(kv[r].as_usize()) {
+                                visit(v);
+                            }
+                        }
+                    });
+                }};
+            }
+            match key_type.as_ref() {
+                DataType::UInt8 => walk!(UInt8Type),
+                DataType::UInt16 => walk!(UInt16Type),
+                k => {
+                    return Err(Error::UnsupportedDictionaryKeyType {
+                        expect_oneof: vec![DataType::UInt8, DataType::UInt16],
+                        actual: k.clone(),
+                    });
+                }
+            }
+        }
+        _ => {
+            let array = materialize_id_values::<T>(col)?;
+            let values = array.values();
+            let nulls = array.nulls().filter(|n| n.null_count() > 0);
+            sel.for_each_row(len, |r| {
+                if nulls.is_none_or(|n| n.is_valid(r)) {
+                    visit(values[r]);
+                }
+            });
+        }
+    }
+    Ok(acc.map(|(lo, hi)| (lo, hi, count)))
+}
+
 /// Returns the primitive array holding the ID values of `array`. For
 /// dictionary arrays this is the VALUES array, not the per-row values.
 fn materialize_id_values<T: ArrowPrimitiveType>(array: &dyn Array) -> Result<&PrimitiveArray<T>> {
@@ -415,8 +527,14 @@ fn materialize_id_values<T: ArrowPrimitiveType>(array: &dyn Array) -> Result<&Pr
 ///
 /// Returns the replacement values in source order (null slots hold 0), the
 /// range mappings needed to remap children, and the next free offset.
+///
+/// When `selection` is given, only the selected rows are compacted (and only
+/// they consume ids); the replacement values of unselected rows are
+/// unspecified. Selections are only supported for native (non-dictionary)
+/// columns, which is always the case for primary id columns.
 fn compact_parent<T: IdType>(
     col: &dyn Array,
+    selection: Option<&Selection<'_>>,
     offset: T::Native,
 ) -> Result<(
     ScalarBuffer<T::Native>,
@@ -426,11 +544,27 @@ fn compact_parent<T: IdType>(
     let array = materialize_id_values::<T>(col)?;
     let values = array.values();
     let mut out = vec![T::Native::default(); values.len()];
+    let nulls = array.nulls().filter(|n| n.null_count() > 0);
 
     // Positions of valid (non-null) ids.
-    let valid: Vec<u32> = match array.nulls() {
-        Some(nulls) if nulls.null_count() > 0 => nulls.valid_indices().map(|i| i as u32).collect(),
-        _ => (0..values.len() as u32).collect(),
+    let valid: Vec<u32> = match (selection, nulls) {
+        (Some(sel), _) if !matches!(sel, Selection::All) => {
+            if matches!(col.data_type(), DataType::Dictionary(_, _)) {
+                return Err(Error::UnexpectedRecordBatchState {
+                    reason: "cannot compact a dictionary encoded primary id column of a cut input"
+                        .to_string(),
+                });
+            }
+            let mut v = Vec::with_capacity(sel.count(values.len()));
+            sel.for_each_row(values.len(), |r| {
+                if nulls.is_none_or(|n| n.is_valid(r)) {
+                    v.push(r as u32);
+                }
+            });
+            v
+        }
+        (_, Some(nulls)) => nulls.valid_indices().map(|i| i as u32).collect(),
+        (_, None) => (0..values.len() as u32).collect(),
     };
 
     let mut sorted_positions = valid;
@@ -459,12 +593,12 @@ fn compact_parent<T: IdType>(
 /// Remap a child `parent_id` column using the parent's mappings.
 ///
 /// Returns the replacement values in source order (indexed like the values
-/// array for dictionary columns) and the selection of rows whose parent
-/// exists. Violating rows are excluded from the selection.
+/// array for dictionary columns) and, if any row's parent does not exist, a
+/// per-row bitmap of the rows to keep.
 fn compact_child<T: IdType>(
     col: &dyn Array,
     mappings: &[IdMapping<T::Native>],
-) -> Result<(ScalarBuffer<T::Native>, Selection)> {
+) -> Result<(ScalarBuffer<T::Native>, Option<BooleanBuffer>)> {
     let array = materialize_id_values::<T>(col)?;
     let values = array.values();
     let value_nulls = array.nulls().filter(|n| n.null_count() > 0);
@@ -477,8 +611,8 @@ fn compact_child<T: IdType>(
     let mut out = vec![T::Native::default(); values.len()];
     untake_vec(&sorted, &mut out, &sort_indices);
 
-    let selection = match violations {
-        None => Selection::All,
+    let keep = match violations {
+        None => None,
         Some(violations) => {
             // Mark violating value positions (source order). Null slots hold
             // arbitrary values that are not ids, so they are never violations
@@ -509,11 +643,11 @@ fn compact_child<T: IdType>(
                 },
                 _ => value_ok,
             };
-            selection_from_bitmap(&row_ok)
+            Some(row_ok)
         }
     };
 
-    Ok((ScalarBuffer::from(out), selection))
+    Ok((ScalarBuffer::from(out), keep))
 }
 
 /// Map a per-value validity bitmap to a per-row bitmap through dictionary
@@ -536,12 +670,25 @@ fn rows_ok_from_keys<K: ArrowDictionaryKeyType>(
     })
 }
 
-/// Convert a keep-bitmap into a [Selection].
-fn selection_from_bitmap(keep: &BooleanBuffer) -> Selection {
-    if keep.count_set_bits() == keep.len() {
-        return Selection::All;
+/// Restrict `selection` to the rows set in `keep`.
+fn restrict_selection<'a>(selection: &Selection<'a>, keep: &BooleanBuffer) -> Selection<'a> {
+    match selection {
+        Selection::All => {
+            if keep.count_set_bits() == keep.len() {
+                return Selection::All;
+            }
+            Selection::Ranges(keep.set_slices().map(|(s, e)| s..e).collect())
+        }
+        Selection::Ranges(_) | Selection::Gather(_) => {
+            let mut rows = Vec::new();
+            selection.for_each_row(keep.len(), |r| {
+                if keep.value(r) {
+                    rows.push(r as u32);
+                }
+            });
+            Selection::Gather(rows.into())
+        }
     }
-    Selection::Ranges(keep.set_slices().map(|(s, e)| s..e).collect())
 }
 
 /// Sort a slice and return the resulting sort indices.
@@ -573,13 +720,14 @@ struct ColumnStats<T> {
 /// Returns one entry per input. Entry `i` is `None` when input `i` has no
 /// parent payload, no ID column, or an empty/all-null ID column.
 fn gather_column_stats<T: IdType, const N: usize>(
-    batches: &[[Option<RecordBatch>; N]],
+    segments: &[Segment<'_, N>],
     ctx: &RelationCtx<'_>,
 ) -> Result<Vec<Option<ColumnStats<T::Native>>>> {
     let parent_idx = payload_to_idx(ctx.parent_payload_type);
-    let mut stats = Vec::with_capacity(batches.len());
+    let mut stats = Vec::with_capacity(segments.len());
 
-    for group in batches {
+    for seg in segments {
+        let group = seg.batches;
         let Some(parent_rb) = &group[parent_idx] else {
             stats.push(None);
             continue;
@@ -588,16 +736,32 @@ fn gather_column_stats<T: IdType, const N: usize>(
             stats.push(None);
             continue;
         };
-        let Some((lo, hi)) = id_column_min_max::<T>(id_col.as_ref())? else {
-            stats.push(None);
-            continue;
+        let (lo, hi, len) = match seg.selection(parent_idx) {
+            None | Some(Selection::All) => {
+                let Some((lo, hi)) = id_column_min_max::<T>(id_col.as_ref())? else {
+                    stats.push(None);
+                    continue;
+                };
+                (lo, hi, id_col.len() - id_col.null_count())
+            }
+            Some(sel) => {
+                let Some((lo, hi, len)) = id_column_min_max_selected::<T>(id_col.as_ref(), sel)?
+                else {
+                    stats.push(None);
+                    continue;
+                };
+                (lo, hi, len)
+            }
         };
-
-        let len = id_col.len() - id_col.null_count();
         let span = hi.as_usize() - lo.as_usize() + 1;
 
+        // Children of a cut segment are selected by joining them to the
+        // selected parents, so they always fall inside the parent's range.
         let mut children_ok = true;
         for &ct in ctx.child_payload_types {
+            if seg.cut.is_some() {
+                break;
+            }
             let Some(child_rb) = &group[payload_to_idx(ct)] else {
                 continue;
             };
@@ -770,7 +934,9 @@ mod tests {
     use arrow::array::RecordBatch;
 
     use crate::error::Error;
-    use crate::otap::transform::concatenate::{ConcatOptions, concatenate, reindex_in_place};
+    use crate::otap::transform::concatenate::{
+        ConcatOptions, concatenate_batches, reindex_in_place,
+    };
     use crate::otap::transform::testing::{assert_no_id_overlaps, extract_relation_fingerprints};
     use crate::otap::transform::transport_optimize::apply_transport_optimized_encodings;
     use crate::otap::transform::util::{IdColumnType, payload_relations, payload_to_idx};
@@ -2048,7 +2214,10 @@ mod tests {
     /// For each U16 payload type, verifies that u16::MAX total rows succeeds
     /// and u16::MAX + 1 fails with TooManyItems.
     fn test_u16_primary_id_bounds<S: OtapBatchStore, const N: usize>() {
-        let reindex_fn = |b: &mut [[Option<RecordBatch>; N]]| plan_ids::<S, N>(b).map(|_| ());
+        let reindex_fn = |b: &mut [[Option<RecordBatch>; N]]| {
+            let segments: Vec<Segment<'_, N>> = b.iter().map(Segment::whole).collect();
+            plan_ids::<S, N>(&segments).map(|_| ())
+        };
         for &payload_type in S::allowed_payload_types() {
             let info = payload_relations(payload_type);
             let Some(id_info) = info.primary_id else {
@@ -2286,7 +2455,8 @@ mod tests {
             .map(|s| otap_to_otlp(&s.into()))
             .collect();
         let mut batches = vec![a.into_batches(), b.into_batches()];
-        let out = concatenate::<{ Logs::COUNT }>(&mut batches, ConcatOptions::reindex()).unwrap();
+        let out =
+            concatenate_batches::<{ Logs::COUNT }>(&mut batches, ConcatOptions::reindex()).unwrap();
 
         let root = out[payload_to_idx(ArrowPayloadType::Logs)]
             .as_ref()
@@ -2314,7 +2484,8 @@ mod tests {
         let a = logs_with_null_ids(vec![None, Some(1), Some(2)], None, vec![1, 2], vec![]);
         let b = logs_with_null_ids(vec![Some(0), None, Some(1)], None, vec![0, 1], vec![]);
         let mut batches = vec![a.into_batches(), b.into_batches()];
-        let out = concatenate::<{ Logs::COUNT }>(&mut batches, ConcatOptions::reindex()).unwrap();
+        let out =
+            concatenate_batches::<{ Logs::COUNT }>(&mut batches, ConcatOptions::reindex()).unwrap();
         let root = out[payload_to_idx(ArrowPayloadType::Logs)]
             .as_ref()
             .unwrap();
@@ -2326,7 +2497,8 @@ mod tests {
         let a = logs_with_null_ids(vec![None, Some(1), Some(2)], None, vec![1, 2, 9], vec![]);
         let b = logs_with_null_ids(vec![Some(0), None, Some(1)], None, vec![0, 1], vec![]);
         let mut batches = vec![a.into_batches(), b.into_batches()];
-        let out = concatenate::<{ Logs::COUNT }>(&mut batches, ConcatOptions::reindex()).unwrap();
+        let out =
+            concatenate_batches::<{ Logs::COUNT }>(&mut batches, ConcatOptions::reindex()).unwrap();
         let root = out[payload_to_idx(ArrowPayloadType::Logs)]
             .as_ref()
             .unwrap();
@@ -2372,7 +2544,8 @@ mod tests {
             );
             let mut batches = vec![a.into_batches(), b.into_batches()];
             let out =
-                concatenate::<{ Logs::COUNT }>(&mut batches, ConcatOptions::reindex()).unwrap();
+                concatenate_batches::<{ Logs::COUNT }>(&mut batches, ConcatOptions::reindex())
+                    .unwrap();
             let root = out[payload_to_idx(ArrowPayloadType::Logs)]
                 .as_ref()
                 .unwrap();
@@ -2405,7 +2578,7 @@ mod tests {
         let a = make(vec![0, 1]);
         let b = make(vec![0, 2, 1, 2]);
         let mut batches = vec![a.into_batches(), b.into_batches()];
-        let out = concatenate::<{ Traces::COUNT }>(&mut batches, ConcatOptions::reindex()).unwrap();
+        let out = concatenate_batches::<{ Traces::COUNT }>(&mut batches, ConcatOptions::reindex()).unwrap();
 
         let attrs = out[payload_to_idx(ArrowPayloadType::SpanEventAttrs)].as_ref().unwrap();
         assert_eq!(attrs.num_rows(), 4, "two rows referencing id 7 are redacted");
@@ -2468,7 +2641,8 @@ mod tests {
 
             let mut batches = vec![a.into_batches(), b.into_batches()];
             let out =
-                concatenate::<{ Logs::COUNT }>(&mut batches, ConcatOptions::reindex()).unwrap();
+                concatenate_batches::<{ Logs::COUNT }>(&mut batches, ConcatOptions::reindex())
+                    .unwrap();
             let attrs = out[payload_to_idx(ArrowPayloadType::LogAttrs)]
                 .as_ref()
                 .unwrap();
@@ -2536,7 +2710,8 @@ mod tests {
         };
 
         let mut batches = vec![make(true).into_batches(), make(false).into_batches()];
-        let out = concatenate::<{ Traces::COUNT }>(&mut batches, ConcatOptions::reindex()).unwrap();
+        let out = concatenate_batches::<{ Traces::COUNT }>(&mut batches, ConcatOptions::reindex())
+            .unwrap();
         let attrs = out[payload_to_idx(ArrowPayloadType::SpanEventAttrs)]
             .as_ref()
             .unwrap();
@@ -2568,7 +2743,7 @@ mod tests {
             make(half, 1).into_batches(),
             make(limit - half, 1).into_batches(),
         ];
-        let out = concatenate::<{ Logs::COUNT }>(&mut batches, ConcatOptions::reindex())
+        let out = concatenate_batches::<{ Logs::COUNT }>(&mut batches, ConcatOptions::reindex())
             .expect("valid ids fit exactly; nulls must not count");
         let root = out[payload_to_idx(ArrowPayloadType::Logs)]
             .as_ref()
@@ -2579,7 +2754,7 @@ mod tests {
             make(half + 1, 1).into_batches(),
             make(limit - half, 1).into_batches(),
         ];
-        let result = concatenate::<{ Logs::COUNT }>(&mut batches, ConcatOptions::reindex());
+        let result = concatenate_batches::<{ Logs::COUNT }>(&mut batches, ConcatOptions::reindex());
         assert!(
             matches!(result, Err(Error::TooManyItems { .. })),
             "expected TooManyItems, got {result:?}"
@@ -2649,7 +2824,7 @@ mod tests {
         if batches.iter().all(|b| b.iter().all(Option::is_none)) {
             return;
         }
-        let combined = concatenate::<N>(&mut batches, ConcatOptions::reindex()).unwrap();
+        let combined = concatenate_batches::<N>(&mut batches, ConcatOptions::reindex()).unwrap();
         let combined_otlp = otap_to_otlp(&batches_to_otap::<S, N>(&combined));
         assert_equivalent(expected, &[combined_otlp]);
     }

@@ -108,12 +108,28 @@ fn bench_all(c: &mut Criterion) {
 /// Split every input into slices of roughly a third of its root rows. This mimics
 /// the batch processor, where concatenation inputs are zero-copy slices whose
 /// dictionary values arrays are shared with other slices.
-fn presplit<const N: usize>(batches: &[[Option<RecordBatch>; N]]) -> Vec<[Option<RecordBatch>; N]> {
+fn presplit<T: OtapBatchStore<BatchArray = [Option<RecordBatch>; N]>, const N: usize>(
+    batches: &[T],
+) -> Vec<T> {
     // Root payload is at index 2 for every signal.
-    let items = batches[0][2].as_ref().map_or(3, RecordBatch::num_rows);
+    let items = batches[0]
+        .get(T::payload_type_at_idx(2))
+        .map_or(3, RecordBatch::num_rows);
     let max = NonZeroU32::new((items / 3).max(1) as u32).expect("non-zero");
-    let mut batches = batches.to_vec();
-    split::<N>(&mut batches, max).expect("split failed")
+    let mut raw: Vec<_> = batches.iter().cloned().map(|b| b.into_batches()).collect();
+    split::<N>(&mut raw, max)
+        .expect("split failed")
+        .into_iter()
+        .map(|b| {
+            let mut t = T::default();
+            for (i, rb) in b.into_iter().enumerate() {
+                if let Some(rb) = rb {
+                    t.set(T::payload_type_at_idx(i), rb).expect("valid");
+                }
+            }
+            t
+        })
+        .collect()
 }
 
 fn bench_group(
@@ -128,17 +144,16 @@ fn bench_group(
 
 /// Time reindexing and concatenation together, as the batch processor runs
 /// them.
-fn bench_concatenate<const N: usize>(
+fn bench_concatenate<T: OtapBatchStore>(
     group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
     signal_name: &str,
-    data: &[[Option<RecordBatch>; N]],
+    data: &[T],
 ) {
     let _ = group.bench_with_input(BenchmarkId::from_parameter(signal_name), data, |b, data| {
         b.iter_batched(
             || data.to_vec(),
-            |mut batches| {
-                let _ = concatenate::<N>(&mut batches, ConcatOptions::reindex())
-                    .expect("concat failed");
+            |batches| {
+                let _ = concatenate(batches, ConcatOptions::reindex()).expect("concat failed");
             },
             BatchSize::SmallInput,
         )
@@ -152,7 +167,7 @@ fn generate_metrics(
     resource_attrs: usize,
     scope_attrs: usize,
     metric_attrs: usize,
-) -> Vec<[Option<RecordBatch>; Metrics::COUNT]> {
+) -> Vec<Metrics> {
     let mut datagen = DataGenerator::with_metrics_config(
         MetricsConfig::new()
             .with_gauges(vec![points_per_gauge])
@@ -166,7 +181,7 @@ fn generate_metrics(
         .map(|_| {
             let data = datagen.generate_metrics_from_config();
             match otlp_to_otap(&data.into()) {
-                OtapArrowRecords::Metrics(m) => m.into_batches(),
+                OtapArrowRecords::Metrics(m) => m,
                 _ => unreachable!(),
             }
         })
@@ -180,7 +195,7 @@ fn generate_logs(
     resource_attrs: usize,
     scope_attrs: usize,
     log_attrs: usize,
-) -> Vec<[Option<RecordBatch>; Logs::COUNT]> {
+) -> Vec<Logs> {
     let mut datagen = DataGenerator::with_logs_config(
         LogsConfig::new(logs_per_scope)
             .with_resources(num_resources)
@@ -193,7 +208,7 @@ fn generate_logs(
         .map(|_| {
             let data = datagen.generate_logs_from_config();
             match otlp_to_otap(&data.into()) {
-                OtapArrowRecords::Logs(l) => l.into_batches(),
+                OtapArrowRecords::Logs(l) => l,
                 _ => unreachable!(),
             }
         })
@@ -207,7 +222,7 @@ fn generate_traces(
     resource_attrs: usize,
     scope_attrs: usize,
     span_attrs: usize,
-) -> Vec<[Option<RecordBatch>; Traces::COUNT]> {
+) -> Vec<Traces> {
     let mut datagen = DataGenerator::with_traces_config(
         TracesConfig::new(spans_per_scope)
             .with_resources(num_resources)
@@ -220,15 +235,21 @@ fn generate_traces(
         .map(|_| {
             let data = datagen.generate_traces_from_config();
             match otlp_to_otap(&data.into()) {
-                OtapArrowRecords::Traces(t) => t.into_batches(),
+                OtapArrowRecords::Traces(t) => t,
                 _ => unreachable!(),
             }
         })
         .collect()
 }
 
-fn introduce_gaps<const N: usize>(batches: &[Option<RecordBatch>; N]) -> [Option<RecordBatch>; N] {
-    std::array::from_fn(|i| batches[i].as_ref().map(double_id_columns))
+fn introduce_gaps<T: OtapBatchStore>(batch: &T) -> T {
+    let mut out = T::default();
+    for &pt in T::allowed_payload_types() {
+        if let Some(rb) = batch.get(pt) {
+            out.set(pt, double_id_columns(rb)).expect("valid batch");
+        }
+    }
+    out
 }
 
 fn double_id_columns(rb: &RecordBatch) -> RecordBatch {

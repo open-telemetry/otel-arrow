@@ -18,7 +18,7 @@ use arrow::array::RecordBatch;
 use otel_arrow_dfe_config::SignalType;
 
 use super::transform::{
-    concatenate::{ConcatOptions, concatenate},
+    concatenate::{ConcatOptions, concatenate_batches},
     split,
 };
 
@@ -304,7 +304,7 @@ fn generic_concatenate<const N: usize>(
 fn concatenate_emitter<const N: usize>(
     current: &mut Vec<[Option<RecordBatch>; N]>,
 ) -> Result<[Option<RecordBatch>; N]> {
-    let out = concatenate(current, ConcatOptions::reindex())?;
+    let out = concatenate_batches(current, ConcatOptions::reindex())?;
     assert_all_empty(current);
     current.clear();
     Ok(out)
