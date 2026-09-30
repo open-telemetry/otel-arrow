@@ -1,0 +1,92 @@
+# Copyright The OpenTelemetry Authors
+# SPDX-License-Identifier: Apache-2.0
+
+# EXPERIMENTAL / TEMPORARY. This multi-stage Dockerfile is used by the
+# `windows-container-build-comparison.yml` workflow to benchmark a
+# self-contained Windows build (compile from source inside a builder stage,
+# then copy only df_engine.exe into a minimal runtime image) against the
+# host-build-and-package approach in `Dockerfile.windows`.
+#
+# Unlike Linux, there is no ready-to-use Windows Rust builder image, so the
+# builder stage has to install the MSVC Build Tools, the Windows SDK, and
+# rustup before it can compile anything. That cost is what the benchmark is
+# meant to quantify. Do not adopt this file as the canonical Windows image
+# without first reviewing the comparison results.
+#
+# Build from the rust/otap-dataflow directory:
+#   docker build -f Dockerfile.windows.multistage -t df_engine_win_multistage .
+#
+# The base image tag must match the Windows version on the host. GitHub Actions
+# windows-2025 runs Windows Server 2025, which supports the ltsc2025 image.
+# Windows container images are only compatible with a narrow host OS/kernel
+# range, so if the runner moves to a newer Windows Server release both the
+# builder and runtime tags must be bumped in lockstep or `docker run` fails
+# with a version-mismatch error.
+
+# ---------------------------------------------------------------------------
+# Builder stage: install toolchain, compile df_engine.exe.
+# ---------------------------------------------------------------------------
+FROM mcr.microsoft.com/windows/servercore:ltsc2025 AS builder
+
+SHELL ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue';"]
+
+# Install the Visual Studio 2022 Build Tools with the C++ workload. The
+# recommended components pull in the Windows SDK and the MSVC toolset that
+# rustc needs to locate the linker (link.exe) via vswhere. Exit code 3010
+# means "success, reboot required", which is fine inside an image layer.
+RUN Invoke-WebRequest -Uri https://aka.ms/vs/17/release/vs_buildtools.exe -OutFile C:\vs_buildtools.exe ; \
+    $proc = Start-Process -FilePath C:\vs_buildtools.exe -Wait -PassThru -ArgumentList \
+        '--quiet', '--wait', '--norestart', '--nocache', \
+        '--add', 'Microsoft.VisualStudio.Workload.VCTools', \
+        '--includeRecommended' ; \
+    if ($proc.ExitCode -ne 0 -and $proc.ExitCode -ne 3010) { \
+        Write-Error ('VS Build Tools install failed with exit code ' + $proc.ExitCode) ; \
+        exit 1 ; \
+    } ; \
+    Remove-Item C:\vs_buildtools.exe -Force
+
+# Install rustup and the stable MSVC toolchain (minimal profile: no docs).
+RUN Invoke-WebRequest -Uri https://static.rust-lang.org/rustup/dist/x86_64-pc-windows-msvc/rustup-init.exe -OutFile C:\rustup-init.exe ; \
+    Start-Process -FilePath C:\rustup-init.exe -Wait -NoNewWindow -ArgumentList \
+        '-y', '--default-host', 'x86_64-pc-windows-msvc', \
+        '--default-toolchain', 'stable', '--profile', 'minimal' ; \
+    Remove-Item C:\rustup-init.exe -Force
+
+# Put cargo on PATH for subsequent RUN layers. rustup installs into the
+# ContainerAdministrator profile because that is the default build user.
+# Prepend to the base image PATH so the standard Windows directories remain
+# reachable.
+ENV PATH="C:\Users\ContainerAdministrator\.cargo\bin;${PATH}"
+
+WORKDIR C:\build
+
+# Copy the build context. The .dockerignore in this directory keeps the large
+# host target/ tree out of the context (only target/release/df_engine.exe is
+# whitelisted, which the builder does not use).
+COPY . C:\build
+
+# Statically link the CRT so the runtime image can stay minimal, matching the
+# host-build recipe documented in Dockerfile.windows.
+ENV RUSTFLAGS="-C target-feature=+crt-static"
+
+# Feature set mirrors Dockerfile.windows so both benchmark paths produce an
+# equivalent binary.
+RUN cargo build --locked --release --no-default-features \
+        --features mimalloc,crypto-ring,dev-tools,core-nodes
+
+# ---------------------------------------------------------------------------
+# Runtime stage: copy only the executable into a clean image.
+# ---------------------------------------------------------------------------
+FROM mcr.microsoft.com/windows/servercore:ltsc2025
+
+# Create a non-admin user for running the engine, mirroring Dockerfile.windows.
+RUN net user appuser /add && \
+    net localgroup Administrators appuser /remove
+
+WORKDIR C:\\dataflow
+
+COPY --from=builder C:/build/target/release/df_engine.exe C:/dataflow/df_engine.exe
+
+USER appuser
+
+ENTRYPOINT ["C:\\dataflow\\df_engine.exe"]

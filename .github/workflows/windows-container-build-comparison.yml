@@ -1,0 +1,281 @@
+# Copyright The OpenTelemetry Authors
+# SPDX-License-Identifier: Apache-2.0
+
+# EXPERIMENTAL / TEMPORARY benchmark workflow.
+#
+# Compares two ways of producing the Windows df_engine container on a single
+# windows-2025 GitHub-hosted runner configuration:
+#
+#   1. Host build + package: build df_engine.exe on the runner, then package it
+#      with Dockerfile.windows.
+#   2. Self-contained multi-stage build: compile from source inside a Windows
+#      builder stage (Dockerfile.windows.multistage), then copy only the
+#      executable into a minimal runtime image.
+#
+# For each approach it records end-to-end time, approximate C: disk
+# consumption, workspace target/ growth, final runtime image size, and whether
+# the resulting container starts and answers `--version`. A compare job renders
+# the numbers into the run Summary so the tradeoff can be discussed on the PR.
+#
+# This workflow is meant to be deleted once the Windows packaging approach is
+# decided. Remove it (and Dockerfile.windows.multistage, if not adopted) after
+# the results are captured.
+
+name: Windows Container Build Comparison
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'rust/otap-dataflow/Dockerfile.windows'
+      - 'rust/otap-dataflow/Dockerfile.windows.multistage'
+      - '.github/workflows/windows-container-build-comparison.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  host-build-package:
+    name: Host build and package
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: true
+
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
+
+      - name: Build binary, package image, and measure
+        shell: pwsh
+        working-directory: ./rust/otap-dataflow
+        run: |
+          $ErrorActionPreference = 'Continue'
+
+          function Get-FolderSizeBytes([string]$p) {
+            if (Test-Path -LiteralPath $p) {
+              $s = (Get-ChildItem -LiteralPath $p -Recurse -Force -File -ErrorAction SilentlyContinue |
+                    Measure-Object -Property Length -Sum).Sum
+              if ($null -eq $s) { return [long]0 } else { return [long]$s }
+            }
+            return [long]0
+          }
+
+          $targetPath = Join-Path (Get-Location) 'target'
+          $start = Get-Date
+          $cFreeBefore = (Get-PSDrive C).Free
+          $targetBefore = Get-FolderSizeBytes $targetPath
+
+          $env:RUSTFLAGS = '-C target-feature=+crt-static'
+          cargo build --locked --release --no-default-features `
+            --features mimalloc,crypto-ring,dev-tools,core-nodes
+          $buildOk = ($LASTEXITCODE -eq 0)
+
+          $binaryBytes = [long]0
+          if (Test-Path .\target\release\df_engine.exe) {
+            $binaryBytes = (Get-Item .\target\release\df_engine.exe).Length
+          }
+
+          $imageTag = 'df_engine_win_host:bench'
+          $imageBytes = [long]0
+          $verified = $false
+          if ($buildOk) {
+            docker build -f Dockerfile.windows -t $imageTag .
+            if ($LASTEXITCODE -eq 0) {
+              $imageBytes = [long](docker image inspect $imageTag --format '{{.Size}}')
+              docker run --rm $imageTag --version
+              $verified = ($LASTEXITCODE -eq 0)
+            }
+          }
+
+          $end = Get-Date
+          $cFreeAfter = (Get-PSDrive C).Free
+          $targetAfter = Get-FolderSizeBytes $targetPath
+
+          $metrics = [ordered]@{
+            approach                = 'host-build-package'
+            label                   = 'Host build + package'
+            total_minutes           = [math]::Round(($end - $start).TotalMinutes, 2)
+            c_disk_delta_gb         = [math]::Round(($cFreeBefore - $cFreeAfter) / 1GB, 2)
+            workspace_disk_delta_gb = [math]::Round(($targetAfter - $targetBefore) / 1GB, 2)
+            runtime_image_size_gb   = [math]::Round($imageBytes / 1GB, 2)
+            host_binary_size_mb     = [math]::Round($binaryBytes / 1MB, 2)
+            build_verified          = $verified
+          }
+          $metrics | ConvertTo-Json | Out-File -FilePath metrics.json -Encoding ascii
+          Write-Host '--- metrics.json ---'
+          Get-Content metrics.json
+
+      - name: Upload host build metrics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-host-build-package-metrics
+          path: rust/otap-dataflow/metrics.json
+          if-no-files-found: warn
+
+      - name: Assert host build verified
+        shell: pwsh
+        working-directory: ./rust/otap-dataflow
+        run: |
+          $m = Get-Content metrics.json | ConvertFrom-Json
+          if (-not $m.build_verified) {
+            Write-Error 'Host build + package did not produce a runnable container.'
+            exit 1
+          }
+
+  multistage-build:
+    name: Self-contained multi-stage build
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: true
+
+      - name: Build multi-stage image and measure
+        shell: pwsh
+        working-directory: ./rust/otap-dataflow
+        run: |
+          $ErrorActionPreference = 'Continue'
+
+          function Get-FolderSizeBytes([string]$p) {
+            if (Test-Path -LiteralPath $p) {
+              $s = (Get-ChildItem -LiteralPath $p -Recurse -Force -File -ErrorAction SilentlyContinue |
+                    Measure-Object -Property Length -Sum).Sum
+              if ($null -eq $s) { return [long]0 } else { return [long]$s }
+            }
+            return [long]0
+          }
+
+          $targetPath = Join-Path (Get-Location) 'target'
+          $start = Get-Date
+          $cFreeBefore = (Get-PSDrive C).Free
+          $targetBefore = Get-FolderSizeBytes $targetPath
+
+          $imageTag = 'df_engine_win_multistage:bench'
+          docker build -f Dockerfile.windows.multistage -t $imageTag .
+          $buildOk = ($LASTEXITCODE -eq 0)
+
+          $imageBytes = [long]0
+          $verified = $false
+          if ($buildOk) {
+            $imageBytes = [long](docker image inspect $imageTag --format '{{.Size}}')
+            docker run --rm $imageTag --version
+            $verified = ($LASTEXITCODE -eq 0)
+          }
+
+          $end = Get-Date
+          $cFreeAfter = (Get-PSDrive C).Free
+          $targetAfter = Get-FolderSizeBytes $targetPath
+
+          $metrics = [ordered]@{
+            approach                = 'multistage'
+            label                   = 'Multi-stage'
+            total_minutes           = [math]::Round(($end - $start).TotalMinutes, 2)
+            c_disk_delta_gb         = [math]::Round(($cFreeBefore - $cFreeAfter) / 1GB, 2)
+            workspace_disk_delta_gb = [math]::Round(($targetAfter - $targetBefore) / 1GB, 2)
+            runtime_image_size_gb   = [math]::Round($imageBytes / 1GB, 2)
+            host_binary_size_mb     = $null
+            build_verified          = $verified
+          }
+          $metrics | ConvertTo-Json | Out-File -FilePath metrics.json -Encoding ascii
+          Write-Host '--- metrics.json ---'
+          Get-Content metrics.json
+
+      - name: Upload multi-stage build metrics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-multistage-build-metrics
+          path: rust/otap-dataflow/metrics.json
+          if-no-files-found: warn
+
+      - name: Assert multi-stage build verified
+        shell: pwsh
+        working-directory: ./rust/otap-dataflow
+        run: |
+          $m = Get-Content metrics.json | ConvertFrom-Json
+          if (-not $m.build_verified) {
+            Write-Error 'Multi-stage build did not produce a runnable container. See log above for the failing install or compile step.'
+            exit 1
+          }
+
+  compare:
+    name: Compare measurements
+    runs-on: ubuntu-24.04
+    needs: [host-build-package, multistage-build]
+    if: always()
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
+      - name: Download host build metrics
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: windows-host-build-package-metrics
+          path: host
+
+      - name: Download multi-stage build metrics
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: windows-multistage-build-metrics
+          path: multi
+
+      - name: Render comparison table
+        shell: pwsh
+        run: |
+          function Read-Metrics([string]$path) {
+            if (Test-Path -LiteralPath $path) {
+              return (Get-Content -LiteralPath $path -Raw | ConvertFrom-Json)
+            }
+            return $null
+          }
+
+          $hostM = Read-Metrics 'host/metrics.json'
+          $multiM = Read-Metrics 'multi/metrics.json'
+
+          function Cell($obj, [string]$field) {
+            if ($null -eq $obj) { return 'missing' }
+            $v = $obj.$field
+            if ($null -eq $v) { return 'n/a' }
+            return "$v"
+          }
+
+          function Verdict($obj) {
+            if ($null -eq $obj) { return 'missing' }
+            if ($obj.build_verified) { return 'passed' } else { return 'failed' }
+          }
+
+          $rows = @(
+            @('Total time (minutes)',        (Cell $hostM 'total_minutes'),           (Cell $multiM 'total_minutes')),
+            @('C: disk delta (GB)',          (Cell $hostM 'c_disk_delta_gb'),         (Cell $multiM 'c_disk_delta_gb')),
+            @('Workspace target delta (GB)', (Cell $hostM 'workspace_disk_delta_gb'), (Cell $multiM 'workspace_disk_delta_gb')),
+            @('Runtime image size (GB)',     (Cell $hostM 'runtime_image_size_gb'),   (Cell $multiM 'runtime_image_size_gb')),
+            @('Host binary size (MB)',       (Cell $hostM 'host_binary_size_mb'),     (Cell $multiM 'host_binary_size_mb')),
+            @('Build and verification',      (Verdict $hostM),                        (Verdict $multiM))
+          )
+
+          $lines = @()
+          $lines += '# Windows Container Build Comparison'
+          $lines += ''
+          $lines += '| Metric | Host build + package | Multi-stage |'
+          $lines += '| --- | --- | --- |'
+          foreach ($r in $rows) {
+            $lines += "| $($r[0]) | $($r[1]) | $($r[2]) |"
+          }
+          $lines += ''
+          $lines += 'Disk deltas are approximate retained consumption on the runner and'
+          $lines += 'include Docker layer storage. Rerun a few times and compare medians.'
+
+          $summary = $lines -join "`n"
+          Write-Host $summary
+          $summary | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
