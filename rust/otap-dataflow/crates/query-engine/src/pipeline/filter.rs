@@ -6284,6 +6284,8 @@ mod test {
         }
     }
 
+    /// Scenario: Filter logs by resolved and null nested serialized attributes.
+    /// Guarantees: Nested comparisons and null predicates select the expected logs.
     #[tokio::test]
     async fn test_filter_by_nested_serialized_attribute() {
         let log_records = vec![

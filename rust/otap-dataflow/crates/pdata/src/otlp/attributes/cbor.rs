@@ -514,6 +514,8 @@ mod tests {
         );
     }
 
+    /// Scenario: Read each supported scalar leaf from nested CBOR maps and arrays.
+    /// Guarantees: Scalar leaves preserve their type and value, including explicit null.
     #[test]
     fn read_scalar_leaves_from_maps_and_arrays() {
         let input = encode(&ciborium::Value::Map(vec![
@@ -584,6 +586,8 @@ mod tests {
         }
     }
 
+    /// Scenario: Read paths that are missing, cross the wrong container, or end at a container.
+    /// Guarantees: Unresolved paths return `None` instead of an error.
     #[test]
     fn read_missing_incompatible_and_container_paths_as_none() {
         let input = encode(&ciborium::Value::Map(vec![(
@@ -610,6 +614,8 @@ mod tests {
         }
     }
 
+    /// Scenario: Read a scalar path from bytes that are not valid CBOR.
+    /// Guarantees: Corrupt serialized values return an error rather than a missing value.
     #[test]
     fn read_corrupt_cbor_returns_error() {
         let err = read_cbor_scalar(

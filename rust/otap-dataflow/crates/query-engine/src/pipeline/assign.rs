@@ -6603,6 +6603,8 @@ mod test {
         attributes
     }
 
+    /// Scenario: Assign every supported scalar type from nested map and array paths.
+    /// Guarantees: Nested scalar leaves retain their types and values during assignment.
     #[tokio::test]
     async fn test_read_nested_scalar_attribute_paths() {
         let complex = AnyValue::new_kvlist(vec![
@@ -6651,6 +6653,8 @@ mod test {
         );
     }
 
+    /// Scenario: Assign missing, container, null, mismatched and out-of-bounds nested paths.
+    /// Guarantees: Nested paths that do not resolve to a scalar leaf read as null.
     #[tokio::test]
     async fn test_read_unresolved_nested_attribute_paths_as_null() {
         let logs_data = to_logs_data(vec![
@@ -6695,6 +6699,8 @@ mod test {
         }
     }
 
+    /// Scenario: Combine two nested paths read from the same serialized attribute.
+    /// Guarantees: Each path resolves independently, and a missing leaf yields null.
     #[tokio::test]
     async fn test_read_multiple_nested_paths_from_same_attribute() {
         let logs_data = to_logs_data(vec![
@@ -6729,6 +6735,8 @@ mod test {
         );
     }
 
+    /// Scenario: Assign a nested path read from instrumentation scope attributes.
+    /// Guarantees: Each log receives the leaf from its own scope.
     #[tokio::test]
     async fn test_read_nested_scope_attribute_path() {
         let scope = |name| {
@@ -6768,6 +6776,8 @@ mod test {
         }
     }
 
+    /// Scenario: Read a nested path from a serialized attribute holding invalid CBOR.
+    /// Guarantees: The pipeline returns an error naming the attribute key and path.
     #[tokio::test]
     async fn test_read_nested_path_from_invalid_cbor_returns_error() {
         let logs_data = to_logs_data(vec![

@@ -421,6 +421,8 @@ mod test {
         pretty_assertions::assert_eq!(result.resource_logs[0].scope_logs[0].log_records, expected)
     }
 
+    /// Scenario: Evaluate a conditional branch using a nested serialized attribute leaf.
+    /// Guarantees: The branch updates only records whose nested leaf matches.
     #[tokio::test]
     async fn test_conditional_with_nested_serialized_attribute() {
         let log_records = vec![
