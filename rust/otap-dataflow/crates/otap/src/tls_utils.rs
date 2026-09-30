@@ -25,7 +25,8 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::time::{Duration, SystemTime};
+use std::sync::mpsc::{self, RecvTimeoutError};
+use std::time::{Duration, Instant, SystemTime};
 use tokio::sync::OnceCell;
 use tonic::transport::{Certificate, ClientTlsConfig};
 use tonic::transport::{Identity, ServerTlsConfig};
@@ -48,8 +49,14 @@ const MAX_CONCURRENT_HANDSHAKES: usize = 64;
 const DEFAULT_RELOAD_INTERVAL_SECS: u64 = 300;
 
 /// Minimum interval between CA certificate reloads to prevent rapid successive reloads.
-/// Events arriving within this window after a reload will be debounced.
-const CA_RELOAD_DEBOUNCE_SECS: u64 = 1;
+/// Changes arriving within this window after a reload are deferred until it ends.
+const CA_RELOAD_DEBOUNCE: Duration = Duration::from_secs(1);
+
+/// Initial delay before retrying a failed CA reload; doubles up to `CA_RELOAD_RETRY_MAX`.
+const CA_RELOAD_RETRY_MIN: Duration = Duration::from_secs(1);
+
+/// Maximum delay between CA reload retries.
+const CA_RELOAD_RETRY_MAX: Duration = Duration::from_secs(60);
 
 /// Delay before reading file metadata after receiving a filesystem event.
 /// This allows atomic rename operations to fully complete before we check the file identity.
@@ -813,198 +820,134 @@ impl ResolvesServerCert for LazyReloadableCertResolver {
     }
 }
 
-/// Internal state for the CA file watcher callback.
+/// Reload state owned by the CA watcher's worker thread.
 ///
-/// # Design: Why Blocking I/O Here is Acceptable
-///
-/// This callback runs in the notify crate's dedicated OS thread, not in the tokio
-/// async runtime. The blocking operations (std::fs::metadata, std::thread::sleep)
-/// only affect the watcher thread, which exists solely to monitor file changes.
-///
-/// Since CA reloads are rare (minutes/hours apart), the performance impact is
-/// negligible. The TLS handshake path remains wait-free - just an atomic pointer load.
-///
-/// Alternative: A channel-based bridge to a tokio worker task would eliminate blocking
-/// entirely, but adds complexity for minimal benefit in this use case.
+/// The notify callback only signals the worker, which rechecks the configured path
+/// (following current symlinks) and schedules its own retries. Blocking I/O here
+/// runs on that dedicated thread, never on the pipeline runtime; handshakes only
+/// load the published verifier.
 struct CaWatcherState {
     /// The verifier to update on reload (shared with ReloadableClientCaVerifier).
-    /// Arc allows sharing between watcher and verifier, ArcSwap enables atomic updates.
     inner: Arc<ArcSwap<Arc<dyn ClientCertVerifier>>>,
-    /// Canonical path to match against events
-    watched_path: PathBuf,
-    /// Original path for reloading the file
+    /// Configured CA path, re-resolved on every check.
     reload_path: PathBuf,
     /// Whether to include system CAs
     include_system_cas: bool,
-    /// Last known file identity (inode on Unix)
-    last_identity: Arc<AtomicU64>,
-    /// Timestamp of last reload (for debouncing)
-    last_reload: Arc<AtomicU64>,
-    /// Lock to prevent concurrent reloads
-    is_reloading: Arc<AtomicBool>,
+    /// File identity (inode on Unix) of the currently loaded CA.
+    last_identity: u64,
+    /// When the last successful reload happened (for debouncing).
+    last_reload: Option<Instant>,
+    /// When the next check is due without a new signal (debounce end or retry).
+    retry_at: Option<Instant>,
+    /// Identity that last failed to load (`None` inside means the path was unreadable).
+    failed_candidate: Option<Option<u64>>,
+    /// Delay before the next retry after a failed reload.
+    retry_delay: Duration,
 }
 
 impl CaWatcherState {
-    /// Create a new watcher state.
     fn new(
-        ca_file_path: &Path,
         inner: Arc<ArcSwap<Arc<dyn ClientCertVerifier>>>,
-        ca_path: PathBuf,
+        reload_path: PathBuf,
         include_system_cas: bool,
-    ) -> Result<Self, io::Error> {
-        let watched_path = std::fs::canonicalize(&ca_path).unwrap_or_else(|_| ca_path.clone());
-        let initial_identity = get_file_identity(ca_file_path).unwrap_or(0);
-
-        Ok(Self {
+        initial_identity: u64,
+    ) -> Self {
+        Self {
             inner,
-            watched_path,
-            reload_path: ca_path,
+            reload_path,
             include_system_cas,
-            last_identity: Arc::new(AtomicU64::new(initial_identity)),
-            last_reload: Arc::new(AtomicU64::new(0)),
-            is_reloading: Arc::new(AtomicBool::new(false)),
-        })
+            last_identity: initial_identity,
+            last_reload: None,
+            retry_at: None,
+            failed_candidate: None,
+            retry_delay: CA_RELOAD_RETRY_MIN,
+        }
     }
 
-    /// Handle a file system event.
-    fn handle_event(&self, res: Result<Event, notify::Error>) {
-        match res {
-            Ok(event) => self.process_event(event),
-            Err(e) => {
-                otel_warn!("tls.file_watcher.error", error = ?e, message = "File watcher error")
+    /// Worker loop: wait for a change signal or a due retry, then check.
+    /// Every wait returns as soon as the watcher (and its signal sender) is dropped.
+    fn run(mut self, signals: mpsc::Receiver<()>) {
+        loop {
+            let received = match self.retry_at {
+                None => signals.recv().map_err(|_| RecvTimeoutError::Disconnected),
+                Some(at) => signals.recv_timeout(at.saturating_duration_since(Instant::now())),
+            };
+            if let Err(RecvTimeoutError::Disconnected) = received {
+                return;
+            }
+
+            // Let atomic renames settle; on macOS, kqueue events can precede stat() visibility.
+            let settle_until = Instant::now() + Duration::from_millis(FS_EVENT_SETTLE_DELAY_MS);
+            if !Self::absorb_signals_until(&signals, settle_until) {
+                return;
+            }
+            self.check();
+        }
+    }
+
+    /// Drains signals until `deadline`. Returns false if the watcher was dropped.
+    fn absorb_signals_until(signals: &mpsc::Receiver<()>, deadline: Instant) -> bool {
+        loop {
+            match signals.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+                Ok(()) => continue,
+                Err(RecvTimeoutError::Timeout) => return true,
+                Err(RecvTimeoutError::Disconnected) => return false,
             }
         }
     }
 
-    /// Process a file system event, potentially triggering a reload.
-    fn process_event(&self, event: Event) {
-        otel_debug!("tls.file_watcher.event", event = ?event, message = "File watcher event");
-
-        // Filter out irrelevant event types early (before expensive path checks)
-        if matches!(event.kind, notify::EventKind::Access(_)) {
-            return;
-        }
-
-        if !self.is_event_for_watched_file(&event) {
-            return;
-        }
-
-        otel_debug!(
-            "tls.file_watcher.match",
-            message = "Event matches our CA file, proceeding with reload check"
-        );
-
-        // Small delay to allow filesystem operations to complete (e.g., atomic renames).
-        // This blocks the notify thread briefly, but is acceptable because:
-        // - CA reloads are rare (days/weeks apart)
-        // - notify buffers events internally
-        // - 50ms won't cause meaningful event loss
-        std::thread::sleep(Duration::from_millis(FS_EVENT_SETTLE_DELAY_MS));
-
-        if !self.should_reload() {
-            return;
-        }
-
-        self.perform_reload();
-    }
-
-    /// Check if the event is for the file we're watching.
-    fn is_event_for_watched_file(&self, event: &Event) -> bool {
-        let is_match = event.paths.iter().any(|p| {
-            if p == &self.watched_path {
-                return true;
-            }
-            // Try canonicalizing the event path if direct match fails
-            std::fs::canonicalize(p)
-                .map(|canon_p| canon_p == self.watched_path)
-                .unwrap_or(false)
-        });
-
-        if !is_match {
-            otel_debug!(
-                "tls.file_watcher.no_match",
-                event_paths = ?event.paths,
-                watched_path = ?self.watched_path,
-                message = "Event not for our file"
-            );
-        }
-
-        is_match
-    }
-
-    /// Check if we should reload based on file identity and debouncing.
-    fn should_reload(&self) -> bool {
-        // Check if file identity (inode) has changed
-        let current_identity = match get_file_identity(&self.reload_path) {
-            Ok(id) => id,
+    /// Reloads if the configured file changed, updating `retry_at` when a follow-up is needed.
+    fn check(&mut self) {
+        let identity = match get_file_identity(&self.reload_path) {
+            Ok(id) => Some(id),
             Err(e) => {
-                otel_debug!("tls.file_watcher.identity_error", error = ?e, message = "Failed to get file identity, skipping reload");
-                return false;
+                otel_debug!("tls.file_watcher.identity_error", error = ?e, message = "Failed to get file identity, will retry");
+                None
             }
         };
 
-        let prev_identity = self.last_identity.load(Ordering::Relaxed);
-        if current_identity == prev_identity {
-            otel_debug!(
-                "tls.file_watcher.identity_unchanged",
-                message = "File identity unchanged, skipping reload"
-            );
-            return false;
-        }
-        otel_debug!(
-            "tls.file_watcher.identity_changed",
-            prev_identity = prev_identity,
-            current_identity = current_identity,
-            message = "File identity changed"
-        );
-
-        // Check debounce window
-        let now = current_timestamp();
-        let last = self.last_reload.load(Ordering::Relaxed);
-        if now.saturating_sub(last) < CA_RELOAD_DEBOUNCE_SECS {
-            otel_debug!(
-                "tls.file_watcher.debounce",
-                message = "Debouncing CA file change event"
-            );
-            return false;
+        if identity == Some(self.last_identity) {
+            self.clear_retry();
+            return;
         }
 
-        // Try to acquire reload lock
-        if self
-            .is_reloading
-            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_err()
+        // A candidate that already failed waits for its scheduled retry, but never past the deadline.
+        if self.failed_candidate == Some(identity)
+            && self.retry_at.is_some_and(|at| Instant::now() < at)
         {
-            otel_debug!(
-                "tls.file_watcher.reload_in_progress",
-                message = "CA reload already in progress, skipping"
-            );
-            return false;
+            return;
         }
 
-        true
-    }
+        if let Some(last) = self.last_reload {
+            let ready_at = last + CA_RELOAD_DEBOUNCE;
+            if Instant::now() < ready_at {
+                otel_debug!(
+                    "tls.file_watcher.debounce",
+                    message = "Deferring CA reload until the debounce window ends"
+                );
+                self.retry_at = Some(ready_at);
+                return;
+            }
+        }
 
-    /// Perform the actual CA certificate reload.
-    fn perform_reload(&self) {
+        let Some(identity) = identity else {
+            self.schedule_retry(None);
+            return;
+        };
+
         otel_info!(
             "tls.file_watcher.reload_start",
             path = ?self.reload_path,
             message = "CA certificate file changed, reloading"
         );
 
-        // Note: There's a theoretical TOCTOU between getting identity and reading the file.
-        // If the file changes in between, we may store a stale identity, causing one extra
-        // reload on the next event. This is harmless and the debounce prevents rapid retries.
-        let current_identity = get_file_identity(&self.reload_path).unwrap_or(0);
-        let now = current_timestamp();
-
+        // If the file changes after the identity read, the next check sees a mismatch and reloads again.
         match reload_ca_verifier(&self.reload_path, self.include_system_cas) {
             Ok(new_verifier) => {
                 self.inner.store(Arc::new(new_verifier));
-                self.last_identity
-                    .store(current_identity, Ordering::Relaxed);
-                self.last_reload.store(now, Ordering::Relaxed);
+                self.last_identity = identity;
+                self.last_reload = Some(Instant::now());
+                self.clear_retry();
                 otel_info!(
                     "tls.file_watcher.reload_success",
                     message = "Successfully reloaded client CA certificates"
@@ -1014,12 +957,23 @@ impl CaWatcherState {
                 otel_error!(
                     "tls.file_watcher.reload_failed",
                     error = ?e,
-                    message = "Failed to reload CA certificates (keeping previous)",
+                    message = "Failed to reload CA certificates (keeping previous, will retry)",
                 );
+                self.schedule_retry(Some(identity));
             }
         }
+    }
 
-        self.is_reloading.store(false, Ordering::Release);
+    fn schedule_retry(&mut self, candidate: Option<u64>) {
+        self.failed_candidate = Some(candidate);
+        self.retry_at = Some(Instant::now() + self.retry_delay);
+        self.retry_delay = (self.retry_delay * 2).min(CA_RELOAD_RETRY_MAX);
+    }
+
+    fn clear_retry(&mut self) {
+        self.retry_at = None;
+        self.failed_candidate = None;
+        self.retry_delay = CA_RELOAD_RETRY_MIN;
     }
 }
 
@@ -1121,7 +1075,8 @@ impl ReloadableClientCaVerifier {
         ca_file_path: PathBuf,
         include_system_cas: bool,
     ) -> Result<Arc<Self>, io::Error> {
-        // Initial load
+        // Read identity before content so the worker's initial check detects a change racing the load.
+        let initial_identity = get_file_identity(&ca_file_path).unwrap_or(0);
         let ca_pem = read_file_with_limit_sync(&ca_file_path)?;
         otel_debug!(
             "tls.ca.initial_load",
@@ -1131,16 +1086,11 @@ impl ReloadableClientCaVerifier {
         let verifier = build_webpki_verifier(&ca_pem, include_system_cas)?;
 
         let inner = Arc::new(ArcSwap::from_pointee(verifier));
-        let inner_for_watcher = Arc::clone(&inner);
-        let ca_path_for_watcher = ca_file_path.clone();
-        let include_system_for_watcher = include_system_cas;
-
-        // Set up file watcher
         let watcher = Self::setup_file_watcher(
             &ca_file_path,
-            inner_for_watcher,
-            ca_path_for_watcher,
-            include_system_for_watcher,
+            Arc::clone(&inner),
+            include_system_cas,
+            initial_identity,
         )?;
 
         Ok(Arc::new(Self {
@@ -1206,25 +1156,44 @@ impl ReloadableClientCaVerifier {
     fn setup_file_watcher(
         ca_file_path: &Path,
         inner: Arc<ArcSwap<Arc<dyn ClientCertVerifier>>>,
-        ca_path: PathBuf,
         include_system_cas: bool,
+        initial_identity: u64,
     ) -> Result<Box<dyn Watcher + Send + Sync>, io::Error> {
-        // Initialize watcher state
-        let state = CaWatcherState::new(ca_file_path, inner, ca_path.clone(), include_system_cas)?;
+        let state = CaWatcherState::new(
+            inner,
+            ca_file_path.to_path_buf(),
+            include_system_cas,
+            initial_identity,
+        );
+
+        // Capacity 1 coalesces bursts of events into a single pending check.
+        let (signal_tx, signal_rx) = mpsc::sync_channel::<()>(1);
+        let initial_check = signal_tx.clone();
+        let _ = std::thread::Builder::new()
+            .name("tls-client-ca-reload".to_string())
+            .spawn(move || state.run(signal_rx))?;
 
         let mut watcher = notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
-            state.handle_event(res);
+            match res {
+                Ok(event) if matches!(event.kind, notify::EventKind::Access(_)) => return,
+                Ok(event) => {
+                    otel_debug!("tls.file_watcher.event", event = ?event, message = "File watcher event");
+                }
+                Err(e) => {
+                    otel_warn!("tls.file_watcher.error", error = ?e, message = "File watcher error");
+                }
+            }
+            let _ = signal_tx.try_send(());
         })
         .map_err(io::Error::other)?;
 
         // Watch the parent directory instead of the file itself. This is necessary because:
         // 1. Atomic file replacements (mv tmp ca.crt) create a new inode - watching the old
         //    file would lose track when it's replaced.
-        // 2. Kubernetes ConfigMaps/Secrets use symlink swapping, which also requires
-        //    watching the parent directory to detect changes.
+        // 2. Kubernetes ConfigMaps/Secrets swap a `..data` symlink and never touch `ca.crt`,
+        //    so the events name sibling entries rather than the CA file.
         // 3. Many editors (vim, etc.) use atomic save patterns that replace the file.
-        // Events are filtered in `is_event_for_watched_file()` to only process changes
-        // to our specific CA file.
+        // Any event is treated as a hint; the worker decides by re-resolving the configured path.
         let parent_dir = ca_file_path.parent().ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -1237,6 +1206,9 @@ impl ReloadableClientCaVerifier {
         watcher
             .watch(&parent_dir, RecursiveMode::NonRecursive)
             .map_err(io::Error::other)?;
+
+        // Catches a CA change between the initial load and watch registration, which emits no event.
+        let _ = initial_check.try_send(());
 
         otel_info!(
             "tls.file_watcher.setup",
@@ -2883,5 +2855,161 @@ mod tests {
         );
         assert!(!material_debug.contains(&rendered_key_bytes));
         assert!(material_debug.contains("key_pem: \"[REDACTED]\""));
+    }
+
+    fn wait_until(timeout: Duration, mut done: impl FnMut() -> bool) -> bool {
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            if done() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        done()
+    }
+
+    /// Scenario: the watcher is dropped while the worker waits out a long backoff.
+    /// Guarantees: disconnecting the signal channel stops the worker well before the pending
+    /// retry, and the worker releases its handle to the verifier state.
+    #[test]
+    fn ca_watcher_worker_exits_promptly_when_dropped_during_backoff() {
+        crate::crypto::ensure_crypto_provider();
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let ca_path = temp_dir.path().join("ca.crt");
+        fs::write(&ca_path, "not a certificate\n").expect("Write invalid CA");
+
+        let initial =
+            build_webpki_verifier(tls_certs::generate_ca("Test CA").cert_pem.as_bytes(), false)
+                .expect("Build initial verifier");
+        let inner = Arc::new(ArcSwap::from_pointee(initial));
+        let mut state = CaWatcherState::new(Arc::clone(&inner), ca_path, false, 0);
+        state.retry_delay = CA_RELOAD_RETRY_MAX;
+
+        let (signal_tx, signal_rx) = mpsc::sync_channel::<()>(1);
+        let worker = std::thread::spawn(move || state.run(signal_rx));
+        signal_tx.send(()).expect("Signal worker");
+
+        // The failed reload schedules a retry CA_RELOAD_RETRY_MAX away.
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(!worker.is_finished(), "worker should be waiting in backoff");
+
+        drop(signal_tx);
+        assert!(
+            wait_until(Duration::from_secs(2), || worker.is_finished()),
+            "worker did not exit while waiting in backoff"
+        );
+        worker.join().expect("Worker panicked");
+        assert_eq!(Arc::strong_count(&inner), 1);
+    }
+
+    /// Scenario: the verifier (and its watcher) is dropped after a failed reload.
+    /// Guarantees: dropping the verifier shuts down the watcher and its worker, releasing the
+    /// shared verifier state.
+    #[test]
+    fn ca_watcher_worker_releases_state_when_verifier_dropped() {
+        crate::crypto::ensure_crypto_provider();
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let ca_path = temp_dir.path().join("ca.crt");
+        fs::write(&ca_path, tls_certs::generate_ca("Test CA").cert_pem).expect("Write CA");
+
+        let verifier = ReloadableClientCaVerifier::new_with_file_watch(ca_path.clone(), false)
+            .expect("Create verifier");
+        let inner = Arc::downgrade(&verifier.inner);
+
+        let tmp_path = temp_dir.path().join("ca.crt.tmp");
+        fs::write(&tmp_path, "not a certificate\n").expect("Write invalid CA");
+        fs::rename(&tmp_path, &ca_path).expect("Replace CA");
+        std::thread::sleep(Duration::from_millis(300));
+
+        drop(verifier);
+        assert!(
+            wait_until(Duration::from_secs(5), || inner.upgrade().is_none()),
+            "worker still holds verifier state after the watcher was dropped"
+        );
+    }
+
+    /// Scenario: the CA file is replaced after the initial load but before the watcher is
+    /// registered, so no filesystem event is ever delivered for the change.
+    /// Guarantees: the worker's initial check reloads the replaced file without another event.
+    #[test]
+    fn ca_watcher_reloads_change_made_before_watch_registration() {
+        crate::crypto::ensure_crypto_provider();
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let ca_path = temp_dir.path().join("ca.crt");
+        fs::write(&ca_path, tls_certs::generate_ca("Test CA 1").cert_pem).expect("Write CA 1");
+
+        let stale_identity = get_file_identity(&ca_path).expect("Read CA 1 identity");
+        let initial = build_webpki_verifier(&fs::read(&ca_path).expect("Read CA 1"), false)
+            .expect("Build initial verifier");
+        let inner = Arc::new(ArcSwap::from_pointee(initial));
+        let loaded = inner.load_full();
+
+        let tmp_path = temp_dir.path().join("ca.crt.tmp");
+        fs::write(&tmp_path, tls_certs::generate_ca("Test CA 2").cert_pem).expect("Write CA 2");
+        fs::rename(&tmp_path, &ca_path).expect("Replace CA");
+
+        let _watcher = ReloadableClientCaVerifier::setup_file_watcher(
+            &ca_path,
+            Arc::clone(&inner),
+            false,
+            stale_identity,
+        )
+        .expect("Set up watcher");
+
+        assert!(
+            wait_until(Duration::from_secs(5), || !Arc::ptr_eq(
+                &inner.load_full(),
+                &loaded
+            )),
+            "change made before watch registration was not reloaded"
+        );
+    }
+
+    /// Scenario: a reload fails and the file stays unchanged, then checks run before and after
+    /// the scheduled retry is due, as when file events keep arriving.
+    /// Guarantees: the failed file is not retried before its deadline, a due retry is never
+    /// skipped, and the previous CA stays in use while retries fail.
+    #[test]
+    fn ca_watcher_runs_due_retry_even_when_events_trigger_the_check() {
+        crate::crypto::ensure_crypto_provider();
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let ca_path = temp_dir.path().join("ca.crt");
+        fs::write(&ca_path, "not a certificate\n").expect("Write invalid CA");
+
+        let initial = build_webpki_verifier(
+            tls_certs::generate_ca("Test CA 1").cert_pem.as_bytes(),
+            false,
+        )
+        .expect("Build initial verifier");
+        let inner = Arc::new(ArcSwap::from_pointee(initial));
+        let loaded = inner.load_full();
+        let mut state = CaWatcherState::new(Arc::clone(&inner), ca_path, false, 0);
+
+        state.check();
+        let scheduled = state
+            .retry_at
+            .expect("failed reload should schedule a retry");
+        assert_eq!(state.retry_delay, CA_RELOAD_RETRY_MIN * 2);
+
+        // The file is never modified, so its identity stays that of the failed candidate on
+        // every platform (Windows identity is the last write time).
+        state.check();
+        assert_eq!(
+            state.retry_at,
+            Some(scheduled),
+            "failed file was retried before its deadline"
+        );
+        assert_eq!(state.retry_delay, CA_RELOAD_RETRY_MIN * 2);
+
+        let due = Instant::now();
+        state.retry_at = Some(due);
+        state.check();
+        assert_eq!(
+            state.retry_delay,
+            CA_RELOAD_RETRY_MIN * 4,
+            "due retry was skipped"
+        );
+        assert!(state.retry_at.is_some_and(|at| at > due));
+        assert!(Arc::ptr_eq(&inner.load_full(), &loaded));
     }
 }
