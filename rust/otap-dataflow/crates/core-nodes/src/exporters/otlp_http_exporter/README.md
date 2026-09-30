@@ -91,11 +91,35 @@ Protocol headers always take precedence over configured headers.
 
 ## Authentication
 
+By default the exporter sends requests without any authentication.
+Authentication can be enabled by binding a [provider extension](../../../../contrib-extensions/README.md) to the exporter node
+via its `capabilities` map. The following providers are supported:
+
+* [`BearerTokenProvider`](#bearertokenprovider): Provides authentication via `Authorization: Bearer
+  <token>` HTTP header.
+* [`ApiKeyProvider`](#apikeyprovider): Provides authentication via a custom HTTP header in the form
+  `<header_name>: <optional_scheme> <api_key>`.
+* [`BasicAuthProvider`](#basicauthprovider): Provides authentication via `Authorization: Basic
+  <base64-encoded(username:password)>` HTTP header.
+* [`AgentFedCredentialProvider`](#agentfedcredentialprovider): Provides authentication using a credential
+  snapshot published by the embedding host as `Authorization: Bearer <token>`
+  HTTP header.
+
+> [!IMPORTANT]
+> Only one authentication provider can be bound to the exporter node at a time.
+> If multiple providers are bound, the exporter will reject the configuration.
+
+> [!NOTE]
+> Static authentication headers can be registered via the `http.headers`
+> configuration (for example, `http.headers.authorization: "Bearer <token>"`)
+> but this is NOT recommended because the value is not managed as a secret.
+
+### BearerTokenProvider
+
 The exporter can inject an OAuth `Authorization: Bearer <token>` on every
-outbound request by consuming the `bearer_token_provider` capability. Binding is
-optional and additive: without it the exporter sends no `authorization` header
-(the default); with it, the bound extension acquires and refreshes the token in
-the background so credentials rotate without restarting the exporter.
+outbound request by consuming the `bearer_token_provider` capability. The bound
+extension acquires and refreshes the token in the background so credentials
+rotate without restarting the exporter.
 
 Declare a provider extension in the pipeline's `extensions:` section and bind it
 on the exporter node via the node's `capabilities:` map. Any provider works and
@@ -145,7 +169,15 @@ they are NACK'd as **retryable**.) A token is guaranteed to eventually arrive:
 the bound extension holds data-path startup until its first token publish, and
 its token stream stays live for the exporter's lifetime.
 
-### Agent-fed credentials
+### ApiKeyProvider
+
+TODO: Add a basic auth provider extension and document it here.
+
+### BasicAuthProvider
+
+TODO: Add a basic auth provider extension and document it here.
+
+### AgentFedCredentialProvider
 
 An embedding host can instead bind `agent_fed_credential_provider`. The exporter
 loads and validates a current credential snapshot before accepting input, then
@@ -192,12 +224,6 @@ that request as rejected and does not send it again. It continues checking at
 the one-second retry cadence and resumes only after the host publishes a
 different `Arc` snapshot. A delayed 401 for an older generation does not reject
 a newer snapshot that is already cached.
-
-Bind either `agent_fed_credential_provider` or `bearer_token_provider`, not both.
-The exporter rejects an ambiguous configuration. With neither capability bound,
-the existing unauthenticated behavior is unchanged. A fixed token can still be
-set as `http.headers.authorization: "Bearer <token>"`, but it is not refreshed
-and should only be used when an auth extension is unavailable.
 
 ## Examples
 
