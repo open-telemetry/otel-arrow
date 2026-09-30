@@ -517,11 +517,12 @@ impl InstrumentationScopeView for RawInstrumentationScope<'_> {
     }
 
     #[inline]
-    fn dropped_attributes_count(&self) -> u32 {
+    fn dropped_attributes_count(&self) -> Option<u32> {
         let slice = self
             .bytes_parser
             .advance_to_find_field(INSTRUMENTATION_DROPPED_ATTRIBUTES_COUNT);
-        read_dropped_count(slice)
+        let count = read_dropped_count(slice);
+        (count != 0).then_some(count)
     }
 
     #[inline]

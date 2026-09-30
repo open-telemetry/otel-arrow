@@ -475,17 +475,10 @@ impl<'a> LogRecordView for OtapLogRecordView<'a> {
     }
 
     #[inline]
-    fn dropped_attributes_count(&self) -> u32 {
+    fn dropped_attributes_count(&self) -> Option<u32> {
         self.columns()
             .and_then(|columns| columns.dropped_attributes_count.as_ref())
-            .map(|col| {
-                if col.is_valid(self.row_idx) {
-                    col.value(self.row_idx)
-                } else {
-                    0
-                }
-            })
-            .unwrap_or(0)
+            .and_then(|col| col.is_valid(self.row_idx).then(|| col.value(self.row_idx)))
     }
 
     #[inline]
@@ -569,19 +562,15 @@ impl<'a> ResourceView for OtapResourceView<'a> {
     }
 
     #[inline]
-    fn dropped_attributes_count(&self) -> u32 {
+    fn dropped_attributes_count(&self) -> Option<u32> {
         self.view
             .resource_columns
             .as_ref()
             .and_then(|cols| cols.dropped_attributes_count.as_ref())
-            .map(|col| {
-                if col.is_valid(self.first_row_index) {
-                    col.value(self.first_row_index)
-                } else {
-                    0
-                }
+            .and_then(|col| {
+                col.is_valid(self.first_row_index)
+                    .then(|| col.value(self.first_row_index))
             })
-            .unwrap_or(0)
     }
 }
 
@@ -640,19 +629,15 @@ impl<'a> InstrumentationScopeView for OtapInstrumentationScopeView<'a> {
     }
 
     #[inline]
-    fn dropped_attributes_count(&self) -> u32 {
+    fn dropped_attributes_count(&self) -> Option<u32> {
         self.view
             .scope_columns
             .as_ref()
             .and_then(|cols| cols.dropped_attributes_count.as_ref())
-            .map(|col| {
-                if col.is_valid(self.first_row_index) {
-                    col.value(self.first_row_index)
-                } else {
-                    0
-                }
+            .and_then(|col| {
+                col.is_valid(self.first_row_index)
+                    .then(|| col.value(self.first_row_index))
             })
-            .unwrap_or(0)
     }
 }
 
@@ -1020,7 +1005,7 @@ mod tests {
             let resource = resource_logs.resource().unwrap();
             let attr_count = resource.attributes().count();
             assert_eq!(attr_count, 2, "Expected 2 resource attributes");
-            let dropped_attr_count = resource.dropped_attributes_count();
+            let dropped_attr_count = resource.dropped_attributes_count().unwrap_or(0);
             let expected_dropped_attrs = match rl_idx {
                 0 => 1,
                 1 | 2 => 0,

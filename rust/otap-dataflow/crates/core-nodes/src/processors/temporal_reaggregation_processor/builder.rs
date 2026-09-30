@@ -308,7 +308,7 @@ impl MetricSignalBuilder {
             .resource
             .append_schema_url(Some(resource_schema_url));
         self.metrics.resource.append_dropped_attributes_count(
-            resource_view.map_or(0, |r| r.dropped_attributes_count()),
+            resource_view.map_or(0, |r| r.dropped_attributes_count().unwrap_or(0)),
         );
         self.metrics.scope.append_id(Some(scope_otap_id));
         self.metrics
@@ -318,7 +318,7 @@ impl MetricSignalBuilder {
             .scope
             .append_version(scope_view.and_then(|s| s.version()));
         self.metrics.scope.append_dropped_attributes_count(
-            scope_view.map_or(0, |s| s.dropped_attributes_count()),
+            scope_view.map_or(0, |s| s.dropped_attributes_count().unwrap_or(0)),
         );
         self.metrics.append_scope_schema_url(scope_schema_url);
         self.metrics.append_metric_type(data_type);
@@ -1496,8 +1496,8 @@ mod tests {
         fn attributes(&self) -> Self::AttributesIter<'_> {
             self.attrs.clone().into_iter()
         }
-        fn dropped_attributes_count(&self) -> u32 {
-            0
+        fn dropped_attributes_count(&self) -> Option<u32> {
+            None
         }
     }
 

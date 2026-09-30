@@ -44,7 +44,7 @@ impl ResourceView for ObjResource<'_> {
     }
 
     #[inline]
-    fn dropped_attributes_count(&self) -> u32 {
-        self.inner.dropped_attributes_count
+    fn dropped_attributes_count(&self) -> Option<u32> {
+        (self.inner.dropped_attributes_count != 0).then_some(self.inner.dropped_attributes_count)
     }
 }

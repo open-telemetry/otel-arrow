@@ -1468,7 +1468,8 @@ fn is_data_aggregatable<'a, D: DataView<'a>>(data: &D) -> bool {
     match data.value_type() {
         DataType::Gauge | DataType::Summary => true,
         DataType::Sum => data.as_sum().is_some_and(|s| {
-            s.aggregation_temporality() == AggregationTemporality::Cumulative && s.is_monotonic()
+            s.aggregation_temporality() == AggregationTemporality::Cumulative
+                && s.is_monotonic().unwrap_or(false)
         }),
         DataType::Histogram => data
             .as_histogram()

@@ -406,8 +406,8 @@ impl SumView for ObjSum<'_> {
         self.inner.aggregation_temporality().into()
     }
 
-    fn is_monotonic(&self) -> bool {
-        self.inner.is_monotonic
+    fn is_monotonic(&self) -> Option<bool> {
+        self.inner.is_monotonic.then_some(true)
     }
 }
 

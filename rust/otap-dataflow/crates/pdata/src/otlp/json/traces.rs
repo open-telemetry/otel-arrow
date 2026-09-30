@@ -155,8 +155,7 @@ impl<T: SpanView> Serialize for SpanJson<T> {
         if let Some(value) = self.0.name().filter(|value| !value.is_empty()) {
             map.serialize_entry("name", &Utf8(value))?;
         }
-        let kind = self.0.kind();
-        if kind != 0 {
+        if let Some(kind) = self.0.kind().filter(|value| *value != 0) {
             map.serialize_entry("kind", &kind)?;
         }
         if let Some(value) = self.0.start_time_unix_nano().filter(|value| *value != 0) {
@@ -168,22 +167,23 @@ impl<T: SpanView> Serialize for SpanJson<T> {
         if self.0.attributes().next().is_some() {
             map.serialize_entry("attributes", &AttributeIterJson::new(self.0.attributes()))?;
         }
-        let dropped_attributes = self.0.dropped_attributes_count();
-        if dropped_attributes != 0 {
+        if let Some(dropped_attributes) = self
+            .0
+            .dropped_attributes_count()
+            .filter(|value| *value != 0)
+        {
             map.serialize_entry("droppedAttributesCount", &dropped_attributes)?;
         }
         if self.0.events().next().is_some() {
             map.serialize_entry("events", &EventList(&self.0))?;
         }
-        let dropped_events = self.0.dropped_events_count();
-        if dropped_events != 0 {
+        if let Some(dropped_events) = self.0.dropped_events_count().filter(|value| *value != 0) {
             map.serialize_entry("droppedEventsCount", &dropped_events)?;
         }
         if self.0.links().next().is_some() {
             map.serialize_entry("links", &LinkList(&self.0))?;
         }
-        let dropped_links = self.0.dropped_links_count();
-        if dropped_links != 0 {
+        if let Some(dropped_links) = self.0.dropped_links_count().filter(|value| *value != 0) {
             map.serialize_entry("droppedLinksCount", &dropped_links)?;
         }
         if let Some(status) = self.0.status() {
@@ -225,8 +225,11 @@ impl<E: EventView> Serialize for EventJson<E> {
         if self.0.attributes().next().is_some() {
             map.serialize_entry("attributes", &AttributeIterJson::new(self.0.attributes()))?;
         }
-        let dropped = self.0.dropped_attributes_count();
-        if dropped != 0 {
+        if let Some(dropped) = self
+            .0
+            .dropped_attributes_count()
+            .filter(|value| *value != 0)
+        {
             map.serialize_entry("droppedAttributesCount", &dropped)?;
         }
         map.end()
@@ -268,8 +271,11 @@ impl<L: LinkView> Serialize for LinkJson<L> {
         if self.0.attributes().next().is_some() {
             map.serialize_entry("attributes", &AttributeIterJson::new(self.0.attributes()))?;
         }
-        let dropped = self.0.dropped_attributes_count();
-        if dropped != 0 {
+        if let Some(dropped) = self
+            .0
+            .dropped_attributes_count()
+            .filter(|value| *value != 0)
+        {
             map.serialize_entry("droppedAttributesCount", &dropped)?;
         }
         if let Some(flags) = self.0.flags().filter(|value| *value != 0) {
@@ -290,8 +296,7 @@ impl<T: StatusView> Serialize for StatusJson<T> {
         if let Some(value) = self.0.message().filter(|value| !value.is_empty()) {
             map.serialize_entry("message", &Utf8(value))?;
         }
-        let code = self.0.status_code();
-        if code != 0 {
+        if let Some(code) = self.0.status_code().filter(|value| *value != 0) {
             map.serialize_entry("code", &code)?;
         }
         map.end()

@@ -196,8 +196,8 @@ impl SpanView for ObjSpan<'_> {
         read_str(self.inner.name.as_bytes())
     }
 
-    fn kind(&self) -> i32 {
-        self.inner.kind
+    fn kind(&self) -> Option<i32> {
+        (self.inner.kind != 0).then_some(self.inner.kind)
     }
 
     fn start_time_unix_nano(&self) -> Option<u64> {
@@ -214,24 +214,24 @@ impl SpanView for ObjSpan<'_> {
         KeyValueIter::new(self.inner.attributes.iter())
     }
 
-    fn dropped_attributes_count(&self) -> u32 {
-        self.inner.dropped_attributes_count
+    fn dropped_attributes_count(&self) -> Option<u32> {
+        (self.inner.dropped_attributes_count != 0).then_some(self.inner.dropped_attributes_count)
     }
 
     fn events(&self) -> Self::EventsIter<'_> {
         EventIter::new(self.inner.events.iter())
     }
 
-    fn dropped_events_count(&self) -> u32 {
-        self.inner.dropped_events_count
+    fn dropped_events_count(&self) -> Option<u32> {
+        (self.inner.dropped_events_count != 0).then_some(self.inner.dropped_events_count)
     }
 
     fn links(&self) -> Self::LinksIter<'_> {
         LinkIter::new(self.inner.links.iter())
     }
 
-    fn dropped_links_count(&self) -> u32 {
-        self.inner.dropped_links_count
+    fn dropped_links_count(&self) -> Option<u32> {
+        (self.inner.dropped_links_count != 0).then_some(self.inner.dropped_links_count)
     }
 
     fn status(&self) -> Option<Self::Status<'_>> {
@@ -247,8 +247,8 @@ impl StatusView for ObjStatus<'_> {
         read_str(self.inner.message.as_bytes())
     }
 
-    fn status_code(&self) -> i32 {
-        self.inner.code
+    fn status_code(&self) -> Option<i32> {
+        (self.inner.code != 0).then_some(self.inner.code)
     }
 }
 
@@ -276,8 +276,8 @@ impl EventView for ObjEvent<'_> {
         KeyValueIter::new(self.inner.attributes.iter())
     }
 
-    fn dropped_attributes_count(&self) -> u32 {
-        self.inner.dropped_attributes_count
+    fn dropped_attributes_count(&self) -> Option<u32> {
+        (self.inner.dropped_attributes_count != 0).then_some(self.inner.dropped_attributes_count)
     }
 }
 
@@ -308,8 +308,8 @@ impl LinkView for ObjLink<'_> {
         KeyValueIter::new(self.inner.attributes.iter())
     }
 
-    fn dropped_attributes_count(&self) -> u32 {
-        self.inner.dropped_attributes_count
+    fn dropped_attributes_count(&self) -> Option<u32> {
+        (self.inner.dropped_attributes_count != 0).then_some(self.inner.dropped_attributes_count)
     }
 
     fn flags(&self) -> Option<u32> {

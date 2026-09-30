@@ -1,0 +1,5 @@
+change_type: bug_fix
+component: otap
+note: Return Option from the presence-sensitive view getters so an absent value reads as None instead of being coerced to zero or false
+issues: [4197]
+subtext: Covers SpanView kind and dropped counts, StatusView status_code, dropped_attributes_count on event, link, resource, scope and log record views, and SumView is_monotonic

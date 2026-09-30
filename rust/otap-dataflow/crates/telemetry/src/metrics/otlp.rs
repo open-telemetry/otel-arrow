@@ -3047,7 +3047,7 @@ mod tests {
         assert_eq!(counter.unit(), b"{request}");
         let data = counter.data().expect("counter data");
         let sum = data.as_sum().expect("counter remains a sum");
-        assert!(sum.is_monotonic());
+        assert_eq!(sum.is_monotonic(), Some(true));
         assert_eq!(
             sum.aggregation_temporality(),
             otel_arrow_dfe_pdata_views::views::metrics::AggregationTemporality::Delta

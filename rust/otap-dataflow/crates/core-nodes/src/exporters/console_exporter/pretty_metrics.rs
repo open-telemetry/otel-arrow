@@ -140,7 +140,7 @@ impl HierarchicalFormatter {
     fn format_sum<S: SumView>(&self, sum: &S, output: &mut dyn Write) -> io::Result<()> {
         self.format_plain_line(3, "SUM", output, |w| {
             write_temporality(w, sum.aggregation_temporality())?;
-            write!(w, " monotonic={}", sum.is_monotonic())
+            write!(w, " monotonic={}", sum.is_monotonic().unwrap_or(false))
         })?;
         for point in sum.data_points() {
             self.format_number_data_point(&point, output)?;

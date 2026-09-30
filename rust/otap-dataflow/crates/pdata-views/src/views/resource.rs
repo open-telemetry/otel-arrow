@@ -22,6 +22,6 @@ pub trait ResourceView {
     /// Access this resource's attributes
     fn attributes(&self) -> Self::AttributesIter<'_>;
 
-    /// Access this resource's dropped attributes.The value is 0 when no attributes were dropped.
-    fn dropped_attributes_count(&self) -> u32;
+    /// Access this resource's dropped attributes. Returns None when no attributes were dropped.
+    fn dropped_attributes_count(&self) -> Option<u32>;
 }

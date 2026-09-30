@@ -157,8 +157,11 @@ impl<L: LogRecordView> Serialize for LogRecordJson<L> {
         if self.0.attributes().next().is_some() {
             map.serialize_entry("attributes", &AttributeIterJson::new(self.0.attributes()))?;
         }
-        let dropped = self.0.dropped_attributes_count();
-        if dropped != 0 {
+        if let Some(dropped) = self
+            .0
+            .dropped_attributes_count()
+            .filter(|value| *value != 0)
+        {
             map.serialize_entry("droppedAttributesCount", &dropped)?;
         }
         if let Some(flags) = self.0.flags().filter(|value| *value != 0) {

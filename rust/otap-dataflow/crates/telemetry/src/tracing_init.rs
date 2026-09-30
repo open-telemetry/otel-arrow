@@ -587,7 +587,7 @@ mod tests {
             for rl in raw.resources() {
                 for sl in rl.scopes() {
                     for lr in sl.log_records() {
-                        parsed_dropped = Some(lr.dropped_attributes_count());
+                        parsed_dropped = lr.dropped_attributes_count();
                     }
                 }
             }

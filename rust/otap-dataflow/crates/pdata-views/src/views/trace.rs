@@ -173,7 +173,7 @@ pub trait SpanView {
     // prost enum so we don't have to establish a dependency on prost code.
 
     /// Access the Span kind
-    fn kind(&self) -> i32;
+    fn kind(&self) -> Option<i32>;
 
     /// Access the start time of the Span
     fn start_time_unix_nano(&self) -> Option<u64>;
@@ -184,20 +184,20 @@ pub trait SpanView {
     /// Access the span's attributes
     fn attributes(&self) -> Self::AttributeIter<'_>;
 
-    /// Access this span's dropped attributes. The value is 0 when no attributes were dropped.
-    fn dropped_attributes_count(&self) -> u32;
+    /// Access this span's dropped attributes. Returns None when no attributes were dropped.
+    fn dropped_attributes_count(&self) -> Option<u32>;
 
     /// Iterator yielding `Events`s
     fn events(&self) -> Self::EventsIter<'_>;
 
     /// Access this span's dropped events count
-    fn dropped_events_count(&self) -> u32;
+    fn dropped_events_count(&self) -> Option<u32>;
 
     /// Iterator yielding `Links`s
     fn links(&self) -> Self::LinksIter<'_>;
 
     /// Access this span's dropped links count
-    fn dropped_links_count(&self) -> u32;
+    fn dropped_links_count(&self) -> Option<u32>;
 
     /// Access this span's Status
     fn status(&self) -> Option<Self::Status<'_>>;
@@ -226,8 +226,8 @@ pub trait EventView {
     /// Access the event's attributes
     fn attributes(&self) -> Self::AttributeIter<'_>;
 
-    /// Access this event's dropped attributes. The value is 0 when no attributes were dropped.
-    fn dropped_attributes_count(&self) -> u32;
+    /// Access this event's dropped attributes. Returns None when no attributes were dropped.
+    fn dropped_attributes_count(&self) -> Option<u32>;
 }
 
 /// View for a Link
@@ -260,8 +260,8 @@ pub trait LinkView {
     /// Access the link's attributes
     fn attributes(&self) -> Self::AttributeIter<'_>;
 
-    /// Access this event's dropped attributes. The value is 0 when no attributes were dropped.
-    fn dropped_attributes_count(&self) -> u32;
+    /// Access this event's dropped attributes. Returns None when no attributes were dropped.
+    fn dropped_attributes_count(&self) -> Option<u32>;
 
     /// Access the link's flags
     fn flags(&self) -> Option<u32>;
@@ -273,5 +273,5 @@ pub trait StatusView {
     fn message(&self) -> Option<Str<'_>>;
 
     /// Access the numeric status code
-    fn status_code(&self) -> i32;
+    fn status_code(&self) -> Option<i32>;
 }

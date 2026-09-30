@@ -1486,7 +1486,7 @@ impl SumView for RawSum<'_> {
         AggregationTemporality::from(val as u32)
     }
 
-    fn is_monotonic(&self) -> bool {
+    fn is_monotonic(&self) -> Option<bool> {
         let val = self
             .byte_parser
             .advance_to_find_field(SUM_IS_MONOTONIC)
@@ -1494,7 +1494,7 @@ impl SumView for RawSum<'_> {
             .map(|(val, _)| val)
             .unwrap_or_default();
 
-        val != 0
+        (val != 0).then_some(true)
     }
 
     fn data_points(&self) -> Self::NumberDataPointIter<'_> {

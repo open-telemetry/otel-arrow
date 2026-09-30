@@ -62,7 +62,10 @@ pub fn metric_type_info_of<'a>(data: &impl DataView<'a>) -> (u8, u8, bool) {
     let (is_monotonic, temporality) = match dt {
         DataType::Sum => {
             let sum = data.as_sum().expect("DataType::Sum should have sum data");
-            (sum.is_monotonic(), sum.aggregation_temporality())
+            (
+                sum.is_monotonic().unwrap_or(false),
+                sum.aggregation_temporality(),
+            )
         }
         DataType::Histogram => {
             let hist = data
@@ -92,7 +95,10 @@ pub fn metric_id_of<'a, M: MetricView>(
     let (is_monotonic, temporality) = match dt {
         DataType::Sum => {
             let sum = data.as_sum().expect("DataType::Sum should have sum data");
-            (sum.is_monotonic(), sum.aggregation_temporality())
+            (
+                sum.is_monotonic().unwrap_or(false),
+                sum.aggregation_temporality(),
+            )
         }
         DataType::Histogram => {
             let hist = data

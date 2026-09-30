@@ -89,7 +89,7 @@ where
             let resource_schema_url = resource_spans.schema_url();
             let resource_dropped_attributes_count = resource_spans
                 .resource()
-                .map(|r| r.dropped_attributes_count())
+                .and_then(|r| r.dropped_attributes_count())
                 .unwrap_or(0);
             let resource = &mut spans.resource;
             resource.append_id_n(curr_resource_id, span_count);
@@ -115,9 +115,9 @@ where
                 if let Some(scope) = scope_spans.scope() {
                     spans.scope.append_name(scope.name());
                     spans.scope.append_version(scope.version());
-                    spans
-                        .scope
-                        .append_dropped_attributes_count(scope.dropped_attributes_count());
+                    spans.scope.append_dropped_attributes_count(
+                        scope.dropped_attributes_count().unwrap_or(0),
+                    );
                 } else {
                     spans.scope.append_name(None);
                     spans.scope.append_version(None);
@@ -146,16 +146,14 @@ where
                 spans.append_parent_span_id(span.parent_span_id().copied())?;
                 spans.append_flags(span.flags());
                 spans.append_name(span.name().unwrap_or_default());
-                spans.append_kind(Some(span.kind()));
-                spans.append_dropped_attributes_count(Some(span.dropped_attributes_count()));
-                spans.append_dropped_events_count(Some(span.dropped_events_count()));
-                spans.append_dropped_links_count(Some(span.dropped_links_count()));
+                spans.append_kind(span.kind());
+                spans.append_dropped_attributes_count(span.dropped_attributes_count());
+                spans.append_dropped_events_count(span.dropped_events_count());
+                spans.append_dropped_links_count(span.dropped_links_count());
 
                 if let Some(status) = &span.status() {
-                    let code = status.status_code();
-                    let message = status.message();
-                    spans.status.append_code((code != 0).then_some(code));
-                    spans.status.append_status_message(message);
+                    spans.status.append_code(status.status_code());
+                    spans.status.append_status_message(status.message());
                 } else {
                     spans.status.append_code(None);
                     spans.status.append_status_message(None)
@@ -166,7 +164,7 @@ where
                     events.append_parent_id(curr_span_id);
                     events.append_time_unix_nano(event.time_unix_nano().map(|v| v as i64));
                     events.append_name(event.name().unwrap_or_default());
-                    events.append_dropped_attributes_count(Some(event.dropped_attributes_count()));
+                    events.append_dropped_attributes_count(event.dropped_attributes_count());
 
                     for kv in event.attributes() {
                         event_attrs.append_parent_id(&curr_event_id);
@@ -184,7 +182,7 @@ where
                     links.append_trace_id(link.trace_id().copied())?;
                     links.append_span_id(link.span_id().copied())?;
                     links.append_trace_state(link.trace_state());
-                    links.append_dropped_attributes_count(Some(link.dropped_attributes_count()));
+                    links.append_dropped_attributes_count(link.dropped_attributes_count());
                     links.append_flags(link.flags());
 
                     for kv in link.attributes() {
@@ -262,7 +260,7 @@ where
                 resource_attrs.append_parent_id(&curr_resource_id);
                 append_attribute_value(&mut resource_attrs, &kv)?;
             }
-            resource.dropped_attributes_count()
+            resource.dropped_attributes_count().unwrap_or(0)
         } else {
             0
         };
@@ -286,7 +284,7 @@ where
                     (
                         scope.name(),
                         scope.version(),
-                        scope.dropped_attributes_count(),
+                        scope.dropped_attributes_count().unwrap_or(0),
                     )
                 } else {
                     (None, None, 0)
@@ -361,7 +359,8 @@ where
                         log_record
                             .as_ref()
                             .expect("LogRecord should not be None")
-                            .dropped_attributes_count(),
+                            .dropped_attributes_count()
+                            .unwrap_or(0),
                     );
                 }
                 for log_record in log_records_slice {
@@ -725,7 +724,7 @@ where
                 resource_attrs.append_parent_id(&curr_resource_id);
                 append_attribute_value(&mut resource_attrs, &kv)?;
             }
-            resource.dropped_attributes_count()
+            resource.dropped_attributes_count().unwrap_or(0)
         } else {
             0
         };
@@ -738,7 +737,7 @@ where
             let scope_version = scope.as_ref().and_then(|s| s.version());
             let scope_dropped_attributes_count = scope
                 .as_ref()
-                .map(|s| s.dropped_attributes_count())
+                .and_then(|s| s.dropped_attributes_count())
                 .unwrap_or(0);
             if let Some(ref scope_ref) = scope {
                 for kv in scope_ref.attributes() {
@@ -775,7 +774,7 @@ where
                     .append_aggregation_temporality(aggregation_temporality.map(|agg| agg as i32));
 
                 let is_monotonic =
-                    data.and_then(|data| data.as_sum().map(|sum| sum.is_monotonic()));
+                    data.and_then(|data| data.as_sum().and_then(|sum| sum.is_monotonic()));
                 metrics.append_is_monotonic(is_monotonic);
 
                 for kv in metric.metadata() {
@@ -3107,7 +3106,7 @@ mod test {
 
         // Validate resource
         let resource = resource_metrics.resource().expect("resource should exist");
-        assert_eq!(resource.dropped_attributes_count(), 99);
+        assert_eq!(resource.dropped_attributes_count(), Some(99));
         let resource_attrs: Vec<_> = resource.attributes().collect();
         assert_eq!(resource_attrs.len(), 1);
         assert_eq!(resource_attrs[0].key(), b"resource_attr1");
@@ -3131,7 +3130,7 @@ mod test {
         let scope = scope_metrics.scope().expect("scope should exist");
         assert_eq!(scope.name(), Some(b"library".as_slice()));
         assert_eq!(scope.version(), Some(b"scopev1".as_slice()));
-        assert_eq!(scope.dropped_attributes_count(), 17);
+        assert_eq!(scope.dropped_attributes_count(), Some(17));
         let scope_attrs: Vec<_> = scope.attributes().collect();
         assert_eq!(scope_attrs.len(), 1);
         assert_eq!(scope_attrs[0].key(), b"scope_attr1");
@@ -3180,7 +3179,7 @@ mod test {
             sum.aggregation_temporality(),
             AggregationTemporality::Cumulative
         );
-        assert!(!sum.is_monotonic());
+        assert_eq!(sum.is_monotonic(), None);
         let sum_dps: Vec<_> = sum.data_points().collect();
         assert_eq!(sum_dps.len(), 1);
         assert_eq!(sum_dps[0].time_unix_nano(), 34);

@@ -523,11 +523,10 @@ impl<'a> SpanView for OtapSpanView<'a> {
     }
 
     #[inline]
-    fn kind(&self) -> i32 {
+    fn kind(&self) -> Option<i32> {
         self.columns()
             .and_then(|columns| columns.kind.as_ref())
             .and_then(|col| col.value_at(self.row_idx))
-            .unwrap_or(0)
     }
 
     #[inline]
@@ -569,17 +568,10 @@ impl<'a> SpanView for OtapSpanView<'a> {
     }
 
     #[inline]
-    fn dropped_attributes_count(&self) -> u32 {
+    fn dropped_attributes_count(&self) -> Option<u32> {
         self.columns()
             .and_then(|columns| columns.dropped_attributes_count.as_ref())
-            .map(|col| {
-                if col.is_valid(self.row_idx) {
-                    col.value(self.row_idx)
-                } else {
-                    0
-                }
-            })
-            .unwrap_or(0)
+            .and_then(|col| col.is_valid(self.row_idx).then(|| col.value(self.row_idx)))
     }
 
     #[inline]
@@ -598,17 +590,10 @@ impl<'a> SpanView for OtapSpanView<'a> {
     }
 
     #[inline]
-    fn dropped_events_count(&self) -> u32 {
+    fn dropped_events_count(&self) -> Option<u32> {
         self.columns()
             .and_then(|columns| columns.dropped_events_count.as_ref())
-            .map(|col| {
-                if col.is_valid(self.row_idx) {
-                    col.value(self.row_idx)
-                } else {
-                    0
-                }
-            })
-            .unwrap_or(0)
+            .and_then(|col| col.is_valid(self.row_idx).then(|| col.value(self.row_idx)))
     }
 
     #[inline]
@@ -627,17 +612,10 @@ impl<'a> SpanView for OtapSpanView<'a> {
     }
 
     #[inline]
-    fn dropped_links_count(&self) -> u32 {
+    fn dropped_links_count(&self) -> Option<u32> {
         self.columns()
             .and_then(|columns| columns.dropped_links_count.as_ref())
-            .map(|col| {
-                if col.is_valid(self.row_idx) {
-                    col.value(self.row_idx)
-                } else {
-                    0
-                }
-            })
-            .unwrap_or(0)
+            .and_then(|col| col.is_valid(self.row_idx).then(|| col.value(self.row_idx)))
     }
 
     #[inline]
@@ -743,19 +721,15 @@ impl<'a> EventView for OtapEventView<'a> {
     }
 
     #[inline]
-    fn dropped_attributes_count(&self) -> u32 {
+    fn dropped_attributes_count(&self) -> Option<u32> {
         self.view
             .event_columns
             .as_ref()
             .and_then(|cols| cols.dropped_attributes_count.as_ref())
-            .map(|col| {
-                if col.is_valid(self.event_row_idx) {
-                    col.value(self.event_row_idx)
-                } else {
-                    0
-                }
+            .and_then(|col| {
+                col.is_valid(self.event_row_idx)
+                    .then(|| col.value(self.event_row_idx))
             })
-            .unwrap_or(0)
     }
 }
 
@@ -873,19 +847,15 @@ impl<'a> LinkView for OtapLinkView<'a> {
     }
 
     #[inline]
-    fn dropped_attributes_count(&self) -> u32 {
+    fn dropped_attributes_count(&self) -> Option<u32> {
         self.view
             .link_columns
             .as_ref()
             .and_then(|cols| cols.dropped_attributes_count.as_ref())
-            .map(|col| {
-                if col.is_valid(self.link_row_idx) {
-                    col.value(self.link_row_idx)
-                } else {
-                    0
-                }
+            .and_then(|col| {
+                col.is_valid(self.link_row_idx)
+                    .then(|| col.value(self.link_row_idx))
             })
-            .unwrap_or(0)
     }
 
     #[inline]
@@ -969,13 +939,12 @@ impl<'a> StatusView for OtapStatusView<'a> {
     }
 
     #[inline]
-    fn status_code(&self) -> i32 {
+    fn status_code(&self) -> Option<i32> {
         self.columns
             .status
             .as_ref()
             .and_then(|s| s.code.as_ref())
             .and_then(|col| col.value_at(self.row_idx))
-            .unwrap_or(0)
     }
 }
 
@@ -1016,19 +985,15 @@ impl<'a> ResourceView for OtapTraceResourceView<'a> {
     }
 
     #[inline]
-    fn dropped_attributes_count(&self) -> u32 {
+    fn dropped_attributes_count(&self) -> Option<u32> {
         self.view
             .resource_columns
             .as_ref()
             .and_then(|cols| cols.dropped_attributes_count.as_ref())
-            .map(|col| {
-                if col.is_valid(self.first_row_index) {
-                    col.value(self.first_row_index)
-                } else {
-                    0
-                }
+            .and_then(|col| {
+                col.is_valid(self.first_row_index)
+                    .then(|| col.value(self.first_row_index))
             })
-            .unwrap_or(0)
     }
 }
 
@@ -1087,19 +1052,15 @@ impl<'a> InstrumentationScopeView for OtapTraceInstrumentationScopeView<'a> {
     }
 
     #[inline]
-    fn dropped_attributes_count(&self) -> u32 {
+    fn dropped_attributes_count(&self) -> Option<u32> {
         self.view
             .scope_columns
             .as_ref()
             .and_then(|cols| cols.dropped_attributes_count.as_ref())
-            .map(|col| {
-                if col.is_valid(self.first_row_index) {
-                    col.value(self.first_row_index)
-                } else {
-                    0
-                }
+            .and_then(|col| {
+                col.is_valid(self.first_row_index)
+                    .then(|| col.value(self.first_row_index))
             })
-            .unwrap_or(0)
     }
 }
 
@@ -1292,7 +1253,7 @@ mod tests {
                     assert_eq!(std::str::from_utf8(name).unwrap(), "span-1");
 
                     // Check kind
-                    assert_eq!(span.kind(), 1); // INTERNAL
+                    assert_eq!(span.kind(), Some(1)); // INTERNAL
 
                     // Check start time
                     assert_eq!(span.start_time_unix_nano(), Some(1_000_000_000));
@@ -1383,7 +1344,7 @@ mod tests {
             for scope_spans in resource_spans.scopes() {
                 for span in scope_spans.spans() {
                     let status = span.status().expect("Should have status");
-                    assert_eq!(status.status_code(), 2); // ERROR
+                    assert_eq!(status.status_code(), Some(2)); // ERROR
                     let msg = status.message().unwrap();
                     assert_eq!(std::str::from_utf8(msg).unwrap(), "something went wrong");
                 }
@@ -1449,11 +1410,11 @@ mod tests {
                     assert!(span.parent_span_id().is_none());
                     assert!(span.flags().is_none());
                     assert!(span.name().is_none());
-                    assert_eq!(span.kind(), 0);
+                    assert_eq!(span.kind(), None);
                     assert!(span.end_time_unix_nano().is_none());
-                    assert_eq!(span.dropped_attributes_count(), 0);
-                    assert_eq!(span.dropped_events_count(), 0);
-                    assert_eq!(span.dropped_links_count(), 0);
+                    assert_eq!(span.dropped_attributes_count(), None);
+                    assert_eq!(span.dropped_events_count(), None);
+                    assert_eq!(span.dropped_links_count(), None);
                     assert!(span.status().is_none());
                     assert_eq!(span.attributes().count(), 0);
                     assert_eq!(span.events().count(), 0);

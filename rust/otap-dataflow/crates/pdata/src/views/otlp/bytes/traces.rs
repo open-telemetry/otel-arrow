@@ -8,24 +8,20 @@ use std::{cell::Cell, num::NonZeroUsize};
 
 use crate::{
     error::Error,
-    proto::{
-        consts::{
-            field_num::traces::{
-                RESOURCE_SPANS_RESOURCE, RESOURCE_SPANS_SCHEMA_URL, RESOURCE_SPANS_SCOPE_SPANS,
-                SCOPE_SPANS_SCHEMA_URL, SCOPE_SPANS_SCOPE, SCOPE_SPANS_SPANS, SPAN_ATTRIBUTES,
-                SPAN_DROPPED_ATTRIBUTES_COUNT, SPAN_DROPPED_EVENTS_COUNT, SPAN_DROPPED_LINKS_COUNT,
-                SPAN_END_TIME_UNIX_NANO, SPAN_EVENT_ATTRIBUTES,
-                SPAN_EVENT_DROPPED_ATTRIBUTES_COUNTS, SPAN_EVENT_NAME, SPAN_EVENT_TIME_UNIX_NANO,
-                SPAN_EVENTS, SPAN_FLAGS, SPAN_KIND, SPAN_LINK_ATTRIBUTES,
-                SPAN_LINK_DROPPED_ATTRIBUTES_COUNT, SPAN_LINK_FLAGS, SPAN_LINK_SPAN_ID,
-                SPAN_LINK_TRACE_ID, SPAN_LINK_TRACE_STATE, SPAN_LINKS, SPAN_NAME,
-                SPAN_PARENT_SPAN_ID, SPAN_SPAN_ID, SPAN_START_TIME_UNIX_NANO, SPAN_STATUS,
-                SPAN_STATUS_CODE, SPAN_STATUS_MESSAGE, SPAN_TRACE_ID, SPAN_TRACE_STATE,
-                TRACES_DATA_RESOURCE_SPANS,
-            },
-            wire_types,
+    proto::consts::{
+        field_num::traces::{
+            RESOURCE_SPANS_RESOURCE, RESOURCE_SPANS_SCHEMA_URL, RESOURCE_SPANS_SCOPE_SPANS,
+            SCOPE_SPANS_SCHEMA_URL, SCOPE_SPANS_SCOPE, SCOPE_SPANS_SPANS, SPAN_ATTRIBUTES,
+            SPAN_DROPPED_ATTRIBUTES_COUNT, SPAN_DROPPED_EVENTS_COUNT, SPAN_DROPPED_LINKS_COUNT,
+            SPAN_END_TIME_UNIX_NANO, SPAN_EVENT_ATTRIBUTES, SPAN_EVENT_DROPPED_ATTRIBUTES_COUNTS,
+            SPAN_EVENT_NAME, SPAN_EVENT_TIME_UNIX_NANO, SPAN_EVENTS, SPAN_FLAGS, SPAN_KIND,
+            SPAN_LINK_ATTRIBUTES, SPAN_LINK_DROPPED_ATTRIBUTES_COUNT, SPAN_LINK_FLAGS,
+            SPAN_LINK_SPAN_ID, SPAN_LINK_TRACE_ID, SPAN_LINK_TRACE_STATE, SPAN_LINKS, SPAN_NAME,
+            SPAN_PARENT_SPAN_ID, SPAN_SPAN_ID, SPAN_START_TIME_UNIX_NANO, SPAN_STATUS,
+            SPAN_STATUS_CODE, SPAN_STATUS_MESSAGE, SPAN_TRACE_ID, SPAN_TRACE_STATE,
+            TRACES_DATA_RESOURCE_SPANS,
         },
-        opentelemetry::trace::v1::{span::SpanKind, status::StatusCode},
+        wire_types,
     },
     schema::{SpanId, TraceId},
     views::{
@@ -673,27 +669,30 @@ impl SpanView for RawSpan<'_> {
     }
 
     #[inline]
-    fn dropped_attributes_count(&self) -> u32 {
+    fn dropped_attributes_count(&self) -> Option<u32> {
         let slice = self
             .bytes_parser
             .advance_to_find_field(SPAN_DROPPED_ATTRIBUTES_COUNT);
-        read_dropped_count(slice)
+        let count = read_dropped_count(slice);
+        (count != 0).then_some(count)
     }
 
     #[inline]
-    fn dropped_events_count(&self) -> u32 {
+    fn dropped_events_count(&self) -> Option<u32> {
         let slice = self
             .bytes_parser
             .advance_to_find_field(SPAN_DROPPED_EVENTS_COUNT);
-        read_dropped_count(slice)
+        let count = read_dropped_count(slice);
+        (count != 0).then_some(count)
     }
 
     #[inline]
-    fn dropped_links_count(&self) -> u32 {
+    fn dropped_links_count(&self) -> Option<u32> {
         let slice = self
             .bytes_parser
             .advance_to_find_field(SPAN_DROPPED_LINKS_COUNT);
-        read_dropped_count(slice)
+        let count = read_dropped_count(slice);
+        (count != 0).then_some(count)
     }
 
     #[inline]
@@ -724,12 +723,12 @@ impl SpanView for RawSpan<'_> {
     }
 
     #[inline]
-    fn kind(&self) -> i32 {
+    fn kind(&self) -> Option<i32> {
         self.bytes_parser
             .advance_to_find_field(SPAN_KIND)
             .and_then(|slice| read_varint(slice, 0))
-            .map(|(var, _)| SpanKind::try_from(var as i32).unwrap_or(SpanKind::Unspecified))
-            .unwrap_or(SpanKind::Unspecified) as i32
+            .map(|(var, _)| var as i32)
+            .filter(|&kind| kind != 0)
     }
 
     #[inline]
@@ -813,11 +812,12 @@ impl EventView for RawSpanEvent<'_> {
     }
 
     #[inline]
-    fn dropped_attributes_count(&self) -> u32 {
+    fn dropped_attributes_count(&self) -> Option<u32> {
         let slice = self
             .bytes_parser
             .advance_to_find_field(SPAN_EVENT_DROPPED_ATTRIBUTES_COUNTS);
-        read_dropped_count(slice)
+        let count = read_dropped_count(slice);
+        (count != 0).then_some(count)
     }
 
     #[inline]
@@ -856,11 +856,12 @@ impl LinkView for RawSpanLink<'_> {
     }
 
     #[inline]
-    fn dropped_attributes_count(&self) -> u32 {
+    fn dropped_attributes_count(&self) -> Option<u32> {
         let slice = self
             .bytes_parser
             .advance_to_find_field(SPAN_LINK_DROPPED_ATTRIBUTES_COUNT);
-        read_dropped_count(slice)
+        let count = read_dropped_count(slice);
+        (count != 0).then_some(count)
     }
 
     #[inline]
@@ -893,12 +894,12 @@ impl LinkView for RawSpanLink<'_> {
 
 impl StatusView for RawSpanStatus<'_> {
     #[inline]
-    fn status_code(&self) -> i32 {
+    fn status_code(&self) -> Option<i32> {
         self.bytes_parser
             .advance_to_find_field(SPAN_STATUS_CODE)
             .and_then(|slice| read_varint(slice, 0))
             .map(|(var, _)| var as i32)
-            .unwrap_or(StatusCode::Unset as i32)
+            .filter(|&code| code != 0)
     }
 
     #[inline]

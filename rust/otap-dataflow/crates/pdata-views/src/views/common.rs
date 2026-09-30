@@ -133,6 +133,6 @@ pub trait InstrumentationScopeView {
     /// Access the scope's attributes
     fn attributes(&self) -> Self::AttributeIter<'_>;
 
-    /// Access this scope's dropped attributes.The value is 0 when no attributes were dropped.
-    fn dropped_attributes_count(&self) -> u32;
+    /// Access this scope's dropped attributes. Returns None when no attributes were dropped.
+    fn dropped_attributes_count(&self) -> Option<u32>;
 }

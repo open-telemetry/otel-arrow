@@ -224,7 +224,7 @@ impl<T: SumView> Serialize for SumJson<T> {
         if let Some(temporality) = aggregation_temporality(self.0.aggregation_temporality()) {
             map.serialize_entry("aggregationTemporality", &temporality)?;
         }
-        if self.0.is_monotonic() {
+        if self.0.is_monotonic() == Some(true) {
             map.serialize_entry("isMonotonic", &true)?;
         }
         map.end()

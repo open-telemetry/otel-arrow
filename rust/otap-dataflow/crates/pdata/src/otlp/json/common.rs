@@ -104,8 +104,11 @@ impl<R: ResourceView> Serialize for ResourceJson<'_, R> {
         if self.0.attributes().next().is_some() {
             map.serialize_entry("attributes", &AttributesJson(self.0))?;
         }
-        let dropped = self.0.dropped_attributes_count();
-        if dropped != 0 {
+        if let Some(dropped) = self
+            .0
+            .dropped_attributes_count()
+            .filter(|value| *value != 0)
+        {
             map.serialize_entry("droppedAttributesCount", &dropped)?;
         }
         map.end()
@@ -353,8 +356,11 @@ impl<I: InstrumentationScopeView> Serialize for ScopeJson<'_, I> {
         if self.0.attributes().next().is_some() {
             map.serialize_entry("attributes", &AttributeIterJson::new(self.0.attributes()))?;
         }
-        let dropped = self.0.dropped_attributes_count();
-        if dropped != 0 {
+        if let Some(dropped) = self
+            .0
+            .dropped_attributes_count()
+            .filter(|value| *value != 0)
+        {
             map.serialize_entry("droppedAttributesCount", &dropped)?;
         }
         map.end()

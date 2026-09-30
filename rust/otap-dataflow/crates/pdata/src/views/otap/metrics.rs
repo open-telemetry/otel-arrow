@@ -478,19 +478,15 @@ impl<'a> ResourceView for OtapMetricsResourceView<'a> {
     }
 
     #[inline]
-    fn dropped_attributes_count(&self) -> u32 {
+    fn dropped_attributes_count(&self) -> Option<u32> {
         self.view
             .resource_columns
             .as_ref()
             .and_then(|cols| cols.dropped_attributes_count.as_ref())
-            .map(|col| {
-                if col.is_valid(self.first_row_index) {
-                    col.value(self.first_row_index)
-                } else {
-                    0
-                }
+            .and_then(|col| {
+                col.is_valid(self.first_row_index)
+                    .then(|| col.value(self.first_row_index))
             })
-            .unwrap_or(0)
     }
 }
 
@@ -625,19 +621,15 @@ impl<'a> InstrumentationScopeView for OtapMetricsScopeView<'a> {
     }
 
     #[inline]
-    fn dropped_attributes_count(&self) -> u32 {
+    fn dropped_attributes_count(&self) -> Option<u32> {
         self.view
             .scope_columns
             .as_ref()
             .and_then(|cols| cols.dropped_attributes_count.as_ref())
-            .map(|col| {
-                if col.is_valid(self.first_row_index) {
-                    col.value(self.first_row_index)
-                } else {
-                    0
-                }
+            .and_then(|col| {
+                col.is_valid(self.first_row_index)
+                    .then(|| col.value(self.first_row_index))
             })
-            .unwrap_or(0)
     }
 }
 
@@ -717,10 +709,7 @@ impl<'a> MetricView for OtapMetricView<'a> {
             .map(|v| AggregationTemporality::from(v as u32))
             .unwrap_or(AggregationTemporality::Unspecified);
 
-        let is_monotonic = metrics_arrays
-            .is_monotonic
-            .value_at(self.row_idx)
-            .unwrap_or(false);
+        let is_monotonic = metrics_arrays.is_monotonic.value_at(self.row_idx);
 
         match metric_type {
             MetricType::Empty => None,
@@ -924,7 +913,7 @@ pub struct OtapSumView<'a> {
     view: &'a OtapMetricsView<'a>,
     metric_id: u16,
     aggregation_temporality: AggregationTemporality,
-    is_monotonic: bool,
+    is_monotonic: Option<bool>,
 }
 
 impl<'a> SumView for OtapSumView<'a> {
@@ -958,7 +947,7 @@ impl<'a> SumView for OtapSumView<'a> {
     }
 
     #[inline]
-    fn is_monotonic(&self) -> bool {
+    fn is_monotonic(&self) -> Option<bool> {
         self.is_monotonic
     }
 }

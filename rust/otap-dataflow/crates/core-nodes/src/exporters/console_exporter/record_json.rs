@@ -161,7 +161,7 @@ where
             map.serialize_entry(
                 "otel",
                 &OtelJson {
-                    dropped_attributes_count: record.dropped_attributes_count(),
+                    dropped_attributes_count: record.dropped_attributes_count().unwrap_or(0),
                     resource_schema_url: self.resource_schema_url,
                     scope_schema_url: self.scope_schema_url,
                 },

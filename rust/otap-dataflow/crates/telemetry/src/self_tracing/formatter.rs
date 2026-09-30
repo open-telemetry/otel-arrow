@@ -311,7 +311,7 @@ impl StyledBufWriter<'_> {
             .as_ref()
             .is_some_and(|v| v.as_string().is_none_or(|s| !s.is_empty()));
         let has_attrs = attrs.peek().is_some();
-        let dropped = record.dropped_attributes_count();
+        let dropped = record.dropped_attributes_count().unwrap_or(0);
 
         // Print separator after event_name if there's content following
         if has_event_name && (has_body || has_attrs || dropped > 0) {

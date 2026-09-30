@@ -252,7 +252,7 @@ pub trait SumView {
     fn aggregation_temporality(&self) -> AggregationTemporality;
 
     /// Access the Sum's monotonicity
-    fn is_monotonic(&self) -> bool;
+    fn is_monotonic(&self) -> Option<bool>;
 }
 
 /// View for NumberDataPoint
