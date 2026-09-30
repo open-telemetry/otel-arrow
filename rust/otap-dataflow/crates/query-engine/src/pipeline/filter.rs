@@ -113,6 +113,11 @@ impl PipelineStage for FilterPipelineStage {
         _task_context: Arc<TaskContext>,
         _exec_options: &mut ExecutionState,
     ) -> Result<RecordBatch> {
+        if attrs_record_batch.num_rows() == 0 {
+            // nothing to do
+            return Ok(attrs_record_batch);
+        }
+
         let result = self
             .predicate
             .evaluate_on_attrs_batch(&attrs_record_batch, &EvalContext::new(session_context))?;

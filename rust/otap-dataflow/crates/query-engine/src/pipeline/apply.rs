@@ -1431,6 +1431,30 @@ mod test {
         assert!(result.get(ArrowPayloadType::LogAttrs).is_none());
     }
 
+    /// Scenario: filter applied to zero results
+    /// Guarantees: executes without error
+    #[tokio::test]
+    async fn test_pipeline_filter_empty_attrs_batch() {
+        let input = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("k1", AnyValue::new_string("hello"))])
+                .finish(),
+        ]);
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(input));
+
+        // this should filter out all the attributes before calling the next filter operation
+        let query = r#"
+            logs | apply attributes {
+                where not (key == "k1") | where value != "hello"
+            }"#;
+
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+        // just make sure we don't panic/return error and that we end up with zero attrs
+        let result = pipeline.execute(input).await.unwrap();
+        assert!(result.get(ArrowPayloadType::LogAttrs).is_none());
+    }
+
     #[tokio::test]
     async fn test_pipeline_set_with_attrs_input_different_types_and_values_used_in_expr() {
         let input = to_logs_data(vec![
