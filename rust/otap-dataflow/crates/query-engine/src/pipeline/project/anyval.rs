@@ -863,25 +863,28 @@ impl Projection {
                 cause: format!("invalid attribute type {input_attr_type}: {e}"),
             })?;
 
-        // check if every value is the same type - if not, we may have problems evaluating the
-        // expression (if the value is used in the expression).
-        let all_rows_same_attr_type =
-            neq(type_column, &UInt8Array::new_scalar(input_attr_type as u8))?.true_count() == 0;
+        let references_value_column = self.references_column(VALUE_COLUMN_NAME);
+        if references_value_column {
+            // check if every value is the same type - if not, we may have problems evaluating the
+            // expression (if the value is used in the expression).
+            let all_rows_same_attr_type =
+                neq(type_column, &UInt8Array::new_scalar(input_attr_type as u8))?.true_count() == 0;
 
-        if !all_rows_same_attr_type {
-            // if not all the attribute types are the same, we can't determine a single value
-            // column to use in the projection, so return an error for now. In practice, the batch
-            // should be split apart before this pipeline stage using other operators to ensure
-            // we only have one value type
-            //
-            // In some rare cases, it may be possible to write an expression that makes sense on
-            // multiple types simultaneously .. e.g. exprs like `value + value` could be an int
-            // or a double. For now, lamentably, we'll force the user to handle this explicitly.
-            return Err(Error::ExecutionError {
-                cause: "All input rows for attribute assignment must have the same type \
-                            if value used in expression"
-                    .into(),
-            });
+            if !all_rows_same_attr_type {
+                // if not all the attribute types are the same, we can't determine a single value
+                // column to use in the projection, so return an error for now. In practice, the batch
+                // should be split apart before this pipeline stage using other operators to ensure
+                // we only have one value type
+                //
+                // In some rare cases, it may be possible to write an expression that makes sense on
+                // multiple types simultaneously .. e.g. exprs like `value + value` could be an int
+                // or a double. For now, lamentably, we'll force the user to handle this explicitly.
+                return Err(Error::ExecutionError {
+                    cause: "All input rows for attribute assignment must have the same type \
+                                if value used in expression"
+                        .into(),
+                });
+            }
         }
 
         // get the name of the column containing the actual values identified by the type column.
@@ -920,7 +923,7 @@ impl Projection {
         }
 
         // create the virtual "value" column
-        if self.references_column(VALUE_COLUMN_NAME) {
+        if references_value_column {
             if let Some(values_column_name) = physical_values_column_name {
                 if let Some((index, field)) = projection_cols.find(values_column_name) {
                     if !self.schema.is_empty() && self.references_column(values_column_name) {
