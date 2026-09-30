@@ -24,20 +24,19 @@
 //! produce a result preserving the input order of the right side input, to avoid losing any rows
 //! and to also avoid having ambiguity about the result.
 //!
-//! TODO
-//! - currently assumption is made that all IDs are u16, because we don't yet support evaluation on
-//!   any OTAP batches that uses u32 IDs. Eventually we'll need to support this, when the engine
-//!   behaviour becomes more sophisticated.
-//!
+use std::marker::PhantomData;
 use std::rc::Rc;
 use std::sync::Arc;
 
 use arrow::array::{
-    Array, ArrayRef, AsArray, BooleanArray, Int32Array, RecordBatch, StructArray, UInt16Array,
+    Array, ArrayRef, ArrowPrimitiveType, AsArray, BooleanArray, Int32Array, PrimitiveArray,
+    RecordBatch, StructArray, UInt16Array,
 };
 use arrow::buffer::{BooleanBuffer, MutableBuffer};
 use arrow::compute::{filter, take};
-use arrow::datatypes::{DataType, Field, Fields, Schema, UInt16Type};
+use arrow::datatypes::{
+    ArrowNativeType, DataType, Field, Fields, Schema, UInt8Type, UInt16Type, UInt32Type,
+};
 use datafusion::logical_expr::ColumnarValue;
 use datafusion::scalar::ScalarValue;
 use otel_arrow_dfe_pdata::OtapArrowRecords;
@@ -108,13 +107,13 @@ impl JoinInput {
     pub fn new_with_parent_ids(
         values: ColumnarValue,
         data_scope: Rc<DataScope>,
-        parent_ids: &UInt16Array,
+        parent_ids: ArrayRef,
     ) -> Self {
         Self {
             values,
             data_scope,
             ids: None,
-            parent_ids: Some(Arc::new(parent_ids.clone())),
+            parent_ids: Some(parent_ids),
             scope_ids: None,
             resource_ids: None,
         }
@@ -180,41 +179,31 @@ pub fn join<'a>(
                 Ok((join_result, left.data_scope.clone()))
             }
         }
-        (
-            DataScope::Record(RecordScope::Signal) | DataScope::RootParent(_),
-            DataScope::Attribute(attr_id, _),
-        ) => {
-            let join_exec = RootToAttributesJoin::new(*attr_id);
+        (DataScope::Record(_) | DataScope::RootParent(_), DataScope::Attribute(attr_id, _)) => {
+            let join_exec = RecordToAttributesJoin::new(*attr_id);
             let join_result = join_exec.join(left, right, otap_batch)?;
             Ok((join_result, left.data_scope.clone()))
         }
-        (
-            DataScope::Attribute(attr_id, _),
-            DataScope::Record(RecordScope::Signal) | DataScope::RootParent(_),
-        ) => match attr_id {
-            AttributesIdentifier::Root => {
-                let join_exec = RootAttrsToRootJoin::new();
-                let join_result = join_exec.join(left, right, otap_batch)?;
-                Ok((join_result, left.data_scope.clone()))
+        (DataScope::Attribute(attr_id, _), DataScope::Record(_) | DataScope::RootParent(_)) => {
+            match attr_id {
+                AttributesIdentifier::Record(_) => {
+                    let join_exec = RecordAttrsToRecordJoin::new();
+                    let join_result = join_exec.join(left, right, otap_batch)?;
+                    Ok((join_result, left.data_scope.clone()))
+                }
+                AttributesIdentifier::NonRecord(payload_type) => {
+                    let join_exec = NonRootAttrsToRootReverseJoin::new(*payload_type);
+                    let join_result = join_exec.join(left, right, otap_batch)?;
+                    Ok((join_result, right.data_scope.clone()))
+                }
             }
-            AttributesIdentifier::NonRoot(payload_type) => {
-                let join_exec = NonRootAttrsToRootReverseJoin::new(*payload_type);
-                let join_result = join_exec.join(left, right, otap_batch)?;
-                Ok((join_result, right.data_scope.clone()))
-            }
-        },
-        (
-            DataScope::Record(RecordScope::Signal) | DataScope::RootParent(_),
-            DataScope::AttributesAll(_),
-        ) => {
+        }
+        (DataScope::Record(_) | DataScope::RootParent(_), DataScope::AttributesAll(_)) => {
             let join_exec = AttributesAllSelectionVecJoin::new(false);
             let join_result = join_exec.join(left, right, otap_batch)?;
             Ok((join_result, left.data_scope.clone()))
         }
-        (
-            DataScope::AttributesAll(_),
-            DataScope::Record(RecordScope::Signal) | DataScope::RootParent(_),
-        ) => {
+        (DataScope::AttributesAll(_), DataScope::Record(_) | DataScope::RootParent(_)) => {
             let join_exec = AttributesAllSelectionVecJoin::new(true);
             let join_result = join_exec.join(left, right, otap_batch)?;
             Ok((join_result, right.data_scope.clone()))
@@ -245,9 +234,9 @@ pub fn is_one_to_many(
     right_attrs_id: &AttributesIdentifier,
 ) -> bool {
     match (left_attrs_id, right_attrs_id) {
-        (AttributesIdentifier::Root, _) => false,
-        (AttributesIdentifier::NonRoot(_), AttributesIdentifier::Root) => true,
-        (AttributesIdentifier::NonRoot(left), AttributesIdentifier::NonRoot(right)) => {
+        (AttributesIdentifier::Record(_), _) => false,
+        (AttributesIdentifier::NonRecord(_), AttributesIdentifier::Record(_)) => true,
+        (AttributesIdentifier::NonRecord(left), AttributesIdentifier::NonRecord(right)) => {
             *left == ArrowPayloadType::ResourceAttrs && *right == ArrowPayloadType::ScopeAttrs
         }
     }
@@ -308,38 +297,34 @@ fn compute_join_alignment(
                 ))
             }
         }
-        (
-            DataScope::Record(RecordScope::Signal) | DataScope::RootParent(_),
-            DataScope::Attribute(attr_id, _),
-        ) => {
-            let exec = RootToAttributesJoin::new(*attr_id);
+        (DataScope::Record(_) | DataScope::RootParent(_), DataScope::Attribute(attr_id, _)) => {
+            let exec = RecordToAttributesJoin::new(*attr_id);
             let indices = exec.rows_to_take(left, right, otap_batch)?;
             Ok((
                 JoinAlignment::LeftPreserved(indices),
                 left.data_scope.clone(),
             ))
         }
-        (
-            DataScope::Attribute(attr_id, _),
-            DataScope::Record(RecordScope::Signal) | DataScope::RootParent(_),
-        ) => match attr_id {
-            AttributesIdentifier::Root => {
-                let exec = RootAttrsToRootJoin::new();
-                let indices = exec.rows_to_take(left, right, otap_batch)?;
-                Ok((
-                    JoinAlignment::LeftPreserved(indices),
-                    left.data_scope.clone(),
-                ))
+        (DataScope::Attribute(attr_id, _), DataScope::Record(_) | DataScope::RootParent(_)) => {
+            match attr_id {
+                AttributesIdentifier::Record(_) => {
+                    let exec = RecordAttrsToRecordJoin::new();
+                    let indices = exec.rows_to_take(left, right, otap_batch)?;
+                    Ok((
+                        JoinAlignment::LeftPreserved(indices),
+                        left.data_scope.clone(),
+                    ))
+                }
+                AttributesIdentifier::NonRecord(payload_type) => {
+                    let exec = NonRootAttrsToRootReverseJoin::new(*payload_type);
+                    let indices = exec.rows_to_take(left, right, otap_batch)?;
+                    Ok((
+                        JoinAlignment::RightPreserved(indices),
+                        right.data_scope.clone(),
+                    ))
+                }
             }
-            AttributesIdentifier::NonRoot(payload_type) => {
-                let exec = NonRootAttrsToRootReverseJoin::new(*payload_type);
-                let indices = exec.rows_to_take(left, right, otap_batch)?;
-                Ok((
-                    JoinAlignment::RightPreserved(indices),
-                    right.data_scope.clone(),
-                ))
-            }
-        },
+        }
         (left, right) => Err(Error::ExecutionError {
             cause: format!("invalid data scopes for join: left {left:?} right {right:?}"),
         }),
@@ -606,14 +591,63 @@ fn extract_u16_array<'a>(
         .ok_or_else(|| invalid_column_type_error(array.data_type()))
 }
 
-/// Helper function to perform a simple left-to-right join using parent IDs
-/// Builds a lookup from right_ids, scans left_ids, and creates a take array
-fn build_simple_join_indices(left_ids: &UInt16Array, right_lookup: &IdJoinLookup) -> Int32Array {
-    let mut to_take = Int32Array::builder(left_ids.len());
+/// Helper function to perform a simple left-to-right join using an ID/Parent ID relationship.
+///
+/// This returns the indices that should be taken from the right side to match the row order of
+/// the IDs on the left side.
+fn try_build_simple_join_ids<T: IdJoinLookupType, const PAGE_SIZE: usize>(
+    left_ids: &dyn Array,
+    right_lookup: &IdJoinLookup<T, PAGE_SIZE>,
+) -> Result<Int32Array> {
+    if let Some(ids_as_primitive) = left_ids.as_primitive_opt::<T::ArrowType>() {
+        Ok(build_simple_join_indices_from_iter(
+            ids_as_primitive.iter(),
+            right_lookup,
+        ))
+    } else if let Some(ids_as_dict) = left_ids.as_dictionary_opt::<UInt8Type>() {
+        if let Some(typed_dict) = ids_as_dict.downcast_dict::<PrimitiveArray<T::ArrowType>>() {
+            Ok(build_simple_join_indices_from_iter(
+                typed_dict.into_iter(),
+                right_lookup,
+            ))
+        } else {
+            Err(otel_arrow_dfe_pdata::error::Error::InvalidIdColumnType {
+                data_type: left_ids.data_type().clone(),
+            }
+            .into())
+        }
+    } else if let Some(ids_as_dict) = left_ids.as_dictionary_opt::<UInt16Type>() {
+        if let Some(typed_dict) = ids_as_dict.downcast_dict::<PrimitiveArray<T::ArrowType>>() {
+            Ok(build_simple_join_indices_from_iter::<T, _, _>(
+                typed_dict.into_iter(),
+                right_lookup,
+            ))
+        } else {
+            Err(otel_arrow_dfe_pdata::error::Error::InvalidIdColumnType {
+                data_type: left_ids.data_type().clone(),
+            }
+            .into())
+        }
+    } else {
+        Err(otel_arrow_dfe_pdata::error::Error::InvalidIdColumnType {
+            data_type: left_ids.data_type().clone(),
+        }
+        .into())
+    }
+}
 
-    left_ids.iter().for_each(|id| {
+fn build_simple_join_indices_from_iter<
+    T: IdJoinLookupType,
+    I: ExactSizeIterator<Item = Option<<T::ArrowType as ArrowPrimitiveType>::Native>>,
+    const PAGE_SIZE: usize,
+>(
+    left_ids: I,
+    right_lookup: &IdJoinLookup<T, PAGE_SIZE>,
+) -> Int32Array {
+    let mut to_take = Int32Array::builder(left_ids.len());
+    left_ids.for_each(|id| {
         if let Some(left_id) = id {
-            let right_index = right_lookup.lookup(left_id).map(|i| i as i32);
+            let right_index = right_lookup.lookup(left_id.into()).map(|i| i as i32);
             to_take.append_option(right_index);
         } else {
             to_take.append_null();
@@ -628,9 +662,9 @@ fn build_simple_join_indices(left_ids: &UInt16Array, right_lookup: &IdJoinLookup
 /// intermediary (e.g., resource attrs + scope attrs)
 fn build_two_hop_join_indices(
     left_ids: &UInt16Array,
-    intermediate_lookup: &IdJoinLookup,
+    intermediate_lookup: &U16IdJoinLookup,
     right_root_ids: &UInt16Array,
-    right_lookup: &IdJoinLookup,
+    right_lookup: &U16IdJoinLookup,
 ) -> Int32Array {
     let mut to_take = Int32Array::builder(left_ids.len());
 
@@ -657,7 +691,7 @@ fn get_attrs_id_values<'a>(
     attrs_id: &'a AttributesIdentifier,
 ) -> Result<&'a UInt16Array> {
     match attrs_id {
-        AttributesIdentifier::Root => {
+        AttributesIdentifier::Record(_) => {
             let id_col = root_batch
                 .column_by_name(consts::ID)
                 .ok_or_else(|| missing_column_err(consts::ID))?;
@@ -666,7 +700,7 @@ fn get_attrs_id_values<'a>(
                 .downcast_ref::<UInt16Array>()
                 .ok_or_else(|| invalid_column_type_error(id_col.data_type()))?)
         }
-        AttributesIdentifier::NonRoot(payload_type) => {
+        AttributesIdentifier::NonRecord(payload_type) => {
             match payload_type {
                 ArrowPayloadType::ResourceAttrs => {
                     let resource_struct = get_required_struct_array(root_batch, consts::RESOURCE)
@@ -905,47 +939,70 @@ impl JoinExec for ScalarJoin {
     }
 }
 
-/// Joins root record batch (logs/metrics/traces) to a child attributes record batch
-/// on root.id == attributes.parent_id
-pub struct RootToAttributesJoin {
+/// Joins record batch (root logs/metrics/traces or child such as metric data points) to a child
+/// attributes record batch on `record.id == attributes.parent_id`. In the case that the record
+/// is the root signal, this can also be used to join the root signal record batch to resource or
+/// scope attributes. The resulting row order will be that of the left side (the record).
+pub struct RecordToAttributesJoin {
     attrs_id: AttributesIdentifier,
 }
 
-impl RootToAttributesJoin {
+impl RecordToAttributesJoin {
     pub fn new(attrs_id: AttributesIdentifier) -> Self {
         Self { attrs_id }
     }
 }
 
-impl JoinExec for RootToAttributesJoin {
+impl JoinExec for RecordToAttributesJoin {
     fn rows_to_take(
         &self,
         left: &JoinInput,
         right: &JoinInput,
         _otap_batch: &OtapArrowRecords,
     ) -> Result<Int32Array> {
-        // build the lookup for the right side of the join by parent ID
-        let right_parent_ids = extract_u16_array(right.parent_ids.as_ref(), consts::PARENT_ID)?;
-        let right_lookup = IdJoinLookup::new(right_parent_ids);
+        // choose the correct ID column type; child record batches (such as metric data points)
+        // have a u32 ID column. by contrast non-child records (such as the root signal type) have
+        // a u16 ID column
+        let is_u32_ids = matches!(
+            left.data_scope.as_ref(),
+            DataScope::Record(RecordScope::Child(_))
+        );
 
-        // get the ID column for which we should scan for join
-        let left_id_col = match self.attrs_id {
-            AttributesIdentifier::Root => &left.ids,
-            AttributesIdentifier::NonRoot(payload_type) => match payload_type {
-                ArrowPayloadType::ResourceAttrs => &left.resource_ids,
-                ArrowPayloadType::ScopeAttrs => &left.scope_ids,
-                other => {
-                    return Err(Error::ExecutionError {
-                        cause: format!(
-                            "RootToAttributesJoin received invalid attrs payload type {other:?}"
-                        ),
-                    });
-                }
-            },
-        };
-        let left_parent_ids = extract_u16_array(left_id_col.as_ref(), consts::ID)?;
+        let left_ids = if !is_u32_ids {
+            match self.attrs_id {
+                AttributesIdentifier::Record(_) => left.ids.as_ref(),
+                AttributesIdentifier::NonRecord(payload_type) => match payload_type {
+                    ArrowPayloadType::ResourceAttrs => left.resource_ids.as_ref(),
+                    ArrowPayloadType::ScopeAttrs => left.scope_ids.as_ref(),
+                    other => {
+                        return Err(Error::ExecutionError {
+                            cause: format!(
+                                "RootToAttributesJoin received invalid attrs payload type {other:?}"
+                            ),
+                        });
+                    }
+                },
+            }
+        } else {
+            // Children (which use u32 Ids) cannot be joined NonRecord attributes (such as
+            // resource/scope) attributes by this strategy so, unlike u16 ID (the root signal)
+            // case, we simply use the ID column from the record
+            left.ids.as_ref()
+        }
+        .ok_or_else(|| missing_column_err(consts::ID))?;
 
-        Ok(build_simple_join_indices(left_parent_ids, &right_lookup))
+        let right_parent_ids = right
+            .parent_ids
+            .as_ref()
+            .ok_or_else(|| missing_column_err(consts::PARENT_ID))?;
+
+        if is_u32_ids {
+            let right_lookup = U32IdJoinLookup::try_new_from_array(right_parent_ids)?;
+            try_build_simple_join_ids(left_ids, &right_lookup)
+        } else {
+            let right_lookup = U16IdJoinLookup::try_new_from_array(right_parent_ids)?;
+            try_build_simple_join_ids(left_ids, &right_lookup)
+        }
     }
 
     fn join(
@@ -954,8 +1011,11 @@ impl JoinExec for RootToAttributesJoin {
         right: &JoinInput,
         otap_batch: &OtapArrowRecords,
     ) -> Result<RecordBatch> {
-        let right_parent_ids = extract_u16_array(right.parent_ids.as_ref(), consts::PARENT_ID)?;
         let to_take = self.rows_to_take(left, right, otap_batch)?;
+        let right_parent_ids = right
+            .parent_ids
+            .as_ref()
+            .ok_or_else(|| missing_column_err(consts::PARENT_ID))?;
         let right_values = right.values.to_array(right_parent_ids.len())?;
         let joined_arr = take(&right_values, &to_take, None)?;
 
@@ -963,32 +1023,49 @@ impl JoinExec for RootToAttributesJoin {
     }
 }
 
-/// Joins root attributes (e.g. log.attributes, span.attributes, or metric.attributes) to the root
-/// record batch on root.id == attributes.parent_id
-pub(crate) struct RootAttrsToRootJoin {}
+/// Joins record attributes (e.g. from root signal log/span/metric.attributes, or child record
+/// attributes such as data point attributes) to their associated record batch on
+/// `attributes.parent_id == record.id`, producing a result that is aligned with the left-side
+/// (the attributes).
+pub(crate) struct RecordAttrsToRecordJoin {}
 
-impl RootAttrsToRootJoin {
+impl RecordAttrsToRecordJoin {
     pub fn new() -> Self {
         Self {}
     }
 }
 
-impl JoinExec for RootAttrsToRootJoin {
+impl JoinExec for RecordAttrsToRecordJoin {
     fn rows_to_take(
         &self,
         left: &JoinInput,
         right: &JoinInput,
         _otap_batch: &OtapArrowRecords,
     ) -> Result<Int32Array> {
-        // build the lookup for the right side of the join by ID column
-        let right_ids = extract_u16_array(right.ids.as_ref(), consts::ID)?;
-        let right_lookup = IdJoinLookup::new(right_ids);
+        let left_parent_ids = left
+            .parent_ids
+            .as_ref()
+            .ok_or_else(|| missing_column_err(consts::PARENT_ID))?;
+        let right_ids = right
+            .ids
+            .as_ref()
+            .ok_or_else(|| missing_column_err(consts::PARENT_ID))?;
 
-        // scan the parent_ID column from the attributes to determine which rows from the
-        // right values should be taken
-        let left_parent_ids = extract_u16_array(left.parent_ids.as_ref(), consts::PARENT_ID)?;
+        // choose the correct ID column type; child record batches (such as metric data points)
+        // have a u32 ID column. by contrast non-child records (such as the root signal type) have
+        // a u16 ID column
+        let is_u32_ids = matches!(
+            left.data_scope.as_ref(),
+            DataScope::Attribute(AttributesIdentifier::Record(RecordScope::Child(_)), _)
+        );
 
-        Ok(build_simple_join_indices(left_parent_ids, &right_lookup))
+        if is_u32_ids {
+            let right_lookup = U32IdJoinLookup::try_new_from_array(right_ids)?;
+            try_build_simple_join_ids(left_parent_ids, &right_lookup)
+        } else {
+            let right_lookup = U16IdJoinLookup::try_new_from_array(right_ids)?;
+            try_build_simple_join_ids(left_parent_ids, &right_lookup)
+        }
     }
 
     fn join(
@@ -997,8 +1074,11 @@ impl JoinExec for RootAttrsToRootJoin {
         right: &JoinInput,
         otap_batch: &OtapArrowRecords,
     ) -> Result<RecordBatch> {
-        let right_ids = extract_u16_array(right.ids.as_ref(), consts::ID)?;
         let to_take = self.rows_to_take(left, right, otap_batch)?;
+        let right_ids = right
+            .ids
+            .as_ref()
+            .ok_or_else(|| missing_column_err(consts::ID))?;
         let right_values = right.values.to_array(right_ids.len())?;
         let joined_arr = take(&right_values, &to_take, None)?;
 
@@ -1035,7 +1115,7 @@ impl JoinExec for NonRootAttrsToRootReverseJoin {
     ) -> Result<Int32Array> {
         // build a lookup of ID to index for the left side
         let left_parent_ids = extract_u16_array(left.parent_ids.as_ref(), consts::PARENT_ID)?;
-        let left_lookup = IdJoinLookup::new(left_parent_ids);
+        let left_lookup = U16IdJoinLookup::new_from_primitive(left_parent_ids);
 
         let right_ids = match self.attrs_payload_type {
             ArrowPayloadType::ResourceAttrs => right.resource_ids.as_ref(),
@@ -1166,14 +1246,30 @@ impl JoinExec for AttributeToSameAttributeJoin {
         right: &JoinInput,
         _otap_batch: &OtapArrowRecords,
     ) -> Result<Int32Array> {
-        // build a mapping of right-side parent_ids to right-side indices
-        let right_parent_ids = extract_u16_array(right.parent_ids.as_ref(), consts::PARENT_ID)?;
-        let right_lookup = IdJoinLookup::new(right_parent_ids);
+        let left_parent_ids = left
+            .parent_ids
+            .as_ref()
+            .ok_or_else(|| missing_column_err(consts::PARENT_ID))?;
+        let right_parent_ids = right
+            .parent_ids
+            .as_ref()
+            .ok_or_else(|| missing_column_err(consts::PARENT_ID))?;
 
-        // determine which rows to take from the right side values
-        let left_parent_ids = extract_u16_array(left.parent_ids.as_ref(), consts::PARENT_ID)?;
+        // choose the correct ID column type; child record batches (such as metric data points)
+        // have a u32 ID column. by contrast non-child records (such as the root signal type) have
+        // a u16 ID column
+        let is_u32_ids = matches!(
+            left.data_scope.as_ref(),
+            DataScope::Attribute(AttributesIdentifier::Record(RecordScope::Child(_)), _)
+        );
 
-        Ok(build_simple_join_indices(left_parent_ids, &right_lookup))
+        if is_u32_ids {
+            let right_lookup = U32IdJoinLookup::try_new_from_array(right_parent_ids)?;
+            try_build_simple_join_ids(left_parent_ids, &right_lookup)
+        } else {
+            let right_lookup = U16IdJoinLookup::try_new_from_array(right_parent_ids)?;
+            try_build_simple_join_ids(left_parent_ids, &right_lookup)
+        }
     }
 
     fn join(
@@ -1185,7 +1281,10 @@ impl JoinExec for AttributeToSameAttributeJoin {
         let to_take = self.rows_to_take(left, right, otap_batch)?;
 
         // take right side values and produce result
-        let right_parent_ids = extract_u16_array(right.parent_ids.as_ref(), consts::PARENT_ID)?;
+        let right_parent_ids = right
+            .parent_ids
+            .as_ref()
+            .ok_or_else(|| missing_column_err(consts::PARENT_ID))?;
         let right_values = right.values.to_array(right_parent_ids.len())?;
         let joined_arr = take(&right_values, &to_take, None)?;
         to_join_result(left, joined_arr)
@@ -1221,7 +1320,7 @@ impl JoinExec for AttributeToDifferentAttributeJoin {
     ) -> Result<Int32Array> {
         // build mapping of the right side parent_id to right side index
         let right_parent_ids = extract_u16_array(right.parent_ids.as_ref(), consts::PARENT_ID)?;
-        let right_lookup = IdJoinLookup::new(right_parent_ids);
+        let right_lookup = U16IdJoinLookup::new_from_primitive(right_parent_ids);
 
         // get root batch and extract the id columns we need
         let root_batch = otap_batch
@@ -1234,7 +1333,7 @@ impl JoinExec for AttributeToDifferentAttributeJoin {
         let right_root_ids = get_attrs_id_values(root_batch, &self.right)?;
 
         // build mapping from left root id -> root index to use as bridge
-        let inter_join_lookup = IdJoinLookup::new(left_root_ids);
+        let inter_join_lookup = U16IdJoinLookup::new_from_primitive(left_root_ids);
 
         // determine indices of right side values to take
         let left_parent_ids = extract_u16_array(left.parent_ids.as_ref(), consts::PARENT_ID)?;
@@ -1290,7 +1389,7 @@ impl JoinExec for AttributeToDifferentAttributeReverseJoin {
     ) -> Result<Int32Array> {
         // build mapping of the left side parent_id to left side index
         let left_parent_ids = extract_u16_array(left.parent_ids.as_ref(), consts::PARENT_ID)?;
-        let left_lookup = IdJoinLookup::new(left_parent_ids);
+        let left_lookup = U16IdJoinLookup::new_from_primitive(left_parent_ids);
 
         // get root batch and extract the id columns we need
         let root_batch = otap_batch
@@ -1303,7 +1402,7 @@ impl JoinExec for AttributeToDifferentAttributeReverseJoin {
         let right_root_ids = get_attrs_id_values(root_batch, &self.right)?;
 
         // build mapping from right root id -> root index to use as bridge
-        let inter_join_lookup = IdJoinLookup::new(right_root_ids);
+        let inter_join_lookup = U16IdJoinLookup::new_from_primitive(right_root_ids);
 
         // determine indices of left side values to take
         let right_parent_ids = extract_u16_array(right.parent_ids.as_ref(), consts::PARENT_ID)?;
@@ -1410,17 +1509,14 @@ impl AttributesAllSelectionVecJoin {
         Self { all_attrs_left }
     }
 
-    fn extract_probe_ids(
-        input: &JoinInput,
-        attrs_id: AttributesIdentifier,
-    ) -> Result<&UInt16Array> {
+    fn extract_probe_ids(input: &JoinInput, attrs_id: AttributesIdentifier) -> Result<&ArrayRef> {
         if matches!(
             input.data_scope.as_ref(),
-            DataScope::Record(RecordScope::Signal) | DataScope::RootParent(_)
+            DataScope::Record(_) | DataScope::RootParent(_)
         ) {
-            let ids = match attrs_id {
-                AttributesIdentifier::Root => input.ids.as_ref(),
-                AttributesIdentifier::NonRoot(payload) => match payload {
+            match attrs_id {
+                AttributesIdentifier::Record(_) => input.ids.as_ref(),
+                AttributesIdentifier::NonRecord(payload) => match payload {
                     ArrowPayloadType::ResourceAttrs => input.resource_ids.as_ref(),
                     ArrowPayloadType::ScopeAttrs => input.scope_ids.as_ref(),
                     _ => {
@@ -1429,8 +1525,8 @@ impl AttributesAllSelectionVecJoin {
                         });
                     }
                 },
-            };
-            extract_u16_array(ids, consts::ID)
+            }
+            .ok_or_else(|| missing_column_err(consts::ID))
         } else {
             // not yet supported
             Err(Error::NotYetSupportedError {
@@ -1477,14 +1573,13 @@ impl JoinExec for AttributesAllSelectionVecJoin {
             });
         }
 
-        let parent_ids = extract_u16_array(
-            if self.all_attrs_left {
-                left.parent_ids.as_ref()
-            } else {
-                right.parent_ids.as_ref()
-            },
-            consts::PARENT_ID,
-        )?;
+        // filter for only the selected parent Ids
+        let parent_ids = if self.all_attrs_left {
+            left.parent_ids.as_ref()
+        } else {
+            right.parent_ids.as_ref()
+        }
+        .ok_or_else(|| missing_column_err(consts::PARENT_ID))?;
 
         let selection_vec = match vals {
             ColumnarValue::Array(arr) => arr.as_boolean().clone(),
@@ -1506,13 +1601,7 @@ impl JoinExec for AttributesAllSelectionVecJoin {
 
         let selected_parent_ids = filter(parent_ids, &selection_vec)?;
         let mut selected_lookup = IdBitmap::new();
-        selected_lookup.populate(
-            selected_parent_ids
-                .as_primitive::<UInt16Type>()
-                .values()
-                .iter()
-                .map(|i| *i as u32),
-        );
+        selected_lookup.try_populate_from_id_column(&selected_parent_ids)?;
 
         let attrs_side_scope = if self.all_attrs_left { left } else { right }
             .data_scope
@@ -1530,10 +1619,29 @@ impl JoinExec for AttributesAllSelectionVecJoin {
             if self.all_attrs_left { right } else { left },
             *attrs_side_id,
         )?;
-        let bool_buf = MutableBuffer::collect_bool(id_col.len(), |index| {
-            let parent_id = id_col.values()[index];
-            selected_lookup.contains(parent_id as u32)
-        });
+        let bool_buf = match id_col.data_type() {
+            DataType::UInt16 => {
+                let id_col = id_col.as_primitive::<UInt16Type>();
+                MutableBuffer::collect_bool(id_col.len(), |index| {
+                    let parent_id = id_col.values()[index];
+                    selected_lookup.contains(parent_id as u32)
+                })
+            }
+            DataType::UInt32 => {
+                let id_col = id_col.as_primitive::<UInt32Type>();
+                MutableBuffer::collect_bool(id_col.len(), |index| {
+                    let parent_id = id_col.values()[index];
+                    selected_lookup.contains(parent_id)
+                })
+            }
+            other => {
+                return Err(otel_arrow_dfe_pdata::error::Error::InvalidIdColumnType {
+                    data_type: other.clone(),
+                }
+                .into());
+            }
+        };
+
         let aligned_selection_vec =
             BooleanArray::new(BooleanBuffer::new(bool_buf.into(), 0, id_col.len()), None);
 
@@ -1548,82 +1656,107 @@ impl JoinExec for AttributesAllSelectionVecJoin {
 
 /// Lookup structure for joining two record batches by ID.
 ///
-/// The intention is for this to be a fast lookup of ID -> row.
+/// Provides O(1) inserts and lookups for mapping ID -> row index, using a paged vector
+/// structure that avoids allocating the entire ID range.
 ///
-/// The idea here is that we have something like a vector that can be indexed by the ID, however we
-/// don't allocate the entire vector. Instead we have allocate it in pages only when there is an ID
-/// in some given range.
+/// Instead of a flat vector indexed by ID (which would be wasteful for large ID types)
+/// or a HashMap (which has hashing overhead), IDs are split into a page index and a
+/// page offset using bit shifting. Pages are allocated on demand, so only the parts of
+/// the ID space that are actually used consume memory.
 ///
-/// This structure provides O(1) inserts and lookups while being memory-efficient for dense ID
-/// ranges, while still attempting to avoid allocating a lookup table for the entire ID range if
-/// the entire range isn't used.
+/// In practice, IDs are typically dense starting from 0 (since they're relative to a
+/// batch), so most lookups hit the first few pages. This gives us good cache locality
+/// and minimal allocations.
 ///
-/// The u16 space (0-65535) is divided into 64 pages of 1024 entries each.
+/// Page sizes were chosen based on benchmarking insert performance across different
+/// batch sizes (128, 1024, 8096), comparing against HashMap:
+/// - u16: PAGE_BITS=8, 256-entry pages (~2KB each), 256 possible pages
+/// - u32: PAGE_BITS=10, 1024-entry pages (~8KB each), ~4M possible pages
 ///
-/// # Memory Layout
-/// - Outer array: 64 entries (top 6 bits of u16)
-/// - Each page: 1024 entries (bottom 10 bits of u16)
-/// - Each page is ~8KB (Option<usize> is 8 bytes on 64-bit systems)
-///
-/// # Example
-/// For ID 5120 (binary: 00010100_00000000):
-/// - Outer index: 5120 >> 10 = 5
-/// - Inner index: 5120 & 0x3FF = 0
-///
-// TODO - benchmark performance against HashMap... HashMap could have been used for this as well
-// however, this might be slightly faster because we don't need to hash the IDs for every insert
-// and lookup. Also, if the join sides are mostly sorted by the ID columns, we'll get good page
-// CPU locality as we scan over the IDs.
-//
-// TODO - eventually this will need to support u32 IDs
-struct IdJoinLookup {
-    /// Two-level lookup: outer array indexed by top 6 bits, inner pages indexed by bottom 10 bits.
-    /// Each page maps parent_id -> row index in the right-side batch.
-    lookup: Vec<Option<Box<[Option<usize>; PAGE_SIZE]>>>,
+/// Smaller pages keep each allocation L1-cache-friendly, which matters more than
+/// minimizing the number of allocations.
+struct IdJoinLookup<T: IdJoinLookupType, const PAGE_SIZE: usize> {
+    pages: Vec<Option<Box<[Option<usize>; PAGE_SIZE]>>>,
+    _phantom: PhantomData<T>,
 }
 
-const PAGE_SIZE: usize = 1024;
-const PAGE_BITS: u16 = 10;
-const PAGE_MASK: u16 = 0x3FF; // Bottom 10 bits
-const NUM_PAGES: usize = 64; // 2^16 / 2^10 = 2^6 = 64
+const U16_ID_LOOKUP_PAGE_SIZE: usize = const { 1 << <u16 as IdJoinLookupType>::PAGE_BITS };
+const U32_ID_LOOKUP_PAGE_SIZE: usize = const { 1 << <u32 as IdJoinLookupType>::PAGE_BITS };
 
-impl IdJoinLookup {
-    /// Creates a new IdJoin from a UInt16Array of parent IDs.
+type U16IdJoinLookup = IdJoinLookup<u16, U16_ID_LOOKUP_PAGE_SIZE>;
+type U32IdJoinLookup = IdJoinLookup<u32, U32_ID_LOOKUP_PAGE_SIZE>;
+
+impl<T: IdJoinLookupType, const PAGE_SIZE: usize> IdJoinLookup<T, PAGE_SIZE> {
+    /// Create a new instance from an ID column.
+    ///
+    /// Returns an error if the ID column is not either `PrimitiveArray<T>` or  `Dict<u8|u16, T>`
+    /// as these are the expected types for ID columns in OTAP. This also returns an error that
+    /// the column is missing if id_arr is `None`
+    fn try_new_from_array(ids_arr: &ArrayRef) -> Result<Self> {
+        if let Some(ids_as_primitive) = ids_arr.as_primitive_opt::<T::ArrowType>() {
+            return Ok(Self::new_from_primitive(ids_as_primitive));
+        } else if let Some(ids_as_dict) = ids_arr.as_dictionary_opt::<UInt8Type>() {
+            if let Some(typed_dict) = ids_as_dict.downcast_dict::<PrimitiveArray<T::ArrowType>>() {
+                return Ok(Self::new_from_iter(typed_dict.into_iter()));
+            }
+        } else if let Some(ids_as_dict) = ids_arr.as_dictionary_opt::<UInt16Type>()
+            && let Some(typed_dict) = ids_as_dict.downcast_dict::<PrimitiveArray<T::ArrowType>>()
+        {
+            return Ok(Self::new_from_iter(typed_dict.into_iter()));
+        }
+
+        Err(otel_arrow_dfe_pdata::error::Error::InvalidIdColumnType {
+            data_type: ids_arr.data_type().clone(),
+        }
+        .into())
+    }
+
+    /// Creates a new IdJoin from a PrimitiveArray of parent IDs.
     ///
     /// # Arguments
     /// * `parent_ids` - The parent_id array from the right side of the join
     ///
     /// # Returns
     /// A lookup structure mapping parent_id -> row index. Null values in the array are skipped.
-    fn new(ids: &UInt16Array) -> Self {
-        let mut lookup: Vec<Option<Box<[Option<usize>; PAGE_SIZE]>>> = vec![None; NUM_PAGES];
+    fn new_from_primitive(ids: &PrimitiveArray<T::ArrowType>) -> Self {
+        Self::new_from_iter::<_>(ids.iter())
+    }
 
-        // TODO bench this. There are probably some optimizations that we can make:
-        // 1 - have a loop that does no null check if there are no nulls
-        // 2 - if there are nulls, we might be able to avoid checking if each row is null by
-        //     using BitSliceIter on the null buffer to get ranges of non-null indices.
+    /// Create a new instance populating non-null IDs from the iter
+    fn new_from_iter<I: Iterator<Item = Option<<T::ArrowType as ArrowPrimitiveType>::Native>>>(
+        ids_array_iter: I,
+    ) -> Self {
+        // This const assertion is here to ensure that it is a compiler error if this generic
+        // type is constructed using PAGE_SIZE that is different than the page size expected
+        // by the ID mask helper, which could cause certain lookups to panic.
+        const { assert!(PAGE_SIZE == T::PAGE_SIZE) };
 
-        for row_idx in 0..ids.len() {
-            // Skip null values
-            if ids.is_null(row_idx) {
-                continue;
+        let mut pages = Vec::new();
+        for (row_idx, value) in ids_array_iter.enumerate() {
+            let Some(value) = value else { continue };
+
+            let parent_id = value.as_usize();
+            let page_idx = parent_id >> T::PAGE_BITS;
+            let page_offset = parent_id & T::PAGE_MASK;
+
+            // ensure length in pages
+            if page_idx >= pages.len() {
+                pages.resize_with(page_idx + 1, || None);
             }
 
-            let parent_id = ids.value(row_idx);
-            let outer = (parent_id >> PAGE_BITS) as usize;
-            let inner = (parent_id & PAGE_MASK) as usize;
-
-            // Allocate page if needed
-            if lookup[outer].is_none() {
-                lookup[outer] = Some(Box::new([None; PAGE_SIZE]));
+            // allocate page if needed
+            if pages[page_idx].is_none() {
+                pages[page_idx] = Some(Box::new([None; PAGE_SIZE]))
             }
 
             // Store the mapping
             // safety: we've initialized lookup[outer] in the block above, so safe to expect
-            lookup[outer].as_mut().expect("allocated")[inner] = Some(row_idx);
+            pages[page_idx].as_mut().expect("allocated")[page_offset] = Some(row_idx);
         }
-
-        Self { lookup }
+        Self {
+            pages,
+            _phantom: Default::default(),
+        }
     }
 
     /// Looks up a left-side ID and returns the corresponding right-side row index.
@@ -1635,11 +1768,101 @@ impl IdJoinLookup {
     /// * `Some(row_idx)` - The row index in the right batch if a match exists
     /// * `None` - No matching parent_id found
     #[inline]
-    fn lookup(&self, left_id: u16) -> Option<usize> {
-        let outer = (left_id >> PAGE_BITS) as usize;
-        let inner = (left_id & PAGE_MASK) as usize;
+    pub fn lookup(&self, left_id: T) -> Option<usize> {
+        // see comment in Self::new_from_iter about the purpose of this const assertion.
+        const { assert!(PAGE_SIZE == T::PAGE_SIZE) };
 
-        self.lookup[outer].as_ref().and_then(|page| page[inner])
+        let page_idx = left_id.as_usize() >> T::PAGE_BITS;
+        let page_offset = left_id.as_usize() & T::PAGE_MASK;
+
+        self.pages
+            .get(page_idx)
+            .and_then(|page| page.as_ref().and_then(|page| page[page_offset]))
+    }
+}
+// Helper trait for defining the size of various structures in the IdJoinLookup paged vec.
+#[allow(missing_docs)]
+trait IdJoinLookupType:
+    Copy
+    + std::ops::Shr<Output = Self>
+    + std::ops::BitAnd<Output = Self>
+    + From<<Self::ArrowType as ArrowPrimitiveType>::Native>
+    + Sized
+{
+    const PAGE_BITS: usize;
+    const PAGE_SIZE: usize = 1 << Self::PAGE_BITS;
+    const PAGE_MASK: usize = Self::PAGE_SIZE - 1;
+    type ArrowType: ArrowPrimitiveType;
+
+    fn as_usize(self) -> usize;
+}
+
+impl IdJoinLookupType for u16 {
+    const PAGE_BITS: usize = 8;
+    type ArrowType = UInt16Type;
+
+    #[inline]
+    fn as_usize(self) -> usize {
+        self as usize
+    }
+}
+
+impl IdJoinLookupType for u32 {
+    const PAGE_BITS: usize = 10;
+    type ArrowType = UInt32Type;
+
+    #[inline]
+    fn as_usize(self) -> usize {
+        self as usize
+    }
+}
+
+/// Support utilities for benchmarks
+#[cfg(feature = "bench")]
+#[doc(hidden)]
+pub mod bench_support {
+    use arrow::array::UInt32Array;
+
+    use super::*;
+
+    /// pub wrapper around [`U16IdJoinLookup`]
+    pub struct U16IdLookupBenchWrapper {
+        inner: U16IdJoinLookup,
+    }
+
+    impl U16IdLookupBenchWrapper {
+        /// inserts all non-null entries into wrapped data structure
+        #[must_use]
+        pub fn new(data: &UInt16Array) -> Self {
+            Self {
+                inner: U16IdJoinLookup::new_from_primitive(data),
+            }
+        }
+
+        #[must_use]
+        pub fn lookup(&self, id: u16) -> Option<usize> {
+            self.inner.lookup(id)
+        }
+    }
+
+    /// pub wrapper around [`U32IdJoinLookup`]
+    pub struct U32IdLookupBenchWrapper {
+        inner: U32IdJoinLookup,
+    }
+
+    impl U32IdLookupBenchWrapper {
+        /// inserts all non-null entries into wrapped data structure
+        #[must_use]
+        pub fn new(data: &UInt32Array) -> Self {
+            Self {
+                inner: U32IdJoinLookup::new_from_primitive(data),
+            }
+        }
+
+        #[must_use]
+        pub fn lookup(&self, id: u32) -> Option<usize> {
+            self.inner.lookup(id)
+        }
     }
 }
 
