@@ -263,7 +263,10 @@ impl Projection {
     }
 }
 
-/// Columns and fields that will be operated on by [`Projection`].
+/// Columns and fields that will be operated by [`Projection`].
+///
+/// This provides a wrapper around mutable vecs of Field and ArrayRef with a variety of helper
+/// methods for organizing projected columns.
 pub(crate) struct ProjectionColumns {
     num_rows: usize,
     fields: Vec<FieldRef>,
@@ -300,11 +303,13 @@ impl ProjectionColumns {
         &self.columns
     }
 
+    /// append a new column
     pub(crate) fn append_column(&mut self, field: Field, column: ArrayRef) {
         self.fields.push(FieldRef::new(field));
         self.columns.push(column);
     }
 
+    /// swap the location of two columns. If either index is out of bounds, this does nothing.
     pub(crate) fn swap(&mut self, pos_1: usize, pos_2: usize) {
         if pos_1 <= self.fields.len() && pos_2 <= self.fields.len() {
             self.fields.swap(pos_1, pos_2);
@@ -312,6 +317,8 @@ impl ProjectionColumns {
         }
     }
 
+    /// find the index and definition of a column/field by name. returns None if no field exists
+    /// with the passed name.
     pub(crate) fn find(&self, column_name: &str) -> Option<(usize, &FieldRef)> {
         self.fields
             .iter()
@@ -319,6 +326,8 @@ impl ProjectionColumns {
             .find(|(_, b)| b.name() == column_name)
     }
 
+    /// replace the column at a given index with the passed array. The field at this index will
+    /// also have its datatype updated. If the index is out of bounds, this does nothing.
     fn replace_column_at_index(&mut self, index: usize, new_column: ArrayRef) {
         if let Some(field) = self.fields.get(index) {
             let new_field = field
@@ -330,6 +339,7 @@ impl ProjectionColumns {
         }
     }
 
+    /// change the name of a column at the given index. noop if index is out of bounds.
     pub(crate) fn rename_column_at_index(&mut self, index: usize, new_column_name: &str) {
         if let Some(field) = self.fields.get(index) {
             let new_field = field.as_ref().clone().with_name(new_column_name);

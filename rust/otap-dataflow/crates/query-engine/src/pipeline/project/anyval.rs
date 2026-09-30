@@ -799,17 +799,17 @@ impl Projection {
     /// columns.
     ///
     /// When handling `AnyValue`s, there's a unique situation where there is a `type` column
-    /// used to discriminate the value's type, which effectively indicates which column
-    /// contains the attributes for this row.
+    /// used to discriminate the value's type, which effectively indicates which column contains
+    /// the attributes value for some row.
     ///
     /// The value columns can be absent, which indicates that it may have contained entirely
-    /// default values. In this case, this method creates an empty placeholder column IF the
-    /// column with values of this type is referenced and IF the `type` column indicates a
-    /// value should be read from this type's value column.
+    /// default values. In this case, this method creates an empty placeholder column if the
+    /// column with values of this type is referenced by the projection and if the `type` column
+    /// indicates a value should be read from this type's value column.
     ///
-    /// The projection may also reference a virtual column called "value", in which case the
-    /// value column to use must be inferred from the type column. For this reason, if there
-    /// is homogeneous types present in the passed columns, we produce an error (although n the
+    /// The projection may also reference a virtual column called "value", in which case the value
+    /// column to use must be inferred from the type column. For this reason, if there are
+    /// heterogeneous types present in the passed columns, we produce an error (although in the
     /// future, we may employ a partitioned execution strategy to handle this).
     ///
     /// Because at least one single row is needed to make this type determination, this function
@@ -872,15 +872,11 @@ impl Projection {
             // if not all the attribute types are the same, we can't determine a single value
             // column to use in the projection, so return an error for now. In practice, the batch
             // should be split apart before this pipeline stage using other operators to ensure
-            // we only have one value type; for example:
-            // - `if (value is Integer) { ... }`
-            // - `value as Integer` (explicit cast)
-            // - `if (key == "something") { ... }` which may assume that all values for some key have
-            //   a homogenous type.
+            // we only have one value type
             //
             // In some rare cases, it may be possible to write an expression that makes sense on
-            // multiple types simultaneously .. e.g. things like `value + value` could be an int
-            // or a double. For now, we'll force the user to handle this explicitly.
+            // multiple types simultaneously .. e.g. exprs like `value + value` could be an int
+            // or a double. For now, lamentably, we'll force the user to handle this explicitly.
             return Err(Error::ExecutionError {
                 cause: "All input rows for attribute assignment must have the same type \
                             if value used in expression"
