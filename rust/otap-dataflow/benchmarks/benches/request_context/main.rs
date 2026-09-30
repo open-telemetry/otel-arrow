@@ -3,6 +3,8 @@
 
 //! Benchmarks request-scoped transport metadata from receiver to exporter.
 
+mod header_propagation;
+
 use std::borrow::Cow;
 use std::hint::black_box;
 use std::mem::size_of;
@@ -100,6 +102,7 @@ fn main_benchmarks(c: &mut Criterion) {
     bench_lookup_clone_and_append(c);
     bench_receive_kafka_original(c);
     bench_end_to_end_kafka_original(c);
+    header_propagation::benchmarks(c);
 }
 
 fn bench_receive_http(c: &mut Criterion) {
