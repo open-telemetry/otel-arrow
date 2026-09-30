@@ -46,6 +46,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           submodules: true
+          persist-credentials: false
 
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
@@ -136,12 +137,21 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           submodules: true
+          persist-credentials: false
 
       - name: Build multi-stage image and measure
         shell: pwsh
         working-directory: ./rust/otap-dataflow
         run: |
           $ErrorActionPreference = 'Continue'
+
+          # Stage the one repo-root file the df_engine build embeds at compile
+          # time (src/main.rs include_str! of THIRD_PARTY_NOTICES.txt) into the
+          # build context. The Dockerfile places it three levels up inside the
+          # image so the include resolves. This mirrors what the Linux
+          # Dockerfile does with --build-context, without relying on BuildKit
+          # named contexts (unreliable for Windows containers).
+          Copy-Item -Path ..\..\THIRD_PARTY_NOTICES.txt -Destination .\THIRD_PARTY_NOTICES.txt -Force
 
           function Get-FolderSizeBytes([string]$p) {
             if (Test-Path -LiteralPath $p) {

@@ -1,5 +1,10 @@
+# escape=`
 # Copyright The OpenTelemetry Authors
 # SPDX-License-Identifier: Apache-2.0
+
+# The escape directive above switches the Dockerfile escape character to a
+# backtick so Windows paths can use single backslashes and multi-line RUN
+# instructions continue with a backtick (the PowerShell convention).
 
 # EXPERIMENTAL / TEMPORARY. This multi-stage Dockerfile is used by the
 # `windows-container-build-comparison.yml` workflow to benchmark a
@@ -34,22 +39,22 @@ SHELL ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "$E
 # recommended components pull in the Windows SDK and the MSVC toolset that
 # rustc needs to locate the linker (link.exe) via vswhere. Exit code 3010
 # means "success, reboot required", which is fine inside an image layer.
-RUN Invoke-WebRequest -Uri https://aka.ms/vs/17/release/vs_buildtools.exe -OutFile C:\vs_buildtools.exe ; \
-    $proc = Start-Process -FilePath C:\vs_buildtools.exe -Wait -PassThru -ArgumentList \
-        '--quiet', '--wait', '--norestart', '--nocache', \
-        '--add', 'Microsoft.VisualStudio.Workload.VCTools', \
-        '--includeRecommended' ; \
-    if ($proc.ExitCode -ne 0 -and $proc.ExitCode -ne 3010) { \
-        Write-Error ('VS Build Tools install failed with exit code ' + $proc.ExitCode) ; \
-        exit 1 ; \
-    } ; \
+RUN Invoke-WebRequest -Uri https://aka.ms/vs/17/release/vs_buildtools.exe -OutFile C:\vs_buildtools.exe ; `
+    $proc = Start-Process -FilePath C:\vs_buildtools.exe -Wait -PassThru -ArgumentList `
+        '--quiet', '--wait', '--norestart', '--nocache', `
+        '--add', 'Microsoft.VisualStudio.Workload.VCTools', `
+        '--includeRecommended' ; `
+    if ($proc.ExitCode -ne 0 -and $proc.ExitCode -ne 3010) { `
+        Write-Error ('VS Build Tools install failed with exit code ' + $proc.ExitCode) ; `
+        exit 1 ; `
+    } ; `
     Remove-Item C:\vs_buildtools.exe -Force
 
 # Install rustup and the stable MSVC toolchain (minimal profile: no docs).
-RUN Invoke-WebRequest -Uri https://static.rust-lang.org/rustup/dist/x86_64-pc-windows-msvc/rustup-init.exe -OutFile C:\rustup-init.exe ; \
-    Start-Process -FilePath C:\rustup-init.exe -Wait -NoNewWindow -ArgumentList \
-        '-y', '--default-host', 'x86_64-pc-windows-msvc', \
-        '--default-toolchain', 'stable', '--profile', 'minimal' ; \
+RUN Invoke-WebRequest -Uri https://static.rust-lang.org/rustup/dist/x86_64-pc-windows-msvc/rustup-init.exe -OutFile C:\rustup-init.exe ; `
+    Start-Process -FilePath C:\rustup-init.exe -Wait -NoNewWindow -ArgumentList `
+        '-y', '--default-host', 'x86_64-pc-windows-msvc', `
+        '--default-toolchain', 'stable', '--profile', 'minimal' ; `
     Remove-Item C:\rustup-init.exe -Force
 
 # Put cargo on PATH for subsequent RUN layers. rustup installs into the
@@ -58,12 +63,26 @@ RUN Invoke-WebRequest -Uri https://static.rust-lang.org/rustup/dist/x86_64-pc-wi
 # reachable.
 ENV PATH="C:\Users\ContainerAdministrator\.cargo\bin;${PATH}"
 
-WORKDIR C:\build
+# Mirror the repository directory layout inside the image so that compile-time
+# includes resolve. src/main.rs does
+# `include_str!("../../../THIRD_PARTY_NOTICES.txt")`, which is three levels
+# above the crate source. Placing the crate at C:\build\rust\dataflow puts that
+# file at C:\build\THIRD_PARTY_NOTICES.txt, matching the Linux Dockerfile. The
+# build context is rust/otap-dataflow only, so the benchmark workflow stages a
+# copy of THIRD_PARTY_NOTICES.txt into the context root before building (the
+# contrib and proto trees the Linux image copies are not in df_engine's build
+# graph: the contrib data-engine crates come from crates.io and no proto is
+# embedded in this binary).
+WORKDIR C:\build\rust\dataflow
 
 # Copy the build context. The .dockerignore in this directory keeps the large
 # host target/ tree out of the context (only target/release/df_engine.exe is
 # whitelisted, which the builder does not use).
-COPY . C:\build
+COPY . C:\build\rust\dataflow
+
+# Place the staged notices file three levels up so the include_str! above finds
+# it at C:\build\THIRD_PARTY_NOTICES.txt.
+COPY THIRD_PARTY_NOTICES.txt C:\build\THIRD_PARTY_NOTICES.txt
 
 # Statically link the CRT so the runtime image can stay minimal, matching the
 # host-build recipe documented in Dockerfile.windows.
@@ -71,7 +90,7 @@ ENV RUSTFLAGS="-C target-feature=+crt-static"
 
 # Feature set mirrors Dockerfile.windows so both benchmark paths produce an
 # equivalent binary.
-RUN cargo build --locked --release --no-default-features \
+RUN cargo build --locked --release --no-default-features `
         --features mimalloc,crypto-ring,dev-tools,core-nodes
 
 # ---------------------------------------------------------------------------
@@ -80,12 +99,12 @@ RUN cargo build --locked --release --no-default-features \
 FROM mcr.microsoft.com/windows/servercore:ltsc2025
 
 # Create a non-admin user for running the engine, mirroring Dockerfile.windows.
-RUN net user appuser /add && \
-    net localgroup Administrators appuser /remove
+# This runtime stage uses the default cmd shell, so && chains the two commands.
+RUN net user appuser /add && net localgroup Administrators appuser /remove
 
-WORKDIR C:\\dataflow
+WORKDIR C:\dataflow
 
-COPY --from=builder C:/build/target/release/df_engine.exe C:/dataflow/df_engine.exe
+COPY --from=builder C:/build/rust/dataflow/target/release/df_engine.exe C:/dataflow/df_engine.exe
 
 USER appuser
 
