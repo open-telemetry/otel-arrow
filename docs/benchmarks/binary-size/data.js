@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790729177609,
+  "lastUpdate": 1790731126086,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -48119,6 +48119,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 104.6,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "33842784+JakeDern@users.noreply.github.com",
+            "name": "Jake Dern",
+            "username": "JakeDern"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c7126e0c12a4988425cbd451b7a904b4582611b8",
+          "message": "perf: Optimize batching operations by fusing reindexing, concatenation, and casting into a single operation (#4170)\n\n# Change summary\n\nThis PR follows on from\n[#4150](https://github.com/open-telemetry/otel-arrow/pull/4150), which\noptimized schema selection in the OTAP concatenation kernel. It builds\non that change to look at the whole reindex + concatenate path used by\nthe batch processor.\n\nBefore this PR, combining a set of OTAP batches involved four separate\npasses, and three of them rewrote column data:\n\n1. Reindex: rewrite every ID / PARENT_ID column so that IDs from\ndifferent batches do not collide\n2. Select a unified schema\n3. Cast every batch to the unified schema\n4. Concatenate the cast batches with Arrow's `BatchCoalescer`\n\nThis PR fuses reindexing, casting, and concatenation so that every\noutput column is allocated once at its final size and written once,\ndirectly from the input arrays, whenever possible.\n\nThis PR:\n\n- Adds hand-written column writers that copy each input range into a\npre-sized destination, casting between native and dictionary encodings\nand applying ID remaps during the copy. `BatchCoalescer`, the per-batch\n`cast`, and the hashing-based dictionary merge are no longer used.\n- Plans ID rewrites without modifying the inputs. Reindexing produces an\noffset or replacement per ID column and a row selection per batch, and\nreferential integrity violations are skipped during the copy instead of\nfiltering and re-sorting the child batches first.\n- Adds `ConcatOptions { reindex }` to `concatenate` and removes the\nstandalone `reindex` API. The batch processor and query-engine `fork`\nreindex; query-engine `conditional` preserves IDs since its inputs are\ndisjoint pieces of one batch.\n- Copies runs of consecutive dictionary keys with a single memcpy when a\ndictionary column is written out as a native column.\n- Fixes reindexing of nullable ID columns. The null bitmap was\npreviously dropped, and applying a negative offset to the value stored\nin a null slot could underflow and panic in debug builds.\n- Reworks the concatenate benchmarks to time reindex + concatenate\ntogether, which is what the batch processor runs, and adds a `presplit`\nscenario that splits batches first like the batch processor does.\n- Makes an overall impact between 45% and 79% for the common cases, and\n7% to 52% when IDs have to be compacted\n\n## Validation\n\nNew regression tests cover null IDs on both the offset and compaction\npaths (including `resource.id`), redaction of dictionary-encoded parent\nIDs, every native/dictionary encoding pair in the column writers, sliced\ninputs, and run-coalesced dictionary gathers. Existing reindex tests now\nalso check that the fused output is OTLP-equivalent to the inputs.\n\nConcatenate benchmarks (reindex + concatenate). Before is the tip of\n#4150 with the reworked benchmark; values are the mean of two runs.\n\n- `contiguous`: freshly encoded batches\n- `presplit`: batches split into thirds before concatenating, as the\nbatch processor does\n- `gapped`: IDs doubled so they overflow the u16 ID budget and force\ncompaction; only triggers at 1000items/3r2s for logs and traces\n\n| Benchmark | Before | After | Diff |\n|---|---|---|---|\n| concatenate/100items/1r1s/contiguous/metrics | 99.2 us | 41.3 us |\n-58.4% |\n| concatenate/100items/1r1s/contiguous/logs | 98.8 us | 30.7 us | -68.9%\n|\n| concatenate/100items/1r1s/contiguous/traces | 194 us | 48.6 us |\n-74.9% |\n| concatenate/100items/1r1s/presplit/logs | 396 us | 91.2 us | -77.0% |\n| concatenate/100items/1r1s/presplit/traces | 694 us | 148 us | -78.6% |\n| concatenate/100items/3r2s/contiguous/metrics | 166 us | 51.4 us |\n-69.1% |\n| concatenate/100items/3r2s/contiguous/logs | 123 us | 37.9 us | -69.1%\n|\n| concatenate/100items/3r2s/contiguous/traces | 277 us | 60.4 us |\n-78.2% |\n| concatenate/100items/3r2s/presplit/metrics | 740 us | 199 us | -73.1%\n|\n| concatenate/100items/3r2s/presplit/logs | 343 us | 77.5 us | -77.4% |\n| concatenate/100items/3r2s/presplit/traces | 616 us | 129 us | -79.0% |\n| concatenate/1000items/1r1s/contiguous/metrics | 135 us | 53.6 us |\n-60.3% |\n| concatenate/1000items/1r1s/contiguous/logs | 131 us | 41.7 us | -68.2%\n|\n| concatenate/1000items/1r1s/contiguous/traces | 343 us | 73.9 us |\n-78.4% |\n| concatenate/1000items/1r1s/presplit/logs | 444 us | 112 us | -74.8% |\n| concatenate/1000items/1r1s/presplit/traces | 827 us | 195 us | -76.4%\n|\n| concatenate/1000items/3r2s/contiguous/metrics | 290 us | 159 us |\n-45.1% |\n| concatenate/1000items/3r2s/contiguous/logs | 285 us | 155 us | -45.6%\n|\n| concatenate/1000items/3r2s/contiguous/traces | 1.52 ms | 384 us |\n-74.7% |\n| concatenate/1000items/3r2s/presplit/metrics | 883 us | 327 us | -62.9%\n|\n| concatenate/1000items/3r2s/presplit/logs | 515 us | 196 us | -61.8% |\n| concatenate/1000items/3r2s/presplit/traces | 1.32 ms | 480 us | -63.7%\n|\n| concatenate/1000items/3r2s/gapped/logs | 797 us | 737 us | -7.5% |\n| concatenate/1000items/3r2s/gapped/traces | 2.16 ms | 1.04 ms | -51.9%\n|\n\nCompaction (`gapped`) still sorts, and is left as a TODO since it only\nruns for malformed input or when the ID budget overflows.\n\n## User-facing changes\n\nPerf changes, plus a fix for batching which no longer drops null IDs or\npanics on them when reindexing.\n\n---------\n\nCo-authored-by: albertlockett <a.lockett@f5.com>",
+          "timestamp": "2026-09-30T00:16:12Z",
+          "tree_id": "988325c72c5b4580ab2c6897b2e3fe1a865060dd",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/c7126e0c12a4988425cbd451b7a904b4582611b8"
+        },
+        "date": 1790731110410,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 85.36,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.78,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.73,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.01,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.98,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_pdata",
+            "value": 2.76,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 72.45,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.89,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 117.79,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 104.91,
             "unit": "MB"
           }
         ]
