@@ -312,7 +312,7 @@ mod tests {
     }
 
     /// Scenario: An exemplar supplies zero timestamp, trace ID, and span ID values.
-    /// Guarantees: Zero-valued optional fields encode identically to absent fields, matching ME presence semantics.
+    /// Guarantees: Zero-valued optional fields encode identically to absent fields, matching optional-field presence semantics.
     #[test]
     fn omits_zero_valued_exemplar_fields() {
         let exemplar = MetricExemplar {
@@ -409,7 +409,7 @@ mod tests {
     }
 
     /// Scenario: Serialized exemplars total exactly 512 bytes before list framing is added.
-    /// Guarantees: Encoding accepts ME's largest payload even though version and count make the wire body larger.
+    /// Guarantees: Encoding accepts the maximum supported payload even though version and count make the wire body larger.
     #[test]
     fn accepts_exemplar_list_at_backend_limit() {
         let exemplar = MetricExemplar {

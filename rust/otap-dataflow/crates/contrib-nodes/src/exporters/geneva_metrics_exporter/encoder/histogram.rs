@@ -275,7 +275,7 @@ mod tests {
     }
 
     /// Scenario: Consecutive raw histogram bucket counts span the full unsigned 32-bit range.
-    /// Guarantees: Count subtraction wraps to the signed 32-bit delta emitted by ME.
+    /// Guarantees: Count subtraction wraps to the signed 32-bit wire delta.
     #[test]
     fn wraps_raw_histogram_count_delta() {
         let mut writer = Writer::default();
@@ -315,7 +315,7 @@ mod tests {
     }
 
     /// Scenario: Consecutive explicit histogram bucket counts span the full unsigned 32-bit range.
-    /// Guarantees: Count subtraction wraps to the signed 32-bit delta emitted by ME.
+    /// Guarantees: Count subtraction wraps to the signed 32-bit wire delta.
     #[test]
     fn wraps_explicit_histogram_count_delta() {
         let mut writer = Writer::default();
@@ -364,7 +364,7 @@ mod tests {
         );
     }
 
-    /// Scenario: Exponential histogram scales cover the serialized i8 range and exceed ME's maximum input scale.
+    /// Scenario: Exponential histogram scales cover the serialized i8 range and exceed the protocol's maximum input scale.
     /// Guarantees: Post-downscale negative values encode through i8::MIN, while scale 21 is rejected.
     #[test]
     fn validates_exponential_histogram_scale_boundaries() {
@@ -473,7 +473,7 @@ mod tests {
     }
 
     /// Scenario: Consecutive exponential histogram counts cross the unsigned 64-bit wrap boundary.
-    /// Guarantees: ME-compatible wrapping subtraction emits the resulting positive signed delta.
+    /// Guarantees: Wrapping subtraction emits the resulting positive signed delta.
     #[test]
     fn wraps_exponential_histogram_count_delta() {
         let mut writer = Writer::default();
@@ -485,7 +485,7 @@ mod tests {
     }
 
     /// Scenario: Consecutive exponential histogram bucket counts have a delta of exactly i64::MIN.
-    /// Guarantees: Encoding rejects the endpoint that ME's sign-magnitude writer cannot represent.
+    /// Guarantees: Encoding rejects the endpoint that the sign-magnitude writer cannot represent.
     #[test]
     fn rejects_exponential_histogram_count_delta_at_i64_min() {
         let mut writer = Writer::default();
