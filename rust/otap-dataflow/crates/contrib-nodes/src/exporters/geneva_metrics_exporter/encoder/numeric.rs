@@ -66,9 +66,9 @@ mod tests {
     }
 
     /// Scenario: Integral doubles sit at and immediately inside the signed 64-bit conversion boundaries.
-    /// Guarantees: The compact range matches ME by excluding both 2^63 endpoints while accepting adjacent representable values.
+    /// Guarantees: The compact range excludes both 2^63 endpoints while accepting adjacent representable values.
     #[test]
-    fn matches_me_compact_integer_boundaries() {
+    fn matches_compact_integer_boundaries() {
         const I64_MIN_AS_F64: f64 = -9_223_372_036_854_775_808.0;
         const NEXT_AFTER_I64_MIN: f64 = -9_223_372_036_854_774_784.0;
         const PREVIOUS_BEFORE_I64_MAX: f64 = 9_223_372_036_854_774_784.0;

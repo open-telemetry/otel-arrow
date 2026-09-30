@@ -207,7 +207,7 @@ pub enum EncodeError {
         /// Required sampling flags.
         required_flags: u32,
     },
-    /// A selected double value is not supported by ME.
+    /// A selected double value is not supported by the protocol.
     #[error("{field} double value with bits {bits:#018x} is not supported")]
     InvalidDoubleValue {
         /// Metric value field name.
@@ -265,7 +265,7 @@ pub enum EncodeError {
     /// A metric timestamp predates the .NET epoch used by the protocol.
     #[error("metric time bucket {0} predates the .NET epoch")]
     NegativeTimeBucket(i64),
-    /// A dimension value contains a NUL character rejected by ME.
+    /// A dimension value contains a NUL character rejected by the protocol.
     #[error("metric {metric_index} dimension {dimension_index} value contains NUL")]
     InvalidDimensionValue {
         /// Metric index within the packet.
@@ -283,9 +283,9 @@ pub enum EncodeError {
         /// Maximum supported dimension count.
         maximum: usize,
     },
-    /// A packet or metric timestamp cannot be reconstructed as ME ticks.
+    /// A packet or metric timestamp cannot be reconstructed as protocol ticks.
     #[error(
-        "{field} time bucket {time_bucket} with {milliseconds} milliseconds exceeds ME tick range"
+        "{field} time bucket {time_bucket} with {milliseconds} milliseconds exceeds protocol tick range"
     )]
     TimestampOutOfRange {
         /// Timestamp field name.
@@ -295,8 +295,8 @@ pub enum EncodeError {
         /// Additional millisecond component.
         milliseconds: u32,
     },
-    /// A string exceeds an ME ingestion limit.
-    #[error("{field} length {length} exceeds ME maximum {maximum}")]
+    /// A string exceeds a protocol ingestion limit.
+    #[error("{field} length {length} exceeds protocol maximum {maximum}")]
     StringLengthOverflow {
         /// String field name.
         field: &'static str,
@@ -311,7 +311,7 @@ pub enum EncodeError {
         /// Encoded field name.
         field: &'static str,
     },
-    /// An exponential histogram scale is outside ME's supported range.
+    /// An exponential histogram scale is outside the protocol's supported range.
     #[error("exponential histogram scale {scale} is outside supported range {minimum}..={maximum}")]
     ExponentialHistogramScaleOutOfRange {
         /// Supplied histogram scale.
@@ -344,9 +344,9 @@ pub enum EncodeError {
         /// Sum of zero, positive, and negative bucket counts.
         bucket_count: u128,
     },
-    /// The difference between exponential histogram bucket counts is not ME-compatible.
+    /// The difference between exponential histogram bucket counts is not protocol-compatible.
     #[error(
-        "difference between exponential histogram bucket counts {previous_count} and {count} cannot be encoded as an ME-compatible signed 64-bit value"
+        "difference between exponential histogram bucket counts {previous_count} and {count} cannot be encoded as a protocol-compatible signed 64-bit value"
     )]
     ExponentialHistogramCountDeltaOverflow {
         /// Previous non-zero bucket count.

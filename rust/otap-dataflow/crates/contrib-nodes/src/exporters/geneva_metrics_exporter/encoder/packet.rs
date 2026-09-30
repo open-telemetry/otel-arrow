@@ -863,7 +863,7 @@ mod tests {
     }
 
     /// Scenario: Exponential histogram bucket totals exceed u32::MAX but narrow to the scalar count.
-    /// Guarantees: Validation uses ME's u32 narrowing semantics and permits the metric to encode.
+    /// Guarantees: Validation applies u32 narrowing semantics and permits the metric to encode.
     #[test]
     fn accepts_narrowed_exponential_histogram_counts() {
         for (bucket_total, scalar_count) in [
@@ -955,7 +955,7 @@ mod tests {
     }
 
     /// Scenario: Selected metric doubles contain generic NaN or positive/negative infinity.
-    /// Guarantees: Encoding rejects every non-finite value that is not ME's stale-NaN sentinel.
+    /// Guarantees: Encoding rejects every non-finite value except the supported stale-NaN sentinel.
     #[test]
     fn rejects_unsupported_non_finite_metric_values() {
         for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
@@ -973,10 +973,10 @@ mod tests {
         }
     }
 
-    /// Scenario: A selected metric sum uses ME's exact Prometheus stale-NaN representation.
+    /// Scenario: A selected metric sum uses the exact Prometheus stale-NaN representation.
     /// Guarantees: The sentinel remains accepted and is serialized with its original IEEE 754 bits.
     #[test]
-    fn preserves_me_stale_nan_metric_value() {
+    fn preserves_stale_nan_metric_value() {
         let value = f64::from_bits(STALE_NAN_BITS);
         let metric = standard_metric(double_values(value, 1), SUM | COUNT);
         let mut writer = Writer::default();
@@ -1001,7 +1001,7 @@ mod tests {
     }
 
     /// Scenario: A delta non-monotonic sum uses Geneva's delta up-down-counter metric type.
-    /// Guarantees: The encoder preserves the ME metric-type bits instead of dropping or rewriting them.
+    /// Guarantees: The encoder preserves the metric-type bits instead of dropping or rewriting them.
     #[test]
     fn preserves_delta_up_down_counter_type() {
         let metric = standard_metric(
@@ -1090,7 +1090,7 @@ mod tests {
         );
     }
 
-    /// Scenario: A high-resolution timestamp metric omits the count sampling flag required by ME.
+    /// Scenario: A high-resolution timestamp metric omits the count sampling flag required by the protocol.
     /// Guarantees: Encoding rejects the invalid flag combination before count and milliseconds lose alignment.
     #[test]
     fn rejects_high_resolution_timestamp_without_count() {
@@ -1228,7 +1228,7 @@ mod tests {
         }
     }
 
-    /// Scenario: Packet and metric whole-second buckets reach and exceed ME's maximum u64 tick value.
+    /// Scenario: Packet and metric whole-second buckets reach and exceed the protocol's maximum u64 tick value.
     /// Guarantees: The largest reconstructable bucket is accepted and either field rejects one additional second.
     #[test]
     fn validates_whole_second_tick_boundary() {
@@ -1273,7 +1273,7 @@ mod tests {
         );
     }
 
-    /// Scenario: A metric at ME's maximum whole-second bucket uses the last valid and first invalid millisecond.
+    /// Scenario: A metric at the maximum whole-second bucket uses the last valid and first invalid millisecond.
     /// Guarantees: Tick reconstruction accepts 955 milliseconds and rejects 956 before u64 overflow.
     #[test]
     fn validates_high_resolution_tick_boundary() {
@@ -1337,7 +1337,7 @@ mod tests {
     }
 
     /// Scenario: A metric dimension value contains an embedded NUL character.
-    /// Guarantees: Encoding rejects the invalid aggregation key instead of publishing a value ME would skip.
+    /// Guarantees: Encoding rejects the invalid aggregation key instead of silently skipping the value.
     #[test]
     fn rejects_nul_in_dimension_value() {
         let mut metric = standard_metric(unsigned_values(1, 1), SUM | COUNT);
@@ -1388,10 +1388,10 @@ mod tests {
         );
     }
 
-    /// Scenario: Metric and dimension strings are exactly at and one character beyond ME's limits.
+    /// Scenario: Metric and dimension strings are exactly at and one character beyond protocol limits.
     /// Guarantees: Every maximum is accepted and oversized strings are rejected before interning.
     #[test]
-    fn validates_me_string_length_limits() {
+    fn validates_string_length_limits() {
         fn assert_limit(
             field: &'static str,
             maximum: usize,
@@ -1440,7 +1440,7 @@ mod tests {
     }
 
     /// Scenario: A metric name contains non-BMP characters that occupy two UTF-16 code units each.
-    /// Guarantees: String limits match Windows ME's wide-string length rather than Unicode scalar count.
+    /// Guarantees: String limits count UTF-16 code units rather than Unicode scalar values.
     #[test]
     fn counts_string_limits_in_utf16_code_units() {
         let supplementary_character = "\u{1f600}";
@@ -1552,7 +1552,7 @@ mod tests {
     }
 
     /// Scenario: Two metrics emit the same non-empty dimension names but have different original name lists.
-    /// Guarantees: Empty-name trimming does not collapse distinct ME metadata identities into one index.
+    /// Guarantees: Empty-name trimming does not collapse distinct metadata identities into one index.
     #[test]
     fn preserves_original_dimension_names_for_metadata_identity() {
         let mut with_empty_name = standard_metric(unsigned_values(1, 1), SUM | COUNT);
