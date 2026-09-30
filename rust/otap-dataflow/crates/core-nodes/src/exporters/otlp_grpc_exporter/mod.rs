@@ -317,6 +317,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
             // first publish, and its watch stream stays live while we hold the
             // provider handle -- so waiting (not dropping) is always correct here.
             let accepting_pdata = auth.as_ref().is_none_or(|a| a.is_ready());
+            self.metrics.record_auth_readiness(accepting_pdata);
 
             // Instant at which a currently-usable auth crosses the usability
             // margin. Used to wake the loop so `accepting_pdata` re-evaluates
@@ -362,13 +363,10 @@ impl Exporter<OtapPdata> for OTLPExporter {
 
                     // Pick up auth refreshes (initial + subsequent) even while pdata
                     // intake is gated, so a pending auth can arrive and unblock us.
-                    refreshed = poll_fn(|cx| match auth.as_mut() {
+                    _ = poll_fn(|cx| match auth.as_mut() {
                         Some(auth) => auth.poll_refresh(cx, &GRPC_AUTH_EVENTS),
                         None => Poll::Pending,
                     }), if auth.as_ref().is_some_and(|auth| auth.is_active()) => {
-                        if !refreshed {
-                            self.metrics.record_auth_failure();
-                        }
                         // A refresh was drained (the adapter caches it and logs any
                         // anomaly); loop to re-evaluate intake readiness.
                         continue;
@@ -446,7 +444,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                     }
                     return Ok(TerminalState::new(
                         deadline,
-                        self.metrics.terminal_snapshots(),
+                        self.metrics.terminal_snapshots(auth.as_deref()),
                     ));
                 }
                 Message::Control(NodeControlMsg::CollectTelemetry {
@@ -3112,9 +3110,9 @@ mod tests {
     #[test]
     fn unauthenticated_generation_recovers_after_provider_refresh() {
         let (runtime, mut metrics, effect_handler, mut auth) = rejection_test_context();
-        assert!(runtime.block_on(poll_fn(|cx| {
+        runtime.block_on(poll_fn(|cx| {
             auth.as_mut().unwrap().poll_refresh(cx, &GRPC_AUTH_EVENTS)
-        })));
+        }));
         let rejected_generation = auth.as_ref().unwrap().header().unwrap().2;
 
         let rejected_generation = finalize_unauthenticated_generation(
@@ -3126,9 +3124,9 @@ mod tests {
         apply_auth_rejection(&mut auth, rejected_generation);
         assert!(!auth.as_ref().unwrap().is_ready());
 
-        assert!(runtime.block_on(poll_fn(|cx| {
+        runtime.block_on(poll_fn(|cx| {
             auth.as_mut().unwrap().poll_refresh(cx, &GRPC_AUTH_EVENTS)
-        })));
+        }));
         let (_, value, generation) = auth.as_ref().unwrap().header().unwrap();
         assert_eq!(value, "Bearer replacement");
         assert_eq!(generation, 2);
@@ -3141,9 +3139,9 @@ mod tests {
     #[test]
     fn stale_unauthenticated_generation_keeps_newer_auth() {
         let (runtime, mut metrics, effect_handler, mut auth) = rejection_test_context();
-        assert!(runtime.block_on(poll_fn(|cx| {
+        runtime.block_on(poll_fn(|cx| {
             auth.as_mut().unwrap().poll_refresh(cx, &GRPC_AUTH_EVENTS)
-        })));
+        }));
         let rejected_generation = auth.as_ref().unwrap().header().unwrap().2;
 
         let rejected_generation = finalize_unauthenticated_generation(
@@ -3152,9 +3150,9 @@ mod tests {
             &effect_handler,
             rejected_generation,
         );
-        assert!(runtime.block_on(poll_fn(|cx| {
+        runtime.block_on(poll_fn(|cx| {
             auth.as_mut().unwrap().poll_refresh(cx, &GRPC_AUTH_EVENTS)
-        })));
+        }));
         apply_auth_rejection(&mut auth, rejected_generation);
 
         assert!(auth.as_ref().unwrap().is_ready());
