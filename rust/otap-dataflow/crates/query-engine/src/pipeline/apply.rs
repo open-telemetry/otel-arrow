@@ -693,6 +693,41 @@ mod test {
         );
     }
 
+    /// Scenario: evaluate filtering using a predicate where the attribute column containing
+    /// the value cannot be statically determined, so the virtual "value" column will be projected
+    /// Guarantees: the predicate can be evaluated on this virtual "value" column
+    #[tokio::test]
+    async fn test_pipeline_filter_attributes_when_value_type_not_statically_determined() {
+        let log_records = vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_double(5.0)),
+                    KeyValue::new("k2", AnyValue::new_double(7.0)),
+                ])
+                .finish(),
+        ];
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(log_records.clone())));
+        let query = r#"logs | apply attributes {
+            where (value as Integer) > 6
+        }"#;
+        let mut pipeline = Pipeline::new(
+            OplParser::parse_with_options(query, default_parser_options())
+                .unwrap()
+                .pipeline,
+        );
+
+        let result = pipeline.execute(input.clone()).await.unwrap();
+        let expected = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("k2", AnyValue::new_double(7.0))])
+                .finish(),
+        ]);
+        assert_equivalent(
+            &[otap_to_otlp(&result)],
+            &[OtlpProtoMessage::Logs(expected)],
+        );
+    }
+
     /// Scenario: multiple batches where the position of the column used in the predicate changes
     /// from one batch to the next due to the alternating presence of some optional columns
     /// Guarantees: the predicate is evaluated on the displaced column
@@ -711,8 +746,6 @@ mod test {
                 .unwrap()
                 .pipeline,
         );
-
-        // TODO -- it'd be nice if we could assert here on what the pipeline actually planned
 
         let input1 = otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(vec![
             LogRecord::build()
