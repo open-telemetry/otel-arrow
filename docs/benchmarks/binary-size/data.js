@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790792338415,
+  "lastUpdate": 1790795915955,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -48551,6 +48551,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 104.91,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ahmed.bektic5@gmail.com",
+            "name": "best-truck-4132",
+            "username": "ahmedbektic"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "8e1a22306ce5b197c1639e96ac93c0e07238d87c",
+          "message": "Add temporal reaggregation metric population counter (#4136)\n\n# Change summary\n\nAdds ```processor.temporal_reaggregation.passthrough.metrics``` to track\nmetric records that the processor classifies as non-aggregatable and\nforwards unchanged. The counter uses the existing classification logic\nand records each input once, preventing internal overflow retries from\ndouble-counting records.\n\n## Related issue\n\n* Closes #2942 \n\n## Validation\n\nExpanded existing tests to cover entirely pass-through, mixed\naggregatable/pass-through, and entirely aggregatable inputs. All 69\ntemporal reaggregation processor tests and affected-crate Clippy checks\npass.\n\nAlso, I manually ran a pipeline using the existing synthetic traffic\ngenerator and inspected the result through the admin metrics endpoint.\nOf 20 generated metric records, nine were non-aggregatable, and\nprocessor.temporal_reaggregation.passthrough.metrics reported 9. Each\nrecord contained >1 data points, confirming the counter counts metric\nrecords rather than data points.\n\n## User-facing changes\n\nUsers can now monitor how many metric records bypass temporal\nreaggregation through\n```processor.temporal_reaggregation.passthrough.metrics```, reported as\na monotonic counter with the {record} unit. The processor README\ndocuments its meaning and a .chloggen entry is included.\n\nSigned-off-by: Ahmed Bektic <ahmed.bektic@slu.edu>\nCo-authored-by: Jake Dern <33842784+JakeDern@users.noreply.github.com>",
+          "timestamp": "2026-09-30T18:20:07Z",
+          "tree_id": "44fb874048c8b9498e42bdfb7b8a7fd6b82086c5",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/8e1a22306ce5b197c1639e96ac93c0e07238d87c"
+        },
+        "date": 1790795899037,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 85.35,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.78,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.25,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.73,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.01,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.98,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 72.45,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.88,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.57,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.32,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 117.79,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 104.85,
             "unit": "MB"
           }
         ]
