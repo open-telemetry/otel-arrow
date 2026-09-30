@@ -642,16 +642,16 @@ impl<'a> SpanView for OtapSpanView<'a> {
 
     #[inline]
     fn status(&self) -> Option<Self::Status<'_>> {
-        // Return a status view if we have status columns
+        // The status column may exist batch-wide while this span's row is null.
         let columns = self.columns()?;
-        if columns.status.is_some() {
-            Some(OtapStatusView {
+        let status = columns.status.as_ref()?;
+        status
+            .status
+            .is_valid(self.row_idx)
+            .then_some(OtapStatusView {
                 columns,
                 row_idx: self.row_idx,
             })
-        } else {
-            None
-        }
     }
 }
 
@@ -1111,7 +1111,8 @@ mod tests {
         ArrayRef, DurationNanosecondArray, FixedSizeBinaryArray, Int32Array, StringArray,
         StructArray, TimestampNanosecondArray, UInt16Array, UInt32Array,
     };
-    use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
+    use arrow::buffer::NullBuffer;
+    use arrow::datatypes::{DataType, Field, Fields, Schema, TimeUnit};
     use std::sync::Arc;
 
     /// Helper to create a minimal spans batch for testing
@@ -1389,6 +1390,101 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Scenario: A span batch has a status column, but one span's status struct row is null.
+    /// Guarantees: OtapSpanView::status() honors the row validity and returns None for that span.
+    #[test]
+    fn test_span_status_absent_row_is_none() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::UInt16, true),
+            Field::new(
+                "resource",
+                DataType::Struct(vec![Field::new("id", DataType::UInt16, false)].into()),
+                false,
+            ),
+            Field::new(
+                "scope",
+                DataType::Struct(vec![Field::new("id", DataType::UInt16, false)].into()),
+                false,
+            ),
+            Field::new(
+                "start_time_unix_nano",
+                DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
+                false,
+            ),
+            Field::new(
+                "status",
+                DataType::Struct(
+                    vec![
+                        Field::new("code", DataType::Int32, true),
+                        Field::new("status_message", DataType::Utf8, true),
+                    ]
+                    .into(),
+                ),
+                true,
+            ),
+        ]));
+
+        let id_array = UInt16Array::from(vec![0, 1]);
+        let resource_struct = StructArray::from(vec![(
+            Arc::new(Field::new("id", DataType::UInt16, false)),
+            Arc::new(UInt16Array::from(vec![1, 1])) as ArrayRef,
+        )]);
+        let scope_struct = StructArray::from(vec![(
+            Arc::new(Field::new("id", DataType::UInt16, false)),
+            Arc::new(UInt16Array::from(vec![1, 1])) as ArrayRef,
+        )]);
+        let start_time = TimestampNanosecondArray::from(vec![1_000_000_000, 2_000_000_000])
+            .with_timezone(UTC_TIME_ZONE);
+
+        // Row 0 carries a real status; row 1's status struct is null.
+        let status_code = Int32Array::from(vec![2, 0]);
+        let status_message = StringArray::from(vec!["something went wrong", ""]);
+        let status_struct = StructArray::new(
+            Fields::from(vec![
+                Field::new("code", DataType::Int32, true),
+                Field::new("status_message", DataType::Utf8, true),
+            ]),
+            vec![
+                Arc::new(status_code) as ArrayRef,
+                Arc::new(status_message) as ArrayRef,
+            ],
+            Some(NullBuffer::from_iter(vec![true, false])),
+        );
+
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(id_array) as ArrayRef,
+                Arc::new(resource_struct) as ArrayRef,
+                Arc::new(scope_struct) as ArrayRef,
+                Arc::new(start_time) as ArrayRef,
+                Arc::new(status_struct) as ArrayRef,
+            ],
+        )
+        .unwrap();
+
+        let view =
+            OtapTracesView::new(Some(&batch), None, None, None, None, None, None, None).unwrap();
+
+        let mut present = 0;
+        let mut absent = 0;
+        for resource_spans in view.resources() {
+            for scope_spans in resource_spans.scopes() {
+                for span in scope_spans.spans() {
+                    if span.status().is_some() {
+                        present += 1;
+                    } else {
+                        absent += 1;
+                    }
+                }
+            }
+        }
+
+        // The status column is present, but only the populated row reports a status.
+        assert_eq!(present, 1);
+        assert_eq!(absent, 1);
     }
 
     #[test]

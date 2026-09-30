@@ -1,0 +1,5 @@
+change_type: bug_fix
+component: otap
+note: Fix the OTAP SpanView status getter to return None when a span has no status, rather than keying off whether the batch has a status column
+issues: [4198]
+subtext: OTLP views report status per span; this matches them by gating on the status struct row validity
