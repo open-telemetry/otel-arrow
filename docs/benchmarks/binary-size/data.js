@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790720560007,
+  "lastUpdate": 1790727990013,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -47833,6 +47833,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 104.48,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "a.lockett@f5.com",
+            "name": "albertlockett",
+            "username": "albertlockett"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f5b006cf677c3c08b2c38535775787f833e1c25d",
+          "message": "feat(query-engine): support metrics data point attributes in expressions and assignment (#4140)\n\n# Change summary\n\nSupports metrics data point attributes as values in expressions and as\nassignment destinations in the OTAP query-engine.\n\nIt means that programs such as the following can now be executed:\n```kql\n// all kinds of new expressions are now supported ...\n\nmetrics | apply data_points {\n  // use attributes when filtering metric data points:\n  where attributes[\"x\"] == \"y\" | // simple attrs filter\n  where attributes[\"x\"] == \"y\" or not(attributes[\"x2\"] == \"y2\") and flags | // and/or/not supported\n  // etc.\n\n  // now assign value to metric attributes\n  set attributes[\"x\"] = 5 | // simple, from scalar\n  set attributes[\"x\"] = attributes[\"y\"] + attributes[\"z\"] | // binary operations supported, including arithmetic\n  set attributes[\"x\"] = join(\".\", attributes[\"y\"], attributes[\"z\"]) // function calls work too!\n  // etc\n}\n```\n\n**Changes**\n\nMany places where we work with the ID column, where previously we were\nassuming the IDs were u16, we now must handle u32 (including dictionary\nencoded u32 IDS, which are used by data point attributes for the\nparent_id column). This includes:\n- to the `join` module including the `IdJoinLookup` (which is used for\nthe \"build\" side of the join when realigning data)\n- when converting ID bitmaps into boolean vecs\n- when passing parent IDs to the `upsert_attributes` utility function\n\nThe other change is to `AttributesIdentifier` which is used to identify\nthe source of attribute data for some expression. Whereas before there\nwere variants called `Root` used to identify that the attributes came\nfrom the root signal (log/metrics/traces), we change this to\n`Record(RecordScope)` where `RecordScope` identifies if the attributes\ncome from the signal or some child (such as metric data points).\n\nTests are added for the new supported query patterns.\n\nI also added a benchmark for `IdJoinLookup`. The \"joins\" could have been\nimplemented as hash join, so this was basically to prove out whether our\ninternal data structure used for the build side of the joins is faster\nthan hashmap (this turned out to the the case). I also figured that\neventually we might want to add further benchmarks to this component of\nexpression evaluation, so this is a good starting point for that bench\nsuite. The crate now exposes a `bench` feature with some helpers for\nbenching these internal structures.\n\n## Related issue\n\n<!--We highly recommend correlation of every PR to an issue-->\n\n* Related to #3722\n\n## Validation\n\n<!--How did you confirm your change has the intended effect?-->\n\nUnit tests\n\n## User-facing changes\n\n<!--\nDescribe the impact, or write `None`.\nUser-facing changes require a `.chloggen/*.yaml` entry. If no entry is\nneeded,\ninclude `chore` in the PR title. Documentation-only changes are exempt.\n-->\n\nYes - new supported OPL syntax in Transform receiver.",
+          "timestamp": "2026-09-29T23:26:14Z",
+          "tree_id": "040654c78e6ac744bf84f997deadf522254a8b01",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/f5b006cf677c3c08b2c38535775787f833e1c25d"
+        },
+        "date": 1790727973694,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 85,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.79,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.22,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.73,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.98,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.76,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 72.15,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.89,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.54,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.1,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 117.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 104.6,
             "unit": "MB"
           }
         ]
