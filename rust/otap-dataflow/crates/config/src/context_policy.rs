@@ -177,9 +177,9 @@ enum ContextEntryPartKind {
 }
 
 impl ContextEntryPart {
-    /// Returns the exact source reference of a member or condition.
+    /// Returns the reference of a member or condition.
     #[must_use]
-    pub fn source(&self) -> &ContextEntryRef {
+    pub fn reference(&self) -> &ContextEntryRef {
         match self {
             Self::TransportHeader { name, .. }
             | Self::AuthorizedIdentity { name, .. }

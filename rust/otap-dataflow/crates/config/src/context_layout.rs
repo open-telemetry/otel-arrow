@@ -1,11 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Deterministic, configuration-only context layout compilation.
-//!
-//! Runtime construction and hashing remain separate: the compiler resolves
-//! source provenance and ordered presence requirements without changing the
-//! current request-context storage or activation of unused declarations.
+//! Context layout support.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -13,69 +9,76 @@ use crate::context::{ContextEntryName, ContextEntryRef};
 use crate::context_policy::{ContextEntryDeclaration, ContextEntryPart, ContextScope};
 use crate::error::Error;
 
-fn invalid(message: impl Into<String>) -> Error {
-    Error::InvalidUserConfig {
-        error: message.into(),
-    }
+/// A layout contains a sorted arrangement of fields and entries with
+/// deterministic mapping to Field and Entry layouts. All fields are sorted.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ContextLayout {
+    /// fields are the primitive elements from each domain.
+    fields: Box<[ContextFieldLayout]>,
+    /// entries are the composites from policies::context::entries
+    entries: Box<[ContextEntryLayout]>,
+    /// by_name covers the namespace of both fields
+    by_name: BTreeMap<ContextEntryName, ContextEntryId>,
 }
 
-/// Trusted provenance and physical storage domain of a primitive field.
+/// Context domains are separate areas of configuration and authority.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
-pub enum ContextSource {
+pub enum ContextDomain {
     /// Untrusted transport metadata.
     TransportHeader,
     /// Verified authorization claim.
     AuthorizedIdentity,
 }
 
-/// Name and provenance assigned by a capture policy or component producer.
+/// A primitive field is a single named element.
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
-pub struct ContextPrimitive {
-    /// Exact configured stored name.
+pub struct ContextFieldLayout {
+    /// Storage domain.
+    pub domain: ContextDomain,
+    /// Stored name.
     pub name: ContextEntryName,
-    /// Physical storage domain.
-    pub source: ContextSource,
 }
 
-/// Dense primitive identity within one compiled pipeline layout.
+/// Corresponds with the position of a field in the layout `fields`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct ContextFieldId(usize);
 
 impl ContextFieldId {
-    /// Returns the index into the layout's primitive fields.
+    /// Returns the index into `fields`.
     #[must_use]
     pub const fn index(self) -> usize {
         self.0
     }
 }
 
-/// Dense entry identity within one compiled pipeline layout.
+/// Corresponds with the position of an entry in the layout `fields`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct ContextEntryId(usize);
 
 impl ContextEntryId {
-    /// Returns the index into the layout's entries.
+    /// Returns the index into `entries`.
     #[must_use]
     pub const fn index(self) -> usize {
         self.0
     }
 }
 
-/// A grouping member and its resolved primitive.
+/// Member of a composite entry.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ContextMember {
-    /// Output member name (after applying `store_as`).
+    /// Name is this member's store_as, falls back to the field's
+    /// primitive name.
     pub name: ContextEntryName,
-    /// Referenced primitive field.
+    /// Primitive field
     pub field: ContextFieldId,
 }
 
-/// One exact condition controlling atomic entry presence.
+/// One conditional element
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub struct ContextCondition {
-    /// Referenced transport-header field.
+    /// Condition field
     pub field: ContextFieldId,
-    /// Required exact byte value.
+    /// Condition value.
     pub value: Box<[u8]>,
 }
 
@@ -92,14 +95,6 @@ pub struct ContextEntryLayout {
     pub conditions: Box<[ContextCondition]>,
 }
 
-/// Immutable, deterministic source and grouping layout for one pipeline.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ContextLayout {
-    fields: Box<[ContextPrimitive]>,
-    entries: Box<[ContextEntryLayout]>,
-    by_name: BTreeMap<ContextEntryName, ContextEntryId>,
-}
-
 /// A compiled entry or qualified member reference.
 ///
 /// `presence` always identifies the parent entry. Reading one member never
@@ -112,16 +107,19 @@ pub struct ContextBinding {
     pub fields: Box<[ContextFieldId]>,
 }
 
+fn invalid(message: impl Into<String>) -> Error {
+    Error::InvalidUserConfig {
+        error: message.into(),
+    }
+}
+
 impl ContextLayout {
-    /// Compile one pipeline's visible definitions and known primitive sources.
-    ///
-    /// Callers supply source names from the *effective* capture/producer
-    /// declarations; unused context policies need not be compiled yet.
+    /// Compile one pipeline's fields and entry declarations.
     pub fn compile(
-        sources: impl IntoIterator<Item = ContextPrimitive>,
+        fields: impl IntoIterator<Item = ContextFieldLayout>,
         declarations: &[ContextEntryDeclaration],
     ) -> Result<Self, Error> {
-        let fields: Box<[_]> = sources
+        let fields: Box<[_]> = fields
             .into_iter()
             .collect::<BTreeSet<_>>()
             .into_iter()
@@ -131,10 +129,10 @@ impl ContextLayout {
         let mut primitive_sources = BTreeMap::new();
         for (index, field) in fields.iter().enumerate() {
             let name = field.name.clone();
-            if let Some(existing) = primitive_sources.insert(name.clone(), field.source) {
+            if let Some(existing) = primitive_sources.insert(name.clone(), field.domain) {
                 return Err(invalid(format!(
                     "context source `{name}` is produced as both {existing:?} and {:?}",
-                    field.source
+                    field.domain
                 )));
             }
             _ = by_name.insert(name.clone(), ContextEntryId(index));
@@ -174,18 +172,18 @@ impl ContextLayout {
             let mut members = Vec::with_capacity(declaration.definition.0.len());
             let mut conditions = Vec::new();
             for part in &declaration.definition.0 {
-                let (source, condition_value) = match part {
+                let (domain, condition_value) = match part {
                     ContextEntryPart::TransportHeader { .. } => {
-                        (ContextSource::TransportHeader, None)
+                        (ContextDomain::TransportHeader, None)
                     }
                     ContextEntryPart::AuthorizedIdentity { .. } => {
-                        (ContextSource::AuthorizedIdentity, None)
+                        (ContextDomain::AuthorizedIdentity, None)
                     }
                     ContextEntryPart::TransportHeaderMatch { value, .. } => {
-                        (ContextSource::TransportHeader, Some(value))
+                        (ContextDomain::TransportHeader, Some(value))
                     }
                 };
-                let reference = part.source();
+                let reference = part.reference();
                 if reference.scope().is_some() {
                     return Err(invalid(format!(
                         "context entry `{}` cannot use nested reference `{reference}`",
@@ -193,15 +191,15 @@ impl ContextLayout {
                     )));
                 }
                 let field = fields
-                    .binary_search(&ContextPrimitive {
+                    .binary_search(&ContextFieldLayout {
                         name: reference.name().clone(),
-                        source,
+                        domain,
                     })
                     .map(ContextFieldId)
                     .map_err(|_| {
                         invalid(format!(
-                            "context entry `{}` requires unavailable {:?} source `{reference}`",
-                            declaration.name, source
+                            "context entry `{}` requires unavailable {:?} domain `{reference}`",
+                            declaration.name, domain
                         ))
                     })?;
                 if let Some(value) = condition_value {
@@ -233,7 +231,7 @@ impl ContextLayout {
                     .any(|member: &ContextMember| member.field == field)
                 {
                     return Err(invalid(format!(
-                        "context entry `{}` repeats source `{reference}`",
+                        "context entry `{}` repeats `{reference}`",
                         declaration.name
                     )));
                 }
@@ -264,7 +262,7 @@ impl ContextLayout {
 
     /// Primitive fields in stable source-and-name order.
     #[must_use]
-    pub fn fields(&self) -> &[ContextPrimitive] {
+    pub fn fields(&self) -> &[ContextFieldLayout] {
         &self.fields
     }
 
@@ -327,11 +325,11 @@ mod tests {
         vec![
             ContextPrimitive {
                 name: name("workspace"),
-                source: ContextSource::TransportHeader,
+                source: ContextDomain::TransportHeader,
             },
             ContextPrimitive {
                 name: name("customer"),
-                source: ContextSource::AuthorizedIdentity,
+                source: ContextDomain::AuthorizedIdentity,
             },
         ]
     }
@@ -369,11 +367,11 @@ mod tests {
         assert_eq!(&whole.fields[..1], &member.fields[..]);
         assert_eq!(
             layout.fields()[whole.fields[0].index()].source,
-            ContextSource::AuthorizedIdentity
+            ContextDomain::AuthorizedIdentity
         );
         assert_eq!(
             layout.fields()[whole.fields[1].index()].source,
-            ContextSource::TransportHeader
+            ContextDomain::TransportHeader
         );
     }
 
@@ -410,7 +408,7 @@ mod tests {
     fn provenance_mismatch_is_rejected() {
         let only_header = [ContextPrimitive {
             name: name("customer"),
-            source: ContextSource::TransportHeader,
+            source: ContextDomain::TransportHeader,
         }];
         assert!(ContextLayout::compile(only_header, &[entry()]).is_err());
     }
@@ -452,11 +450,11 @@ mod tests {
         let fields = [
             ContextPrimitive {
                 name: name("customer"),
-                source: ContextSource::AuthorizedIdentity,
+                source: ContextDomain::AuthorizedIdentity,
             },
             ContextPrimitive {
                 name: name("customer"),
-                source: ContextSource::TransportHeader,
+                source: ContextDomain::TransportHeader,
             },
         ];
         let error = ContextLayout::compile(fields, &[]).expect_err("collision must fail");
@@ -474,11 +472,11 @@ mod tests {
         fields.extend([
             ContextPrimitive {
                 name: name("environment"),
-                source: ContextSource::TransportHeader,
+                source: ContextDomain::TransportHeader,
             },
             ContextPrimitive {
                 name: name("region"),
-                source: ContextSource::TransportHeader,
+                source: ContextDomain::TransportHeader,
             },
         ]);
         let mut conditional = entry();

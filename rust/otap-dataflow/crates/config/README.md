@@ -354,11 +354,6 @@ policies:
 ```
 
 > [!NOTE]
-> Composite context entries are atomic: they are present only when every
-> value-bearing member exists and every `transport_header_match` condition
-> succeeds. Qualified member references retain the parent composite's presence
-> requirement.
->
 > Named transport-header propagation can refer to a composite member with
 > `product_user:othername_id`. The selected member must exist, and every
 > `transport_header_match` condition must have an exact byte-value match.
