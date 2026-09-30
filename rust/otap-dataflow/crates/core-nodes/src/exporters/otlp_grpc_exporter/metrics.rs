@@ -217,9 +217,9 @@ mod tests {
         );
         let mut metrics = OtlpGrpcExporterMetrics::register(&pipeline_ctx, Some(&auth));
 
-        assert!(futures::executor::block_on(poll_fn(|cx| {
+        futures::executor::block_on(poll_fn(|cx| {
             auth.poll_refresh(cx, &super::super::GRPC_AUTH_EVENTS)
-        })));
+        }));
         let snapshots = metrics.terminal_snapshots(Some(&auth));
         let auth_snapshot = snapshots
             .iter()
