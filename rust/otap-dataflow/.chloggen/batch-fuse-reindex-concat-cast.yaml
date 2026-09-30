@@ -1,3 +1,4 @@
+
 # Use this changelog template to create an entry for release notes.
 
 # One of 'breaking', 'deprecation', 'new_component', 'enhancement', 'bug_fix'
@@ -8,12 +9,10 @@ change_type: enhancement
 component: pdata
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
-note: |
-  OTAP timestamp columns are now required to be in nanoseconds with a time zone
-  set to either 'UTC', '+00:00', or no timezone. In the future no timezone will also be rejected.
+note: Optimize OTAP batch concatenation by fusing reindexing, casting, and concatenation together.
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
-issues: [2369]
+issues: [4170]
 
 # (Optional) One or more lines of additional information to render under the primary note.
 # These lines will be padded with 2 spaces and then inserted directly into the document.
@@ -21,6 +20,6 @@ issues: [2369]
 # section with the specific action consumers must take. Keep notes to 200
 # characters and subtext to 300 characters.
 subtext: |
-  Timestamps remain nanoseconds since the Unix epoch; only the time zone
-  annotation changes. Received data that omits the time zone is still accepted
-  and read as UTC, so upgrading senders and receivers in any order is safe.
+  Speeds up OTAP batch concatenation by up to 78% by fusing reindexing, casting, and
+  concatenation together which allows for constructing the final column data for a
+  batch in place and in one pass.
