@@ -63,6 +63,9 @@ pub enum Error {
     #[error("Unable to handle empty metric type")]
     EmptyMetricType,
 
+    #[error("Duplicate id: {id}")]
+    DuplicateId { id: u16 },
+
     #[error("Cannot recognize attribute value type")]
     UnrecognizedAttributeValueType {
         #[from]

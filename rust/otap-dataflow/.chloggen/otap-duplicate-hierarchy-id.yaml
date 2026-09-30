@@ -1,0 +1,5 @@
+change_type: bug_fix
+component: otap
+note: Reject OTAP metrics, logs, and traces batches with a duplicate hierarchy id, which previously duplicated one parent's children onto another and dropped the displaced parent's own children
+issues: [4196]
+subtext:

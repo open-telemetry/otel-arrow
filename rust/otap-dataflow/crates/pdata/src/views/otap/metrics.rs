@@ -25,7 +25,7 @@ use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use crate::schema::{SpanId, TraceId};
 use crate::views::otap::common::{
     Otap32AttributeIter, OtapAttributeIter, OtapAttributeView, RowGroup, RowGroupIter,
-    build_attribute_index, group_by_resource_id, group_by_scope_id,
+    build_attribute_index, group_by_resource_id, group_by_scope_id, reject_duplicate_ids,
 };
 use otel_arrow_dfe_pdata_views::views::common::{InstrumentationScopeView, Str};
 use otel_arrow_dfe_pdata_views::views::metrics::{
@@ -141,6 +141,11 @@ impl<'a> TryFrom<&'a OtapArrowRecords> for OtapMetricsView<'a> {
         let metrics_arrays = metrics_batch.map(MetricsArrays::try_from).transpose()?;
         let resource_columns = metrics_batch.map(ResourceArrays::try_from).transpose()?;
         let scope_columns = metrics_batch.map(ScopeArrays::try_from).transpose()?;
+
+        // Metric ids must be unique so each data point maps to exactly one metric.
+        if let Some(arrays) = metrics_arrays.as_ref() {
+            reject_duplicate_ids(arrays.id)?;
+        }
 
         let resource_attrs_batch = records.get(ArrowPayloadType::ResourceAttrs);
         let scope_attrs_batch = records.get(ArrowPayloadType::ScopeAttrs);
@@ -1958,6 +1963,13 @@ impl<'a> ExemplarView for OtapExemplarView<'a> {
 mod tests {
     use super::*;
 
+    use crate::encode::encode_metrics_otap_batch;
+    use crate::proto::opentelemetry::metrics::v1::{
+        Gauge, Metric, MetricsData, NumberDataPoint, ResourceMetrics, ScopeMetrics, metric,
+        number_data_point::Value as NumberValue,
+    };
+    use crate::proto::opentelemetry::resource::v1::Resource;
+
     #[test]
     fn test_missing_root_metrics_batch_yields_empty_view() {
         // Per the OTAP spec, a missing root payload is semantically equivalent to
@@ -1991,5 +2003,57 @@ mod tests {
         assert_eq!(resource_count, 0, "Expected 0 resources");
         assert_eq!(scope_count, 0, "Expected 0 scopes");
         assert_eq!(metric_count, 0, "Expected 0 metrics");
+    }
+
+    fn gauge_metric(name: &str, value: f64) -> Metric {
+        Metric {
+            name: name.to_string(),
+            data: Some(metric::Data::Gauge(Gauge {
+                data_points: vec![NumberDataPoint {
+                    time_unix_nano: 1_700_000_000_000_000_000,
+                    value: Some(NumberValue::AsDouble(value)),
+                    ..Default::default()
+                }],
+            })),
+            ..Default::default()
+        }
+    }
+
+    fn two_gauge_metrics() -> MetricsData {
+        MetricsData {
+            resource_metrics: vec![ResourceMetrics {
+                resource: Some(Resource::default()),
+                scope_metrics: vec![ScopeMetrics {
+                    metrics: vec![
+                        gauge_metric("metric-0", 100.0),
+                        gauge_metric("metric-1", 5.0),
+                    ],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        }
+    }
+
+    #[test]
+    fn test_duplicate_metric_id_is_rejected() {
+        use crate::views::otap::common::duplicate_id_column;
+
+        let mut otap_batch =
+            encode_metrics_otap_batch(&two_gauge_metrics()).expect("encode metrics");
+        assert!(OtapMetricsView::try_from(&otap_batch).is_ok());
+
+        let metrics = otap_batch
+            .get(ArrowPayloadType::UnivariateMetrics)
+            .expect("metrics batch present");
+        let duplicated = duplicate_id_column(metrics);
+        otap_batch
+            .set(ArrowPayloadType::UnivariateMetrics, duplicated)
+            .expect("set metrics batch");
+
+        assert!(matches!(
+            OtapMetricsView::try_from(&otap_batch),
+            Err(Error::DuplicateId { .. })
+        ));
     }
 }

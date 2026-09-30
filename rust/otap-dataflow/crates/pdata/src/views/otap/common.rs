@@ -12,10 +12,47 @@ use std::ops::Range;
 use arrow::array::{Array, RecordBatch, StructArray, UInt16Array};
 
 use crate::arrays::{MaybeDictArrayAccessor, NullableArrayAccessor, StringArrayAccessor};
+use crate::error::Error;
 use crate::otlp::attributes::{Attribute16Arrays, Attribute32Arrays, AttributeValueType};
 use crate::otlp::common::AnyValueArrays;
 use crate::schema::consts;
 use otel_arrow_dfe_pdata_views::views::common::{AnyValueView, AttributeView, Str, ValueType};
+
+/// Errors on the first repeated value in a `u16` id column. Children reference their parent by this
+/// id, so a duplicate would attribute one parent's children to another and orphan the other's.
+pub(crate) fn reject_duplicate_ids(id: &UInt16Array) -> Result<(), Error> {
+    let mut seen = vec![0u64; (u16::MAX as usize + 1) / 64];
+    for i in 0..id.len() {
+        if id.is_valid(i) {
+            let value = id.value(i);
+            let word = value as usize >> 6;
+            let mask = 1u64 << (value & 63);
+            if seen[word] & mask != 0 {
+                return Err(Error::DuplicateId { id: value });
+            }
+            seen[word] |= mask;
+        }
+    }
+    Ok(())
+}
+
+/// Test helper: rebuilds `rb` with the second row's `id` set to the first's, forging a duplicate.
+#[cfg(test)]
+pub(crate) fn duplicate_id_column(rb: &RecordBatch) -> RecordBatch {
+    let idx = rb.schema().index_of(consts::ID).expect("id column present");
+    let ids = rb
+        .column(idx)
+        .as_any()
+        .downcast_ref::<UInt16Array>()
+        .expect("id column is UInt16");
+    let first = ids.value(0);
+    let rewritten: Vec<u16> = (0..ids.len())
+        .map(|i| if i == 1 { first } else { ids.value(i) })
+        .collect();
+    let mut columns = rb.columns().to_vec();
+    columns[idx] = std::sync::Arc::new(UInt16Array::from(rewritten));
+    RecordBatch::try_new(rb.schema(), columns).expect("rebuild record batch")
+}
 
 // ===== RowGroup =====
 

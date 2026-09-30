@@ -23,7 +23,7 @@ use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use crate::schema::{SpanId, TraceId};
 use crate::views::otap::common::{
     OtapAnyValueView, OtapAttributeIter, OtapAttributeView, RowGroup, RowGroupIter,
-    build_attribute_index, group_by_resource_id, group_by_scope_id,
+    build_attribute_index, group_by_resource_id, group_by_scope_id, reject_duplicate_ids,
 };
 use otel_arrow_dfe_pdata_views::views::common::{InstrumentationScopeView, Str};
 use otel_arrow_dfe_pdata_views::views::logs::{
@@ -99,6 +99,10 @@ impl<'a> OtapLogsView<'a> {
         let columns = logs_batch.map(LogsArrays::try_from).transpose()?;
         let resource_columns = logs_batch.map(ResourceArrays::try_from).transpose()?;
         let scope_columns = logs_batch.map(ScopeArrays::try_from).transpose()?;
+
+        if let Some(id) = columns.as_ref().and_then(|c| c.id) {
+            reject_duplicate_ids(id)?;
+        }
 
         // 2. Pre-compute resource/scope grouping. When the root batch is missing
         //    these stay empty, so iteration yields 0 rows.
@@ -1618,6 +1622,15 @@ mod tests {
     /// Helper to create a logs batch WITHOUT ID column (for when there are no attributes)
     fn create_test_logs_batch_no_id() -> RecordBatch {
         create_test_logs_batch_impl(false)
+    }
+
+    #[test]
+    fn test_duplicate_log_id_is_rejected() {
+        use crate::views::otap::common::duplicate_id_column;
+
+        let logs = duplicate_id_column(&create_test_logs_batch());
+        let result = OtapLogsView::new(Some(&logs), None, None, None);
+        assert!(matches!(result, Err(Error::DuplicateId { .. })));
     }
 
     #[test]

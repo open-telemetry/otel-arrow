@@ -41,6 +41,7 @@ use otel_arrow_dfe_pdata_views::views::trace::{
 use crate::views::otap::common::{
     Otap32AttributeIter, OtapAttributeIter, OtapAttributeView, RowGroup, RowGroupIter,
     build_attribute_index, build_attribute_index_u32, group_by_resource_id, group_by_scope_id,
+    reject_duplicate_ids,
 };
 
 // ===== Main View =====
@@ -113,6 +114,10 @@ impl<'a> OtapTracesView<'a> {
         let columns = spans_batch.map(SpansArrays::try_from).transpose()?;
         let resource_columns = spans_batch.map(ResourceArrays::try_from).transpose()?;
         let scope_columns = spans_batch.map(ScopeArrays::try_from).transpose()?;
+
+        if let Some(id) = columns.as_ref().and_then(|c| c.id) {
+            reject_duplicate_ids(id)?;
+        }
 
         // 2. Pre-compute resource/scope grouping. When the root batch is missing
         //    these stay empty, so iteration yields 0 rows.
@@ -1238,6 +1243,15 @@ mod tests {
             }
         }
         assert_eq!(span_count, 3, "all spans ingest without an id column");
+    }
+
+    #[test]
+    fn test_duplicate_span_id_is_rejected() {
+        use crate::views::otap::common::duplicate_id_column;
+
+        let spans = duplicate_id_column(&create_test_spans_batch());
+        let result = OtapTracesView::new(Some(&spans), None, None, None, None, None, None, None);
+        assert!(matches!(result, Err(Error::DuplicateId { .. })));
     }
 
     #[test]
