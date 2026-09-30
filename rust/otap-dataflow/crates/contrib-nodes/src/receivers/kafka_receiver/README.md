@@ -51,7 +51,7 @@ config:
 | `auto_offset_reset` | string | `latest` | Where to start consuming when no committed offset exists. |
 | `commit` | object | `{mode: manual}` | Commit configuration (see [Commit Configuration](#commit-configuration)). |
 | `transient_nack` | object | Manual: `{mode: replay, initial_backoff_ms: 1000, max_backoff_ms: 30000}`; auto: inactive | Policy for non-permanent downstream NACKs (see [Transient NACK Configuration](#transient-nack-configuration)). |
-| `dlq` | object | *none* (disabled) | Optional dead-letter-queue configuration. Presence enables it; manual commit only (see [Dead Letter Queue](#dead-letter-queue)). |
+| `dlq` | object | *none* (disabled) | Optional dead-letter-queue configuration. Presence enables it; manual commit only (see [Dead Letter Queue](#dead-letter-queue-experimental)). |
 | `lag_refresh_interval_ms` | integer | *none* | Interval between consumer-lag refreshes, in milliseconds. Enables `receiver.kafka.consumer.group.lag` (consumer-group lag against broker-committed offsets; see [Metric Sets](#metric-sets)). Manual commit mode only; runs off the receive loop so it never blocks processing. Off by default; recommended `60000` (60s), higher under large partition fan-out; must be > 0 when set. |
 | `session_timeout_ms` | integer | `10000` | Session timeout in milliseconds. Must be > 0. |
 | `heartbeat_interval_ms` | integer | `3000` | Heartbeat interval in milliseconds. Must be > 0 and strictly less than `session_timeout_ms`. |
@@ -191,7 +191,7 @@ leaves the policy inactive. Explicit `mode: replay` requires
 broker-managed commits cannot honor downstream feedback. Retries are unlimited
 and use exponential backoff capped by `max_backoff_ms`. There is no
 retry-exhaustion action. To durably capture records the pipeline cannot handle,
-enable the [Dead Letter Queue](#dead-letter-queue).
+enable the [Dead Letter Queue](#dead-letter-queue-experimental).
 
 ```yaml
 config:
@@ -210,7 +210,7 @@ Manual-mode completion behavior is:
 | Completion | Offset behavior |
 | --- | --- |
 | ACK | Marks the record complete and advances the partition watermark when contiguous progress permits. |
-| Permanent NACK | Remains terminal and marks the record complete. When the [DLQ](#dead-letter-queue) captures `permanent_nack`, the original bytes are dead-lettered first and the offset advances only after delivery. |
+| Permanent NACK | Remains terminal and marks the record complete. When the [DLQ](#dead-letter-queue-experimental) captures `permanent_nack`, the original bytes are dead-lettered first and the offset advances only after delivery. |
 | Non-permanent NACK with `mode: commit_and_skip` | Explicitly opts out of recovery, marks the record complete, and permits the offset to advance. |
 | Non-permanent NACK with `mode: replay` | Leaves the record unresolved, pauses only its partition, waits for backoff, seeks to the earliest unresolved offset, and resumes. |
 | Feedback from an obsolete assignment or replay generation | Ignored without changing offsets. |
@@ -263,7 +263,7 @@ Kafka receiver -> internal processors -> retry processor -> exporter
 See [At-Least-Once with the Retry Processor](#at-least-once-with-the-retry-processor)
 for a complete pipeline example.
 
-### Dead Letter Queue
+### Dead Letter Queue (Experimental)
 
 The optional `dlq` block forwards messages the pipeline cannot handle to a
 user-configured Kafka topic instead of silently dropping them, giving operators
@@ -306,6 +306,13 @@ wedged. Outstanding deliveries are bounded at 5 in flight.
 Because delivery-then-commit is at-least-once, a crash between a DLQ produce and
 the source-offset commit re-delivers and re-dead-letters the message on restart;
 DLQ consumers must tolerate duplicates.
+
+To prevent a routing loop, when the DLQ reuses the source cluster (its brokers
+overlap the source consumer's), config validation rejects any resolved DLQ topic
+(global or per-signal) that matches a configured ingest topic or include regex,
+so the receiver can never consume and re-dead-letter its own output. Excludes are
+ignored in this check because librdkafka still consumes an excluded topic before
+routing drops it. When the DLQ targets a disjoint cluster the check is skipped.
 
 #### Fields
 
@@ -467,7 +474,7 @@ the Go Kafka receiver:
 
 - **Permanent-error policy.** This receiver commits a permanent NACK after
   optionally dead-lettering it. Enable the
-  [Dead Letter Queue](#dead-letter-queue) with `permanent_nack` capture to
+  [Dead Letter Queue](#dead-letter-queue-experimental) with `permanent_nack` capture to
   forward the original bytes to a DLQ topic before the offset advances; there is
   no equivalent to leaving a permanent error unmarked.
 - **Transient-NACK opt-out.** Manual mode replays non-permanent NACKs by
@@ -1206,7 +1213,7 @@ an empty assignment resets it to zero.
   rewind point and blocks the affected partition until progress resumes.
 - Receiver replay retries indefinitely with a capped exponential backoff. It
   has no jitter, retry limit, operator-resume command, or built-in retry topic.
-  The optional [Dead Letter Queue](#dead-letter-queue) forwards undecodable,
+  The optional [Dead Letter Queue](#dead-letter-queue-experimental) forwards undecodable,
   excluded-topic, and permanently-nacked records to a DLQ topic; a permanent NACK
   commits the record after any configured dead-letter delivery.
 - See

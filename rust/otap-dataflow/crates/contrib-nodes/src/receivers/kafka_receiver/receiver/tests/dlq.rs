@@ -1031,9 +1031,7 @@ async fn excluded_topic_is_dead_lettered_byte_identical() {
             .topic_with(DLQ, 1, 1),
         |cluster| async move {
             let producer = cluster.producer().build();
-            let req = create_traces_with_spans();
-            let mut bytes = vec![];
-            req.encode(&mut bytes).expect("encode");
+            let bytes = encoded_trace_fixture();
             // A well-formed record on the excluded topic: it is subscribed (the
             // traces include regex matches) but routes to no signal.
             producer
@@ -1228,9 +1226,7 @@ async fn excluded_topic_dead_letter_routes_to_matching_signal_topic() {
             .topic_with(DLQ_TRACES, 1, 1),
         |cluster| async move {
             let producer = cluster.producer().build();
-            let req = create_traces_with_spans();
-            let mut bytes = vec![];
-            req.encode(&mut bytes).expect("encode");
+            let bytes = encoded_trace_fixture();
             producer
                 .send_full(SendRecord::new(EXCLUDED, &bytes).key(b"k"))
                 .await

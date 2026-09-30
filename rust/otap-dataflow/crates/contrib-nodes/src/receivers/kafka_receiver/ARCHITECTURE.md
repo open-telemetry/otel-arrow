@@ -201,7 +201,7 @@ Highlights:
   `decode` (poison, including empty payloads) or `excluded_topic`, the raw bytes
   are routed to the DLQ first
   and the offset advance is deferred until delivery (see
-  [Dead-letter queue](#dead-letter-queue)).
+  [Dead-letter queue](#dead-letter-queue-experimental)).
 - The compact topic-id registry can be exhausted only after 2^32 distinct topic
   names; such a record is rejected (`topic-id exhausted`) and left un-tracked so
   it is re-delivered on restart rather than corrupting Ack/Nack routing.
@@ -348,12 +348,19 @@ Highlights:
 
 ---
 
-## Dead-letter queue
+## Dead-letter queue (Experimental)
 
 Optional and manual-commit only. When enabled, messages that cannot be handled
 are forwarded to a Kafka topic instead of being dropped. The DLQ is a single
 module (`receiver/dlq`) that owns a producer, an optional dedicated re-read
 consumer, and a bounded in-flight set.
+
+Loop prevention is enforced at config validation: when the DLQ reuses the source
+cluster (overlapping brokers), any resolved DLQ topic that matches a configured
+ingest topic or include regex is rejected so the receiver cannot consume its own
+output. The check mirrors the raw Kafka subscription and ignores `exclude_topics`
+(librdkafka still consumes an excluded topic before routing drops it); it is
+skipped when the DLQ targets a disjoint cluster.
 
 The dataflow: two entry points feed byte recovery, recovery feeds the bounded
 `DlqManager`, and every terminal outcome advances the source offset (produced or
