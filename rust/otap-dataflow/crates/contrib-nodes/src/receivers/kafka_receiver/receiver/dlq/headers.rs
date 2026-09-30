@@ -12,7 +12,8 @@ use rdkafka::message::{Header, Headers, OwnedHeaders};
 
 /// Header key: the error message that caused the dead-letter.
 pub(crate) const DLQ_ERROR: &str = "dlq.error";
-/// Header key: the failure category (`decode`, `unknown_topic`, `permanent_nack`).
+/// Header key: the failure category (`decode`, `empty_payload`, `excluded_topic`,
+/// `permanent_nack`).
 pub(crate) const DLQ_REASON: &str = "dlq.reason";
 /// Header key: the original source topic.
 pub(crate) const DLQ_SOURCE_TOPIC: &str = "dlq.source.topic";

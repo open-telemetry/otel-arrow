@@ -183,9 +183,12 @@ pub(crate) const DLQ_OP_TIMEOUT_MS: u64 = 10_000;
 #[serde(rename_all = "snake_case")]
 pub enum DlqCapture {
     /// The payload could not be decoded using the configured signal encoding.
+    /// This also covers empty (null-value) payloads, which are reported with the
+    /// distinct `empty_payload` reason but share this capture toggle.
     Decode,
-    /// The topic did not map to a configured signal.
-    UnknownTopic,
+    /// The topic was delivered by a regex subscription but removed by
+    /// `exclude_topics`, so it routed to no signal.
+    ExcludedTopic,
     /// The message was permanently rejected (permanent NACK) downstream.
     PermanentNack,
 }
@@ -194,7 +197,7 @@ pub enum DlqCapture {
 fn default_dlq_capture() -> Vec<DlqCapture> {
     vec![
         DlqCapture::Decode,
-        DlqCapture::UnknownTopic,
+        DlqCapture::ExcludedTopic,
         DlqCapture::PermanentNack,
     ]
 }
@@ -263,7 +266,7 @@ pub(crate) struct ResolvedDlqConfig {
     pub(crate) metrics_topic: Option<String>,
     pub(crate) logs_topic: Option<String>,
     pub(crate) capture_decode: bool,
-    pub(crate) capture_unknown_topic: bool,
+    pub(crate) capture_excluded_topic: bool,
     pub(crate) capture_permanent_nack: bool,
     pub(crate) connection: DlqConnection,
 }
@@ -979,13 +982,13 @@ fn resolve_dlq(
     }
 
     let capture_decode = dlq.capture.contains(&DlqCapture::Decode);
-    let capture_unknown_topic = dlq.capture.contains(&DlqCapture::UnknownTopic);
+    let capture_excluded_topic = dlq.capture.contains(&DlqCapture::ExcludedTopic);
     let capture_permanent_nack = dlq.capture.contains(&DlqCapture::PermanentNack);
 
     // Resolve a DLQ topic per signal: a per-signal override, else the global
     // topic. Only signals that actually ingest need a DLQ topic; the
-    // `unknown_topic` category is not signal-scoped, so it uses whichever
-    // topic resolves (validated below to be non-empty when captured).
+    // `excluded_topic` category resolves its matching (excluding) signal at
+    // runtime, so it routes to that signal's topic.
     let per_signal = dlq.per_signal.as_ref();
     let resolve = |override_topic: Option<&String>| -> Option<String> {
         override_topic
@@ -1096,7 +1099,7 @@ fn resolve_dlq(
         metrics_topic,
         logs_topic,
         capture_decode,
-        capture_unknown_topic,
+        capture_excluded_topic,
         capture_permanent_nack,
         connection,
     })

@@ -52,8 +52,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub(crate) enum DlqReason {
     /// The payload could not be decoded.
     Decode,
-    /// The topic did not map to a configured signal.
-    UnknownTopic,
+    /// The payload was empty (a null-value Kafka record) and could not be
+    /// converted. Reported distinctly from `Decode` but gated by the same
+    /// `decode` capture category.
+    EmptyPayload,
+    /// The topic was delivered by a regex subscription but removed by
+    /// `exclude_topics`, so it routed to no signal.
+    ExcludedTopic,
     /// The message was permanently rejected downstream.
     PermanentNack,
 }
@@ -63,7 +68,8 @@ impl DlqReason {
     fn as_str(self) -> &'static str {
         match self {
             DlqReason::Decode => "decode",
-            DlqReason::UnknownTopic => "unknown_topic",
+            DlqReason::EmptyPayload => "empty_payload",
+            DlqReason::ExcludedTopic => "excluded_topic",
             DlqReason::PermanentNack => "permanent_nack",
         }
     }
@@ -174,7 +180,7 @@ impl DlqCompletion {
 
 /// How a job's payload bytes are obtained.
 enum JobKind {
-    /// Bytes already in hand (decode / unknown_topic path).
+    /// Bytes already in hand (decode / empty-payload / excluded-topic path).
     Inline {
         payload: Vec<u8>,
         original_headers: Option<OwnedHeaders>,
@@ -253,8 +259,10 @@ impl DlqManager {
     /// Whether the given failure category should be dead-lettered.
     pub(crate) fn captures(&self, reason: DlqReason) -> bool {
         match reason {
-            DlqReason::Decode => self.config.capture_decode,
-            DlqReason::UnknownTopic => self.config.capture_unknown_topic,
+            // Empty-payload dead-letters are gated by the same `decode` capture:
+            // they are a decode-class failure, distinguished only by their label.
+            DlqReason::Decode | DlqReason::EmptyPayload => self.config.capture_decode,
+            DlqReason::ExcludedTopic => self.config.capture_excluded_topic,
             DlqReason::PermanentNack => self.config.capture_permanent_nack,
         }
     }
@@ -263,15 +271,18 @@ impl DlqManager {
     /// no configured DLQ topic (should not happen for captured signals given
     /// validation, but callers treat `None` as an immediate loss).
     fn topic_for(&self, signal: Option<SignalType>) -> Option<String> {
-        // Prefer the signal-specific topic; fall back to any configured topic
-        // for signal-less categories (e.g. unknown_topic).
+        // Prefer the signal-specific topic. Every dead-letterable category now
+        // resolves a signal (excluded-topic routes to its matching signal), so
+        // the signal-less arm is only a defensive fallback to any configured
+        // topic and should not be reached in normal operation.
         signal
             .and_then(|sig| self.config.topic_for(sig))
             .or_else(|| self.config.all_topics().first().copied())
             .map(str::to_string)
     }
 
-    /// Submit a decode / unknown_topic failure whose bytes are already in hand.
+    /// Submit a decode / empty-payload / excluded-topic failure whose bytes are
+    /// already in hand.
     ///
     /// Returns `Some(DlqCompletion)` immediately when the message cannot be
     /// admitted (no topic resolved, or the in-flight bound is reached); in that

@@ -25,9 +25,10 @@ pub enum KafkaReceiverError {
     #[error("empty kafka payload: {0}")]
     EmptyPayloadDecode(#[source] EngineError),
 
-    /// Topic didn't match any configured signal.
-    #[error("unknown kafka topic: {0}")]
-    UnknownTopicDecode(#[source] EngineError),
+    /// Topic was delivered by a regex subscription but removed by `exclude_topics`,
+    /// so it routed to no configured signal.
+    #[error("excluded kafka topic: {0}")]
+    ExcludedTopicDecode(#[source] EngineError),
 
     /// Decode/unmarshal failed for a routed signal (traces, metrics, or logs).
     ///
@@ -271,7 +272,7 @@ impl KafkaReceiverError {
     pub(crate) fn inner(&self) -> Option<&EngineError> {
         match self {
             Self::EmptyPayloadDecode(e)
-            | Self::UnknownTopicDecode(e)
+            | Self::ExcludedTopicDecode(e)
             | Self::SignalDecode { source: e, .. } => Some(e),
             _ => None,
         }
@@ -296,8 +297,8 @@ mod tests {
             KafkaReceiverError::EmptyPayloadDecode(EngineError::PdataConversionError {
                 error: "empty".to_string(),
             }),
-            KafkaReceiverError::UnknownTopicDecode(EngineError::PdataConversionError {
-                error: "unknown".to_string(),
+            KafkaReceiverError::ExcludedTopicDecode(EngineError::PdataConversionError {
+                error: "excluded".to_string(),
             }),
             KafkaReceiverError::SignalDecode {
                 signal: SignalType::Traces,

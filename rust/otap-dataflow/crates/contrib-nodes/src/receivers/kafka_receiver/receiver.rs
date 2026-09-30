@@ -274,6 +274,36 @@ impl KafkaReceiver {
         }
     }
 
+    /// Returns the signal whose include pattern matched `topic`, ignoring
+    /// `exclude_topics`.
+    ///
+    /// A topic reaches the no-signal (excluded) path only when a signal's regex
+    /// include matched it but that signal's `exclude_topics` then removed it
+    /// (validation forbids `exclude_topics` without a regex include, and literal
+    /// topics always route). This resolves that owning signal so an excluded-topic
+    /// dead-letter routes to the matching signal's DLQ topic and reports the
+    /// correct `signal`. Precedence mirrors [`signal_type_for_topic`]
+    /// (traces, then metrics, then logs).
+    fn excluding_signal_for_topic(&self, topic: &str) -> Option<SignalType> {
+        if matches_any_topic(
+            self.config.traces_topics(),
+            &self.traces_topic_regexes,
+            topic,
+        ) {
+            Some(SignalType::Traces)
+        } else if matches_any_topic(
+            self.config.metrics_topics(),
+            &self.metrics_topic_regexes,
+            topic,
+        ) {
+            Some(SignalType::Metrics)
+        } else if matches_any_topic(self.config.logs_topics(), &self.logs_topic_regexes, topic) {
+            Some(SignalType::Logs)
+        } else {
+            None
+        }
+    }
+
     /// Decodes a Kafka message into [`OtapPdata`].
     ///
     /// The caller tracks offsets, including decode failures.
@@ -315,9 +345,9 @@ impl KafkaReceiver {
                 )
                 .map_err(|source| KafkaReceiverError::SignalDecode { signal, source })
             }
-            None => Err(KafkaReceiverError::UnknownTopicDecode(
+            None => Err(KafkaReceiverError::ExcludedTopicDecode(
                 EngineError::PdataConversionError {
-                    error: "Received a message from an unknown Kafka topic; unable to convert it to PData"
+                    error: "Received a message from an excluded Kafka topic (matched a regex subscription but removed by exclude_topics); unable to convert it to PData"
                         .to_string(),
                 },
             )),
@@ -905,13 +935,22 @@ impl KafkaReceiver {
                                             self.signal_type_for_topic(&topic),
                                             ReceiverRejectionErrorType::InvalidRequest,
                                             KafkaReceiverRejectionReason::EmptyPayload,
-                                            Some(DlqReason::Decode),
+                                            // Empty payloads are a decode-class
+                                            // failure but carry a distinct
+                                            // `empty_payload` DLQ reason (gated by
+                                            // the `decode` capture).
+                                            Some(DlqReason::EmptyPayload),
                                         ),
-                                        KafkaReceiverError::UnknownTopicDecode(_) => (
-                                            None,
+                                        KafkaReceiverError::ExcludedTopicDecode(_) => (
+                                            // An excluded topic always has an owning
+                                            // signal (its regex include matched
+                                            // before `exclude_topics` removed it), so
+                                            // resolve it for correct DLQ routing and
+                                            // telemetry instead of reporting unknown.
+                                            self.excluding_signal_for_topic(&topic),
                                             ReceiverRejectionErrorType::InvalidRequest,
-                                            KafkaReceiverRejectionReason::UnknownTopic,
-                                            Some(DlqReason::UnknownTopic),
+                                            KafkaReceiverRejectionReason::ExcludedTopic,
+                                            Some(DlqReason::ExcludedTopic),
                                         ),
                                         KafkaReceiverError::SignalDecode { signal, .. } => (
                                             Some(*signal),
@@ -944,9 +983,9 @@ impl KafkaReceiver {
                                                 offset = offset,
                                             );
                                         }
-                                        KafkaReceiverError::UnknownTopicDecode(e) => {
+                                        KafkaReceiverError::ExcludedTopicDecode(e) => {
                                             otel_error!(
-                                                "kafka.message.unknown_topic",
+                                                "kafka.message.excluded_topic",
                                                 error = %e,
                                                 topic = %topic,
                                                 partition = partition,
@@ -1170,12 +1209,12 @@ impl local::Receiver<OtapPdata> for KafkaReceiver {
 
 impl KafkaReceiver {
     /// Capture the raw payload bytes and source headers of a message that is
-    /// being dead-lettered on a decode / unknown-topic failure.
+    /// being dead-lettered on a decode / excluded-topic failure.
     ///
     /// Returns `None` (skipping the copy) when the DLQ is disabled, the failure
     /// is not dead-letterable (`reason` is `None`), or the DLQ does not capture
     /// this failure category. Callers invoke this only after a decode /
-    /// unknown-topic failure, so the successful-decode hot path never copies.
+    /// excluded-topic failure, so the successful-decode hot path never copies.
     fn dlq_inline_capture_snapshot(
         dlq: Option<&DlqManager>,
         reason: Option<DlqReason>,
@@ -1193,7 +1232,7 @@ impl KafkaReceiver {
         Some((payload, headers))
     }
 
-    /// Attempt to dead-letter an inline (decode / unknown-topic) failure.
+    /// Attempt to dead-letter an inline (decode / empty-payload / excluded-topic) failure.
     ///
     /// `reason` is the pre-classified DLQ category (`None` for internal/config
     /// errors that never dead-letter), and `error` is the already-rendered error
@@ -1280,7 +1319,8 @@ impl KafkaReceiver {
 
         // Resolve the source signal from the original topic so the DLQ record
         // and telemetry carry the correct `dlq.signal` (rather than `unknown`).
-        // A signal-less topic (e.g. an unknown-topic ingest) stays `None`.
+        // A permanently-nacked record was admitted downstream, so its topic
+        // always routes to a signal; the `None` case is defensive only.
         let signal = self.signal_type_for_topic(&feedback.topic);
 
         let manager = dlq.as_mut().expect("dlq presence checked above");

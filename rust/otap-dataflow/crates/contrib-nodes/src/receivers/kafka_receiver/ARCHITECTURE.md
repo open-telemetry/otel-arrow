@@ -198,7 +198,8 @@ Highlights:
 
 - **Poison pill**: a record that fails to decode is still tracked and advanced
   past, so one bad message cannot wedge a partition. When the DLQ captures
-  `decode` (poison) or `unknown_topic`, the raw bytes are routed to the DLQ first
+  `decode` (poison, including empty payloads) or `excluded_topic`, the raw bytes
+  are routed to the DLQ first
   and the offset advance is deferred until delivery (see
   [Dead-letter queue](#dead-letter-queue)).
 - The compact topic-id registry can be exhausted only after 2^32 distinct topic
@@ -361,12 +362,12 @@ lost) so ingestion is never wedged.
 ```mermaid
 flowchart TD
     subgraph ENTRY["Entry points (receive loop)"]
-        DEC["decode / unknown_topic failure<br/>raw bytes in hand"]
+        DEC["decode / excluded_topic failure<br/>raw bytes in hand"]
         PNK["permanent_nack terminal feedback<br/>resolve offset identity (generation guard)"]
     end
 
     subgraph RECOVER["Byte recovery"]
-        INLINE["inline bytes<br/>(decode / unknown_topic)"]
+        INLINE["inline bytes<br/>(decode / excluded_topic)"]
         RR["re-read consumer (spawn_blocking)<br/>assign@offset -> poll(once, timeout)<br/>-> verify offset == target -> unassign"]
     end
 
@@ -420,13 +421,13 @@ stateDiagram-v2
 Highlights:
 
 - **Two entry points, one manager.** The dataflow above shows the split byte
-  recovery (inline for `decode` / `unknown_topic`, re-read for `permanent_nack`)
+  recovery (inline for `decode` / `excluded_topic`, re-read for `permanent_nack`)
   converging on the single bounded `DlqManager`; the lifecycle diagram shows one
   job's states.
 - **Every terminal state advances the offset.** Both `Produced` and `Loss` end at
   `advance_offset_and_commit`, so a failed dead-letter is counted
   (`receiver.kafka.dlq.loss`) and skipped rather than wedging the partition.
-- **Byte recovery.** `decode` and `unknown_topic` failures dead-letter the raw
+- **Byte recovery.** `decode` and `excluded_topic` failures dead-letter the raw
   bytes already held in the receive loop. `permanent_nack` failures recover the
   original bytes with a dedicated, normally-idle consumer that assigns the failed
   `(topic, partition)` at the exact offset, polls once (bounded by a timeout),

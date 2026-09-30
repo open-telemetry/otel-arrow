@@ -279,14 +279,20 @@ under auto commit.
 `capture` selects which failure categories are dead-lettered (default: all
 three):
 
-- `decode` -- the payload failed to decode ("poison pill").
-- `unknown_topic` -- the message targeted a topic with no configured signal.
+- `decode` -- the payload failed to decode ("poison pill"). This toggle also
+  covers empty (null-value) payloads, which are dead-lettered with the distinct
+  `empty_payload` reason. A zero-length payload that is a well-formed empty
+  request is accepted and forwarded, not dead-lettered.
+- `excluded_topic` -- the message arrived on a topic delivered by a regex
+  subscription but removed by `exclude_topics`, so it routed to no signal. It is
+  dead-lettered to the matching (excluding) signal's DLQ topic.
 - `permanent_nack` -- the message was permanently rejected downstream.
 
-For `decode` and `unknown_topic` the original raw bytes are still in hand and are
-dead-lettered directly. For `permanent_nack` the receiver recovers the original
-bytes with a dedicated, idle re-read consumer that seeks to the failed offset.
-In all cases the DLQ record payload is byte-identical to the source message.
+For `decode`, `empty_payload`, and `excluded_topic` the original raw bytes are
+still in hand and are dead-lettered directly. For `permanent_nack` the receiver
+recovers the original bytes with a dedicated, idle re-read consumer that seeks to
+the failed offset. In all cases the DLQ record payload is byte-identical to the
+source message.
 
 #### Offset and failure behavior
 
@@ -307,7 +313,7 @@ DLQ consumers must tolerate duplicates.
 | --- | --- | --- | --- |
 | `topic` | string | *none* | Global DLQ topic applied to all captured signals unless overridden. |
 | `per_signal` | object | *none* | Per-signal topic overrides (`traces`, `metrics`, `logs`). |
-| `capture` | list | all three | Subset of `decode`, `unknown_topic`, `permanent_nack`. Must be non-empty. |
+| `capture` | list | all three | Subset of `decode`, `excluded_topic`, `permanent_nack`. Must be non-empty. (`decode` also covers empty payloads, reported as `empty_payload`.) |
 | `connection` | object | source connection | Optional `brokers`/`auth`/`tls` overrides for the DLQ producer; defaults to the source consumer's connection. The re-read consumer always uses the source connection. |
 
 Every DLQ topic must be a valid Kafka topic name and, when the DLQ reuses the
@@ -343,7 +349,7 @@ receivers:
       topic: "otel_dlq"
       per_signal:
         traces: "otel_dlq_traces"
-      capture: ["decode", "unknown_topic", "permanent_nack"]
+      capture: ["decode", "excluded_topic", "permanent_nack"]
 ```
 
 #### Comparison with the Go Kafka receiver
@@ -1069,7 +1075,7 @@ and `refused` for a permanent NACK.
 `signal` is `traces`, `metrics`, `logs`, or `unknown` when topic routing did not
 establish a signal. `error.type` uses the shared receiver categories
 `invalid_request` and `internal`. The Kafka-specific `reason` is one of
-`empty_payload`, `unknown_topic`, `decode`, `topic_id_exhausted`, or `internal`.
+`empty_payload`, `excluded_topic`, `decode`, `topic_id_exhausted`, or `internal`.
 These values are bounded; topic names and payload details remain in events
 instead of metrics.
 
@@ -1130,7 +1136,7 @@ an empty assignment resets it to zero.
 | `receiver.kafka.acks_received`, `nacks_received` | `receiver.kafka.acknowledgements.responses` with `outcome="success"`, `outcome="failure"` (non-permanent NACK), or `outcome="refused"` (permanent NACK). |
 | `receiver.kafka.processing_errors` | Sum `receiver.kafka.rejections.messages` across its bounded attributes. |
 | `receiver.kafka.unmarshal_failed_traces`, `unmarshal_failed_metrics`, `unmarshal_failed_logs` | `receiver.kafka.rejections.messages{reason="decode"}` filtered by `signal`. |
-| `receiver.kafka.empty_payloads`, `unknown_topic_errors`, `topic_id_exhausted` | `receiver.kafka.rejections.messages` filtered by the corresponding `reason`. |
+| `receiver.kafka.empty_payloads`, `excluded_topic_errors`, `topic_id_exhausted` | `receiver.kafka.rejections.messages` filtered by the corresponding `reason`. |
 | `receiver.kafka.transport_errors` | Sum `receiver.kafka.transport.errors` across `error.type`. |
 | `receiver.kafka.offset_commits`, `offset_commit_errors` | `receiver.kafka.offset_commits.commits` with `outcome="success"` or `outcome="failure"`. |
 | `receiver.kafka.idempotent_skips` | `receiver.kafka.consumer.records.duplicates`. |
@@ -1149,7 +1155,7 @@ an empty assignment resets it to zero.
 | `kafka.shutdown.commit_failed` | `error` | Final offset commit during shutdown failed. |
 | `kafka.commit.failed` | `error` | An offset commit failed (non-fatal; offsets stay tracked and are retried on the next terminal feedback or timer tick). |
 | `kafka.message.empty_payload` | `error` | A consumed message had an empty payload. |
-| `kafka.message.unknown_topic` | `error` | A consumed message came from a topic not mapped to any signal. |
+| `kafka.message.excluded_topic` | `error` | A consumed message came from a topic delivered by a regex subscription but removed by `exclude_topics`. |
 | `kafka.message.unmarshal_failed` | `error` | A consumed message failed to unmarshal (includes `signal` field: traces, metrics, or logs). |
 | `kafka.message.decode_failed` | `error` | A consumed message failed to decode and was skipped. |
 | `kafka.partition_eof` | `info` | Consumer reached end of a partition. |
@@ -1201,7 +1207,7 @@ an empty assignment resets it to zero.
 - Receiver replay retries indefinitely with a capped exponential backoff. It
   has no jitter, retry limit, operator-resume command, or built-in retry topic.
   The optional [Dead Letter Queue](#dead-letter-queue) forwards undecodable,
-  unknown-topic, and permanently-nacked records to a DLQ topic; a permanent NACK
+  excluded-topic, and permanently-nacked records to a DLQ topic; a permanent NACK
   commits the record after any configured dead-letter delivery.
 - See
   [Comparison with the Go Kafka receiver](#comparison-with-the-go-kafka-receiver)

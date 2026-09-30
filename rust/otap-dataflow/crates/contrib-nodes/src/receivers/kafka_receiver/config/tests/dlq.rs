@@ -61,7 +61,7 @@ fn dlq_global_topic_resolves_and_defaults_capture() {
     let dlq = cfg.dlq().expect("dlq enabled");
     assert_eq!(dlq.topic_for(SignalType::Traces), Some("otel_dlq"));
     assert!(dlq.capture_decode);
-    assert!(dlq.capture_unknown_topic);
+    assert!(dlq.capture_excluded_topic);
     assert!(dlq.capture_permanent_nack);
 }
 
@@ -242,7 +242,7 @@ fn dlq_narrowed_capture_set() {
     .expect("valid DLQ config");
     let dlq = cfg.dlq().expect("dlq enabled");
     assert!(dlq.capture_decode);
-    assert!(!dlq.capture_unknown_topic);
+    assert!(!dlq.capture_excluded_topic);
     assert!(!dlq.capture_permanent_nack);
 }
 

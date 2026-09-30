@@ -22,8 +22,8 @@ use rdkafka::types::RDKafkaErrorCode;
 pub enum KafkaReceiverRejectionReason {
     /// The Kafka record contained no payload.
     EmptyPayload,
-    /// The Kafka topic did not map to a configured signal.
-    UnknownTopic,
+    /// The topic was delivered by a regex subscription but removed by `exclude_topics`.
+    ExcludedTopic,
     /// The payload could not be decoded using the configured signal encoding.
     Decode,
     /// The receiver exhausted the compact topic ID space used in acknowledgement routing.
@@ -73,8 +73,10 @@ pub struct KafkaReceiverRejectionAttributes {
 pub enum KafkaReceiverDlqReason {
     /// The payload could not be decoded using the configured signal encoding.
     Decode,
-    /// The topic did not map to a configured signal.
-    UnknownTopic,
+    /// The payload was empty (a null-value Kafka record) and could not be converted.
+    EmptyPayload,
+    /// The topic was delivered by a regex subscription but removed by `exclude_topics`.
+    ExcludedTopic,
     /// The message was permanently rejected downstream.
     PermanentNack,
 }
@@ -84,7 +86,8 @@ impl From<super::receiver::dlq::DlqReason> for KafkaReceiverDlqReason {
         use super::receiver::dlq::DlqReason;
         match reason {
             DlqReason::Decode => Self::Decode,
-            DlqReason::UnknownTopic => Self::UnknownTopic,
+            DlqReason::EmptyPayload => Self::EmptyPayload,
+            DlqReason::ExcludedTopic => Self::ExcludedTopic,
             DlqReason::PermanentNack => Self::PermanentNack,
         }
     }
@@ -570,8 +573,12 @@ mod tests {
             KafkaReceiverDlqReason::Decode
         );
         assert_eq!(
-            KafkaReceiverDlqReason::from(DlqReason::UnknownTopic),
-            KafkaReceiverDlqReason::UnknownTopic
+            KafkaReceiverDlqReason::from(DlqReason::EmptyPayload),
+            KafkaReceiverDlqReason::EmptyPayload
+        );
+        assert_eq!(
+            KafkaReceiverDlqReason::from(DlqReason::ExcludedTopic),
+            KafkaReceiverDlqReason::ExcludedTopic
         );
         assert_eq!(
             KafkaReceiverDlqReason::from(DlqReason::PermanentNack),
@@ -653,7 +660,7 @@ mod tests {
         metrics.record_rejection(
             None,
             ReceiverRejectionErrorType::InvalidRequest,
-            KafkaReceiverRejectionReason::UnknownTopic,
+            KafkaReceiverRejectionReason::ExcludedTopic,
         );
         metrics.record_offset_commits(Outcome::Success, 2);
         metrics.record_offset_commits(Outcome::Failure, 1);
@@ -716,7 +723,7 @@ mod tests {
                 .get(KafkaReceiverRejectionAttributes {
                     signal: KafkaReceiverRejectionSignal::Unknown,
                     error_type: ReceiverRejectionErrorType::InvalidRequest,
-                    reason: KafkaReceiverRejectionReason::UnknownTopic,
+                    reason: KafkaReceiverRejectionReason::ExcludedTopic,
                 })
                 .messages
                 .get(),

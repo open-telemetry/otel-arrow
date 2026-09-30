@@ -58,7 +58,8 @@ fn meta(reason: DlqReason, signal: Option<SignalType>) -> JobMeta {
 #[test]
 fn reason_as_str_maps_each_variant() {
     assert_eq!(DlqReason::Decode.as_str(), "decode");
-    assert_eq!(DlqReason::UnknownTopic.as_str(), "unknown_topic");
+    assert_eq!(DlqReason::EmptyPayload.as_str(), "empty_payload");
+    assert_eq!(DlqReason::ExcludedTopic.as_str(), "excluded_topic");
     assert_eq!(DlqReason::PermanentNack.as_str(), "permanent_nack");
 }
 
@@ -126,7 +127,9 @@ fn captures_reflects_config() {
         connection: None,
     });
     assert!(mgr.captures(DlqReason::Decode));
-    assert!(!mgr.captures(DlqReason::UnknownTopic));
+    // Empty-payload is gated by the same `decode` capture.
+    assert!(mgr.captures(DlqReason::EmptyPayload));
+    assert!(!mgr.captures(DlqReason::ExcludedTopic));
     assert!(mgr.captures(DlqReason::PermanentNack));
 }
 
@@ -142,7 +145,7 @@ fn topic_for_precedence() {
             metrics: None,
             logs: None,
         }),
-        capture: vec![DlqCapture::Decode, DlqCapture::UnknownTopic],
+        capture: vec![DlqCapture::Decode, DlqCapture::ExcludedTopic],
         connection: None,
     });
     // Per-signal override wins.
@@ -156,6 +159,38 @@ fn topic_for_precedence() {
         Some("global_dlq")
     );
     // Signal-less category resolves to some configured topic.
+    assert!(mgr.topic_for(None).is_some());
+}
+
+/// Scenario: an excluded-topic dead-letter resolves its matching signal, so it
+/// is routed with `Some(signal)` and lands in that signal's DLQ topic (its
+/// per-signal override, else the global topic).
+/// Guarantees: excluded-topic dead-letters route to the matching signal's topic
+/// rather than a signal-less fallback; the defensive `None` arm still resolves a
+/// configured topic.
+#[test]
+fn topic_for_excluded_topic_uses_matching_signal() {
+    let mgr = manager(DlqConfig {
+        topic: Some("global_dlq".to_string()),
+        per_signal: Some(DlqPerSignalTopics {
+            traces: Some("t_dlq".to_string()),
+            metrics: Some("m_dlq".to_string()),
+            logs: None,
+        }),
+        capture: vec![DlqCapture::ExcludedTopic],
+        connection: None,
+    });
+    // An excluded topic that belongs to metrics routes to the metrics DLQ topic.
+    assert_eq!(
+        mgr.topic_for(Some(SignalType::Metrics)).as_deref(),
+        Some("m_dlq")
+    );
+    // A signal without a per-signal override falls back to the global topic.
+    assert_eq!(
+        mgr.topic_for(Some(SignalType::Logs)).as_deref(),
+        Some("global_dlq")
+    );
+    // The defensive signal-less arm still resolves a configured topic.
     assert!(mgr.topic_for(None).is_some());
 }
 

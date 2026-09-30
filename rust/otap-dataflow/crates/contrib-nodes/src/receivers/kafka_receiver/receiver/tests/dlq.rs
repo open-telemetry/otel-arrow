@@ -4,7 +4,7 @@
 //! Integration and edge-case coverage for the Kafka receiver dead-letter queue.
 //!
 //! These tests exercise the DLQ egress against an in-process mock cluster: raw
-//! bytes recovery (inline for decode / unknown-topic, re-read for
+//! bytes recovery (inline for decode / excluded-topic, re-read for
 //! permanent-nack), byte fidelity, the non-stall contract under producer and
 //! re-read stalls, pending-queue overflow, and offset advancement only on a
 //! terminal DLQ outcome.
@@ -729,18 +729,302 @@ async fn uncommitted_dead_letter_is_redelivered_on_restart_at_least_once() {
     .await;
 }
 
-/// Scenario: a record arrives on a topic matched by the include regex but
-/// removed by `exclude_topics`, so it routes to no signal (unknown topic) while
-/// the DLQ captures `unknown_topic`.
-/// Guarantees: the original bytes are dead-lettered byte-identically with reason
-/// `unknown_topic`, and the source offset advances.
+/// Scenario: a manual-commit receiver with `permanent_nack` DLQ capture holds an
+/// un-acked in-flight record on a partition that a second group member then
+/// steals (revoking it); the now-stale record is permanently nacked.
+/// Guarantees: the stale permanent nack is dropped by the feedback guard
+/// (`receiver.kafka.consumer.group.feedback.after_revocation` increments), so it
+/// is NOT dead-lettered and the revoked partition's offset is not committed by
+/// the losing owner -- the record is left for the new owner (at-least-once).
 #[tokio::test]
-async fn unknown_topic_is_dead_lettered_byte_identical() {
-    const EXCLUDED: &str = "dlq-unknown-excluded";
-    // The DLQ topic must sit outside the `^dlq-unknown-.*` ingest regex, or
+async fn dlq_permanent_nack_after_revoke_is_not_dead_lettered() {
+    const TOPIC: &str = "dlq-nack-revoke-src";
+    const DLQ: &str = "dlq-nack-revoke-out";
+    let group = "dlq-nack-revoke-group";
+    with_cluster(
+        KafkaTestCluster::builder()
+            .topic_with(TOPIC, REBALANCE_TEST_PARTITIONS, 1)
+            .topic_with(DLQ, 1, 1),
+        |cluster| async move {
+            let producer = cluster.producer().build();
+            let req = create_traces_with_spans();
+            let mut bytes = vec![];
+            req.encode(&mut bytes).expect("encode");
+            // One valid record per partition so the receiver holds in-flight work
+            // on every partition it owns.
+            for partition in 0..REBALANCE_TEST_PARTITIONS {
+                producer
+                    .send_full(
+                        SendRecord::new(TOPIC, &bytes)
+                            .key(b"k")
+                            .partition(partition),
+                    )
+                    .await
+                    .expect("send");
+            }
+
+            let cfg = manual_traces_config_with_dlq(
+                cluster.bootstrap_servers(),
+                group,
+                TOPIC,
+                DLQ,
+                vec![DlqCapture::PermanentNack],
+            );
+            let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
+
+            // Consume every record but hold them un-acked so their offsets stay
+            // pending across the revoke.
+            let mut in_flight = Vec::new();
+            for _ in 0..REBALANCE_TEST_PARTITIONS {
+                in_flight.push(receiver.recv_pdata().await);
+            }
+
+            // A second member joins and steals at least one partition.
+            let trigger =
+                RebalanceTrigger::join(&cluster, group, &[TOPIC], Duration::from_secs(30)).await;
+            let stolen = trigger
+                .assignment()
+                .into_iter()
+                .find_map(|(topic, partition)| (topic == TOPIC).then_some(partition))
+                .expect("rebalance trigger should own a partition from the test topic");
+            receiver
+                .wait_for_partition_revocation(TOPIC, stolen, Duration::from_secs(10))
+                .await;
+
+            // Permanently nack every in-flight record now that a partition is
+            // revoked. The nack for the revoked partition must be dropped by the
+            // feedback guard and never enter the DLQ re-read path.
+            for pdata in in_flight {
+                receiver.nack_permanent("stale after revoke", pdata);
+            }
+
+            // Nack and Shutdown share the FIFO control channel, so feedback is
+            // handled before the terminal snapshot.
+            let terminal = shutdown_and_terminal(receiver, Duration::from_secs(5)).await;
+            drop(trigger);
+
+            let mut m = FoldedMetrics::new();
+            m.fold_all(terminal.metrics());
+            assert!(
+                m.value("group.feedback.after_revocation") >= 1,
+                "a permanent nack for a revoked partition must be dropped and counted, got {}; \
+                     revocations={}",
+                m.value("group.feedback.after_revocation"),
+                m.value("group.partition.revocations"),
+            );
+
+            // Nothing was dead-lettered for the dropped nack: the DLQ topic stays
+            // empty (the revoked record is left for the new owner, at-least-once).
+            let dead_letters = drain_dlq_topic(&cluster, DLQ, 1, Duration::from_secs(3)).await;
+            assert!(
+                dead_letters.is_empty(),
+                "a permanent nack dropped after revoke must not be dead-lettered"
+            );
+        },
+    )
+    .await;
+}
+
+/// Scenario: several distinct records are produced to one partition; a record
+/// that is NOT the first offset is permanently nacked with `permanent_nack` DLQ
+/// capture, so the re-read consumer must seek past earlier offsets to it.
+/// Guarantees: the dead-lettered payload is byte-identical to the specifically
+/// nacked record (its exact offset), never an adjacent record's bytes, and its
+/// `dlq.source.offset` header matches that offset.
+#[tokio::test]
+async fn reread_recovers_exact_offset_among_multiple_records() {
+    const TOPIC: &str = "dlq-reread-exact-src";
+    const DLQ: &str = "dlq-reread-exact-out";
+    let group = "dlq-reread-exact-group";
+    const RECORDS: usize = 4;
+    with_cluster(
+        KafkaTestCluster::builder()
+            .topic_with(TOPIC, 1, 1)
+            .topic_with(DLQ, 1, 1),
+        |cluster| async move {
+            let producer = cluster.producer().build();
+            // Produce RECORDS distinct, decodable payloads to partition 0. Each
+            // carries a unique span name so the encoded bytes differ per offset.
+            let mut payloads: Vec<Vec<u8>> = Vec::new();
+            for i in 0..RECORDS {
+                let mut req = create_traces_with_spans();
+                // Make each record's bytes unique and distinguishable.
+                req.resource_spans[0].scope_spans[0].spans[0].name = format!("span-{i}");
+                let mut bytes = vec![];
+                req.encode(&mut bytes).expect("encode");
+                producer
+                    .send_full(SendRecord::new(TOPIC, &bytes).key(b"k").partition(0))
+                    .await
+                    .expect("send");
+                payloads.push(bytes);
+            }
+
+            let cfg = manual_traces_config_with_dlq(
+                cluster.bootstrap_servers(),
+                group,
+                TOPIC,
+                DLQ,
+                vec![DlqCapture::PermanentNack],
+            );
+            let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
+
+            // Consume all records, mapping each source offset to the pdata so we
+            // can nack a specific, non-first offset.
+            let mut by_offset: HashMap<i64, OtapPdata> = HashMap::new();
+            for _ in 0..RECORDS {
+                let pdata = receiver.recv_pdata().await;
+                let route = pdata
+                    .source_route()
+                    .expect("delivered pdata carries source calldata");
+                let (_topic_id, _partition, offset, _generation) = decode_calldata(&route.calldata);
+                let _ = by_offset.insert(offset, pdata);
+            }
+
+            // Ack every record except the target (offset 2, the third record) so
+            // only the targeted offset is dead-lettered.
+            const TARGET_OFFSET: i64 = 2;
+            for (offset, pdata) in by_offset {
+                if offset == TARGET_OFFSET {
+                    receiver.nack_permanent("terminal", pdata);
+                } else {
+                    receiver.ack(pdata);
+                }
+            }
+
+            let records = drain_dlq_topic(&cluster, DLQ, 1, Duration::from_secs(30)).await;
+            assert_eq!(
+                records.len(),
+                1,
+                "exactly the targeted record is dead-lettered"
+            );
+            assert_eq!(
+                records[0].payload.as_deref(),
+                Some(payloads[TARGET_OFFSET as usize].as_slice()),
+                "re-read must recover the exact target offset's bytes, not an adjacent record"
+            );
+            assert_eq!(
+                records[0].header("dlq.source.offset"),
+                Some(TARGET_OFFSET.to_string().as_bytes()),
+                "dead-letter must carry the targeted source offset"
+            );
+
+            receiver.shutdown(Duration::from_secs(5));
+            let _ = receiver.await_terminal_state().await;
+        },
+    )
+    .await;
+}
+
+/// Scenario: `DLQ_MAX_IN_FLIGHT` distinct records are permanently nacked close
+/// together with `permanent_nack` capture, so up to five re-read recoveries run
+/// concurrently through the single shared re-read consumer while keep-warm polls.
+/// Guarantees: every record is dead-lettered exactly once with byte-identical
+/// bytes matching its OWN source offset (no cross-contamination or stolen
+/// records), and no spurious loss occurs -- the count equals the number nacked.
+#[tokio::test]
+async fn concurrent_permanent_nack_recoveries_recover_correct_bytes() {
+    use crate::receivers::kafka_receiver::config::DLQ_MAX_IN_FLIGHT;
+    const TOPIC: &str = "dlq-concurrent-src";
+    const DLQ: &str = "dlq-concurrent-out";
+    let group = "dlq-concurrent-group";
+    let n = DLQ_MAX_IN_FLIGHT; // 5 concurrent recoveries: the in-flight bound.
+    with_cluster(
+        KafkaTestCluster::builder()
+            .topic_with(TOPIC, 1, 1)
+            .topic_with(DLQ, 1, 1),
+        |cluster| async move {
+            let producer = cluster.producer().build();
+            // Distinct, decodable payloads so each dead-letter can be matched to
+            // the exact source record it should have recovered.
+            let mut payload_by_offset: HashMap<i64, Vec<u8>> = HashMap::new();
+            let mut sent: Vec<Vec<u8>> = Vec::new();
+            for i in 0..n {
+                let mut req = create_traces_with_spans();
+                req.resource_spans[0].scope_spans[0].spans[0].name = format!("concurrent-span-{i}");
+                let mut bytes = vec![];
+                req.encode(&mut bytes).expect("encode");
+                producer
+                    .send_full(SendRecord::new(TOPIC, &bytes).key(b"k").partition(0))
+                    .await
+                    .expect("send");
+                sent.push(bytes);
+            }
+
+            let cfg = manual_traces_config_with_dlq(
+                cluster.bootstrap_servers(),
+                group,
+                TOPIC,
+                DLQ,
+                vec![DlqCapture::PermanentNack],
+            );
+            let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
+
+            // Consume all records, mapping each to its source offset.
+            let mut in_flight: Vec<(i64, OtapPdata)> = Vec::new();
+            for _ in 0..n {
+                let pdata = receiver.recv_pdata().await;
+                let route = pdata
+                    .source_route()
+                    .expect("delivered pdata carries source calldata");
+                let (_topic_id, _partition, offset, _generation) = decode_calldata(&route.calldata);
+                let idx = offset as usize;
+                let _ = payload_by_offset.insert(offset, sent[idx].clone());
+                in_flight.push((offset, pdata));
+            }
+
+            // Nack all of them back-to-back so their re-read recoveries overlap on
+            // the single shared consumer (bounded by DLQ_MAX_IN_FLIGHT).
+            for (_offset, pdata) in in_flight {
+                receiver.nack_permanent("terminal", pdata);
+            }
+
+            // Every record must be dead-lettered exactly once, each with the bytes
+            // of its OWN offset (indexed by the dlq.source.offset header).
+            let records = drain_dlq_topic(&cluster, DLQ, n, Duration::from_secs(30)).await;
+            assert_eq!(
+                records.len(),
+                n,
+                "every concurrently-nacked record must be dead-lettered exactly once (no loss)"
+            );
+            for rec in &records {
+                let offset_bytes = rec
+                    .header("dlq.source.offset")
+                    .expect("dead-letter carries source offset");
+                let offset: i64 = std::str::from_utf8(offset_bytes)
+                    .expect("ascii offset")
+                    .parse()
+                    .expect("numeric offset");
+                let expected = payload_by_offset
+                    .get(&offset)
+                    .expect("offset was produced and nacked");
+                assert_eq!(
+                    rec.payload.as_deref(),
+                    Some(expected.as_slice()),
+                    "concurrent recovery for offset {offset} must carry its own bytes, \
+                         proving no cross-contamination on the shared re-read consumer"
+                );
+            }
+
+            receiver.shutdown(Duration::from_secs(5));
+            let _ = receiver.await_terminal_state().await;
+        },
+    )
+    .await;
+}
+
+/// Scenario: a record arrives on a topic matched by the traces include regex but
+/// removed by `exclude_topics`, so it routes to no signal while the DLQ captures
+/// `excluded_topic`.
+/// Guarantees: the original bytes are dead-lettered byte-identically with reason
+/// `excluded_topic`, the dead-letter carries `dlq.signal=traces` (the matching
+/// signal, not `unknown`), and the source offset advances.
+#[tokio::test]
+async fn excluded_topic_is_dead_lettered_byte_identical() {
+    const EXCLUDED: &str = "dlq-excluded-topic";
+    // The DLQ topic must sit outside the `^dlq-excluded-.*` ingest regex, or
     // loop-prevention validation would reject it.
-    const DLQ: &str = "unknown-dead-letters";
-    let group = "dlq-unknown-group";
+    const DLQ: &str = "excluded-dead-letters";
+    let group = "dlq-excluded-group";
     with_cluster(
         KafkaTestCluster::builder()
             .topic_with(EXCLUDED, 1, 1)
@@ -751,22 +1035,22 @@ async fn unknown_topic_is_dead_lettered_byte_identical() {
             let mut bytes = vec![];
             req.encode(&mut bytes).expect("encode");
             // A well-formed record on the excluded topic: it is subscribed (the
-            // include regex matches) but routes to no signal.
+            // traces include regex matches) but routes to no signal.
             producer
                 .send_full(SendRecord::new(EXCLUDED, &bytes).key(b"k"))
                 .await
                 .expect("send");
 
-            // Subscribe via the broad `^dlq-unknown-.*` regex so EXCLUDED is
+            // Subscribe via the broad `^dlq-excluded-.*` regex so EXCLUDED is
             // consumed by librdkafka, but exclude it so it routes to no signal
-            // (the unknown-topic path). The DLQ topic sits outside that regex.
+            // (the excluded-topic path). The DLQ topic sits outside that regex.
             use crate::receivers::kafka_receiver::config::DlqConfig;
             let builder =
                 KafkaReceiverConfigBuilder::new(cluster.bootstrap_servers(), group, "test-client")
                     .with_traces(
-                        SignalConfig::new(vec!["^dlq-unknown-.*$".to_string()])
+                        SignalConfig::new(vec!["^dlq-excluded-.*$".to_string()])
                             .with_encoding(MessageFormat::OtlpProto)
-                            .with_exclude_topics(vec!["^dlq-unknown-excluded$".to_string()]),
+                            .with_exclude_topics(vec!["^dlq-excluded-topic$".to_string()]),
                     )
                     .with_commit(CommitConfig {
                         mode: ConfigCommitMode::Manual,
@@ -776,7 +1060,7 @@ async fn unknown_topic_is_dead_lettered_byte_identical() {
                     .with_dlq(DlqConfig {
                         topic: Some(DLQ.to_string()),
                         per_signal: None,
-                        capture: vec![DlqCapture::UnknownTopic],
+                        capture: vec![DlqCapture::ExcludedTopic],
                         connection: None,
                     });
             let cfg = KafkaReceiverConfig::try_from(builder).expect("valid");
@@ -787,12 +1071,220 @@ async fn unknown_topic_is_dead_lettered_byte_identical() {
             assert_eq!(
                 records[0].payload.as_deref(),
                 Some(bytes.as_slice()),
-                "unknown-topic DLQ payload must be byte-identical to the source"
+                "excluded-topic DLQ payload must be byte-identical to the source"
             );
-            assert_eq!(records[0].header("dlq.reason"), Some(&b"unknown_topic"[..]));
+            assert_eq!(
+                records[0].header("dlq.reason"),
+                Some(&b"excluded_topic"[..])
+            );
+            // The excluding signal (traces) is resolved, not `unknown`.
+            assert_eq!(records[0].header("dlq.signal"), Some(&b"traces"[..]));
             assert_eq!(
                 records[0].header("dlq.source.topic"),
                 Some(EXCLUDED.as_bytes())
+            );
+
+            receiver.shutdown(Duration::from_secs(5));
+            let _ = receiver.await_terminal_state().await;
+        },
+    )
+    .await;
+}
+
+/// Scenario: a zero-length OTLP-proto Kafka record is consumed by a receiver with
+/// a decode-capturing DLQ.
+/// Guarantees: the empty payload decodes as a valid (empty) request and is
+/// FORWARDED downstream (not dead-lettered), so a well-formed empty request is
+/// never treated as a failure.
+#[tokio::test]
+async fn empty_payload_is_accepted_and_forwarded() {
+    const TOPIC: &str = "dlq-empty-src";
+    const DLQ: &str = "dlq-empty-out";
+    let group = "dlq-empty-group";
+    with_cluster(
+        KafkaTestCluster::builder()
+            .topic_with(TOPIC, 1, 1)
+            .topic_with(DLQ, 1, 1),
+        |cluster| async move {
+            let producer = cluster.producer().build();
+            // A zero-length payload is delivered as an empty (Some(&[])) value and
+            // decodes as a valid empty OTLP-proto request.
+            producer
+                .send_full(SendRecord::new(TOPIC, &[]).key(b"k"))
+                .await
+                .expect("send empty");
+
+            let cfg = manual_traces_config_with_dlq(
+                cluster.bootstrap_servers(),
+                group,
+                TOPIC,
+                DLQ,
+                vec![DlqCapture::Decode],
+            );
+            let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
+
+            // The empty-but-valid record is forwarded downstream.
+            let pdata = receiver
+                .try_recv_pdata(Duration::from_secs(30))
+                .await
+                .expect("empty valid OTLP record must be forwarded, not dead-lettered");
+            receiver.ack(pdata);
+
+            // Nothing is dead-lettered: the DLQ topic stays empty.
+            let dead_letters = drain_dlq_topic(&cluster, DLQ, 1, Duration::from_secs(3)).await;
+            assert!(
+                dead_letters.is_empty(),
+                "a valid empty payload must not be dead-lettered"
+            );
+
+            receiver.shutdown(Duration::from_secs(5));
+            let _ = receiver.await_terminal_state().await;
+        },
+    )
+    .await;
+}
+
+// REVIEW(#8-audit): end-to-end source-header passthrough (previously only unit-
+// tested on build_dlq_headers). A dead-lettered record must be a faithful
+// superset: original source headers survive alongside the injected dlq.* context.
+/// Scenario: a record carrying a custom source header (`x-tenant`) fails decode
+/// and is dead-lettered with decode capture.
+/// Guarantees: the dead-lettered record carries BOTH the injected `dlq.*` context
+/// headers AND the original `x-tenant` source header, proving faithful passthrough.
+#[tokio::test]
+async fn source_headers_pass_through_to_dead_letter() {
+    const TOPIC: &str = "dlq-hdr-src";
+    const DLQ: &str = "dlq-hdr-out";
+    let group = "dlq-hdr-group";
+    with_cluster(
+        KafkaTestCluster::builder()
+            .topic_with(TOPIC, 1, 1)
+            .topic_with(DLQ, 1, 1),
+        |cluster| async move {
+            let producer = cluster.producer().build();
+            // An undecodable OTAP payload carrying a custom source header.
+            let bad = b"poison-otap-with-header".to_vec();
+            producer
+                .send_full(
+                    SendRecord::new(TOPIC, &bad)
+                        .key(b"k")
+                        .header("x-tenant", b"acme"),
+                )
+                .await
+                .expect("send");
+
+            let cfg = manual_otap_traces_config_with_dlq(
+                cluster.bootstrap_servers(),
+                group,
+                TOPIC,
+                DLQ,
+                vec![DlqCapture::Decode],
+            );
+            let receiver = KafkaReceiverHarness::start(&cluster, cfg);
+
+            let records = drain_dlq_topic(&cluster, DLQ, 1, Duration::from_secs(30)).await;
+            assert_eq!(records.len(), 1, "the record must be dead-lettered");
+            // Injected dlq.* context is present ...
+            assert_eq!(records[0].header("dlq.reason"), Some(&b"decode"[..]));
+            assert_eq!(
+                records[0].header("dlq.source.topic"),
+                Some(TOPIC.as_bytes())
+            );
+            // ... and the original source header survived the passthrough.
+            assert_eq!(
+                records[0].header("x-tenant"),
+                Some(&b"acme"[..]),
+                "original source header must pass through to the dead-letter"
+            );
+
+            receiver.shutdown(Duration::from_secs(5));
+            let _ = receiver.await_terminal_state().await;
+        },
+    )
+    .await;
+}
+
+/// Scenario: per-signal DLQ topics are configured for traces and metrics. A
+/// record on a topic matched by the TRACES include regex but removed by
+/// `exclude_topics` is dead-lettered with `excluded_topic` capture.
+/// Guarantees: the excluded-topic dead-letter routes to the MATCHING signal's
+/// DLQ topic (traces), not a sorted-first fallback, carries `dlq.signal=traces`,
+/// and nothing lands in the metrics DLQ topic -- proving signal-aware routing.
+#[tokio::test]
+async fn excluded_topic_dead_letter_routes_to_matching_signal_topic() {
+    const EXCLUDED: &str = "dlq-route-excluded";
+    // Both DLQ topics sit outside the ingest regexes. The traces DLQ topic is
+    // deliberately the lexicographically LARGER name to prove routing is by the
+    // matching signal, not by sort order.
+    const DLQ_METRICS: &str = "aaa-dlq-metrics";
+    const DLQ_TRACES: &str = "zzz-dlq-traces";
+    const METRICS_TOPIC: &str = "metrics-ingest";
+    let group = "dlq-route-signal-group";
+    with_cluster(
+        KafkaTestCluster::builder()
+            .topic_with(EXCLUDED, 1, 1)
+            .topic_with(METRICS_TOPIC, 1, 1)
+            .topic_with(DLQ_METRICS, 1, 1)
+            .topic_with(DLQ_TRACES, 1, 1),
+        |cluster| async move {
+            let producer = cluster.producer().build();
+            let req = create_traces_with_spans();
+            let mut bytes = vec![];
+            req.encode(&mut bytes).expect("encode");
+            producer
+                .send_full(SendRecord::new(EXCLUDED, &bytes).key(b"k"))
+                .await
+                .expect("send");
+
+            use crate::receivers::kafka_receiver::config::{DlqConfig, DlqPerSignalTopics};
+            // The excluded topic is matched by the TRACES include regex, so its
+            // owning signal is traces; metrics ingests a separate literal topic so
+            // both signals have per-signal DLQ topics configured.
+            let builder =
+                KafkaReceiverConfigBuilder::new(cluster.bootstrap_servers(), group, "test-client")
+                    .with_traces(
+                        SignalConfig::new(vec!["^dlq-route-.*$".to_string()])
+                            .with_encoding(MessageFormat::OtlpProto)
+                            .with_exclude_topics(vec!["^dlq-route-excluded$".to_string()]),
+                    )
+                    .with_metrics(
+                        SignalConfig::new(vec![METRICS_TOPIC.to_string()])
+                            .with_encoding(MessageFormat::OtlpProto),
+                    )
+                    .with_commit(CommitConfig {
+                        mode: ConfigCommitMode::Manual,
+                        interval_ms: None,
+                    })
+                    .with_auto_offset_reset(AutoOffsetReset::Earliest)
+                    .with_dlq(DlqConfig {
+                        topic: None,
+                        per_signal: Some(DlqPerSignalTopics {
+                            traces: Some(DLQ_TRACES.to_string()),
+                            metrics: Some(DLQ_METRICS.to_string()),
+                            logs: None,
+                        }),
+                        capture: vec![DlqCapture::ExcludedTopic],
+                        connection: None,
+                    });
+            let cfg = KafkaReceiverConfig::try_from(builder).expect("valid");
+            let receiver = KafkaReceiverHarness::start(&cluster, cfg);
+
+            // The excluded-topic dead-letter must land in the TRACES DLQ topic
+            // (its matching signal), despite that name sorting last.
+            let routed = drain_dlq_topic(&cluster, DLQ_TRACES, 1, Duration::from_secs(30)).await;
+            assert_eq!(
+                routed.len(),
+                1,
+                "excluded-topic dead-letter must route to the matching (traces) DLQ topic"
+            );
+            assert_eq!(routed[0].header("dlq.reason"), Some(&b"excluded_topic"[..]));
+            assert_eq!(routed[0].header("dlq.signal"), Some(&b"traces"[..]));
+
+            // And nothing lands in the metrics DLQ topic.
+            let other = drain_dlq_topic(&cluster, DLQ_METRICS, 1, Duration::from_secs(3)).await;
+            assert!(
+                other.is_empty(),
+                "the excluded traces-topic record must not route to the metrics DLQ topic"
             );
 
             receiver.shutdown(Duration::from_secs(5));
