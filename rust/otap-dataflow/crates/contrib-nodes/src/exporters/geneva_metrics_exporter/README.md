@@ -2,8 +2,9 @@
 
 ## Metadata
 
-- Type: Not registered
-- Feature gate: `geneva-metrics-exporter`
+- Type: Exporter
+- Feature gate: `geneva-metrics`
+- Optional certificate authentication: `geneva-metrics-certificate-auth` (disabled by default)
 - Stability: WIP; metrics support is under development
 
 ## Overview
@@ -16,9 +17,13 @@ The exporter is separate from `geneva_exporter`, which publishes logs and
 traces through a different Geneva protocol and client.
 
 The current implementation contains the protocol model, encoder, compatibility
-fixtures, and Geneva-compatible mapping for OTLP and OTAP metrics views.
-Publication, authentication, exporter registration, and runtime configuration
-are introduced by follow-up changes.
+fixtures, Geneva-compatible mapping for OTLP and OTAP metrics views,
+authenticated HTTP publication, exporter registration, and runtime
+configuration. The registered exporter accepts OTLP metrics payloads.
+
+Password-protected PKCS#12 certificate authentication is excluded by default.
+Build with `--features geneva-metrics-certificate-auth` only when certificate
+authentication is required.
 
 ## Testing
 
@@ -27,12 +32,9 @@ Run the current Geneva metrics tests with:
 ```bash
 cargo test --manifest-path rust/otap-dataflow/Cargo.toml \
   -p otel-arrow-dfe-contrib-nodes \
-  --features geneva-metrics-exporter \
+  --features geneva-metrics \
   geneva_metrics_exporter
 ```
-
-A runtime YAML test configuration is not included because the exporter is not
-registered on this branch.
 
 ## License
 

@@ -1,0 +1,6 @@
+change_type: new_component
+component: pipeline
+note: "Add the feature-gated Geneva Metrics exporter for authenticated OTLP metrics publication."
+issues: [3873]
+subtext: |
+  Register `urn:otel:exporter:geneva_metrics` with bearer-token authentication and optional certificate authentication.

@@ -360,6 +360,14 @@ azure-monitor = [
 clickhouse = ["otel-arrow-dfe-contrib-nodes/clickhouse"]
 geneva = ["otel-arrow-dfe-contrib-nodes/geneva"]
 geneva-certificate-auth = ["geneva", "otel-arrow-dfe-contrib-nodes/geneva-certificate-auth"]
+geneva-metrics = [
+    "otel-arrow-dfe-contrib-nodes/geneva-metrics",
+    "azure-identity-auth",
+]
+geneva-metrics-certificate-auth = [
+    "geneva-metrics",
+    "otel-arrow-dfe-contrib-nodes/geneva-metrics-certificate-auth",
+]
 
 # Contrib extensions.
 contrib-extensions = ["otel-arrow-dfe-contrib-extensions/contrib-extensions"]

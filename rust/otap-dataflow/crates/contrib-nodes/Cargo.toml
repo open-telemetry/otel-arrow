@@ -112,6 +112,7 @@ contrib-exporters = [
     "azure-monitor",
     "clickhouse",
     "geneva",
+    "geneva-metrics",
     "kafka",
 ]
 
@@ -184,7 +185,6 @@ clickhouse = [
     "dep:ryu",
 ]
 clickhouse-bench = ["clickhouse"]
-geneva-metrics-exporter = ["dep:crc32fast"]
 geneva = [
     "dep:geneva-uploader",
     "dep:opentelemetry-proto",
@@ -193,6 +193,16 @@ geneva = [
 geneva-certificate-auth = [
     "geneva",
     "geneva-uploader/certificate-auth",
+]
+geneva-metrics = [
+    "dep:crc32fast",
+    "dep:humantime-serde",
+    "dep:reqwest",
+    "dep:urlencoding",
+]
+geneva-metrics-certificate-auth = [
+    "geneva-metrics",
+    "reqwest/native-tls",
 ]
 
 # Cross-cutting integration support.
