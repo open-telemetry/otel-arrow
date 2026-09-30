@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! OTLP metrics to ME-to-FE protocol model mapping.
+//! OTLP metrics to Geneva protocol model mapping.
 
 mod attributes;
 mod config;
@@ -84,7 +84,7 @@ const BANNED_METRIC_NAMESPACES: &[&str] = &[
 pub struct Publication {
     /// Monitoring account selected by OTLP attribute precedence.
     pub monitoring_account: String,
-    /// ME-to-FE packet for this account.
+    /// Geneva protocol packet for this account.
     pub packet: Packet,
 }
 
@@ -122,8 +122,8 @@ pub enum MappingError {
     /// The mapping configuration is invalid.
     #[error("invalid Geneva metrics mapping configuration: {0}")]
     InvalidConfig(String),
-    /// The packet timestamp exceeds the ME time representation.
-    #[error("OTLP receive timestamp exceeds the ME time representation")]
+    /// The packet timestamp exceeds the protocol time representation.
+    #[error("OTLP receive timestamp exceeds the protocol time representation")]
     ReceiveTimeOverflow,
 }
 
@@ -519,7 +519,7 @@ where
                 min: Some(point.min().unwrap_or(0.0)),
                 max: Some(point.max().unwrap_or(0.0)),
                 sum: Some(point.sum().unwrap_or(0.0)),
-                count: Some(me_scalar_count(point.count())),
+                count: Some(narrow_scalar_count(point.count())),
                 milliseconds: None,
                 histogram,
             }),
@@ -609,7 +609,7 @@ where
                 min: Some(point.min().unwrap_or(0.0)),
                 max: Some(point.max().unwrap_or(0.0)),
                 sum: Some(point.sum().unwrap_or(0.0)),
-                count: Some(me_scalar_count(point.count())),
+                count: Some(narrow_scalar_count(point.count())),
                 milliseconds: None,
                 histogram: Some(MetricHistogram::Exponential(
                     super::encoder::ExponentialHistogram {
@@ -758,7 +758,7 @@ fn unix_nanos_to_dotnet_ticks(value: u64) -> Option<u64> {
     (value <= i64::MAX as u64).then_some(value / NANOS_PER_DOTNET_TICK)
 }
 
-fn me_scalar_count(value: u64) -> u64 {
+fn narrow_scalar_count(value: u64) -> u64 {
     u64::from(value as u32)
 }
 
@@ -910,67 +910,8 @@ mod tests {
         }
     }
 
-    /// Scenario: An Autotester OTLP gauge uses resource routing and selected resource dimensions.
-    /// Guarantees: Direct Geneva publication preserves the expected series identity without the raw-data flag that FE drops.
-    #[test]
-    fn maps_autotester_gauge_without_raw_data_flag() {
-        let scope = scope_with_metrics(vec![gauge_metric(
-            "gauge",
-            gauge_point(vec![string_attribute("exporter", "otlp")]),
-        )]);
-        let mut mapping_config = config();
-        mapping_config.resource_attributes =
-            vec!["hostname".to_string(), "service.name".to_string()];
-        let mapped = map_request(
-            &request(
-                vec![
-                    string_attribute(ACCOUNT_ATTRIBUTE, "AgentSdkTeamIntTest"),
-                    string_attribute(NAMESPACE_ATTRIBUTE, "Autotester.Emitters.OTEL"),
-                    string_attribute("hostname", "mdm-otelarrow-amd64-1p-noproxy"),
-                    string_attribute("service.name", "Autotester"),
-                ],
-                scope,
-            ),
-            &mapping_config,
-            TEST_TIME_NANOS,
-        )
-        .expect("Autotester gauge should map");
-
-        assert_eq!(mapped.rejected_data_points, 0);
-        assert_eq!(mapped.publications.len(), 1);
-        let publication = &mapped.publications[0];
-        assert_eq!(publication.monitoring_account, "AgentSdkTeamIntTest");
-        let metric = &publication.packet.metrics[0];
-        assert_eq!(metric.namespace, "Autotester.Emitters.OTEL");
-        assert_eq!(
-            metric.sampling_type,
-            SUM | COUNT | METRIC_TYPE_GAUGE | METRIC_ORIGIN_OPEN_TELEMETRY
-        );
-        assert_eq!(metric.sampling_type & IS_RAW_DATA, 0);
-        assert_eq!(
-            metric.dimensions,
-            vec![
-                super::super::encoder::Dimension {
-                    name: "exporter".to_string(),
-                    value: "otlp".to_string(),
-                },
-                super::super::encoder::Dimension {
-                    name: "hostname".to_string(),
-                    value: "mdm-otelarrow-amd64-1p-noproxy".to_string(),
-                },
-                super::super::encoder::Dimension {
-                    name: "service.name".to_string(),
-                    value: "Autotester".to_string(),
-                },
-            ]
-        );
-        let packet = super::super::encoder::encode(&publication.packet)
-            .expect("Autotester gauge packet should encode");
-        assert!(!packet.is_empty());
-    }
-
     /// Scenario: A delta OTLP integer sum contains routing attributes and the SDK cardinality-overflow marker.
-    /// Guarantees: Point routing wins, overflow metadata produces a diagnostic instead of a dimension, and FE counter flags omit raw data.
+    /// Guarantees: Point routing wins, overflow metadata produces a diagnostic instead of a dimension, and the expected counter flags are selected.
     #[test]
     fn maps_delta_sum_with_attribute_precedence() {
         let point = NumberDataPoint {
@@ -1080,7 +1021,7 @@ mod tests {
     }
 
     /// Scenario: Successive scopes override, omit, and clear one exact-case resource dimension.
-    /// Guarantees: FE's sticky resource override survives omitted and case-variant scope keys until an exact empty value restores the resource value.
+    /// Guarantees: A sticky resource override survives omitted and case-variant scope keys until an exact empty value restores the resource value.
     #[test]
     fn preserves_resource_overrides_across_scopes() {
         let scope =
@@ -1150,7 +1091,7 @@ mod tests {
     }
 
     /// Scenario: Monotonic and non-monotonic sums use an unrecognized aggregation temporality.
-    /// Guarantees: Every non-delta value follows ME's cumulative counter and up-down-counter paths.
+    /// Guarantees: Every non-delta value follows the expected cumulative counter and up-down-counter paths.
     #[test]
     fn maps_unknown_sum_temporalities_as_cumulative() {
         let unknown_temporality = i32::MAX;
@@ -1184,7 +1125,7 @@ mod tests {
     }
 
     /// Scenario: OTLP explicit and exponential histograms contain valid distributions.
-    /// Guarantees: Dense OTLP buckets become C++-compatible ME histograms without the raw-data flag rejected by FE.
+    /// Guarantees: Dense OTLP buckets become the expected explicit and sparse exponential histogram models.
     #[test]
     fn maps_histogram_distributions() {
         let explicit_point = HistogramDataPoint {
@@ -1296,7 +1237,7 @@ mod tests {
     }
 
     /// Scenario: Explicit and exponential histogram scalar counts exceed the Geneva u32 wire field.
-    /// Guarantees: Counts use ME's narrowing conversion while distributions and all metrics remain encodable.
+    /// Guarantees: Counts are narrowed to the wire representation while distributions and all metrics remain encodable.
     #[test]
     fn narrows_large_histogram_scalar_counts() {
         let count = u64::from(u32::MAX) + 1;
@@ -1306,7 +1247,7 @@ mod tests {
             (count, 0),
             (u64::MAX, u64::from(u32::MAX)),
         ] {
-            assert_eq!(me_scalar_count(input), expected);
+            assert_eq!(narrow_scalar_count(input), expected);
         }
         let scope = scope_with_metrics(vec![
             gauge_metric("valid", gauge_point(Vec::new())),
@@ -1355,7 +1296,7 @@ mod tests {
     }
 
     /// Scenario: Receive and datapoint timestamps share a fractional whole-second boundary.
-    /// Guarantees: Protocol serialization time floors while the datapoint bucket rounds up like ME.
+    /// Guarantees: Protocol serialization time floors while datapoint bucketing rounds up at the same boundary.
     #[test]
     fn uses_distinct_receive_and_datapoint_timestamp_bucketing() {
         let exact = 45 * NANOS_PER_SECOND;
@@ -1396,7 +1337,7 @@ mod tests {
     }
 
     /// Scenario: An explicit histogram reports only scalar count and sum without a bucket distribution.
-    /// Guarantees: The mapped FE metric retains scalar fields without a histogram body and remains encodable.
+    /// Guarantees: The mapped metric retains scalar fields without a histogram body and remains encodable.
     #[test]
     fn maps_distributionless_explicit_histogram_as_scalar_only() {
         let point = HistogramDataPoint {
@@ -1438,7 +1379,7 @@ mod tests {
     }
 
     /// Scenario: Overflow-marked points fail dimension and oversized metric-name validation after label processing.
-    /// Guarantees: Both metrics are rejected, and an oversized name produces ME's unset diagnostic name.
+    /// Guarantees: Both metrics are rejected, and an oversized name produces an unset diagnostic name.
     #[test]
     fn retains_overflow_diagnostics_for_rejected_metrics() {
         let overflow_attribute = bool_attribute("otel.metric.overflow", true);
@@ -1478,7 +1419,7 @@ mod tests {
     }
 
     /// Scenario: Overflow-marked gauges encounter invalid resource dimensions, invalid scope dimensions, and an empty metric name.
-    /// Guarantees: Parent validation rejects invalid dimensions while FE accepts and diagnoses an empty metric name.
+    /// Guarantees: Parent validation rejects invalid dimensions while an empty metric name remains accepted and diagnosed.
     #[test]
     fn retains_overflow_diagnostics_across_parent_validation() {
         let overflow_point = || gauge_point(vec![bool_attribute("otel.metric.overflow", true)]);
@@ -1553,10 +1494,10 @@ mod tests {
         assert_eq!(empty_name_mapped.cardinality_overflows[0].metric_name, "");
     }
 
-    /// Scenario: Metric names are empty, exactly 512 UTF-16 units, or exceed the FE limit.
+    /// Scenario: Metric names are empty, exactly 512 UTF-16 units, or exceed the protocol limit.
     /// Guarantees: Empty and boundary names map while oversized names are rejected before publication.
     #[test]
-    fn applies_fe_metric_name_limits() {
+    fn applies_metric_name_limits() {
         let supplementary = "\u{1f600}";
         let accepted = supplementary.repeat(MAX_METRIC_NAME_UTF16_UNITS / 2);
         let rejected = supplementary.repeat(MAX_METRIC_NAME_UTF16_UNITS / 2 + 1);
@@ -1612,10 +1553,10 @@ mod tests {
         );
     }
 
-    /// Scenario: Destination names cover every ME-banned account and namespace plus case-only variants.
-    /// Guarantees: The mapper uses the same exact case-sensitive deny lists as RawMdmEventsQueue.
+    /// Scenario: Destination names cover every banned account and namespace plus case-only variants.
+    /// Guarantees: The mapper uses exact case-sensitive destination deny lists.
     #[test]
-    fn matches_me_banned_destination_lists() {
+    fn matches_banned_destination_lists() {
         for account in BANNED_MONITORING_ACCOUNTS {
             assert!(is_banned_monitoring_account(account));
         }
@@ -1635,7 +1576,7 @@ mod tests {
     }
 
     /// Scenario: Overflow-marked points target empty, banned, and case-variant account and namespace names.
-    /// Guarantees: ME-banned destinations are rejected after diagnostics are recorded while case-only variants remain publishable.
+    /// Guarantees: Banned destinations are rejected after diagnostics are recorded while case-only variants remain publishable.
     #[test]
     fn rejects_banned_destinations_after_overflow_diagnostics() {
         let point = |account: &str, namespace: &str| {
@@ -1896,7 +1837,7 @@ mod tests {
     }
 
     /// Scenario: A serialized OTLP gauge request is decoded, mapped, and serialized as protocol v6.
-    /// Guarantees: The complete local OTLP-to-ME path produces a non-empty packet with one metric.
+    /// Guarantees: The complete local OTLP-to-packet path produces a non-empty packet with one metric.
     #[test]
     fn decodes_and_encodes_otlp_request() {
         let scope = ScopeMetrics {

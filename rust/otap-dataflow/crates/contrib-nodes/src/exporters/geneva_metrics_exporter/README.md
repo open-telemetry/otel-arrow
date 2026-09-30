@@ -16,7 +16,7 @@ The exporter is separate from `geneva_exporter`, which publishes logs and
 traces through a different Geneva protocol and client.
 
 The current implementation contains the protocol model, encoder, compatibility
-fixtures, and FE-compatible mapping for OTLP and OTAP metrics views.
+fixtures, and Geneva-compatible mapping for OTLP and OTAP metrics views.
 Publication, authentication, exporter registration, and runtime configuration
 are introduced by follow-up changes.
 

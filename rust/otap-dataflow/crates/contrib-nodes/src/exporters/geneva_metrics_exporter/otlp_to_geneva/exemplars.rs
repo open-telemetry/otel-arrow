@@ -453,7 +453,7 @@ mod tests {
     }
 
     /// Scenario: An oversized exemplar set contains equal positive values with distinct trace IDs.
-    /// Guarantees: ME-style tail replacement preserves the same retained exemplar identities and order.
+    /// Guarantees: Tail replacement preserves the same retained exemplar identities and order.
     #[test]
     fn retains_duplicate_exemplars_up_to_payload_limit() {
         let mut candidates = (0..32)
@@ -478,7 +478,7 @@ mod tests {
     }
 
     /// Scenario: Mixed-sign sampling encounters the negative minimum and a duplicate negative maximum.
-    /// Guarantees: The FE mixed-sign buckets and tail swaps select the same exemplar identities and order.
+    /// Guarantees: Mixed-sign buckets and tail swaps select the same exemplar identities and order.
     #[test]
     fn matches_mixed_sign_tail_replacement() {
         let values = [
@@ -503,7 +503,7 @@ mod tests {
     }
 
     /// Scenario: Removing a duplicate zero first brings an exemplar payload below the size limit.
-    /// Guarantees: FE still reprocesses and removes the swapped duplicate tail exemplar before stopping.
+    /// Guarantees: Tail processing reprocesses and removes the swapped duplicate exemplar before stopping.
     #[test]
     fn reprocesses_tail_after_zero_removal_reaches_limit() {
         let values = [1.0, 0.0, 0.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0, 128.0, 1.0];

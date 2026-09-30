@@ -171,7 +171,7 @@ mod tests {
     }
 
     /// Scenario: Explicit histogram bucket counts omit, include, or exceed the required overflow bucket.
-    /// Guarantees: FE rejects missing overflow counts and ignores counts beyond the first overflow bucket.
+    /// Guarantees: Missing overflow counts are rejected, and counts beyond the first overflow bucket are ignored.
     #[test]
     fn validates_explicit_histogram_bucket_shape() {
         assert!(!valid_explicit_histogram(&explicit_point(
@@ -211,7 +211,7 @@ mod tests {
     }
 
     /// Scenario: Explicit histogram bounds are unordered, duplicated, and share a bound with the synthetic overflow bucket.
-    /// Guarantees: Buckets are sorted and equal boundaries are coalesced using ME-compatible count addition.
+    /// Guarantees: Buckets are sorted and equal boundaries are coalesced using protocol-compatible count addition.
     #[test]
     fn sorts_and_coalesces_explicit_histogram_buckets() {
         let histogram = explicit_histogram(&explicit_point(

@@ -361,7 +361,7 @@ fn compare_dimensions(left: &Dimension, right: &Dimension) -> Ordering {
 }
 
 fn compare_ascii_case_insensitive(left: &str, right: &str) -> Ordering {
-    // ME compares UTF-16 wide strings and folds ASCII under its default C locale.
+    // Dimension names are compared as UTF-16 code units with ASCII case folding.
     left.encode_utf16()
         .map(ascii_lowercase_utf16)
         .cmp(right.encode_utf16().map(ascii_lowercase_utf16))
@@ -570,7 +570,7 @@ mod tests {
     }
 
     /// Scenario: Final resource routing attributes are empty or non-string after earlier non-empty values.
-    /// Guarantees: ME routing falls back to the configured monitoring account and namespace.
+    /// Guarantees: Routing falls back to the configured monitoring account and namespace.
     #[test]
     fn falls_back_from_empty_resource_routing_values() {
         let mapping_config = config();
@@ -725,7 +725,7 @@ mod tests {
     }
 
     /// Scenario: A later scope repeats an exact resource key with an empty value.
-    /// Guarantees: FE clears the earlier scope override and restores the original resource value.
+    /// Guarantees: An empty scope override clears the earlier override and restores the original resource value.
     #[test]
     fn empty_scope_pre_override_restores_resource_value() {
         let original = vec![dimension("region", "resource")];
@@ -766,7 +766,7 @@ mod tests {
     }
 
     /// Scenario: Selected resource and scope attributes contain case variants of the same key.
-    /// Guarantees: Raw parent occurrences remain available for FE's exact-case pre-override pass.
+    /// Guarantees: Raw parent occurrences remain available for the exact-case pre-override pass.
     #[test]
     fn retains_parent_dimension_occurrences_until_merge() {
         let mut mapping_config = config();
@@ -808,7 +808,7 @@ mod tests {
     }
 
     /// Scenario: An honored resource value differs from the existing point value only by casing.
-    /// Guarantees: ME's case-insensitive duplicate check preserves the first serialized value.
+    /// Guarantees: The case-insensitive duplicate check preserves the first serialized value.
     #[test]
     fn preserves_point_value_when_honored_resource_differs_only_by_case() {
         let point = [dimension("REGION", "WEST")];
@@ -863,7 +863,7 @@ mod tests {
     }
 
     /// Scenario: A supplementary-plane dimension name is compared with a BMP private-use name.
-    /// Guarantees: Dimension ordering follows ME's UTF-16 code-unit order rather than UTF-8 byte order.
+    /// Guarantees: Dimension ordering follows UTF-16 code-unit order rather than UTF-8 byte order.
     #[test]
     fn sorts_dimension_names_by_utf16_code_units() {
         assert_eq!(
@@ -895,7 +895,7 @@ mod tests {
     }
 
     /// Scenario: Duplicate point values differ only by casing.
-    /// Guarantees: ME retains the first value instead of replacing it with a case-equivalent value.
+    /// Guarantees: The first value is retained instead of being replaced by a case-equivalent value.
     #[test]
     fn preserves_first_case_equivalent_point_dimension_value() {
         let point = point_context(
@@ -945,9 +945,9 @@ mod tests {
     }
 
     /// Scenario: Double point attributes cover fixed, scientific, and special floating-point values.
-    /// Guarantees: Dimension values use ME's six-decimal locale-independent formatting contract.
+    /// Guarantees: Dimension values use a six-decimal locale-independent formatting contract.
     #[test]
-    fn formats_double_dimensions_like_me() {
+    fn formats_double_dimensions_with_fixed_precision() {
         let point = point_context(
             &[
                 double_attribute("fixed", 12_345.678_9),
@@ -1083,7 +1083,7 @@ mod tests {
     }
 
     /// Scenario: Oversized resource and scope values are replaced by valid point values.
-    /// Guarantees: Dimension limits apply after ME precedence, so discarded parent values do not reject the point.
+    /// Guarantees: Dimension limits apply after precedence, so discarded parent values do not reject the point.
     #[test]
     fn accepts_valid_point_overrides_for_oversized_parent_values() {
         let oversized = "v".repeat(MAX_DIMENSION_VALUE_UTF16_UNITS + 1);
@@ -1207,7 +1207,7 @@ mod tests {
     }
 
     /// Scenario: Exact scope selectors appear before and after a wildcard scope selector.
-    /// Guarantees: The first wildcard replaces exact selections and later entries are ignored like ME configuration loading.
+    /// Guarantees: The first wildcard replaces exact selections and later entries are ignored.
     #[test]
     fn wildcard_scope_selection_replaces_exact_entries() {
         let mut mapping_config = config();
