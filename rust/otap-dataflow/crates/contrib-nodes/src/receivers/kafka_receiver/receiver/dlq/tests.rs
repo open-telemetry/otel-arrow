@@ -158,8 +158,11 @@ fn topic_for_precedence() {
         mgr.topic_for(Some(SignalType::Metrics)).as_deref(),
         Some("global_dlq")
     );
-    // Signal-less category resolves to some configured topic.
-    assert!(mgr.topic_for(None).is_some());
+    // Signal-less category is a defensive arm that is unreachable in normal
+    // operation (every dead-letterable category resolves a signal). It falls
+    // back to the sorted-first of all configured topics ("global_dlq" sorts
+    // before "traces_dlq").
+    assert_eq!(mgr.topic_for(None).as_deref(), Some("global_dlq"));
 }
 
 /// Scenario: an excluded-topic dead-letter resolves its matching signal, so it
@@ -190,8 +193,10 @@ fn topic_for_excluded_topic_uses_matching_signal() {
         mgr.topic_for(Some(SignalType::Logs)).as_deref(),
         Some("global_dlq")
     );
-    // The defensive signal-less arm still resolves a configured topic.
-    assert!(mgr.topic_for(None).is_some());
+    // The defensive signal-less arm is unreachable in normal operation and
+    // falls back to the sorted-first of all configured topics ("global_dlq"
+    // sorts before "m_dlq" and "t_dlq").
+    assert_eq!(mgr.topic_for(None).as_deref(), Some("global_dlq"));
 }
 
 /// Scenario: the in-flight set is saturated to `DLQ_MAX_IN_FLIGHT` and a new job

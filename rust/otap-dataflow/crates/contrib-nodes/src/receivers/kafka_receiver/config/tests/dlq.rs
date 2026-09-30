@@ -289,6 +289,71 @@ fn dlq_producer_client_id_auto_derived_and_timeout_aligned() {
     assert_eq!(producer.get("request.required.acks"), None);
 }
 
+/// Scenario: the DLQ connection overrides both brokers and SASL/PLAIN auth.
+/// Guarantees: the built producer client config uses the override brokers (not
+/// the source brokers) and the override security settings, so a DLQ pointed at a
+/// different cluster/credentials is wired correctly.
+#[test]
+fn dlq_producer_connection_override_is_applied() {
+    let cfg = parse(manual_with_dlq(json!({
+        "topic": "otel_dlq",
+        "connection": {
+            "brokers": "dlq-broker:9092",
+            "auth": {"sasl": {"mechanism": "PLAIN", "username": "u", "password": "p"}},
+        },
+    })))
+    .expect("valid");
+    let producer = cfg
+        .build_dlq_producer_config()
+        .expect("dlq present implies producer config");
+    // Override brokers win over the source brokers ("b:9092").
+    assert_eq!(producer.get("bootstrap.servers"), Some("dlq-broker:9092"));
+    assert_eq!(producer.get("client.id"), Some("c-dlq"));
+    // SASL-without-TLS resolves to SASL_PLAINTEXT with the override credentials.
+    assert_eq!(producer.get("security.protocol"), Some("SASL_PLAINTEXT"));
+    assert_eq!(producer.get("sasl.mechanism"), Some("PLAIN"));
+    assert_eq!(producer.get("sasl.username"), Some("u"));
+    assert_eq!(producer.get("sasl.password"), Some("p"));
+}
+
+/// Scenario: no DLQ connection override is set.
+/// Guarantees: the producer defaults to the source brokers, so an unspecified
+/// DLQ connection reuses the source consumer's connection.
+#[test]
+fn dlq_producer_defaults_to_source_brokers() {
+    let cfg = parse(manual_with_dlq(json!({"topic": "otel_dlq"}))).expect("valid");
+    let producer = cfg
+        .build_dlq_producer_config()
+        .expect("dlq present implies producer config");
+    assert_eq!(producer.get("bootstrap.servers"), Some("b:9092"));
+    // Source has no TLS/auth, so the DLQ producer is plaintext.
+    assert_eq!(producer.get("security.protocol"), Some("PLAINTEXT"));
+}
+
+/// Scenario: the DLQ producer connection overrides the brokers, but the DLQ
+/// re-read consumer must recover the ORIGINAL bytes from the source cluster.
+/// Guarantees: the re-read consumer config always targets the source brokers
+/// (never the producer override) and is a manual-assignment, no-auto-commit
+/// consumer with the derived `-dlq-reread` client and group ids.
+#[test]
+fn dlq_reread_consumer_always_uses_source_connection() {
+    let cfg = parse(manual_with_dlq(json!({
+        "topic": "otel_dlq",
+        "connection": {"brokers": "dlq-broker:9092"},
+    })))
+    .expect("valid");
+    let reread = cfg
+        .build_dlq_reread_consumer_config()
+        .expect("dlq present implies reread config");
+    // The re-read consumer reads source topics, so it must use the SOURCE
+    // brokers regardless of the producer-only connection override.
+    assert_eq!(reread.get("bootstrap.servers"), Some("b:9092"));
+    assert_eq!(reread.get("client.id"), Some("c-dlq-reread"));
+    assert_eq!(reread.get("group.id"), Some("g-dlq-reread"));
+    assert_eq!(reread.get("enable.auto.commit"), Some("false"));
+    assert_eq!(reread.get("enable.auto.offset.store"), Some("false"));
+}
+
 /// Scenario: no `dlq` block is present.
 /// Guarantees: the DLQ is disabled (accessor returns None).
 #[test]

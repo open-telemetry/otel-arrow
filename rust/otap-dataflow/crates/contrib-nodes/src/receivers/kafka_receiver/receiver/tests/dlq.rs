@@ -376,6 +376,86 @@ async fn permanent_nack_not_captured_is_not_dead_lettered() {
     .await;
 }
 
+/// Scenario: a receiver has BOTH transient-nack replay AND a DLQ that captures
+/// permanent nacks. A record is transiently nacked, then (after replay
+/// redelivery) permanently nacked.
+/// Guarantees: the transient nack is replayed and never dead-lettered (replay
+/// takes precedence over the DLQ for non-permanent nacks), while the subsequent
+/// permanent nack on the redelivered record IS dead-lettered -- locking the
+/// nack-handling precedence.
+#[tokio::test]
+async fn transient_nack_with_replay_is_not_dead_lettered_but_permanent_is() {
+    use crate::receivers::kafka_receiver::config::DlqConfig;
+    const TOPIC: &str = "dlq-replay-precedence-src";
+    const DLQ: &str = "dlq-replay-precedence-out";
+    let group = "dlq-replay-precedence-group";
+    with_cluster(
+        KafkaTestCluster::builder()
+            .topic_with(TOPIC, 1, 1)
+            .topic_with(DLQ, 1, 1),
+        |cluster| async move {
+            let producer = cluster.producer().build();
+            let bytes = encoded_trace_fixture();
+            producer
+                .send_full(SendRecord::new(TOPIC, &bytes).key(b"k"))
+                .await
+                .expect("send");
+
+            // Replay transient nacks (short backoff so redelivery is prompt) AND
+            // capture permanent nacks in the DLQ, so both handlers are armed.
+            let builder = manual_traces_builder(cluster.bootstrap_servers(), group, TOPIC)
+                .with_transient_nack(TransientNackConfig {
+                    mode: TransientNackMode::Replay,
+                    initial_backoff_ms: 10,
+                    max_backoff_ms: 40,
+                })
+                .with_enable_idempotency(true)
+                .with_dlq(DlqConfig {
+                    topic: Some(DLQ.to_string()),
+                    per_signal: None,
+                    capture: vec![DlqCapture::PermanentNack],
+                    connection: None,
+                });
+            let cfg = KafkaReceiverConfig::try_from(builder).expect("valid");
+            let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
+
+            // Transiently nack the record: it must be replayed, not dead-lettered.
+            let first = receiver.recv_pdata().await;
+            receiver.nack_transient("retry me", first);
+
+            // Nothing is dead-lettered for the transient nack.
+            let after_transient = drain_dlq_topic(&cluster, DLQ, 1, Duration::from_secs(3)).await;
+            assert!(
+                after_transient.is_empty(),
+                "a transient nack under replay must not be dead-lettered"
+            );
+
+            // The record is redelivered by replay; permanently nack it now.
+            let redelivered = receiver
+                .try_recv_pdata(Duration::from_secs(30))
+                .await
+                .expect("transiently-nacked record must be replayed/redelivered");
+            receiver.nack_permanent("terminal", redelivered);
+
+            // The permanent nack IS dead-lettered.
+            let records = drain_dlq_topic(&cluster, DLQ, 1, Duration::from_secs(30)).await;
+            assert_eq!(
+                records.len(),
+                1,
+                "the permanent nack on the redelivered record must be dead-lettered"
+            );
+            assert_eq!(
+                records[0].header("dlq.reason"),
+                Some(&b"permanent_nack"[..])
+            );
+
+            receiver.shutdown(Duration::from_secs(5));
+            let _ = receiver.await_terminal_state().await;
+        },
+    )
+    .await;
+}
+
 /// Scenario: a permanently-nacked traces message is dead-lettered via re-read.
 /// Guarantees: the DLQ record carries `dlq.signal = traces` (resolved from the
 /// source topic), not the placeholder `unknown`, so telemetry and the record
@@ -1142,9 +1222,62 @@ async fn empty_payload_is_accepted_and_forwarded() {
     .await;
 }
 
-// REVIEW(#8-audit): end-to-end source-header passthrough (previously only unit-
-// tested on build_dlq_headers). A dead-lettered record must be a faithful
-// superset: original source headers survive alongside the injected dlq.* context.
+/// Scenario: a Kafka record with a null (absent) value -- not an empty
+/// `Some(&[])` payload -- is consumed by a receiver with a decode-capturing DLQ.
+/// Guarantees: the null record is dead-lettered with reason `empty_payload`
+/// (gated by the `decode` capture) rather than forwarded, so a genuinely
+/// value-less record is captured distinctly from a valid empty request.
+#[tokio::test]
+async fn null_value_is_dead_lettered_with_empty_payload_reason() {
+    const TOPIC: &str = "dlq-null-src";
+    const DLQ: &str = "dlq-null-out";
+    let group = "dlq-null-group";
+    with_cluster(
+        KafkaTestCluster::builder()
+            .topic_with(TOPIC, 1, 1)
+            .topic_with(DLQ, 1, 1),
+        |cluster| async move {
+            let producer = cluster.producer().build();
+            // A null-value record: the consumer sees payload() == None, which is
+            // the only input that yields the EmptyPayload decode failure.
+            producer
+                .send_null_value(TOPIC, b"k")
+                .await
+                .expect("send null value");
+
+            // empty_payload is a decode-class failure gated by the decode capture.
+            let cfg = manual_traces_config_with_dlq(
+                cluster.bootstrap_servers(),
+                group,
+                TOPIC,
+                DLQ,
+                vec![DlqCapture::Decode],
+            );
+            let receiver = KafkaReceiverHarness::start(&cluster, cfg);
+
+            let records = drain_dlq_topic(&cluster, DLQ, 1, Duration::from_secs(30)).await;
+            assert_eq!(
+                records.len(),
+                1,
+                "the null-value record must be dead-lettered"
+            );
+            assert_eq!(
+                records[0].header("dlq.reason"),
+                Some(&b"empty_payload"[..]),
+                "a null-value record must be dead-lettered as empty_payload"
+            );
+            assert_eq!(
+                records[0].header("dlq.source.topic"),
+                Some(TOPIC.as_bytes())
+            );
+
+            receiver.shutdown(Duration::from_secs(5));
+            let _ = receiver.await_terminal_state().await;
+        },
+    )
+    .await;
+}
+
 /// Scenario: a record carrying a custom source header (`x-tenant`) fails decode
 /// and is dead-lettered with decode capture.
 /// Guarantees: the dead-lettered record carries BOTH the injected `dlq.*` context
