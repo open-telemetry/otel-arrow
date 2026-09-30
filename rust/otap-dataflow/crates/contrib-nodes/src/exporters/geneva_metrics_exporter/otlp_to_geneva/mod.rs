@@ -29,13 +29,14 @@ use otel_arrow_dfe_pdata_views::views::resource::ResourceView;
 use prost::Message;
 use thiserror::Error;
 
+#[cfg(test)]
+use super::encoder::IS_RAW_DATA;
 use super::encoder::{
-    COUNT, EXEMPLAR, HISTOGRAM, IS_RAW_DATA, MAX, METRIC_ORIGIN_OPEN_TELEMETRY,
-    METRIC_TYPE_CUMULATIVE_COUNTER, METRIC_TYPE_CUMULATIVE_EXPONENTIAL_HISTOGRAM,
-    METRIC_TYPE_CUMULATIVE_HISTOGRAM, METRIC_TYPE_CUMULATIVE_UP_DOWN_COUNTER,
-    METRIC_TYPE_DELTA_COUNTER, METRIC_TYPE_DELTA_EXPONENTIAL_HISTOGRAM,
-    METRIC_TYPE_DELTA_HISTOGRAM, METRIC_TYPE_GAUGE, MIN, Metric, MetricExemplar, MetricHistogram,
-    MetricValues, NumericValues, Packet, SUM,
+    COUNT, EXEMPLAR, HISTOGRAM, MAX, METRIC_ORIGIN_OPEN_TELEMETRY, METRIC_TYPE_CUMULATIVE_COUNTER,
+    METRIC_TYPE_CUMULATIVE_EXPONENTIAL_HISTOGRAM, METRIC_TYPE_CUMULATIVE_HISTOGRAM,
+    METRIC_TYPE_CUMULATIVE_UP_DOWN_COUNTER, METRIC_TYPE_DELTA_COUNTER,
+    METRIC_TYPE_DELTA_EXPONENTIAL_HISTOGRAM, METRIC_TYPE_DELTA_HISTOGRAM, METRIC_TYPE_GAUGE, MIN,
+    Metric, MetricExemplar, MetricHistogram, MetricValues, NumericValues, Packet, SUM,
 };
 #[cfg(test)]
 use attributes::{
@@ -422,7 +423,7 @@ where
     let Some(context) = context else {
         return Ok(MapPointResult::rejected(overflow));
     };
-    let mut sampling_type = SUM | COUNT | IS_RAW_DATA | metric_type | METRIC_ORIGIN_OPEN_TELEMETRY;
+    let mut sampling_type = SUM | COUNT | metric_type | METRIC_ORIGIN_OPEN_TELEMETRY;
     let exemplars = map_point_exemplars(
         config,
         point.exemplars(),
@@ -494,14 +495,8 @@ where
         return Ok(MapPointResult::rejected(overflow));
     };
     let histogram = explicit_histogram(point);
-    let mut sampling_type = MIN
-        | MAX
-        | SUM
-        | COUNT
-        | HISTOGRAM
-        | IS_RAW_DATA
-        | metric_type
-        | METRIC_ORIGIN_OPEN_TELEMETRY;
+    let mut sampling_type =
+        MIN | MAX | SUM | COUNT | HISTOGRAM | metric_type | METRIC_ORIGIN_OPEN_TELEMETRY;
     let exemplars = map_point_exemplars(
         config,
         point.exemplars(),
@@ -590,14 +585,8 @@ where
     let Some(context) = context else {
         return Ok(MapPointResult::rejected(overflow));
     };
-    let mut sampling_type = MIN
-        | MAX
-        | SUM
-        | COUNT
-        | HISTOGRAM
-        | IS_RAW_DATA
-        | metric_type
-        | METRIC_ORIGIN_OPEN_TELEMETRY;
+    let mut sampling_type =
+        MIN | MAX | SUM | COUNT | HISTOGRAM | metric_type | METRIC_ORIGIN_OPEN_TELEMETRY;
     let exemplars = map_point_exemplars(
         config,
         point.exemplars(),
@@ -921,8 +910,67 @@ mod tests {
         }
     }
 
+    /// Scenario: An Autotester OTLP gauge uses resource routing and selected resource dimensions.
+    /// Guarantees: Direct Geneva publication preserves the expected series identity without the raw-data flag that FE drops.
+    #[test]
+    fn maps_autotester_gauge_without_raw_data_flag() {
+        let scope = scope_with_metrics(vec![gauge_metric(
+            "gauge",
+            gauge_point(vec![string_attribute("exporter", "otlp")]),
+        )]);
+        let mut mapping_config = config();
+        mapping_config.resource_attributes =
+            vec!["hostname".to_string(), "service.name".to_string()];
+        let mapped = map_request(
+            &request(
+                vec![
+                    string_attribute(ACCOUNT_ATTRIBUTE, "AgentSdkTeamIntTest"),
+                    string_attribute(NAMESPACE_ATTRIBUTE, "Autotester.Emitters.OTEL"),
+                    string_attribute("hostname", "mdm-otelarrow-amd64-1p-noproxy"),
+                    string_attribute("service.name", "Autotester"),
+                ],
+                scope,
+            ),
+            &mapping_config,
+            TEST_TIME_NANOS,
+        )
+        .expect("Autotester gauge should map");
+
+        assert_eq!(mapped.rejected_data_points, 0);
+        assert_eq!(mapped.publications.len(), 1);
+        let publication = &mapped.publications[0];
+        assert_eq!(publication.monitoring_account, "AgentSdkTeamIntTest");
+        let metric = &publication.packet.metrics[0];
+        assert_eq!(metric.namespace, "Autotester.Emitters.OTEL");
+        assert_eq!(
+            metric.sampling_type,
+            SUM | COUNT | METRIC_TYPE_GAUGE | METRIC_ORIGIN_OPEN_TELEMETRY
+        );
+        assert_eq!(metric.sampling_type & IS_RAW_DATA, 0);
+        assert_eq!(
+            metric.dimensions,
+            vec![
+                super::super::encoder::Dimension {
+                    name: "exporter".to_string(),
+                    value: "otlp".to_string(),
+                },
+                super::super::encoder::Dimension {
+                    name: "hostname".to_string(),
+                    value: "mdm-otelarrow-amd64-1p-noproxy".to_string(),
+                },
+                super::super::encoder::Dimension {
+                    name: "service.name".to_string(),
+                    value: "Autotester".to_string(),
+                },
+            ]
+        );
+        let packet = super::super::encoder::encode(&publication.packet)
+            .expect("Autotester gauge packet should encode");
+        assert!(!packet.is_empty());
+    }
+
     /// Scenario: A delta OTLP integer sum contains routing attributes and the SDK cardinality-overflow marker.
-    /// Guarantees: Point routing wins, overflow metadata produces a diagnostic instead of a dimension, and raw ME counter flags are selected.
+    /// Guarantees: Point routing wins, overflow metadata produces a diagnostic instead of a dimension, and FE counter flags omit raw data.
     #[test]
     fn maps_delta_sum_with_attribute_precedence() {
         let point = NumberDataPoint {
@@ -989,7 +1037,7 @@ mod tests {
         assert_eq!(metric.name, "requests");
         assert_eq!(
             metric.sampling_type,
-            SUM | COUNT | IS_RAW_DATA | METRIC_TYPE_DELTA_COUNTER | METRIC_ORIGIN_OPEN_TELEMETRY
+            SUM | COUNT | METRIC_TYPE_DELTA_COUNTER | METRIC_ORIGIN_OPEN_TELEMETRY
         );
         assert_eq!(
             metric.dimensions,
@@ -1136,7 +1184,7 @@ mod tests {
     }
 
     /// Scenario: OTLP explicit and exponential histograms contain valid distributions.
-    /// Guarantees: Dense OTLP buckets become the C++-compatible explicit and sparse exponential ME histogram models.
+    /// Guarantees: Dense OTLP buckets become C++-compatible ME histograms without the raw-data flag rejected by FE.
     #[test]
     fn maps_histogram_distributions() {
         let explicit_point = HistogramDataPoint {
@@ -1243,8 +1291,8 @@ mod tests {
         );
         assert_eq!(metrics[0].sampling_type & (MIN | MAX), MIN | MAX);
         assert_eq!(metrics[1].sampling_type & (MIN | MAX), MIN | MAX);
-        assert_ne!(metrics[0].sampling_type & IS_RAW_DATA, 0);
-        assert_ne!(metrics[1].sampling_type & IS_RAW_DATA, 0);
+        assert_eq!(metrics[0].sampling_type & IS_RAW_DATA, 0);
+        assert_eq!(metrics[1].sampling_type & IS_RAW_DATA, 0);
     }
 
     /// Scenario: Explicit and exponential histogram scalar counts exceed the Geneva u32 wire field.
@@ -1371,7 +1419,7 @@ mod tests {
 
         assert_eq!(
             metric.sampling_type & (MIN | MAX | HISTOGRAM | IS_RAW_DATA),
-            MIN | MAX | HISTOGRAM | IS_RAW_DATA
+            MIN | MAX | HISTOGRAM
         );
         assert_eq!(
             metric.values,
