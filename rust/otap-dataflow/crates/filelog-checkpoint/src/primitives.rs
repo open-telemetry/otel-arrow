@@ -13,10 +13,8 @@ pub const FILELOG_FORMAT_VERSION: u16 = 1;
 /// Version of the framing-profile canonical serialization and digest recipe.
 pub const FRAMING_PROFILE_VERSION: u16 = 1;
 pub(crate) const TX_ENVELOPE_VERSION: u16 = 1;
-pub(crate) const CURRENT_MAGIC: &[u8; 8] = b"FLOGCUR\0";
 pub(crate) const SNAPSHOT_MAGIC: &[u8; 8] = b"FLOGSNP\0";
 pub(crate) const SNAPSHOT_FOOTER_MAGIC: &[u8; 8] = b"FLOGSFT\0";
-pub(crate) const WAL_MAGIC: &[u8; 8] = b"FLOGWAL\0";
 pub(crate) const TX_MAGIC: &[u8; 8] = b"FLOGTXN\0";
 
 const NAMESPACE_DOMAIN: &[u8] = b"otel-arrow-filelog-checkpoint-namespace-v1\0";

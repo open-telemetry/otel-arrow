@@ -260,7 +260,7 @@ groups:
 | `rotation.on_truncate` | `fail` | `fail` durably quarantines; `read_new` accepts an explicit reported gap and continues at epoch-reset offset zero |
 | `checkpoint.id` | Derived logical receiver key | Optional stable namespace name of 1 to 127 ASCII bytes; set explicitly to preserve continuity across logical-key renames |
 | `checkpoint.sync_interval` | `0s` | Zero syncs every Ack transaction before release; nonzero permits rereading/reframing and, after storage/power failure, possible fail-closed recovery of a damaged unsynced WAL region |
-| `checkpoint.compact_after_bytes` | `64MiB` | Complete-WAL byte threshold, including the 56-byte header; at least one maximum transaction plus the header |
+| `checkpoint.compact_after_bytes` | `64MiB` | WAL-section byte threshold, excluding the immutable header/snapshot prefix; at least one maximum transaction |
 | `checkpoint.compact_after_transactions` | `10000` | Nonzero transaction threshold |
 | `checkpoint.retention` | `7d` | Continuous runtime-proven absence interval before eligibility; restart or incomplete evidence resets it, zero disables removal, and removal loses durable association |
 | `checkpoint.ownership_timeout` | `30s` | Nonzero bounded ownership wait |
@@ -320,7 +320,7 @@ rename, or an explicit namespace migration. Startup opens only the selected ID. 
 is genuinely absent--directory and artifacts are absent--the receiver runs the
 checkpoint-format first-publication state machine, emits a bounded health
 event, and applies new-file admission policy. Existing artifacts without valid
-`CURRENT` are not an empty namespace. The receiver never searches sibling
+`checkpoint.db` are not an empty namespace. The receiver never searches sibling
 namespaces. Changing the ID therefore selects different existing state or a
 genuinely new namespace and can cause replay or intentional `start_at`
 exclusion.
@@ -503,7 +503,7 @@ The following relationships are enforced:
     or `drop_and_continue`; the former proposed `on_nack` key is not an alias.
 41. `retry.max_backoff >= retry.initial_backoff`.
 42. `checkpoint.compact_after_bytes` is at least
-    `WAL_HEADER_BYTES + WAL_MAX_TX_FRAME_BYTES = 16,777,312` bytes;
+    `WAL_MAX_TX_FRAME_BYTES = 16,777,256` bytes;
     `checkpoint.compact_after_transactions` and the consecutive-failure budget
     are nonzero.
 43. Every UTF-8 input to the derived checkpoint-ID recipe has a length representable
@@ -1227,7 +1227,7 @@ filelog_fd_budget =
 ```
 
 The checkpoint allowance covers the namespace directory and lock, active
-snapshot/WAL, `CURRENT`, and bounded temporary publication descriptors; the
+`checkpoint.db` and a bounded temporary publication descriptor; the
 store must close intermediate handles before exceeding it. Startup rejects a
 receiver-local budget above the process soft `RLIMIT_NOFILE` or platform
 equivalent and emits a warning when it consumes more than 80 percent of that
@@ -2868,9 +2868,11 @@ revalidation, the worker stages one complete table with the entire nonempty
 vetted removal set omitted, while the current live table and generation remain
 unchanged. It writes and publishes the filtered snapshot and fresh WAL through
 the ordinary compaction state machine. The filtered table becomes live only
-after the replacement `CURRENT` is durably published. Failure before that
-point leaves the prior table and generation authoritative; recovery after
-publication observes the complete filtered set. The vetted set is therefore
+after the replacement `checkpoint.db` is durably published. Failure before
+replacement leaves the prior table and generation authoritative. An ambiguous
+replacement or sync failure blocks the store until recovery establishes which
+complete file is authoritative; it never assumes rollback. Recovery of the
+new file observes the complete filtered set. The vetted set is therefore
 atomic regardless of its size and is never divided into `remove_file`
 transactions or partially durable chunks. An empty set does not compact.
 
@@ -2887,18 +2889,17 @@ explicit retention tradeoff.
 
 Namespace creation follows the
 [checkpoint-format first-generation state machine](filelog-checkpoint-format.md#first-generation-namespace-publication).
-A namespace is new only when its directory and artifacts are absent. Existing
-artifacts without valid `CURRENT` are recovered only as the exact recognized
-interrupted-first-publication state; every other authority gap fails closed.
-No source is registered or read before snapshot, WAL, and `CURRENT` publication
-and required syncs complete. Required syncs include durable creation of every
-new namespace path component in its immediate parent as defined by the format
-state machine; syncing only the new child directory is insufficient.
+A namespace is new only when its directory and artifacts are absent. Missing
+`checkpoint.db` is recoverable only as the exact recognized interrupted initial
+publication state; every other authority gap fails closed. No source is
+registered or read before file publication, namespace directory sync, and all
+required ancestor syncs complete.
 
-For compaction accounting, `wal_bytes` is the complete current WAL file length,
-including its 56-byte header, and `wal_transactions` is the number of complete
-transactions following that header. Configuration guarantees that a fresh WAL
-plus any one valid transaction fits `checkpoint.compact_after_bytes`.
+For compaction accounting, `wal_bytes = file_length - wal_offset`, using checked
+arithmetic, and `wal_transactions` counts complete transactions in that section.
+The container header and complete snapshot prefix are excluded. A fresh file
+has zero WAL bytes, so configuration requires at least `WAL_MAX_TX_FRAME_BYTES`
+in `checkpoint.compact_after_bytes`.
 
 Before every append, the worker computes with checked arithmetic:
 
@@ -2917,15 +2918,14 @@ conservative upper bounds are:
 maximum_wal_bytes =
   min(
     checkpoint.compact_after_bytes,
-    WAL_HEADER_BYTES
-      + checkpoint.compact_after_transactions * WAL_MAX_TX_FRAME_BYTES
+    checkpoint.compact_after_transactions * WAL_MAX_TX_FRAME_BYTES
   )
 
 maximum_wal_transactions =
   min(
     checkpoint.compact_after_transactions,
     floor(
-      (checkpoint.compact_after_bytes - WAL_HEADER_BYTES)
+      checkpoint.compact_after_bytes
         / TX_MIN_FRAME_BYTES
     )
   )
@@ -2945,109 +2945,91 @@ on a threshold need not trigger immediate second compaction; compaction occurs
 before the next append or at the independently scheduled retention deadline.
 
 Compaction proposes `new_generation = current_generation + 1` with checked
-arithmetic; overflow fails before writing. A generation becomes assigned only
-when a durable `CURRENT` publishes it. A successfully published generation is
-never reused. For proposed generation G, compaction uses only
-`offsets-G.snapshot.compact.tmp`, `offsets-G.wal.compact.tmp`, and
-`CURRENT.compact.tmp` as temporary names. It writes, validates, syncs, and
-closes the complete new snapshot and fresh WAL before renaming the two
-generation files to their final names with exclusive/no-replace semantics and
-syncing the directory. It then writes and syncs a complete replacement
-`CURRENT`, atomically replaces the marker, and performs the platform-required
-directory sync. The previously
-authoritative generation remains complete and recoverable until publication of
-`CURRENT` is durable.
+arithmetic; overflow fails before writing. The generation is stored inside the
+snapshot for diagnostics and monotonic publication, not encoded in filenames.
+The worker holds the separate namespace ownership lock throughout compaction
+and pauses all WAL appends and mutations while preparing and publishing the
+replacement. Source work remains subject to the existing retained-batch rules.
 
-After a crash, a valid `CURRENT` therefore names either the complete old or
-complete new generation. Complete or partial generation artifacts not named by
-`CURRENT` are abandoned and never authoritative. Before another compaction,
-cleanup recognizes only the exact temporary and final artifacts for the one
-proposed `current_generation + 1`: its snapshot/WAL final names,
-`offsets-G.snapshot.compact.tmp`, `offsets-G.wal.compact.tmp`, and the
-generation-independent `CURRENT.compact.tmp`. Cleanup rereads and validates
-`CURRENT` under exclusive ownership and requires its selection to have been
-made durable by publication sync or the [recovery barrier](#recovery-and-publication-barrier)
-before removing abandoned artifacts. It then syncs the directory. The
-unpublished number may then be proposed again. Cleanup never deletes the
-generation named by `CURRENT`, is idempotent after interruption, and completes before exclusive creation for the next attempt. Ambiguous
-authority or an invalid `CURRENT` fails closed rather than selecting by
-generation number or modification time.
+1. Finish required recovery and temporary cleanup before starting. Exclusively
+   create `checkpoint.db.compact.tmp` in the same opened namespace directory,
+   with no symlink following and least-privilege permissions.
+2. Write a complete container header and snapshot of the current table,
+   including any vetted retention removals, followed by an empty WAL section.
+   Validate the complete immutable prefix and configured bounds, sync the file,
+   and close it. Do not change the live table or release retained work yet.
+3. Close the old data-file handle while retaining `ownership.lock`. Atomically
+   replace `checkpoint.db` with the temporary file using the qualified platform
+   replacement operation. Never truncate or overwrite the active file in place.
+4. Sync the namespace directory. Only after successful durable publication may
+   the filtered table become live. Open/validate the new `checkpoint.db` for
+   appending, with the new `wal_offset`, zero WAL bytes/transactions, and next
+   transaction sequence one. Never reuse a handle to the replaced inode.
+5. Resume checkpoint work only after all these steps succeed. A failure after
+   replacement may have changed authority: mark the live store unavailable and
+   reopen through recovery before retrying any mutation or publication. Do not
+   append to the old file, assume rollback, or report successful compaction.
 
-Recognized generations and temporary artifacts are bounded. After `CURRENT`
-durably publishes generation G with `G > 0`, the immediately prior generation
-G-1 is retired. Because another compaction cannot begin while retired cleanup is
-pending, restart recognizes exactly four states for that retired pair: both
-snapshot and WAL remain, snapshot only remains, WAL only remains, or neither
-remains. All four are valid cleanup states and none is authoritative.
+Before replacement, `checkpoint.db` remains authoritative. The replacement
+contains all current logical state, so once its publication is durable the old
+file is no longer needed. On qualified filesystems a crash during replacement
+recovers the complete old or new file. There is no independently published WAL
+and no retired generation pair to unlink. A successful publication never
+reuses a generation; an unpublished attempted number can be retried only after
+recovery establishes the active generation and cleans the temporary.
 
-Each cleanup attempt rereads and validates `CURRENT` under exclusive namespace
-ownership. Only after publication sync or the recovery barrier has made that
-selection durable, and if it still names G, cleanup removes the retired WAL and
-then the retired snapshot, treating either already-absent file as idempotent
-success, and syncs the namespace directory after the deletion set. A crash or sync
-failure leaves one of the same recognized states and cleanup resumes from the
-remaining subset. Cleanup never deletes either file belonging to the generation
-currently named by `CURRENT`.
-
-Appends to the authoritative G WAL may continue while retired cleanup is
-pending only after authority is durable through publication sync or the recovery
-barrier, and while its configured artifact bounds do not require another
-compaction. A later compaction remains blocked until retired cleanup and its
-directory sync succeed; inability to finish before the next required
-compaction enters the checkpoint-store failure/backpressure path rather than
-exceeding the WAL bound.
+Disk admission covers the old complete file plus the replacement header and
+snapshot while compaction is in progress. Recovery recognizes only the fixed
+creation and compaction temporary names. Under exclusive ownership, after
+validating `checkpoint.db`, replay, and the recovery barrier, remove a recognized
+leftover temporary, treat already-absent as success, and sync the directory.
+Never delete `checkpoint.db` or `ownership.lock`. Unexpected artifacts fail
+closed for inspection. A cleanup or cleanup-sync failure blocks another
+publication; bounded retries use the checkpoint-store failure/backpressure
+policy. This protocol admits no normal accumulation of retired files.
 
 #### Recovery and publication barrier
 
 Recovery holds exclusive namespace ownership throughout validation and the
-barrier below. A marker rename can remain visible after process exit without
-having survived the required directory sync. Reading a valid `CURRENT` therefore
-selects recovery input but does not by itself establish durable publication.
-Checkpoint structural or replay validation failures abort recovery immediately:
-corruption, invalid length, checksum failure, unsupported artifact/envelope
-version or operation, sequence error, impossible transition, and non-tail damage
-remain fail closed. The barrier never repairs or authorizes invalid authority.
+barrier. An atomic replacement can remain visible after process exit without
+its directory update being durable. Reading a complete `checkpoint.db` does not
+by itself establish durable publication. Recovery never selects a temporary
+file or an older generation to bypass a missing or corrupt authoritative file.
 
-Recovery proceeds as follows:
+1. Open `checkpoint.db` through the validated namespace handle. Handle absence
+   only through the exact first-publication rules; unreadable or incomplete
+   authority fails closed.
+2. Read its fixed 24-byte container header. Validate magic, version, flags, CRC,
+   minimum `wal_offset`, checked arithmetic, and configured snapshot byte bound
+   before reading or allocating the snapshot section.
+3. Derive the expected namespace digest from the exact selected `checkpoint.id`.
+   Read exactly `[24, wal_offset)`. Validate snapshot header, namespace digest,
+   record-count and physical bounds, records, footer, and exact section end.
+   The generation counter comes from this validated snapshot.
+4. Replay complete WAL transactions incrementally from `wal_offset`, starting
+   at sequence one. Validate all checksums, operation and sequence rules, and
+   apply each transaction atomically to recovery state that is not yet live.
+5. Classify only the mechanically incomplete final transaction at proven
+   physical EOF as a discardable torn suffix. Corruption, impossible state,
+   invalid section boundaries, and non-tail damage fail closed.
+6. Sync the opened checkpoint namespace directory before relying on the visible
+   file replacement. Until this recovery publication barrier succeeds, source
+   reads, progress acceptance, tail repair, temporary deletion, and another
+   publication remain blocked. File sync and engine-root sync do not replace it.
+7. If necessary, truncate the allowed torn suffix to the absolute file offset
+   `wal_offset + valid_wal_bytes`, using checked arithmetic, then sync the file
+   before appending. Never truncate below `wal_offset` or modify the header or
+   snapshot prefix. Finish recognized temporary cleanup and its directory sync.
+8. Install recovered state and resume appends only through the validated active
+   file handle, with the exact next sequence and WAL byte/transaction counts.
 
-1. Reads and validates `CURRENT` and selects exactly the named authoritative
-   generation.
-2. Derives the expected namespace digest from the exact selected
-   `checkpoint.id` bytes using the checkpoint-format recipe.
-3. Opens both named generation files. A missing, unreadable, or incomplete
-   authoritative snapshot or WAL fails closed with its distinct recovery error;
-   recovery never chooses another generation by modification time.
-4. Validates header version, bounds, integrity, generation, and namespace digest
-   before parsing a snapshot record or WAL transaction.
-5. Requires snapshot and WAL namespace digests to equal both the expected digest
-   and one another. Any mismatch is a distinct namespace-mismatch error.
-6. Loads a bounded snapshot.
-7. Replays complete transactions in strict sequence.
-8. Applies each transaction atomically to recovery state, which is not yet
-   available for new source work or checkpoint mutation.
-9. Classifies only the exact structurally incomplete final transaction defined
-   by the checkpoint-format specification as a discardable torn suffix.
-10. After validating `CURRENT` and its selected generation, synchronizes the
-    opened checkpoint namespace directory before relying on that selection.
-    This required recovery publication barrier makes the visible authority
-    selection durable, including a rename left unsynced by a previous process.
-11. Truncates and syncs an allowed torn suffix to the last valid transaction
-    boundary before permitting a new append.
-
-Until the barrier and remaining recovery steps succeed, source reads, new WAL
-appends/progress acceptance, abandoned or retired artifact deletion, and another
-publication remain blocked. Barrier failure enters the existing checkpoint-store
-failure path; bounded retries keep those operations blocked, and exhaustion
-fails the receiver. It never selects an older generation or treats visibility
-as successful sync. Reopening for recovery repeats the barrier under exclusive
-ownership. Read-only validation/inspection does not authorize mutation.
-
-The barrier is independent of `checkpoint.sync_interval` and applies to recovery
-of both first publication and later compaction. It synchronizes the namespace
-containing `CURRENT`, not merely the engine root or the WAL file. It does not
-replace generation-file sync before publication, torn-tail repair sync, or
-post-deletion directory sync. A platform cannot enable this durability contract
-without implementing and qualifying the required directory barrier.
+Barrier failure follows bounded checkpoint-store retries and ultimately fails
+the receiver; no protected work is admitted in between. Reopening repeats
+validation and the barrier. It applies to both first publication and compaction,
+independently of `checkpoint.sync_interval`. Read-only inspection does not grant
+mutation authority. File sync before replacement, tail-repair sync, and cleanup
+sync are additional requirements. Platform crash qualification must cover the
+replacement protocol and repeated process exits before its directory barrier.
 
 Live WAL append failure distinguishes no-write, known-partial, ambiguous-write,
 and append-success/sync-failure outcomes using the
@@ -3063,7 +3045,7 @@ Fail-closed namespace recovery does not authorize automatic salvage. Production
 qualification requires a supported exclusive procedure that can inspect and
 validate bounded artifacts, preserve an evidence backup, and deliberately
 reset the complete namespace with explicit replay or `start_at` consequences.
-Repointing `CURRENT` to an older generation is not a Phase 1 recovery operation;
+Restoring an older checkpoint file is not a Phase 1 recovery operation;
 it requires separate review because it can roll progress back and duplicate
 previously delivered data.
 

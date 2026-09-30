@@ -1,22 +1,19 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Version 1 WAL header, operation, transaction, and scanner codec.
+//! Version 1 WAL operation, transaction, and scanner codec.
 
 use std::collections::HashSet;
 
 use crate::primitives::{
-    AUDIT_REASON_MAX_BYTES, FILELOG_FORMAT_VERSION, FINGERPRINT_MAX_BYTES, FRAMING_PROFILE_VERSION,
-    NAMESPACE_ID_MAX_BYTES, Reader, TX_ENVELOPE_VERSION, TX_MAGIC, WAL_MAGIC, Writer, crc32c,
-    quarantine_reason_reserved,
+    AUDIT_REASON_MAX_BYTES, FINGERPRINT_MAX_BYTES, FRAMING_PROFILE_VERSION, NAMESPACE_ID_MAX_BYTES,
+    Reader, TX_ENVELOPE_VERSION, TX_MAGIC, Writer, crc32c, quarantine_reason_reserved,
 };
 use crate::{
     AdvisoryPath, CommittedFrontierGuard, DecodeError, EncodeError, FileId, FramingResume,
     LifecycleState, Locator,
 };
 
-/// Exact version 1 WAL header width.
-pub const WAL_HEADER_BYTES: usize = 56;
 /// Exact version 1 transaction header width.
 pub const TX_HEADER_BYTES: usize = 36;
 const TX_FRAME_CRC_BYTES: usize = 4;
@@ -53,15 +50,6 @@ const OP_QUARANTINE_FILE: u8 = 0x06;
 const OP_RESET_QUARANTINED_FILE: u8 = 0x07;
 const OP_REMOVE_FILE: u8 = 0x08;
 const METADATA_PATH_PRESENT: u8 = 0x01;
-
-/// Fixed fields decoded from one version 1 WAL header.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct WalHeader {
-    /// WAL generation.
-    pub generation: u64,
-    /// Exact namespace digest.
-    pub namespace_digest: [u8; 32],
-}
 
 /// Registers a newly observed file.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1408,67 +1396,4 @@ pub fn scan_next_transaction(
             .map_err(|error| error.in_complete_container("WAL transaction body"))?,
         consumed: needed,
     }))
-}
-
-/// Encodes an exact version 1 WAL header.
-pub fn encode_wal_header(generation: u64, checkpoint_id: &str) -> Result<Vec<u8>, EncodeError> {
-    let namespace = crate::namespace_digest(checkpoint_id)?;
-    let mut out = Writer::new();
-    out.bytes(WAL_MAGIC);
-    out.u16(FILELOG_FORMAT_VERSION);
-    out.u16(0);
-    out.u64(generation);
-    out.bytes(&namespace);
-    out.u32(crc32c(out.as_slice()));
-    Ok(out.finish())
-}
-
-/// Decodes one exact version 1 WAL header.
-///
-/// This validates and returns the namespace digest encoded in the header. A
-/// future store must compare that digest with the selected checkpoint
-/// namespace before replaying any transaction.
-pub fn decode_wal_header(bytes: &[u8]) -> Result<WalHeader, DecodeError> {
-    if bytes.len() != WAL_HEADER_BYTES {
-        return Err(DecodeError::InvalidLength {
-            context: "WAL header",
-            expected: WAL_HEADER_BYTES,
-            actual: bytes.len(),
-        });
-    }
-    let mut input = Reader::new(bytes);
-    if input.exact(8)? != WAL_MAGIC {
-        return Err(DecodeError::BadMagic {
-            context: "WAL header",
-        });
-    }
-    let version = input.u16()?;
-    if version != FILELOG_FORMAT_VERSION {
-        return Err(DecodeError::UnsupportedVersion {
-            context: "WAL header",
-            found: version,
-        });
-    }
-    let flags = input.u16()?;
-    if flags != 0 {
-        return Err(DecodeError::ReservedFieldNonZero {
-            field: "wal_header.flags",
-            value: u64::from(flags),
-        });
-    }
-    let generation = input.u64()?;
-    let namespace_digest = input.array()?;
-    let stored = input.u32()?;
-    let computed = crc32c(&bytes[..52]);
-    if stored != computed {
-        return Err(DecodeError::ChecksumMismatch {
-            context: "WAL header",
-            stored,
-            computed,
-        });
-    }
-    Ok(WalHeader {
-        generation,
-        namespace_digest,
-    })
 }

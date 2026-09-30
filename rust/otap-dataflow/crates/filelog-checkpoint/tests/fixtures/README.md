@@ -12,7 +12,8 @@ python3 tests/generate_fixtures.py
 ```
 
 `expected-values.txt` records the published digest vectors. The binary set
-covers `CURRENT`, snapshot lifecycle shapes, the WAL header, every operation,
+covers empty and active checkpoint containers, a container with a WAL transaction,
+snapshot lifecycle shapes, every operation,
 both transaction classes, all quarantine-reset actions, absent optional
 metadata and non-administrative removal fields, `keep_failed` preservation and
 mutation, the minimum transaction body, the 4,096-operation progress boundary,

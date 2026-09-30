@@ -11,9 +11,8 @@ storage or WAL library.
 
 The crate encodes and decodes:
 
-- `CURRENT`, which identifies the active checkpoint generation;
-- snapshots containing the complete tracked-file state;
-- WAL headers;
+- a `checkpoint.db` container header identifying the WAL start offset;
+- an embedded snapshot containing the complete tracked-file state;
 - checkpoint operations; and
 - atomic WAL transactions.
 
@@ -22,15 +21,22 @@ checksums are validated before variable-size data is trusted.
 
 ## Format compatibility
 
+Merging this codec does not freeze the on-disk format. Version 1 remains
+unfrozen until the first released conforming Filelog implementation.
+
+The single-file layout is a pre-release revision of the proposed version 1
+format. The earlier unshipped `CURRENT`/snapshot/WAL layout is not imported;
+legacy artifacts must fail closed rather than start an empty checkpoint.
+
 Once a Filelog release writes a version 1 checkpoint, later releases must
 continue to interpret those bytes using the same field layout, byte order,
 operation codes, checksums, and corruption rules. An incompatible on-disk
 change requires a new checkpoint format version and an explicit migration or
 rejection policy.
 
-The crate's Rust API remains internal and experimental. Rust types, module
-layout, and function names may change while the version 1 byte format remains
-compatible.
+The crate's Rust API remains internal and experimental. After the format is
+frozen, Rust types, module layout, and function names may still change while
+the version 1 byte format remains compatible.
 
 ## Scope
 
@@ -69,13 +75,30 @@ rewrite it, or silently omit the record. The codec does not automatically
 quarantine or repair state; any recovery procedure belongs to the separately
 defined administrative contract.
 
-Snapshot decoding takes the generation selected by `CURRENT`, the expected
-namespace digest, and the caller's current tracked-file limit. Header CRC and
-namespace checks precede generation matching, which rejects a mismatched
-snapshot before record-count validation or record decoding. Before record
-storage is allocated or a body is decoded, the authenticated count must fit
-both that limit and the maximum number of minimum-width record frames
-physically possible in the supplied snapshot bytes.
+`checkpoint.db` consists of a 24-byte checksummed container header, one
+complete snapshot section, and zero or more WAL transactions. The header gives
+the absolute WAL start offset. The snapshot retains its header, footer,
+namespace binding, generation counter, and record encoding. The WAL has no
+separate artifact header. Its first transaction sequence is one after creation
+or compaction.
+
+For bounded recovery, read exactly `CHECKPOINT_HEADER_BYTES` and call
+`decode_checkpoint_header` with the configured maximum snapshot byte count
+before reading its declared section. `decode_checkpoint_snapshot` validates
+that complete prefix against the expected namespace, byte budget, and record
+limit, then returns the snapshot and WAL offset. Extra WAL bytes in the input
+are left unexamined, not accepted as valid transactions. A store can discard
+the input prefix and read the WAL incrementally. The lower-level
+`decode_snapshot` accepts only the exact snapshot section, excluding the
+container header and WAL, and rejects trailing bytes. Its generation comes
+from the snapshot itself; no external generation selector exists.
+
+Compaction publishes a newly encoded empty-WAL container by syncing the
+complete temporary file, atomically replacing `checkpoint.db`, and syncing the
+namespace directory under the separate ownership lock. Recovery repeats the
+directory barrier before new mutations. Appends must switch to the replacement
+file handle. Tail repair may only truncate within the WAL section. These are
+storage-layer obligations, not operations performed by this codec.
 
 WAL recovery is incremental. `scan_next_transaction` returns at most one
 validated transaction, allowing the caller to apply and drop it before

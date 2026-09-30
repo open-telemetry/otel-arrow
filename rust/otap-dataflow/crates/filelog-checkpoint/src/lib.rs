@@ -8,14 +8,17 @@
 //! It contains no filesystem, publication, replay-table, receiver-runtime, or
 //! administration implementation.
 
-mod current_marker;
+mod checkpoint;
 mod error;
 mod framing_profile;
 mod primitives;
 mod snapshot;
 mod wal;
 
-pub use current_marker::{CURRENT_BYTES, decode_current, encode_current};
+pub use checkpoint::{
+    CHECKPOINT_HEADER_BYTES, CheckpointHeader, decode_checkpoint_header,
+    decode_checkpoint_snapshot, encode_checkpoint,
+};
 pub use error::{DecodeError, EncodeError};
 pub use framing_profile::{
     FramingEncoding, FramingOnDecodeError, FramingProfileParams, MaxLogSizeBehavior, MultilineMode,
@@ -35,8 +38,7 @@ pub use wal::{
     MAX_VALID_UPDATE_FINGERPRINT_PAYLOAD_BYTES, Operation, QuarantineFile, RegisterFile,
     RemoveFile, ResetAfterTruncate, ResetQuarantineAction, ResetQuarantinedFile, TX_HEADER_BYTES,
     TX_MIN_BODY_BYTES, TX_MIN_FRAME_BYTES, Transaction, TransactionClass, TransactionScan,
-    UpdateFingerprint, UpdateMetadata, UpdateProgress, WAL_HEADER_BYTES,
-    WAL_MAX_NON_PROGRESS_OPS_PER_TX, WAL_MAX_OPS_PER_TX, WAL_MAX_TX_BODY_BYTES,
-    WAL_MAX_TX_FRAME_BYTES, WalHeader, decode_operation, decode_wal_header, encode_operation,
-    encode_transaction, encode_wal_header, scan_next_transaction,
+    UpdateFingerprint, UpdateMetadata, UpdateProgress, WAL_MAX_NON_PROGRESS_OPS_PER_TX,
+    WAL_MAX_OPS_PER_TX, WAL_MAX_TX_BODY_BYTES, WAL_MAX_TX_FRAME_BYTES, decode_operation,
+    encode_operation, encode_transaction, scan_next_transaction,
 };

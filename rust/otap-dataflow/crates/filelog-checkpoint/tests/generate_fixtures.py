@@ -126,11 +126,6 @@ EMPTY_GUARD = frontier(0, b"")
 FOUR_GUARD = frontier(4, b"abc\n")
 
 
-def current(generation):
-    prefix = b"FLOGCUR\0" + u16(1) + u16(0) + u64(generation)
-    return prefix + u32(crc32c(prefix))
-
-
 def record(
     file_id,
     epoch,
@@ -178,9 +173,10 @@ def snapshot(generation, records):
     return header + record_bytes + footer
 
 
-def wal_header(generation):
-    header = b"FLOGWAL\0" + u16(1) + u16(0) + u64(generation) + namespace_digest()
-    return header + u32(crc32c(header))
+def checkpoint(generation, records, transactions=b""):
+    snap = snapshot(generation, records)
+    header = b"FLOGCHK\0" + u16(1) + u16(0) + u64(24 + len(snap))
+    return header + u32(crc32c(header)) + snap + transactions
 
 
 def operation(code, fields):
@@ -426,13 +422,14 @@ def main():
         advisory(1, b"x" * 5000),
     )
 
-    write("current-generation-42.bin", current(42))
     write("snapshot-empty.bin", snapshot(0, []))
     write("snapshot-active.bin", snapshot(7, [active]))
     write("snapshot-quarantined.bin", snapshot(7, [quarantined]))
     write("snapshot-rotated-finalized.bin", snapshot(7, [finalized]))
     write("snapshot-long-path.bin", snapshot(7, [long_path]))
-    write("wal-header.bin", wal_header(7))
+    write("checkpoint-empty.bin", checkpoint(0, []))
+    write("checkpoint-active.bin", checkpoint(7, [active]))
+    write("checkpoint-with-wal.bin", checkpoint(7, [active], transaction(1, [op_progress(file_ids[0])])))
     write("advisory-unix.bin", UNIX_PATH)
     write("advisory-windows-utf16le.bin", advisory(2, "C:\\logs\\app.log".encode("utf-16le")))
     write("advisory-long-truncated.bin", advisory(1, b"x" * 5000))

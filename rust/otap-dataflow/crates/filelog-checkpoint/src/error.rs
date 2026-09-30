@@ -182,12 +182,10 @@ pub enum DecodeError {
         /// Artifact name.
         context: &'static str,
     },
-    /// The snapshot generation differs from the selected authoritative generation.
-    #[error("snapshot generation mismatch: expected {expected}, found {found}")]
-    GenerationMismatch {
-        /// Generation selected by the caller from CURRENT.
-        expected: u64,
-        /// Generation declared by the validated snapshot header.
+    /// The WAL offset leaves insufficient room for a complete snapshot section.
+    #[error("checkpoint WAL offset {found} precedes the minimum snapshot end")]
+    InvalidWalOffset {
+        /// Absolute offset from the validated container header.
         found: u64,
     },
     /// A snapshot declared more records than the caller permits.

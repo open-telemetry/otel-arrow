@@ -83,14 +83,14 @@ pub enum MultilineMode {
     Newline,
     /// Start-pattern multiline framing.
     StartPattern {
-        /// Executable regex-profile version.
+        /// Executable regex-profile version; only version 1 (`re2-v1`) is supported.
         regex_profile_version: u16,
         /// Exact UTF-8 regex source.
         pattern: String,
     },
     /// End-pattern multiline framing.
     EndPattern {
-        /// Executable regex-profile version.
+        /// Executable regex-profile version; only version 1 (`re2-v1`) is supported.
         regex_profile_version: u16,
         /// Exact UTF-8 regex source.
         pattern: String,
@@ -116,7 +116,7 @@ impl MultilineMode {
 /// Complete canonical framing and identity profile input.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FramingProfileParams {
-    /// Fingerprint recipe version.
+    /// Fingerprint recipe version; the current producer supports only version 1.
     pub fingerprint_profile_version: u16,
     /// Configured fingerprint evidence window.
     pub fingerprint_bytes: u16,
@@ -143,10 +143,10 @@ pub struct FramingProfileParams {
 impl FramingProfileParams {
     /// Produces the exact version 1 canonical byte sequence.
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, EncodeError> {
-        if self.fingerprint_profile_version == 0 {
+        if self.fingerprint_profile_version != 1 {
             return Err(EncodeError::InvalidFieldValue {
                 field: "framing_profile.fingerprint_profile_version",
-                reason: "must be nonzero",
+                reason: "must be version 1",
             });
         }
         if self.fingerprint_bytes < 16 {
@@ -156,10 +156,10 @@ impl FramingProfileParams {
             });
         }
         let (mode, regex_version, pattern) = self.multiline_mode.parts();
-        if mode != 0 && regex_version == 0 {
+        if mode != 0 && regex_version != 1 {
             return Err(EncodeError::InvalidFieldValue {
                 field: "framing_profile.regex_profile_version",
-                reason: "pattern modes require a nonzero version",
+                reason: "pattern modes require version 1",
             });
         }
         if mode != 0 && pattern.is_empty() {

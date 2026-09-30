@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Version 1 snapshot artifact codec.
+//! Version 1 snapshot section codec.
 
 use std::collections::{HashMap, HashSet};
 
@@ -306,7 +306,7 @@ fn validate_uniqueness(records: &[SnapshotRecord]) -> Result<(), EncodeError> {
     Ok(())
 }
 
-/// Encodes a complete version 1 snapshot artifact.
+/// Encodes a complete version 1 snapshot section, without a container header.
 ///
 /// Callers must keep `records.len()` within the `max_records` limit they pass
 /// to [`decode_snapshot`] during recovery; this encoder does not enforce that
@@ -323,20 +323,32 @@ pub fn encode_snapshot(
     checkpoint_id: &str,
     records: &[SnapshotRecord],
 ) -> Result<Vec<u8>, EncodeError> {
+    let mut out = Writer::new();
+    encode_snapshot_into(&mut out, generation, checkpoint_id, records)?;
+    Ok(out.finish())
+}
+
+/// Appends a snapshot to an existing writer without a second snapshot-sized buffer.
+pub(crate) fn encode_snapshot_into(
+    out: &mut Writer,
+    generation: u64,
+    checkpoint_id: &str,
+    records: &[SnapshotRecord],
+) -> Result<(), EncodeError> {
     validate_uniqueness(records)?;
     let record_count =
         u32::try_from(records.len()).map_err(|_| EncodeError::ArithmeticOverflow {
             context: "snapshot record count",
         })?;
     let namespace = crate::namespace_digest(checkpoint_id)?;
-    let mut out = Writer::new();
+    let header_start = out.as_slice().len();
     out.bytes(SNAPSHOT_MAGIC);
     out.u16(FILELOG_FORMAT_VERSION);
     out.u16(0);
     out.u64(generation);
     out.bytes(&namespace);
     out.u32(record_count);
-    out.u32(crc32c(out.as_slice()));
+    out.u32(crc32c(&out.as_slice()[header_start..]));
 
     let mut total_record_bytes = 0u64;
     for record in records {
@@ -355,20 +367,19 @@ pub fn encode_snapshot(
     out.u32(record_count);
     let footer_crc = crc32c(&out.as_slice()[footer_start..]);
     out.u32(footer_crc);
-    Ok(out.finish())
+    Ok(())
 }
 
-/// Decodes one complete version 1 snapshot for the selected namespace and generation.
+/// Decodes one complete version 1 snapshot for the selected namespace.
 ///
-/// After header CRC and namespace validation, the generation must match
-/// `expected_generation` selected by CURRENT. The validated header count is
+/// The generation is a compaction counter within the authoritative file, not
+/// an external authority selector. The validated header count is
 /// then checked against both `max_records` and
 /// the maximum number of minimum-width frames physically possible in `bytes`
 /// before any record storage is allocated or any record body is decoded.
 pub fn decode_snapshot(
     bytes: &[u8],
     expected_namespace_digest: &[u8; 32],
-    expected_generation: u64,
     max_records: u32,
 ) -> Result<Snapshot, DecodeError> {
     if bytes.len() < SNAPSHOT_HEADER_BYTES {
@@ -412,12 +423,6 @@ pub fn decode_snapshot(
     if &namespace != expected_namespace_digest {
         return Err(DecodeError::NamespaceMismatch {
             context: "snapshot",
-        });
-    }
-    if generation != expected_generation {
-        return Err(DecodeError::GenerationMismatch {
-            expected: expected_generation,
-            found: generation,
         });
     }
     if record_count > max_records {

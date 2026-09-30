@@ -12,19 +12,16 @@ use otel_arrow_dfe_filelog_checkpoint::{
     ResetQuarantinedFile, SNAPSHOT_FOOTER_BYTES, SNAPSHOT_HEADER_BYTES,
     SNAPSHOT_MAX_RECORD_FRAME_BYTES, SnapshotRecord, TX_HEADER_BYTES, TX_MIN_BODY_BYTES,
     TX_MIN_FRAME_BYTES, Transaction, TransactionScan, UpdateFingerprint, UpdateMetadata,
-    UpdateProgress, WAL_HEADER_BYTES, WAL_MAX_TX_BODY_BYTES, WAL_MAX_TX_FRAME_BYTES, crc32c,
-    decode_current, decode_operation, decode_snapshot, decode_wal_header, encode_current,
-    encode_operation, encode_snapshot, encode_transaction, encode_wal_header, namespace_digest,
+    UpdateProgress, WAL_MAX_TX_BODY_BYTES, WAL_MAX_TX_FRAME_BYTES, crc32c, decode_operation,
+    decode_snapshot, encode_operation, encode_snapshot, encode_transaction, namespace_digest,
     scan_next_transaction,
 };
 
-const CURRENT: &[u8] = include_bytes!("fixtures/current-generation-42.bin");
 const EMPTY_SNAPSHOT: &[u8] = include_bytes!("fixtures/snapshot-empty.bin");
 const ACTIVE_SNAPSHOT: &[u8] = include_bytes!("fixtures/snapshot-active.bin");
 const QUARANTINED_SNAPSHOT: &[u8] = include_bytes!("fixtures/snapshot-quarantined.bin");
 const FINALIZED_SNAPSHOT: &[u8] = include_bytes!("fixtures/snapshot-rotated-finalized.bin");
 const LONG_PATH_SNAPSHOT: &[u8] = include_bytes!("fixtures/snapshot-long-path.bin");
-const WAL_HEADER: &[u8] = include_bytes!("fixtures/wal-header.bin");
 
 struct TestScanResult {
     transactions: Vec<Transaction>,
@@ -107,14 +104,6 @@ fn idle_flush_500ms_profile(multiline: bool) -> FramingProfileParams {
     }
 }
 
-/// Scenario: The independent CURRENT fixture selects generation 42.
-/// Guarantees: The fixed width, CRC coverage, and big-endian generation agree with v1.
-#[test]
-fn current_fixture_matches_codec() {
-    assert_eq!(decode_current(CURRENT), Ok(42));
-    assert_eq!(encode_current(42), CURRENT);
-}
-
 /// Scenario: Public v1 version and complete-frame bounds are inspected by a future store consumer.
 /// Guarantees: Framing-profile versioning stays independent and every exported frame bound matches its normative value and component arithmetic.
 #[test]
@@ -165,7 +154,7 @@ fn register_file_uses_independent_framing_profile_version() {
 #[test]
 fn empty_snapshot_fixture_matches_codec() {
     let namespace = namespace_digest("app-logs").unwrap();
-    let snapshot = decode_snapshot(EMPTY_SNAPSHOT, &namespace, 0, u32::MAX).unwrap();
+    let snapshot = decode_snapshot(EMPTY_SNAPSHOT, &namespace, u32::MAX).unwrap();
     assert_eq!(snapshot.generation, 0);
     assert!(snapshot.records.is_empty());
     assert_eq!(encode_snapshot(0, "app-logs", &[]).unwrap(), EMPTY_SNAPSHOT);
@@ -181,7 +170,7 @@ fn lifecycle_snapshot_fixtures_match_codec() {
         (QUARANTINED_SNAPSHOT, LifecycleState::Quarantined),
         (FINALIZED_SNAPSHOT, LifecycleState::RotatedFinalized),
     ] {
-        let snapshot = decode_snapshot(bytes, &namespace, 7, u32::MAX).unwrap();
+        let snapshot = decode_snapshot(bytes, &namespace, u32::MAX).unwrap();
         assert_eq!(snapshot.records.len(), 1);
         assert_eq!(snapshot.records[0].lifecycle_state, expected_state);
         assert_eq!(
@@ -196,7 +185,7 @@ fn lifecycle_snapshot_fixtures_match_codec() {
 #[test]
 fn long_advisory_path_snapshot_is_bounded() {
     let namespace = namespace_digest("app-logs").unwrap();
-    let snapshot = decode_snapshot(LONG_PATH_SNAPSHOT, &namespace, 7, u32::MAX).unwrap();
+    let snapshot = decode_snapshot(LONG_PATH_SNAPSHOT, &namespace, u32::MAX).unwrap();
     let path = &snapshot.records[0].advisory_path;
     assert!(path.is_truncated());
     assert_eq!(path.full_path_len(), 5000);
@@ -205,20 +194,6 @@ fn long_advisory_path_snapshot_is_bounded() {
         path.full_path_digest(),
         expected("advisory_long").as_slice()
     );
-}
-
-/// Scenario: The independent WAL header fixture declares generation seven.
-/// Guarantees: WAL magic, namespace digest, version fields, and CRC agree with v1.
-#[test]
-fn wal_header_fixture_matches_codec() {
-    assert_eq!(WAL_HEADER.len(), WAL_HEADER_BYTES);
-    let header = decode_wal_header(WAL_HEADER).unwrap();
-    assert_eq!(header.generation, 7);
-    assert_eq!(
-        header.namespace_digest,
-        namespace_digest("app-logs").unwrap()
-    );
-    assert_eq!(encode_wal_header(7, "app-logs").unwrap(), WAL_HEADER);
 }
 
 /// Scenario: Independent standalone frames exercise every version 1 operation code.
@@ -604,7 +579,7 @@ fn maximum_snapshot_record_frame_is_accepted() {
     assert_eq!(record_frame.len() as u64, SNAPSHOT_MAX_RECORD_FRAME_BYTES);
 
     let namespace = namespace_digest("maximum-record").unwrap();
-    let decoded = decode_snapshot(&encoded, &namespace, 9, 1).unwrap();
+    let decoded = decode_snapshot(&encoded, &namespace, 1).unwrap();
     assert_eq!(decoded.records, vec![record]);
     assert_eq!(decoded.records[0].fingerprint.len(), u16::MAX as usize);
     assert_eq!(
@@ -891,10 +866,10 @@ fn frontier_window_equality_is_canonical() {
     );
 }
 
-/// Scenario: Framing profiles exercise exact pattern length and invalid version boundaries.
-/// Guarantees: A 4,096-byte pattern is accepted; 4,097 bytes, zero versions, empty patterns, and subminimum fingerprints are rejected.
+/// Scenario: Framing profiles exercise exact pattern length and required field boundaries.
+/// Guarantees: A 4,096-byte pattern is accepted; 4,097 bytes, empty patterns, and subminimum fingerprints are rejected.
 #[test]
-fn framing_profile_pattern_and_version_boundaries_are_enforced() {
+fn framing_profile_pattern_and_field_boundaries_are_enforced() {
     let mut profile = idle_flush_500ms_profile(false);
     profile.multiline_mode = MultilineMode::StartPattern {
         regex_profile_version: 1,
@@ -912,20 +887,6 @@ fn framing_profile_pattern_and_version_boundaries_are_enforced() {
         Err(EncodeError::FieldTooLong { max: 4096, .. })
     ));
 
-    let mut zero_regex = profile.clone();
-    let MultilineMode::StartPattern {
-        regex_profile_version,
-        ..
-    } = &mut zero_regex.multiline_mode
-    else {
-        unreachable!();
-    };
-    *regex_profile_version = 0;
-    assert!(matches!(
-        zero_regex.canonical_bytes(),
-        Err(EncodeError::InvalidFieldValue { .. })
-    ));
-
     let mut empty_pattern = profile.clone();
     let MultilineMode::StartPattern { pattern, .. } = &mut empty_pattern.multiline_mode else {
         unreachable!();
@@ -936,16 +897,78 @@ fn framing_profile_pattern_and_version_boundaries_are_enforced() {
         Err(EncodeError::RequiredFieldEmpty { .. })
     ));
 
-    let mut zero_fingerprint_version = idle_flush_500ms_profile(false);
-    zero_fingerprint_version.fingerprint_profile_version = 0;
-    assert!(matches!(
-        zero_fingerprint_version.canonical_bytes(),
-        Err(EncodeError::InvalidFieldValue { .. })
-    ));
     let mut short_fingerprint = idle_flush_500ms_profile(false);
     short_fingerprint.fingerprint_bytes = 15;
     assert!(matches!(
         short_fingerprint.canonical_bytes(),
         Err(EncodeError::InvalidFieldValue { .. })
     ));
+}
+
+/// Scenario: Canonical profile generation receives fingerprint recipe versions 0, 1, 2, and u16::MAX.
+/// Guarantees: Only version 1 can produce canonical bytes or a digest; unsupported versions report the exact invalid field.
+#[test]
+fn fingerprint_profile_version_must_be_one() {
+    let mut profile = idle_flush_500ms_profile(false);
+    profile.fingerprint_profile_version = 1;
+    assert!(profile.canonical_bytes().is_ok());
+    assert!(profile.digest().is_ok());
+
+    for version in [0, 2, u16::MAX] {
+        profile.fingerprint_profile_version = version;
+        for error in [
+            profile.canonical_bytes().unwrap_err(),
+            profile.digest().unwrap_err(),
+        ] {
+            assert!(matches!(
+                error,
+                EncodeError::InvalidFieldValue {
+                    field: "framing_profile.fingerprint_profile_version",
+                    reason: "must be version 1",
+                }
+            ));
+        }
+    }
+}
+
+/// Scenario: Newline mode and both pattern modes are encoded with supported and unsupported regex recipe versions.
+/// Guarantees: Newline remains valid without a regex version; both pattern modes accept only version 1 for canonical bytes and digests.
+#[test]
+fn regex_profile_version_matches_multiline_mode() {
+    let mut profile = idle_flush_500ms_profile(false);
+    profile.multiline_mode = MultilineMode::Newline;
+    assert!(profile.canonical_bytes().is_ok());
+    assert!(profile.digest().is_ok());
+
+    for version in [0, 1, 2, u16::MAX] {
+        for mode in [
+            MultilineMode::StartPattern {
+                regex_profile_version: version,
+                pattern: "^start".into(),
+            },
+            MultilineMode::EndPattern {
+                regex_profile_version: version,
+                pattern: "end$".into(),
+            },
+        ] {
+            profile.multiline_mode = mode;
+            if version == 1 {
+                assert!(profile.canonical_bytes().is_ok());
+                assert!(profile.digest().is_ok());
+            } else {
+                for error in [
+                    profile.canonical_bytes().unwrap_err(),
+                    profile.digest().unwrap_err(),
+                ] {
+                    assert!(matches!(
+                        error,
+                        EncodeError::InvalidFieldValue {
+                            field: "framing_profile.regex_profile_version",
+                            reason: "pattern modes require version 1",
+                        }
+                    ));
+                }
+            }
+        }
+    }
 }

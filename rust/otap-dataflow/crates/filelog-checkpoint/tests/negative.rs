@@ -8,11 +8,10 @@ use otel_arrow_dfe_filelog_checkpoint::{
     FRAMING_PROFILE_VERSION, FileId, FramingResume, LifecycleState, Locator, Operation,
     QuarantineEvidence, SNAPSHOT_FOOTER_BYTES, SNAPSHOT_HEADER_BYTES, SnapshotRecord,
     TX_HEADER_BYTES, TX_MIN_BODY_BYTES, Transaction, TransactionScan, WAL_MAX_OPS_PER_TX, crc32c,
-    decode_current, decode_operation, decode_snapshot, decode_wal_header, encode_operation,
-    encode_snapshot, encode_transaction, namespace_digest, scan_next_transaction,
+    decode_operation, decode_snapshot, encode_operation, encode_snapshot, encode_transaction,
+    namespace_digest, scan_next_transaction,
 };
 
-const CURRENT: &[u8] = include_bytes!("fixtures/current-generation-42.bin");
 const ACTIVE_SNAPSHOT: &[u8] = include_bytes!("fixtures/snapshot-active.bin");
 const QUARANTINED_SNAPSHOT: &[u8] = include_bytes!("fixtures/snapshot-quarantined.bin");
 const MIN_TX: &[u8] = include_bytes!("fixtures/transaction-minimum.bin");
@@ -167,40 +166,6 @@ fn continuation_frame(start: u64, end: u64, index: u32, lifecycle: u8) -> Vec<u8
     resize_record_payload(frame, payload)
 }
 
-/// Scenario: CURRENT is short, has bad magic/version/flags, or has a bad CRC.
-/// Guarantees: Every fixed marker envelope failure is rejected rather than partially accepted.
-#[test]
-fn current_envelope_corruption_is_rejected() {
-    assert!(matches!(
-        decode_current(&CURRENT[..23]),
-        Err(DecodeError::InvalidLength { .. })
-    ));
-    let mut bytes = CURRENT.to_vec();
-    bytes[0] ^= 1;
-    assert!(matches!(
-        decode_current(&bytes),
-        Err(DecodeError::BadMagic { .. })
-    ));
-    let mut bytes = CURRENT.to_vec();
-    put_u16(&mut bytes, 8, 2);
-    assert!(matches!(
-        decode_current(&bytes),
-        Err(DecodeError::UnsupportedVersion { .. })
-    ));
-    let mut bytes = CURRENT.to_vec();
-    put_u16(&mut bytes, 10, 1);
-    assert!(matches!(
-        decode_current(&bytes),
-        Err(DecodeError::ReservedFieldNonZero { .. })
-    ));
-    let mut bytes = CURRENT.to_vec();
-    bytes[23] ^= 1;
-    assert!(matches!(
-        decode_current(&bytes),
-        Err(DecodeError::ChecksumMismatch { .. })
-    ));
-}
-
 /// Scenario: Snapshot header CRC, record CRC, footer CRC, truncation, and trailing bytes are corrupted.
 /// Guarantees: Snapshots fail closed with no WAL-style torn-tail salvage.
 #[test]
@@ -209,33 +174,32 @@ fn snapshot_artifact_corruption_is_rejected() {
     let mut bytes = ACTIVE_SNAPSHOT.to_vec();
     bytes[59] ^= 1;
     assert!(matches!(
-        decode_snapshot(&bytes, &namespace, 7, u32::MAX),
+        decode_snapshot(&bytes, &namespace, u32::MAX),
         Err(DecodeError::ChecksumMismatch { .. })
     ));
     let mut bytes = ACTIVE_SNAPSHOT.to_vec();
     bytes[20] ^= 1;
     assert!(matches!(
-        decode_snapshot(&bytes, &namespace, 7, u32::MAX),
+        decode_snapshot(&bytes, &namespace, u32::MAX),
         Err(DecodeError::ChecksumMismatch { .. })
     ));
     let mut bytes = ACTIVE_SNAPSHOT.to_vec();
     bytes[ACTIVE_SNAPSHOT.len() - 25] ^= 1;
     assert!(matches!(
-        decode_snapshot(&bytes, &namespace, 7, u32::MAX),
+        decode_snapshot(&bytes, &namespace, u32::MAX),
         Err(DecodeError::ChecksumMismatch { .. })
     ));
     let mut bytes = ACTIVE_SNAPSHOT.to_vec();
     let footer_crc = bytes.len() - 1;
     bytes[footer_crc] ^= 1;
     assert!(matches!(
-        decode_snapshot(&bytes, &namespace, 7, u32::MAX),
+        decode_snapshot(&bytes, &namespace, u32::MAX),
         Err(DecodeError::ChecksumMismatch { .. })
     ));
     assert!(matches!(
         decode_snapshot(
             &ACTIVE_SNAPSHOT[..ACTIVE_SNAPSHOT.len() - 1],
             &namespace,
-            7,
             u32::MAX
         ),
         Err(DecodeError::Truncated { .. })
@@ -243,7 +207,7 @@ fn snapshot_artifact_corruption_is_rejected() {
     let mut bytes = ACTIVE_SNAPSHOT.to_vec();
     bytes.push(0);
     assert!(matches!(
-        decode_snapshot(&bytes, &namespace, 7, u32::MAX),
+        decode_snapshot(&bytes, &namespace, u32::MAX),
         Err(DecodeError::TrailingBytes { .. })
     ));
 }
@@ -256,19 +220,19 @@ fn snapshot_header_discriminants_are_rejected() {
     let mut magic = ACTIVE_SNAPSHOT.to_vec();
     magic[0] ^= 1;
     assert!(matches!(
-        decode_snapshot(&magic, &namespace, 7, u32::MAX),
+        decode_snapshot(&magic, &namespace, u32::MAX),
         Err(DecodeError::BadMagic { .. })
     ));
     let mut version = ACTIVE_SNAPSHOT.to_vec();
     put_u16(&mut version, 8, 2);
     assert!(matches!(
-        decode_snapshot(&version, &namespace, 7, u32::MAX),
+        decode_snapshot(&version, &namespace, u32::MAX),
         Err(DecodeError::UnsupportedVersion { .. })
     ));
     let mut flags = ACTIVE_SNAPSHOT.to_vec();
     put_u16(&mut flags, 10, 1);
     assert!(matches!(
-        decode_snapshot(&flags, &namespace, 7, u32::MAX),
+        decode_snapshot(&flags, &namespace, u32::MAX),
         Err(DecodeError::ReservedFieldNonZero { .. })
     ));
 }
@@ -281,13 +245,13 @@ fn snapshot_record_lengths_are_bounded_before_slicing() {
     let mut bytes = ACTIVE_SNAPSHOT.to_vec();
     put_u32(&mut bytes, 60, 69_855);
     assert!(matches!(
-        decode_snapshot(&bytes, &namespace, 7, u32::MAX),
+        decode_snapshot(&bytes, &namespace, u32::MAX),
         Err(DecodeError::LengthExceedsMaximum { .. })
     ));
     let mut bytes = ACTIVE_SNAPSHOT.to_vec();
     put_u32(&mut bytes, 60, 500);
     assert!(matches!(
-        decode_snapshot(&bytes, &namespace, 7, u32::MAX),
+        decode_snapshot(&bytes, &namespace, u32::MAX),
         Err(DecodeError::Truncated { .. })
     ));
 }
@@ -298,7 +262,7 @@ fn snapshot_record_lengths_are_bounded_before_slicing() {
 fn snapshot_record_count_is_checked_before_record_allocation_and_decode() {
     let namespace = namespace_digest("app-logs").unwrap();
     assert_eq!(
-        decode_snapshot(ACTIVE_SNAPSHOT, &namespace, 7, 1)
+        decode_snapshot(ACTIVE_SNAPSHOT, &namespace, 1)
             .unwrap()
             .records
             .len(),
@@ -308,7 +272,7 @@ fn snapshot_record_count_is_checked_before_record_allocation_and_decode() {
     let mut corrupt_record = ACTIVE_SNAPSHOT.to_vec();
     corrupt_record[ACTIVE_SNAPSHOT.len() - 25] ^= 1;
     assert_eq!(
-        decode_snapshot(&corrupt_record, &namespace, 7, 0),
+        decode_snapshot(&corrupt_record, &namespace, 0),
         Err(DecodeError::SnapshotRecordCountExceedsLimit {
             declared: 1,
             max: 0,
@@ -322,7 +286,7 @@ fn snapshot_record_count_is_checked_before_record_allocation_and_decode() {
 #[test]
 fn snapshot_recovers_after_record_limit_is_restored() {
     let namespace = namespace_digest("app-logs").unwrap();
-    let mut snapshot = decode_snapshot(ACTIVE_SNAPSHOT, &namespace, 7, 2).unwrap();
+    let mut snapshot = decode_snapshot(ACTIVE_SNAPSHOT, &namespace, 2).unwrap();
     let mut second = snapshot.records[0].clone();
     second.file_id = FileId::from_bytes(2u128.to_be_bytes());
     second.locator = Locator::PosixDevIno {
@@ -333,66 +297,24 @@ fn snapshot_recovers_after_record_limit_is_restored() {
     let bytes = encode_snapshot(7, "app-logs", &snapshot.records).unwrap();
 
     assert_eq!(
-        decode_snapshot(&bytes, &namespace, 7, 1),
+        decode_snapshot(&bytes, &namespace, 1),
         Err(DecodeError::SnapshotRecordCountExceedsLimit {
             declared: 2,
             max: 1,
         })
     );
-    assert_eq!(decode_snapshot(&bytes, &namespace, 7, 2).unwrap(), snapshot);
+    assert_eq!(decode_snapshot(&bytes, &namespace, 2).unwrap(), snapshot);
 }
 
-/// Scenario: A CRC-valid snapshot declares generation eight while CURRENT selected seven.
-/// Guarantees: Generation mismatch precedes record-count, physical-capacity, and record-body validation.
+/// Scenario: A snapshot generation is changed without refreshing its CRC, then decoded under a wrong namespace.
+/// Guarantees: The embedded generation is integrity-protected, and namespace binding still rejects misplaced state.
 #[test]
-fn snapshot_generation_mismatch_precedes_record_work() {
-    let namespace = namespace_digest("app-logs").unwrap();
-    let mut bytes = ACTIVE_SNAPSHOT.to_vec();
-    put_u64(&mut bytes, 12, 8);
-    let header_crc = crc32c(&bytes[..56]);
-    put_u32(&mut bytes, 56, header_crc);
-    assert_eq!(
-        decode_snapshot(&bytes, &namespace, 8, 1)
-            .unwrap()
-            .generation,
-        8
-    );
-
-    // An exceeded record-count limit cannot mask the generation mismatch.
-    assert_eq!(
-        decode_snapshot(&bytes, &namespace, 7, 0),
-        Err(DecodeError::GenerationMismatch {
-            expected: 7,
-            found: 8
-        })
-    );
-    // No record bytes are available, so physical capacity would otherwise fail.
-    assert_eq!(
-        decode_snapshot(&bytes[..SNAPSHOT_HEADER_BYTES], &namespace, 7, 1),
-        Err(DecodeError::GenerationMismatch {
-            expected: 7,
-            found: 8
-        })
-    );
-    bytes[SNAPSHOT_HEADER_BYTES + 4] ^= 1;
-    assert_eq!(
-        decode_snapshot(&bytes, &namespace, 7, 1),
-        Err(DecodeError::GenerationMismatch {
-            expected: 7,
-            found: 8
-        })
-    );
-}
-
-/// Scenario: A generation-mismatched snapshot also has a bad header CRC or wrong namespace.
-/// Guarantees: Header integrity and namespace binding are checked before comparing generation.
-#[test]
-fn snapshot_generation_check_follows_header_integrity_and_namespace() {
+fn snapshot_generation_integrity_and_namespace_are_checked() {
     let namespace = namespace_digest("app-logs").unwrap();
     let mut bytes = ACTIVE_SNAPSHOT.to_vec();
     put_u64(&mut bytes, 12, 8);
     assert!(matches!(
-        decode_snapshot(&bytes, &namespace, 7, 1),
+        decode_snapshot(&bytes, &namespace, 1),
         Err(DecodeError::ChecksumMismatch {
             context: "snapshot header",
             ..
@@ -402,7 +324,7 @@ fn snapshot_generation_check_follows_header_integrity_and_namespace() {
     put_u32(&mut bytes, 56, header_crc);
     let other = namespace_digest("other").unwrap();
     assert_eq!(
-        decode_snapshot(&bytes, &other, 7, 1),
+        decode_snapshot(&bytes, &other, 1),
         Err(DecodeError::NamespaceMismatch {
             context: "snapshot"
         })
@@ -454,7 +376,7 @@ fn snapshot_record_count_is_physically_bounded_before_decode() {
         SNAPSHOT_HEADER_BYTES + 181 + SNAPSHOT_FOOTER_BYTES
     );
     assert_eq!(
-        decode_snapshot(&exact, &namespace, 7, u32::MAX)
+        decode_snapshot(&exact, &namespace, u32::MAX)
             .unwrap()
             .records
             .len(),
@@ -467,7 +389,7 @@ fn snapshot_record_count_is_physically_bounded_before_decode() {
     put_u32(&mut one_more, 56, header_crc);
     one_more[SNAPSHOT_HEADER_BYTES + 4] ^= 1;
     assert_eq!(
-        decode_snapshot(&one_more, &namespace, 7, u32::MAX),
+        decode_snapshot(&one_more, &namespace, u32::MAX),
         Err(DecodeError::SnapshotRecordCountExceedsPhysicalMaximum {
             declared: 2,
             max: 1,
@@ -480,7 +402,7 @@ fn snapshot_record_count_is_physically_bounded_before_decode() {
     let header_crc = crc32c(&header_only[..56]);
     put_u32(&mut header_only, 56, header_crc);
     assert_eq!(
-        decode_snapshot(&header_only, &namespace, 7, u32::MAX),
+        decode_snapshot(&header_only, &namespace, u32::MAX),
         Err(DecodeError::SnapshotRecordCountExceedsPhysicalMaximum {
             declared: u32::MAX,
             max: 0,
@@ -495,7 +417,7 @@ fn snapshot_record_count_is_physically_bounded_before_decode() {
 fn snapshot_offset_zero_guard_requires_canonical_digest() {
     let fixture = include_bytes!("fixtures/snapshot-rotated-finalized.bin");
     let namespace = namespace_digest("app-logs").unwrap();
-    let mut record = decode_snapshot(fixture, &namespace, 7, 1)
+    let mut record = decode_snapshot(fixture, &namespace, 1)
         .unwrap()
         .records
         .remove(0);
@@ -509,7 +431,7 @@ fn snapshot_offset_zero_guard_requires_canonical_digest() {
     frame[34] ^= 1;
     refresh_record_crc(&mut frame);
     assert!(matches!(
-        decode_snapshot(&snapshot_from_frames(&[frame]), &namespace, 7, 1),
+        decode_snapshot(&snapshot_from_frames(&[frame]), &namespace, 1),
         Err(DecodeError::InvalidSnapshotState { .. })
     ));
 }
@@ -522,7 +444,7 @@ fn duplicate_snapshot_file_id_is_rejected() {
     let bytes = snapshot_from_frames(&[frame.clone(), frame]);
     let namespace = namespace_digest("app-logs").unwrap();
     assert!(matches!(
-        decode_snapshot(&bytes, &namespace, 7, u32::MAX),
+        decode_snapshot(&bytes, &namespace, u32::MAX),
         Err(DecodeError::DuplicateFileId { .. })
     ));
 }
@@ -538,7 +460,7 @@ fn duplicate_live_snapshot_locator_is_rejected() {
     let bytes = snapshot_from_frames(&[first, second]);
     let namespace = namespace_digest("app-logs").unwrap();
     assert!(matches!(
-        decode_snapshot(&bytes, &namespace, 7, u32::MAX),
+        decode_snapshot(&bytes, &namespace, u32::MAX),
         Err(DecodeError::DuplicateLiveLocator { .. })
     ));
 }
@@ -552,7 +474,7 @@ fn invalid_snapshot_locator_is_rejected() {
     unknown[88] = 9;
     refresh_record_crc(&mut unknown);
     assert!(matches!(
-        decode_snapshot(&snapshot_from_frames(&[unknown]), &namespace, 7, u32::MAX),
+        decode_snapshot(&snapshot_from_frames(&[unknown]), &namespace, u32::MAX),
         Err(DecodeError::UnknownDiscriminant { .. })
     ));
 
@@ -562,12 +484,7 @@ fn invalid_snapshot_locator_is_rejected() {
     payload[84] = 0;
     let unspecified = resize_record_payload(frame, payload);
     assert!(matches!(
-        decode_snapshot(
-            &snapshot_from_frames(&[unspecified]),
-            &namespace,
-            7,
-            u32::MAX
-        ),
+        decode_snapshot(&snapshot_from_frames(&[unspecified]), &namespace, u32::MAX),
         Err(DecodeError::InvalidSnapshotState { .. })
     ));
 }
@@ -581,7 +498,7 @@ fn invalid_snapshot_lifecycle_and_resume_are_rejected() {
     lifecycle[140] = 9;
     refresh_record_crc(&mut lifecycle);
     assert!(matches!(
-        decode_snapshot(&snapshot_from_frames(&[lifecycle]), &namespace, 7, u32::MAX),
+        decode_snapshot(&snapshot_from_frames(&[lifecycle]), &namespace, u32::MAX),
         Err(DecodeError::UnknownDiscriminant { .. })
     ));
 
@@ -594,7 +511,6 @@ fn invalid_snapshot_lifecycle_and_resume_are_rejected() {
         decode_snapshot(
             &snapshot_from_frames(&[invalid_resume]),
             &namespace,
-            7,
             u32::MAX
         ),
         Err(DecodeError::InvalidSnapshotState { .. })
@@ -611,7 +527,7 @@ fn snapshot_zero_epoch_and_profile_version_are_rejected() {
         frame[offset..offset + width].fill(0);
         refresh_record_crc(&mut frame);
         assert!(matches!(
-            decode_snapshot(&snapshot_from_frames(&[frame]), &namespace, 7, 1),
+            decode_snapshot(&snapshot_from_frames(&[frame]), &namespace, 1),
             Err(DecodeError::InvalidSnapshotState { .. })
         ));
     }
@@ -628,7 +544,7 @@ fn snapshot_continuation_reachability_is_enforced() {
         continuation_frame(0, 0, 1, 2),
     ] {
         assert!(matches!(
-            decode_snapshot(&snapshot_from_frames(&[frame]), &namespace, 7, 1),
+            decode_snapshot(&snapshot_from_frames(&[frame]), &namespace, 1),
             Err(DecodeError::InvalidSnapshotState { .. })
         ));
     }
@@ -644,7 +560,7 @@ fn snapshot_invalid_quarantine_evidence_values_are_rejected() {
     put_u16(&mut zero_reason, 149, 0);
     refresh_record_crc(&mut zero_reason);
     assert!(matches!(
-        decode_snapshot(&snapshot_from_frames(&[zero_reason]), &namespace, 7, 1),
+        decode_snapshot(&snapshot_from_frames(&[zero_reason]), &namespace, 1),
         Err(DecodeError::InvalidSnapshotState { .. })
     ));
 
@@ -652,7 +568,7 @@ fn snapshot_invalid_quarantine_evidence_values_are_rejected() {
     put_u32(&mut mismatched_epoch, 159, 5);
     refresh_record_crc(&mut mismatched_epoch);
     assert!(matches!(
-        decode_snapshot(&snapshot_from_frames(&[mismatched_epoch]), &namespace, 7, 1),
+        decode_snapshot(&snapshot_from_frames(&[mismatched_epoch]), &namespace, 1),
         Err(DecodeError::InvalidSnapshotState { .. })
     ));
 }
@@ -668,7 +584,7 @@ fn snapshot_reserved_reason_decodes_but_cannot_be_reencoded() {
     refresh_record_crc(&mut frame);
     let bytes = snapshot_from_frames(&[frame]);
 
-    let snapshot = decode_snapshot(&bytes, &namespace, 7, 1).unwrap();
+    let snapshot = decode_snapshot(&bytes, &namespace, 1).unwrap();
     assert_eq!(snapshot.records.len(), 1);
     let record = &snapshot.records[0];
     assert_eq!(record.lifecycle_state, LifecycleState::Quarantined);
@@ -692,7 +608,7 @@ fn snapshot_quarantine_evidence_shape_is_enforced_during_decode() {
     let mut payload = frame[4..frame.len() - 4].to_vec();
     drop(payload.drain(145..167));
     let missing = resize_record_payload(frame, payload);
-    assert!(decode_snapshot(&snapshot_from_frames(&[missing]), &namespace, 7, 1).is_err());
+    assert!(decode_snapshot(&snapshot_from_frames(&[missing]), &namespace, 1).is_err());
 
     let frame = active_record_frame();
     let mut payload = frame[4..frame.len() - 4].to_vec();
@@ -703,7 +619,7 @@ fn snapshot_quarantine_evidence_shape_is_enforced_during_decode() {
     evidence.extend_from_slice(&99u64.to_be_bytes());
     drop(payload.splice(137..137, evidence));
     let unexpected = resize_record_payload(frame, payload);
-    assert!(decode_snapshot(&snapshot_from_frames(&[unexpected]), &namespace, 7, 1).is_err());
+    assert!(decode_snapshot(&snapshot_from_frames(&[unexpected]), &namespace, 1).is_err());
 }
 
 /// Scenario: An in-memory Active record incorrectly carries quarantine evidence.
@@ -711,7 +627,7 @@ fn snapshot_quarantine_evidence_shape_is_enforced_during_decode() {
 #[test]
 fn invalid_quarantine_presence_shape_is_rejected() {
     let namespace = namespace_digest("app-logs").unwrap();
-    let mut record = decode_snapshot(ACTIVE_SNAPSHOT, &namespace, 7, u32::MAX)
+    let mut record = decode_snapshot(ACTIVE_SNAPSHOT, &namespace, u32::MAX)
         .unwrap()
         .records
         .remove(0);
@@ -733,7 +649,7 @@ fn invalid_quarantine_presence_shape_is_rejected() {
 fn encoder_rejects_reserved_reason_codes() {
     let namespace = namespace_digest("app-logs").unwrap();
     let fixture = include_bytes!("fixtures/snapshot-quarantined.bin");
-    let mut record = decode_snapshot(fixture, &namespace, 7, u32::MAX)
+    let mut record = decode_snapshot(fixture, &namespace, u32::MAX)
         .unwrap()
         .records
         .remove(0);
@@ -1148,7 +1064,7 @@ fn malformed_advisory_path_is_rejected() {
     refresh_record_crc(&mut frame);
     let namespace = namespace_digest("app-logs").unwrap();
     assert!(matches!(
-        decode_snapshot(&snapshot_from_frames(&[frame]), &namespace, 7, u32::MAX),
+        decode_snapshot(&snapshot_from_frames(&[frame]), &namespace, u32::MAX),
         Err(DecodeError::UnknownDiscriminant { .. })
     ));
 }
@@ -1163,7 +1079,7 @@ fn advisory_path_flags_and_unavailable_shape_are_rejected() {
     let mut reserved = unix.to_vec();
     reserved[1] = 0x02;
     assert!(matches!(
-        decode_snapshot(&snapshot_with_active_advisory(&reserved), &namespace, 7, 1),
+        decode_snapshot(&snapshot_with_active_advisory(&reserved), &namespace, 1),
         Err(DecodeError::ReservedFieldNonZero { .. })
     ));
 
@@ -1175,7 +1091,6 @@ fn advisory_path_flags_and_unavailable_shape_are_rejected() {
         decode_snapshot(
             &snapshot_with_active_advisory(&unavailable_flags),
             &namespace,
-            7,
             1
         ),
         Err(DecodeError::InvalidAdvisoryPath { .. })
@@ -1188,7 +1103,6 @@ fn advisory_path_flags_and_unavailable_shape_are_rejected() {
         decode_snapshot(
             &snapshot_with_active_advisory(&unavailable_length),
             &namespace,
-            7,
             1
         ),
         Err(DecodeError::InvalidAdvisoryPath { .. })
@@ -1208,7 +1122,6 @@ fn advisory_path_unix_length_and_digest_rules_are_rejected() {
         decode_snapshot(
             &snapshot_with_active_advisory(&empty_present),
             &namespace,
-            7,
             1
         ),
         Err(DecodeError::InvalidAdvisoryPath { .. })
@@ -1218,12 +1131,7 @@ fn advisory_path_unix_length_and_digest_rules_are_rejected() {
     put_u16(&mut incomplete, 10, 15);
     assert_eq!(incomplete.remove(12), b'/');
     assert!(matches!(
-        decode_snapshot(
-            &snapshot_with_active_advisory(&incomplete),
-            &namespace,
-            7,
-            1
-        ),
+        decode_snapshot(&snapshot_with_active_advisory(&incomplete), &namespace, 1),
         Err(DecodeError::InvalidAdvisoryPath { .. })
     ));
 
@@ -1233,7 +1141,6 @@ fn advisory_path_unix_length_and_digest_rules_are_rejected() {
         decode_snapshot(
             &snapshot_with_active_advisory(&short_truncated),
             &namespace,
-            7,
             1
         ),
         Err(DecodeError::InvalidAdvisoryPath { .. })
@@ -1246,7 +1153,6 @@ fn advisory_path_unix_length_and_digest_rules_are_rejected() {
         decode_snapshot(
             &snapshot_with_active_advisory(&wrong_suffix_len),
             &namespace,
-            7,
             1
         ),
         Err(DecodeError::InvalidAdvisoryPath { .. })
@@ -1256,12 +1162,7 @@ fn advisory_path_unix_length_and_digest_rules_are_rejected() {
     let last = wrong_digest.len() - 1;
     wrong_digest[last] ^= 1;
     assert!(matches!(
-        decode_snapshot(
-            &snapshot_with_active_advisory(&wrong_digest),
-            &namespace,
-            7,
-            1
-        ),
+        decode_snapshot(&snapshot_with_active_advisory(&wrong_digest), &namespace, 1),
         Err(DecodeError::InvalidAdvisoryPath { .. })
     ));
 }
@@ -1277,7 +1178,7 @@ fn advisory_path_windows_alignment_is_rejected() {
     let full = u64::from_be_bytes(odd_full[2..10].try_into().unwrap());
     put_u64(&mut odd_full, 2, full - 1);
     assert!(matches!(
-        decode_snapshot(&snapshot_with_active_advisory(&odd_full), &namespace, 7, 1),
+        decode_snapshot(&snapshot_with_active_advisory(&odd_full), &namespace, 1),
         Err(DecodeError::InvalidAdvisoryPath { .. })
     ));
 
@@ -1286,12 +1187,7 @@ fn advisory_path_windows_alignment_is_rejected() {
     put_u16(&mut odd_stored, 10, stored - 1);
     assert_eq!(odd_stored.remove(12), b'C');
     assert!(matches!(
-        decode_snapshot(
-            &snapshot_with_active_advisory(&odd_stored),
-            &namespace,
-            7,
-            1
-        ),
+        decode_snapshot(&snapshot_with_active_advisory(&odd_stored), &namespace, 1),
         Err(DecodeError::InvalidAdvisoryPath { .. })
     ));
 }
@@ -1306,7 +1202,7 @@ fn snapshot_unconsumed_record_and_footer_mismatches_are_rejected() {
     payload.push(0);
     let extended = resize_record_payload(frame, payload);
     assert!(matches!(
-        decode_snapshot(&snapshot_from_frames(&[extended]), &namespace, 7, u32::MAX),
+        decode_snapshot(&snapshot_from_frames(&[extended]), &namespace, u32::MAX),
         Err(DecodeError::UnconsumedBytes { .. })
     ));
 
@@ -1322,7 +1218,7 @@ fn snapshot_unconsumed_record_and_footer_mismatches_are_rejected() {
         let crc_offset = bytes.len() - 4;
         put_u32(&mut bytes, crc_offset, checksum);
         assert!(matches!(
-            decode_snapshot(&bytes, &namespace, 7, u32::MAX),
+            decode_snapshot(&bytes, &namespace, u32::MAX),
             Err(DecodeError::UnconsumedBytes { .. })
         ));
     }
@@ -1336,31 +1232,8 @@ fn future_framing_profile_version_is_structurally_preserved() {
     put_u16(&mut frame, 105, 2);
     refresh_record_crc(&mut frame);
     let namespace = namespace_digest("app-logs").unwrap();
-    let snapshot =
-        decode_snapshot(&snapshot_from_frames(&[frame]), &namespace, 7, u32::MAX).unwrap();
+    let snapshot = decode_snapshot(&snapshot_from_frames(&[frame]), &namespace, u32::MAX).unwrap();
     assert_eq!(snapshot.records[0].framing_profile_version, 2);
-}
-
-/// Scenario: WAL header magic, version, flags, and checksum are corrupted.
-/// Guarantees: Every fixed WAL header field is validated before transaction scanning.
-#[test]
-fn wal_header_corruption_is_rejected() {
-    let fixture = include_bytes!("fixtures/wal-header.bin");
-    assert!(matches!(
-        decode_wal_header(&fixture[..55]),
-        Err(DecodeError::InvalidLength { .. })
-    ));
-    for (offset, expected) in [(0, "magic"), (8, "version"), (10, "flags"), (55, "crc")] {
-        let mut bytes = fixture.to_vec();
-        bytes[offset] ^= 1;
-        let error = decode_wal_header(&bytes).unwrap_err();
-        match expected {
-            "magic" => assert!(matches!(error, DecodeError::BadMagic { .. })),
-            "version" => assert!(matches!(error, DecodeError::UnsupportedVersion { .. })),
-            "flags" => assert!(matches!(error, DecodeError::ReservedFieldNonZero { .. })),
-            _ => assert!(matches!(error, DecodeError::ChecksumMismatch { .. })),
-        }
-    }
 }
 
 /// Scenario: Operation framing has an excessive length, missing declared bytes, or bad CRC.
@@ -1900,7 +1773,7 @@ fn administrative_string_shapes_are_rejected() {
 fn finalized_snapshot_requires_clean_resume() {
     let fixture = include_bytes!("fixtures/snapshot-rotated-finalized.bin");
     let namespace = namespace_digest("app-logs").unwrap();
-    let mut record: SnapshotRecord = decode_snapshot(fixture, &namespace, 7, u32::MAX)
+    let mut record: SnapshotRecord = decode_snapshot(fixture, &namespace, u32::MAX)
         .unwrap()
         .records
         .remove(0);
@@ -1922,7 +1795,7 @@ fn finalized_snapshot_requires_clean_resume() {
 #[test]
 fn snapshot_encoder_rejects_unspecified_locator() {
     let namespace = namespace_digest("app-logs").unwrap();
-    let mut record = decode_snapshot(ACTIVE_SNAPSHOT, &namespace, 7, u32::MAX)
+    let mut record = decode_snapshot(ACTIVE_SNAPSHOT, &namespace, u32::MAX)
         .unwrap()
         .records
         .remove(0);
@@ -1939,7 +1812,7 @@ fn snapshot_encoder_rejects_unspecified_locator() {
 fn snapshot_namespace_mismatch_is_rejected() {
     let other = namespace_digest("other").unwrap();
     assert!(matches!(
-        decode_snapshot(ACTIVE_SNAPSHOT, &other, 7, u32::MAX),
+        decode_snapshot(ACTIVE_SNAPSHOT, &other, u32::MAX),
         Err(DecodeError::NamespaceMismatch { .. })
     ));
 }
@@ -1973,12 +1846,7 @@ fn complete_snapshot_record_shortfall_is_malformed() {
     let mut snapshot = ACTIVE_SNAPSHOT.to_vec();
     snapshot[60..60 + frame.len()].copy_from_slice(&frame);
     assert!(matches!(
-        decode_snapshot(
-            &snapshot,
-            &namespace_digest("app-logs").unwrap(),
-            7,
-            u32::MAX
-        ),
+        decode_snapshot(&snapshot, &namespace_digest("app-logs").unwrap(), u32::MAX),
         Err(DecodeError::MalformedPayload {
             context: "snapshot record payload",
             ..
