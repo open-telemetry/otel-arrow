@@ -972,7 +972,7 @@ fn default_attrs_values_column(attr_type: AttributeValueType, num_rows: usize) -
         AttributeValueType::Str => Arc::new(DictionaryArray::new(
             UInt16Array::new(ScalarBuffer::from(vec![0; num_rows]), None),
             Arc::new(StringArray::new(
-                OffsetBuffer::new_zeroed(num_rows),
+                OffsetBuffer::new_zeroed(1),
                 MutableBuffer::new(0).into(),
                 None,
             )),
@@ -981,7 +981,7 @@ fn default_attrs_values_column(attr_type: AttributeValueType, num_rows: usize) -
             Arc::new(DictionaryArray::new(
                 UInt16Array::new(ScalarBuffer::from(vec![0; num_rows]), None),
                 Arc::new(BinaryArray::new(
-                    OffsetBuffer::new_zeroed(num_rows),
+                    OffsetBuffer::new_zeroed(1),
                     MutableBuffer::new(0).into(),
                     None,
                 )),

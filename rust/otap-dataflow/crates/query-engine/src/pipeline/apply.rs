@@ -1737,6 +1737,8 @@ mod test {
         );
     }
 
+    /// Scenario: assign a comparison result when the referenced string value column is omitted.
+    /// Guarantees: omitted default string values compare equal to the empty string.
     #[tokio::test]
     async fn test_pipeline_set_attribute_to_result_of_predicate_involving_missing_column() {
         let input = to_logs_data(vec![
