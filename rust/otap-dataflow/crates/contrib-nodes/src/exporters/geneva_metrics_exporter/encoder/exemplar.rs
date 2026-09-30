@@ -142,57 +142,79 @@ fn encoded_exemplar_list_size(exemplars: &[MetricExemplar]) -> Result<usize, Enc
 }
 
 pub(crate) fn encoded_exemplar_size(exemplar: &MetricExemplar) -> Result<usize, EncodeError> {
-    let label_count = exemplar.filtered_attributes.len();
-    if label_count > u8::MAX as usize {
-        return Err(EncodeError::LengthOverflow {
-            field: "exemplar label count",
-            length: label_count,
-            maximum: u8::MAX as usize,
-        });
-    }
+    encoded_exemplar_size_from_parts(
+        exemplar.value,
+        exemplar
+            .time_unix_nano
+            .is_some_and(|timestamp| timestamp != 0),
+        exemplar
+            .trace_id
+            .is_some_and(|identifier| identifier.iter().any(|byte| *byte != 0)),
+        exemplar
+            .span_id
+            .is_some_and(|identifier| identifier.iter().any(|byte| *byte != 0)),
+        exemplar.sample_count.is_some_and(|count| count != 0.0),
+        exemplar
+            .filtered_attributes
+            .iter()
+            .map(|(name, value)| (name.len(), value.len())),
+    )
+}
 
-    let stored_as_long = serializable_as_i64(exemplar.value);
+pub(crate) fn encoded_exemplar_size_from_parts(
+    value: f64,
+    has_timestamp: bool,
+    has_trace_id: bool,
+    has_span_id: bool,
+    has_sample_count: bool,
+    filtered_attributes: impl Iterator<Item = (usize, usize)>,
+) -> Result<usize, EncodeError> {
+    let stored_as_long = serializable_as_i64(value);
     let value_size = if stored_as_long {
-        signed_base128_size(exemplar.value as i64)
+        signed_base128_size(value as i64)
     } else {
         size_of::<f64>()
     };
     let mut length = checked_size_add("single exemplar", 3, value_size)?;
     length = checked_size_add("single exemplar", length, size_of::<u8>())?;
-    if exemplar
-        .time_unix_nano
-        .is_some_and(|timestamp| timestamp != 0)
-    {
+    if has_timestamp {
         length = checked_size_add("single exemplar", length, size_of::<u64>())?;
     }
-    if exemplar
-        .trace_id
-        .is_some_and(|identifier| identifier.iter().any(|byte| *byte != 0))
-    {
+    if has_trace_id {
         length = checked_size_add("single exemplar", length, 16)?;
     }
-    if exemplar
-        .span_id
-        .is_some_and(|identifier| identifier.iter().any(|byte| *byte != 0))
-    {
+    if has_span_id {
         length = checked_size_add("single exemplar", length, 8)?;
     }
-    if exemplar.sample_count.is_some_and(|count| count != 0.0) {
+    if has_sample_count {
         length = checked_size_add("single exemplar", length, size_of::<f64>())?;
     }
-    for (name, value) in &exemplar.filtered_attributes {
+    let mut label_count = 0_usize;
+    for (name_length, value_length) in filtered_attributes {
+        label_count = label_count
+            .checked_add(1)
+            .ok_or(EncodeError::LengthCalculationOverflow {
+                field: "exemplar label count",
+            })?;
+        if label_count > u8::MAX as usize {
+            return Err(EncodeError::LengthOverflow {
+                field: "exemplar label count",
+                length: label_count,
+                maximum: u8::MAX as usize,
+            });
+        }
         length = checked_size_add(
             "single exemplar",
             length,
-            unsigned_base128_size(name.len() as u64),
+            unsigned_base128_size(name_length as u64),
         )?;
-        length = checked_size_add("single exemplar", length, name.len())?;
+        length = checked_size_add("single exemplar", length, name_length)?;
         length = checked_size_add(
             "single exemplar",
             length,
-            unsigned_base128_size(value.len() as u64),
+            unsigned_base128_size(value_length as u64),
         )?;
-        length = checked_size_add("single exemplar", length, value.len())?;
+        length = checked_size_add("single exemplar", length, value_length)?;
     }
     if length > MAX_SINGLE_EXEMPLAR_SIZE {
         return Err(EncodeError::LengthOverflow {
