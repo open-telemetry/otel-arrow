@@ -311,7 +311,7 @@ impl ProjectionColumns {
 
     /// swap the location of two columns. If either index is out of bounds, this does nothing.
     pub(crate) fn swap(&mut self, pos_1: usize, pos_2: usize) {
-        if pos_1 <= self.fields.len() && pos_2 <= self.fields.len() {
+        if pos_1 < self.fields.len() && pos_2 < self.fields.len() {
             self.fields.swap(pos_1, pos_2);
             self.columns.swap(pos_1, pos_2);
         }
