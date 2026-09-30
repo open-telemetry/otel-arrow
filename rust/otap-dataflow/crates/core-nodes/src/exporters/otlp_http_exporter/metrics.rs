@@ -9,7 +9,7 @@ use otel_arrow_dfe_engine::context::PipelineContext;
 use otel_arrow_dfe_otap::http_client_auth::HttpClientAuthProvider;
 use otel_arrow_dfe_otap::metrics::ExporterMetrics;
 use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
-use otel_arrow_dfe_telemetry::instrument::{Counter, Gauge};
+use otel_arrow_dfe_telemetry::instrument::{Counter, UpDownCounter};
 use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSet, MetricSetSnapshot};
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use otel_arrow_dfe_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
@@ -116,7 +116,7 @@ struct OtlpHttpAuthSourceAttributes {
 struct OtlpHttpExporterAuthMetrics {
     /// Whether authenticated progress is currently possible (0=false, 1=true).
     #[metric(unit = "{1}")]
-    ready: Gauge<u64>,
+    ready: UpDownCounter<u64>,
 }
 
 /// Terminal outcome and failure metrics emitted by an OTLP HTTP exporter.
@@ -141,7 +141,9 @@ impl OtlpHttpExporterMetrics {
                     pipeline_ctx,
                     &OtlpHttpAuthSourceAttributes { source: a.name() },
                 );
-                metrics.ready.set(u64::from(a.is_ready()));
+                if a.is_ready() {
+                    metrics.ready.inc();
+                }
                 metrics
             }),
         }
@@ -150,7 +152,11 @@ impl OtlpHttpExporterMetrics {
     /// Records whether authenticated progress is currently possible.
     pub(super) fn record_auth_readiness(&mut self, ready: bool) {
         if let Some(auth) = self.auth.as_mut() {
-            auth.ready.set(u64::from(ready));
+            match (auth.ready.get(), ready) {
+                (0, true) => auth.ready.inc(),
+                (1, false) => auth.ready.dec(),
+                _ => {}
+            }
         }
     }
 
