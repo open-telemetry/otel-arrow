@@ -69,7 +69,6 @@ macro_rules! id_column_dispatch {
         }
     };
 }
-pub(crate) use id_column_dispatch;
 
 /// Create a new record batch by taking the specified ranges from the provided record batch.
 pub fn take_record_batch_ranges(
@@ -88,18 +87,6 @@ pub fn take_record_batch_ranges(
     }
 
     RecordBatch::try_new(rb.schema(), new_columns)
-}
-
-pub(crate) fn sort_otap_batch_by_parent_then_id<const N: usize>(
-    batches: &mut [Option<RecordBatch>; N],
-) -> Result<()> {
-    for batch in batches.iter_mut() {
-        if let Some(rb) = batch.take() {
-            *batch = Some(sort_by_parent_then_id(rb)?);
-        }
-    }
-
-    Ok(())
 }
 
 /// Sorts a record batch by `parent_id` (primary) then `id` (secondary) columns.

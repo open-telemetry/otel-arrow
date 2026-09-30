@@ -116,6 +116,7 @@ use arrow::datatypes::{
 use arrow_schema::{DataType, Field, FieldRef, Schema, SchemaBuilder};
 use itertools::Either;
 use roaring::RoaringBitmap;
+use std::borrow::Cow;
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -123,14 +124,15 @@ use arrow::array::{
     ArrayData, ArrowNativeTypeOp, BooleanArray, BooleanBufferBuilder, FixedSizeBinaryArray,
     GenericByteArray, MutableArrayData, PrimitiveArray, make_array,
 };
-use arrow::buffer::{Buffer, NullBuffer, OffsetBuffer, ScalarBuffer};
+use arrow::buffer::{BooleanBuffer, Buffer, NullBuffer, OffsetBuffer, ScalarBuffer};
 use arrow::compute::kernels::cast;
 use arrow::datatypes::{
     ArrowDictionaryKeyType, BinaryType, ByteArrayType, Int32Type, UInt32Type, Utf8Type,
 };
 use arrow_schema::{ArrowError, Fields};
 
-use crate::otap::transform::reindex;
+use crate::otap::sealed;
+use crate::otap::transform::reindex::{self, Segment};
 
 use crate::error::Error;
 use crate::otap::{Logs, Metrics, OtapBatchStore, Result, Traces};
@@ -189,16 +191,61 @@ impl Default for ConcatOptions {
 
 /// Concatenate the provided OTAP batches into a single batch.
 ///
-/// See the module documentation for the algorithm. By default, this function
-/// will reindex the input batches where transport optimized encodings are
-/// removed and ID columns are rewritten so that IDs from different inputs
+/// See the module documentation for the algorithm. Transport optimized
+/// encodings are always removed first (concatenating encoded ID columns is
+/// not valid), except when a single input is passed through untouched. By
+/// default, ID columns are then rewritten so that IDs from different inputs
 /// cannot collide.
 ///
 /// Reindexing behavior can be disabled with [`ConcatOptions::preserve_ids`].
 /// Be careful when doing this, as the resulting otap batch will most likely
 /// have corrupted id columns unless you can guarantee that the input IDs are
-/// decoded and non-overlapping. The most common valid scenario is when all
-/// input batches are pieces of the same original otap batch.
+/// non-overlapping. The most common valid scenario is when all input batches
+/// are pieces of the same original otap batch.
+///
+/// # Errors
+///
+/// Returns an error if an input is malformed or the output would overflow
+/// the ID space of a payload.
+pub fn concatenate<T: OtapBatchStore>(inputs: Vec<T>, opts: ConcatOptions) -> Result<T> {
+    let mut batches: Vec<Vec<Option<RecordBatch>>> = inputs
+        .into_iter()
+        .map(|mut t| {
+            sealed::OtapBatchStore::batches_mut(&mut t)
+                .iter_mut()
+                .map(Option::take)
+                .collect()
+        })
+        .collect();
+    let out = match T::COUNT {
+        Logs::COUNT => concat_dyn::<{ Logs::COUNT }>(&mut batches, opts)?,
+        Metrics::COUNT => concat_dyn::<{ Metrics::COUNT }>(&mut batches, opts)?,
+        Traces::COUNT => concat_dyn::<{ Traces::COUNT }>(&mut batches, opts)?,
+        n => return Err(Error::UnsupportedBatchStoreType { batch_width: n }),
+    };
+    let mut result = T::default();
+    for (slot, rb) in sealed::OtapBatchStore::batches_mut(&mut result)
+        .iter_mut()
+        .zip(out)
+    {
+        *slot = rb;
+    }
+    Ok(result)
+}
+
+fn concat_dyn<const N: usize>(
+    batches: &mut [Vec<Option<RecordBatch>>],
+    opts: ConcatOptions,
+) -> Result<Vec<Option<RecordBatch>>> {
+    let mut items: Vec<[Option<RecordBatch>; N]> = batches
+        .iter_mut()
+        .map(|b| std::array::from_fn(|i| b[i].take()))
+        .collect();
+    Ok(concatenate_batches::<N>(&mut items, opts)?.into())
+}
+
+/// Concatenate the provided OTAP batches (as raw per-payload arrays) into a
+/// single batch. See [concatenate].
 ///
 /// The inputs are consumed: every slot in `items` is `None` on success.
 ///
@@ -209,7 +256,7 @@ impl Default for ConcatOptions {
 /// batches are passed. The signal is selected by width alone, so a future
 /// batch store that reuses an existing signal's width would be routed to that
 /// signal's payload schemas.
-pub fn concatenate<const N: usize>(
+pub(crate) fn concatenate_batches<const N: usize>(
     items: &mut [[Option<RecordBatch>; N]],
     opts: ConcatOptions,
 ) -> Result<[Option<RecordBatch>; N]> {
@@ -243,59 +290,132 @@ fn concatenate_signal<S: OtapBatchStore, const N: usize>(
     items: &mut [[Option<RecordBatch>; N]],
     opts: ConcatOptions,
 ) -> Result<[Option<RecordBatch>; N]> {
+    // Encoded ID columns cannot be concatenated, with or without reindexing.
+    reindex::remove_transport_encodings::<S, N>(items)?;
+    let segments: Vec<Segment<'_, N>> = items.iter().map(Segment::whole).collect();
+    let result = concatenate_segments::<S, N>(&segments, opts)?;
+    for group in items.iter_mut() {
+        *group = [const { None }; N];
+    }
+    Ok(result)
+}
+
+/// Concatenate `segments` (whole or cut inputs) into one batch.
+///
+/// Transport optimized encodings must already have been removed from every
+/// segment, unless there is exactly one whole segment. A single segment
+/// needs no reindexing and keeps its own schema.
+pub(crate) fn concatenate_segments<S: OtapBatchStore, const N: usize>(
+    segments: &[Segment<'_, N>],
+    opts: ConcatOptions,
+) -> Result<[Option<RecordBatch>; N]> {
     let mut result = [const { None }; N];
 
-    // Decode transport encodings and plan the ID rewrites. Nothing
-    // is copied here apart from decoding encoded columns and the scratch
+    if let [seg] = segments {
+        return single_segment::<N>(seg);
+    }
+
+    // Plan the ID rewrites. Nothing is copied here apart from the scratch
     // values of compacted ID columns.
     let mut id_plan = if opts.reindex {
-        reindex::remove_transport_encodings::<S, N>(items)?;
-        Some(reindex::plan_ids::<S, N>(items)?)
+        reindex::plan_ids::<S, N>(segments)?
     } else {
-        None
+        std::array::from_fn(|i| {
+            segments
+                .iter()
+                .map(|s| InputPlan {
+                    selection: s.cut.map(|c| c[i].clone()).unwrap_or_default(),
+                    remaps: Default::default(),
+                })
+                .collect()
+        })
     };
 
     let mut batches: Vec<&RecordBatch> = Vec::new();
-    let mut plans: Vec<InputPlan> = Vec::new();
+    let mut plans: Vec<InputPlan<'_>> = Vec::new();
     for i in 0..N {
         let payload_def = payloads::get(S::payload_type_at_idx(i));
 
-        let index = index_records(select_all(items, i), payload_def)?;
+        let index = index_records(segments.iter().map(|s| s.batches[i].as_ref()), payload_def)?;
         if index.batch_count == 0 {
             continue;
         }
         let selected = select_schema(&index)?;
 
+        // The buffers are reused across payloads; the inputs are borrowed
+        // from `segments`, which outlives the loop.
+        batches.clear();
+        plans.clear();
         batches.reserve(index.batch_count);
         plans.reserve(index.batch_count);
-        for (j, group) in items.iter().enumerate() {
-            if let Some(rb) = group[i].as_ref() {
+        for (j, seg) in segments.iter().enumerate() {
+            if let Some(rb) = seg.batches[i].as_ref() {
                 batches.push(rb);
-                plans.push(match id_plan.as_mut() {
-                    Some(p) => std::mem::take(&mut p[i][j]),
-                    None => InputPlan::default(),
-                });
+                plans.push(std::mem::take(&mut id_plan[i][j]));
             }
         }
-
-        result[i] = Some(write_payload(&batches, &plans, payload_def, selected)?);
-
-        // We can't just clear batches because of the lifetime, hence the
-        // `reuse_vec` trick to reuse the allocation.
-        batches = reuse_vec(batches);
-        plans.clear();
-
-        for payload in select_all_mut(items, i) {
-            *payload = None;
+        let rows: usize = batches
+            .iter()
+            .zip(&plans)
+            .map(|(rb, plan)| plan.selection.count(rb.num_rows()))
+            .sum();
+        if rows == 0 && segments.iter().any(|s| s.cut.is_some()) {
+            // A cut left nothing of this payload.
+            continue;
         }
+        result[i] = Some(write_payload(&batches, &plans, payload_def, selected)?);
     }
 
     Ok(result)
 }
 
-fn reuse_vec<'b, T>(mut v: Vec<&T>) -> Vec<&'b T> {
-    v.clear();
-    v.into_iter().map(|_| unreachable!()).collect()
+/// Produce the output for a single segment. IDs cannot collide within one
+/// input, so there is no reindexing, and the input keeps its own schema.
+/// Payloads that are taken whole, or as a single contiguous range, are
+/// sliced without copying.
+fn single_segment<const N: usize>(seg: &Segment<'_, N>) -> Result<[Option<RecordBatch>; N]> {
+    let mut result = [const { None }; N];
+    for i in 0..N {
+        let Some(rb) = seg.batches[i].as_ref() else {
+            continue;
+        };
+        let sel = seg.cut.map(|c| &c[i]);
+        let n = rb.num_rows();
+        match sel.map_or(Some(0..n), |s| s.as_single_range(n)) {
+            Some(r) if r.is_empty() && sel.is_some() => {}
+            Some(r) if r == (0..n) => result[i] = Some(rb.clone()),
+            Some(r) => result[i] = Some(rb.slice(r.start, r.len())),
+            None => {
+                // Gather every column with the input's own types. Dictionary
+                // columns keep their values array and only gather keys.
+                let plan = InputPlan {
+                    selection: sel.cloned().unwrap_or_default(),
+                    remaps: Default::default(),
+                };
+                let rows = plan.selection.count(n);
+                let schema = rb.schema();
+                let columns = schema
+                    .fields()
+                    .iter()
+                    .zip(rb.columns())
+                    .map(|(field, col)| {
+                        let input = Input {
+                            column: Some(col),
+                            num_rows: n,
+                            plan: &plan,
+                        };
+                        write_column(field, &[input], rows, top_level_id_col(field.name()))
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                let options = arrow::array::RecordBatchOptions::new().with_row_count(Some(rows));
+                result[i] = Some(
+                    RecordBatch::try_new_with_options(schema, columns, &options)
+                        .map_err(|source| Error::Batching { source })?,
+                );
+            }
+        }
+    }
+    Ok(result)
 }
 
 /// Test helper: apply the reindex plan to every input independently, without
@@ -306,8 +426,11 @@ pub(crate) fn reindex_in_place<S: OtapBatchStore, const N: usize>(
     items: &mut [[Option<RecordBatch>; N]],
 ) -> Result<()> {
     reindex::remove_transport_encodings::<S, N>(items)?;
-    let mut id_plan = reindex::plan_ids::<S, N>(items)?;
-    for (j, group) in items.iter_mut().enumerate() {
+    let segments: Vec<Segment<'_, N>> = items.iter().map(Segment::whole).collect();
+    let mut id_plan = reindex::plan_ids::<S, N>(&segments)?;
+    let mut outs: Vec<[Option<RecordBatch>; N]> = Vec::with_capacity(items.len());
+    for (j, group) in items.iter().enumerate() {
+        let mut out = [const { None }; N];
         for i in 0..N {
             let Some(rb) = group[i].as_ref() else {
                 continue;
@@ -316,9 +439,12 @@ pub(crate) fn reindex_in_place<S: OtapBatchStore, const N: usize>(
             let index = index_records(std::iter::once(Some(rb)), payload_def)?;
             let selected = select_schema(&index)?;
             let plan = std::mem::take(&mut id_plan[i][j]);
-            let out = write_payload(&[rb], &[plan], payload_def, selected)?;
-            group[i] = Some(out);
+            out[i] = Some(write_payload(&[rb], &[plan], payload_def, selected)?);
         }
+        outs.push(out);
+    }
+    for (group, out) in items.iter_mut().zip(outs) {
+        *group = out;
     }
     Ok(())
 }
@@ -329,7 +455,7 @@ pub(crate) fn reindex_in_place<S: OtapBatchStore, const N: usize>(
 /// selection and ID remaps. Every output column is written exactly once.
 fn write_payload(
     batches: &[&RecordBatch],
-    plans: &[InputPlan],
+    plans: &[InputPlan<'_>],
     payload_def: &PayloadSchema,
     selected: SelectedSchema,
 ) -> Result<RecordBatch> {
@@ -526,10 +652,11 @@ struct IndexedField<'a> {
     // all dictionary batches. Bounds the number of dictionary entries that Arrow
     // may append while coalescing, and hence the required key width.
     total_physical_value_count: usize,
-    // The dictionary values array of the most recent input carrying this
-    // column, if it was dictionary encoded. A repeat of the same values array
-    // in the next input is shared by the writer, so it is counted once.
-    last_dict_values: Option<&'a ArrayRef>,
+    // The dictionary values arrays already counted for this column. A values
+    // array shared by several inputs is written once, so it is counted once
+    // (see `SeenValues`).
+    seen_dict_values: SeenValues<()>,
+    _values: std::marker::PhantomData<&'a ArrayRef>,
     // For struct columns, the recursively-indexed children.
     struct_index: Option<Box<FieldIndex<'a>>>,
 }
@@ -650,7 +777,14 @@ fn index_fields<'a>(
                 is_dictionary: is_dict,
                 present_count: 1,
                 total_physical_value_count: array.len(),
-                last_dict_values: is_dict.then_some(array),
+                seen_dict_values: {
+                    let mut seen = SeenValues::default();
+                    if is_dict && !is_id_column(parent, name) {
+                        seen.insert(array, ());
+                    }
+                    seen
+                },
+                _values: std::marker::PhantomData,
                 struct_index,
             });
             continue;
@@ -689,22 +823,30 @@ fn index_fields<'a>(
         // Mirror the writer's sharing rule (see `WrittenDictValues`). ID
         // columns may be remapped per input and then cannot share values,
         // so they always count every values array.
-        let is_id_col = match parent {
-            None => top_level_id_col(name).is_some(),
-            Some(parent) => struct_child_id_col(parent, name).is_some(),
-        };
-        let shared = is_dict
-            && !is_id_col
-            && existing
-                .last_dict_values
-                .is_some_and(|prev| same_values(prev, array));
+        let is_id_col = is_id_column(parent, name);
+        let shared = is_dict && !is_id_col && existing.seen_dict_values.find(array).is_some();
         if !shared {
             existing.total_physical_value_count += array.len();
         }
-        existing.last_dict_values = is_dict.then_some(array);
+        if is_dict && !is_id_col {
+            if !shared {
+                existing.seen_dict_values.insert(array, ());
+            }
+        } else {
+            existing.seen_dict_values.clear_last();
+        }
     }
 
     Ok(())
+}
+
+/// True if `name` (a top-level field, or a child of struct `parent`) is an
+/// ID column that may be remapped per input.
+fn is_id_column(parent: Option<&str>, name: &str) -> bool {
+    match parent {
+        None => top_level_id_col(name).is_some(),
+        Some(parent) => struct_child_id_col(parent, name).is_some(),
+    }
 }
 
 /// Downcast a column whose value type is a struct to a [`StructArray`].
@@ -1092,19 +1234,12 @@ fn check_cardinality<'a>(
 }
 
 /// Select a specific record batch from every OtapArrowRecords
+#[cfg(feature = "bench")]
 fn select_all<const N: usize>(
     batches: &[[Option<RecordBatch>; N]],
     i: usize,
 ) -> impl Iterator<Item = Option<&RecordBatch>> {
     batches.iter().map(move |batches| batches[i].as_ref())
-}
-
-/// Similar to [select], but does not filter out the `None` values.
-fn select_all_mut<const N: usize>(
-    batches: &mut [[Option<RecordBatch>; N]],
-    i: usize,
-) -> impl Iterator<Item = &mut Option<RecordBatch>> {
-    batches.iter_mut().map(move |batches| &mut batches[i])
 }
 
 // ---------------------------------------------------------------------------
@@ -1115,31 +1250,115 @@ fn select_all_mut<const N: usize>(
 
 /// The rows of a single input record batch that survive into the output.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) enum Selection {
+pub(crate) enum Selection<'a> {
     /// Every row is kept. This is the common case.
     #[default]
     All,
     /// Only the rows in these sorted, disjoint, non-empty ranges are kept.
     Ranges(Vec<Range<usize>>),
+    /// Only these rows are kept, in this order. Each index is in bounds.
+    /// Produced by the batching join for inputs that are cut; usually
+    /// borrowed from the join's row buffer so selecting allocates nothing.
+    Gather(Cow<'a, [u32]>),
 }
 
-impl Selection {
+/// One contiguous part of a [Selection]: a range of rows, or a list of
+/// (possibly scattered) row indices.
+#[derive(Debug, Clone)]
+pub(crate) enum Part<'s> {
+    Range(Range<usize>),
+    Gather(&'s [u32]),
+}
+
+impl Selection<'_> {
     /// Number of selected rows given the source length.
     #[must_use]
     pub(crate) fn count(&self, len: usize) -> usize {
         match self {
             Selection::All => len,
             Selection::Ranges(ranges) => ranges.iter().map(|r| r.len()).sum(),
+            Selection::Gather(rows) => rows.len(),
         }
     }
 
-    /// Iterate the selected ranges given the source length.
+    /// Iterate the selected rows as maximal runs of consecutive rows.
     pub(crate) fn ranges(&self, len: usize) -> impl Iterator<Item = Range<usize>> + '_ {
-        let (all, ranges): (Option<Range<usize>>, &[Range<usize>]) = match self {
-            Selection::All => ((len > 0).then_some(0..len), &[]),
-            Selection::Ranges(ranges) => (None, ranges.as_slice()),
+        let (all, ranges, rows): (Option<Range<usize>>, &[Range<usize>], &[u32]) = match self {
+            Selection::All => ((len > 0).then_some(0..len), &[], &[]),
+            Selection::Ranges(ranges) => (None, ranges.as_slice(), &[]),
+            Selection::Gather(rows) => (None, &[], rows),
         };
-        all.into_iter().chain(ranges.iter().cloned())
+        all.into_iter()
+            .chain(ranges.iter().cloned())
+            .chain(RowRuns { rows })
+    }
+
+    /// Iterate the selection as [Part]s: contiguous ranges, or a single
+    /// gather list. Writers use this to copy ranges with `append_range` and
+    /// gathers with `append_gather`.
+    pub(crate) fn parts(&self, len: usize) -> impl Iterator<Item = Part<'_>> + '_ {
+        let (all, ranges, rows): (Option<Range<usize>>, &[Range<usize>], Option<&[u32]>) =
+            match self {
+                Selection::All => ((len > 0).then_some(0..len), &[], None),
+                Selection::Ranges(ranges) => (None, ranges.as_slice(), None),
+                Selection::Gather(rows) => (None, &[], (!rows.is_empty()).then_some(rows)),
+            };
+        all.into_iter()
+            .chain(ranges.iter().cloned())
+            .map(Part::Range)
+            .chain(rows.map(Part::Gather))
+    }
+
+    /// If the selection is a single contiguous range (or everything), that
+    /// range.
+    #[must_use]
+    pub(crate) fn as_single_range(&self, len: usize) -> Option<Range<usize>> {
+        match self {
+            Selection::All => Some(0..len),
+            Selection::Ranges(r) if r.len() == 1 => Some(r[0].clone()),
+            Selection::Ranges(r) if r.is_empty() => Some(0..0),
+            Selection::Gather(rows) if rows.is_empty() => Some(0..0),
+            Selection::Gather(rows) => {
+                let first = rows[0] as usize;
+                let contiguous = rows
+                    .iter()
+                    .enumerate()
+                    .all(|(i, &r)| r as usize == first + i);
+                contiguous.then(|| first..first + rows.len())
+            }
+            Selection::Ranges(_) => None,
+        }
+    }
+
+    /// Visit every selected row index in order.
+    pub(crate) fn for_each_row(&self, len: usize, mut f: impl FnMut(usize)) {
+        match self {
+            Selection::Gather(rows) => rows.iter().for_each(|&r| f(r as usize)),
+            _ => self.ranges(len).flatten().for_each(f),
+        }
+    }
+}
+
+/// Iterator over maximal runs of consecutive row indices.
+struct RowRuns<'s> {
+    rows: &'s [u32],
+}
+
+impl Iterator for RowRuns<'_> {
+    type Item = Range<usize>;
+
+    fn next(&mut self) -> Option<Range<usize>> {
+        let (&first, rest) = self.rows.split_first()?;
+        let mut n = 1;
+        for &r in rest {
+            if r != first + n as u32 {
+                break;
+            }
+            n += 1;
+        }
+        self.rows = &self.rows[n..];
+        let first = first as usize;
+        Some(first..first + n)
     }
 }
 
@@ -1179,14 +1398,14 @@ impl IdCol {
 
 /// Plan for a single input record batch of a single payload type.
 #[derive(Debug, Clone, Default)]
-pub(crate) struct InputPlan {
+pub(crate) struct InputPlan<'a> {
     /// Rows that survive into the output.
-    pub(crate) selection: Selection,
+    pub(crate) selection: Selection<'a>,
     /// Remaps for each ID column, indexed by [IdCol]. `None` means identity.
     pub(crate) remaps: [Option<AnyRemap>; IdCol::COUNT],
 }
 
-impl InputPlan {
+impl InputPlan<'_> {
     /// Look up the remap for an ID column.
     #[must_use]
     pub(crate) fn remap(&self, col: IdCol) -> Option<&AnyRemap> {
@@ -1206,7 +1425,7 @@ pub(crate) struct Input<'a> {
     /// Number of rows in the source record batch.
     pub(crate) num_rows: usize,
     /// Row selection and ID remaps for this input.
-    pub(crate) plan: &'a InputPlan,
+    pub(crate) plan: &'a InputPlan<'a>,
 }
 
 impl Input<'_> {
@@ -1216,6 +1435,10 @@ impl Input<'_> {
 
     fn ranges(&self) -> impl Iterator<Item = Range<usize>> + '_ {
         self.plan.selection.ranges(self.num_rows)
+    }
+
+    fn parts(&self) -> impl Iterator<Item = Part<'_>> + '_ {
+        self.plan.selection.parts(self.num_rows)
     }
 }
 
@@ -1248,6 +1471,10 @@ pub(crate) fn write_column(
 ) -> Result<ArrayRef> {
     debug_assert_eq!(rows, inputs.iter().map(Input::selected_rows).sum::<usize>());
 
+    if let Some(out) = write_single_dict_input(target, inputs, id_col) {
+        return Ok(out);
+    }
+
     let result = match target.data_type() {
         DataType::Struct(fields) => write_struct(target.name(), fields, inputs, rows),
         DataType::Dictionary(key, value) => match key.as_ref() {
@@ -1263,6 +1490,59 @@ pub(crate) fn write_column(
     };
 
     result.map_err(|e| with_column_name(e, target.name()))
+}
+
+/// Fast path for a dictionary column carried by a single input with the
+/// output's exact type and no ID remap: gather the selected keys and share
+/// the input's values array instead of copying it. This is what keeps
+/// outputs cut from one input from duplicating its dictionaries.
+fn write_single_dict_input(
+    target: &Field,
+    inputs: &[Input<'_>],
+    id_col: Option<IdCol>,
+) -> Option<ArrayRef> {
+    let [inp] = inputs else { return None };
+    let col = inp.column?;
+    if col.data_type() != target.data_type() {
+        return None;
+    }
+    if id_col.is_some_and(|c| inp.plan.remap(c).is_some()) {
+        return None;
+    }
+    match col.data_type() {
+        DataType::Dictionary(k, _) => match k.as_ref() {
+            DataType::UInt8 => Some(gather_dict_keys::<UInt8Type>(col, inp)),
+            DataType::UInt16 => Some(gather_dict_keys::<UInt16Type>(col, inp)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn gather_dict_keys<K: ArrowDictionaryKeyType>(col: &ArrayRef, inp: &Input<'_>) -> ArrayRef {
+    let dict = col.as_dictionary::<K>();
+    let src = dict.keys().values();
+    let mut keys: Vec<K::Native> = Vec::with_capacity(inp.selected_rows());
+    let mut nulls = LazyNulls::new(inp.selected_rows());
+    for part in inp.parts() {
+        match part {
+            Part::Range(r) => {
+                keys.extend_from_slice(&src[r.clone()]);
+                nulls.append_from(dict.nulls(), r);
+            }
+            Part::Gather(rows) => {
+                keys.extend(rows.iter().map(|&i| src[i as usize]));
+                nulls.append_gather(dict.nulls(), rows);
+            }
+        }
+    }
+    let keys = PrimitiveArray::<K>::new(ScalarBuffer::from(keys), nulls.finish());
+    // SAFETY: every key was copied from a valid dictionary array with the
+    // same values array, so valid keys are in bounds. Null keys may hold
+    // arbitrary values, which Arrow permits.
+    #[expect(unsafe_code)]
+    let out = unsafe { DictionaryArray::<K>::new_unchecked(keys, Arc::clone(dict.values())) };
+    Arc::new(out)
 }
 
 /// Attach the column name to a [check_value_type] error. The value writers
@@ -1336,18 +1616,21 @@ impl<K: ArrowDictionaryKeyType> Driver for DictDriver<K> {
 /// A values array identical to the previous input's is counted once, since
 /// [write_dict] may share it (see [WrittenDictValues]).
 fn dict_values_capacity(inputs: &[Input<'_>]) -> usize {
-    let mut prev: Option<&ArrayRef> = None;
+    let mut seen = SeenValues::<()>::default();
     inputs
         .iter()
         .map(|inp| match inp.column {
             Some(col) => match dict_values(col) {
                 Some(v) => {
-                    let repeat = prev.is_some_and(|p| same_values(p, v));
-                    prev = Some(v);
-                    if repeat { 0 } else { v.len() }
+                    if seen.find(v).is_some() {
+                        0
+                    } else {
+                        seen.insert(v, ());
+                        v.len()
+                    }
                 }
                 None => {
-                    prev = None;
+                    seen.clear_last();
                     inp.selected_rows()
                 }
             },
@@ -1453,9 +1736,17 @@ fn write_native<B: ValueBuilder>(
             dt => {
                 check_value_type(dt, value_type)?;
                 let src = B::downcast(col.as_ref());
-                for r in inp.ranges() {
-                    builder.append_range(&src, r.clone());
-                    nulls.append_from(col.nulls(), r);
+                for part in inp.parts() {
+                    match part {
+                        Part::Range(r) => {
+                            builder.append_range(&src, r.clone());
+                            nulls.append_from(col.nulls(), r);
+                        }
+                        Part::Gather(rows) => {
+                            builder.append_gather::<u32>(&src, rows, usize::MAX);
+                            nulls.append_gather(col.nulls(), rows);
+                        }
+                    }
                 }
             }
         }
@@ -1477,18 +1768,32 @@ fn gather_dict<K: ArrowDictionaryKeyType, B: ValueBuilder>(
     let values_len = values.len();
     let src = B::downcast(values.as_ref());
 
-    for r in inp.ranges() {
+    // Gathered rows are handled by first gathering their keys, then
+    // appending as if they were a contiguous range of those keys.
+    let mut gathered: Vec<K::Native> = Vec::new();
+    for part in inp.parts() {
+        let (keys, key_nulls, r) = match part {
+            Part::Range(r) => (&keys[..], dict.nulls().cloned(), r),
+            Part::Gather(rows) => {
+                gathered.clear();
+                gathered.extend(rows.iter().map(|&i| keys[i as usize]));
+                let key_nulls = gather_null_buffer(dict.nulls(), rows);
+                (gathered.as_slice(), key_nulls, 0..rows.len())
+            }
+        };
+        let key_nulls = key_nulls.as_ref();
         if values_len == 0 {
             // Every key must be null.
             builder.append_default(r.len());
         } else {
             let max = values_len - 1;
-            let key_nulls = dict
-                .keys()
-                .nulls()
+            // `key_nulls` is aligned with `keys` for both range and gathered
+            // parts, so slice it with `r` rather than the dictionary's own
+            // null buffer.
+            let range_nulls = key_nulls
                 .map(|n| n.slice(r.start, r.len()))
                 .filter(|n| n.null_count() > 0);
-            match key_nulls {
+            match range_nulls {
                 None => builder.append_gather::<K::Native>(&src, &keys[r.clone()], max),
                 Some(key_nulls) => {
                     // Null key slots may reference any value (often a large
@@ -1514,7 +1819,7 @@ fn gather_dict<K: ArrowDictionaryKeyType, B: ValueBuilder>(
             Some(vn) if vn.null_count() > 0 => {
                 for k in keys[r.clone()].iter().zip(r.clone()) {
                     let (key, row) = k;
-                    let valid = dict.keys().is_valid(row)
+                    let valid = key_nulls.is_none_or(|n| n.is_valid(row))
                         && key.as_usize() < values_len
                         && vn.is_valid(key.as_usize());
                     if valid {
@@ -1524,9 +1829,16 @@ fn gather_dict<K: ArrowDictionaryKeyType, B: ValueBuilder>(
                     }
                 }
             }
-            _ => nulls.append_from(dict.nulls(), r),
+            _ => nulls.append_from(key_nulls, r),
         }
     }
+}
+
+/// Gather a null buffer at `rows`. `None` if no gathered row is null.
+fn gather_null_buffer(nulls: Option<&NullBuffer>, rows: &[u32]) -> Option<NullBuffer> {
+    let nulls = nulls.filter(|n| n.null_count() > 0)?;
+    let bits = BooleanBuffer::collect_bool(rows.len(), |i| nulls.is_valid(rows[i] as usize));
+    Some(NullBuffer::new(bits)).filter(|n| n.null_count() > 0)
 }
 
 /// Produce a dictionary output column with key type `K`.
@@ -1583,12 +1895,21 @@ fn write_dict<K: ArrowDictionaryKeyType, B: ValueBuilder>(
             dt => {
                 check_value_type(dt, value_type)?;
                 let src = B::downcast(col.as_ref());
-                for r in inp.ranges() {
-                    let n = r.len();
-                    builder.append_range(&src, r.clone());
+                for part in inp.parts() {
+                    let n = match part {
+                        Part::Range(r) => {
+                            builder.append_range(&src, r.clone());
+                            key_nulls.append_from(col.nulls(), r.clone());
+                            r.len()
+                        }
+                        Part::Gather(rows) => {
+                            builder.append_gather::<u32>(&src, rows, usize::MAX);
+                            key_nulls.append_gather(col.nulls(), rows);
+                            rows.len()
+                        }
+                    };
                     value_nulls.append_valid(n);
                     keys.extend((vbase..vbase + n).map(K::Native::usize_as));
-                    key_nulls.append_from(col.nulls(), r);
                     vbase += n;
                 }
             }
@@ -1655,13 +1976,24 @@ fn append_dict_input<Ks: ArrowDictionaryKeyType, K: ArrowDictionaryKeyType, B: V
     };
 
     let src_keys = dict.keys().values();
-    for r in inp.ranges() {
-        keys.extend(
-            src_keys[r.clone()]
-                .iter()
-                .map(|k| K::Native::usize_as(k.as_usize() + base)),
-        );
-        key_nulls.append_from(dict.nulls(), r);
+    for part in inp.parts() {
+        match part {
+            Part::Range(r) => {
+                keys.extend(
+                    src_keys[r.clone()]
+                        .iter()
+                        .map(|k| K::Native::usize_as(k.as_usize() + base)),
+                );
+                key_nulls.append_from(dict.nulls(), r);
+            }
+            Part::Gather(rows) => {
+                keys.extend(
+                    rows.iter()
+                        .map(|&i| K::Native::usize_as(src_keys[i as usize].as_usize() + base)),
+                );
+                key_nulls.append_gather(dict.nulls(), rows);
+            }
+        }
     }
     Ok(())
 }
@@ -1670,29 +2002,82 @@ fn append_dict_input<Ks: ArrowDictionaryKeyType, K: ArrowDictionaryKeyType, B: V
 /// dictionary output, with the position of its first value in the output
 /// values array.
 ///
-/// Only the previous input is compared: zero-copy pieces of one dictionary
-/// (e.g. from `split`) are adjacent, and a full scan would be quadratic in
-/// the number of inputs. [index_fields] applies the same rule, so the writer
-/// never writes more values than the selected key type can address.
+/// See [SeenValues] for the sharing rule. [index_fields] and
+/// [dict_values_capacity] apply the same rule, so the writer never writes
+/// more values than the selected key type can address.
 #[derive(Default)]
 struct WrittenDictValues {
-    last: Option<(ArrayRef, usize)>,
+    seen: SeenValues<usize>,
 }
 
 impl WrittenDictValues {
-    /// The base of the previously written values array if it is identical
-    /// to `values`.
+    /// The base of a previously written values array identical to `values`.
     fn find(&self, values: &ArrayRef) -> Option<usize> {
-        self.last
-            .as_ref()
-            .filter(|(v, _)| same_values(v, values))
-            .map(|(_, base)| *base)
+        self.seen.find(values).copied()
     }
 
     /// Record the values array just written. `None` when the values were
     /// remapped and must not be shared.
     fn set(&mut self, last: Option<(&ArrayRef, usize)>) {
-        self.last = last.map(|(v, base)| (Arc::clone(v), base));
+        match last {
+            Some((v, base)) => self.seen.insert(v, base),
+            None => self.seen.clear_last(),
+        }
+    }
+}
+
+/// Dictionary values arrays already seen among the inputs of one output
+/// column, so a values array shared by several inputs is written (and
+/// counted) once.
+///
+/// Zero-copy pieces of one dictionary (e.g. slices of one batch split
+/// upstream) share the same values `Arc`, which is matched regardless of
+/// input order. The most recent array is additionally compared by buffer
+/// identity (see [same_values]), which catches arrays that share buffers
+/// through different `Arc`s when they are adjacent.
+#[derive(Debug)]
+struct SeenValues<T> {
+    by_ptr: Vec<(*const (), T)>,
+    last: Option<(ArrayRef, T)>,
+}
+
+impl<T> Default for SeenValues<T> {
+    fn default() -> Self {
+        Self {
+            by_ptr: Vec::new(),
+            last: None,
+        }
+    }
+}
+
+impl<T> SeenValues<T> {
+    fn key(values: &ArrayRef) -> *const () {
+        Arc::as_ptr(values) as *const ()
+    }
+
+    fn find(&self, values: &ArrayRef) -> Option<&T> {
+        let key = Self::key(values);
+        if let Some((_, t)) = self.by_ptr.iter().find(|(k, _)| *k == key) {
+            return Some(t);
+        }
+        // Only arrays of the same length can be identical, and comparing
+        // lengths first avoids materializing `ArrayData` in the common case.
+        self.last
+            .as_ref()
+            .filter(|(v, _)| v.len() == values.len() && same_values(v, values))
+            .map(|(_, t)| t)
+    }
+
+    fn insert(&mut self, values: &ArrayRef, t: T)
+    where
+        T: Clone,
+    {
+        self.by_ptr.push((Self::key(values), t.clone()));
+        self.last = Some((Arc::clone(values), t));
+    }
+
+    fn clear_last(&mut self) {
+        self.last = None;
     }
 }
 
@@ -1700,7 +2085,26 @@ impl WrittenDictValues {
 /// same `Arc`, or the same buffers, offset, length and null buffer (as
 /// Arrow's own concat checks). Never compares values.
 fn same_values(a: &ArrayRef, b: &ArrayRef) -> bool {
-    Arc::ptr_eq(a, b) || (a.len() == b.len() && a.to_data().ptr_eq(&b.to_data()))
+    if Arc::ptr_eq(a, b) {
+        return true;
+    }
+    if a.len() != b.len() || a.data_type() != b.data_type() {
+        return false;
+    }
+    // Materializing `ArrayData` allocates, so first require that the arrays
+    // share their first value buffer (a cheap check on the typed arrays).
+    let first_buffer = |x: &ArrayRef| -> Option<*const u8> {
+        match x.data_type() {
+            DataType::Utf8 => Some(x.as_string::<i32>().values().as_ptr()),
+            DataType::Binary => Some(x.as_binary::<i32>().values().as_ptr()),
+            DataType::FixedSizeBinary(_) => Some(x.as_fixed_size_binary().values().as_ptr()),
+            _ => None,
+        }
+    };
+    match (first_buffer(a), first_buffer(b)) {
+        (Some(pa), Some(pb)) if pa != pb => false,
+        _ => a.to_data().ptr_eq(&b.to_data()),
+    }
 }
 
 /// Produce a struct output column, recursing into its children.
@@ -1719,8 +2123,11 @@ fn write_struct(
     for (inp, s) in inputs.iter().zip(&structs) {
         match s {
             Some(s) => {
-                for r in inp.ranges() {
-                    nulls.append_from(s.nulls(), r);
+                for part in inp.parts() {
+                    match part {
+                        Part::Range(r) => nulls.append_from(s.nulls(), r),
+                        Part::Gather(rows) => nulls.append_gather(s.nulls(), rows),
+                    }
                 }
             }
             None => nulls.append_null(inp.selected_rows()),
@@ -1876,6 +2283,21 @@ impl LazyNulls {
         }
     }
 
+    /// Append validity for the gathered logical indices `rows` of a source
+    /// null buffer.
+    pub(crate) fn append_gather(&mut self, nulls: Option<&NullBuffer>, rows: &[u32]) {
+        match nulls {
+            Some(n) if n.null_count() > 0 => {
+                let b = self.materialize();
+                for &r in rows {
+                    b.append(n.is_valid(r as usize));
+                }
+                self.len += rows.len();
+            }
+            _ => self.append_valid(rows.len()),
+        }
+    }
+
     pub(crate) fn finish(self) -> Option<NullBuffer> {
         self.builder
             .map(|mut b| NullBuffer::new(b.finish()))
@@ -1895,7 +2317,7 @@ trait ValueBuilder {
     fn downcast(array: &dyn Array) -> Self::Src<'_>;
 
     /// Called before each input is processed.
-    fn begin_input(&mut self, _plan: &InputPlan) {}
+    fn begin_input(&mut self, _plan: &InputPlan<'_>) {}
 
     /// True if the current input's values are copied unchanged, i.e. no ID
     /// remap applies. Only then can a dictionary values array already
@@ -1917,7 +2339,7 @@ trait ValueBuilder {
 }
 
 /// Extracts the typed remap for an ID column from an [InputPlan].
-type RemapFn<T> = fn(&InputPlan, IdCol) -> Option<IdRemap<T>>;
+type RemapFn<T> = fn(&InputPlan<'_>, IdCol) -> Option<IdRemap<T>>;
 
 fn u16_remap(col: IdCol) -> (IdCol, RemapFn<u16>) {
     (col, |plan, col| match plan.remap(col) {
@@ -1988,7 +2410,7 @@ impl<T: ArrowPrimitiveType> ValueBuilder for PrimitiveBuilder<T> {
         array.as_primitive::<T>().values()
     }
 
-    fn begin_input(&mut self, plan: &InputPlan) {
+    fn begin_input(&mut self, plan: &InputPlan<'_>) {
         if let Some((col, f)) = self.remap_source {
             self.remap = f(plan, col).unwrap_or(IdRemap::Identity);
         }
@@ -2095,7 +2517,7 @@ impl<T: ByteArrayType<Offset = i32>> BytesBuilder<T> {
         // unexpected type are skipped here; the writer rejects them with
         // `check_value_type`.
         let mut bytes = 0usize;
-        let mut prev: Option<&ArrayRef> = None;
+        let mut seen = SeenValues::<()>::default();
         for inp in inputs {
             let Some(col) = inp.column else { continue };
             match col.data_type() {
@@ -2103,12 +2525,11 @@ impl<T: ByteArrayType<Offset = i32>> BytesBuilder<T> {
                     let Some(values) = dict_values(col) else {
                         continue;
                     };
-                    // Values shared with the previous input are written once.
-                    let repeat = prev.is_some_and(|p| same_values(p, values));
-                    prev = Some(values);
-                    if repeat {
+                    // Values shared with an earlier input are written once.
+                    if seen.find(values).is_some() {
                         continue;
                     }
+                    seen.insert(values, ());
                     if let Some(v) = values.as_bytes_opt::<T>() {
                         let o = v.value_offsets();
                         bytes += (o[o.len() - 1] - o[0]) as usize;
@@ -2323,7 +2744,8 @@ mod batch_width_tests {
     fn unsupported_batch_width_returns_error() {
         for num_batches in 0..=2 {
             let mut items: Vec<[Option<RecordBatch>; 1]> = vec![[None]; num_batches];
-            let err = concatenate::<1>(&mut items, ConcatOptions::preserve_ids()).unwrap_err();
+            let err =
+                concatenate_batches::<1>(&mut items, ConcatOptions::preserve_ids()).unwrap_err();
             assert!(
                 matches!(err, Error::UnsupportedBatchStoreType { batch_width: 1 }),
                 "{num_batches} batches: unexpected error: {err:?}"
@@ -2478,7 +2900,7 @@ mod schema_tests {
         b[LOGS_ROOT_IDX] = Some(batch2);
         let mut batches = vec![a, b];
         let result =
-            concatenate::<LOGS_COUNT>(&mut batches, ConcatOptions::preserve_ids()).unwrap();
+            concatenate_batches::<LOGS_COUNT>(&mut batches, ConcatOptions::preserve_ids()).unwrap();
         result[LOGS_ROOT_IDX]
             .as_ref()
             .expect("concatenated root logs batch")
@@ -2807,6 +3229,92 @@ mod schema_tests {
         let actual = cast(col, &DataType::Utf8).unwrap();
         let expected = cast(batch.column(0), &DataType::Utf8).unwrap();
         assert_eq!(actual.as_ref(), expected.as_ref());
+    }
+
+    /// Scenario: three zero-copy slices of one dictionary batch are
+    /// concatenated out of order (last, first, middle).
+    /// Guarantees: the shared values array is recognized regardless of input
+    /// order, so it is written once and the output keeps u8 keys.
+    #[test]
+    fn test_reordered_slices_share_dict_values() {
+        let count = 200usize;
+        let values: Arc<dyn Array> = Arc::new(StringArray::from(
+            (0..count).map(|i| format!("sev-{i}")).collect::<Vec<_>>(),
+        ));
+        let keys = UInt8Array::from((0..count).map(|i| i as u8).collect::<Vec<_>>());
+        let batch = create_dict_batch(SEVERITY_TEXT, keys, values, DataType::Utf8);
+
+        let mut items: Vec<[Option<RecordBatch>; LOGS_COUNT]> = [
+            batch.slice(150, 50),
+            batch.slice(0, 100),
+            batch.slice(100, 50),
+        ]
+        .into_iter()
+        .map(|rb| {
+            let mut a: [Option<RecordBatch>; LOGS_COUNT] = Default::default();
+            a[LOGS_ROOT_IDX] = Some(rb);
+            a
+        })
+        .collect();
+        let out =
+            concatenate_batches::<LOGS_COUNT>(&mut items, ConcatOptions::preserve_ids()).unwrap();
+        let col = out[LOGS_ROOT_IDX]
+            .as_ref()
+            .unwrap()
+            .column_by_name(SEVERITY_TEXT)
+            .unwrap()
+            .clone();
+        assert_eq!(
+            col.data_type(),
+            &DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+        );
+        assert_eq!(col.as_dictionary::<UInt8Type>().values().len(), count);
+    }
+
+    /// Scenario: two transport-optimized logs batches (delta-encoded ids and
+    /// quasi-delta attribute parent ids) are concatenated with
+    /// `preserve_ids`, as query-engine `conditional` does.
+    /// Guarantees: every input is decoded before its ID columns are copied,
+    /// so the output ID columns (labelled plain) hold each input's decoded
+    /// ids rather than raw deltas.
+    #[test]
+    #[rustfmt::skip]
+    fn test_preserve_ids_decodes_transport_encoded_inputs() {
+        use crate::otap::OtapArrowRecords;
+        use crate::otap::transform::testing::collect_row_ids;
+
+        let mk = |ids: Vec<u16>| crate::logs!(
+            (Logs, ("id", UInt16, ids.clone())),
+            (LogAttrs,
+                ("parent_id", UInt16, ids.clone()),
+                ("type", UInt8, vec![1u8; ids.len()]),
+                ("key", Utf8, vec!["k"; ids.len()]),
+                ("str", Utf8, ids.iter().map(|i| format!("v{i}")).collect::<Vec<_>>()))
+        );
+        let encode = |l: crate::otap::Logs| {
+            let mut rec = OtapArrowRecords::Logs(l);
+            rec.encode_transport_optimized().unwrap();
+            match rec {
+                OtapArrowRecords::Logs(l) => l,
+                _ => unreachable!(),
+            }
+        };
+        let decoded_ids = |l: &crate::otap::Logs| {
+            let mut rec = OtapArrowRecords::Logs(l.clone());
+            rec.decode_transport_optimized_ids().unwrap();
+            let rb = rec.get(Logs).unwrap().clone();
+            collect_row_ids(rb.column_by_name(ID).unwrap().as_ref())
+        };
+        let inputs = vec![encode(mk(vec![0, 1, 2])), encode(mk(vec![0, 1, 2, 3]))];
+        let mut expected = decoded_ids(&inputs[0]);
+        expected.extend(decoded_ids(&inputs[1]));
+        // Sanity check: the raw (encoded) values differ from the decoded ids.
+        let raw = collect_row_ids(inputs[1].get(Logs).unwrap().column_by_name(ID).unwrap().as_ref());
+        assert_ne!(raw, decoded_ids(&inputs[1]));
+
+        let out = concatenate(inputs, ConcatOptions::preserve_ids()).unwrap();
+        let rb = out.get(Logs).unwrap();
+        assert_eq!(collect_row_ids(rb.column_by_name(ID).unwrap().as_ref()), expected);
     }
 
     /// Scenario: the same real dictionary column (str) is carried with u8 keys in
@@ -4425,18 +4933,18 @@ mod write_tests {
     };
     use arrow::datatypes::Int32Type as I32;
 
-    fn plan_all() -> InputPlan {
+    fn plan_all() -> InputPlan<'static> {
         InputPlan::default()
     }
 
-    fn plan_ranges(ranges: Vec<Range<usize>>) -> InputPlan {
+    fn plan_ranges(ranges: Vec<Range<usize>>) -> InputPlan<'static> {
         InputPlan {
             selection: Selection::Ranges(ranges),
             ..Default::default()
         }
     }
 
-    fn plan_remap(col: IdCol, remap: AnyRemap) -> InputPlan {
+    fn plan_remap(col: IdCol, remap: AnyRemap) -> InputPlan<'static> {
         let mut plan = InputPlan::default();
         plan.remaps[col as usize] = Some(remap);
         plan
@@ -4458,7 +4966,7 @@ mod write_tests {
 
     fn write(
         target: DataType,
-        cols: &[(Option<ArrayRef>, usize, InputPlan)],
+        cols: &[(Option<ArrayRef>, usize, InputPlan<'_>)],
         id_col: Option<IdCol>,
     ) -> ArrayRef {
         let field = Field::new("f", target, true);

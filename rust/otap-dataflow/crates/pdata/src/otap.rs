@@ -25,7 +25,6 @@ pub mod batching_tests;
 
 /// filter support for the filter processor
 pub mod filter;
-pub mod groups;
 pub mod memory;
 pub mod raw_batch_store;
 pub mod schema;
@@ -171,16 +170,6 @@ impl OtapArrowRecords {
             Self::Logs(logs) => logs.num_items(),
             Self::Metrics(metrics) => metrics.num_items(),
             Self::Traces(traces) => traces.num_items(),
-        }
-    }
-
-    /// The signal type of this data.
-    #[must_use]
-    const fn signal_type(&self) -> SignalType {
-        match self {
-            Self::Logs(_) => SignalType::Logs,
-            Self::Metrics(_) => SignalType::Metrics,
-            Self::Traces(_) => SignalType::Traces,
         }
     }
 
@@ -574,7 +563,7 @@ const DATA_POINTS_TYPES: [ArrowPayloadType; 4] = [
 /// all the usages in to groups.rs. Instead we can have each batch store
 /// define these.
 #[must_use]
-fn num_items(batches: &[Option<RecordBatch>]) -> usize {
+pub(crate) fn num_items(batches: &[Option<RecordBatch>]) -> usize {
     match batches.len() {
         raw_batch_store::LOGS_COUNT => batches[POSITION_LOOKUP[ArrowPayloadType::Logs as usize]]
             .as_ref()

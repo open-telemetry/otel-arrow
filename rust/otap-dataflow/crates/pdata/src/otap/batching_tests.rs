@@ -3,12 +3,16 @@
 
 //! This module tests batching.rs logic.
 
-use crate::otap::batching::make_item_batches;
+use crate::OtapPayloadHelpers;
+use crate::otap::OtapArrowRecords;
+use crate::otap::batching::{ItemBatch, make_item_batches};
 use crate::proto::OtlpProtoMessage;
+use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use crate::testing::equiv::assert_equivalent;
-use crate::testing::fixtures::{DataGenerator, MetricsConfig};
+use crate::testing::fixtures::{DataGenerator, LogsConfig, MetricsConfig};
 use crate::testing::round_trip::otap_to_otlp;
 use crate::testing::round_trip::otlp_to_otap;
+use otel_arrow_dfe_config::SignalType;
 use std::num::NonZeroU64;
 
 /// A test case for batching metrics with specific configurations
@@ -265,11 +269,11 @@ fn test_batching(
         .expect("at least one input")
         .signal_type();
 
-    let outputs_otlp: Vec<_> = make_item_batches(signal_type, max_items, inputs_otap)
-        .expect("batching should succeed")
-        .iter()
-        .map(otap_to_otlp)
-        .collect();
+    let n_inputs = inputs_otap.len();
+    let outputs =
+        make_item_batches(signal_type, max_items, inputs_otap).expect("batching should succeed");
+    assert_input_ranges(&outputs, n_inputs);
+    let outputs_otlp: Vec<_> = outputs.iter().map(|b| otap_to_otlp(&b.records)).collect();
 
     // Assert num_items <= max_items
     if let Some(max_batch) = max_items {
@@ -298,6 +302,73 @@ fn test_batching(
 
     // Check OTLP equivalence
     assert_equivalent(&inputs_otlp, &outputs_otlp);
+}
+
+/// Check the structural contract of [`ItemBatch::inputs`] for well-formed
+/// inputs: ranges are in bounds, non-decreasing, overlap by at most one
+/// index, and together cover every input.
+fn assert_input_ranges(outputs: &[ItemBatch], n_inputs: usize) {
+    let mut next = 0usize;
+    for (i, out) in outputs.iter().enumerate() {
+        let (s, e) = (*out.inputs.start(), *out.inputs.end());
+        assert!(
+            s <= e && e < n_inputs,
+            "output {i} range {s}..={e} out of bounds"
+        );
+        assert!(
+            s == next || (next > 0 && s == next - 1),
+            "output {i} range {s}..={e} must start at {next} or overlap the previous end"
+        );
+        next = e + 1;
+    }
+    if n_inputs > 0 {
+        assert_eq!(next, n_inputs, "every input must be covered by some output");
+    }
+}
+
+/// Build a metrics input with a single gauge of `points` data points.
+fn gauge_input(points: usize) -> OtapArrowRecords {
+    let mut datagen =
+        DataGenerator::with_metrics_config(MetricsConfig::new().with_gauges(vec![points]));
+    otlp_to_otap(&datagen.generate_metrics_from_config().into())
+}
+
+/// Scenario: a metrics input with no metrics table (only orphan data
+/// points) is placed between two well-formed inputs and batched without a
+/// limit.
+///
+/// Guarantees: the dropped input contributes nothing, and the single output
+/// reports that it came from inputs 0..=2, so the caller can attribute it to
+/// both well-formed inputs without counting items.
+#[test]
+fn test_item_batches_ranges_skip_dropped_input() {
+    let mut orphan = gauge_input(3);
+    let _ = orphan.remove(ArrowPayloadType::UnivariateMetrics);
+    let inputs = vec![gauge_input(2), orphan, gauge_input(2)];
+    let outputs = make_item_batches(SignalType::Metrics, None, inputs).expect("batching");
+    assert_eq!(outputs.len(), 1);
+    assert_eq!(outputs[0].inputs, 0..=2);
+    assert_eq!(outputs[0].records.num_items(), 4);
+}
+
+/// Scenario: logs inputs of 3 and 5 items are batched with max_size = 4, so
+/// the second input is cut across two outputs.
+///
+/// Guarantees: outputs report [0..=1, 1..=1]: the first output mixes both
+/// inputs, and the second holds only the tail of input 1.
+#[test]
+fn test_item_batches_ranges_cut_input() {
+    let logs = |n: usize| -> OtapArrowRecords {
+        let mut datagen = DataGenerator::with_logs_config(LogsConfig::new(n));
+        otlp_to_otap(&datagen.generate_logs_from_config().into())
+    };
+    let inputs = vec![logs(3), logs(5)];
+    let outputs =
+        make_item_batches(SignalType::Logs, NonZeroU64::new(4), inputs).expect("batching");
+    let ranges: Vec<_> = outputs.iter().map(|o| o.inputs.clone()).collect();
+    assert_eq!(ranges, vec![0..=1, 1..=1]);
+    let sizes: Vec<_> = outputs.iter().map(|o| o.records.num_items()).collect();
+    assert_eq!(sizes, vec![4, 4]);
 }
 
 /// Count the total number of metrics in a MetricsData batch
