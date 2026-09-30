@@ -639,3 +639,11 @@ impl<
 #[cfg(test)]
 #[path = "../live_control_tests.rs"]
 mod tests;
+
+/// Constructs the real control plane for OpAMP state-directory invariant tests.
+#[cfg(test)]
+pub(crate) fn state_directory_test_control_plane(
+    config: &OtelDataflowSpec,
+) -> Arc<dyn ControlPlane> {
+    tests::test_runtime(config).control_plane()
+}

@@ -25,11 +25,11 @@ pub fn partition_key_from_transport_headers(headers: &TransportHeaders) -> Optio
 
     // Sort by exact stored name, then value. Ignore original wire-name casing
     // and input order.
-    let mut sorted: Vec<&_> = headers.iter().collect();
+    let mut sorted: Vec<_> = headers.iter().collect();
     sorted.sort_unstable_by(|a, b| {
         a.name
             .cmp(&b.name)
-            .then_with(|| a.value.bytes.cmp(&b.value.bytes))
+            .then_with(|| a.value.bytes.cmp(b.value.bytes))
     });
 
     let mut hasher = Xxh64::new(0);

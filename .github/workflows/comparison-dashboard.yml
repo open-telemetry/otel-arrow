@@ -37,6 +37,7 @@ jobs:
         with:
           ref: main
           path: source
+          persist-credentials: false
 
       # The benchmarks branch holds the published per-suite data and is the
       # push target. Check it out into ./target/.
@@ -47,6 +48,8 @@ jobs:
           path: target
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
+          # zizmor: ignore[artipacked] Credentials are required by the branch push below.
+          persist-credentials: true
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:

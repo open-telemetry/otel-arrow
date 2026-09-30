@@ -6,7 +6,7 @@ runs:
   steps:
     - name: Download and configure SymCrypt
       shell: pwsh
-      run: |
+      run: | # zizmor: ignore[github-env] The exported path comes from a release asset verified against a pinned SHA-256 digest.
         $tag = 'v103.11.0'
         $assetName = 'symcrypt-windows-amd64-release-103.11.0-748c20f1.zip'
         $assetSha256 = '5E2A9E60C03A60B952E84A3B50984F0D723A4B3EC1585F9CF6E800D4BD61159E'
