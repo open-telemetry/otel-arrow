@@ -7988,6 +7988,7 @@ name = "otel-arrow-dfe-telemetry"
 version = "0.57.0"
 dependencies = [
  "arc-swap",
+ "async-channel",
  "bytes",
  "chrono",
  "criterion",
