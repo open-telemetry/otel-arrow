@@ -696,19 +696,19 @@ macro_rules! oracle_module_tests {
             fn cursor_bind_values_are_normalized_to_utc_and_source_precision() {
                 for (input, target, expected, with_tz) in [
                     (
-                        "2026-01-01 00:15:30.123456789 +05:30",
+                        "2026-01-01 00:15:30.000000000 +05:30",
                         OracleType::Date,
                         "2025-12-31 18:45:30",
                         false,
                     ),
                     (
-                        "2026-01-01 00:15:30.123456789 +05:30",
+                        "2026-01-01 00:15:30.123456000 +05:30",
                         OracleType::Timestamp(6),
                         "2025-12-31 18:45:30.123456",
                         false,
                     ),
                     (
-                        "2024-03-01 01:00:00.987654321 +14:00",
+                        "2024-03-01 01:00:00.987654000 +14:00",
                         OracleType::Timestamp(6),
                         "2024-02-29 11:00:00.987654",
                         false,
@@ -720,7 +720,7 @@ macro_rules! oracle_module_tests {
                         true,
                     ),
                     (
-                        "2026-01-01 00:15:30.123456789 +05:30",
+                        "2026-01-01 00:15:30.123000000 +05:30",
                         OracleType::TimestampLTZ(3),
                         "2025-12-31 18:45:30.123 +00:00",
                         true,
@@ -735,15 +735,97 @@ macro_rules! oracle_module_tests {
             }
 
             /// Scenario: A timezone-naive cursor already represents UTC for a plain source column.
-            /// Guarantees: Type matching changes precision only and never shifts its wall-clock value.
+            /// Guarantees: Removing trailing fractional zeros never shifts the cursor's UTC instant.
             #[test]
             fn naive_cursor_is_already_utc() {
-                let source = Timestamp::from_str("2026-01-01 00:15:30.123456789")
+                let source = Timestamp::from_str("2026-01-01 00:15:30.123456000")
                     .expect("naive cursor");
                 let bound = cursor_bind_timestamp(source, &OracleType::Timestamp(6))
                     .expect("timestamp");
                 assert_eq!(bound.to_string(), "2026-01-01 00:15:30.123456");
                 assert!(!bound.with_tz());
+            }
+
+            /// Scenario: A TIMESTAMP(6) initial cursor falls between two representable microseconds.
+            /// Guarantees: Binding rejects the cursor rather than admitting earlier rows with higher IDs.
+            #[test]
+            fn timestamp6_initial_cursor_rejects_precision_loss() {
+                use otel_arrow_dfe_engine::error::ReceiverErrorKind;
+                use otel_arrow_dfe_scraper::database::DriverAdapter;
+
+                let initial = CompositeCursor::new(
+                    "2026-01-01 10:00:00.123456789".to_owned(), 100,
+                );
+                let error = cursor_bind_timestamp(
+                    parse_cursor_timestamp(&initial.timestamp).expect("valid initial cursor"),
+                    &OracleType::Timestamp(6),
+                ).expect_err("must not bind the earlier .123456000 boundary");
+                assert!(matches!(
+                    error, OracleAdapterError::CursorTimestampPrecisionLoss { precision: 6 },
+                ));
+                assert!(matches!(
+                    super::OracleAdapter::classify_error(&error),
+                    ReceiverErrorKind::Configuration,
+                ));
+                assert!(!super::OracleAdapter::is_retryable(&error));
+                assert!(error.to_string().contains("6-digit fractional precision"));
+                assert_redacted(error, &initial.timestamp);
+                assert_eq!(initial.timestamp, "2026-01-01 10:00:00.123456789");
+                assert_eq!(initial.tie_breaker, 100);
+            }
+
+            /// Scenario: A DATE initial cursor has a fractional second, with or without a timezone offset.
+            /// Guarantees: Binding rejects it rather than admitting rows at the preceding whole second.
+            #[test]
+            fn date_initial_cursor_rejects_fractional_seconds() {
+                for input in [
+                    "2026-01-01 10:00:00.000000001",
+                    "2026-01-01 10:00:00.500000000",
+                    "2026-01-01 00:15:30.123456789 +05:30",
+                ] {
+                    let error = cursor_bind_timestamp(
+                        parse_cursor_timestamp(input).expect("valid initial cursor"),
+                        &OracleType::Date,
+                    ).expect_err("must not bind an earlier whole-second boundary");
+                    assert!(matches!(
+                        error, OracleAdapterError::CursorTimestampPrecisionLoss { precision: 0 },
+                    ));
+                    assert_redacted(error, input);
+                }
+            }
+
+            /// Scenario: Initial or checkpoint cursors use each timestamp family and precision from zero to nine.
+            /// Guarantees: Exact fractions bind unchanged; losing even one nanosecond is rejected, including after UTC conversion.
+            #[test]
+            fn timestamp_family_binds_require_exact_precision() {
+                for precision in 0..=9 {
+                    let scale = 10_u32.pow(u32::from(9 - precision));
+                    for target in [
+                        OracleType::Timestamp(precision),
+                        OracleType::TimestampTZ(precision),
+                        OracleType::TimestampLTZ(precision),
+                    ] {
+                        for nanos in [0, 1, 1_000, 123_000_000, 123_456_000, 123_456_789, 999_999_999] {
+                            for offset in ["", " +05:30", " -12:00"] {
+                                let input = format!("2026-01-01 00:15:30.{nanos:09}{offset}");
+                                let result = cursor_bind_timestamp(
+                                    parse_cursor_timestamp(&input).expect("valid cursor"), &target,
+                                );
+                                if nanos % scale == 0 {
+                                    assert_eq!(
+                                        result.expect("exactly representable cursor").nanosecond(), nanos,
+                                    );
+                                } else {
+                                    assert!(matches!(
+                                        result,
+                                        Err(OracleAdapterError::CursorTimestampPrecisionLoss { precision: actual })
+                                            if actual == precision
+                                    ), "{target:?}: {input}");
+                                }
+                            }
+                        }
+                    }
+                }
             }
 
             /// Scenario: Normalized Oracle output contains plain/zoned timestamps and number/int tie-breakers.

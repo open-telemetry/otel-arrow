@@ -395,6 +395,7 @@ impl DriverAdapter for OracleAdapter {
             | OracleAdapterError::UnsupportedCursorTimestamp
             | OracleAdapterError::UnsupportedCursorTieBreaker
             | OracleAdapterError::InvalidCursorTimestamp
+            | OracleAdapterError::CursorTimestampPrecisionLoss { .. }
             | OracleAdapterError::NormalizedByteLimit { .. }
             | OracleAdapterError::ResultMetadataChanged
             | OracleAdapterError::UnsupportedType => ReceiverErrorKind::Configuration,
@@ -664,7 +665,7 @@ fn cursor_bind_type(source_type: &OracleType) -> Result<OracleType, OracleAdapte
     }
 }
 
-/// Normalizes offset-bearing cursors to UTC and the discovered source precision.
+/// Normalizes cursors to UTC, rejecting lossy conversion to the source precision.
 fn cursor_bind_timestamp(
     timestamp: Timestamp,
     target_type: &OracleType,
@@ -714,7 +715,9 @@ fn cursor_bind_timestamp(
         )
     };
     let scale = 10_u32.pow(u32::from(9 - precision));
-    let nanosecond = nanosecond / scale * scale;
+    if nanosecond % scale != 0 {
+        return Err(OracleAdapterError::CursorTimestampPrecisionLoss { precision });
+    }
     let timestamp = Timestamp::new(year, month, day, hour, minute, second, nanosecond)
         .and_then(|timestamp| timestamp.and_prec(precision))
         .map_err(|_| OracleAdapterError::InvalidCursorTimestamp)?;
@@ -1425,6 +1428,14 @@ pub enum OracleAdapterError {
     /// The committed cursor timestamp cannot be bound to Oracle.
     #[error("committed watermark timestamp is not a valid Oracle timestamp")]
     InvalidCursorTimestamp,
+    /// Binding the cursor would move its timestamp before the requested lower bound.
+    #[error(
+        "watermark timestamp cannot be represented exactly at the cursor column's {precision}-digit fractional precision"
+    )]
+    CursorTimestampPrecisionLoss {
+        /// Fractional-second precision supported by the cursor column.
+        precision: u8,
+    },
     /// The first row alone exceeds the normalized in-memory ceiling.
     #[error(
         "the first database row normalizes to {normalized_bytes} bytes, exceeding the {limit}-byte budget from query.max_batch_bytes"

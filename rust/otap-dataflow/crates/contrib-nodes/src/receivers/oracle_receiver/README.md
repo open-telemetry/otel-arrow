@@ -189,6 +189,13 @@ is Oracle `DATE`, `TIMESTAMP`, `TIMESTAMP WITH TIME ZONE`, or
 `NUMBER(p,0)` with `1 <= p <= 18`; unconstrained, fractional, unsigned, and
 wider numeric cursor types are rejected.
 
+Initial and checkpoint cursor timestamps must be exactly representable by the
+cursor column's fractional precision. For `TIMESTAMP(6)`, `.123456000` is valid
+but `.123456789` is rejected; `DATE` requires whole seconds. The receiver reports
+a configuration error before executing a normal poll with a lossy bind, rather
+than truncating the timestamp and reading rows before the requested start.
+Timezone offsets are still normalized to UTC without changing the instant.
+
 The tie-breaker must be unique within each timestamp group. The receiver checks
 column presence, types, and nullability, but cannot prove source uniqueness,
 commit ordering, or immutability.
