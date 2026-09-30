@@ -2,17 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use reqwest::{Client, StatusCode};
-use std::path::Path;
 use std::time::Duration;
 use thiserror::Error;
 
 const CONTENT_TYPE: &str = "application/x-mepacket";
 const ORIGINAL_CONTENT_SIZE_HEADER: &str = "OriginalContentSize";
-
-pub(crate) struct CertificateIdentity<'a> {
-    pub(crate) path: &'a Path,
-    pub(crate) password: &'a str,
-}
 
 #[derive(Clone, Debug)]
 pub(crate) struct MetricsPublisher {
@@ -24,21 +18,6 @@ pub(crate) struct MetricsPublisher {
 pub(crate) enum PublisherBuildError {
     #[error("invalid Geneva metrics endpoint: {0}")]
     InvalidEndpoint(String),
-    #[cfg(not(feature = "geneva-metrics-certificate-auth"))]
-    #[error(
-        "certificate authentication requires the 'geneva-metrics-certificate-auth' build feature"
-    )]
-    CertificateFeatureDisabled,
-    #[cfg(feature = "geneva-metrics-certificate-auth")]
-    #[error("failed to read Geneva metrics certificate {path}: {source}")]
-    ReadCertificate {
-        path: String,
-        #[source]
-        source: std::io::Error,
-    },
-    #[cfg(feature = "geneva-metrics-certificate-auth")]
-    #[error("failed to load the Geneva metrics PKCS#12 certificate: {0}")]
-    Certificate(#[source] Box<reqwest::Error>),
     #[error("failed to create the Geneva metrics HTTP client: {0}")]
     Client(#[source] Box<reqwest::Error>),
 }
@@ -67,36 +46,13 @@ impl PublishError {
 }
 
 impl MetricsPublisher {
-    pub(crate) fn new(
-        endpoint: &str,
-        timeout: Duration,
-        certificate: Option<CertificateIdentity<'_>>,
-    ) -> Result<Self, PublisherBuildError> {
+    pub(crate) fn new(endpoint: &str, timeout: Duration) -> Result<Self, PublisherBuildError> {
         otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
         let endpoint = endpoint.trim();
         let _endpoint = reqwest::Url::parse(endpoint)
             .map_err(|error| PublisherBuildError::InvalidEndpoint(error.to_string()))?;
-        let builder = Client::builder().timeout(timeout);
-        #[cfg(feature = "geneva-metrics-certificate-auth")]
-        let builder = if let Some(certificate) = certificate {
-            let der = std::fs::read(certificate.path).map_err(|source| {
-                PublisherBuildError::ReadCertificate {
-                    path: certificate.path.display().to_string(),
-                    source,
-                }
-            })?;
-            let identity = reqwest::Identity::from_pkcs12_der(&der, certificate.password)
-                .map_err(|error| PublisherBuildError::Certificate(Box::new(error)))?;
-            builder.tls_backend_native().identity(identity)
-        } else {
-            builder
-        };
-        #[cfg(not(feature = "geneva-metrics-certificate-auth"))]
-        if let Some(certificate) = certificate {
-            let _ = (certificate.path, certificate.password);
-            return Err(PublisherBuildError::CertificateFeatureDisabled);
-        }
-        let client = builder
+        let client = Client::builder()
+            .timeout(timeout)
             .build()
             .map_err(|error| PublisherBuildError::Client(Box::new(error)))?;
         Ok(Self {
@@ -109,7 +65,7 @@ impl MetricsPublisher {
         &self,
         monitoring_account: &str,
         packet: Vec<u8>,
-        bearer_token: Option<&str>,
+        bearer_token: &str,
     ) -> Result<(), PublishError> {
         let original_size = packet.len();
         let endpoint = self.endpoint.replace(
@@ -122,13 +78,11 @@ impl MetricsPublisher {
             .header(reqwest::header::CONTENT_TYPE, CONTENT_TYPE)
             .header(ORIGINAL_CONTENT_SIZE_HEADER, original_size)
             .body(packet);
-        if let Some(token) = bearer_token {
-            let mut authorization =
-                reqwest::header::HeaderValue::from_str(&format!("Bearer {token}"))
-                    .map_err(PublishError::InvalidAuthorizationHeader)?;
-            authorization.set_sensitive(true);
-            request = request.header(reqwest::header::AUTHORIZATION, authorization);
-        }
+        let mut authorization =
+            reqwest::header::HeaderValue::from_str(&format!("Bearer {bearer_token}"))
+                .map_err(PublishError::InvalidAuthorizationHeader)?;
+        authorization.set_sensitive(true);
+        request = request.header(reqwest::header::AUTHORIZATION, authorization);
         let response = request
             .send()
             .await
@@ -160,21 +114,19 @@ mod tests {
             .and(path("/metrics"))
             .and(header("content-type", CONTENT_TYPE))
             .and(header(ORIGINAL_CONTENT_SIZE_HEADER, "5"))
+            .and(header("authorization", "Bearer test-token"))
             .and(body_bytes(packet.clone()))
             .respond_with(ResponseTemplate::new(200))
             .expect(1)
             .mount(&server)
             .await;
 
-        let publisher = MetricsPublisher::new(
-            &format!("{}/metrics", server.uri()),
-            Duration::from_secs(1),
-            None,
-        )
-        .expect("publisher should be created");
+        let publisher =
+            MetricsPublisher::new(&format!("{}/metrics", server.uri()), Duration::from_secs(1))
+                .expect("publisher should be created");
 
         publisher
-            .publish("example-account", packet, None)
+            .publish("example-account", packet, "test-token")
             .await
             .expect("publication should succeed");
     }
@@ -188,11 +140,11 @@ mod tests {
             .respond_with(ResponseTemplate::new(400))
             .mount(&server)
             .await;
-        let publisher = MetricsPublisher::new(&server.uri(), Duration::from_secs(1), None)
-            .expect("valid endpoint");
+        let publisher =
+            MetricsPublisher::new(&server.uri(), Duration::from_secs(1)).expect("valid endpoint");
 
         let error = publisher
-            .publish("example-account", vec![6, 0], None)
+            .publish("example-account", vec![6, 0], "test-token")
             .await
             .expect_err("publication should fail");
 
@@ -209,11 +161,11 @@ mod tests {
                 .respond_with(ResponseTemplate::new(status))
                 .mount(&server)
                 .await;
-            let publisher = MetricsPublisher::new(&server.uri(), Duration::from_secs(1), None)
+            let publisher = MetricsPublisher::new(&server.uri(), Duration::from_secs(1))
                 .expect("valid endpoint");
 
             let error = publisher
-                .publish("example-account", vec![6, 0], None)
+                .publish("example-account", vec![6, 0], "test-token")
                 .await
                 .expect_err("publication should fail");
 
@@ -236,55 +188,12 @@ mod tests {
         let publisher = MetricsPublisher::new(
             &format!("{}/metrics/{{monitoring_account}}", server.uri()),
             Duration::from_secs(1),
-            None,
         )
         .expect("valid endpoint");
 
         publisher
-            .publish("account name", vec![6, 0], Some("test-token"))
+            .publish("account name", vec![6, 0], "test-token")
             .await
             .expect("authenticated publication should succeed");
-    }
-
-    /// Scenario: Certificate authentication references a missing PKCS#12 file.
-    /// Guarantees: Exporter construction fails explicitly before any publication attempt.
-    #[cfg(feature = "geneva-metrics-certificate-auth")]
-    #[test]
-    fn rejects_missing_certificate_file() {
-        let missing = Path::new("missing-geneva-metrics-client.p12");
-        let error = MetricsPublisher::new(
-            "https://example.test/metrics",
-            Duration::from_secs(1),
-            Some(CertificateIdentity {
-                path: missing,
-                password: "not-used",
-            }),
-        )
-        .expect_err("missing certificate should fail");
-
-        assert!(matches!(error, PublisherBuildError::ReadCertificate { .. }));
-    }
-
-    /// Scenario: Certificate authentication reads a file that is not valid PKCS#12.
-    /// Guarantees: Invalid certificate material is rejected during exporter construction.
-    #[cfg(feature = "geneva-metrics-certificate-auth")]
-    #[test]
-    fn rejects_invalid_pkcs12_certificate() {
-        let path =
-            std::env::temp_dir().join(format!("geneva-metrics-invalid-{}.p12", std::process::id()));
-        std::fs::write(&path, b"not a pkcs12 identity").expect("fixture should be written");
-
-        let error = MetricsPublisher::new(
-            "https://example.test/metrics",
-            Duration::from_secs(1),
-            Some(CertificateIdentity {
-                path: &path,
-                password: "wrong-password",
-            }),
-        )
-        .expect_err("invalid certificate should fail");
-        std::fs::remove_file(path).expect("fixture should be removed");
-
-        assert!(matches!(error, PublisherBuildError::Certificate(_)));
     }
 }

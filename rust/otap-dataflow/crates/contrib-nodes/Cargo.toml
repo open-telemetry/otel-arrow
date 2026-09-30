@@ -200,10 +200,6 @@ geneva-metrics = [
     "dep:reqwest",
     "dep:urlencoding",
 ]
-geneva-metrics-certificate-auth = [
-    "geneva-metrics",
-    "reqwest/native-tls",
-]
 
 # Cross-cutting integration support.
 aws = [

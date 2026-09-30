@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use serde::Deserialize;
-use std::path::PathBuf;
 use std::time::Duration;
 
 fn default_timeout() -> Duration {
@@ -20,21 +19,11 @@ pub struct ScopeAttributes {
 }
 
 /// Authentication applied to Geneva metrics publication requests.
-#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum AuthConfig {
-    /// Do not attach a client identity or bearer token.
-    #[default]
-    None,
-    /// Use a bound `bearer_token_provider` capability.
+    /// Use managed identity through a bound `bearer_token_provider` capability.
     Bearer,
-    /// Use a password-protected PKCS#12 client identity for mutual TLS.
-    Certificate {
-        /// Path to the PKCS#12 (`.p12` or `.pfx`) identity.
-        path: PathBuf,
-        /// Environment variable containing the PKCS#12 password.
-        password_env: String,
-    },
 }
 
 /// Configuration for the Geneva metrics exporter.
@@ -55,7 +44,6 @@ pub struct Config {
     pub timeout: Duration,
 
     /// Publication authentication mode.
-    #[serde(default)]
     pub auth: AuthConfig,
 
     /// Resource attribute keys to add as dimensions, or `*` for all attributes.
@@ -100,27 +88,8 @@ impl Config {
         if self.timeout.is_zero() {
             return Err("timeout must be greater than zero".to_string());
         }
-        if matches!(&self.auth, AuthConfig::Certificate { .. })
-            && !cfg!(feature = "geneva-metrics-certificate-auth")
-        {
-            return Err(
-                "certificate authentication requires the 'geneva-metrics-certificate-auth' build feature"
-                    .to_string(),
-            );
-        }
-        if matches!(&self.auth, AuthConfig::Bearer) && endpoint.scheme() != "https" {
-            return Err("bearer authentication requires an HTTPS endpoint".to_string());
-        }
-        if let AuthConfig::Certificate { path, password_env } = &self.auth {
-            if endpoint.scheme() != "https" {
-                return Err("certificate authentication requires an HTTPS endpoint".to_string());
-            }
-            if path.as_os_str().is_empty() {
-                return Err("certificate path must not be empty".to_string());
-            }
-            if password_env.trim().is_empty() {
-                return Err("certificate password_env must not be empty".to_string());
-            }
+        if endpoint.scheme() != "https" {
+            return Err("managed identity authentication requires an HTTPS endpoint".to_string());
         }
         if self
             .scope_attributes
@@ -164,7 +133,7 @@ mod tests {
             monitoring_account: "example-account".to_string(),
             metric_namespace: "example-namespace".to_string(),
             timeout: default_timeout(),
-            auth: AuthConfig::None,
+            auth: AuthConfig::Bearer,
             resource_attributes: Vec::new(),
             honor_resource_attributes: false,
             scope_attributes: Vec::new(),
@@ -227,44 +196,6 @@ mod tests {
         );
     }
 
-    /// Scenario: Certificate authentication targets an unencrypted HTTP endpoint.
-    /// Guarantees: mTLS configuration is rejected unless the endpoint uses HTTPS.
-    #[cfg(feature = "geneva-metrics-certificate-auth")]
-    #[test]
-    fn rejects_certificate_auth_for_http_endpoint() {
-        let mut config = valid_config();
-        config.endpoint = "http://example.test/metrics".to_string();
-        config.auth = AuthConfig::Certificate {
-            path: PathBuf::from("client.p12"),
-            password_env: "CERT_PASSWORD".to_string(),
-        };
-
-        assert_eq!(
-            config.validate(),
-            Err("certificate authentication requires an HTTPS endpoint".to_string())
-        );
-    }
-
-    /// Scenario: Certificate authentication is configured without its opt-in build feature.
-    /// Guarantees: Configuration validation rejects the unsupported authentication mode early.
-    #[cfg(not(feature = "geneva-metrics-certificate-auth"))]
-    #[test]
-    fn certificate_auth_requires_opt_in_feature() {
-        let mut config = valid_config();
-        config.auth = AuthConfig::Certificate {
-            path: PathBuf::from("client.p12"),
-            password_env: "CERT_PASSWORD".to_string(),
-        };
-
-        assert_eq!(
-            config.validate(),
-            Err(
-                "certificate authentication requires the 'geneva-metrics-certificate-auth' build feature"
-                    .to_string()
-            )
-        );
-    }
-
     /// Scenario: Bearer authentication targets an unencrypted HTTP endpoint.
     /// Guarantees: Credentials cannot be configured for transmission without TLS.
     #[test]
@@ -275,7 +206,7 @@ mod tests {
 
         assert_eq!(
             config.validate(),
-            Err("bearer authentication requires an HTTPS endpoint".to_string())
+            Err("managed identity authentication requires an HTTPS endpoint".to_string())
         );
     }
 
@@ -297,34 +228,6 @@ mod tests {
             (
                 invalid_scope,
                 "scope_attributes entries require a name and at least one key",
-            ),
-        ] {
-            assert_eq!(config.validate(), Err(expected.to_string()));
-        }
-    }
-
-    /// Scenario: Certificate authentication omits required identity settings.
-    /// Guarantees: Incomplete certificate configuration is rejected before exporter startup.
-    #[cfg(feature = "geneva-metrics-certificate-auth")]
-    #[test]
-    fn rejects_invalid_certificate_constraints() {
-        let mut empty_path = valid_config();
-        empty_path.auth = AuthConfig::Certificate {
-            path: PathBuf::new(),
-            password_env: "CERT_PASSWORD".to_string(),
-        };
-
-        let mut empty_password_env = valid_config();
-        empty_password_env.auth = AuthConfig::Certificate {
-            path: PathBuf::from("client.p12"),
-            password_env: " ".to_string(),
-        };
-
-        for (config, expected) in [
-            (empty_path, "certificate path must not be empty"),
-            (
-                empty_password_env,
-                "certificate password_env must not be empty",
             ),
         ] {
             assert_eq!(config.validate(), Err(expected.to_string()));

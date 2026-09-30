@@ -364,10 +364,6 @@ geneva-metrics = [
     "otel-arrow-dfe-contrib-nodes/geneva-metrics",
     "azure-identity-auth",
 ]
-geneva-metrics-certificate-auth = [
-    "geneva-metrics",
-    "otel-arrow-dfe-contrib-nodes/geneva-metrics-certificate-auth",
-]
 
 # Contrib extensions.
 contrib-extensions = ["otel-arrow-dfe-contrib-extensions/contrib-extensions"]

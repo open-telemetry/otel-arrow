@@ -4,7 +4,6 @@
 
 - Type: Exporter
 - Feature gate: `geneva-metrics`
-- Optional certificate authentication: `geneva-metrics-certificate-auth` (disabled by default)
 - Stability: WIP; metrics support is under development
 
 ## Overview
@@ -21,9 +20,10 @@ fixtures, Geneva-compatible mapping for OTLP and OTAP metrics views,
 authenticated HTTP publication, exporter registration, and runtime
 configuration. The registered exporter accepts OTLP metrics payloads.
 
-Password-protected PKCS#12 certificate authentication is excluded by default.
-Build with `--features geneva-metrics-certificate-auth` only when certificate
-authentication is required.
+The exporter requires `auth.type: bearer` and a bound
+`bearer_token_provider` supplied by the Azure Identity extension. The provider
+uses managed identity to acquire publication tokens, and the endpoint must use
+HTTPS.
 
 ## Testing
 
