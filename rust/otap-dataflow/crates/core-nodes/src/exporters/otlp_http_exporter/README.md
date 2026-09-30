@@ -114,7 +114,8 @@ via its `capabilities` map. The following providers are supported:
 > [!NOTE]
 > Static authentication headers can be registered via the `http.headers`
 > configuration (for example, `http.headers.authorization: "Bearer <token>"`)
-> but this is NOT recommended because the value is not managed as a secret.
+> but this is NOT recommended because the credential remains embedded in the
+> rendered configuration and cannot be refreshed by a provider.
 
 ### BearerTokenProvider
 

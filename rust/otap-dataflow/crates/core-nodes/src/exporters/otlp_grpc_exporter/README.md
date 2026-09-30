@@ -108,8 +108,8 @@ node via its `capabilities` map. The following providers are supported:
 
 > [!NOTE]
 > Static authentication metadata can be registered via `headers`, but this is
-> NOT recommended because its value is not managed as a secret or refreshed
-> automatically.
+> NOT recommended because the credential remains embedded in the rendered
+> configuration and cannot be refreshed by a provider.
 
 ### BearerTokenProvider
 
