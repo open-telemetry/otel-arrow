@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790808448379,
+  "lastUpdate": 1790809683158,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -48983,6 +48983,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 104.91,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "95833540+c-valdebenito@users.noreply.github.com",
+            "name": "c-valdebenito",
+            "username": "c-valdebenito"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "9d1b28c89f35e1c4e1508304d594663a06c7fb63",
+          "message": "feat(otap): validate OTLP exporter mTLS cert/key pairs and extract reusable client TLS material loader (#4172)\n\n## Description\n\nFirst stage of OTLP exporter client TLS hot reload (#4160), split into\nsmall\nreviewable PRs. This PR is **refactor + validation only** -- it does not\nadd a\nreload loop yet; it lays the groundwork and closes a validation gap\ncalled out\nin the issue discussion.\n\n### What this changes\n\n**Separate loading/validating client TLS material from building the\ntransport.**\nSo a single validated snapshot can later be reused by a reload loop to\nbuild a\nfresh transport without re-reading files:\n\n- `LoadedClientTlsMaterial` / `load_client_tls_material()` -- reads the\nCA, client\n  certificate, and key bytes **once** and validates them.\n- `build_tonic_client_tls()` -- builds the tonic `ClientTlsConfig` from\nexactly\n  those captured bytes.\n- `load_client_tls_config()` now delegates to both, preserving existing\nbehavior\n  and defaults (covered by the existing gRPC / mTLS / proxy tests).\n\n**Add a layered client cert/key match check.** The validator first uses\nrustls\n`CertifiedKey::keys_match()` for providers that expose the signing key's\npublic\nhalf. It runs a sign-and-verify probe via `rustls-webpki` only when\nrustls reports\nthat the comparison is `Unknown`:\n\n- A definitive mismatch from either check is rejected.\n- Inconclusive checks are skipped, including when no crypto provider is\ninstalled, no verifiable signature scheme is available, or WebPKI cannot\nparse a certificate extension that the configured transport provider may\nsupport. This preserves the previous startup behavior for such\ncertificates.\n- Applied to **both** the OTLP/gRPC and OTLP/HTTP exporter client\nbuilders, so a\ndefinitively mismatched identity now fails fast at build time instead of\nat\n  connect time.\n\n### Scope\n\nLimited to the OTLP HTTP and gRPC exporter client TLS path. No reload\nbehavior,\nno config changes. Subsequent PRs add the bounded reload loop (ArcSwap\ngeneration + content-based change detection + Kubernetes\nprojected-Secret\n`..data` handling) and wire it into each exporter.\n\n### Testing\n\n- New unit tests cover matching/mismatched cert-key pairs, material\ncapture, the\nHTTP client build path, and the compatibility case where WebPKI cannot\nparse\n  an otherwise transport-supported certificate extension (each with\n  `Scenario:` / `Guarantees:` docs).\n- Full `cargo xtask check` passes, including formatting, clippy, and the\ncomplete\n  workspace test suite.\n\n### Related\n\n- Issue: #4160\n- Epic: #4165 (engine-owned TLS material reload service)\n- Related: #4025 (reject empty trust store)\n\n---------\n\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>\nCopilot-Session: 9612d273-4a61-439f-bff5-063fcdfe2e06",
+          "timestamp": "2026-09-30T22:13:07Z",
+          "tree_id": "ca8150d65d520b29eafdf52150eb970374f9142d",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/9d1b28c89f35e1c4e1508304d594663a06c7fb63"
+        },
+        "date": 1790809667095,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 85.33,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.77,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.22,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.73,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.01,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.98,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_pdata",
+            "value": 2.78,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 72.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.88,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.36,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 117.78,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 104.92,
             "unit": "MB"
           }
         ]
