@@ -95,19 +95,21 @@ By default the exporter sends requests without any authentication.
 Authentication can be enabled by binding a [provider extension](../../../../contrib-extensions/README.md) to the exporter node
 via its `capabilities` map. The following providers are supported:
 
-* [`BearerTokenProvider`](#bearertokenprovider): Provides authentication via `Authorization: Bearer
+- [`BearerTokenProvider`](#bearertokenprovider): Provides authentication via `Authorization: Bearer
   <token>` HTTP header.
-* [`ApiKeyProvider`](#apikeyprovider): Provides authentication via a custom HTTP header in the form
+- [`ApiKeyProvider`](#apikeyprovider): Provides authentication via a custom HTTP header in the form
   `<header_name>: <optional_scheme> <api_key>`.
-* [`BasicAuthProvider`](#basicauthprovider): Provides authentication via `Authorization: Basic
+- [`BasicAuthProvider`](#basicauthprovider): Provides authentication via `Authorization: Basic
   <base64-encoded(username:password)>` HTTP header.
-* [`AgentFedCredentialProvider`](#agentfedcredentialprovider): Provides authentication using a credential
+- [`AgentFedCredentialProvider`](#agentfedcredentialprovider): Provides authentication using a credential
   snapshot published by the embedding host as `Authorization: Bearer <token>`
   HTTP header.
 
 > [!IMPORTANT]
 > Only one authentication provider can be bound to the exporter node at a time.
 > If multiple providers are bound, the exporter will reject the configuration.
+
+<!-- Separate consecutive admonitions. -->
 
 > [!NOTE]
 > Static authentication headers can be registered via the `http.headers`

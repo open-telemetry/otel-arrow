@@ -104,6 +104,8 @@ node via its `capabilities` map. The following providers are supported:
 > Only one authentication provider can be bound to the exporter node at a time.
 > If multiple providers are bound, the exporter will reject the configuration.
 
+<!-- Separate consecutive admonitions. -->
+
 > [!NOTE]
 > Static authentication metadata can be registered via `headers`, but this is
 > NOT recommended because its value is not managed as a secret or refreshed
