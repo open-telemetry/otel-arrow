@@ -59,9 +59,11 @@ RUN Invoke-WebRequest -Uri https://static.rust-lang.org/rustup/dist/x86_64-pc-wi
 
 # Put cargo on PATH for subsequent RUN layers. rustup installs into the
 # ContainerAdministrator profile because that is the default build user.
-# Prepend to the base image PATH so the standard Windows directories remain
-# reachable.
-ENV PATH="C:\Users\ContainerAdministrator\.cargo\bin;${PATH}"
+# The classic Windows builder does not expand the base image ${PATH} here, so
+# list the standard Windows system directories explicitly; otherwise later RUN
+# steps cannot find powershell.exe (in System32) and fail with 0x2 "system
+# cannot find the file specified".
+ENV PATH="C:\Users\ContainerAdministrator\.cargo\bin;C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0;C:\Windows\System32\OpenSSH"
 
 # Mirror the repository directory layout inside the image so that compile-time
 # includes resolve. src/main.rs does
