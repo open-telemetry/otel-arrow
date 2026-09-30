@@ -743,6 +743,10 @@ Telemetry policy notes:
 - `normal` adds message and phase counters
 - `detailed` adds latency/duration summaries and completion unwind-depth
   distribution
+- node-local `telemetry.duration_distribution` accepts `basic`, `normal`, or
+  `detailed` and defaults to `normal`
+- shared receiver and exporter local duration instruments use the selected
+  node-local distribution tier when `duration: true`
 - See [Node and Flow Metrics](node-and-flow-metrics.md) to configure and
   interpret node item metrics and processor flow metrics.
 
