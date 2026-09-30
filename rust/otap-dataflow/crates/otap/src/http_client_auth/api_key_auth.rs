@@ -59,7 +59,7 @@ impl HttpClientStreamAuthProviderBuilder for ApiKeyHttpClientStreamAuthProviderB
 mod tests {
     use std::time::{Duration, Instant};
 
-    use otel_arrow_dfe_engine::capability::auth::ApiKey;
+    use otel_arrow_dfe_engine::capability::auth::{ApiKey, ApiKeyAttributes};
 
     use super::{ApiKeyHttpClientStreamAuthProviderBuilder, HttpClientStreamAuthProviderBuilder};
 
@@ -75,8 +75,13 @@ mod tests {
     fn builds_schemed_header_and_preserves_expiry() {
         let expires_on = Instant::now() + Duration::from_secs(300);
         let api_key = ApiKey::new("secret-key")
-            .with_http_header_name_attribute("x-api-key")
-            .with_http_header_scheme_attribute("ApiKey")
+            .with_attributes(
+                ApiKeyAttributes::new()
+                    .with_http_header_name_attribute("x-api-key")
+                    .expect("valid")
+                    .with_http_header_scheme_attribute("ApiKey")
+                    .expect("valid"),
+            )
             .with_expiry(expires_on);
 
         let header = ApiKeyHttpClientStreamAuthProviderBuilder::build_auth_header(api_key)
@@ -91,7 +96,11 @@ mod tests {
     /// Guarantees: the builder uses the raw key value and reports its provider name.
     #[test]
     fn builds_unschemed_header_and_reports_provider_name() {
-        let api_key = ApiKey::new("secret-key").with_http_header_name_attribute("x-api-key");
+        let api_key = ApiKey::new("secret-key").with_attributes(
+            ApiKeyAttributes::new()
+                .with_http_header_name_attribute("x-api-key")
+                .expect("valid"),
+        );
 
         let header = ApiKeyHttpClientStreamAuthProviderBuilder::build_auth_header(api_key)
             .expect("header should be valid");
@@ -113,22 +122,15 @@ mod tests {
         assert_eq!(error, "API Key HTTP header attribute not configured");
     }
 
-    /// Scenario: an API key specifies a malformed HTTP header name.
-    /// Guarantees: the builder rejects the invalid name before constructing a header.
-    #[test]
-    fn rejects_malformed_header_name() {
-        let api_key = ApiKey::new("secret-key").with_http_header_name_attribute("invalid header");
-
-        let error = build_auth_header_and_return_error(api_key);
-
-        assert!(error.starts_with("API Key configured HTTP header attribute is malformed:"));
-    }
-
     /// Scenario: an API key value contains a character forbidden in HTTP header values.
     /// Guarantees: the builder rejects the key instead of producing an invalid header.
     #[test]
     fn rejects_malformed_api_key_value() {
-        let api_key = ApiKey::new("bad\nkey").with_http_header_name_attribute("x-api-key");
+        let api_key = ApiKey::new("bad\nkey").with_attributes(
+            ApiKeyAttributes::new()
+                .with_http_header_name_attribute("x-api-key")
+                .expect("valid"),
+        );
 
         let error = build_auth_header_and_return_error(api_key);
 
