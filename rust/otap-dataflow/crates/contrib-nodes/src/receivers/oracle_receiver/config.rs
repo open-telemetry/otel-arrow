@@ -41,7 +41,7 @@ const fn default_fetch_size_rows() -> usize {
     300
 }
 
-/// Validated configuration for one Oracle scalar or composite watermark query.
+/// Validated configuration for one Oracle snapshot or keyset query.
 pub struct OracleReceiverConfig {
     source_id: String,
     connection: OracleConnectionConfig,
@@ -144,6 +144,7 @@ impl TryFrom<RawOracleConfig> for OracleReceiverConfig {
         config.watermark.validate()?;
         config.checkpoint.validate()?;
         let output = match &mut config.watermark {
+            WatermarkConfig::Snapshot {} => OutputConfig::default(),
             WatermarkConfig::Composite {
                 timestamp,
                 tie_breaker,
@@ -189,6 +190,12 @@ impl TryFrom<RawOracleConfig> for OracleReceiverConfig {
         // Preserve the exact composite fingerprint schema and field ordering.
         // A scalar fingerprint has a separate mode and an explicitly typed initial value.
         let fingerprint = match &config.watermark {
+            WatermarkConfig::Snapshot {} => serde_json::to_vec(&SnapshotFingerprintInput {
+                source_id: &config.source_id,
+                connect_string: &config.connection.connect_string,
+                statement: query.sql(),
+                mode: "snapshot",
+            }),
             WatermarkConfig::Composite {
                 timestamp,
                 tie_breaker,
@@ -231,6 +238,14 @@ impl TryFrom<RawOracleConfig> for OracleReceiverConfig {
             config_fingerprint,
         })
     }
+}
+
+#[derive(Serialize)]
+struct SnapshotFingerprintInput<'a> {
+    source_id: &'a str,
+    connect_string: &'a str,
+    statement: &'a str,
+    mode: &'static str,
 }
 
 #[derive(Serialize)]
@@ -347,16 +362,31 @@ fn validate_statement(
     let upper = statement.to_ascii_uppercase();
     let tokens = sql_tokens(&upper)?;
     if tokens.iter().skip(1).any(|token| {
-        matches!(
-            token.text.as_str(),
-            "SELECT" | "UNION" | "INTERSECT" | "MINUS" | "EXCEPT"
-        )
+        !token.quoted
+            && matches!(
+                token.text.as_str(),
+                "SELECT" | "UNION" | "INTERSECT" | "MINUS" | "EXCEPT"
+            )
     }) {
         return Err(OracleConfigError::new(
             "query.statement must be a single SELECT without subqueries or set operations",
         ));
     }
     let (timestamp, tie_breaker) = match watermark {
+        WatermarkConfig::Snapshot {} => {
+            // No cursor parameters are bound in snapshot mode. Keep the single
+            // SELECT restriction above and reject locking and SELECT INTO forms.
+            if tokens.iter().any(|token| {
+                !token.quoted
+                    && (token.text.starts_with(':')
+                        || matches!(token.text.as_str(), "FOR" | "INTO"))
+            }) {
+                return Err(OracleConfigError::new(
+                    "snapshot query must be a read-only SELECT without binds, FOR, or INTO",
+                ));
+            }
+            return Ok(statement);
+        }
         WatermarkConfig::Composite {
             timestamp,
             tie_breaker,
@@ -504,7 +534,10 @@ fn validate_cursor_projections<'a>(
 }
 
 fn is_direct_cursor_projection(projection: &[SqlToken], column: &str) -> bool {
-    projection.len() == 1 && projection[0].depth == 0 && projection[0].text == column
+    projection.len() == 1
+        && projection[0].depth == 0
+        && !projection[0].quoted
+        && projection[0].text == column
 }
 
 /// Requires one strict scalar keyset predicate and a matching outer ordering.
@@ -576,9 +609,10 @@ fn validate_scalar_statement(
 struct SqlToken {
     text: String,
     depth: usize,
+    quoted: bool,
 }
 
-/// Splits uppercased SQL into identifier tokens, discarding string literals.
+/// Splits uppercased SQL into tokens, keeping quoted identifiers opaque.
 fn sql_tokens(sql: &str) -> Result<Vec<SqlToken>, OracleConfigError> {
     let mut tokens = Vec::new();
     let mut current = String::new();
@@ -597,12 +631,43 @@ fn sql_tokens(sql: &str) -> Result<Vec<SqlToken>, OracleConfigError> {
             continue;
         }
         if character == '\'' {
+            if current.eq_ignore_ascii_case("q") || current.eq_ignore_ascii_case("nq") {
+                return Err(OracleConfigError::new(
+                    "query.statement does not support Oracle alternative-quoted string literals",
+                ));
+            }
             push_token(&mut tokens, &mut current, depth);
             tokens.push(SqlToken {
                 text: "'literal'".to_owned(),
                 depth,
+                quoted: false,
             });
             in_string = true;
+            continue;
+        }
+        if character == '"' {
+            push_token(&mut tokens, &mut current, depth);
+            let mut terminated = false;
+            while let Some(character) = characters.next() {
+                if character == '"' {
+                    if characters.peek() == Some(&'"') {
+                        _ = characters.next();
+                    } else {
+                        terminated = true;
+                        break;
+                    }
+                }
+            }
+            if !terminated {
+                return Err(OracleConfigError::new(
+                    "query.statement contains an unterminated quoted identifier",
+                ));
+            }
+            tokens.push(SqlToken {
+                text: "\"identifier\"".to_owned(),
+                depth,
+                quoted: true,
+            });
             continue;
         }
         if character.is_ascii_alphanumeric() || matches!(character, '_' | '$' | '#' | ':') {
@@ -615,6 +680,7 @@ fn sql_tokens(sql: &str) -> Result<Vec<SqlToken>, OracleConfigError> {
                 tokens.push(SqlToken {
                     text: "(".to_owned(),
                     depth,
+                    quoted: false,
                 });
                 depth = depth.saturating_add(1);
             }
@@ -625,20 +691,24 @@ fn sql_tokens(sql: &str) -> Result<Vec<SqlToken>, OracleConfigError> {
                 tokens.push(SqlToken {
                     text: ")".to_owned(),
                     depth,
+                    quoted: false,
                 });
             }
             ',' => tokens.push(SqlToken {
                 text: ",".to_owned(),
                 depth,
+                quoted: false,
             }),
             '>' | '=' => tokens.push(SqlToken {
                 text: character.to_string(),
                 depth,
+                quoted: false,
             }),
             value if value.is_whitespace() => {}
             value => tokens.push(SqlToken {
                 text: value.to_string(),
                 depth,
+                quoted: false,
             }),
         }
     }
@@ -680,6 +750,7 @@ fn push_token(tokens: &mut Vec<SqlToken>, current: &mut String, depth: usize) {
         tokens.push(SqlToken {
             text: std::mem::take(current),
             depth,
+            quoted: false,
         });
     }
 }
