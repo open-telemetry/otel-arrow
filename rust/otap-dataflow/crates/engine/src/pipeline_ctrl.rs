@@ -1505,7 +1505,7 @@ mod tests {
             pipeline_entity_key,
         );
 
-        let (forced_shutdown_trigger, _) = crate::forced_shutdown::new_forced_shutdown_signal();
+        let (forced_shutdown_trigger, _) = ForcedShutdownTrigger::pair();
         let manager = RuntimeCtrlMsgManager::new(
             DeployedPipelineKey {
                 pipeline_group_id,
@@ -1993,8 +1993,7 @@ mod tests {
                     watch::channel(MemoryPressureChanged::initial());
 
                 // Create manager with empty control_senders map (no registered nodes)
-                let (forced_shutdown_trigger, _) =
-                    crate::forced_shutdown::new_forced_shutdown_signal();
+                let (forced_shutdown_trigger, _) = ForcedShutdownTrigger::pair();
                 let manager = RuntimeCtrlMsgManager::<()>::new(
                     pipeline_key,
                     pipeline_context,
@@ -2468,7 +2467,9 @@ mod tests {
                 let (manager, pipeline_tx, _control_receivers, _nodes, _pipeline_entity_guard) =
                     setup_test_manager::<()>();
                 let deadline = manager.terminal_metrics_deadline.clone();
+                let forced_shutdown_signal = manager.forced_shutdown_trigger.subscribe();
                 let original = tokio::time::Instant::now() + Duration::from_millis(100);
+                let duplicate = original - Duration::from_millis(80);
                 pipeline_tx
                     .send(RuntimeControlMsg::Shutdown {
                         deadline: original.into_std(),
@@ -2478,14 +2479,30 @@ mod tests {
                     .unwrap();
                 pipeline_tx
                     .send(RuntimeControlMsg::Shutdown {
-                        deadline: (original - Duration::from_millis(80)).into_std(),
+                        deadline: duplicate.into_std(),
                         reason: "duplicate shutdown".to_owned(),
                     })
                     .await
                     .unwrap();
+                // Observe the forced-shutdown signal directly so an early trigger
+                // caused by the duplicate request is detected rather than hidden.
+                let observer = tokio::task::spawn_local(async move {
+                    let pending_through_duplicate = forced_shutdown_signal.clone();
+                    tokio::select! {
+                        biased;
+                        () = tokio::time::sleep_until(duplicate) => {}
+                        () = pending_through_duplicate.triggered() => {
+                            panic!("forced shutdown fired at the duplicate deadline")
+                        }
+                    }
+                    forced_shutdown_signal.triggered().await;
+                    tokio::time::Instant::now()
+                });
                 manager.run().await.unwrap();
                 drop(pipeline_tx);
+                let fired_at = observer.await.expect("observer completes");
                 assert_eq!(deadline.get(), original.into_std());
+                assert_eq!(fired_at, original);
                 assert_eq!(tokio::time::Instant::now(), original);
             })
             .await;
@@ -3134,7 +3151,7 @@ mod tests {
         let (_memory_pressure_tx, memory_pressure_rx) =
             watch::channel(MemoryPressureChanged::initial());
 
-        let (forced_shutdown_trigger, _) = crate::forced_shutdown::new_forced_shutdown_signal();
+        let (forced_shutdown_trigger, _) = ForcedShutdownTrigger::pair();
         let manager = RuntimeCtrlMsgManager::new(
             DeployedPipelineKey {
                 pipeline_group_id,
@@ -3408,7 +3425,7 @@ mod tests {
         let (_memory_pressure_tx, memory_pressure_rx) =
             watch::channel(MemoryPressureChanged::initial());
 
-        let (forced_shutdown_trigger, _) = crate::forced_shutdown::new_forced_shutdown_signal();
+        let (forced_shutdown_trigger, _) = ForcedShutdownTrigger::pair();
         let manager = RuntimeCtrlMsgManager::new(
             DeployedPipelineKey {
                 pipeline_group_id,
@@ -3491,7 +3508,7 @@ mod tests {
         let (memory_pressure_tx, memory_pressure_rx) =
             watch::channel(MemoryPressureChanged::initial());
 
-        let (forced_shutdown_trigger, _) = crate::forced_shutdown::new_forced_shutdown_signal();
+        let (forced_shutdown_trigger, _) = ForcedShutdownTrigger::pair();
         let manager = RuntimeCtrlMsgManager::new(
             DeployedPipelineKey {
                 pipeline_group_id,

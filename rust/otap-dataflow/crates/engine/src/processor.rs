@@ -1494,7 +1494,7 @@ mod tests {
             .run_until(async move {
                 let processor_task = tokio::task::spawn_local(async move {
                     let (_, forced_shutdown_signal) =
-                        crate::forced_shutdown::new_forced_shutdown_signal();
+                        crate::forced_shutdown::ForcedShutdownTrigger::pair();
                     processor
                         .start_with_completion_metrics(
                             runtime_ctrl_tx,
@@ -1687,7 +1687,7 @@ mod tests {
         let _control_keepalive = wrapper.control_sender();
         let deadline = crate::terminal_state::TerminalMetricsDeadline::default();
         let (forced_shutdown_trigger, forced_shutdown_signal) =
-            crate::forced_shutdown::new_forced_shutdown_signal();
+            crate::forced_shutdown::ForcedShutdownTrigger::pair();
         let start = tokio::time::Instant::now();
         let run = wrapper.start_with_completion_metrics(
             runtime_tx,
@@ -1918,7 +1918,7 @@ mod tests {
 
         let _ctrl_keepalive = p.control_sender();
 
-        let (_, forced_shutdown_signal) = crate::forced_shutdown::new_forced_shutdown_signal();
+        let (_, forced_shutdown_signal) = crate::forced_shutdown::ForcedShutdownTrigger::pair();
         let result = p
             .start_with_completion_metrics(
                 runtime_ctrl_tx,
@@ -2162,7 +2162,7 @@ mod tests {
         drop(input_tx);
         let _ctrl_keepalive = p.control_sender();
 
-        let (_, forced_shutdown_signal) = crate::forced_shutdown::new_forced_shutdown_signal();
+        let (_, forced_shutdown_signal) = crate::forced_shutdown::ForcedShutdownTrigger::pair();
         let result = p
             .start_with_completion_metrics(
                 runtime_ctrl_tx,

@@ -143,7 +143,7 @@ pub(super) fn build_manager<PData>(
     let (_memory_pressure_tx, memory_pressure_rx) =
         watch::channel(MemoryPressureChanged::initial());
 
-    let (forced_shutdown_trigger, _) = crate::forced_shutdown::new_forced_shutdown_signal();
+    let (forced_shutdown_trigger, _) = crate::forced_shutdown::ForcedShutdownTrigger::pair();
     let manager = RuntimeCtrlMsgManager::new(
         otel_arrow_dfe_config::DeployedPipelineKey {
             pipeline_group_id,

@@ -527,7 +527,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
         // spawning data-path tasks.
         let terminal_metrics_deadline = TerminalMetricsDeadline::default();
         let (forced_shutdown_trigger, forced_shutdown_signal) =
-            crate::forced_shutdown::new_forced_shutdown_signal();
+            crate::forced_shutdown::ForcedShutdownTrigger::pair();
         let mut extension_lifecycle = crate::extension_lifecycle::ExtensionLifecycle::spawn(
             extensions,
             &local_tasks,

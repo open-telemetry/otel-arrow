@@ -16,9 +16,23 @@ pub(crate) struct ForcedShutdownTrigger {
 }
 
 impl ForcedShutdownTrigger {
+    /// Construct a matched ([`ForcedShutdownTrigger`], [`ForcedShutdownSignal`]) pair.
+    pub(crate) fn pair() -> (Self, ForcedShutdownSignal) {
+        let (state, receiver) = watch::channel(false);
+        (Self { state }, ForcedShutdownSignal { state: receiver })
+    }
+
     /// Retains the forced-shutdown state and wakes all current waiters.
     pub(crate) fn trigger(&self) {
         let _ = self.state.send_replace(true);
+    }
+
+    /// Subscribes an additional [`ForcedShutdownSignal`] to this trigger.
+    #[cfg(test)]
+    pub(crate) fn subscribe(&self) -> ForcedShutdownSignal {
+        ForcedShutdownSignal {
+            state: self.state.subscribe(),
+        }
     }
 }
 
@@ -39,15 +53,6 @@ impl ForcedShutdownSignal {
     }
 }
 
-/// Creates one retained forced-shutdown notification for a pipeline runtime.
-pub(crate) fn new_forced_shutdown_signal() -> (ForcedShutdownTrigger, ForcedShutdownSignal) {
-    let (state, receiver) = watch::channel(false);
-    (
-        ForcedShutdownTrigger { state },
-        ForcedShutdownSignal { state: receiver },
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -56,7 +61,7 @@ mod tests {
     /// Guarantees: The retained notification wakes every observer without requiring another trigger.
     #[tokio::test]
     async fn forced_shutdown_is_retained_for_late_waiters() {
-        let (trigger, signal) = new_forced_shutdown_signal();
+        let (trigger, signal) = ForcedShutdownTrigger::pair();
         let current = signal.clone();
         let current = tokio::spawn(current.triggered());
 
