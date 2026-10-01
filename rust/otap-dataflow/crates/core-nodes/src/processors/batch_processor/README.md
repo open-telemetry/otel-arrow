@@ -14,6 +14,11 @@ The batch processor combines OTAP and OTLP payloads before forwarding them
 downstream. It can preserve the inbound payload format or force output to OTAP
 or OTLP, and it tracks ACK/NACK-sensitive request state across batch flushes.
 
+Batches are sized against a range of acceptable sizes, `[min_size, max_size]`.
+Inputs that already fall in that range are forwarded unchanged. Smaller inputs
+are buffered and merged, and larger inputs are split, until the output falls in
+range or `max_batch_duration` elapses.
+
 ## Getting Started
 
 Configure format-specific sizing and the maximum time to hold pending data:
@@ -40,15 +45,15 @@ type: processor:batch
 config:
   # Batch sizing for OTAP records (defaults are format-specific).
   otap:
-    min_size: 8192      # Flush threshold; null disables size flushing.
+    min_size: 8192     # Lower bound of the acceptable size range; defaults to max_size when null.
     max_size: null     # Optional upper bound.
-    sizer: items       # "requests", "items", or "bytes".
+    sizer: items       # OTAP supports "items" only.
 
   # Batch sizing for OTLP bytes (defaults are format-specific).
   otlp:
-    min_size: 1048576
+    min_size: 262144
     max_size: null
-    sizer: bytes
+    sizer: bytes       # OTLP supports "bytes" only.
     max_split_fragments: 65536  # Cap on fragments per oversize entry (OTLP only).
     max_split_overhead_bytes: 8388608  # Cap on duplicated wrapper bytes per oversize entry (OTLP only).
     max_split_fragments_per_flush: 65536  # Greedy per-flush split threshold (OTLP only).
@@ -66,9 +71,15 @@ config:
 
 Each format object contains:
 
-- `min_size`: non-zero flush threshold, or `null` to disable size flushing.
-- `max_size`: optional non-zero upper bound, or `null`.
-- `sizer`: one of `requests`, `items`, or `bytes`.
+- `min_size`: lower bound of the acceptable batch size, or `null`. When `null`
+  it defaults to `max_size`. `0` is allowed and means any input up to
+  `max_size` is forwarded as-is. Defaults: 8192 items (OTAP), 262144 bytes
+  (OTLP).
+- `max_size`: optional non-zero upper bound, or `null` for no upper bound. Must
+  be `>= min_size` when both are set.
+- `sizer`: the unit `min_size` and `max_size` are measured in. OTAP supports
+  `items` (log records, spans, or metric data points); OTLP supports `bytes`
+  (encoded request size).
 - `max_split_fragments` (OTLP bytes only): non-zero cap on how many fragments a
   single oversize resource entry may split into, or `null` for unbounded
   (default 65536, a power-of-two backstop). Splitting an entry that exceeds
@@ -110,14 +121,125 @@ Each format object contains:
   look ahead over later entries and is independent of Ack/Nack outbound-slot
   accounting (which governs *sending*, not up-front allocation).
 
+### Validation rules
+
+- At least one of `min_size` or `max_size` must be set.
+- `max_size`, when set, must be non-zero and `>= min_size`.
+- A non-zero `min_size` requires a non-zero `max_batch_duration`, otherwise
+  buffered data below `min_size` could wait forever.
+- With `max_batch_duration: 0s`, `max_size` must be set unless `min_size` is
+  explicitly `0`.
+- `min_size: 0` with no `max_size` is accepted but logs a
+  `batch.config.forwards_everything` warning: every input is forwarded as-is and
+  no batching is performed.
+
+## Behavior
+
+Sizes are measured in the format's sizer unit. Signals (logs, metrics, traces)
+and formats (OTAP, OTLP) are buffered independently. Below, `min` is the
+effective lower bound (`min_size`, or `max_size` if `min_size` is unset) and
+`max` is `max_size` (infinite if unset).
+
+### When an input arrives
+
+1. **Empty input** (size 0): acknowledged immediately and dropped.
+2. **Already acceptable** (`min <= size <= max`): forwarded immediately and
+   unchanged, with its original request context. It is not buffered, merged, or
+   split, and downstream Ack/Nack go straight to the original sender without
+   using the processor's request-tracking slots. Any data already buffered is
+   left in place.
+3. **Otherwise** (smaller than `min`, or larger than `max`): appended to the
+   pending buffer. If this is the first pending data, the flush timer starts.
+   If the pending total reaches `min` (or `max_batch_duration` is `0s`), a size
+   flush runs immediately.
+
+### Flushing
+
+A flush happens when pending data reaches `min` (size flush), when
+`max_batch_duration` elapses after the oldest pending data arrived (timer
+flush), or at shutdown.
+
+- If exactly one whole input is pending and it fits within `max`, it is
+  forwarded unchanged with its original context, as in step 2 above.
+- Otherwise all pending data is merged in arrival order. If `max_size` is set,
+  it is split so every output is at most `max_size`. Items are packed to fill
+  each output to exactly `max_size` where the data allows.
+- If `max_size` is unset, everything pending is merged into a single output with
+  no upper bound.
+
+### Held-back remainders
+
+On a size flush with `max_size` set and a non-zero `max_batch_duration` that
+produces more than one output, if the final output is smaller than `min`, it is
+held back instead of sent. It becomes
+the first data in the next batch and restarts the flush timer. A held-back
+remainder therefore waits at most about `2 x max_batch_duration` in total.
+Timer and shutdown flushes send everything, including remainders.
+
+The original request is not acknowledged until every output carrying its data,
+including a held-back remainder, has been acknowledged.
+
+### Acknowledgements
+
+- Forwarded-as-is inputs keep their own context, so downstream Ack/Nack route
+  directly to the original sender.
+- Merged or split data is tracked: an input is acknowledged only after every
+  output containing part of it is acknowledged, and is negatively acknowledged
+  as soon as any such output is rejected.
+- When the tracking limits (`inbound_request_limit`, `outbound_request_limit`)
+  are exhausted, affected requests are rejected with a NACK so the sender can
+  retry.
+
+### Guarantees and caveats
+
+- Output order is not preserved relative to buffered data: an input forwarded
+  as-is may be sent before older data that is still buffered.
+- Batch sizes are best-effort. Metrics are only split at metric boundaries, so
+  a metric with more data points than `max_size` is sent on its own and
+  metric batches can fall below `min_size`. OTLP byte splitting may emit an
+  entry whole when a split budget is exceeded.
+- Timer and shutdown flushes send whatever is pending, regardless of size.
+- Without `max_size`, merged OTAP output is limited only by the protocol's ID
+  width; a merge that would overflow it fails and the affected requests are
+  rejected. Set `max_size` for bounded output.
+
+### Common configurations
+
+| Goal | `min_size` | `max_size` | `max_batch_duration` | Behavior |
+| --- | --- | --- | --- | --- |
+| Uniform batches | `N` | `N` | `> 0` | Inputs of exactly `N` pass through; everything else is merged or split into batches of `N` (except timer/shutdown flushes). |
+| Batches in a range | `L` | `H` | `> 0` | Inputs in `[L, H]` pass through; smaller inputs accumulate to at least `L`; larger inputs are split to at most `H`. |
+| Accumulate up to a maximum | `null` | `H` | `> 0` | `min_size` defaults to `H`: smaller inputs accumulate to `H`, inputs of exactly `H` pass through. |
+| Merge only | `L` | `null` | `> 0` | Inputs of at least `L` pass through; smaller inputs accumulate to at least `L` with no upper bound. |
+| Split only | `0` or `null` | `H` | `0s` | Inputs up to `H` pass through; larger inputs are split to at most `H`. |
+| Split only (any timeout) | `0` | `H` | any | As above; with `min_size: 0` nothing is ever buffered, so `max_batch_duration` has no effect. |
+
 ## Examples
 
-Flush every incoming message:
+Batches of exactly 1000 items (except timer/shutdown flushes):
+
+```yaml
+type: processor:batch
+config:
+  max_batch_duration: 200ms
+  format: otap
+  otap:
+    min_size: 1000
+    max_size: 1000
+    sizer: items
+```
+
+Only split oversized requests, forwarding everything else unchanged:
 
 ```yaml
 type: processor:batch
 config:
   max_batch_duration: 0s
+  format: otap
+  otap:
+    min_size: 0
+    max_size: 8192
+    sizer: items
 ```
 
 ## Telemetry
@@ -139,6 +261,7 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 | `otap.processor.batch.produced_batches_traces` | `{item}` | Total batches produced for traces signal. |
 | `otap.processor.batch.flushes_size` | `{flush}` | Number of flushes triggered by size threshold (all signals) |
 | `otap.processor.batch.flushes_timer` | `{flush}` | Number of flushes triggered by timer (all signals) |
+| `otap.processor.batch.passthrough_batches` | `{batch}` | Number of inputs forwarded as-is, without re-batching or completion tracking, because their size was already within `[min_size, max_size]` or they were flushed alone. |
 | `otap.processor.batch.flush_pending_requests` | `{request}` | Number of input requests pending at flush time. |
 | `otap.processor.batch.flush_pending_bytes` | `By` | Number of bytes pending at flush time when byte size is known. |
 | `otap.processor.batch.flush_age_duration` | `ns` | Time from first pending input arrival to actual flush start. |
@@ -155,11 +278,11 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 
 | Event | Severity | Description |
 | --- | --- | --- |
-| *None* | N/A | No node-specific events are emitted. |
+| `batch.config.forwards_everything` | WARN | Emitted at startup for each format configured with `min_size: 0` and no `max_size`; every input is forwarded as-is and no batching is performed. |
 
 ## Limits
 
-- `min_size` and `max_size`, when set, must be non-zero.
+- `max_size`, when set, must be non-zero. `min_size` may be `0`.
 - `bytes` sizing depends on payload formats that can report encoded size.
 - `max_batch_duration: 0s` disables time-based accumulation and flushes
   immediately.
