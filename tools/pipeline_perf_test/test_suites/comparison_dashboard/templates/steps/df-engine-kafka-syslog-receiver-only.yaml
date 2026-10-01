@@ -1,0 +1,221 @@
+{% macro forward_variables() -%}
+{%- for k, v in variables.items() %}
+                {{k}}: {{v | tojson}}
+{%- endfor %}
+{%- endmacro -%}
+steps:
+  - name: Deploy Kafka Broker
+    action:
+      component_action:
+        phase: deploy
+        target: kafka-broker
+  - name: Wait for Kafka Broker
+    action:
+      no_op: {}
+    hooks:
+      run:
+        pre:
+          - run_command:
+              command: >-
+                for attempt in $(seq 1 30); do
+                if timeout 5 docker exec kafka-broker /opt/kafka/bin/kafka-topics.sh
+                --bootstrap-server localhost:9092 --list; then exit 0; fi;
+                sleep 2; done; echo "Kafka did not become ready" >&2; exit 1
+  - name: Create Syslog Topic
+    action:
+      no_op: {}
+    hooks:
+      run:
+        pre:
+          - run_command:
+              command: >-
+                docker exec kafka-broker /opt/kafka/bin/kafka-topics.sh
+                --bootstrap-server localhost:9092 --create --if-not-exists
+                --topic otel-syslog --partitions 1 --replication-factor 1
+  - name: Deploy Kafka Consumer
+    action:
+      component_action:
+        phase: deploy
+        target: kafka-consumer
+    hooks:
+      run:
+        pre:
+          - render_template:
+              template_path: '{{kafka_consumer_config}}'
+              output_path: '{{test_dir}}/kafka-consumer-config.rendered.yaml'
+              variables:{{forward_variables()}}
+                core_start: 1
+                core_end: 1
+          - run_command:
+              command: 'cp "{{test_dir}}/kafka-consumer-config.rendered.yaml" "{{data_dir}}/kafka-consumer-config.rendered.yaml"'
+        post:
+          - ready_check_http:
+              url: http://localhost:18088/api/v1/telemetry/metrics?reset=false
+              method: GET
+              expected_status_code: 200
+  - name: Deploy Load Generator
+    action:
+      component_action:
+        phase: deploy
+        target: load-generator
+    hooks:
+      run:
+        post:
+          - ready_check_http:
+              url: http://localhost:18085/metrics
+              method: GET
+              expected_status_code: 200
+          - run_command:
+              command: >-
+                docker inspect --format {% raw %}'{{.Name}} {{.Image}}'{% endraw %}
+                load-generator kafka-broker kafka-consumer
+                > "{{test_dir}}/images.txt"
+  - name: Monitor All
+    action:
+      multi_component_action:
+        phase: start_monitoring
+        targets: [load-generator, kafka-broker, kafka-consumer]
+  - name: Start Raw Syslog Producer
+    action:
+      no_op: {}
+    hooks:
+      run:
+        pre:
+          - send_http_request:
+              url: http://localhost:18085/start
+              method: POST
+              timeout: 60
+              payload:
+                load_type: syslog
+                syslog_transport: kafka
+                syslog_format: rfc5424
+                syslog_content_type: random
+                kafka_brokers: kafka-broker:9092
+                kafka_topic: otel-syslog
+                target_rate: {{target_rate}}
+                threads: {{loadgen_threads}}
+                batch_size: {{loadgen_batch_size}}
+                body_size: {{message_size}}
+                message_size: {{message_size}}
+  - name: Warm Up
+    action:
+      wait:
+        delay_seconds: {{wait_for_data_interval}}
+  - name: Observe Load
+    action:
+      wait:
+        delay_seconds: {{observation_interval}}
+    hooks:
+      run:
+        pre:
+          - send_http_request:
+              url: http://localhost:18085/status
+              method: GET
+          - run_command:
+              command: 'python3 kafka_syslog_receiver_only.py snapshot --output-dir "{{test_dir}}" --phase observation-start'
+          - record_event:
+              name: observation_start
+        post:
+          - record_event:
+              name: observation_stop
+          - run_command:
+              command: 'python3 kafka_syslog_receiver_only.py snapshot --output-dir "{{test_dir}}" --phase observation-stop'
+          - send_http_request:
+              url: http://localhost:18085/status
+              method: GET
+  - name: Stop and Flush Producer
+    action:
+      no_op: {}
+    hooks:
+      run:
+        pre:
+          - send_http_request:
+              url: http://localhost:18085/stop
+              method: POST
+              timeout: 60
+  - name: Bounded Consumer Drain
+    # Producer is off; do not extend this wait based on lag or pending counts.
+    action:
+      wait:
+        delay_seconds: {{drain_wait_secs}}
+  - name: Capture Final Local Perf Counters
+    # Both scrapes MUST precede shutdown: the consumer admin listener exits.
+    # These are not post-shutdown totals and do not include later drain progress.
+    action:
+      no_op: {}
+    hooks:
+      run:
+        pre:
+          - run_command:
+              command: 'python3 kafka_syslog_receiver_only.py snapshot --output-dir "{{test_dir}}" --phase final'
+  - name: Stop Kafka Consumer
+    action:
+      no_op: {}
+    hooks:
+      run:
+        pre:
+          - send_http_request:
+              url: http://localhost:18088/api/v1/groups/shutdown?wait=true&timeout_secs={{drain_timeout_secs}}
+              method: POST
+              timeout: {{drain_timeout_secs + 5}}
+  - name: Capture Kafka Record and Verify Delivery
+    # Sampling after counter capture cannot lengthen the measured bounded drain.
+    action:
+      no_op: {}
+    hooks:
+      run:
+        pre:
+          - run_command:
+              command: >-
+                timeout 20 docker exec kafka-broker /opt/kafka/bin/kafka-console-consumer.sh
+                --bootstrap-server localhost:9092 --topic otel-syslog --from-beginning
+                --max-messages 1 --timeout-ms 10000 > "{{test_dir}}/kafka-record.txt"
+          - run_command:
+              command: 'python3 kafka_syslog_receiver_only.py verify --output-dir "{{test_dir}}"{% if target_rate == 1000 %} --expect-full-delivery{% endif %}'
+  - name: Wait For Metrics Update
+    action:
+      wait:
+        delay_seconds: 1
+  - name: Stop Monitoring All
+    action:
+      multi_component_action:
+        phase: stop_monitoring
+        targets: [load-generator, kafka-broker, kafka-consumer]
+  - name: Destroy All
+    action:
+      multi_component_action:
+        phase: destroy
+        targets: [load-generator, kafka-consumer, kafka-broker]
+  - name: Run Report
+    action:
+      no_op: {}
+    hooks:
+      run:
+        # Steps may continue to cleanup after failure. Never emit a successful
+        # report unless the saved pre-shutdown evidence still passes the gate.
+        pre:
+          - run_command:
+              command: 'python3 kafka_syslog_receiver_only.py verify --output-dir "{{test_dir}}"{% if target_rate == 1000 %} --expect-full-delivery{% endif %}'
+        post:
+          - print_container_logs: {}
+          - sql_report:
+              name: '{{report_name}}'
+              report_config_file: '{{report}}'
+              output:
+                - format:
+                    template: {}
+                  destination:
+                    console: {}
+                - format:
+                    template:
+                      path: ../pipeline_perf_test/test_suites/integration/templates/reports/gh-action-sqlreport.j2
+                  destination:
+                    file:
+                      directory: '{{test_dir}}'
+                - format:
+                    template:
+                      path: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/reports/dashboard-timeseries.j2
+                  destination:
+                    file:
+                      directory: '{{test_dir}}'
+                      name: timeseries

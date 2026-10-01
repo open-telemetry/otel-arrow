@@ -45,6 +45,63 @@ python loadgen.py --load-type syslog --syslog-server 127.0.0.1 --syslog-port 514
 python loadgen.py --load-type syslog --syslog-content-type cef --syslog-server 127.0.0.1 --syslog-port 5140 --duration 30
 ```
 
+### Raw Syslog over Kafka
+
+Kafka mode uses `confluent-kafka`/librdkafka to send one raw Syslog value per
+record, not OTLP protobuf. It defaults to RFC 5424, 1024 UTF-8 bytes including
+the header, a plain random body, and no trailing newline, key, or compression.
+TCP/UDP retain their newline framing and mixed random-message pools.
+
+```bash
+python loadgen.py --load-type syslog --syslog-transport kafka \
+  --kafka-brokers localhost:19094 --kafka-topic otel-syslog \
+  --syslog-format rfc5424 --message-size 1024 --body-size 1024 \
+  --threads 1 --batch-size 100 --target-rate 100000 --duration 30
+```
+
+Create the topic before starting. `target_rate` is aggregate across workers;
+`batch_size` is a scheduling chunk, not multiple logs inside one Kafka record.
+Each worker has its own producer. Queue bounds default to 10,000 messages and
+16 MiB per producer, with a 5s enqueue deadline, 10s delivery lifetime and 10s
+flush deadline. Queue pressure retries without counting false sends; only broker
+callbacks advance `logs_produced`, `bytes_sent`, and `logs_bytes_produced`.
+`kafka_pending`, delivery/enqueue failures and flush timeouts remain observable.
+These acknowledgements (`acks=1` by default) do not prove consumer delivery.
+
+Kafka options are available as CLI flags (`--kafka-send-timeout`, for example)
+and corresponding underscore-named JSON fields. `/status` returns lifecycle,
+bounded error details and metrics, with HTTP 500 on failure. `/stop` stops and
+flushes accepted work and returns HTTP 500 if unsuccessful; it blocks a new run
+until an old controller exits. CLI failures exit nonzero. `/metrics` remains
+readable for diagnostics even after failure.
+
+The [receiver-only dashboard suite](../../comparison_dashboard/README.md#syslog-kafka-receiver-only-benchmark)
+manages the broker, generator, consumer, and final delivery evidence.
+
+### Container build and offline wheelhouse
+
+From the repository root:
+
+```bash
+docker build -t load_generator:kafka-syslog tools/pipeline_perf_test/load_generator
+```
+
+The Dockerfile installs `requirements.lock.txt` with `--require-hashes`. If the
+build cannot reach the package index, download the locked wheels on a
+network-enabled Linux host matching the image's Python 3.14 and architecture:
+
+```bash
+python -m pip download --only-binary=:all: --require-hashes \
+  -r tools/pipeline_perf_test/load_generator/requirements.lock.txt \
+  --dest /tmp/loadgen-wheels
+docker build --build-context wheelhouse=/tmp/loadgen-wheels \
+  --build-arg PIP_NO_INDEX=1 -t load_generator:kafka-syslog \
+  tools/pipeline_perf_test/load_generator
+```
+
+Use a trusted package index; do not disable TLS verification. The offline build
+uses BuildKit's named `wheelhouse` context without copying wheels into the image.
+
 ### Server mode (HTTP API control)
 
 Start the load generator as a long-running server, then control it via HTTP:
@@ -64,6 +121,9 @@ curl -X POST http://localhost:5001/stop
 
 # Get metrics
 curl http://localhost:5001/metrics
+
+# Check lifecycle/error state
+curl --fail http://localhost:5001/status
 ```
 
 ## Future Enhancements

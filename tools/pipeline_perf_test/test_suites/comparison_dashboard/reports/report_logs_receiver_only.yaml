@@ -1,0 +1,180 @@
+# Independent endpoint: Kafka receiver -> local Perf, not a remote backend.
+# No loss or egress-per-exported-log claims are derived from windowed counters.
+queries:
+  - name: Filter metadata
+    sql: |
+      CREATE VIEW metadata_filtered AS
+      SELECT * FROM metadata WHERE Attribute NOT LIKE 'test.ctx.%';
+
+  - name: Observation window
+    sql: |
+      CREATE TABLE observation_window AS
+      SELECT
+        TO_TIMESTAMP(start.timestamp / 1000000000.0) AS start_ts,
+        TO_TIMESTAMP(stop.timestamp / 1000000000.0) AS stop_ts
+      FROM events start
+      JOIN events stop
+        ON start."attributes.test.name" = stop."attributes.test.name"
+      JOIN metadata_row
+        ON metadata_row."test.name" = start."attributes.test.name"
+      WHERE start.name = 'observation_start' AND stop.name = 'observation_stop'
+        AND start.timestamp < stop.timestamp;
+      SELECT CASE WHEN COUNT(*) = 1 THEN 1
+        ELSE error('Expected exactly one valid observation window') END
+      FROM observation_window;
+
+  - name: Broker-confirmed producer and successful local Perf counters
+    sql: |
+      CREATE TABLE endpoint_counters AS
+      SELECT timestamp, value,
+        CASE WHEN metric_name = 'logs_produced' THEN 'logs_produced_rate'
+          ELSE 'logs_received_rate' END AS metric
+      FROM metrics
+      WHERE timestamp > (SELECT CAST("test.start" AS TIMESTAMPTZ) FROM metadata_row)
+        AND (
+          (metric_name = 'logs_produced'
+            AND "metric_attributes.component_name" = 'load-generator')
+          OR (metric_name = 'items'
+            AND "metric_attributes.component_name" = 'kafka-consumer'
+            AND "metric_attributes.otel_scope_name" = 'node.input'
+            AND "metric_attributes.otel_scope_node_id" = 'perf'
+            AND "metric_attributes.otel_scope_pipeline_group_id" = 'default'
+            AND "metric_attributes.otel_scope_pipeline_id" = 'main'
+            AND "metric_attributes.otel_scope_core_id" = '1'
+            AND "metric_attributes.signal" = 'logs'
+            AND "metric_attributes.outcome" = 'success')
+        );
+      CREATE TABLE endpoint_rates AS
+      WITH previous AS (
+        SELECT *, LAG(value) OVER w AS previous_value,
+          LAG(timestamp) OVER w AS previous_timestamp
+        FROM endpoint_counters
+        WINDOW w AS (PARTITION BY metric ORDER BY timestamp)
+      )
+      SELECT *, (value - previous_value) /
+        NULLIF(EXTRACT(EPOCH FROM timestamp - previous_timestamp), 0) AS rate
+      FROM previous;
+
+  - name: Validate endpoint measurements and calculate rates
+    sql: |
+      CREATE TABLE endpoint_summary AS
+      WITH stats AS (
+        SELECT metric, COUNT(*) AS n, COUNT(value) AS values_present,
+          COUNT(DISTINCT timestamp) AS timestamps,
+          BOOL_AND(isfinite(value) AND value >= 0
+            AND value = floor(value)) AS valid,
+          BOOL_OR(value < previous_value) AS reset,
+          (MAX(value) - MIN(value)) /
+            NULLIF(EXTRACT(EPOCH FROM MAX(timestamp) - MIN(timestamp)), 0) AS rate
+        FROM endpoint_rates
+        CROSS JOIN observation_window ow
+        WHERE timestamp BETWEEN ow.start_ts AND ow.stop_ts
+        GROUP BY metric
+      )
+      SELECT expected.metric,
+        CASE WHEN n >= 2 AND values_present = n AND timestamps = n
+          AND valid AND NOT reset
+          AND isfinite(rate) THEN rate
+          ELSE error('Missing, invalid or reset producer/local Perf counters')
+        END AS rate
+      FROM (VALUES ('logs_produced_rate'), ('logs_received_rate')) expected(metric)
+      LEFT JOIN stats USING (metric);
+
+  - name: Consumer resources normalized to one allocated core
+    sql: |
+      CREATE TABLE consumer_allocation AS
+      SELECT CASE WHEN COUNT(*) > 0 AND COUNT(value) = COUNT(*)
+        AND MIN(value) = 1 AND MAX(value) = 1
+        AND BOOL_AND(isfinite(value)) THEN 1
+        ELSE error('Receiver-only CPU normalization requires allocated_cores=1')
+      END AS cores
+      FROM metrics
+      WHERE metric_name = 'container.cpu.allocated'
+        AND "metric_attributes.component_name" = 'kafka-consumer';
+      CREATE TABLE consumer_resources AS
+      SELECT timestamp, metric_name, value
+      FROM metrics CROSS JOIN observation_window ow
+      WHERE timestamp BETWEEN ow.start_ts AND ow.stop_ts
+        AND "metric_attributes.component_name" = 'kafka-consumer'
+        AND metric_name IN ('container.cpu.usage', 'container.memory.usage');
+      CREATE TABLE resource_summary AS
+      WITH stats AS (
+        SELECT metric_name, COUNT(*) AS n, COUNT(value) AS values_present,
+          BOOL_AND(isfinite(value) AND value >= 0) AS valid,
+          AVG(value) AS average, MAX(value) AS maximum
+        FROM consumer_resources GROUP BY metric_name
+      )
+      SELECT expected.metric_name,
+        CASE WHEN n >= 2 AND values_present = n AND valid THEN average
+          ELSE error('Missing or invalid consumer CPU/memory samples')
+        END AS average, maximum
+      FROM (VALUES ('container.cpu.usage'),
+        ('container.memory.usage')) expected(metric_name)
+      LEFT JOIN stats USING (metric_name);
+
+  - name: Dashboard metrics
+    sql: |
+      CREATE TABLE gh_actions_benchmark AS
+      SELECT metric AS name, 'logs/sec' AS unit, rate AS value,
+        metadata_row."test.suite" || '/' || metadata_row."test.name" ||
+        CASE WHEN metric = 'logs_received_rate' THEN ' - Local Perf success input'
+          ELSE ' - Broker-confirmed raw Kafka records' END AS extra
+      FROM endpoint_summary CROSS JOIN metadata_row
+      UNION ALL
+      SELECT 'cpu_percentage_normalized_avg', '%', average / cores * 100,
+        'Kafka consumer container CPU; one allocated core'
+      FROM resource_summary CROSS JOIN consumer_allocation
+      WHERE metric_name = 'container.cpu.usage'
+      UNION ALL
+      SELECT 'cpu_percentage_normalized_max', '%', maximum / cores * 100,
+        'Kafka consumer container CPU; one allocated core'
+      FROM resource_summary CROSS JOIN consumer_allocation
+      WHERE metric_name = 'container.cpu.usage'
+      UNION ALL
+      SELECT 'ram_mib_avg', 'MiB', average / 1048576,
+        'Kafka consumer container memory'
+      FROM resource_summary WHERE metric_name = 'container.memory.usage'
+      UNION ALL
+      SELECT 'ram_mib_max', 'MiB', maximum / 1048576,
+        'Kafka consumer container memory'
+      FROM resource_summary WHERE metric_name = 'container.memory.usage'
+      UNION ALL
+      SELECT 'test_duration', 'seconds', EXTRACT(EPOCH FROM stop_ts - start_ts),
+        'Observation only; excludes warmup and producer-off bounded drain'
+      FROM observation_window;
+
+  - name: Dashboard time series
+    sql: |
+      CREATE TABLE dashboard_timeseries AS
+      SELECT EXTRACT(EPOCH FROM timestamp - ow.start_ts) AS t, metric, rate AS value
+      FROM endpoint_rates CROSS JOIN observation_window ow
+      WHERE timestamp BETWEEN ow.start_ts AND ow.stop_ts AND rate IS NOT NULL
+      UNION ALL
+      SELECT EXTRACT(EPOCH FROM timestamp - ow.start_ts),
+        'cpu_percentage_normalized', value / cores * 100
+      FROM consumer_resources CROSS JOIN observation_window ow
+        CROSS JOIN consumer_allocation
+      WHERE metric_name = 'container.cpu.usage'
+      UNION ALL
+      SELECT EXTRACT(EPOCH FROM timestamp - ow.start_ts), 'ram_mib', value / 1048576
+      FROM consumer_resources CROSS JOIN observation_window ow
+      WHERE metric_name = 'container.memory.usage'
+      ORDER BY metric, t;
+
+result_tables:
+  - name: metadata_filtered
+    description: Test metadata.
+  - name: endpoint_summary
+    description: >-
+      Broker-confirmed producer rate and successful local Perf input rate.
+      Receiver-only includes Syslog decoding, Arrow materialization and handoff.
+      Final bounded-drain counts are in verified-delivery.json, not inferred loss.
+  - name: resource_summary
+    description: Kafka consumer container CPU/memory during observation.
+  - name: gh_actions_benchmark
+    description: >-
+      Receiver-only dashboard metrics. CPU uses one allocated core. No remote
+      export, backend, dropped-log or egress-bytes-per-exported-log metrics.
+  - name: dashboard_timeseries
+    description: Actual producer/local Perf counter rates and consumer resources.
+    display: false

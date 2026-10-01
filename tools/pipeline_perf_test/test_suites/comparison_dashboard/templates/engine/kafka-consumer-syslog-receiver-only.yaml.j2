@@ -1,0 +1,60 @@
+version: otel_dataflow/v1
+policies:
+  telemetry:
+    # The benchmark image needs normal runtime completion telemetry for the
+    # Perf node.input success series, matching the historical Perf backend.
+    runtime_metrics: normal
+  channel_capacity:
+    control:
+      node: 100
+      pipeline: 100
+    pdata: 100
+  resources:
+    core_allocation:
+      type: core_set
+      set:
+        - start: {{core_start}}
+          end: {{core_end}}
+engine:
+  telemetry:
+    logs:
+      level: info
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          receiver:
+            type: urn:otel:receiver:kafka
+            config:
+              brokers: "kafka-broker:9092"
+              group_id: "{{kafka_consumer_group_id}}"
+              client_id: dfe-kafka-syslog-consumer
+              auto_offset_reset: earliest
+              commit:
+                mode: auto
+                interval_ms: 1000
+              session_timeout_ms: 30000
+              heartbeat_interval_ms: 3000
+              min_fetch_bytes: 1
+              max_fetch_bytes: 1048576
+              max_fetch_wait_ms: 500
+              max_partition_fetch_bytes: 1048576
+              isolation_level: read_uncommitted
+              logs:
+                topics: ["otel-syslog"]
+                encoding: syslog
+          perf:
+            type: urn:otel:exporter:perf
+            policies:
+              telemetry:
+                item_counts: true
+            config:
+              frequency: 500
+              cpu_usage: false
+              mem_usage: false
+              disk_usage: false
+              io_usage: false
+        connections:
+          - from: receiver
+            to: perf
