@@ -92,8 +92,19 @@ ENV RUSTFLAGS="-C target-feature=+crt-static"
 
 # Feature set mirrors Dockerfile.windows so both benchmark paths produce an
 # equivalent binary.
+#
+# After the build, move the executable out and delete the target/ tree in the
+# SAME layer. On the classic Windows builder every instruction commits a layer
+# equal to the filesystem diff, and target/ for this workspace is ~20 GB
+# (line-tables debuginfo pdbs for a large dependency graph). Committing that
+# exhausts the runner's disk during snapshotting. Pruning within the layer keeps
+# the committed diff down to just df_engine.exe. $ErrorActionPreference does not
+# trap native non-zero exit codes, so check $LASTEXITCODE explicitly.
 RUN cargo build --locked --release --no-default-features `
-        --features mimalloc,crypto-ring,dev-tools,core-nodes
+        --features mimalloc,crypto-ring,dev-tools,core-nodes ; `
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } ; `
+    Copy-Item target\release\df_engine.exe C:\build\df_engine.exe ; `
+    Remove-Item -Recurse -Force target
 
 # ---------------------------------------------------------------------------
 # Runtime stage: copy only the executable into a clean image.
@@ -101,12 +112,14 @@ RUN cargo build --locked --release --no-default-features `
 FROM mcr.microsoft.com/windows/servercore:ltsc2025
 
 # Create a non-admin user for running the engine, mirroring Dockerfile.windows.
-# This runtime stage uses the default cmd shell, so && chains the two commands.
-RUN net user appuser /add && net localgroup Administrators appuser /remove
+# A user created with `net user /add` is a member of Users (not
+# Administrators), so no group removal is needed; it provides the intended
+# privilege separation on its own.
+RUN net user appuser /add
 
 WORKDIR C:\dataflow
 
-COPY --from=builder C:/build/rust/dataflow/target/release/df_engine.exe C:/dataflow/df_engine.exe
+COPY --from=builder C:/build/df_engine.exe C:/dataflow/df_engine.exe
 
 USER appuser
 

@@ -139,6 +139,16 @@ jobs:
           submodules: true
           persist-credentials: false
 
+      - name: Free disk space before build
+        shell: pwsh
+        run: |
+          # The classic Windows builder stores every committed layer under the
+          # Docker data root on C:. A full df_engine build produces a large
+          # target/ tree, and a prior run exhausted C: while snapshotting it.
+          # Reclaim any dangling Docker state up front to lower peak usage.
+          docker system prune -af 2>$null
+          Get-PSDrive C | Select-Object Used, Free | Format-List
+
       - name: Build multi-stage image and measure
         shell: pwsh
         working-directory: ./rust/otap-dataflow
