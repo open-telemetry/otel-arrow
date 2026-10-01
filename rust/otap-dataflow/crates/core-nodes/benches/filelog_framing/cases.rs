@@ -154,8 +154,7 @@ fn case(
     }
 }
 
-// Mirrors a bounded streaming consumer: retain no output queue, and never seek
-// fresh input to an emitted frame boundary when the decoder owns lookahead.
+// Drop output immediately; advance by consumed bytes, not frame ends, to preserve lookahead.
 pub fn scan(case: &Case, chunk_size: usize) -> Scan {
     let mut framer = LineFramer::new(case.config, LineStart::NewStream).expect("valid fixture");
     let mut result = Scan::default();
@@ -172,8 +171,7 @@ pub fn scan(case: &Case, chunk_size: usize) -> Scan {
                     LineBody::Text(body) => body.len(),
                     LineBody::Bytes(body) => body.len(),
                 };
-                // Keep payload construction observable without hashing/copying it.
-                // Drop each frame, including its source shadow, before the next step.
+                // Observe without hashing/copying; drop the frame and shadow before the next step.
                 let _ = black_box(&frame);
             }
             if !step.advanced {

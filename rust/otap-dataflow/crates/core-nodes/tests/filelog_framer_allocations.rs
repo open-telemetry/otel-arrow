@@ -27,7 +27,7 @@ fn discard(framer: &mut LineFramer, mut input: &[u8]) {
 }
 
 /// Scenario: A preserve-raw truncation scans four MiB after filling its bounded prefix.
-/// Guarantees: Tail scans and payload transfer allocate nothing; prefix growth is geometric rather than per character.
+/// Guarantees: Tail scans and payload transfer allocate nothing; prefix growth stays geometric.
 #[test]
 fn truncate_tail_allocates_nothing() {
     let _profiler = dhat::Profiler::builder().testing().build();

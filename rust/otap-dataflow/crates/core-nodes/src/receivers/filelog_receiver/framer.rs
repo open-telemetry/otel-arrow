@@ -156,10 +156,9 @@ pub struct CompletionStep {
 
 /// Construction and framing errors.
 ///
-/// At runtime, `CompletionInProgress` and the input-offset
-/// `Decode(OffsetDiscontinuity)` returned by `next` are recoverable. Other
-/// runtime failures are terminal; [`LineFramer::terminal_error`] reports the
-/// instance's status. Constructor validation errors create no instance.
+/// Only `CompletionInProgress` and `next`'s input-offset
+/// `Decode(OffsetDiscontinuity)` are recoverable at runtime; other errors latch
+/// in [`LineFramer::terminal_error`]. Constructor errors create no instance.
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
 pub enum LineError {
     /// Bounds must fit allocation arithmetic and one largest encoding unit.
@@ -168,11 +167,9 @@ pub enum LineError {
     /// Scan-to-LF recovery needs positive progress/index and split behavior.
     #[error("invalid physical-line continuation")]
     InvalidContinuation,
-    /// A source decoder error with its original evidence.
-    ///
-    /// `next` checks caller offsets before invoking the decoder. Internal decoder
-    /// errors are latched, including an unexpected `DrainRequired`: the framer
-    /// drains before completion, so callers cannot cause that sequencing error.
+    /// Original decoder error. `next` checks caller offsets before decoding.
+    /// Internal errors latch, including `DrainRequired`: the framer drains before
+    /// completion, so callers cannot trigger that sequencing error.
     #[error(transparent)]
     Decode(#[from] DecodeError),
     /// Fresh input or a different reason was supplied during explicit completion.
@@ -306,11 +303,11 @@ impl LineFramer {
         self.advance(input)
     }
 
-    /// Begins/continues a caller-authorized boundary after all caller input was supplied.
+    /// Completes a caller-authorized boundary after all input is supplied.
     ///
-    /// Repeat with the same reason until `complete`; retain every returned frame.
-    /// Each call processes at most one event. Earlier LF/split output is returned
-    /// before resolving a later incomplete unit. This method owns no clock or EOF test.
+    /// Repeat the same reason until `complete`, retaining every frame. Each call
+    /// handles at most one event; LF/split output precedes later incomplete units.
+    /// The caller checks the clock and EOF.
     pub fn complete_partial(
         &mut self,
         reason: PartialCompletion,
@@ -377,10 +374,9 @@ impl LineFramer {
         (self.frame_start < self.next_expected_input_offset()).then_some(self.frame_start)
     }
 
-    /// Current retained heap capacities (text and raw); excludes returned output.
-    /// Includes reusable text capacity retained after emitting a byte body, even
-    /// when no source bytes remain pending.
-    /// Inline state is bounded by `size_of::<LineFramer>()`.
+    /// Retained text/raw heap capacity, excluding returned output. Includes reusable
+    /// text storage after byte-body emission, even with no pending source bytes.
+    /// Inline state occupies `size_of::<LineFramer>()`.
     #[must_use]
     pub fn retained_capacity(&self) -> usize {
         self.text.capacity() + self.raw.capacity()

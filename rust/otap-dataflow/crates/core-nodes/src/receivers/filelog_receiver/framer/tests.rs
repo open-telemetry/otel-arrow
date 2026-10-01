@@ -424,7 +424,7 @@ fn earlier_output_precedes_sticky_failure() {
 }
 
 /// Scenario: UTF-16 lookahead consumes a later unit before delivering the overflow unit.
-/// Guarantees: Pausing at output preserves all consumed bytes and resumption neither duplicates nor loses units.
+/// Guarantees: Output pauses retain consumed bytes; resuming neither duplicates nor loses units.
 #[test]
 fn consumed_delivered_and_framed_boundaries_differ() {
     let cfg = config(Encoding::Utf16Le, OnDecodeError::Replace, 4);
@@ -545,7 +545,7 @@ fn incomplete_units_require_explicit_completion() {
     }
 }
 
-/// Scenario: A source scalar is split by a read pause, or explicitly resolved before later bytes arrive.
+/// Scenario: A partial scalar is paused or explicitly completed before more input arrives.
 /// Guarantees: Pauses preserve units; authorized completion starts fresh units and never probes a later BOM.
 #[test]
 fn append_after_pause_and_after_completion() {
@@ -574,7 +574,7 @@ fn append_after_pause_and_after_completion() {
 }
 
 /// Scenario: Completion encounters an overflow replacement and buffered decoder lookahead.
-/// Guarantees: Completion can yield repeatedly, rejects fresh input while active, and preserves completion reason.
+/// Guarantees: Completion can yield repeatedly; fresh input and reason changes are rejected while active.
 #[test]
 fn completion_drains_pending_work_before_finishing() {
     let mut framer = new(config(Encoding::Utf8, OnDecodeError::Replace, 4));
@@ -618,8 +618,8 @@ fn completion_drains_pending_work_before_finishing() {
     );
 }
 
-/// Scenario: Each nonfinal split boundary is used to reconstruct a fresh framer without buffered lookahead.
-/// Guarantees: Replay from returned frame ends reproduces remaining bodies, ranges and indices, including odd UTF-16 offsets.
+/// Scenario: A fresh framer resumes at each nonfinal split boundary without prior lookahead.
+/// Guarantees: Replay preserves remaining bodies, ranges and indices, even at odd UTF-16 offsets.
 #[test]
 fn continuation_restart_reproduces_remaining_fragments() {
     for (encoding, source) in [
@@ -666,7 +666,7 @@ fn continuation_restart_reproduces_remaining_fragments() {
 }
 
 /// Scenario: Recovery starts at zero or at a continuation followed by LF or maximum fragment index.
-/// Guarantees: Resume never strips BOM, new LF bytes can end an empty fragment, and index overflow precedes emission.
+/// Guarantees: Resume keeps BOMs; LF can end an empty fragment; index overflow fails before emission.
 #[test]
 fn resume_validation_and_fragment_overflow() {
     let cfg = config(Encoding::Utf8, OnDecodeError::PreserveRaw, 4);
@@ -779,7 +779,7 @@ fn new_error(cfg: LineConfig) -> LineError {
 }
 
 /// Scenario: Millions of unterminated source bytes exceed split/truncate bounds.
-/// Guarantees: Retained capacities stay bounded, truncate allocates no growing tail, and no implicit final record appears.
+/// Guarantees: Capacity stays bounded, truncate tails do not grow buffers, and final output requires completion.
 #[test]
 fn large_unterminated_input_has_bounded_retention() {
     for behavior in [OversizeBehavior::Split, OversizeBehavior::Truncate] {
@@ -822,7 +822,7 @@ fn large_unterminated_input_has_bounded_retention() {
 }
 
 /// Scenario: A valid line precedes malformed input under every partition and encoding.
-/// Guarantees: Earlier output always appears first and consumption reports all accepted bytes without authorizing the failed line.
+/// Guarantees: Output precedes failure; consumption counts all accepted bytes without authorizing the failed line.
 #[test]
 fn failure_order_and_consumption_across_partitions() {
     for (encoding, source, first_end, bad_start) in [
