@@ -7,7 +7,7 @@ use arrow::array::{
     Array, ArrayRef, Float64Array, Int64Array, ListArray, RecordBatch, StringArray, StructArray,
     UInt8Array,
 };
-use arrow::compute::cast;
+use arrow::compute::{cast, kernels::numeric::mul};
 use arrow::datatypes::{DataType, Field, Schema};
 use async_trait::async_trait;
 use datafusion::config::ConfigOptions;
@@ -167,7 +167,7 @@ impl PipelineStage for ScaleMetricPipelineStage {
 }
 
 fn update_units(record_batch: &RecordBatch, unit: &str) -> Result<RecordBatch> {
-    let units = StringArray::from_iter(std::iter::repeat_n(Some(unit), record_batch.num_rows()));
+    let units = StringArray::new_repeated(unit, record_batch.num_rows());
 
     if let Ok(index) = record_batch.schema().index_of(consts::UNIT) {
         let schema = record_batch.schema();
@@ -210,19 +210,7 @@ fn scale_columns(
                     value.map(|value| (value as f64 * multiplier) as i64)
                 })))
             }
-            DataType::Float64 => {
-                let values = array
-                    .as_any()
-                    .downcast_ref::<Float64Array>()
-                    .ok_or_else(|| Error::ExecutionError {
-                        cause: format!("{column_name} is not a Float64 array"),
-                    })?;
-                Arc::new(Float64Array::from_iter(
-                    values
-                        .iter()
-                        .map(|value| value.map(|value| value * multiplier)),
-                ))
-            }
+            DataType::Float64 => mul(array, &Float64Array::new_scalar(multiplier))?,
             data_type => {
                 return Err(Error::ExecutionError {
                     cause: format!(
@@ -264,18 +252,14 @@ fn scale_list_values(
         .ok_or_else(|| Error::ExecutionError {
             cause: format!("{column_name} values are not Float64"),
         })?;
-    let scaled_values = Float64Array::from_iter(
-        values
-            .iter()
-            .map(|value| value.map(|value| value * multiplier)),
-    );
+    let scaled_values = mul(values, &Float64Array::new_scalar(multiplier))?;
     let DataType::List(field) = list.data_type() else {
         unreachable!("downcast ListArray has list data type");
     };
     let scaled = ListArray::new(
         Arc::clone(field),
         list.offsets().clone(),
-        Arc::new(scaled_values),
+        scaled_values,
         list.nulls().cloned(),
     );
     otap_batch.set(
@@ -324,11 +308,7 @@ fn scale_summary_quantiles(otap_batch: &mut OtapArrowRecords, multiplier: f64) -
         .ok_or_else(|| Error::ExecutionError {
             cause: "summary quantile value is not Float64".into(),
         })?;
-    let scaled_values: ArrayRef = Arc::new(Float64Array::from_iter(
-        value_array
-            .iter()
-            .map(|value| value.map(|value| value * multiplier)),
-    ));
+    let scaled_values = mul(value_array, &Float64Array::new_scalar(multiplier))?;
     let mut struct_columns = values.columns().to_vec();
     struct_columns[value_index] = scaled_values;
     let scaled_struct = StructArray::new(
