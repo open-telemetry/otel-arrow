@@ -1120,7 +1120,7 @@ impl PipelineStage for AssignPipelineStage {
                 return Ok(otap_batch);
             };
 
-            let new_attrs = self.assign_to_nested_attributes::<UInt16Type>(
+            let new_attrs = self.assign_to_nested_attributes(
                 &otap_batch,
                 Cow::Borrowed(attrs_record_batch),
                 &mut eval_results,
@@ -1550,7 +1550,7 @@ impl PipelineStage for AssignPipelineStage {
                     continue;
                 };
 
-                let new_attrs = self.assign_to_nested_attributes::<UInt32Type>(
+                let new_attrs = self.assign_to_nested_attributes(
                     &otap_batch,
                     Cow::Borrowed(attrs_record_batch),
                     &mut eval_results,
