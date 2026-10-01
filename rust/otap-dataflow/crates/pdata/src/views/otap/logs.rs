@@ -748,10 +748,13 @@ fn get_log_id(id_array: Option<&UInt16Array>, row_idx: usize) -> Option<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proto::opentelemetry::common::v1::{
-        AnyValue, ArrayValue, KeyValue, KeyValueList, any_value,
-    };
+    use crate::proto::opentelemetry::common::v1::AnyValue;
+    use crate::proto::opentelemetry::common::v1::ArrayValue;
+    use crate::proto::opentelemetry::common::v1::KeyValue;
+    use crate::proto::opentelemetry::common::v1::KeyValueList;
+    use crate::proto::opentelemetry::common::v1::any_value;
     use crate::proto::opentelemetry::logs::v1::LogRecord;
+    use crate::schema::UTC_TIME_ZONE;
     use crate::schema::consts;
     use crate::testing::round_trip::to_otap_logs;
     use arrow::array::{
@@ -804,12 +807,12 @@ mod tests {
             scope_field,
             Field::new(
                 "time_unix_nano",
-                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                 true,
             ),
             Field::new(
                 "observed_time_unix_nano",
-                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                 true,
             ),
             Field::new("severity_number", DataType::Int32, true),
@@ -875,13 +878,15 @@ mod tests {
             Some(1000000000),
             Some(2000000000),
             Some(3000000000),
-        ]);
+        ])
+        .with_timezone(UTC_TIME_ZONE);
 
         let observed_time_array = TimestampNanosecondArray::from(vec![
             Some(1000000100),
             Some(2000000100),
             Some(3000000100),
-        ]);
+        ])
+        .with_timezone(UTC_TIME_ZONE);
 
         let severity_array = Int32Array::from(vec![Some(9), Some(17), Some(13)]); // INFO, ERROR, WARN
         let severity_text_array =
@@ -1461,12 +1466,12 @@ mod tests {
             ),
             Field::new(
                 "time_unix_nano",
-                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                 false,
             ),
             Field::new(
                 "observed_time_unix_nano",
-                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                 false,
             ),
         ]));
@@ -1482,8 +1487,10 @@ mod tests {
             Arc::new(Field::new("id", DataType::UInt16, false)),
             Arc::new(scope_id_array) as ArrayRef,
         )]);
-        let time_array = TimestampNanosecondArray::from(vec![1_000_000_000]);
-        let observed_time_array = TimestampNanosecondArray::from(vec![1_000_000_000]);
+        let time_array =
+            TimestampNanosecondArray::from(vec![1_000_000_000]).with_timezone(UTC_TIME_ZONE);
+        let observed_time_array =
+            TimestampNanosecondArray::from(vec![1_000_000_000]).with_timezone(UTC_TIME_ZONE);
 
         let logs_batch = RecordBatch::try_new(
             logs_schema,

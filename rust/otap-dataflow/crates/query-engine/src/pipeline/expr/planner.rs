@@ -22,7 +22,8 @@ use datafusion::logical_expr::expr::ScalarFunction;
 use datafusion::logical_expr::simplify::{ExprSimplifyResult, SimplifyContext};
 use datafusion::logical_expr::{BinaryExpr, Expr, Operator, ScalarUDF, col, lit, not};
 use datafusion::logical_expr::{ScalarUDFImpl, cast};
-use datafusion::prelude::{binary_expr, lit_timestamp_nano};
+use datafusion::prelude::binary_expr;
+use datafusion::scalar::ScalarValue;
 use otel_arrow_contrib_data_engine_expressions::{
     BinaryMathematicalScalarExpression, BooleanValue, CaptureTextScalarExpression,
     CoalesceScalarExpression, CollectionScalarExpression, CombineScalarExpression,
@@ -34,7 +35,7 @@ use otel_arrow_contrib_data_engine_expressions::{
 };
 use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_pdata::otlp::metrics::MetricType;
-use otel_arrow_dfe_pdata::schema::consts;
+use otel_arrow_dfe_pdata::schema::{UTC_TIME_ZONE, consts};
 
 #[cfg(feature = "sha1-hash")]
 use crate::consts::SHA1_FUNC_NAME;
@@ -211,8 +212,13 @@ impl ExprPlanner {
                                 ),
                             }
                         })?;
+                        // Tag the literal with UTC so it compares against
+                        // OTAP timestamp columns, which are always UTC.
                         (
-                            lit_timestamp_nano(val),
+                            lit(ScalarValue::TimestampNanosecond(
+                                Some(val),
+                                Some(UTC_TIME_ZONE.into()),
+                            )),
                             ExprLogicalType::TimestampNanosecond,
                         )
                     }
@@ -1121,6 +1127,9 @@ impl ExprPlanner {
 
         let requires_dict_downcast = left.requires_dict_downcast || right.requires_dict_downcast;
 
+        if self.record_type.is_attribute() {
+            resolve_attr_value_column_in_planned_ops(&mut left, &mut right);
+        }
         let mut expr = self.build_binary_expr(left, operator, right, requires_dict_downcast)?;
         if !either_side_literal {
             // if we're here, it means both sides of the comparison are not literals. For
@@ -1872,14 +1881,11 @@ impl ExprPlanner {
     /// (cross-scope).
     fn build_binary_expr(
         &self,
-        mut left: PlannedOp,
+        left: PlannedOp,
         operator: Operator,
-        mut right: PlannedOp,
+        right: PlannedOp,
         dict_downcast: bool,
     ) -> Result<ScopedExpr> {
-        if self.record_type.is_attribute() {
-            resolve_attr_value_column_in_planned_ops(&mut left, &mut right);
-        }
         let possible_scope = try_combine_scopes(&left, &right);
 
         if let Some(scope) = possible_scope {
@@ -2053,7 +2059,7 @@ impl ScopedExpr {
 
                 if *align_children_to_record {
                     let record_scope = match record_type {
-                        RecordType::Child(child_kind) => RecordScope::Child(child_kind.clone()),
+                        RecordType::Child(child) => RecordScope::Child(*child),
                         _ => RecordScope::Signal,
                     };
                     return Ok(Cow::Owned(DataScope::Record(record_scope)));
@@ -2087,8 +2093,8 @@ impl ScopedExpr {
                             DataScope::Attribute(attr_id, _),
                             DataScope::Record(_) | DataScope::RootParent(_),
                         ) => match attr_id {
-                            AttributesIdentifier::Root => curr_scope,
-                            AttributesIdentifier::NonRoot(_) => next_scope,
+                            AttributesIdentifier::Record(_) => curr_scope,
+                            AttributesIdentifier::NonRecord(_) => next_scope,
                         },
 
                         // rest always have record alignment
@@ -2103,7 +2109,7 @@ impl ScopedExpr {
             }
             Self::BitmapAnd(_, _) | Self::BitmapOr(_, _) | Self::BitmapNot(_) => {
                 let record_scope = match record_type {
-                    RecordType::Child(child_kind) => RecordScope::Child(child_kind.clone()),
+                    RecordType::Child(child_kind) => RecordScope::Child(*child_kind),
                     _ => RecordScope::Signal,
                 };
                 Ok(Cow::Owned(DataScope::Record(record_scope)))
@@ -2201,7 +2207,7 @@ fn escape_like_literals(planned: &mut PlannedOp) {
     if let ScopedExpr::Eval {
         eval:
             LeafEval::DatafusionExpr {
-                logical_expr: Expr::Literal(datafusion::scalar::ScalarValue::Utf8(Some(s)), _),
+                logical_expr: Expr::Literal(ScalarValue::Utf8(Some(s)), _),
                 ..
             },
         ..
@@ -2560,7 +2566,7 @@ mod test {
         assert!(matches!(
             planned.expr,
             ScopedExpr::Eval {
-                scope: DataScope::Attribute(AttributesIdentifier::Root, _),
+                scope: DataScope::Attribute(AttributesIdentifier::Record(RecordScope::Signal), _),
                 ..
             }
         ));
@@ -2576,7 +2582,7 @@ mod test {
             .unwrap();
         assert!(matches!(
             result.scope,
-            DataScope::Attribute(AttributesIdentifier::Root, _)
+            DataScope::Attribute(AttributesIdentifier::Record(RecordScope::Signal), _)
         ));
         // 3 attribute rows (one per log record, each has key "x")
         match &result.values {
@@ -2882,7 +2888,7 @@ mod test {
         assert!(matches!(
             op,
             ScopedExpr::Eval {
-                scope: DataScope::AttributesAll(AttributesIdentifier::Root),
+                scope: DataScope::AttributesAll(AttributesIdentifier::Record(RecordScope::Signal)),
                 ..
             }
         ));
@@ -2922,7 +2928,7 @@ mod test {
         assert!(matches!(
             op,
             ScopedExpr::Eval {
-                scope: DataScope::AttributesAll(AttributesIdentifier::Root),
+                scope: DataScope::AttributesAll(AttributesIdentifier::Record(RecordScope::Signal)),
                 ..
             }
         ));
@@ -2981,7 +2987,7 @@ mod test {
         assert!(matches!(
             op,
             ScopedExpr::Eval {
-                scope: DataScope::AttributesAll(AttributesIdentifier::Root),
+                scope: DataScope::AttributesAll(AttributesIdentifier::Record(RecordScope::Signal)),
                 ..
             }
         ));

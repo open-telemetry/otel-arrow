@@ -1,0 +1,8 @@
+change_type: bug_fix
+component: observability
+note: Replace OTLP exporter auth refresh-failure counters with authentication readiness up/down counters.
+issues: [4077]
+subtext: |
+  The new counters report 0 when authenticated progress is unavailable and 1
+  when it is possible. HTTP 401 and gRPC UNAUTHENTICATED message failures
+  remain reported by the existing exporter failure metrics.
