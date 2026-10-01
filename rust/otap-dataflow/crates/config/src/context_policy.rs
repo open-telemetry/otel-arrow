@@ -179,7 +179,7 @@ enum ContextEntryPartKind {
 impl ContextEntryPart {
     /// Returns the reference of a member or condition.
     #[must_use]
-    pub fn reference(&self) -> &ContextEntryRef {
+    pub(crate) fn reference(&self) -> &ContextEntryRef {
         match self {
             Self::TransportHeader { name, .. }
             | Self::AuthorizedIdentity { name, .. }
@@ -189,7 +189,7 @@ impl ContextEntryPart {
 
     /// Returns the resulting value-member name after applying `store_as`.
     #[must_use]
-    pub fn member_name(&self) -> Option<&ContextEntryName> {
+    pub(crate) fn member_name(&self) -> Option<&ContextEntryName> {
         match self {
             Self::TransportHeader { name, store_as }
             | Self::AuthorizedIdentity { name, store_as } => {
