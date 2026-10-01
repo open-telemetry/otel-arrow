@@ -14,7 +14,8 @@ const MAX_SCALE_POWER10: i32 = 18;
 const MIN_COLLECTION_INTERVAL: Duration = Duration::from_secs(1);
 const MAX_COLLECTION_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 const MAX_INITIAL_DELAY: Duration = Duration::from_secs(24 * 60 * 60);
-const MAX_METRICS: usize = u16::MAX as usize + 1;
+const MAX_METRIC_NAME_LEN: usize = 255;
+const MAX_METRIC_UNIT_LEN: usize = 63;
 const MAX_COUNTERS: usize = 256;
 const RECEIVER_ATTRIBUTE_PREFIX: &str = "windows.perf_counter.";
 
@@ -125,16 +126,9 @@ enum OneOrMany {
 }
 
 impl OneOrMany {
-    fn len(&self) -> usize {
+    fn as_slice(&self) -> &[String] {
         match self {
-            Self::One(_) => 1,
-            Self::Many(values) => values.len(),
-        }
-    }
-
-    fn into_vec(self) -> Vec<String> {
-        match self {
-            Self::One(value) => vec![value],
+            Self::One(value) => std::slice::from_ref(value),
             Self::Many(values) => values,
         }
     }
@@ -204,7 +198,7 @@ fn expanded_counter_count(objects: &[ObjectConfig]) -> Result<usize, Error> {
     };
     let mut total: usize = 0;
     for object in objects {
-        let instances = object.instances.as_ref().map_or(1, OneOrMany::len);
+        let instances = object.instances.as_ref().map_or(1, |i| i.as_slice().len());
         let paths = instances
             .checked_mul(object.counters.len())
             .ok_or_else(too_many)?;
@@ -216,13 +210,65 @@ fn expanded_counter_count(objects: &[ObjectConfig]) -> Result<usize, Error> {
     Ok(total)
 }
 
-fn validate_metric_count(count: usize) -> Result<(), Error> {
-    if count > MAX_METRICS {
+/// Enforces the OpenTelemetry instrument-name syntax on the trimmed name.
+fn validate_metric_name(name: &str) -> Result<&str, Error> {
+    let name = name.trim();
+    require_name("metric name", name)?;
+    let mut chars = name.chars();
+    let valid = name.len() <= MAX_METRIC_NAME_LEN
+        && chars.next().is_some_and(|c| c.is_ascii_alphabetic())
+        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-' | '/'));
+    if !valid {
         return Err(invalid(format!(
-            "metrics must contain at most {MAX_METRICS} entries"
+            "metric name {name:?} must start with an ASCII letter, contain only ASCII \
+             letters, digits, '_', '.', '-', or '/', and be at most {MAX_METRIC_NAME_LEN} characters"
         )));
     }
-    Ok(())
+    Ok(name)
+}
+
+/// Enforces the OpenTelemetry instrument-unit syntax on the trimmed unit.
+fn validate_metric_unit<'a>(name: &str, unit: &'a str) -> Result<&'a str, Error> {
+    let unit = unit.trim();
+    let field = format!("metrics.{name}.unit");
+    require_name(&field, unit)?;
+    if unit.len() > MAX_METRIC_UNIT_LEN || !unit.bytes().all(|b| b.is_ascii_graphic() || b == b' ')
+    {
+        return Err(invalid(format!(
+            "{field} must be printable ASCII and at most {MAX_METRIC_UNIT_LEN} characters"
+        )));
+    }
+    Ok(unit)
+}
+
+/// Trims attribute keys, rejecting blank, reserved, or post-trim duplicate keys.
+fn normalize_attributes(
+    field: &str,
+    attributes: &BTreeMap<String, String>,
+) -> Result<BTreeMap<String, String>, Error> {
+    let mut normalized = BTreeMap::new();
+    for (key, value) in attributes {
+        let key = key.trim();
+        require_name(&format!("{field} attribute key"), key)?;
+        if key.starts_with(RECEIVER_ATTRIBUTE_PREFIX) {
+            return Err(invalid(format!(
+                "{field} attribute {key:?} conflicts with receiver-generated attributes"
+            )));
+        }
+        if normalized.insert(key.to_owned(), value.clone()).is_some() {
+            return Err(invalid(format!(
+                "{field} contains duplicate attribute key {key:?}"
+            )));
+        }
+    }
+    Ok(normalized)
+}
+
+/// A metric definition after trimming and validation.
+struct NormalizedMetric<'a> {
+    description: &'a str,
+    unit: &'a str,
+    kind: MetricKind,
 }
 
 fn validate_counter(counter: &CounterConfig) -> Result<(), Error> {
@@ -238,18 +284,6 @@ fn validate_counter(counter: &CounterConfig) -> Result<(), Error> {
             counter.path
         )));
     }
-    for key in counter.attributes.keys() {
-        require_name(
-            &format!("counter path {:?} attribute key", counter.path),
-            key,
-        )?;
-        if key.starts_with(RECEIVER_ATTRIBUTE_PREFIX) {
-            return Err(invalid(format!(
-                "counter path {:?} attribute {key:?} conflicts with receiver-generated attributes",
-                counter.path
-            )));
-        }
-    }
     Ok(())
 }
 
@@ -258,7 +292,12 @@ impl RuntimeConfig {
     pub fn from_json(value: &serde_json::Value) -> Result<Self, Error> {
         let user: Config =
             serde_json::from_value(value.clone()).map_err(|err| invalid(err.to_string()))?;
-        validate_metric_count(user.metrics.len())?;
+        // Every metric must be referenced, so the counter cap also bounds metric definitions.
+        if user.metrics.len() > MAX_COUNTERS {
+            return Err(invalid(format!(
+                "metrics must contain at most {MAX_COUNTERS} entries"
+            )));
+        }
         if !(MIN_COLLECTION_INTERVAL..=MAX_COLLECTION_INTERVAL).contains(&user.collection_interval)
         {
             return Err(invalid(format!(
@@ -281,17 +320,32 @@ impl RuntimeConfig {
             return Err(invalid("perfcounters must contain at least one entry"));
         }
 
+        let mut metrics = BTreeMap::new();
+        let mut metric_identities = HashSet::new();
         for (name, metric) in &user.metrics {
-            require_name("metric name", name)?;
-            require_name(&format!("metrics.{name}.description"), &metric.description)?;
-            require_name(&format!("metrics.{name}.unit"), &metric.unit)?;
-            let _ = metric.kind(name)?;
+            let name = validate_metric_name(name)?;
+            // OTel instrument names are case-insensitive.
+            if !metric_identities.insert(name.to_ascii_lowercase()) {
+                return Err(invalid(format!("metrics contains duplicate {name:?}")));
+            }
+            let description = metric.description.trim();
+            require_name(&format!("metrics.{name}.description"), description)?;
+            let unit = validate_metric_unit(name, &metric.unit)?;
+            let kind = metric.kind(name)?;
+            let _ = metrics.insert(
+                name,
+                NormalizedMetric {
+                    description,
+                    unit,
+                    kind,
+                },
+            );
         }
 
         let expanded_count = expanded_counter_count(&user.perfcounters)?;
         let mut counters = Vec::with_capacity(expanded_count);
         let mut referenced_metrics = HashSet::new();
-        for (object_index, object) in user.perfcounters.into_iter().enumerate() {
+        for (object_index, object) in user.perfcounters.iter().enumerate() {
             let object_field = format!("perfcounters[{object_index}]");
             let object_name =
                 validate_object_or_instance(&format!("{object_field}.object"), &object.object)?;
@@ -300,10 +354,10 @@ impl RuntimeConfig {
                     "{object_field}.counters must contain at least one entry"
                 )));
             }
-            let instances = match object.instances {
+            let instances = match &object.instances {
                 None => vec![None],
                 Some(instances) => {
-                    let instances = instances.into_vec();
+                    let instances = instances.as_slice();
                     if instances.is_empty() {
                         return Err(invalid(format!(
                             "{object_field}.instances must not be empty"
@@ -311,33 +365,34 @@ impl RuntimeConfig {
                     }
                     let mut unique = HashSet::new();
                     instances
-                        .into_iter()
+                        .iter()
                         .map(|instance| {
                             let instance = validate_object_or_instance(
                                 &format!("{object_field}.instances"),
-                                &instance,
+                                instance,
                             )?;
                             if !unique.insert(instance.to_lowercase()) {
                                 return Err(invalid(format!(
                                     "{object_field}.instances contains duplicate {instance:?}"
                                 )));
                             }
-                            Ok(Some(instance.to_owned()))
+                            Ok(Some(instance))
                         })
                         .collect::<Result<Vec<_>, Error>>()?
                 }
             };
-            for (counter_index, mapping) in object.counters.into_iter().enumerate() {
+            for (counter_index, mapping) in object.counters.iter().enumerate() {
                 let counter_field = format!("{object_field}.counters[{counter_index}]");
                 let counter_name =
                     validate_counter_name(&format!("{counter_field}.name"), &mapping.name)?;
-                let metric = user.metrics.get(&mapping.metric).ok_or_else(|| {
+                let metric_name = mapping.metric.trim();
+                let metric = metrics.get(metric_name).ok_or_else(|| {
                     invalid(format!(
-                        "{counter_field}.metric references undefined metric {:?}",
-                        mapping.metric
+                        "{counter_field}.metric references undefined metric {metric_name:?}"
                     ))
                 })?;
-                let _ = referenced_metrics.insert(mapping.metric.clone());
+                let _ = referenced_metrics.insert(metric_name);
+                let attributes = normalize_attributes(&counter_field, &mapping.attributes)?;
                 for instance in &instances {
                     let path = match instance {
                         Some(instance) => {
@@ -347,11 +402,11 @@ impl RuntimeConfig {
                     };
                     counters.push(CounterConfig {
                         path,
-                        name: mapping.metric.clone(),
-                        unit: metric.unit.clone(),
-                        description: metric.description.clone(),
-                        kind: metric.kind(&mapping.metric)?,
-                        attributes: mapping.attributes.clone(),
+                        name: metric_name.to_owned(),
+                        unit: metric.unit.to_owned(),
+                        description: metric.description.to_owned(),
+                        kind: metric.kind,
+                        attributes: attributes.clone(),
                         scale_power10: mapping.scale_power10,
                     });
                 }
@@ -364,11 +419,10 @@ impl RuntimeConfig {
                 return Err(invalid(format!("duplicate counter path: {}", counter.path)));
             }
         }
-        let unused = user
-            .metrics
+        let unused = metrics
             .keys()
             .filter(|name| !referenced_metrics.contains(*name))
-            .cloned()
+            .copied()
             .collect::<Vec<_>>();
         if !unused.is_empty() {
             return Err(invalid(format!(
@@ -597,7 +651,7 @@ mod tests {
                     }]
                 }]
             }),
-            "counter path \"\\\\Memory\\\\Available Bytes\" attribute",
+            "perfcounters[0].counters[0] attribute \"windows.perf_counter.custom\" conflicts",
         );
     }
 
@@ -704,12 +758,146 @@ mod tests {
         assert_config_error(value, "unknown field `unknown`");
     }
 
-    /// Scenario: The number of metric definitions exceeds the OTAP metric identifier domain.
-    /// Guarantees: Validation rejects the count before a receiver can fail on every scrape.
+    /// Scenario: More metric definitions are configured than counters can reference.
+    /// Guarantees: Validation rejects the count up front instead of listing every unreferenced metric.
     #[test]
     fn rejects_too_many_metric_definitions() {
-        assert!(validate_metric_count(MAX_METRICS).is_ok());
-        assert!(validate_metric_count(MAX_METRICS + 1).is_err());
+        let metrics = (0..=MAX_COUNTERS)
+            .map(|index| {
+                (
+                    format!("m{index}"),
+                    json!({"description": "Value.", "unit": "By", "gauge": {}}),
+                )
+            })
+            .collect::<serde_json::Map<_, _>>();
+        assert_config_error(
+            json!({
+                "metrics": metrics,
+                "perfcounters": [{
+                    "object": "Memory",
+                    "counters": [{"name": "Available Bytes", "metric": "m0"}]
+                }]
+            }),
+            "metrics must contain at most 256 entries",
+        );
+    }
+
+    /// Scenario: Metric names violate the OpenTelemetry instrument-name syntax.
+    /// Guarantees: Validation rejects them instead of emitting invalid metric names.
+    #[test]
+    fn rejects_invalid_metric_names() {
+        let too_long = format!("a{}", "b".repeat(MAX_METRIC_NAME_LEN));
+        for name in ["1available", "avail able", "é", too_long.as_str()] {
+            assert_config_error(
+                json!({
+                    "metrics": {name: {"description": "Value.", "unit": "By", "gauge": {}}},
+                    "perfcounters": [{
+                        "object": "Memory",
+                        "counters": [{"name": "Available Bytes", "metric": name}]
+                    }]
+                }),
+                "must start with an ASCII letter",
+            );
+        }
+        let at_limit = format!("a{}", "b".repeat(MAX_METRIC_NAME_LEN - 1));
+        for name in ["system.memory_usage-1/s", at_limit.as_str()] {
+            assert!(
+                RuntimeConfig::from_json(&json!({
+                    "metrics": {name: {"description": "Value.", "unit": "By", "gauge": {}}},
+                    "perfcounters": [{
+                        "object": "Memory",
+                        "counters": [{"name": "Available Bytes", "metric": name}]
+                    }]
+                }))
+                .is_ok()
+            );
+        }
+    }
+
+    /// Scenario: Metric units violate the OpenTelemetry instrument-unit syntax.
+    /// Guarantees: Validation rejects non-ASCII, control-character, or overlong units.
+    #[test]
+    fn rejects_invalid_metric_units() {
+        let unit_config = |unit: &str| {
+            json!({
+                "metrics": {"m": {"description": "Value.", "unit": unit, "gauge": {}}},
+                "perfcounters": [{
+                    "object": "Memory",
+                    "counters": [{"name": "Available Bytes", "metric": "m"}]
+                }]
+            })
+        };
+        let too_long = "a".repeat(MAX_METRIC_UNIT_LEN + 1);
+        for unit in ["µs", "B\ty", too_long.as_str()] {
+            assert_config_error(unit_config(unit), "metrics.m.unit must be printable ASCII");
+        }
+        let at_limit = "a".repeat(MAX_METRIC_UNIT_LEN);
+        for unit in ["By", "{packets}/s", "1", at_limit.as_str()] {
+            assert!(RuntimeConfig::from_json(&unit_config(unit)).is_ok());
+        }
+    }
+
+    /// Scenario: Metric names, references, descriptions, units, and attribute keys are padded.
+    /// Guarantees: Values are trimmed consistently and padded references still resolve.
+    #[test]
+    fn trims_metric_definitions_and_attribute_keys() {
+        let config = RuntimeConfig::from_json(&json!({
+            "metrics": {" available ": {
+                "description": " Available memory. ",
+                "unit": " By ",
+                "gauge": {}
+            }},
+            "perfcounters": [{
+                "object": "Memory",
+                "counters": [{
+                    "name": "Available Bytes",
+                    "metric": "available ",
+                    "attributes": {" state ": " free "}
+                }]
+            }]
+        }))
+        .unwrap();
+        let counter = &config.counters[0];
+        assert_eq!(counter.name, "available");
+        assert_eq!(counter.description, "Available memory.");
+        assert_eq!(counter.unit, "By");
+        assert_eq!(
+            counter.attributes,
+            BTreeMap::from([("state".to_owned(), " free ".to_owned())])
+        );
+    }
+
+    /// Scenario: Metric names or attribute keys collide after trimming or case folding.
+    /// Guarantees: Validation rejects them instead of silently merging definitions.
+    #[test]
+    fn rejects_duplicate_metric_names_and_attribute_keys() {
+        let metric = json!({"description": "Value.", "unit": "By", "gauge": {}});
+        for (first, second) in [("cpu", " cpu"), ("cpu", "CPU")] {
+            assert_config_error(
+                json!({
+                    "metrics": {first: metric.clone(), second: metric.clone()},
+                    "perfcounters": [{
+                        "object": "Processor",
+                        "counters": [
+                            {"name": "% Processor Time", "metric": first},
+                            {"name": "% User Time", "metric": second}
+                        ]
+                    }]
+                }),
+                "metrics contains duplicate",
+            );
+        }
+        assert_config_error(
+            gauge_config(json!({
+                "object": "Memory",
+                "counters": [{
+                    "name": "Available Bytes",
+                    "metric": "available",
+                    "attributes": {"state": "a", " state": "b"}
+                }]
+            })),
+            "contains duplicate attribute key \"state\"",
+        );
     }
 
     /// Scenario: Explicit instance names differ only by letter casing.
@@ -1006,6 +1194,31 @@ mod tests {
         );
         assert_config_error(
             gauge_config(object(10_000, 10_000)),
+            "perfcounters must expand to at most 256 counter paths",
+        );
+    }
+
+    /// Scenario: Several object entries each stay under the cap but exceed it together.
+    /// Guarantees: The expanded-path bound applies to the total across all entries.
+    #[test]
+    fn bounds_expanded_counter_paths_across_objects() {
+        let objects = |count: usize| {
+            json!({
+                "metrics": {"available": {"description": "Value.", "unit": "By", "gauge": {}}},
+                "perfcounters": (0..2)
+                    .map(|o| json!({
+                        "object": format!("Object{o}"),
+                        "counters": (0..count)
+                            .map(|c| json!({"name": format!("C{c}"), "metric": "available"}))
+                            .collect::<Vec<_>>()
+                    }))
+                    .collect::<Vec<_>>()
+            })
+        };
+        let config = RuntimeConfig::from_json(&objects(MAX_COUNTERS / 2)).unwrap();
+        assert_eq!(config.counters.len(), MAX_COUNTERS);
+        assert_config_error(
+            objects(MAX_COUNTERS / 2 + 1),
             "perfcounters must expand to at most 256 counter paths",
         );
     }
