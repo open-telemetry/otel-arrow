@@ -22,4 +22,4 @@ subtext: |
   An unset min_size still defaults to max_size. Requests of at least min_size are
   no longer merged with smaller buffered data and may be sent ahead of it. Set
   min_size equal to max_size for uniform batches, or min_size 0 to only split
-  oversized requests. New metric: passthrough_batches.
+  oversized requests. New metric: passthrough.batches.
