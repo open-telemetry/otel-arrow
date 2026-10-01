@@ -175,7 +175,7 @@ fn require_name(field: &str, value: &str) -> Result<(), Error> {
 fn validate_object_or_instance<'a>(field: &str, value: &'a str) -> Result<&'a str, Error> {
     let value = value.trim();
     require_name(field, value)?;
-    if value.contains(['\\', '(', ')', '*', '?']) {
+    if value.contains(['\\', '(', ')', '*', '?', '\0']) {
         return Err(invalid(format!(
             "{field} contains a reserved performance-counter path character"
         )));
@@ -186,7 +186,7 @@ fn validate_object_or_instance<'a>(field: &str, value: &'a str) -> Result<&'a st
 fn validate_counter_name<'a>(field: &str, value: &'a str) -> Result<&'a str, Error> {
     let value = value.trim();
     require_name(field, value)?;
-    if value.contains(['\\', '*', '?']) {
+    if value.contains(['\\', '*', '?', '\0']) {
         return Err(invalid(format!(
             "{field} contains a reserved performance-counter path character"
         )));
@@ -952,10 +952,10 @@ mod tests {
     }
 
     /// Scenario: Object and instance names contain each reserved path character.
-    /// Guarantees: Every structural or wildcard character is rejected in those segments.
+    /// Guarantees: Every structural, wildcard, or NUL character is rejected in those segments.
     #[test]
     fn rejects_each_reserved_object_and_instance_character() {
-        for reserved in ['\\', '(', ')', '*', '?'] {
+        for reserved in ['\\', '(', ')', '*', '?', '\0'] {
             assert_config_error(
                 gauge_config(json!({
                     "object": format!("Mem{reserved}ory"),
@@ -972,7 +972,7 @@ mod tests {
                 "perfcounters[0].instances contains a reserved",
             );
         }
-        for reserved in ['\\', '?'] {
+        for reserved in ['\\', '?', '\0'] {
             assert_config_error(
                 gauge_config(json!({
                     "object": "Memory",

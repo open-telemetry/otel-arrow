@@ -7607,7 +7607,7 @@ dependencies = [
  "flume",
  "futures",
  "futures-core",
- "http 1.5.0",
+ "http",
  "linkme",
  "memory-stats",
  "nix 0.31.3",
