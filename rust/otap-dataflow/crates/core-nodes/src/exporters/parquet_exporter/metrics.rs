@@ -4,10 +4,11 @@
 //! Metrics specific to the Parquet exporter IO lifecycle.
 
 use otel_arrow_dfe_engine::context::PipelineContext;
+use otel_arrow_dfe_otap::metrics::ExporterMetrics;
 use otel_arrow_dfe_telemetry::error::Error;
 use otel_arrow_dfe_telemetry::instrument::Counter;
 use otel_arrow_dfe_telemetry::metrics::{
-    MeasurementMetricSet, MetricSet, MetricSetHandler, MetricSetSnapshot,
+    MeasurementMetricSet, MetricSet, MetricSetHandler, MetricSetRegistrar, MetricSetSnapshot,
 };
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use otel_arrow_dfe_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
@@ -64,6 +65,8 @@ pub struct ParquetExporterRowMetrics {
 
 /// Shared bounded-cardinality Parquet exporter metrics tracker.
 pub struct ParquetExporterMetrics {
+    /// Shared exporter boundary metrics (attempted, duration, payload, items).
+    pub boundary: ExporterMetrics,
     /// File metrics.
     pub files: MeasurementMetricSet<ParquetExporterFileMetrics>,
     /// Row metrics.
@@ -75,13 +78,15 @@ impl ParquetExporterMetrics {
     #[must_use]
     pub fn register(pipeline_ctx: &PipelineContext) -> Self {
         Self {
+            boundary: ExporterMetrics::register(pipeline_ctx),
             files: ParquetExporterFileMetrics::register(pipeline_ctx),
-            rows: pipeline_ctx.register_metrics::<ParquetExporterRowMetrics>(),
+            rows: pipeline_ctx.register_metric_set::<ParquetExporterRowMetrics>(),
         }
     }
 
     /// Reports touched metric buckets.
     pub fn report(&mut self, reporter: &mut MetricsReporter) -> Result<(), Error> {
+        self.boundary.report(reporter)?;
         reporter.report_measurement(&mut self.files)?;
         reporter.report(&mut self.rows)?;
         Ok(())
@@ -89,7 +94,8 @@ impl ParquetExporterMetrics {
 
     /// Takes every touched metric bucket for terminal handoff.
     pub fn terminal_snapshots(&mut self) -> Vec<MetricSetSnapshot> {
-        let mut snapshots = self.files.terminal_snapshots();
+        let mut snapshots = self.boundary.terminal_snapshots();
+        snapshots.extend(self.files.terminal_snapshots());
         if self.rows.needs_flush() {
             snapshots.extend(self.rows.terminal_snapshots());
         }

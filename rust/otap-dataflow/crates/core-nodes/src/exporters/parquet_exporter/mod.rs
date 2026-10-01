@@ -58,12 +58,10 @@ use otel_arrow_dfe_engine::message::{ExporterInbox, Message};
 use otel_arrow_dfe_engine::node::NodeId;
 use otel_arrow_dfe_engine::terminal_state::TerminalState;
 use otel_arrow_dfe_otap::OTAP_EXPORTER_FACTORIES;
-use otel_arrow_dfe_otap::metrics::ExporterExportMetrics;
 use otel_arrow_dfe_otap::pdata::OtapPdata;
 use otel_arrow_dfe_pdata::TryIntoWithOptions;
 use otel_arrow_dfe_pdata::otap::OtapArrowRecords;
-use otel_arrow_dfe_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
-use otel_arrow_dfe_telemetry::metrics::MeasurementMetricSet;
+
 use std::io::ErrorKind;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -77,7 +75,6 @@ pub struct ParquetExporter {
     token_provider: Option<
         Box<dyn otel_arrow_dfe_engine::shared::capability::auth::bearer_token_provider::BearerTokenProvider>,
     >,
-    pdata_metrics: Option<MeasurementMetricSet<ExporterExportMetrics>>,
     io_metrics: Option<metrics::ParquetExporterMetrics>,
 }
 
@@ -126,7 +123,6 @@ impl ParquetExporter {
         Self {
             config,
             token_provider: None,
-            pdata_metrics: None,
             io_metrics: None,
         }
     }
@@ -142,27 +138,20 @@ impl ParquetExporter {
             }
         })?;
 
-        let pdata_metrics = ExporterExportMetrics::register(&pipeline_ctx);
         let io_metrics = metrics::ParquetExporterMetrics::register(&pipeline_ctx);
 
         Ok(ParquetExporter {
             config,
             token_provider: None,
-            pdata_metrics: Some(pdata_metrics),
             io_metrics: Some(io_metrics),
         })
     }
 
     fn terminal_state(
         deadline: Instant,
-        mut pdata_metrics: Option<MeasurementMetricSet<ExporterExportMetrics>>,
         mut io_metrics: Option<metrics::ParquetExporterMetrics>,
     ) -> TerminalState {
         let mut snapshots = Vec::new();
-
-        if let Some(metrics) = &mut pdata_metrics {
-            snapshots.extend(metrics.terminal_snapshots());
-        }
 
         if let Some(metrics) = &mut io_metrics {
             snapshots.extend(metrics.terminal_snapshots());
@@ -260,9 +249,6 @@ impl Exporter<OtapPdata> for ParquetExporter {
                 Message::Control(NodeControlMsg::CollectTelemetry {
                     mut metrics_reporter,
                 }) => {
-                    if let Some(metrics) = self.pdata_metrics.as_mut() {
-                        _ = metrics_reporter.report_measurement(metrics);
-                    }
                     if let Some(metrics) = self.io_metrics.as_mut() {
                         _ = metrics.report(&mut metrics_reporter);
                     }
@@ -303,7 +289,7 @@ impl Exporter<OtapPdata> for ParquetExporter {
                                     if let Some(io) = self.io_metrics.as_mut() {
                                         record_io_metrics(io, stats);
                                     }
-                                    Ok(Self::terminal_state(deadline, self.pdata_metrics, self.io_metrics))
+                                    Ok(Self::terminal_state(deadline, self.io_metrics))
                                 }
                                 Err(e) => {
                                     if let Some(io) = self.io_metrics.as_mut() {
@@ -323,152 +309,81 @@ impl Exporter<OtapPdata> for ParquetExporter {
                 }
 
                 Message::PData(pdata) => {
-                    let export_start = Instant::now();
                     // Capture signal type before moving pdata into try_from
                     let signal_type = pdata.signal_type();
 
                     // Note: context is not used
                     let (_context, payload) = pdata.into_parts();
 
-                    let mut otap_batch: OtapArrowRecords =
-                        payload.try_into_with_default().inspect_err(|_| {
-                            if let Some(metrics) = self.pdata_metrics.as_mut() {
-                                metrics
-                                    .with(SignalOutcomeAttributes {
-                                        signal: signal_type,
-                                        outcome: Outcome::Failure,
+                    if let Some(io) = self.io_metrics.as_mut() {
+                        let completed = io
+                            .boundary
+                            .attempt(signal_type)
+                            .run(async |attempt| {
+                                let mut otap_batch: OtapArrowRecords =
+                                    payload.try_into_with_default().map_err(|e| {
+                                        attempt.failed(format!("Payload conversion failed: {e}"))
+                                    })?;
+
+                                // decode the transport optimized IDs before converting
+                                // to unvalidated parquet records
+                                otap_batch.decode_transport_optimized_ids().map_err(|e| {
+                                    attempt.failed(format!(
+                                        "Failed to decode transport optimized IDs: {e}"
+                                    ))
+                                })?;
+
+                                // convert to parquet-local records for unvalidated access
+                                let mut otap_batch: records::OtapParquetRecords = otap_batch.into();
+
+                                // generate unique IDs
+                                id_generator
+                                    .generate_unique_ids(&mut otap_batch)
+                                    .map_err(|e| {
+                                        attempt.failed(format!("ID Generation failed: {e}"))
+                                    })?;
+
+                                // ensure the batches has the schema the parquet writer expects
+                                transform_to_known_schema(&mut otap_batch).map_err(|e| {
+                                    attempt.failed(format!("Schema transformation failed: {e}"))
+                                })?;
+
+                                // compute any partitions
+                                let partitions = match self.config.partitioning_strategies.as_ref()
+                                {
+                                    Some(strategies) => partition(otap_batch, strategies),
+                                    None => vec![Partition {
+                                        otap_batch,
+                                        attributes: None,
+                                    }],
+                                };
+
+                                // write the data
+                                let writes = partitions
+                                    .iter()
+                                    .map(|partition| {
+                                        WriteBatch::new(
+                                            batch_id,
+                                            &partition.otap_batch,
+                                            partition.attributes.as_deref(),
+                                        )
                                     })
-                                    .record(export_start.elapsed());
-                            }
-                        })?;
-
-                    // decode the transport optimized IDs before converting
-                    // to unvalidated parquet records
-                    otap_batch.decode_transport_optimized_ids().map_err(|e| {
-                        if let Some(metrics) = self.pdata_metrics.as_mut() {
-                            metrics
-                                .with(SignalOutcomeAttributes {
-                                    signal: signal_type,
-                                    outcome: Outcome::Failure,
-                                })
-                                .record(export_start.elapsed());
-                        }
-                        let source_detail = format_error_sources(&e);
-                        Error::ExporterError {
-                            exporter: exporter_id.clone(),
-                            kind: ExporterErrorKind::Other,
-                            error: format!("Failed to decode transport optimized IDs: {e}"),
-                            source_detail,
-                        }
-                    })?;
-
-                    // convert to parquet-local records for unvalidated access
-                    let mut otap_batch: records::OtapParquetRecords = otap_batch.into();
-
-                    // generate unique IDs
-                    let id_gen_result = id_generator.generate_unique_ids(&mut otap_batch);
-                    if let Err(e) = id_gen_result {
-                        // mark failure before returning
-                        if let Some(metrics) = self.pdata_metrics.as_mut() {
-                            metrics
-                                .with(SignalOutcomeAttributes {
-                                    signal: signal_type,
-                                    outcome: Outcome::Failure,
-                                })
-                                .record(export_start.elapsed());
-                        }
-                        // TODO - this is not the error handling we want long term.
-                        // eventually we should have the concept of retryable & non-retryable errors and
-                        // use Nack message + a Retry processor to handle this gracefully
-                        // https://github.com/open-telemetry/otel-arrow/issues/504
-                        let source_detail = format_error_sources(&e);
-                        return Err(Error::ExporterError {
-                            exporter: exporter_id.clone(),
-                            kind: ExporterErrorKind::Other,
-                            error: format!("ID Generation failed: {e}"),
-                            source_detail,
-                        });
-                    }
-
-                    // ensure the batches has the schema the parquet writer expects
-                    transform_to_known_schema(&mut otap_batch).map_err(|e| {
-                        // mark failure before returning
-                        if let Some(metrics) = self.pdata_metrics.as_mut() {
-                            metrics
-                                .with(SignalOutcomeAttributes {
-                                    signal: signal_type,
-                                    outcome: Outcome::Failure,
-                                })
-                                .record(export_start.elapsed());
-                        }
-                        // TODO - Ack/Nack instead of returning error
-                        let source_detail = format_error_sources(&e);
-                        Error::ExporterError {
-                            exporter: exporter_id.clone(),
-                            kind: ExporterErrorKind::Other,
-                            error: format!("Schema transformation failed: {e}"),
-                            source_detail,
-                        }
-                    })?;
-
-                    // compute any partitions
-                    let partitions = match self.config.partitioning_strategies.as_ref() {
-                        Some(strategies) => partition(otap_batch, strategies),
-                        None => vec![Partition {
-                            otap_batch,
-                            attributes: None,
-                        }],
-                    };
-
-                    // write the data
-                    let writes = partitions
-                        .iter()
-                        .map(|partition| {
-                            WriteBatch::new(
-                                batch_id,
-                                &partition.otap_batch,
-                                partition.attributes.as_deref(),
-                            )
-                        })
-                        .collect::<Vec<_>>();
-                    batch_id += 1;
-                    match writer.write(&writes).await {
-                        Ok(stats) => {
-                            // successful write
-                            if let Some(metrics) = self.pdata_metrics.as_mut() {
-                                metrics
-                                    .with(SignalOutcomeAttributes {
-                                        signal: signal_type,
-                                        outcome: Outcome::Success,
-                                    })
-                                    .record(export_start.elapsed());
-                            }
-                            if let Some(io) = self.io_metrics.as_mut() {
+                                    .collect::<Vec<_>>();
+                                batch_id += 1;
+                                let stats = writer.write(&writes).await.map_err(|e| {
+                                    record_io_metrics(io, e.stats);
+                                    attempt.failed(format!("Parquet write failed: {e}"))
+                                })?;
                                 record_io_metrics(io, stats);
-                            }
-                        }
-                        Err(e) => {
-                            // mark failure before returning
-                            if let Some(metrics) = self.pdata_metrics.as_mut() {
-                                metrics
-                                    .with(SignalOutcomeAttributes {
-                                        signal: signal_type,
-                                        outcome: Outcome::Failure,
-                                    })
-                                    .record(export_start.elapsed());
-                            }
-                            if let Some(io) = self.io_metrics.as_mut() {
-                                record_io_metrics(io, e.stats);
-                            }
-                            // TODO - this is not the error handling we want long term.
-                            // eventually we should have the concept of retryable & non-retryable errors and
-                            // use Nack message + a Retry processor to handle this gracefully
-                            // https://github.com/open-telemetry/otel-arrow/issues/504
-                            let source_detail = format_error_sources(&e);
+                                Ok::<(), otel_arrow_dfe_otap::metrics::ErrorWithOutcome<String>>(())
+                            })
+                            .await;
+                        if let Err(error_detail) = io.boundary.record(completed) {
+                            let source_detail = error_detail.to_string();
                             return Err(Error::ExporterError {
-                                exporter: effect_handler.exporter_id(),
-                                kind: ExporterErrorKind::Transport,
-                                error: format!("Parquet write failed: {e}"),
+                                exporter: exporter_id.clone(),
+                                kind: ExporterErrorKind::Other,
+                                error: source_detail.clone(),
                                 source_detail,
                             });
                         }
