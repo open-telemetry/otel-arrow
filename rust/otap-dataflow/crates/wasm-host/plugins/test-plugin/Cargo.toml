@@ -1,6 +1,6 @@
 [package]
-name = "severity-filter-guest"
-description = "Reference WASM guest plugin: filter log records where severity == ERROR"
+name = "wasm-host-test-guest"
+description = "Test-only WASM guest fixture for wasm-host failure and resource-limit coverage"
 version = "0.0.0"
 edition = "2021"
 license = "Apache-2.0"

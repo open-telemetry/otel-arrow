@@ -31,6 +31,38 @@ pub struct WasmProcessorMetrics {
     /// Total host kernel invocations dispatched by the guest.
     #[metric(unit = "{item}")]
     pub kernel_calls: Counter<u64>,
+
+    // ---- host-services counter tracking ----
+    /// Number of guest `counter-add` calls accepted (name within both the
+    /// length and cardinality bounds).
+    #[metric(unit = "{item}")]
+    pub guest_counter_add_calls: Counter<u64>,
+    /// Number of guest `counter-add` calls rejected (silently no-op'd)
+    /// because the counter name exceeded the host's maximum name length.
+    /// Distinct from the cardinality rejection below: this one means the
+    /// plugin is emitting a malformed name.
+    #[metric(unit = "{item}")]
+    pub guest_counter_add_rejected_name_len: Counter<u64>,
+    /// Number of guest `counter-add` calls rejected (silently no-op'd)
+    /// because accepting the name would exceed the host's distinct-counter
+    /// cardinality bound. Means the plugin is tracking more counters than the
+    /// host allows, and some of its counts are being lost.
+    #[metric(unit = "{item}")]
+    pub guest_counter_add_rejected_cardinality: Counter<u64>,
+    /// Sum of values accepted through guest `counter-add` calls.
+    #[metric(unit = "{item}")]
+    pub guest_counter_add_value: Counter<u64>,
+    /// Number of guest `log`/`counter-add`/`get-config` calls rejected
+    /// (silently no-op'd) because the shared token-bucket rate limiter was
+    /// empty. The limiter is scoped to the plugin instance's whole lifetime,
+    /// not reset per `initialize`/`process`/`shutdown` call. A non-zero value
+    /// is how an operator tells a throttled plugin apart from a quiet one.
+    #[metric(unit = "{item}")]
+    pub guest_host_service_calls_rejected: Counter<u64>,
+    /// Number of guest `log` messages truncated to the host's maximum
+    /// retained length before being forwarded to telemetry.
+    #[metric(unit = "{item}")]
+    pub guest_log_message_truncated: Counter<u64>,
 }
 
 /// Record throughput metrics partitioned by OpenTelemetry signal type.

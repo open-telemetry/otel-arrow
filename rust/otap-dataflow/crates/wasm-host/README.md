@@ -33,7 +33,9 @@ otel-arrow-dfe-wasm-host = { workspace = true, features = ["wasm"] }
 ```
 
 With the feature off, the crate compiles to an empty shell and pulls in no
-wasmtime dependency. Enable `wasm` to build and register the processor.
+wasmtime dependency. Enable `wasm` to build and register the processor. This
+experimental feature requires Rust 1.96 or newer due to its wasmtime
+dependency.
 
 ## What it does
 
@@ -61,7 +63,21 @@ slice needs:
 - `otel-kernels`: the `pdata` resource, `pdata-num-rows`,
   `filter-by-attribute-eq`, and the `attr-scope` enum.
 - `processor`: `process(data) -> option<pdata>` (return `none` to drop).
-- the `kernel-processor` world.
+- `host-services`: a capability-limited, host-provided import giving the
+  guest an ABI version (`host-abi-version`), read-only config access
+  (`get-config`), structured logging (`log`), and a bounded counter
+  (`counter-add`).
+- The host also links only the WASI 0.3 CLI and clocks interfaces needed by
+  Rust `std`. CLI state is inert (empty arguments/environment, no cwd, and
+  empty stdio). Filesystem, sockets, random, and all other WASI capabilities
+  remain unavailable. Clock reads are available in every guest entry point.
+  Future clock waits are awaited during `process`, but rejected immediately
+  during synchronous `initialize` and `shutdown` lifecycle calls.
+- `lifecycle`: a guest-exported interface with `initialize` (called exactly
+  once per plugin instance, after instantiation and before any `process`
+  call) and `shutdown` (called at most once, after the last `process` call).
+- the `kernel-processor` world (`import otel-kernels; import host-services;
+  export processor; export lifecycle;`).
 
 Current experimental behavior is intentionally narrow:
 
@@ -73,7 +89,117 @@ Current experimental behavior is intentionally narrow:
   the same selection to root and child batches.
 - The processor reports minimal telemetry on `CollectTelemetry` for guest
   process calls, guest process errors, guest-driven drops, kernel invocation
-  counters, and per-signal `records_in`/`records_out`.
+  counters, per-signal `records_in`/`records_out`, and guest host-service
+  activity (`counter-add` accepted/rejected, rate-limiter rejections, log
+  truncations). The same tick emits the guest's cumulative per-name counter
+  totals.
+- The guest fetches its own config from within `initialize` by calling
+  `host-services.get-config`, rather than receiving it as a function
+  parameter, so the "host services" import remains the single mechanism for
+  all guest/host interaction beyond raw pdata kernels. It is served only the
+  plugin-owned `config` sub-object; host-internal fields such as `wasm_path`
+  are not exposed to the guest.
+- If a guest's `initialize` call returns an `init-error` (or traps), the
+  `wasm_processor` factory fails at pipeline *construction* time with a
+  config error -- misconfigured plugins never reach the `process` hot path.
+- Guest `process` calls are awaited directly by the engine's existing async
+  processor method. This allows finite WASI clock waits to yield the
+  current-thread pipeline runtime instead of blocking other tasks on that
+  core.
+- Guest `log` records, and the per-name counter totals, are emitted under the
+  same component scope as native `wasm_processor` telemetry and are stamped
+  by the host with the emitting pipeline node name (a `node` attribute).
+  Guests cannot forge or suppress that attribution, so guest telemetry is
+  always traceable to the specific plugin instance that produced it.
+
+### Resource bounds and failure behavior
+
+Every plugin instance runs under the following bounds. They are deliberately blunt;
+see "Deferred to later phases" for what a real limits design still owes.
+
+- **Fuel.** Each `initialize`/`process`/`shutdown` call is granted a fixed
+  Wasmtime fuel budget, so a runaway guest traps instead of hanging the
+  pipeline thread.
+- **Linear memory.** Each instance has a 64 MiB guest-memory cap.
+- **String copies.** Canonical-ABI lifting has a 16 KiB encoded-input budget
+  per lift, checked before copying strings into host memory. This covers
+  imported arguments and exported results; bulk telemetry stays host-side.
+  Log messages, counter names, kernel strings, and config clones additionally
+  share a 2 MiB byte allowance per guest entry and a lifetime byte bucket
+  (1 MiB/second, 2 MiB burst). Both aggregate limits charge UTF-8 bytes,
+  including arguments to calls that are later ignored. Config is charged
+  before cloning; incoming arguments are charged after lifting, so the
+  failing call can copy at most one additional bounded argument set (up to
+  32 KiB after encoding conversion). Exceeding either copy limit traps.
+  The per-entry allowance does not refill while a call is running.
+- **Host-service call rate.** `get-config`, `log`, and `counter-add` share a
+  token-bucket limiter scoped to the instance's lifetime (sustained rate plus
+  a burst allowance). Throttled calls within the copy budgets are silent no-ops.
+- **Resource handles.** The host-managed component resource table is capped at
+  10,000 entries. Retaining a `pdata` handle retains its complete host-side
+  batch, so exceeding this cap traps instead of allowing unbounded host memory
+  growth.
+- **Kernel invocations.** Each `initialize`/`process`/`shutdown` call has a
+  separate cap on native `otel-kernels` invocations. This is required because
+  fuel accounts for guest Wasm instructions, not time spent inside native
+  host imports; exceeding the cap traps the guest.
+
+Where the host silently drops a guest request, it always counts it, so
+"the plugin is quiet" is distinguishable from "the plugin is being
+throttled":
+
+- Name too long: call ignored; increments
+  `guest_counter_add_rejected_name_len`.
+- Too many names: call ignored; increments
+  `guest_counter_add_rejected_cardinality`.
+- No tokens: call ignored, and `get-config` returns `""`; increments
+  `guest_host_service_calls_rejected`.
+- Log too long: message truncated and emitted; increments
+  `guest_log_message_truncated`.
+- Kernel call cap reached: guest call traps; increments
+  `guest_process_errors`.
+
+Copy-limit traps fail construction during `initialize`, or fail the node
+during `process` and increment `guest_process_errors`. Host-services ABI
+version 2 introduces these limits; plugins checking the ABI must accept
+version 2 and keep control strings and aggregate copy work within the bounds.
+
+Counter values accumulate with saturation, so a guest cannot overflow or wrap
+host telemetry.
+
+**Traps are terminal.** Wasmtime marks an instance permanently unusable after
+any trap, and this host does not re-instantiate. A trap during `process`
+(fuel exhaustion, a guest panic, or a kernel contract violation) fails that
+call, and the engine terminates a node whose `process` returns an error. The
+host records the instance as poisoned and skips the guest's `shutdown`, which
+could only produce a second error for the same fault. Plugins should treat
+traps as fatal rather than as a per-batch error channel.
+
+Correspondingly, host kernel implementations return traps rather than
+panicking on guest-controlled input: the bindings are generated with trappable
+imports so an unsupported `attr-scope`, an absent attribute key, or a stale
+resource handle fails only that plugin, instead of aborting the collector
+process.
+
+**Teardown ordering.** `shutdown` runs from the processor's `Drop`, not from
+the `NodeControlMsg::Shutdown` control message. That message begins a pipeline
+*drain*: the engine broadcasts it to every non-receiver node at once so
+buffering upstream processors (batch, temporal reaggregation, ...) can flush,
+and the node loop keeps delivering messages until its inbox closes. Calling
+the guest's `shutdown` there would hand it further `process` calls after it
+had already torn down its state, breaking the contract in `wit/plugin.wit`.
+`Drop` runs after the node loop ends, which is the first point at which that
+contract holds. It is idempotent, and is skipped while the thread is already
+panicking (re-entering the guest during unwind risks a double-panic abort).
+Because `Drop` is synchronous, a future clock wait from `shutdown` traps
+immediately rather than blocking teardown. The same restriction applies to
+synchronous startup and `initialize`.
+
+**Async wait limitation.** A processing clock wait yields the pipeline runtime,
+but it does not make the Wasmtime store concurrently accessible. The host keeps
+one in-flight guest invocation per store and does not claim that an outer Tokio
+timeout can forcibly interrupt every suspended Wasmtime host call. General
+deadline and cancellation policy remains follow-on runtime hardening.
 
 ## Enabling in `df_engine`
 
@@ -98,21 +224,85 @@ nodes:
     type: processor:wasm_processor
     config:
       wasm_path: "/plugins/severity_filter.wasm"
+      # Optional freeform config. This sub-object -- and only this
+      # sub-object -- is serialized to JSON and served to the guest by
+      # `host-services.get-config`.
+      config:
+        some_plugin_setting: true
 ```
 
 ## Reference guest plugin
 
-`plugins/severity-filter/` is a `no_std`, `wasm32-wasip2` reference plugin
-that filters log records where `severity_text == "ERROR"`. The WASM binary is intentionally
-excluded from the Cargo workspace and built on demand by the
-integration test.
+`plugins/severity-filter/` is a `std`, `wasm32-wasip3` reference plugin built
+with Rust nightly that filters log records where `severity_text == "ERROR"`.
+The WASM binary is intentionally excluded from the Cargo workspace and built
+on demand by the integration test. It also demonstrates the
+`lifecycle` and `host-services` contract: `initialize` checks
+`host-abi-version`, logs, and records a `counter-add` call; `shutdown` logs a
+single message and records a counter.
+
+The reference plugin intentionally contains no synthetic failure switches or
+resource-abuse paths, so it remains a small example of normal plugin code.
+
+## Test-only guest fixture
+
+`plugins/test-plugin/` is a separate guest used only by host tests. It contains
+deliberately abnormal behavior selected through config flags: returned
+initialization errors, panics, fuel-exhausting loops, oversized allocations and
+strings, copy floods, and clock waits in each lifecycle phase. Keeping those
+paths in a test fixture prevents test requirements from turning the reference
+plugin into an example that real plugin authors should not follow.
+
+### Building a guest plugin
+
+Build for `wasm32-wasip3` with Rust nightly:
+
+```bash
+rustup target add --toolchain nightly wasm32-wasip3
+cd crates/wasm-host/plugins/severity-filter
+rustup run nightly cargo build --release --target wasm32-wasip3
+```
+
+Building the host with the experimental `wasm` feature requires Rust 1.96 or
+newer because of Wasmtime 49. This feature-specific requirement does not affect
+the workspace's default build, where the optional Wasmtime dependencies are
+disabled.
+
+`wasm32-wasip1` (WASI 0.1) predates the component model, so a `wasip1` binary
+is a plain module, not a component, and cannot satisfy `wit/plugin.wit`'s
+worlds at all.
+
+Phase 1b guest plugins use Rust `std`. The host deliberately links only
+`wasi:cli@0.3.0` and `wasi:clocks@0.3.0` in addition to the interfaces
+declared by the `kernel-processor` world. The
+`guest_imports_only_the_sandboxed_interfaces` integration test enforces that
+allowlist, so importing filesystem, sockets, random, or any other ambient WASI
+capability fails both the test and host instantiation. Check a plugin by hand
+with `wasm-tools component wit <plugin>.wasm | grep import`.
 
 ## Deferred to later phases
 
 The full kernel vocabulary, regex/hash/redact/truncate kernels, the escape
-hatches, the OPL path, an AOT module cache, epoch-interruption resource
-limits, a polished guest SDK, and the exporter/receiver/extension worlds are
-all out of scope for this initial implementation.
+hatches, the OPL path, an AOT module cache, and the
+exporter/receiver/extension worlds are all out of scope for this initial
+implementation.
+
+Also deferred, and more pressing:
+
+- **A real resource-limit design.** The fuel and memory constants here are
+  unprofiled placeholders, are not configurable per plugin or pipeline, and
+  have no epoch-interruption backstop for blocking that fuel does not
+  account for.
+- **A trap recovery policy.** Today any trap is terminal for the node. Whether
+  a plugin should instead be re-instantiated, restarted with backoff, or
+  bypassed is an open question.
+- **Deterministic clocks.** The linked WASI clocks currently expose real wall
+  and monotonic time. A later determinism-policy change will replace them with
+  frozen host clocks.
+- **A guest SDK.** The reference plugin is deliberately only an example, not a
+  reusable authoring SDK.
+- **Flushing from `shutdown`.** The current `shutdown` cannot emit pdata, so a
+  plugin that buffers data has no way to drain it.
 
 [parent]: https://github.com/open-telemetry/otel-arrow/issues/2973
 [wit]: https://github.com/open-telemetry/otel-arrow/issues/3227

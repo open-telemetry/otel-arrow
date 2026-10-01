@@ -1,0 +1,6 @@
+change_type: enhancement
+component: pipeline
+note: "WASM processors add lifecycle, host services, resource limits, and std guests on nightly wasm32-wasip3."
+issues: [2973, 3227]
+subtext: |
+  Experimental wasm uses Wasmtime 49 (Rust 1.96+), the component model, lifecycle, bounded resources, host services, inert WASI CLI, and real clocks. Process clock waits are awaited; lifecycle waits fail.

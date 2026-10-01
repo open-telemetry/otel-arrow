@@ -5,9 +5,10 @@ members = [
     "xtask"
 ]
 exclude = [
-    # Reference WASM guest plugin, built on demand for the wasm-host
-    # integration test and compiled for the wasm32-wasip2 target only.
+    # Standalone WASM guest plugins, built on demand for wasm-host tests and
+    # compiled for the nightly wasm32-wasip3 target only.
     "crates/wasm-host/plugins/severity-filter",
+    "crates/wasm-host/plugins/test-plugin",
 ]
 resolver = "2"
 
@@ -94,7 +95,7 @@ arrow-schema = { version = "58.3" }
 arrow-array = { version = "58.3" }
 arrow-cast = { version = "58.3" }
 arrow-select = { version = "58.3" }
-wasmtime = { version = "48.0", default-features = false, features = ["runtime", "component-model", "cranelift", "std"] }
+wasmtime = { version = "49.0", default-features = false, features = ["runtime", "component-model", "component-model-async", "cranelift", "std"] }
 async-stream = "0.3.6"
 async-trait = "0.1.88"
 async-unsync = "0.3.0"
