@@ -567,7 +567,8 @@ mod test {
             retry: None,
             partitioning_strategies: None,
             writer_options: None,
-        }).with_dummy_metrics();
+        })
+        .with_dummy_metrics();
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
         let exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
             exporter,
@@ -676,7 +677,8 @@ mod test {
             retry: None,
             partitioning_strategies: None,
             writer_options: None,
-        }).with_dummy_metrics();
+        })
+        .with_dummy_metrics();
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
         let exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
             exporter,
@@ -822,7 +824,8 @@ mod test {
                 vec![idgen::PARTITION_METADATA_KEY.to_string()],
             )]),
             writer_options: None,
-        }).with_dummy_metrics();
+        })
+        .with_dummy_metrics();
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
         let exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
             exporter,
@@ -909,7 +912,8 @@ mod test {
             retry: None,
             partitioning_strategies: None,
             writer_options: None,
-        }).with_dummy_metrics();
+        })
+        .with_dummy_metrics();
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
         let exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
             exporter,
@@ -1275,7 +1279,8 @@ mod test {
             retry: None,
             partitioning_strategies: None,
             writer_options: None,
-        }).with_dummy_metrics();
+        })
+        .with_dummy_metrics();
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
         let exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
             exporter,
@@ -1347,7 +1352,8 @@ mod test {
             retry: None,
             partitioning_strategies: None,
             writer_options: None,
-        }).with_dummy_metrics();
+        })
+        .with_dummy_metrics();
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
         let exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
             exporter,
@@ -1693,7 +1699,8 @@ mod test {
             retry: None,
             partitioning_strategies: None,
             writer_options: None,
-        }).with_dummy_metrics();
+        })
+        .with_dummy_metrics();
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
         let exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
             exporter,
