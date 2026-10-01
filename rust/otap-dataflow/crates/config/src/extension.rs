@@ -7,9 +7,37 @@
 //! have no output ports, no wiring contracts, and no header policies.
 
 pub use crate::extension_urn::ExtensionUrn;
+use crate::{PipelineGroupId, PipelineId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::fmt;
+
+/// Configuration scope containing an extension declaration.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ExtensionDeclarationScope {
+    /// Top-level engine scope.
+    Engine,
+    /// Pipeline-group scope.
+    PipelineGroup(PipelineGroupId),
+    /// Individual pipeline scope.
+    Pipeline(PipelineGroupId, PipelineId),
+}
+
+impl fmt::Display for ExtensionDeclarationScope {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Engine => formatter.write_str("engine scope"),
+            Self::PipelineGroup(pipeline_group_id) => {
+                write!(formatter, "pipeline-group `{pipeline_group_id}` scope")
+            }
+            Self::Pipeline(pipeline_group_id, pipeline_id) => write!(
+                formatter,
+                "pipeline `{pipeline_group_id}/{pipeline_id}` scope"
+            ),
+        }
+    }
+}
 
 /// User configuration for an extension instance.
 ///

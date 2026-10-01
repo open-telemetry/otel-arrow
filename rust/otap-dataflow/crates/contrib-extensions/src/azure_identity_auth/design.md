@@ -555,7 +555,7 @@ registration takes effect.
   rather than firing on a shared cadence. A future move to a broader scope
   (group/engine) would let a single instance be shared across cores without code
   changes (see
-  [Extension Scopes](../../../../docs/extension-requirements.md#extension-scopes)).
+  [Extension Declaration Scopes](../../../../docs/extension-requirements.md#extension-declaration-scopes)).
 - **Runtime discipline.** The refresh loop runs on the per-core async runtime;
   all I/O is async (`reqwest` via the Azure SDK), so it never blocks other
   futures on the core.
@@ -620,7 +620,7 @@ Additional scenario coverage:
 - **Broader extension scope.** Hoist the extension to group/engine scope for
   genuine cross-core token-cache sharing, so a single token cache and
   refresh loop serve every core (see
-  [Extension Scopes](../../../../docs/extension-requirements.md#extension-scopes)).
+  [Extension Declaration Scopes](../../../../docs/extension-requirements.md#extension-declaration-scopes)).
 
 ## References
 

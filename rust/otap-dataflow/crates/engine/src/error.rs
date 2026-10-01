@@ -8,6 +8,7 @@
 
 use crate::node::{NodeId, NodeName};
 use otel_arrow_dfe_channel::error::SendError;
+use otel_arrow_dfe_config::extension::ExtensionDeclarationScope;
 use otel_arrow_dfe_config::node::NodeKind;
 use otel_arrow_dfe_config::{NodeUrn, PortName, TopicName};
 use otel_arrow_dfe_telemetry::event::ErrorSummary;
@@ -349,6 +350,17 @@ pub enum Error {
         plugin_urn: String,
     },
 
+    /// An extension declaration requires a shared variant at its scope.
+    #[error(
+        "Extension `{extension}` cannot be declared at {declaration_scope} because it does not provide a shared variant"
+    )]
+    ExtensionDeclarationRequiresSharedVariant {
+        /// The configured extension identifier.
+        extension: ExtensionId,
+        /// Scope containing the extension declaration.
+        declaration_scope: ExtensionDeclarationScope,
+    },
+
     /// Capability registration failed for an extension.
     #[error("Failed to register capabilities for extension `{extension}`: {message}")]
     CapabilityRegistrationFailed {
@@ -638,6 +650,9 @@ impl Error {
             Error::UnknownExporter { .. } => "UnknownExporter",
             Error::ExtensionAlreadyExists { .. } => "ExtensionAlreadyExists",
             Error::UnknownExtension { .. } => "UnknownExtension",
+            Error::ExtensionDeclarationRequiresSharedVariant { .. } => {
+                "ExtensionDeclarationRequiresSharedVariant"
+            }
             Error::CapabilityRegistrationFailed { .. } => "CapabilityRegistrationFailed",
             Error::CapabilityResolutionFailed { .. } => "CapabilityResolutionFailed",
             Error::UnknownNode { .. } => "UnknownNode",

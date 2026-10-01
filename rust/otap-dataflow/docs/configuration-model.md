@@ -72,9 +72,10 @@ This section records the intentional choices behind the v1 model.
 
 ### Root Config, Groups, and Pipelines
 
-The engine accepts a single root spec with `version`, optional defaults, and
-`groups`. A group scopes related pipelines and group-level policies. A pipeline
-is an executable graph identified by `(group_id, pipeline_id)`.
+The engine accepts a single root spec with `version`, optional defaults,
+engine-scoped extensions, and `groups`. A group scopes related pipelines,
+group-level policies, and group-scoped extensions. A pipeline is an executable
+graph identified by `(group_id, pipeline_id)`.
 
 This hierarchy gives the controller a stable unit for deployment,
 observability, resource assignment, and live reconfiguration. It also keeps room
@@ -161,6 +162,7 @@ At startup, the engine runtime accepts a single root configuration file format
 - `version`: required schema version (`otel_dataflow/v1`)
 - `policies`: optional top-level defaults
 - `topics`: optional top-level topic declarations
+- `extensions`: optional engine-scoped capability providers
 - `engine`: optional engine-wide settings
 - `groups`: pipeline groups map
 
@@ -193,10 +195,17 @@ Live reconfiguration is intentionally narrower than root-file loading:
 - The target pipeline group must already exist.
 - Pipeline topology, node configuration, and pipeline-level policy changes are
   supported for the target pipeline.
+- Pipeline-scoped extension changes are supported as part of pipeline
+  replacement.
 - Scale-only changes use the same pipeline update path when the effective
   runtime change is `policies.resources.core_allocation`.
-- Group-level, engine-level, and topic-broker mutation are out of scope for the
-  current live reconfiguration API.
+- Engine- and group-scoped extension declarations are immutable after startup.
+  Full-config reconciliation also rejects changes to channel or telemetry
+  policy values consumed by a running extension scope host.
+- Group-level and engine-level metadata that does not affect a hosted extension,
+  plus unrelated telemetry policy values, can still be reconciled.
+- Topic-broker mutation remains out of scope for the current live
+  reconfiguration API.
 
 For the API flow, rollout behavior, rollback handling, and current limits, see
 [admin/live-reconfiguration.md](admin/live-reconfiguration.md).
@@ -242,8 +251,10 @@ The runtime model is hierarchical:
 
 - top-level configuration (root)
 - top-level `topics` (optional global topic declarations)
+- top-level `extensions` (optional engine-scoped providers)
 - `groups` (map of pipeline groups)
 - group-local `topics` (optional topic declarations inside a group)
+- group-local `extensions` (optional group-scoped providers)
 - `pipelines` (map of pipelines inside each group)
 
 A **pipeline group** is a logical container for related pipelines.
@@ -252,6 +263,8 @@ A **pipeline group** is a logical container for related pipelines.
 - It can define group-level `policies` applied to pipelines in that group.
 - It can define group-local `topics` that override top-level topics with the
   same local name for pipelines in that group.
+- It can define group-scoped extensions shared by regular pipelines in that
+  group.
 - It is the intermediate level between root defaults and
   pipeline-specific overrides.
 
@@ -300,6 +313,18 @@ Topic declaration precedence for a pipeline in a given group:
 - `groups.<group>.topics.<topic>`
 - `topics.<topic>`
 
+Extension declaration precedence for a regular pipeline:
+
+- `groups.<group>.pipelines.<pipeline>.extensions.<extension>`
+- `groups.<group>.extensions.<extension>`
+- `extensions.<extension>`
+
+The nearest declaration shadows the entire extension id. A pipeline extension
+is instantiated once per runtime pipeline core. Group and engine declarations
+are controller-hosted once per declaration scope and require a shared execution
+variant. The internal observability pipeline does not inherit user-declared
+engine or group extensions.
+
 ## Pipeline Structure
 
 At pipeline level:
@@ -316,7 +341,8 @@ At node level:
 - `config`: node-specific payload
 - `outputs` (optional): named output ports for multi-output nodes
 - `default_output` (optional): explicit default output port for implicit sends
-- `capabilities` (optional): capability bindings to pipeline extensions
+- `capabilities` (optional): capability bindings to lexically visible
+  pipeline, group, or engine extensions
 - `entity` (optional): node entity enrichment metadata
 - `header_capture` (optional): receiver-only transport header capture override
 - `header_propagation` (optional): exporter-only transport header propagation
