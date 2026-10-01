@@ -1,0 +1,6 @@
+type: k8s_service_account_token_auth
+status:
+  class: extension
+  codeowners:
+    active:
+      - gouslu

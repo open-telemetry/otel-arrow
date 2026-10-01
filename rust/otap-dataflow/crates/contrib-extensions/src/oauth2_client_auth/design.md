@@ -519,8 +519,8 @@ become hot-swappable is an open question (see [Open Questions](#open-questions))
 
 ```toml
 [features]
-contrib-extensions = ["oauth2-client-auth-extension"]
-oauth2-client-auth-extension = [
+contrib-extensions = ["oauth2-client-auth"]
+oauth2-client-auth = [
     "dep:oauth2",
     "dep:reqwest",
     "dep:http",

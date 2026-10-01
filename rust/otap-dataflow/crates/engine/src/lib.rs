@@ -98,6 +98,7 @@ pub mod process_duration;
 mod route_admission;
 pub mod runtime_pipeline;
 pub mod shared;
+pub mod state_dir;
 pub mod terminal_state;
 pub mod testing;
 pub mod topic;
@@ -1033,6 +1034,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                 telemetry_policy.runtime_metrics,
                 node_config,
             ));
+            base_ctx.set_node_duration_distribution(node_config.duration_distribution());
             let invalid_binding = |error: String| {
                 Error::ConfigError(Box::new(
                     otel_arrow_dfe_config::error::Error::InvalidUserConfig {
@@ -2737,6 +2739,7 @@ mod test {
                 messages: true,
                 completion_duration: true,
                 duration: true,
+                duration_distribution: otel_arrow_dfe_config::policy::DistributionTier::Detailed,
                 item_counts: true,
                 size: true,
             }),
@@ -2760,6 +2763,7 @@ mod test {
                 messages: true,
                 completion_duration: true,
                 duration: true,
+                duration_distribution: otel_arrow_dfe_config::policy::DistributionTier::Detailed,
                 item_counts: true,
                 size: true,
             }),

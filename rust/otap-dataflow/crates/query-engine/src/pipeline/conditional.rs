@@ -16,13 +16,16 @@ use datafusion::prelude::SessionContext;
 use otel_arrow_dfe_pdata::OtapArrowRecords;
 
 use otel_arrow_dfe_pdata::otap::filter::{IdBitmapPool, filter_otap_batch};
+use otel_arrow_dfe_pdata::otap::transform::concatenate::ConcatOptions;
 
 use crate::error::Result;
 use crate::pipeline::concat::{
     concatenate_attrs_record_batches, concatenate_logs, concatenate_metrics, concatenate_traces,
 };
+use crate::pipeline::expr::eval::EvalContext;
 use crate::pipeline::expr::{DataScope, ScopedExpr};
 use crate::pipeline::filter::{align_selection_to_root, scoped_value_to_boolean_array};
+use crate::pipeline::planner::RecordType;
 use crate::pipeline::state::ExecutionState;
 use crate::pipeline::{BoxedPipelineStage, PipelineStage};
 
@@ -145,18 +148,18 @@ impl PipelineStage for ConditionalPipelineStage {
             // batch specifically containing the rows that have not already been selected and
             // feeding that into next iterations. This is extra overhead, but the resulting batch
             // would have less rows which could make filter faster.
-            let predicate_result = branch
-                .condition
-                .execute_as_value(&otap_batch, session_ctx)?;
+            let eval_ctx = EvalContext::new(session_ctx);
+            let predicate_result = branch.condition.execute_as_value(&otap_batch, &eval_ctx)?;
 
             let predicate_selection_vec = match predicate_result {
                 None => BooleanArray::new(BooleanBuffer::new_unset(root_batch.num_rows()), None),
                 Some(scoped_value) => {
-                    if scoped_value.scope != DataScope::Root
-                        && !(matches!(scoped_value.scope, DataScope::RootParent(_)))
-                        && scoped_value.scope != DataScope::StaticScalar
+                    if !(matches!(
+                        scoped_value.scope,
+                        DataScope::Record(_) | DataScope::RootParent(_)
+                    )) && scoped_value.scope != DataScope::StaticScalar
                     {
-                        align_selection_to_root(Some(scoped_value), &otap_batch)?
+                        align_selection_to_root(Some(scoped_value), &otap_batch, &eval_ctx)?
                     } else {
                         // extract the BooleanArray from the ScopedValue
                         scoped_value_to_boolean_array(scoped_value.values, root_batch.num_rows())?
@@ -240,9 +243,15 @@ impl PipelineStage for ConditionalPipelineStage {
 
         // reconstruct the result with the results of each branch
         match otap_batch {
-            OtapArrowRecords::Logs(_) => concatenate_logs(&mut branch_results),
-            OtapArrowRecords::Metrics(_) => concatenate_metrics(&mut branch_results),
-            OtapArrowRecords::Traces(_) => concatenate_traces(&mut branch_results),
+            OtapArrowRecords::Logs(_) => {
+                concatenate_logs(&mut branch_results, ConcatOptions::preserve_ids())
+            }
+            OtapArrowRecords::Metrics(_) => {
+                concatenate_metrics(&mut branch_results, ConcatOptions::preserve_ids())
+            }
+            OtapArrowRecords::Traces(_) => {
+                concatenate_traces(&mut branch_results, ConcatOptions::preserve_ids())
+            }
         }
     }
 
@@ -279,7 +288,7 @@ impl PipelineStage for ConditionalPipelineStage {
             // evaluate the branch condition directly on the attributes record batch
             let predicate = branch
                 .condition
-                .evaluate_on_batch(session_ctx, &attrs_record_batch)?;
+                .evaluate_on_batch(&attrs_record_batch, &EvalContext::new(session_ctx))?;
             let predicate_selection_vec =
                 scoped_value_to_boolean_array(predicate, attrs_record_batch.num_rows())?;
 
@@ -337,8 +346,8 @@ impl PipelineStage for ConditionalPipelineStage {
         Ok(final_result)
     }
 
-    fn supports_exec_on_attributes(&self) -> bool {
-        true
+    fn supports_exec_on(&self, record_type: &RecordType) -> bool {
+        matches!(record_type, RecordType::Attributes | RecordType::Signal)
     }
 }
 

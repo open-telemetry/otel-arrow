@@ -16,11 +16,9 @@ use otel_arrow_dfe_pdata::{
 use crate::pipeline::{BoxedPipelineStage, PipelineStage, state::ExecutionState};
 use crate::{
     error::Result,
-    pipeline::concat::{
-        concatenate_logs, concatenate_metrics, concatenate_traces, reindex_logs, reindex_metrics,
-        reindex_traces,
-    },
+    pipeline::concat::{concatenate_logs, concatenate_metrics, concatenate_traces},
 };
+use otel_arrow_dfe_pdata::otap::transform::concatenate::ConcatOptions;
 
 /// This [`PipelineStage`] implementation duplicates each batch of telemetry and processes it on
 /// each nested branch. The results are then unioned back together to produce the output.
@@ -102,16 +100,13 @@ impl PipelineStage for ForkPipelineStage {
             // concatenate batches together, adjusting IDs to avoid ID duplicates:
             _ => match otap_batch {
                 OtapArrowRecords::Logs(_) => {
-                    reindex_logs(&mut self.branch_results)?;
-                    concatenate_logs(&mut self.branch_results)
+                    concatenate_logs(&mut self.branch_results, ConcatOptions::reindex())
                 }
                 OtapArrowRecords::Metrics(_) => {
-                    reindex_metrics(&mut self.branch_results)?;
-                    concatenate_metrics(&mut self.branch_results)
+                    concatenate_metrics(&mut self.branch_results, ConcatOptions::reindex())
                 }
                 OtapArrowRecords::Traces(_) => {
-                    reindex_traces(&mut self.branch_results)?;
-                    concatenate_traces(&mut self.branch_results)
+                    concatenate_traces(&mut self.branch_results, ConcatOptions::reindex())
                 }
             },
         }

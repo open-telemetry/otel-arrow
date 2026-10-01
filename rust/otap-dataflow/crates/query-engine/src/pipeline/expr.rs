@@ -12,8 +12,8 @@
 //! ([`PhysicalExpr`s](datafusion::physical_expr::PhysicalExprRef)) during evaluation.
 //!
 //! There is an additional layer of abstraction in the expression tree containing these datafusion
-//! logical/physical expressions. This is necessary because typically with typical datafusion
-//! expression evaluation, there would be a single [`RecordBatch`] as input and a single expression
+//! logical/physical expressions. This is necessary because typically with datafusion expression
+//! evaluation, there would be a single [`RecordBatch`] as input and a single expression
 //! tree which produces the resulting [`ColumnValue`]. However, in the OTAP data-model, not all
 //! data is in one [`RecordBatch`].
 //!
@@ -52,7 +52,7 @@ use otel_arrow_dfe_pdata::schema::consts;
 use otel_arrow_dfe_pdata::{OtapArrowRecords, OtapPayloadHelpers};
 
 use crate::error::Result;
-use crate::pipeline::planner::{AttributesIdentifier, ColumnAccessor};
+use crate::pipeline::planner::{AttributesIdentifier, ColumnAccessor, RecordType};
 use crate::pipeline::project::{Projection, ProjectionOptions};
 
 mod bitmap;
@@ -72,6 +72,25 @@ pub(crate) fn arg_column_name(index: usize) -> String {
     format!("arg_{index}")
 }
 
+/// Identifies the scope of data when an expression is evaluating on an element of the stream of
+/// the records.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum RecordScope {
+    /// The Root OTAP [`RecordBatch`] (Log, Metric, Span)
+    Signal,
+
+    /// Some child [`RecordBatch`] representing a nested, repeated field.
+    Child(ChildRecordKind),
+}
+
+/// Used to identify the non-signal (non-root) [`RecordBatch`] which was the source of data for
+/// some expression evaluation when it has record scope.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ChildRecordKind {
+    /// The scope of the record data is a record batch containing metric data points.
+    DataPoint,
+}
+
 /// Identifies which root-level parent struct column a [`DataScope::RootParent`] belongs to.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum RootParentStruct {
@@ -88,7 +107,7 @@ pub(crate) enum RootParentStruct {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum DataScope {
     /// Main telemetry batch (e.g., Logs with columns like severity_number, severity_text)
-    Root,
+    Record(RecordScope),
 
     /// Attribute batch identified by [`AttributesIdentifier`] and filtered by some key.
     /// For example, (AttributesIdentifier::Root, "http.method") may refer to log attributes
@@ -112,8 +131,8 @@ pub(crate) enum DataScope {
     StaticScalar,
 
     /// A field read from a resource or scope struct column in the root record batch (e.g.,
-    /// resource.schema_url or scope.name). Physically the data lives in the root batch (same
-    /// as Root), but the parent struct records the hierarchy level for cardinality validation.
+    /// resource.schema_url or scope.name). Physically the data lives in the root batch in
+    /// a struct column and the struct records the hierarchy level for cardinality validation.
     RootParent(RootParentStruct),
 }
 
@@ -130,9 +149,18 @@ impl DataScope {
         if self.is_scalar() || other.is_scalar() {
             return true;
         }
-        let self_in_root = matches!(self, Self::Root | Self::RootParent(_));
-        let other_in_root = matches!(other, Self::Root | Self::RootParent(_));
-        (self_in_root && other_in_root) || self == other
+
+        match (self, other) {
+            (
+                Self::Record(RecordScope::Signal) | Self::RootParent(_),
+                Self::Record(RecordScope::Signal) | Self::RootParent(_),
+            ) => true,
+            (
+                Self::Record(RecordScope::Child(self_child)),
+                Self::Record(RecordScope::Child(other_child)),
+            ) => self_child == other_child,
+            _ => self == other,
+        }
     }
 
     /// Returns the [`AttributesIdentifier`] if this is an attribute-related scope
@@ -149,16 +177,17 @@ impl DataScope {
     pub fn is_scalar(&self) -> bool {
         *self == Self::StaticScalar
     }
-}
 
-impl From<&ColumnAccessor> for DataScope {
-    fn from(value: &ColumnAccessor) -> Self {
-        match value {
-            ColumnAccessor::ColumnName(_) => Self::Root,
+    pub fn from_record_column(column: &ColumnAccessor, record_type: &RecordType) -> Self {
+        match column {
+            ColumnAccessor::ColumnName(_) => match record_type {
+                RecordType::Child(child) => Self::Record(RecordScope::Child(*child)),
+                _ => Self::Record(RecordScope::Signal),
+            },
             ColumnAccessor::StructCol(struct_name, _) => match *struct_name {
                 consts::RESOURCE => Self::RootParent(RootParentStruct::Resource),
                 consts::SCOPE => Self::RootParent(RootParentStruct::Scope),
-                _ => Self::Root,
+                _ => Self::Record(RecordScope::Signal),
             },
             ColumnAccessor::Attributes(attrs_id, attrs_key) => {
                 Self::Attribute(*attrs_id, attrs_key.clone())
@@ -212,7 +241,7 @@ impl ShortCircuitStrategy {
                 // short circuiting, hence why the "or"/all-true short-circuit strategy can't apply
                 matches!(
                     data_scope,
-                    DataScope::Root | DataScope::RootParent(_) | DataScope::StaticScalar
+                    DataScope::Record(_) | DataScope::RootParent(_) | DataScope::StaticScalar
                 ) && Self::is_all_true(values)
             }
         }
@@ -333,7 +362,7 @@ pub(crate) enum ScopedExpr {
         /// appropriate join type to avoid reordering the child results if possible. Setting this
         /// flag overrides the dynamic join choice and forces root alignment when combining the
         /// child results.
-        align_children_to_root: bool,
+        align_children_to_record: bool,
 
         /// Optional short-circuit strategy for logical binary expressions.
         ///
@@ -552,9 +581,10 @@ mod test {
     use otel_arrow_dfe_pdata::testing::round_trip::{otlp_to_otap, to_logs_data};
 
     use crate::pipeline::Pipeline;
-    use crate::pipeline::expr::{DataScope, VALUE_COLUMN_NAME, arg_column_name};
+    use crate::pipeline::expr::eval::EvalContext;
     use crate::pipeline::expr::{
-        LeafEval, ScopedExpr, ScopedValue, ShortCircuitStrategy, SignalTypePredicate,
+        ChildRecordKind, DataScope, LeafEval, RecordScope, ScopedExpr, ScopedValue,
+        ShortCircuitStrategy, SignalTypePredicate, VALUE_COLUMN_NAME, arg_column_name,
     };
     use crate::pipeline::functions::test::always_panic;
     use crate::pipeline::id_mask::IdMask;
@@ -563,7 +593,7 @@ mod test {
     /// Helper: create an `Eval(DatafusionExpr)` node for a root-scoped expression.
     fn root_eval(expr: Expr) -> ScopedExpr {
         ScopedExpr::Eval {
-            scope: DataScope::Root,
+            scope: DataScope::Record(RecordScope::Signal),
             eval: LeafEval::new_df_expr(expr, false).unwrap(),
         }
     }
@@ -592,7 +622,7 @@ mod test {
     /// Helper: create a `Eval(BatchPredicate)` node for a signal type check.
     fn signal_type_eval(signal_type: SignalType) -> ScopedExpr {
         ScopedExpr::Eval {
-            scope: DataScope::Root,
+            scope: DataScope::Record(RecordScope::Signal),
             eval: LeafEval::BatchPredicate(Box::new(SignalTypePredicate::new(signal_type))),
         }
     }
@@ -661,8 +691,11 @@ mod test {
         // severity_number > 14
         let mut op = root_eval(col(consts::SEVERITY_NUMBER).gt(lit(14i32)));
 
-        let result = op.execute_as_value(&otap, &session_ctx).unwrap().unwrap();
-        assert_eq!(result.scope, DataScope::Root);
+        let result = op
+            .execute_as_value(&otap, &EvalContext::new(&session_ctx))
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.scope, DataScope::Record(RecordScope::Signal));
 
         let bool_arr = as_bool_arr(&result);
         // severity_numbers are [13, 17, 13], so only index 1 passes
@@ -681,7 +714,7 @@ mod test {
         let mut op = root_eval(col(consts::SEVERITY_NUMBER).gt(lit(14i32)));
 
         let result = op
-            .execute_as_id_mask(&otap, &session_ctx, &mut pool)
+            .execute_as_id_mask(&otap, &EvalContext::new(&session_ctx), &mut pool)
             .unwrap();
 
         // exactly one row (index 1) passes
@@ -703,12 +736,22 @@ mod test {
         let session_ctx = Pipeline::create_session_context();
 
         // attributes["code.namespace"] (returns the AnyValue struct as value column)
-        let mut op = attrs_eval(AttributesIdentifier::Root, "code.namespace", col("value"));
+        let mut op = attrs_eval(
+            AttributesIdentifier::Record(RecordScope::Signal),
+            "code.namespace",
+            col("value"),
+        );
 
-        let result = op.execute_as_value(&otap, &session_ctx).unwrap().unwrap();
+        let result = op
+            .execute_as_value(&otap, &EvalContext::new(&session_ctx))
+            .unwrap()
+            .unwrap();
         assert_eq!(
             result.scope,
-            DataScope::Attribute(AttributesIdentifier::Root, "code.namespace".to_string())
+            DataScope::Attribute(
+                AttributesIdentifier::Record(RecordScope::Signal),
+                "code.namespace".to_string()
+            )
         );
 
         // should have 3 rows (one per log record)
@@ -730,7 +773,10 @@ mod test {
         let mut op = signal_type_eval(SignalType::Logs);
 
         // execute_as_value: should return true scalar
-        let result = op.execute_as_value(&otap, &session_ctx).unwrap().unwrap();
+        let result = op
+            .execute_as_value(&otap, &EvalContext::new(&session_ctx))
+            .unwrap()
+            .unwrap();
         match &result.values {
             ColumnarValue::Scalar(ScalarValue::Boolean(Some(true))) => {}
             other => panic!("expected true scalar, got {other:?}"),
@@ -738,7 +784,7 @@ mod test {
 
         // execute_as_id_mask: should return IdMask::All
         let result = op
-            .execute_as_id_mask(&otap, &session_ctx, &mut pool)
+            .execute_as_id_mask(&otap, &EvalContext::new(&session_ctx), &mut pool)
             .unwrap();
         assert_eq!(result.mask, IdMask::All);
     }
@@ -752,14 +798,17 @@ mod test {
         // checking for Traces on a Logs batch -> false
         let mut op = signal_type_eval(SignalType::Traces);
 
-        let result = op.execute_as_value(&otap, &session_ctx).unwrap().unwrap();
+        let result = op
+            .execute_as_value(&otap, &EvalContext::new(&session_ctx))
+            .unwrap()
+            .unwrap();
         match &result.values {
             ColumnarValue::Scalar(ScalarValue::Boolean(Some(false))) => {}
             other => panic!("expected false scalar, got {other:?}"),
         }
 
         let result = op
-            .execute_as_id_mask(&otap, &session_ctx, &mut pool)
+            .execute_as_id_mask(&otap, &EvalContext::new(&session_ctx), &mut pool)
             .unwrap();
         assert_eq!(result.mask, IdMask::None);
     }
@@ -784,7 +833,7 @@ mod test {
 
         // Left child: severity_number cast to Int64
         let left_child = ScopedExpr::Eval {
-            scope: DataScope::Root,
+            scope: DataScope::Record(RecordScope::Signal),
             eval: LeafEval::new_df_expr(
                 cast(
                     col(consts::SEVERITY_NUMBER),
@@ -797,7 +846,7 @@ mod test {
 
         // Right child: the int sub-column of the attributes value (already Int64)
         let right_child = attrs_eval_dict_downcast(
-            AttributesIdentifier::Root,
+            AttributesIdentifier::Record(RecordScope::Signal),
             "code.line.number",
             col(VALUE_COLUMN_NAME),
         );
@@ -805,7 +854,7 @@ mod test {
         let mut op = ScopedExpr::JoinAndEval {
             children: vec![left_child, right_child],
             default_null_children: false,
-            align_children_to_root: false,
+            align_children_to_record: false,
             short_circuit: None,
             eval: LeafEval::new_df_expr(
                 Expr::BinaryExpr(datafusion::logical_expr::BinaryExpr::new(
@@ -818,7 +867,10 @@ mod test {
             .unwrap(),
         };
 
-        let result = op.execute_as_value(&otap, &session_ctx).unwrap().unwrap();
+        let result = op
+            .execute_as_value(&otap, &EvalContext::new(&session_ctx))
+            .unwrap()
+            .unwrap();
 
         let bool_arr = as_bool_arr(&result);
         assert_eq!(bool_arr.len(), 3);
@@ -844,7 +896,7 @@ mod test {
 
         let left = root_eval(col(consts::SEVERITY_TEXT).eq(lit("WARN")));
         let right = attrs_eval_dict_downcast(
-            AttributesIdentifier::Root,
+            AttributesIdentifier::Record(RecordScope::Signal),
             "code.namespace",
             col(VALUE_COLUMN_NAME).eq(lit("main")),
         );
@@ -853,7 +905,7 @@ mod test {
 
         // test execute_as_id_mask
         let result = op
-            .execute_as_id_mask(&otap, &session_ctx, &mut pool)
+            .execute_as_id_mask(&otap, &EvalContext::new(&session_ctx), &mut pool)
             .unwrap();
 
         match &result.mask {
@@ -869,14 +921,17 @@ mod test {
         let mut op2 = ScopedExpr::BitmapAnd(
             Box::new(root_eval(col(consts::SEVERITY_TEXT).eq(lit("WARN")))),
             Box::new(attrs_eval_dict_downcast(
-                AttributesIdentifier::Root,
+                AttributesIdentifier::Record(RecordScope::Signal),
                 "code.namespace",
                 col(VALUE_COLUMN_NAME).eq(lit("main")),
             )),
         );
 
-        let result = op2.execute_as_value(&otap, &session_ctx).unwrap().unwrap();
-        assert_eq!(result.scope, DataScope::Root);
+        let result = op2
+            .execute_as_value(&otap, &EvalContext::new(&session_ctx))
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.scope, DataScope::Record(RecordScope::Signal));
         let bool_arr = as_bool_arr(&result);
         assert_eq!(bool_arr.len(), 3);
         assert!(bool_arr.value(0));
@@ -897,7 +952,7 @@ mod test {
         // OR result: should be rows 0 and 2
 
         let left = attrs_eval(
-            AttributesIdentifier::Root,
+            AttributesIdentifier::Record(RecordScope::Signal),
             "nonexistent",
             col(VALUE_COLUMN_NAME).eq(lit("x")),
         );
@@ -906,7 +961,7 @@ mod test {
         let mut op = ScopedExpr::BitmapOr(Box::new(left), Box::new(right));
 
         let result = op
-            .execute_as_id_mask(&otap, &session_ctx, &mut pool)
+            .execute_as_id_mask(&otap, &EvalContext::new(&session_ctx), &mut pool)
             .unwrap();
 
         match &result.mask {
@@ -934,7 +989,7 @@ mod test {
         let mut op = ScopedExpr::BitmapNot(Box::new(inner));
 
         let result = op
-            .execute_as_id_mask(&otap, &session_ctx, &mut pool)
+            .execute_as_id_mask(&otap, &EvalContext::new(&session_ctx), &mut pool)
             .unwrap();
 
         match &result.mask {
@@ -952,7 +1007,10 @@ mod test {
         let mut op2 = ScopedExpr::BitmapNot(Box::new(root_eval(
             col(consts::SEVERITY_TEXT).eq(lit("WARN")),
         )));
-        let result = op2.execute_as_value(&otap, &session_ctx).unwrap().unwrap();
+        let result = op2
+            .execute_as_value(&otap, &EvalContext::new(&session_ctx))
+            .unwrap()
+            .unwrap();
         let bool_arr = as_bool_arr(&result);
         assert_eq!(bool_arr.len(), 3);
         assert!(!bool_arr.value(0));
@@ -978,12 +1036,12 @@ mod test {
         // Note: attribute str values are dictionary-encoded, so we need dict downcast.
         // Attribute int values are stored in the "int" column (Int64).
         let attr_namespace = attrs_eval_dict_downcast(
-            AttributesIdentifier::Root,
+            AttributesIdentifier::Record(RecordScope::Signal),
             "code.namespace",
             col(VALUE_COLUMN_NAME).eq(lit("main")),
         );
         let attr_line = attrs_eval_dict_downcast(
-            AttributesIdentifier::Root,
+            AttributesIdentifier::Record(RecordScope::Signal),
             "code.line.number",
             col(VALUE_COLUMN_NAME).eq(lit(42i64)),
         );
@@ -994,7 +1052,7 @@ mod test {
         let mut op = ScopedExpr::BitmapAnd(Box::new(inner_and), Box::new(severity));
 
         let result = op
-            .execute_as_id_mask(&otap, &session_ctx, &mut pool)
+            .execute_as_id_mask(&otap, &EvalContext::new(&session_ctx), &mut pool)
             .unwrap();
 
         match &result.mask {
@@ -1021,7 +1079,7 @@ mod test {
 
         // Right child: attributes["code.namespace"] == "main"
         let right_child = attrs_eval_dict_downcast(
-            AttributesIdentifier::Root,
+            AttributesIdentifier::Record(RecordScope::Signal),
             "code.namespace",
             // will panic if actually evaluated
             always_panic().call(vec![col(VALUE_COLUMN_NAME)]),
@@ -1030,7 +1088,7 @@ mod test {
         let mut op = ScopedExpr::JoinAndEval {
             children: vec![left_child, right_child],
             default_null_children: false,
-            align_children_to_root: false,
+            align_children_to_record: false,
             short_circuit: Some(ShortCircuitStrategy::And),
             eval: LeafEval::new_df_expr(
                 col(arg_column_name(0)).and(col(arg_column_name(1))),
@@ -1039,7 +1097,10 @@ mod test {
             .unwrap(),
         };
 
-        let result = op.execute_as_value(&otap, &session_ctx).unwrap().unwrap();
+        let result = op
+            .execute_as_value(&otap, &EvalContext::new(&session_ctx))
+            .unwrap()
+            .unwrap();
 
         // Short-circuit should produce a scalar false
         match &result.values {
@@ -1062,7 +1123,7 @@ mod test {
 
         // Right child: attributes["code.namespace"] == "main"
         let right_child = attrs_eval_dict_downcast(
-            AttributesIdentifier::Root,
+            AttributesIdentifier::Record(RecordScope::Signal),
             "code.namespace",
             // will panic if actually evaluated
             always_panic().call(vec![col(VALUE_COLUMN_NAME)]),
@@ -1071,13 +1132,16 @@ mod test {
         let mut op = ScopedExpr::JoinAndEval {
             children: vec![left_child, right_child],
             default_null_children: false,
-            align_children_to_root: false,
+            align_children_to_record: false,
             short_circuit: Some(ShortCircuitStrategy::Or),
             eval: LeafEval::new_df_expr(col(arg_column_name(0)).or(col(arg_column_name(1))), false)
                 .unwrap(),
         };
 
-        let result = op.execute_as_value(&otap, &session_ctx).unwrap().unwrap();
+        let result = op
+            .execute_as_value(&otap, &EvalContext::new(&session_ctx))
+            .unwrap()
+            .unwrap();
 
         // Short-circuit should produce a scalar true
         match &result.values {
@@ -1100,7 +1164,7 @@ mod test {
 
         // Right child: attributes["code.namespace"] == "main" -> rows 0,2 true, row 1 false
         let right_child = attrs_eval_dict_downcast(
-            AttributesIdentifier::Root,
+            AttributesIdentifier::Record(RecordScope::Signal),
             "code.namespace",
             col(VALUE_COLUMN_NAME).eq(lit("main")),
         );
@@ -1108,7 +1172,7 @@ mod test {
         let mut op = ScopedExpr::JoinAndEval {
             children: vec![left_child, right_child],
             default_null_children: false,
-            align_children_to_root: false,
+            align_children_to_record: false,
             short_circuit: Some(ShortCircuitStrategy::And),
             eval: LeafEval::new_df_expr(
                 col(arg_column_name(0)).and(col(arg_column_name(1))),
@@ -1117,7 +1181,10 @@ mod test {
             .unwrap(),
         };
 
-        let result = op.execute_as_value(&otap, &session_ctx).unwrap().unwrap();
+        let result = op
+            .execute_as_value(&otap, &EvalContext::new(&session_ctx))
+            .unwrap()
+            .unwrap();
 
         // Should NOT short-circuit -- should produce a full array result
         let bool_arr = as_bool_arr(&result);
@@ -1139,7 +1206,7 @@ mod test {
 
         // something scoped to attributes that will pass for all rows having the attribute
         let left_child = attrs_eval(
-            AttributesIdentifier::Root,
+            AttributesIdentifier::Record(RecordScope::Signal),
             "exception.type",
             col(VALUE_COLUMN_NAME).eq(lit("java.net.IOException")),
         );
@@ -1148,15 +1215,43 @@ mod test {
         let mut op = ScopedExpr::JoinAndEval {
             children: vec![left_child, right_child],
             default_null_children: false,
-            align_children_to_root: false,
+            align_children_to_record: false,
             short_circuit: Some(ShortCircuitStrategy::Or),
             eval: LeafEval::new_df_expr(col(arg_column_name(0)).or(col(arg_column_name(1))), false)
                 .unwrap(),
         };
 
-        let result = op.execute_as_value(&otap, &session_ctx).unwrap().unwrap();
+        let result = op
+            .execute_as_value(&otap, &EvalContext::new(&session_ctx))
+            .unwrap()
+            .unwrap();
 
         // we should be returning a selection vec, not a scalar (which is returned by short-circuit)
         assert!(!matches!(result.values, ColumnarValue::Scalar(_)));
+    }
+
+    /// Scenario: expression with source data scope of data point is evaluated, but the
+    /// data point type is not populated on the eval context
+    /// Guarantees: the expected error is returned
+    #[test]
+    fn test_eval_for_data_point_with_missing_data_point_type_in_context() {
+        let mut expr = ScopedExpr::Eval {
+            scope: DataScope::Record(RecordScope::Child(ChildRecordKind::DataPoint)),
+            eval: LeafEval::new_df_expr(col(consts::FLAGS), false).unwrap(),
+        };
+
+        let session_ctx = Pipeline::create_session_context();
+        let eval_ctx = EvalContext::new(&session_ctx);
+        assert!(eval_ctx.data_point_type().is_none());
+
+        let err = expr
+            .execute_as_value(&test_logs_data(), &eval_ctx)
+            .unwrap_err();
+
+        let err_msg = err.to_string();
+        assert!(
+            err_msg.contains("Expr planned with source DataScope Record(Child(DataPoint)) but no data_point_type in eval context"),
+            "unexpected error message {err_msg}"
+        )
     }
 }

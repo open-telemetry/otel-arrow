@@ -210,6 +210,30 @@ pub enum GrpcEndpointError {
     },
 }
 
+/// Validates an ASCII gRPC metadata key and rejects protocol-owned names.
+pub fn validate_grpc_metadata_key(
+    name: &str,
+) -> Result<MetadataKey<tonic::metadata::Ascii>, String> {
+    let key = name
+        .parse::<MetadataKey<tonic::metadata::Ascii>>()
+        .map_err(|_| {
+            format!(
+                "header name \"{name}\" is not a valid gRPC metadata key (expected an HTTP/2 \
+                 token: ASCII letters, digits, or `-_.`; the key is sent lowercased and must not \
+                 end with `-bin`, which is reserved for binary metadata)"
+            )
+        })?;
+    if matches!(key.as_str(), "content-type" | "te" | "user-agent")
+        || key.as_str().starts_with("grpc-")
+    {
+        return Err(format!(
+            "header \"{name}\" is reserved by the gRPC protocol and cannot be set; it is managed \
+             by the exporter"
+        ));
+    }
+    Ok(key)
+}
+
 /// Validates that a gRPC endpoint string is a well-formed URI.
 ///
 /// When no scheme is present the endpoint is validated as if `http://` were prepended.
@@ -339,31 +363,7 @@ impl GrpcClientSettings {
 
         let mut seen_names = HashSet::new();
         for (name, value) in &self.headers {
-            let key = name
-                .parse::<MetadataKey<tonic::metadata::Ascii>>()
-                .map_err(|_| {
-                    GrpcEndpointError::InvalidConfig(format!(
-                        "header name \"{name}\" is not a valid gRPC metadata key (expected an \
-                         HTTP/2 token: ASCII letters, digits, or `-_.`; the key is sent \
-                         lowercased and must not end with `-bin`, which is reserved for \
-                         binary metadata)"
-                    ))
-                })?;
-            // Reject metadata the gRPC protocol/transport manages itself, mirroring
-            // the OTLP/HTTP exporter's reserved-header check. `content-type`, `te`,
-            // and `user-agent` are set by the transport (a dedicated `user_agent`
-            // config field already exists), and the `grpc-` prefix is reserved by
-            // the gRPC spec (e.g. `grpc-timeout`, `grpc-encoding`), so user-supplied
-            // values could otherwise alter call semantics such as the server-side
-            // deadline.
-            if matches!(key.as_str(), "content-type" | "te" | "user-agent")
-                || key.as_str().starts_with("grpc-")
-            {
-                return Err(GrpcEndpointError::InvalidConfig(format!(
-                    "header \"{name}\" is reserved by the gRPC protocol and cannot be set via \
-                     `headers`; it is managed by the exporter"
-                )));
-            }
+            let key = validate_grpc_metadata_key(name).map_err(GrpcEndpointError::InvalidConfig)?;
             if MetadataValue::try_from(value.expose_secret()).is_err() {
                 return Err(GrpcEndpointError::InvalidConfig(format!(
                     "header \"{name}\" has a value that cannot be represented as ASCII gRPC \

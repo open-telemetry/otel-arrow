@@ -75,7 +75,7 @@ use crate::exporters::clickhouse_exporter::transform::transform_batch::BatchTran
 use crate::exporters::clickhouse_exporter::writer::ClickHouseWriter;
 
 mod arrays;
-#[cfg(feature = "clickhouse-exporter-bench")]
+#[cfg(feature = "clickhouse-bench")]
 #[doc(hidden)]
 pub mod bench_support;
 mod config;

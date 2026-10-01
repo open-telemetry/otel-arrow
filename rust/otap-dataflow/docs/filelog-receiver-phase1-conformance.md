@@ -543,7 +543,20 @@ while their semantic and format definitions remain normative from version 1.
 | Discovery | Lexical alias maps to excluded target | Excluded |
 | Discovery | `follow_symlinks: false` final symlink | Not admitted |
 | Discovery | `follow_symlinks: true` allowed target | Admitted once |
-| Discovery | FIFO, socket, directory, or device candidate | Rejected without blocking the discovery thread |
+| Discovery | FIFO, socket, directory, or device candidate | Rejected before a normal read-open; Linux O_PATH probes do not invoke a device open or register a FIFO reader |
+| Linux source access | Final symlink rejected under O_PATH + O_NOFOLLOW | Pinned symlink is rejected as non-regular |
+| Linux source access | Direct or followed regular-looking file on procfs, sysfs, debugfs, tracefs, securityfs, cgroup v1/v2, or nsfs | Unsupported-filesystem rejection on the pin before read-open |
+| Linux source access | Followed `/proc/self/ns/net` namespace handle | Resolved nsfs object rejected before read-open despite its regular-file type |
+| Linux source access | Filesystem query fails | Original OS error; no read-open or bypass |
+| Linux source access | Regular log file on tmpfs | Filesystem check and pinned reopen succeed subject to ordinary permissions |
+| Linux source access | Read permission denied during pinned reopen | Distinct reopen error retains EACCES; all acquired descriptors closed |
+| Linux source access | Conflicting write lease | Nonblocking reopen returns WouldBlock for caller-owned bounded retry |
+| Linux source access | Descriptor pressure or interruption at different I/O stages | Common OS-error inspection preserves the errno for consistent retry classification |
+| Linux source access | Candidate name changes after O_PATH pinning | Read reopen uses the pinned object; no original-path fallback |
+| Linux source access | Procfs reopen unavailable, permission denied, or descriptor limit reached | Distinct reopen failure preserves OS error and closes the pin |
+| Linux source access | Reopened handle has different type or locator | Distinct reopened-mismatch error; both descriptors closed; no progress or automatic quarantine |
+| Linux source access | Cancellation between pin, metadata and read-open stages | All acquired descriptors closed; caller-owned directory unaffected |
+| Resource | Concurrent discovery and reader reopen operations | Shared transient source-open population never exceeds two beyond reserved resident handles |
 | Discovery | Path target substituted between check and open | Opened handle fails policy/type/identity validation; not admitted |
 | Discovery | Symlink directory cycle | Bounded, incomplete pass |
 | Discovery | Hardlink/overlapping glob | One locator candidate/reader |
@@ -779,6 +792,10 @@ while their semantic and format definitions remain normative from version 1.
 | State root | Crash after any directory creation or before a required sync | Retry the same path, validate and repeat syncs; never delete checkpoint artifacts or treat missing namespace authority as empty |
 | State root | Existing root, including one made visible by another creator | Validate opened objects, permissions and identity; repeat required durability steps rather than assuming existence proves sync |
 | State root | Untrusted symlink/reparse traversal, non-directory, substitution, permissions failure, unavailable storage, or failed required sync | Actionable startup failure; no alternate root or checkpoint reset |
+| State root | Live addition, removal, or replacement through rollout preparation or full reconciliation (including OpAMP) | Rejected before applied configuration or pipeline changes; unchanged roots remain usable |
+| State root | Unconfigured engine or configured root on an unsupported platform | Omission preserves existing behavior; unsupported provisioning fails startup clearly |
+| State root | Restrictive umask or inherited Linux POSIX ACL | Validate actual owner permissions and ACL mask through mode bits; no chmod or umask repair |
+| State root | Pipeline restart/resizing after ancestor rename or live root removal | Reuse the retained handle; no pathname reopening or automatic root recreation |
 | State root | Intentional root change | Select only that root; document different-state/new-namespace consequences; no sibling search or automatic relocation |
 | Recovery output | Idle flush emits `ABC`; crash before Ack; append `DEF` and LF before recovery | Recovered offset is unchanged; may emit `ABCDEF`, not identical `ABC` replay |
 | Recovery output | Idle flush resolves an incomplete UTF-8/UTF-16 unit; crash before Ack; append completing bytes | Decode combined input under the configured policy; body/type and malformed evidence may differ |

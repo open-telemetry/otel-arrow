@@ -475,8 +475,8 @@ treated as an extension restart rather than an in-place swap (see
 
 ```toml
 [features]
-contrib-extensions = ["azure-identity-auth-extension"]
-azure-identity-auth-extension = ["dep:azure_core", "dep:azure_identity"]
+contrib-extensions = ["azure-identity-auth"]
+azure-identity-auth = ["dep:azure_core", "dep:azure_identity"]
 
 [dependencies]
 azure_core = { workspace = true, optional = true, features = ["reqwest"] }

@@ -19,14 +19,17 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use arrow::array::{
-    Array, ArrayRef, AsArray, BooleanArray, DictionaryArray, Float64Array, Int64Array, NullArray,
-    RecordBatch, StringArray, StructArray, UInt8Array, UInt16Array,
+    Array, ArrayRef, ArrowPrimitiveType, AsArray, BooleanArray, DictionaryArray, Float64Array,
+    Int64Array, NullArray, PrimitiveArray, RecordBatch, StringArray, StructArray, UInt8Array,
+    UInt16Array,
 };
-use arrow::buffer::BooleanBuffer;
+use arrow::buffer::{BooleanBuffer, ScalarBuffer};
 use arrow::compute::kernels::cmp::{eq, neq};
 use arrow::compute::kernels::merge::merge;
 use arrow::compute::{and_not, cast, filter, max, take};
-use arrow::datatypes::{DataType, Field, Fields, Schema, UInt16Type};
+use arrow::datatypes::{
+    ArrowNativeType, DataType, Field, Fields, Schema, UInt8Type, UInt16Type, UInt32Type,
+};
 use async_trait::async_trait;
 use datafusion::config::ConfigOptions;
 use datafusion::execution::TaskContext;
@@ -42,12 +45,12 @@ use otel_arrow_dfe_pdata::encode::record::array::{
 };
 use otel_arrow_dfe_pdata::error::Error as PdataError;
 use otel_arrow_dfe_pdata::otap::Logs;
-use otel_arrow_dfe_pdata::otap::filter::IdBitmapPool;
+use otel_arrow_dfe_pdata::otap::filter::{IdBitmap, IdBitmapPool};
 use otel_arrow_dfe_pdata::otap::transform::concatenate::{
     Cardinality, FieldInfo, estimate_cardinality,
 };
 use otel_arrow_dfe_pdata::otap::transform::upsert_attributes::{
-    AttributeUpsert, EMPTY_U16_ATTRS_RECORD_BATCH, upsert_attributes,
+    AttributeUpsert, EMPTY_U16_ATTRS_RECORD_BATCH, EMPTY_U32_ATTRS_RECORD_BATCH, upsert_attributes,
 };
 use otel_arrow_dfe_pdata::otlp::attributes::{
     AttributeValueType,
@@ -62,21 +65,22 @@ use otel_arrow_dfe_pdata::schema::{consts, get_field_metadata, update_field_meta
 
 use crate::error::{Error, Result};
 use crate::pipeline::PipelineStage;
-use crate::pipeline::expr::eval::scoped_value_to_join_input;
+use crate::pipeline::expr::eval::{EvalContext, scoped_value_to_join_input};
 use crate::pipeline::expr::join::JoinInput;
 use crate::pipeline::expr::join::{
-    AttributeToDifferentAttributeJoin, AttributeToSameAttributeJoin, JoinExec, RootAttrsToRootJoin,
-    RootToAttributesJoin,
+    AttributeToDifferentAttributeJoin, AttributeToSameAttributeJoin, JoinExec,
+    RecordAttrsToRecordJoin, RecordToAttributesJoin,
 };
 use crate::pipeline::expr::planner::PlannedOp;
 use crate::pipeline::expr::types::{
-    ExprLogicalType, nested_struct_field_type, root_field_supports_dict_encoding, root_field_type,
+    ExprLogicalType, MetricDataPointType, nested_struct_field_type,
+    root_field_supports_dict_encoding, root_field_type,
 };
 use crate::pipeline::expr::{
-    DataScope, LeafEval, RootParentStruct, SCALAR_RECORD_BATCH_INPUT, ScopedExpr, ScopedValue,
+    ChildRecordKind, DataScope, LeafEval, RecordScope, RootParentStruct, ScopedExpr, ScopedValue,
     VALUE_COLUMN_NAME,
 };
-use crate::pipeline::planner::{AttributesIdentifier, ColumnAccessor};
+use crate::pipeline::planner::{AttributesIdentifier, ColumnAccessor, RecordType};
 use crate::pipeline::project::anyval::{
     attempt_coerce_value_column_from_any_value_struct_column, fill_null_type_as_empty,
     is_any_value_data_type, wrap_as_any_value_struct,
@@ -127,7 +131,10 @@ pub(crate) struct AssignPipelineStage {
 
 impl AssignPipelineStage {
     /// Create a new instance of [`AssignPipelineStage`]
-    pub fn try_new(assignments: &mut Vec<Assignment<'_>>) -> Result<Self> {
+    pub fn try_new(
+        assignments: &mut Vec<Assignment<'_>>,
+        record_type: &RecordType,
+    ) -> Result<Self> {
         if assignments.is_empty() {
             return Err(Error::InvalidPipelineError {
                 cause: "assignments cannot be empty".into(),
@@ -186,7 +193,7 @@ impl AssignPipelineStage {
         Ok(Self {
             dest_scopes: dest_columns
                 .iter()
-                .map(DataScope::from)
+                .map(|col| DataScope::from_record_column(col, record_type))
                 .map(Rc::new)
                 .collect(),
             dest_columns,
@@ -311,7 +318,7 @@ impl AssignPipelineStage {
 
             // create a JoinExec implementation that computes joined indices of values to root on
             // `root.id == attrs.parent_id` and use this to take rows from the result in order.
-            let join_exec = RootToAttributesJoin::new(*attrs_id);
+            let join_exec = RecordToAttributesJoin::new(*attrs_id);
             let eval_result = scoped_value_to_join_input(scoped_value, &otap_batch)?;
             let vals_take_indices = join_exec.rows_to_take(
                 &JoinInput::new(
@@ -359,7 +366,7 @@ impl AssignPipelineStage {
                 unreachable!("unexpected data_scope for non-aligned result")
             };
 
-            let join_exec = RootToAttributesJoin::new(*attrs_id);
+            let join_exec = RecordToAttributesJoin::new(*attrs_id);
 
             let vals_take_indices = join_exec.rows_to_take(
                 &JoinInput::new(
@@ -554,7 +561,7 @@ impl AssignPipelineStage {
             || &scoped_value.scope == dest_scope.as_ref()
             || matches!(
                 scoped_value.scope,
-                DataScope::Root | DataScope::RootParent(_)
+                DataScope::Record(RecordScope::Signal) | DataScope::RootParent(_)
             );
 
         if !already_aligned {
@@ -562,7 +569,7 @@ impl AssignPipelineStage {
                 unreachable!("unexpected data_scope")
             };
 
-            let join_exec = RootToAttributesJoin::new(attrs_id);
+            let join_exec = RecordToAttributesJoin::new(attrs_id);
             let vals_take_indices = join_exec.rows_to_take(
                 &JoinInput::new(
                     ColumnarValue::Scalar(ScalarValue::Null),
@@ -584,86 +591,26 @@ impl AssignPipelineStage {
         Ok(otap_batch)
     }
 
-    fn assign_to_attributes(
+    fn assign_to_attributes<T: ArrowPrimitiveType>(
         &mut self,
-        mut otap_batch: OtapArrowRecords,
+        otap_batch: &OtapArrowRecords,
+        id_col: Option<ArrayRef>,
+        attrs_record_batch: Cow<'_, RecordBatch>,
         eval_results: &mut [Option<ScopedValue>],
         dest_attrs_id: AttributesIdentifier,
-    ) -> Result<OtapArrowRecords> {
-        let root_record_batch = match otap_batch.root_record_batch() {
-            Some(root_rb) => root_rb,
-            None => {
-                // nothing to do
-                return Ok(otap_batch);
-            }
-        };
-
-        let (attrs_payload_type, id_col) = match dest_attrs_id {
-            AttributesIdentifier::Root => {
-                let attrs_payload_type = match otap_batch {
-                    OtapArrowRecords::Logs(_) => ArrowPayloadType::LogAttrs,
-                    OtapArrowRecords::Metrics(_) => ArrowPayloadType::MetricAttrs,
-                    OtapArrowRecords::Traces(_) => ArrowPayloadType::SpanAttrs,
-                };
-                let id_col = root_record_batch.column_by_name(consts::ID);
-                (attrs_payload_type, id_col)
-            }
-            AttributesIdentifier::NonRoot(payload_type) => {
-                let struct_col_name = match payload_type {
-                    ArrowPayloadType::ResourceAttrs => consts::RESOURCE,
-                    ArrowPayloadType::ScopeAttrs => consts::SCOPE,
-                    other => {
-                        return Err(Error::InvalidPipelineError {
-                            cause: format!("Unsupported attributes payload type {other:?}"),
-                            query_location: None,
-                        });
-                    }
-                };
-
-                // access the ID column from the nested Resource/Scope struct
-                let id_col = root_record_batch
-                    .column_by_name(struct_col_name)
-                    .map(|s| {
-                        s.as_any().downcast_ref::<StructArray>().ok_or_else(|| {
-                            Error::ExecutionError {
-                                cause: format!(
-                                    "invalid struct column. found type {:?}",
-                                    s.data_type()
-                                ),
-                            }
-                        })
-                    })
-                    .transpose()?
-                    .and_then(|s| s.column_by_name(consts::ID));
-                (payload_type, id_col)
-            }
-        };
-
-        let attrs_record_batch = match otap_batch.get(attrs_payload_type) {
-            Some(attrs_batch) => Cow::Borrowed(attrs_batch),
-            None => {
-                // add an indicator to the parent id column that it is not transport/delta encoded.
-                // the upsert_attrs function assumes that transport/delta encoding has already been
-                // removed from the parent ID.
-                let batch = EMPTY_U16_ATTRS_RECORD_BATCH.deref();
-                let schema = batch.schema_ref();
-                Cow::Owned(RecordBatch::new_empty(Arc::new(update_field_metadata(
-                    schema,
-                    consts::PARENT_ID,
-                    metadata::COLUMN_ENCODING,
-                    metadata::encodings::PLAIN,
-                ))))
-            }
-        };
-
+    ) -> Result<RecordBatch>
+    where
+        u32: From<<T as ArrowPrimitiveType>::Native>,
+    {
         let mut parent_id_set = self.id_bitmap_pool.acquire();
         if let Some(id_col) = id_col {
             let id_col = id_col
                 .as_any()
-                .downcast_ref::<UInt16Array>()
+                .downcast_ref::<PrimitiveArray<T>>()
                 .ok_or_else(|| Error::ExecutionError {
                     cause: format!(
-                        "invalid ID column. expected u16 type, found {:?}",
+                        "invalid ID column. expected {:?} type, found {:?}",
+                        T::DATA_TYPE,
                         id_col.data_type()
                     ),
                 })?;
@@ -713,35 +660,12 @@ impl AssignPipelineStage {
             //
             let existing_key_mask = eq(&key_column, &StringArray::new_scalar(attrs_key))?;
             let update_parent_ids = filter(&parent_ids_col, &existing_key_mask)?;
-            let update_parent_ids_u16 = update_parent_ids
-                .as_any()
-                .downcast_ref::<UInt16Array>()
-                .ok_or_else(|| Error::ExecutionError {
-                    cause: format!(
-                        "invalid ID column. expected u16 type, found {:?}",
-                        update_parent_ids.data_type()
-                    ),
-                })?;
-            let mut update_parent_id_set = self.id_bitmap_pool.acquire();
-            update_parent_id_set.populate(update_parent_ids_u16.iter().flatten().map(|i| i.into()));
 
-            let total = parent_id_set.len() as usize;
-            let mut parent_ids = vec![0u16; total];
-            let mut curr_idx = 0;
-            for id in update_parent_ids_u16.iter().flatten() {
-                parent_ids[curr_idx] = id;
-                curr_idx += 1;
-            }
-            // now put in all the IDS for which we need to insert
-            for id in parent_id_set.iter() {
-                if update_parent_id_set.contains(id) {
-                    continue;
-                }
-                parent_ids[curr_idx] = id as u16;
-                curr_idx += 1;
-            }
-            self.id_bitmap_pool.release(update_parent_id_set);
-            let parent_ids = UInt16Array::from(parent_ids);
+            let parent_ids: PrimitiveArray<T> = create_upsert_attrs_parent_id_array(
+                &mut self.id_bitmap_pool,
+                &parent_id_set,
+                &update_parent_ids,
+            )?;
 
             // Attempt to coerce the AnyValue into a single column. In this case, we do this as an
             // optimization: this makes the join faster because we can take fewer columns, and it
@@ -763,7 +687,7 @@ impl AssignPipelineStage {
                 //
                 // the ScopedValue converted to a JoinInput below. The conversion consumes the it,
                 // so extract the values array first
-                let eval_result = scoped_value_to_join_input(scoped_value, &otap_batch)?;
+                let eval_result = scoped_value_to_join_input(scoped_value, otap_batch)?;
                 let ColumnarValue::Array(ref result_values) = eval_result.values else {
                     unreachable!("expected ColumnarResult::Array")
                 };
@@ -771,7 +695,7 @@ impl AssignPipelineStage {
                 let left_join_input = &JoinInput::new_with_parent_ids(
                     ColumnarValue::Scalar(ScalarValue::Null), // empty placeholder,
                     Rc::clone(&self.dest_scopes[i]),
-                    &parent_ids,
+                    Arc::new(parent_ids.clone()),
                 );
 
                 let vals_take_indices = match eval_result.data_scope.as_ref() {
@@ -781,15 +705,20 @@ impl AssignPipelineStage {
                             AttributeToSameAttributeJoin::new().rows_to_take(
                                 left_join_input,
                                 &eval_result,
-                                &otap_batch,
+                                otap_batch,
                             )?
                         } else {
                             AttributeToDifferentAttributeJoin::new(dest_attrs_id, *result_attrs_id)
-                                .rows_to_take(left_join_input, &eval_result, &otap_batch)?
+                                .rows_to_take(left_join_input, &eval_result, otap_batch)?
                         }
                     }
-                    DataScope::Root | DataScope::RootParent(_) => RootAttrsToRootJoin::new()
-                        .rows_to_take(left_join_input, &eval_result, &otap_batch)?,
+                    DataScope::Record(_) | DataScope::RootParent(_) => {
+                        RecordAttrsToRecordJoin::new().rows_to_take(
+                            left_join_input,
+                            &eval_result,
+                            otap_batch,
+                        )?
+                    }
                     DataScope::StaticScalar => {
                         // safety: if the data scope was scalar, the result would have also been a
                         // Scalar which would have been handled above where we checked the
@@ -828,11 +757,8 @@ impl AssignPipelineStage {
 
         self.id_bitmap_pool.release(parent_id_set);
 
-        // replace attributes batch
         let new_attrs = upsert_attributes(&attrs_record_batch, &attrs_upserts)?;
-        otap_batch.set(attrs_payload_type, new_attrs)?;
-
-        Ok(otap_batch)
+        Ok(new_attrs)
     }
 
     fn assign_to_nested_attributes(
@@ -846,12 +772,20 @@ impl AssignPipelineStage {
         }
 
         let attrs_payload_type = match dest_attrs_id {
-            AttributesIdentifier::Root => match otap_batch {
+            AttributesIdentifier::Record(RecordScope::Signal) => match otap_batch {
                 OtapArrowRecords::Logs(_) => ArrowPayloadType::LogAttrs,
                 OtapArrowRecords::Metrics(_) => ArrowPayloadType::MetricAttrs,
                 OtapArrowRecords::Traces(_) => ArrowPayloadType::SpanAttrs,
             },
-            AttributesIdentifier::NonRoot(payload_type) => payload_type,
+            AttributesIdentifier::NonRecord(payload_type) => payload_type,
+            AttributesIdentifier::Record(RecordScope::Child(child)) => {
+                return Err(Error::InvalidPipelineError {
+                    cause: format!(
+                        "Cannot assign nested attribute of child {child:?} when executing pipeline on signal"
+                    ),
+                    query_location: Default::default(),
+                });
+            }
         };
 
         let Some(mut attrs_record_batch) = otap_batch.get(attrs_payload_type).cloned() else {
@@ -926,7 +860,7 @@ impl AssignPipelineStage {
                 let left_join_input = &JoinInput::new_with_parent_ids(
                     ColumnarValue::Scalar(ScalarValue::Null),
                     Rc::clone(&self.dest_scopes[i]),
-                    update_parent_ids_u16,
+                    Arc::new(update_parent_ids_u16.clone()),
                 );
 
                 let vals_take_indices = match eval_result.data_scope.as_ref() {
@@ -943,8 +877,25 @@ impl AssignPipelineStage {
                                 .rows_to_take(left_join_input, &eval_result, &otap_batch)?
                         }
                     }
-                    DataScope::Root | DataScope::RootParent(_) => RootAttrsToRootJoin::new()
-                        .rows_to_take(left_join_input, &eval_result, &otap_batch)?,
+                    DataScope::Record(RecordScope::Signal) | DataScope::RootParent(_) => {
+                        RecordAttrsToRecordJoin::new().rows_to_take(
+                            left_join_input,
+                            &eval_result,
+                            &otap_batch,
+                        )?
+                    }
+                    DataScope::Record(RecordScope::Child(_child)) => {
+                        // In the current implementation, we shouldn't end up here. The planner
+                        // should not allow us to create an expression that would evaluate on some
+                        // child record (like metric data points), and assign the result to an
+                        // attribute. Returning this error to be defensive
+                        return Err(Error::ExecutionError {
+                            cause: format!(
+                                "unexpected DataScope for attribute assignment `{:?}`",
+                                eval_result.data_scope
+                            ),
+                        });
+                    }
                     DataScope::StaticScalar => unreachable!("unexpected array for scalar scope"),
                 };
 
@@ -1087,24 +1038,111 @@ impl PipelineStage for AssignPipelineStage {
     ) -> Result<OtapArrowRecords> {
         // if we're assigning to attributes, do it as a bulk attribute upsert for best performance
         if let ColumnAccessor::Attributes(attrs_id, _) = &self.dest_columns[0] {
-            if *attrs_id == AttributesIdentifier::Root {
+            if matches!(attrs_id, AttributesIdentifier::Record(_)) {
                 self.fill_root_id_column_nulls(&mut otap_batch, exec_state)?;
             }
 
+            let root_record_batch = match otap_batch.root_record_batch() {
+                Some(root_rb) => root_rb,
+                None => {
+                    // nothing to do
+                    return Ok(otap_batch);
+                }
+            };
+
             let mut eval_results = Vec::new();
             for source in &mut self.sources {
-                let eval_result = source.execute_as_value(&otap_batch, session_context)?;
+                let eval_result =
+                    source.execute_as_value(&otap_batch, &EvalContext::new(session_context))?;
                 eval_results.push(eval_result);
             }
-            let result = self.assign_to_attributes(otap_batch, &mut eval_results, *attrs_id)?;
 
-            return Ok(result);
+            let (attrs_payload_type, id_column) = match *attrs_id {
+                AttributesIdentifier::Record(RecordScope::Signal) => {
+                    let attrs_payload_type = match otap_batch {
+                        OtapArrowRecords::Logs(_) => ArrowPayloadType::LogAttrs,
+                        OtapArrowRecords::Metrics(_) => ArrowPayloadType::MetricAttrs,
+                        OtapArrowRecords::Traces(_) => ArrowPayloadType::SpanAttrs,
+                    };
+                    let id_col = root_record_batch.column_by_name(consts::ID);
+                    (attrs_payload_type, id_col)
+                }
+                AttributesIdentifier::Record(RecordScope::Child(child)) => {
+                    return Err(Error::InvalidPipelineError {
+                        cause: format!(
+                            "Cannot assign attribute of child {child:?} when executing pipeline on signal"
+                        ),
+                        query_location: Default::default(),
+                    });
+                }
+                AttributesIdentifier::NonRecord(payload_type) => {
+                    let struct_col_name = match payload_type {
+                        ArrowPayloadType::ResourceAttrs => consts::RESOURCE,
+                        ArrowPayloadType::ScopeAttrs => consts::SCOPE,
+                        other => {
+                            return Err(Error::InvalidPipelineError {
+                                cause: format!("Unsupported attributes payload type {other:?}"),
+                                query_location: None,
+                            });
+                        }
+                    };
+
+                    // access the ID column from the nested Resource/Scope struct
+                    let id_col = root_record_batch
+                        .column_by_name(struct_col_name)
+                        .map(|s| {
+                            s.as_any().downcast_ref::<StructArray>().ok_or_else(|| {
+                                Error::ExecutionError {
+                                    cause: format!(
+                                        "invalid struct column. found type {:?}",
+                                        s.data_type()
+                                    ),
+                                }
+                            })
+                        })
+                        .transpose()?
+                        .and_then(|s| s.column_by_name(consts::ID));
+                    (payload_type, id_col)
+                }
+            };
+
+            let attrs_record_batch = match otap_batch.get(attrs_payload_type) {
+                Some(attrs_batch) => Cow::Borrowed(attrs_batch),
+                None => {
+                    // TODO - avoid record batch clone here
+                    // https://github.com/open-telemetry/otel-arrow/issues/3988
+                    //
+                    // add an indicator to the parent id column that it is not transport/delta encoded.
+                    // the upsert_attrs function assumes that transport/delta encoding has already been
+                    // removed from the parent ID.
+                    let batch = EMPTY_U16_ATTRS_RECORD_BATCH.deref();
+                    let schema = batch.schema_ref();
+                    Cow::Owned(RecordBatch::new_empty(Arc::new(update_field_metadata(
+                        schema,
+                        consts::PARENT_ID,
+                        metadata::COLUMN_ENCODING,
+                        metadata::encodings::PLAIN,
+                    ))))
+                }
+            };
+
+            let new_attrs = self.assign_to_attributes::<UInt16Type>(
+                &otap_batch,
+                id_column.cloned(),
+                attrs_record_batch,
+                &mut eval_results,
+                *attrs_id,
+            )?;
+
+            otap_batch.set(attrs_payload_type, new_attrs)?;
+            return Ok(otap_batch);
         }
 
         if let ColumnAccessor::NestedAttribute(attrs_id, _, _) = &self.dest_columns[0] {
             let mut eval_results = Vec::new();
             for source in &mut self.sources {
-                let eval_result = source.execute_as_value(&otap_batch, session_context)?;
+                let eval_result =
+                    source.execute_as_value(&otap_batch, &EvalContext::new(session_context))?;
                 eval_results.push(eval_result);
             }
             let result =
@@ -1117,7 +1155,8 @@ impl PipelineStage for AssignPipelineStage {
         // support bulk assignment so we just evaluate the expressions and update the columns
         // one at a time
         for i in 0..self.sources.len() {
-            let eval_result = self.sources[i].execute_as_value(&otap_batch, session_context)?;
+            let eval_result = self.sources[i]
+                .execute_as_value(&otap_batch, &EvalContext::new(session_context))?;
             let dest_scope = &self.dest_scopes[i];
             match &self.dest_columns[i] {
                 ColumnAccessor::ColumnName(dest_col_name) => {
@@ -1337,15 +1376,12 @@ impl PipelineStage for AssignPipelineStage {
                 columns,
             )?)
         } else {
-            // since the expression does not require the "value" column, we assume that it is an
-            // expression involving only static literals, in which case the input can just be an
-            // empty record batch
-            Cow::Borrowed(SCALAR_RECORD_BATCH_INPUT.deref())
+            Cow::Borrowed(&attrs_record_batch)
         };
 
         // evaluate the expression
         let mut result = self.sources[0]
-            .evaluate_on_batch(session_context, &projected_rb)?
+            .evaluate_on_batch(&projected_rb, &EvalContext::new(session_context))?
             .to_array(attrs_record_batch.num_rows())?;
 
         // determine the "logical" type of the result (e.g. the array type, or the values if the
@@ -1463,8 +1499,94 @@ impl PipelineStage for AssignPipelineStage {
         )?)
     }
 
-    fn supports_exec_on_attributes(&self) -> bool {
-        true
+    async fn execute_on_metric_data_points(
+        &mut self,
+        mut otap_batch: OtapArrowRecords,
+        session_ctx: &SessionContext,
+        _config_options: &ConfigOptions,
+        _task_context: Arc<TaskContext>,
+        _exec_state: &mut ExecutionState,
+    ) -> Result<OtapArrowRecords> {
+        for data_point_type in MetricDataPointType::all() {
+            let dp_payload_type = data_point_type.payload_type();
+            let Some(metrics_dp_rb) = otap_batch.get(dp_payload_type) else {
+                // nothing to do
+                continue;
+            };
+
+            let eval_ctx = EvalContext::new_for_metrics_data_points(data_point_type, session_ctx);
+
+            // if we're assigning to attributes, do it as a bulk attribute upsert for best performance
+            if let ColumnAccessor::Attributes(attrs_id, _) = &self.dest_columns[0] {
+                let mut eval_results = Vec::new();
+                for source in &mut self.sources {
+                    let eval_result = source.execute_as_value(&otap_batch, &eval_ctx)?;
+                    eval_results.push(eval_result);
+                }
+
+                let attrs_payload_type = data_point_type.dp_attrs_payload_type();
+                let attrs_record_batch = match otap_batch.get(attrs_payload_type) {
+                    Some(dp_attrs) => Cow::Borrowed(dp_attrs),
+                    None => {
+                        // TODO - avoid the record batch clone here
+                        // https://github.com/open-telemetry/otel-arrow/issues/3988
+                        //
+                        // add an indicator to the parent id column that it is not transport/delta encoded.
+                        // the upsert_attrs function assumes that transport/delta encoding has already been
+                        // removed from the parent ID.
+                        let batch = EMPTY_U32_ATTRS_RECORD_BATCH.deref();
+                        let schema = batch.schema_ref();
+                        Cow::Owned(RecordBatch::new_empty(Arc::new(update_field_metadata(
+                            schema,
+                            consts::PARENT_ID,
+                            metadata::COLUMN_ENCODING,
+                            metadata::encodings::PLAIN,
+                        ))))
+                    }
+                };
+
+                let id_col = metrics_dp_rb.column_by_name(consts::ID);
+
+                let new_attrs = self.assign_to_attributes::<UInt32Type>(
+                    &otap_batch,
+                    id_col.cloned(),
+                    attrs_record_batch,
+                    &mut eval_results,
+                    *attrs_id,
+                )?;
+
+                otap_batch.set(attrs_payload_type, new_attrs)?;
+                continue;
+            }
+
+            // TODO support - add support for additional assignment targets for metric data points
+            return Err(match self.dest_columns[0] {
+                ColumnAccessor::ColumnName(_) | ColumnAccessor::StructCol(_, _) => {
+                    Error::NotYetSupportedError {
+                        message: "assigning metric data point columns not yet supported".into(),
+                    }
+                }
+                ColumnAccessor::NestedAttribute(_, _, _) => Error::NotYetSupportedError {
+                    message: "assigning to metric data point nested attributes not yet supported"
+                        .into(),
+                },
+                ColumnAccessor::Attributes(_, _) => {
+                    // safety: we've handled this in the block above
+                    unreachable!("already handled column accessor attributes")
+                }
+            });
+        }
+
+        Ok(otap_batch)
+    }
+
+    fn supports_exec_on(&self, record_type: &RecordType) -> bool {
+        matches!(
+            record_type,
+            RecordType::Attributes
+                | RecordType::Signal
+                | RecordType::Child(ChildRecordKind::DataPoint)
+        )
     }
 
     fn init_state_for_conditional_branch(
@@ -1478,7 +1600,7 @@ impl PipelineStage for AssignPipelineStage {
         // to ensure the IDs that are assigned are not duplicated across branches. That is why we
         // add this extension.
         if let ColumnAccessor::Attributes(attrs_id, _) = &self.dest_columns[0]
-            && *attrs_id == AttributesIdentifier::Root
+            && matches!(attrs_id, AttributesIdentifier::Record(_))
             && exec_state.get_extension::<NextIdTracker>().is_none()
         {
             let next_id_tracker = NextIdTracker::try_new(otap_batch)?;
@@ -1697,6 +1819,117 @@ impl NextIdTracker {
     }
 }
 
+/// Creates a primitive array containing the `parent_id`s which is an argument to
+/// `upsert_attributes`. This is supposed to contain the `parent_id` for the attributes that will
+/// be created/updated, in a specific order where all the updates are followed by all the inserts.
+///
+///
+/// # Arguments:
+///
+/// - `id_bitmap_pool` - mutable ID bitmap pool (for access to reusable scratch id bitmap)
+/// - `all_parent_id_set` - bitmap containing all parent IDs that should contain the attribute
+/// - `update_parent_ids` - array containing that already contain the attribute and hence should
+///   have their attribute value updated.
+///
+/// This returns an error if column type which is passed is not a valid ID column.
+fn create_upsert_attrs_parent_id_array<T: ArrowPrimitiveType>(
+    id_bitmap_pool: &mut IdBitmapPool,
+    all_parent_id_set: &IdBitmap,
+    update_parent_ids: &ArrayRef,
+) -> Result<PrimitiveArray<T>>
+where
+    u32: From<<T as ArrowPrimitiveType>::Native>,
+{
+    let mut update_parent_id_set = id_bitmap_pool.acquire();
+    let upsert_parent_ids_values_buffer = if let Some(parent_id_col_primitive) =
+        update_parent_ids.as_primitive_opt::<T>()
+    {
+        update_parent_id_set.populate(parent_id_col_primitive.iter().flatten().map(|i| i.into()));
+        create_upsert_attrs_values_buffer_from_iter::<T, _>(
+            parent_id_col_primitive.iter(),
+            all_parent_id_set,
+            &update_parent_id_set,
+        )
+    } else if let Some(parent_id_col_dict) = update_parent_ids.as_dictionary_opt::<UInt8Type>() {
+        if let Some(typed_dict) = parent_id_col_dict.downcast_dict::<PrimitiveArray<T>>() {
+            update_parent_id_set.populate(typed_dict.into_iter().flatten().map(|i| i.into()));
+            create_upsert_attrs_values_buffer_from_iter::<T, _>(
+                typed_dict.into_iter(),
+                all_parent_id_set,
+                &update_parent_id_set,
+            )
+        } else {
+            return Err(otel_arrow_dfe_pdata::error::Error::InvalidIdColumnType {
+                data_type: update_parent_ids.data_type().clone(),
+            }
+            .into());
+        }
+    } else if let Some(parent_id_col_dict) = update_parent_ids.as_dictionary_opt::<UInt16Type>() {
+        if let Some(typed_dict) = parent_id_col_dict.downcast_dict::<PrimitiveArray<T>>() {
+            update_parent_id_set.populate(typed_dict.into_iter().flatten().map(|i| i.into()));
+            create_upsert_attrs_values_buffer_from_iter::<T, _>(
+                typed_dict.into_iter(),
+                all_parent_id_set,
+                &update_parent_id_set,
+            )
+        } else {
+            return Err(otel_arrow_dfe_pdata::error::Error::InvalidIdColumnType {
+                data_type: update_parent_ids.data_type().clone(),
+            }
+            .into());
+        }
+    } else {
+        // invalid type column
+        return Err(otel_arrow_dfe_pdata::error::Error::InvalidIdColumnType {
+            data_type: update_parent_ids.data_type().clone(),
+        }
+        .into());
+    };
+
+    id_bitmap_pool.release(update_parent_id_set);
+    Ok(PrimitiveArray::new(upsert_parent_ids_values_buffer, None))
+}
+
+/// Creates a values buffer for the `parent_id`s which is an argument to `upsert_attributes`. This
+/// is supposed containing the `parent_id` for the attributes that will be created/updated, in a
+/// specific order where all the updates are followed by all the inserts.
+fn create_upsert_attrs_values_buffer_from_iter<
+    T: ArrowPrimitiveType,
+    I: ExactSizeIterator<Item = Option<T::Native>>,
+>(
+    update_parent_id_col: I,
+    all_parent_id_set: &IdBitmap,
+    update_parent_id_set: &IdBitmap,
+) -> ScalarBuffer<T::Native>
+where
+    u32: From<T::Native>,
+{
+    let mut upsert_attr_parent_ids = vec![
+        T::Native::default();
+        update_parent_id_col.len()
+            + (all_parent_id_set.len() - update_parent_id_set.len())
+                as usize
+    ];
+    let mut curr_idx = 0;
+
+    // insert all the IDs to upsert first, which will be those from the existing parent_id column
+    for id in update_parent_id_col.flatten() {
+        upsert_attr_parent_ids[curr_idx] = id;
+        curr_idx += 1
+    }
+
+    for id in all_parent_id_set.iter() {
+        if update_parent_id_set.contains(id) {
+            continue;
+        }
+
+        upsert_attr_parent_ids[curr_idx] = T::Native::usize_as(id as usize);
+        curr_idx += 1;
+    }
+
+    ScalarBuffer::from(upsert_attr_parent_ids)
+}
+
 /// Decompose an AnyValue struct result into one [`AttributeUpsert`] per distinct value type.
 ///
 /// When an expression produces an AnyValue struct (because different rows had different input
@@ -1713,12 +1946,12 @@ impl NextIdTracker {
 ///
 /// 3. Extract the concrete value column for this type from the struct.
 ///
-fn decompose_any_value_upsert<'a>(
+fn decompose_any_value_upsert<'a, T: ArrowPrimitiveType>(
     attrs_key: &'a str,
     existing_key_mask: &BooleanArray,
     any_value_arr: &ArrayRef,
-    parent_ids: &UInt16Array,
-) -> Result<Vec<AttributeUpsert<'a, UInt16Type>>> {
+    parent_ids: &PrimitiveArray<T>,
+) -> Result<Vec<AttributeUpsert<'a, T>>> {
     let struct_arr = any_value_arr
         .as_any()
         .downcast_ref::<StructArray>()
@@ -1790,9 +2023,9 @@ fn decompose_any_value_upsert<'a>(
 
         let filtered_parent_ids = filtered_parent_ids
             .as_any()
-            .downcast_ref::<UInt16Array>()
+            .downcast_ref::<PrimitiveArray<T>>()
             .ok_or_else(|| Error::ExecutionError {
-                cause: "filtered parent_ids is not UInt16".into(),
+                cause: format!("filtered parent_ids is not {:?}", T::DATA_TYPE),
             })?
             .clone();
 
@@ -1844,9 +2077,9 @@ fn decompose_any_value_upsert<'a>(
         let filtered_parent_ids = filter(parent_ids, &empty)?;
         let filtered_parent_ids = filtered_parent_ids
             .as_any()
-            .downcast_ref::<UInt16Array>()
+            .downcast_ref::<PrimitiveArray<T>>()
             .ok_or_else(|| Error::ExecutionError {
-                cause: "filtered parent_ids is not UInt16".into(),
+                cause: format!("filtered parent_ids is not of type {:?}", T::DATA_TYPE),
             })?
             .clone();
 
@@ -2004,16 +2237,16 @@ fn validate_assign(
 /// there can be many logs with different events to a single resource, it is ambiguous what the
 /// actual value should be and os we consider this an invalid expression
 ///
-/// This walks the `ScopedExpr` tree and checks the `DataScope` at each `Eval` leaf. For non-root
-/// attribute destinations, root-scoped data and bitmap operations (which produce root-scoped
+/// This walks the `ScopedExpr` tree and checks the `DataScope` at each `Eval` leaf. For non-record
+/// attribute destinations, record-scoped data and bitmap operations (which produce root-scoped
 /// booleans) are invalid because of the one-to-many relationship.
 fn validate_expr_cardinality(
     dest_attrs_id: AttributesIdentifier,
     dest_query_location: Option<&QueryLocation>,
     expr: &ScopedExpr,
 ) -> Result<()> {
-    if dest_attrs_id == AttributesIdentifier::Root {
-        // root attributes have no 1:many relations
+    if matches!(dest_attrs_id, AttributesIdentifier::Record(_)) {
+        // record attributes have no 1:many relations
         return Ok(());
     }
 
@@ -2023,20 +2256,30 @@ fn validate_expr_cardinality(
                 // always valid to assign a scalar
                 DataScope::StaticScalar => true,
 
-                // we've already determined we're not assigning to a root attribute, so the
+                // we've already determined we're not assigning to a record attribute, so the
                 // destination must be something that has a one:many relationship with root like
                 // resource or scope
-                DataScope::Root | DataScope::RootParent(_) => false,
+                DataScope::Record(RecordScope::Signal) | DataScope::RootParent(_) => false,
+                DataScope::Record(RecordScope::Child(_child)) => {
+                    // If we end up here, it would mean we're trying to assign to something like
+                    // a resource attribute or scope attribute from the value of some nested child
+                    // record like a metric data point. The planner shouldn't be creating plans like
+                    // this, but we'll reject it here if that's what has been passed as an argument
+                    return Err(Error::InvalidPipelineError {
+                        cause: "Cannot assign non-record attribute from non-signal record".into(),
+                        query_location: dest_query_location.cloned(),
+                    });
+                }
 
                 DataScope::Attribute(source_attrs_id, _)
                 | DataScope::AttributesAll(source_attrs_id) => {
                     dest_attrs_id == *source_attrs_id
                         || matches!(
                             dest_attrs_id,
-                            AttributesIdentifier::NonRoot(ArrowPayloadType::ScopeAttrs)
+                            AttributesIdentifier::NonRecord(ArrowPayloadType::ScopeAttrs)
                         ) && matches!(
                             source_attrs_id,
-                            AttributesIdentifier::NonRoot(ArrowPayloadType::ResourceAttrs)
+                            AttributesIdentifier::NonRecord(ArrowPayloadType::ResourceAttrs)
                         )
                 }
             };
@@ -2108,7 +2351,17 @@ fn validate_struct_col_assign_cardinality(
             let is_valid = match scope {
                 DataScope::StaticScalar => true,
                 // root (log/span/metric level) is always lower than resource or scope
-                DataScope::Root => false,
+                DataScope::Record(RecordScope::Signal) => false,
+                DataScope::Record(RecordScope::Child(_child)) => {
+                    // If we end up here, it would mean we're trying to assign to something like
+                    // a resource or scope field from the value of some nested child record like
+                    // a metric data point. The planner shouldn't be creating plans like this, but
+                    // we'll reject it here if that's what has been passed as an argument
+                    return Err(Error::InvalidPipelineError {
+                        cause: "Cannot assign struct column from non-signal record".into(),
+                        query_location: dest_query_location.cloned(),
+                    });
+                }
                 DataScope::RootParent(source_parent) => match dest_struct_name {
                     consts::RESOURCE => {
                         matches!(source_parent, RootParentStruct::Resource)
@@ -2123,12 +2376,12 @@ fn validate_struct_col_assign_cardinality(
                 | DataScope::AttributesAll(source_attrs_id) => match dest_struct_name {
                     consts::RESOURCE => matches!(
                         source_attrs_id,
-                        AttributesIdentifier::NonRoot(ArrowPayloadType::ResourceAttrs)
+                        AttributesIdentifier::NonRecord(ArrowPayloadType::ResourceAttrs)
                     ),
                     consts::SCOPE => matches!(
                         source_attrs_id,
-                        AttributesIdentifier::NonRoot(ArrowPayloadType::ResourceAttrs)
-                            | AttributesIdentifier::NonRoot(ArrowPayloadType::ScopeAttrs)
+                        AttributesIdentifier::NonRecord(ArrowPayloadType::ResourceAttrs)
+                            | AttributesIdentifier::NonRecord(ArrowPayloadType::ScopeAttrs)
                     ),
                     _ => false,
                 },
@@ -3888,7 +4141,7 @@ mod test {
         let err = pipeline.execute(input).await.unwrap_err();
         assert!(
             err.to_string()
-                .contains("cannot assign data scope Root to struct column scope"),
+                .contains("cannot assign data scope Record(Signal) to struct column scope"),
             "unexpected error: {}",
             err
         );
@@ -3967,7 +4220,7 @@ mod test {
         let err = pipeline.execute(input).await.unwrap_err();
         assert!(
             err.to_string().contains(
-                "cannot assign data scope Attribute(NonRoot(ScopeAttrs), \"key\") to struct column resource"
+                "cannot assign data scope Attribute(NonRecord(ScopeAttrs), \"key\") to struct column resource"
             ),
             "unexpected error: {}",
             err
@@ -6475,7 +6728,9 @@ mod test {
         let err = pipeline.execute(input.clone()).await.unwrap_err();
         let err_msg = err.to_string();
         assert!(
-            err_msg.contains("cannot assign data scope Root to attributes NonRoot(ResourceAttrs)"),
+            err_msg.contains(
+                "cannot assign data scope Record(Signal) to attributes NonRecord(ResourceAttrs)"
+            ),
             "unexpected error message {}",
             err_msg
         );
@@ -6487,7 +6742,7 @@ mod test {
         let err = pipeline.execute(input.clone()).await.unwrap_err();
         let err_msg = err.to_string();
         assert!(
-            err_msg.contains("cannot assign data scope Attribute(Root, \"x\") to attributes NonRoot(ResourceAttrs)"),
+            err_msg.contains("cannot assign data scope Attribute(Record(Signal), \"x\") to attributes NonRecord(ResourceAttrs)"),
             "unexpected error message {}",
             err_msg
         );
@@ -6500,7 +6755,7 @@ mod test {
         let err = pipeline.execute(input.clone()).await.unwrap_err();
         let err_msg = err.to_string();
         assert!(
-            err_msg.contains("cannot assign data scope Attribute(NonRoot(ScopeAttrs), \"x\") to attributes NonRoot(ResourceAttrs)"),
+            err_msg.contains("cannot assign data scope Attribute(NonRecord(ScopeAttrs), \"x\") to attributes NonRecord(ResourceAttrs)"),
             "unexpected error message {}",
             err_msg
         );
@@ -6513,7 +6768,7 @@ mod test {
         let err = pipeline.execute(input.clone()).await.unwrap_err();
         let err_msg = err.to_string();
         assert!(
-            err_msg.contains("cannot assign data scope Attribute(Root, \"y\") to attributes NonRoot(ResourceAttrs)"),
+            err_msg.contains("cannot assign data scope Attribute(Record(Signal), \"y\") to attributes NonRecord(ResourceAttrs)"),
             "unexpected error message {}",
             err_msg
         );
@@ -6533,7 +6788,9 @@ mod test {
         let err = pipeline.execute(input.clone()).await.unwrap_err();
         let err_msg = err.to_string();
         assert!(
-            err_msg.contains("cannot assign data scope Root to attributes NonRoot(ScopeAttrs)"),
+            err_msg.contains(
+                "cannot assign data scope Record(Signal) to attributes NonRecord(ScopeAttrs)"
+            ),
             "unexpected error message {}",
             err_msg
         );
@@ -6546,7 +6803,7 @@ mod test {
         let err_msg = err.to_string();
         assert!(
             err_msg.contains(
-                "cannot assign data scope Attribute(Root, \"x\") to attributes NonRoot(ScopeAttrs)"
+                "cannot assign data scope Attribute(Record(Signal), \"x\") to attributes NonRecord(ScopeAttrs)"
             ),
             "unexpected error message {}",
             err_msg
@@ -8501,11 +8758,13 @@ mod test {
         let result = exec_logs_pipeline::<OplParser>(query, logs_data.clone()).await;
         assert_result(result, AnyValue::new_double(5.0));
 
+        // Timestamp columns are UTC, so the string rendering carries the "Z"
+        // zone designator.
         let query = r#"logs | set attributes["result"] = time_unix_nano as String"#;
         let result = exec_logs_pipeline::<OplParser>(query, logs_data.clone()).await;
         assert_result(
             result,
-            AnyValue::new_string("1970-01-01T00:00:00.000000005"),
+            AnyValue::new_string("1970-01-01T00:00:00.000000005Z"),
         );
 
         // test cast from result of function call

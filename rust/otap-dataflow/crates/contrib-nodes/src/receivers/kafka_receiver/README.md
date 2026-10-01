@@ -5,7 +5,7 @@
 ## Metadata
 
 - Type: `receiver:kafka` (`urn:otel:receiver:kafka`)
-- Feature gate: `kafka-receiver` (also enabled by `contrib-receivers`)
+- Feature gate: `kafka` (also enabled by `contrib-receivers`)
 - Stability: Experimental (pending performance optimization)
 
 ## Overview

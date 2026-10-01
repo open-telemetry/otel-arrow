@@ -1,0 +1,6 @@
+type: content_router
+status:
+  class: processor
+  codeowners:
+    active:
+      - lalitb

@@ -5109,7 +5109,7 @@ mod tests {
                     "should capture exactly one x-trace-bin header"
                 );
                 assert_eq!(
-                    trace_headers[0].value.bytes.as_ref(),
+                    trace_headers[0].value.bytes,
                     raw_bytes_for_validation.as_slice(),
                     "captured binary header should contain raw decoded bytes, not base64 wire form"
                 );

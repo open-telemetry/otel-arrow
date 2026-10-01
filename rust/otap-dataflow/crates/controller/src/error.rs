@@ -11,6 +11,10 @@ use otel_arrow_dfe_config::topic::TopicBackendKind;
 /// Errors that can occur in the controller crate.
 #[derive(thiserror::Error, Debug, Diagnostic)]
 pub enum Error {
+    /// Startup could not establish the configured stable state root.
+    #[error(transparent)]
+    StateDirectory(#[from] otel_arrow_dfe_engine::state_dir::StateDirectoryError),
+
     /// A collection of errors that occurred during parsing or validating the configuration.
     #[error("Invalid configuration: {errors:?}")]
     InvalidConfiguration {

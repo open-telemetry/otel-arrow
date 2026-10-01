@@ -5,7 +5,7 @@
 ## Metadata
 
 - Type: `receiver:topic` (`urn:otel:receiver:topic`)
-- Feature gate: Default
+- Feature gate: `topic`
 - Stability: Experimental
 
 ## Overview
