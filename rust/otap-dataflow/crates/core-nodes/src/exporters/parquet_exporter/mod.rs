@@ -161,6 +161,7 @@ impl ParquetExporter {
     }
 
     #[cfg(test)]
+    #[must_use]
     pub fn with_dummy_metrics(mut self) -> Self {
         let registry = otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle::new();
         let controller = otel_arrow_dfe_engine::context::ControllerContext::new(registry);
