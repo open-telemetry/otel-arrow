@@ -20,6 +20,7 @@ use crate::context::{ControllerContext, ExtensionContext, PipelineContext};
 use crate::control::NodeControlMsg;
 use crate::runtime_services::PipelineRuntimeServices;
 use otel_arrow_dfe_channel::mpsc;
+#[cfg(any(test, feature = "test-utils"))]
 use otel_arrow_dfe_config::ExtensionId;
 use otel_arrow_dfe_config::engine::{
     ResolvedOtelDataflowSpec, ResolvedPipelineConfig, ResolvedPipelineRole,

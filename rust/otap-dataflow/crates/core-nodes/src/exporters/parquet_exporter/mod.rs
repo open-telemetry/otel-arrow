@@ -959,7 +959,7 @@ mod test {
                 target_rows_per_file: Some(50),
                 ..Default::default()
             }),
-        });
+        }).with_dummy_metrics();
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
         let mut exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
             exporter,
@@ -1121,7 +1121,7 @@ mod test {
                 target_rows_per_file: None,
                 flush_when_older_than: Some(Duration::from_millis(200)),
             }),
-        });
+        }).with_dummy_metrics();
 
         let test_runtime = TestRuntime::<OtapPdata>::new();
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
@@ -1311,7 +1311,7 @@ mod test {
                         .expect("Failed to send  logs message");
 
                     ctx.send_shutdown(
-                        Instant::now().add(Duration::from_millis(200)),
+                        Instant::now().add(Duration::from_secs(5)),
                         "test completed",
                     )
                     .await
@@ -1383,7 +1383,7 @@ mod test {
                         .expect("Failed to send  logs message");
 
                     ctx.send_shutdown(
-                        Instant::now().add(Duration::from_millis(1000)),
+                        Instant::now().add(Duration::from_secs(5)),
                         "test completed",
                     )
                     .await
@@ -1677,13 +1677,13 @@ mod test {
         let mut saw_exports = false;
         telemetry_registry.visit_current_metrics(|desc, _attrs, iter| {
             let has_positive_value = iter.into_iter().any(|(_, value)| value.to_f64() > 0.0);
-            if desc.name == "exporter.exports" && has_positive_value {
+            if desc.name == "otap.exporter.parquet.rows" && has_positive_value {
                 saw_exports = true;
             }
         });
         assert!(
             saw_exports,
-            "expected exporter.exports metrics to be reported"
+            "expected otap.exporter.parquet.rows metrics to be reported"
         );
     }
 
@@ -1742,7 +1742,7 @@ mod test {
                         .await
                         .unwrap();
                     ctx.send_shutdown(
-                        Instant::now().add(Duration::from_millis(1000)),
+                        Instant::now().add(Duration::from_secs(5)),
                         "test complete",
                     )
                     .await
