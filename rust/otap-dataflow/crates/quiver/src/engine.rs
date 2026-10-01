@@ -6384,6 +6384,15 @@ mod tests {
                 .await
                 .expect("ingest");
             assert_eq!(engine.total_segments_written(), 0);
+            // Preserve the WAL-only restart state while ensuring the entry is
+            // durable before the first engine is dropped.
+            engine
+                .wal_writer
+                .lock()
+                .await
+                .flush()
+                .await
+                .expect("flush WAL");
         }
 
         let replay_config = QuiverConfig::builder()
