@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790881840406,
+  "lastUpdate": 1790883128879,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -49557,6 +49557,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 104.92,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "pritishnahar@gmail.com",
+            "name": "Pritish Nahar",
+            "username": "pritishnahar95"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "58b6880f0bc30b78071d229e47fd086a2a4e1eaf",
+          "message": "feat(query-engine): read scalar leaves from nested serialized attributes (#4204)\n\n# Change summary\n\nSupports reading scalar leaves from nested Map and Slice attributes in\nquery-engine expressions.\nMap- and Slice-valued attributes are stored as serialized CBOR, so paths\nsuch as the following\npreviously failed during planning:\n\n```text\nlogs | extend attributes[\"name\"] = attributes[\"complex\"][\"child\"][\"name\"]\nlogs | where attributes[\"complex\"][\"items\"][0] == \"first\"\nlogs | extend attributes[\"component\"] = instrumentation_scope.attributes[\"custom\"][\"componentName\"]\n```\n\n### Changes\n\n- `DataScope::Attribute` carries the serialized path after the attribute\nkey. Top-level\nattributes use an empty path. Different paths under the same key are\ndifferent scopes, so they\n  are joined by parent ID rather than evaluated from one projection.\n- `project_attrs` decodes the `ser` column for rows whose type matches\nthe first path element\n(Map for a string key, Slice for an integer index). Resolved leaves are\nrebuilt as an `AnyValue`\nstruct with `AnyValuesRecordsBuilder`, so the rest of the expression\nengine handles them like any\n  other attribute value.\n- Adds `read_cbor_scalar` to pdata, alongside the existing nested\nmutation helpers.\n- Fused attribute comparison, `contains`, and `matches` optimizations\napply only to top-level\n  attributes, because they read typed attribute columns directly.\n- `attributes[...][...] == null` plans as a key-and-path existence\ncheck.\n\n### Semantics\n\n| Leaf | Result |\n| --- | --- |\n| String, integer, double, boolean, bytes | Typed value |\n| Null, map, or array | Null |\n| Missing key or index, or incompatible container | Null |\n| Invalid CBOR | Execution error naming the attribute and path |\n\nRows that resolve to null are omitted from the projection, so they align\nas null in the same way\nas a missing top-level attribute.\n\n**Known limitation:** each path decodes its serialized value\nindependently, so an expression that\nreads several paths from one attribute decodes it once per path. As\ndiscussed in the issue, avoiding\nrepeated projection needs engine support that is broader than nested\nattributes.\n\n## Related issue\n\n- Closes #4043\n\n## Validation\n\nUnit tests:\n\n- `read_cbor_scalar`: scalar leaves from maps and arrays, missing and\nincompatible paths, container\n  results, and invalid CBOR.\n- Assignment from nested map and array leaves for every scalar type.\n- Missing paths, container results, null leaves, wrong container types,\nand out-of-bounds indexes\n  resolve to null.\n- Arithmetic across two paths under the same attribute key.\n- Reads from nested instrumentation-scope attributes.\n- Filtering with equality, numeric comparison, `== null`, and `not(...\n== null)`.\n- Conditional (`if`) branches using nested paths.\n- Invalid CBOR returns an execution error.\n\n`cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt\n--check`, and\n`tools/sanitycheck.py` pass.\n\n## User-facing changes\n\nTransform expressions can read scalar values from nested Map and Slice\nattributes using string key\nand integer index selectors, for example\n`attributes[\"complex\"][\"items\"][0]`. Added\n`.chloggen/query-engine-nested-attribute-reads.yaml`.",
+          "timestamp": "2026-10-01T18:25:15Z",
+          "tree_id": "43ff9599aa64c598c6856ab20a85bcd62d931485",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/58b6880f0bc30b78071d229e47fd086a2a4e1eaf"
+        },
+        "date": 1790883108604,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 85.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.77,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.22,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.73,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.01,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.98,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_pdata",
+            "value": 2.78,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 72.48,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.88,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.56,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.16,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.35,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 117.8,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 104.98,
             "unit": "MB"
           }
         ]
