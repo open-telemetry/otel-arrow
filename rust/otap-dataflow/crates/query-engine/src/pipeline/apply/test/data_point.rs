@@ -1713,20 +1713,7 @@ async fn test_not_supported_queries_return_error() {
                     }
                 }",
         },
-        // assert that special attribute operations are not yet supported
-        TestCase {
-            query: "metrics | apply data_points {
-                rename attributes \"x\" as \"y\"
-            }",
-        },
-        TestCase {
-            query: "metrics | apply data_points {
-                remove attributes[\"x\"]
-            }",
-        },
-        // the following two cases, where we're accessing resource attributes for some data point
-        // should probably never be supported (instead, renaming attributes should be supported at
-        // the level metric itself).
+        // Accessing resource/scope attributes from a data-point pipeline is not supported.
         TestCase {
             query: "metrics | apply data_points {
                 rename resource.attributes \"x\" as \"y\"
