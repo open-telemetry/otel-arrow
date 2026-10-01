@@ -178,21 +178,14 @@ flush), or at shutdown.
 
 - All pending data is merged in arrival order. If `max_size` is set,
   it is split so every output is at most `max_size`. Items are packed to fill
-  each output to exactly `max_size` where the data allows.
+  each output to exactly `max_size` when the data allows. 
 - If `max_size` is unset, everything pending is merged into a single output with
   no upper bound.
 
-### Held-back remainders
-
-On a size flush with `max_size` set and a non-zero `max_batch_duration` that
-produces more than one output, if the final output is smaller than `min`, it is
-held back instead of sent. It becomes
-the first data in the next batch and restarts the flush timer. A held-back
-remainder therefore waits at most about `2 x max_batch_duration` in total.
-Timer and shutdown flushes send everything, including remainders.
-
-The original request is not acknowledged until every output carrying its data,
-including a held-back remainder, has been acknowledged.
+Note: Batch construction follows a greedy algorithm to seal batches and some 
+signal items with some sizers (such as metrics with an item sizer) are 
+non-uniform in size and either cannot be or are currently not split. `min_size`
+and `max_size` should be treated as lower and upper bounds respectively.
 
 ### Example configurations
 
@@ -202,7 +195,7 @@ batch processor.
 ```yaml
 type: processor:batch
 config:
-  max_batch_duration: 0s
+  max_batch_duration: 200ms
   format: otap
   otap:
     min_size: 8192
@@ -228,7 +221,7 @@ Only split oversized requests, forwarding everything else unchanged:
 ```yaml
 type: processor:batch
 config:
-  max_batch_duration: 0s
+  max_batch_duration: 200ms
   format: otap
   otap:
     min_size: 0
@@ -242,7 +235,7 @@ through.
 ```yaml
 type: processor:batch
 config:
-  max_batch_duration: 0s
+  max_batch_duration: 200mss
   format: otap
   otap:
     min_size: 8192
@@ -268,7 +261,7 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 | `otap.processor.batch.produced_batches_traces`       | `{item}`    | Total batches produced for traces signal.                                                                                                                                                              |
 | `otap.processor.batch.flushes_size`                  | `{flush}`   | Number of flushes triggered by size threshold (all signals)                                                                                                                                            |
 | `otap.processor.batch.flushes_timer`                 | `{flush}`   | Number of flushes triggered by timer (all signals)                                                                                                                                                     |
-| `otap.processor.batch.passthrough_batches`           | `{batch}`   | Number of inputs forwarded as-is, without re-batching or completion tracking, because their size was already within `[min_size, max_size]` on arrival.                                                 |
+| `otap.processor.batch.passthrough.batches`           | `{batch}`   | Number of inputs forwarded as-is, without re-batching or completion tracking, because their size was already within `[min_size, max_size]` on arrival.                                                 |
 | `otap.processor.batch.flush_pending_requests`        | `{request}` | Number of input requests pending at flush time.                                                                                                                                                        |
 | `otap.processor.batch.flush_pending_bytes`           | `By`        | Number of bytes pending at flush time when byte size is known.                                                                                                                                         |
 | `otap.processor.batch.flush_age_duration`            | `ns`        | Time from first pending input arrival to actual flush start.                                                                                                                                           |
