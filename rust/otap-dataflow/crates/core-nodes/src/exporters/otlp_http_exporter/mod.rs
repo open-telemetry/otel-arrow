@@ -1028,6 +1028,11 @@ async fn collect_body(response: Response, max_len: usize) -> Result<Bytes, Servi
     Ok(buf.freeze())
 }
 
+/// Finalizes one backend export and routes its terminal pipeline notification.
+///
+/// Backend metrics and delivery diagnostics are recorded before Ack/Nack routing.
+/// Notification failures therefore cannot redefine the export outcome. A rejected
+/// dynamic-auth generation is returned so the caller can invalidate it before retrying.
 async fn finalize_completed_export(
     completed: CompletedExport,
     effect_handler: &EffectHandler<OtapPdata>,
@@ -1043,17 +1048,28 @@ async fn finalize_completed_export(
     } = completed;
     let result = metrics.boundary.record(attempt);
     let pdata = OtapPdata::new(context, saved_payload);
+
+    // A delivery episode is scoped to backend completion, not the later Ack/Nack.
+    // Keep both attempt start and completion times so an older in-flight success
+    // cannot declare recovery from a failure observed after that attempt started.
     let now = Instant::now();
-    // Use the same auth-aware decision for diagnostics and the terminal Nack.
+
+    // Compute retryability once so the retained diagnostic sample and terminal
+    // Nack agree, including the special handling of a 401 from dynamic auth.
     let retryable = result.as_ref().is_err_and(|error| {
         error.is_retryable() || (auth_generation.is_some() && error.is_auth_failure())
     });
-    let diagnostic = metrics.diagnostics.signal(signal_type);
+
+    // Success is normally silent and only selects a summary or confirmed recovery.
+    // Failure detail is formatted only when the first warning or a summary is due.
+    let delivery_diagnostic = metrics.diagnostics.signal(signal_type);
     let report = match &result {
-        Ok(()) => diagnostic.success(diagnostic_started_at, now),
-        Err(error) => diagnostic.failure(now, error.error_type(), retryable, || error),
+        Ok(()) => delivery_diagnostic.success(diagnostic_started_at, now),
+        Err(error) => delivery_diagnostic.failure(now, error.error_type(), retryable, || error),
     };
-    diagnostic.emit(report, signal_type);
+    // Emit immediately while the selected report and retained retryability sample
+    // still describe the same completed export.
+    delivery_diagnostic.emit(report, signal_type);
 
     // Set to the rejected auth's generation when the server rejected the auth
     // this request used (401), so the caller can invalidate exactly that
