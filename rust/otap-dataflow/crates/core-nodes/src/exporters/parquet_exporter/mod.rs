@@ -159,6 +159,15 @@ impl ParquetExporter {
 
         TerminalState::new(deadline, snapshots)
     }
+
+    #[cfg(test)]
+    pub fn with_dummy_metrics(mut self) -> Self {
+        let registry = otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle::new();
+        let controller = otel_arrow_dfe_engine::context::ControllerContext::new(registry);
+        let ctx = controller.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        self.io_metrics = Some(metrics::ParquetExporterMetrics::register(&ctx));
+        self
+    }
 }
 
 #[async_trait(?Send)]
@@ -558,7 +567,7 @@ mod test {
             retry: None,
             partitioning_strategies: None,
             writer_options: None,
-        });
+        }).with_dummy_metrics();
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
         let exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
             exporter,
@@ -667,7 +676,7 @@ mod test {
             retry: None,
             partitioning_strategies: None,
             writer_options: None,
-        });
+        }).with_dummy_metrics();
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
         let exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
             exporter,
@@ -813,7 +822,7 @@ mod test {
                 vec![idgen::PARTITION_METADATA_KEY.to_string()],
             )]),
             writer_options: None,
-        });
+        }).with_dummy_metrics();
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
         let exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
             exporter,
@@ -900,7 +909,7 @@ mod test {
             retry: None,
             partitioning_strategies: None,
             writer_options: None,
-        });
+        }).with_dummy_metrics();
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
         let exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
             exporter,
@@ -1266,7 +1275,7 @@ mod test {
             retry: None,
             partitioning_strategies: None,
             writer_options: None,
-        });
+        }).with_dummy_metrics();
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
         let exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
             exporter,
@@ -1338,7 +1347,7 @@ mod test {
             retry: None,
             partitioning_strategies: None,
             writer_options: None,
-        });
+        }).with_dummy_metrics();
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
         let exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
             exporter,
@@ -1684,7 +1693,7 @@ mod test {
             retry: None,
             partitioning_strategies: None,
             writer_options: None,
-        });
+        }).with_dummy_metrics();
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
         let exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
             exporter,
