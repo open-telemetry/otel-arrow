@@ -9,15 +9,18 @@ use crate::context::{ContextEntryName, ContextEntryRef};
 use crate::context_policy::{ContextEntryDeclaration, ContextEntryPart, ContextScope};
 use crate::error::Error;
 
-/// A layout contains sorted primitive fields and composite entries.
+/// A deterministic layout of primitive fields and composite entries.
+///
+/// Fields and entries use canonical ordering; entry members retain declaration
+/// order because that order defines their projection.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ContextLayout {
     /// Primitive elements from each domain.
     fields: Box<[ContextFieldLayout]>,
     /// Composite entries from `policies::context::entries`.
     entries: Box<[ContextEntryLayout]>,
-    /// Flat root namespace containing both primitives and composites.
-    by_name: BTreeMap<ContextEntryName, ContextRootId>,
+    /// Namespace containing both primitives and composites.
+    names: BTreeMap<ContextEntryName, ContextNameId>,
 }
 
 /// Context domains are separate areas of configuration and authority.
@@ -62,9 +65,9 @@ impl ContextEntryId {
     }
 }
 
-/// Identity of one name in the layout's flat root namespace.
+/// Identity of one name in the layout's top-level namespace.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ContextRootId {
+pub enum ContextNameId {
     /// Independently addressable primitive field.
     Primitive(ContextFieldId),
     /// Composite entry, addressable as a whole or by qualified member.
@@ -103,16 +106,38 @@ pub struct ContextEntryLayout {
     pub conditions: Box<[ContextCondition]>,
 }
 
-/// A compiled primitive, composite, or qualified composite-member reference.
-///
-/// For a qualified member, `presence` identifies the parent composite. Reading
-/// one member never bypasses that composite's atomic presence requirement.
+/// Selected context values and their atomic presence gate.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ContextBinding {
-    /// Primitive or composite whose presence must be checked.
-    pub presence: ContextRootId,
-    /// Fields in their configured projection order.
-    pub fields: Box<[ContextFieldId]>,
+pub enum ContextProjection {
+    /// One independently present primitive field.
+    Primitive(ContextFieldId),
+    /// All or selected fields gated by one composite entry.
+    Composite {
+        /// Composite whose members and conditions determine presence.
+        entry: ContextEntryId,
+        /// Fields in configured projection order.
+        fields: Box<[ContextFieldId]>,
+    },
+}
+
+impl ContextProjection {
+    /// Returns the primitive or composite whose presence gates this projection.
+    #[must_use]
+    pub const fn presence(&self) -> ContextNameId {
+        match self {
+            Self::Primitive(field) => ContextNameId::Primitive(*field),
+            Self::Composite { entry, .. } => ContextNameId::Composite(*entry),
+        }
+    }
+
+    /// Returns fields in configured projection order.
+    #[must_use]
+    pub fn fields(&self) -> &[ContextFieldId] {
+        match self {
+            Self::Primitive(field) => std::slice::from_ref(field),
+            Self::Composite { fields, .. } => fields,
+        }
+    }
 }
 
 fn invalid(message: impl Into<String>) -> Error {
@@ -133,20 +158,20 @@ impl ContextLayout {
             .into_iter()
             .collect();
         let mut entries = Vec::with_capacity(declarations.len());
-        let mut by_name = BTreeMap::new();
+        let mut names = BTreeMap::new();
         for (index, field) in fields.iter().enumerate() {
             let name = field.name.clone();
             let field_id = ContextFieldId(index);
-            match by_name.insert(name.clone(), ContextRootId::Primitive(field_id)) {
+            match names.insert(name.clone(), ContextNameId::Primitive(field_id)) {
                 None => {}
-                Some(ContextRootId::Primitive(existing)) => {
+                Some(ContextNameId::Primitive(existing)) => {
                     return Err(invalid(format!(
                         "context source `{name}` is produced as both {:?} and {:?}",
                         fields[existing.index()].domain,
                         field.domain,
                     )));
                 }
-                Some(ContextRootId::Composite(_)) => {
+                Some(ContextNameId::Composite(_)) => {
                     return Err(invalid(format!(
                         "context source `{name}` conflicts with a composite entry"
                     )));
@@ -161,7 +186,7 @@ impl ContextLayout {
                 .then_with(|| left.name.cmp(&right.name))
         });
         for declaration in ordered {
-            if by_name.contains_key(&declaration.name) {
+            if names.contains_key(&declaration.name) {
                 return Err(invalid(format!(
                     "context entry `{}` conflicts with a primitive or composite entry",
                     declaration.name
@@ -173,7 +198,7 @@ impl ContextLayout {
                     declaration.name
                 )));
             }
-            let mut names = BTreeSet::new();
+            let mut member_names = BTreeSet::new();
             let mut members = Vec::with_capacity(declaration.definition.0.len());
             let mut conditions = Vec::new();
             for part in &declaration.definition.0 {
@@ -225,7 +250,7 @@ impl ContextLayout {
                     .member_name()
                     .expect("value-bearing context part has a member name")
                     .clone();
-                if !names.insert(name.clone()) {
+                if !member_names.insert(name.clone()) {
                     return Err(invalid(format!(
                         "context entry `{}` repeats member `{name}`",
                         declaration.name
@@ -250,7 +275,7 @@ impl ContextLayout {
             }
             conditions.sort_unstable();
             let id = ContextEntryId(entries.len());
-            _ = by_name.insert(declaration.name.clone(), ContextRootId::Composite(id));
+            _ = names.insert(declaration.name.clone(), ContextNameId::Composite(id));
             entries.push(ContextEntryLayout {
                 name: declaration.name.clone(),
                 scope: declaration.scope.clone(),
@@ -261,7 +286,7 @@ impl ContextLayout {
         Ok(Self {
             fields,
             entries: entries.into_boxed_slice(),
-            by_name,
+            names,
         })
     }
 
@@ -277,45 +302,44 @@ impl ContextLayout {
         &self.entries
     }
 
-    /// Resolve a whole entry or qualified member with its parent's presence gate.
-    pub fn bind(&self, reference: &ContextEntryRef) -> Result<ContextBinding, Error> {
+    /// Resolve a primitive, whole composite, or qualified composite member.
+    pub fn resolve(&self, reference: &ContextEntryRef) -> Result<ContextProjection, Error> {
         match reference.scope() {
             None => {
-                let root = *self
-                    .by_name
+                let name = *self
+                    .names
                     .get(reference.name())
                     .ok_or_else(|| invalid(format!("unknown context entry `{reference}`")))?;
-                let fields = match root {
-                    ContextRootId::Primitive(field) => vec![field],
-                    ContextRootId::Composite(entry) => self.entries[entry.index()]
-                        .members
-                        .iter()
-                        .map(|member| member.field)
-                        .collect(),
-                };
-                Ok(ContextBinding {
-                    presence: root,
-                    fields: fields.into_boxed_slice(),
-                })
+                match name {
+                    ContextNameId::Primitive(field) => Ok(ContextProjection::Primitive(field)),
+                    ContextNameId::Composite(entry) => Ok(ContextProjection::Composite {
+                        entry,
+                        fields: self.entries[entry.index()]
+                            .members
+                            .iter()
+                            .map(|member| member.field)
+                            .collect(),
+                    }),
+                }
             }
             Some(entry_name) => {
-                let root = *self
-                    .by_name
+                let name = *self
+                    .names
                     .get(entry_name)
                     .ok_or_else(|| invalid(format!("unknown context entry `{entry_name}`")))?;
-                let ContextRootId::Composite(entry_id) = root else {
+                let ContextNameId::Composite(entry) = name else {
                     return Err(invalid(format!(
                         "primitive context entry `{entry_name}` has no qualified members"
                     )));
                 };
-                let field = self.entries[entry_id.index()]
+                let field = self.entries[entry.index()]
                     .members
                     .iter()
                     .find(|candidate| &candidate.name == reference.name())
                     .ok_or_else(|| invalid(format!("unknown context member `{reference}`")))?
                     .field;
-                Ok(ContextBinding {
-                    presence: root,
+                Ok(ContextProjection::Composite {
+                    entry,
                     fields: Box::new([field]),
                 })
             }
@@ -367,48 +391,48 @@ mod tests {
     }
 
     /// Scenario: a mixed-source grouping is compiled in declaration order.
-    /// Guarantees: whole and qualified bindings use one atomic presence gate.
+    /// Guarantees: whole and qualified projections use one atomic presence gate.
     #[test]
     fn mixed_group_and_member_share_presence() {
         let layout = ContextLayout::compile(fields(), &[entry()]).expect("valid layout");
         let whole = layout
-            .bind(&reference("product_user"))
+            .resolve(&reference("product_user"))
             .expect("whole entry");
         let member = layout
-            .bind(&reference("product_user:customer_id"))
+            .resolve(&reference("product_user:customer_id"))
             .expect("qualified member");
-        assert_eq!(whole.presence, member.presence);
-        assert_eq!(whole.fields.len(), 2);
-        assert_eq!(&whole.fields[..1], &member.fields[..]);
+        assert_eq!(whole.presence(), member.presence());
+        assert_eq!(whole.fields().len(), 2);
+        assert_eq!(&whole.fields()[..1], member.fields());
         assert!(matches!(
-            whole.presence,
-            ContextRootId::Composite(ContextEntryId(0))
+            whole.presence(),
+            ContextNameId::Composite(ContextEntryId(0))
         ));
         assert_eq!(layout.entries().len(), 1);
         assert_eq!(
-            layout.fields()[whole.fields[0].index()].domain,
+            layout.fields()[whole.fields()[0].index()].domain,
             ContextDomain::AuthorizedIdentity
         );
         assert_eq!(
-            layout.fields()[whole.fields[1].index()].domain,
+            layout.fields()[whole.fields()[1].index()].domain,
             ContextDomain::TransportHeader
         );
     }
 
-    /// Scenario: an unqualified primitive name is bound directly.
-    /// Guarantees: primitive roots bind one field without creating a synthetic composite entry.
+    /// Scenario: an unqualified primitive name is resolved directly.
+    /// Guarantees: primitive projections contain one field and create no synthetic composite.
     #[test]
-    fn primitive_binding_uses_field_presence() {
+    fn primitive_projection_uses_field_presence() {
         let layout = ContextLayout::compile(fields(), &[entry()]).expect("valid layout");
-        let binding = layout
-            .bind(&reference("workspace"))
+        let projection = layout
+            .resolve(&reference("workspace"))
             .expect("primitive entry");
 
-        assert_eq!(binding.fields.len(), 1);
-        assert_eq!(
-            binding.presence,
-            ContextRootId::Primitive(binding.fields[0])
-        );
+        let ContextProjection::Primitive(field) = &projection else {
+            panic!("workspace must resolve to a primitive projection");
+        };
+        assert_eq!(projection.fields().len(), 1);
+        assert_eq!(projection.presence(), ContextNameId::Primitive(*field));
         assert_eq!(layout.entries().len(), 1);
     }
 
@@ -476,8 +500,8 @@ mod tests {
     #[test]
     fn unknown_qualified_member_is_rejected() {
         let layout = ContextLayout::compile(fields(), &[entry()]).expect("layout");
-        assert!(layout.bind(&reference("product_user:missing")).is_err());
-        assert!(layout.bind(&reference("workspace:customer")).is_err());
+        assert!(layout.resolve(&reference("product_user:missing")).is_err());
+        assert!(layout.resolve(&reference("workspace:customer")).is_err());
     }
 
     /// Scenario: transport-header and authorized-identity capture produce the same stored name.
@@ -533,11 +557,14 @@ mod tests {
         let first = ContextLayout::compile(fields.clone(), &[conditional]).expect("layout");
         let second = ContextLayout::compile(fields, &[reordered]).expect("layout");
         assert_eq!(first, second);
-        let binding = first
-            .bind(&reference("product_user"))
+        let projection = first
+            .resolve(&reference("product_user"))
             .expect("composite entry");
-        let ContextRootId::Composite(entry_id) = binding.presence else {
-            panic!("product_user must bind a composite");
+        let ContextProjection::Composite {
+            entry: entry_id, ..
+        } = projection
+        else {
+            panic!("product_user must resolve to a composite projection");
         };
         let entry = &first.entries()[entry_id.index()];
         assert_eq!(entry.members.len(), 2);
