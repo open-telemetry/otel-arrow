@@ -167,43 +167,7 @@ impl PipelineStage for ScaleMetricPipelineStage {
 }
 
 fn update_units(record_batch: &RecordBatch, unit: &str) -> Result<RecordBatch> {
-    let metric_types = record_batch
-        .column_by_name(consts::METRIC_TYPE)
-        .and_then(|array| array.as_any().downcast_ref::<UInt8Array>())
-        .ok_or_else(|| Error::ExecutionError {
-            cause: "metrics batch is missing a UInt8 metric_type column".into(),
-        })?;
-    let existing_units = record_batch
-        .column_by_name(consts::UNIT)
-        .map(|array| cast(array, &DataType::Utf8))
-        .transpose()?;
-    let existing_units = existing_units
-        .as_ref()
-        .map(|array| {
-            array
-                .as_any()
-                .downcast_ref::<StringArray>()
-                .ok_or_else(|| Error::ExecutionError {
-                    cause: "unit column could not be cast to Utf8".into(),
-                })
-        })
-        .transpose()?;
-
-    let units = StringArray::from_iter((0..record_batch.num_rows()).map(|index| {
-        let supported = metric_types.is_valid(index)
-            && matches!(
-                metric_types.value(index),
-                value if value == MetricType::Gauge as u8
-                    || value == MetricType::Sum as u8
-                    || value == MetricType::Histogram as u8
-                    || value == MetricType::Summary as u8
-            );
-        if supported {
-            Some(unit)
-        } else {
-            existing_units.and_then(|array| array.is_valid(index).then(|| array.value(index)))
-        }
-    }));
+    let units = StringArray::from_iter(std::iter::repeat_n(Some(unit), record_batch.num_rows()));
 
     if let Ok(index) = record_batch.schema().index_of(consts::UNIT) {
         let schema = record_batch.schema();
