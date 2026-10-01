@@ -178,12 +178,12 @@ flush), or at shutdown.
 
 - All pending data is merged in arrival order. If `max_size` is set,
   it is split so every output is at most `max_size`. Items are packed to fill
-  each output to exactly `max_size` when the data allows. 
+  each output to exactly `max_size` when the data allows.
 - If `max_size` is unset, everything pending is merged into a single output with
   no upper bound.
 
-Note: Batch construction follows a greedy algorithm to seal batches and some 
-signal items with some sizers (such as metrics with an item sizer) are 
+Note: Batch construction follows a greedy algorithm to seal batches and some
+signal items with some sizers (such as metrics with an item sizer) are
 non-uniform in size and either cannot be or are currently not split. `min_size`
 and `max_size` should be treated as lower and upper bounds respectively.
 
