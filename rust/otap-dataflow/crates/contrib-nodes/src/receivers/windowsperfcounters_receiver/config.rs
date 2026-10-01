@@ -15,6 +15,7 @@ const MIN_COLLECTION_INTERVAL: Duration = Duration::from_secs(1);
 const MAX_COLLECTION_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 const MAX_INITIAL_DELAY: Duration = Duration::from_secs(24 * 60 * 60);
 const MAX_METRICS: usize = u16::MAX as usize + 1;
+const MAX_COUNTERS: usize = 256;
 const RECEIVER_ATTRIBUTE_PREFIX: &str = "windows.perf_counter.";
 
 /// OTel metric kind used to project a performance counter.
@@ -124,6 +125,13 @@ enum OneOrMany {
 }
 
 impl OneOrMany {
+    fn len(&self) -> usize {
+        match self {
+            Self::One(_) => 1,
+            Self::Many(values) => values.len(),
+        }
+    }
+
     fn into_vec(self) -> Vec<String> {
         match self {
             Self::One(value) => vec![value],
@@ -184,6 +192,28 @@ fn validate_counter_name<'a>(field: &str, value: &'a str) -> Result<&'a str, Err
         )));
     }
     Ok(value)
+}
+
+/// Counts expanded counter paths before allocating them, so instance-by-counter
+/// products are bounded before materialization.
+fn expanded_counter_count(objects: &[ObjectConfig]) -> Result<usize, Error> {
+    let too_many = || {
+        invalid(format!(
+            "perfcounters must expand to at most {MAX_COUNTERS} counter paths"
+        ))
+    };
+    let mut total: usize = 0;
+    for object in objects {
+        let instances = object.instances.as_ref().map_or(1, OneOrMany::len);
+        let paths = instances
+            .checked_mul(object.counters.len())
+            .ok_or_else(too_many)?;
+        total = total.checked_add(paths).ok_or_else(too_many)?;
+        if total > MAX_COUNTERS {
+            return Err(too_many());
+        }
+    }
+    Ok(total)
 }
 
 fn validate_metric_count(count: usize) -> Result<(), Error> {
@@ -258,7 +288,8 @@ impl RuntimeConfig {
             let _ = metric.kind(name)?;
         }
 
-        let mut counters = Vec::new();
+        let expanded_count = expanded_counter_count(&user.perfcounters)?;
+        let mut counters = Vec::with_capacity(expanded_count);
         let mut referenced_metrics = HashSet::new();
         for (object_index, object) in user.perfcounters.into_iter().enumerate() {
             let object_field = format!("perfcounters[{object_index}]");
@@ -950,6 +981,33 @@ mod tests {
                 "perfcounters[0].counters[0].name contains a reserved",
             );
         }
+    }
+
+    /// Scenario: Instance and counter lists multiply into many expanded counter paths.
+    /// Guarantees: The expanded total is bounded before any paths are materialized.
+    #[test]
+    fn bounds_expanded_counter_paths() {
+        let object = |instances: usize, counters: usize| {
+            json!({
+                "object": "Process",
+                "instances": (0..instances).map(|i| format!("i{i}")).collect::<Vec<_>>(),
+                "counters": (0..counters)
+                    .map(|c| json!({"name": format!("C{c}"), "metric": "available"}))
+                    .collect::<Vec<_>>()
+            })
+        };
+
+        let config = RuntimeConfig::from_json(&gauge_config(object(16, 16))).unwrap();
+        assert_eq!(config.counters.len(), MAX_COUNTERS);
+
+        assert_config_error(
+            gauge_config(object(17, 16)),
+            "perfcounters must expand to at most 256 counter paths",
+        );
+        assert_config_error(
+            gauge_config(object(10_000, 10_000)),
+            "perfcounters must expand to at most 256 counter paths",
+        );
     }
 
     /// Scenario: Path segments have leading or trailing whitespace.
