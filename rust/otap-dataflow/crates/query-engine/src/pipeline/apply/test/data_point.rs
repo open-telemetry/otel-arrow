@@ -1216,6 +1216,28 @@ async fn test_filter_data_point_by_attribute_is_null() {
     .await;
 }
 
+/// Scenario: Filter all metric data point types by a nested serialized attribute leaf.
+/// Guarantees: Only data points whose nested leaf matches are kept.
+#[tokio::test]
+async fn test_filter_data_point_by_nested_attribute() {
+    let query = "metrics | apply data_points {
+        where attributes[\"complex\"][\"x\"] == 5
+    }";
+    let complex = |x| {
+        Some(vec![KeyValue::new(
+            "complex",
+            AnyValue::new_kvlist(vec![KeyValue::new("x", AnyValue::new_int(x))]),
+        )])
+    };
+
+    run_filter_all_data_point_types_test(
+        query,
+        vec![(1u32, complex(6)), (2u32, complex(5)), (3u32, None)],
+        vec![1],
+    )
+    .await;
+}
+
 /// In a handful of tests below, we want to ensure that values are assigned to all data point types
 /// with the correct key / value from sources involving various types of expressions. This helper
 /// simply populates each type of data point, evaluates the expression, and ensures the correct
@@ -1409,6 +1431,27 @@ async fn test_assign_to_data_point_attributes_copy_attribute() {
         query,
         Default::default(),
         Some(vec![KeyValue::new("y", AnyValue::new_int(5))]),
+        "x",
+        AnyValue::new_int(5),
+    )
+    .await;
+}
+
+/// Scenario: assign a data point attribute from a nested serialized data point attribute leaf
+/// Guarantees: every data point type receives the nested leaf value
+#[tokio::test]
+async fn test_assign_to_data_point_attributes_from_nested_attribute() {
+    let query = "metrics | apply data_points {
+        set attributes[\"x\"] = attributes[\"complex\"][\"y\"]
+    }";
+
+    run_assign_to_all_data_point_type_test(
+        query,
+        Default::default(),
+        Some(vec![KeyValue::new(
+            "complex",
+            AnyValue::new_kvlist(vec![KeyValue::new("y", AnyValue::new_int(5))]),
+        )]),
         "x",
         AnyValue::new_int(5),
     )

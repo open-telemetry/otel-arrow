@@ -6776,6 +6776,45 @@ mod test {
         }
     }
 
+    /// Scenario: Assign a span attribute from a nested serialized span attribute leaf.
+    /// Guarantees: Each span receives the leaf from its own nested attribute.
+    #[tokio::test]
+    async fn test_read_nested_span_attribute_path() {
+        let complex = |name| {
+            KeyValue::new(
+                "complex",
+                AnyValue::new_kvlist(vec![KeyValue::new("name", AnyValue::new_string(name))]),
+            )
+        };
+        let traces_data = to_traces_data(vec![
+            Span::build().attributes(vec![complex("a")]).finish(),
+            Span::build().attributes(vec![complex("b")]).finish(),
+        ]);
+
+        let query = r#"traces | extend attributes["name"] = attributes["complex"]["name"]"#;
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+        let input = otlp_to_otap(&OtlpProtoMessage::Traces(traces_data));
+        let result = pipeline.execute(input).await.unwrap();
+
+        let OtlpProtoMessage::Traces(result_traces_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        for (span, expected) in result_traces_data.resource_spans[0].scope_spans[0]
+            .spans
+            .iter()
+            .zip(["a", "b"])
+        {
+            assert_eq!(
+                span.attributes,
+                vec![
+                    complex(expected),
+                    KeyValue::new("name", AnyValue::new_string(expected)),
+                ]
+            );
+        }
+    }
+
     /// Scenario: Read a nested path from a serialized attribute holding invalid CBOR.
     /// Guarantees: The pipeline returns an error naming the attribute key and path.
     #[tokio::test]

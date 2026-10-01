@@ -6350,6 +6350,38 @@ mod test {
         }
     }
 
+    /// Scenario: Filter spans by a nested serialized attribute leaf.
+    /// Guarantees: Only spans whose nested leaf matches are kept.
+    #[tokio::test]
+    async fn test_filter_spans_by_nested_serialized_attribute() {
+        let span = |name: &str| {
+            Span::build()
+                .trace_id(vec![1; 16])
+                .span_id(vec![1; 8])
+                .status(Status::default())
+                .attributes(vec![KeyValue::new(
+                    "complex",
+                    AnyValue::new_kvlist(vec![KeyValue::new("name", AnyValue::new_string(name))]),
+                )])
+                .finish()
+        };
+        let spans = vec![span("a"), span("b")];
+
+        let parser_result =
+            OplParser::parse(r#"traces | where attributes["complex"]["name"] == "b""#).unwrap();
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
+        let result = pipeline
+            .execute(to_otap_traces(spans.clone()))
+            .await
+            .unwrap();
+
+        let traces_data = otap_to_traces_data(result);
+        pretty_assertions::assert_eq!(
+            &traces_data.resource_spans[0].scope_spans[0].spans,
+            &[spans[1].clone()]
+        );
+    }
+
     #[tokio::test]
     async fn test_filter_by_attr_bytes_type() {
         let log_records = vec![
