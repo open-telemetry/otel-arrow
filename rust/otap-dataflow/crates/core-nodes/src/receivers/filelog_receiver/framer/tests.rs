@@ -774,6 +774,71 @@ fn bounds_and_offset_overflow() {
     assert_eq!(framer.pending_source_start(), Some(u64::MAX - 1));
 }
 
+/// Scenario: ASCII bodies fit or exceed limits below the initial allocation floor.
+/// Guarantees: Requested growth stays within the limit; split/truncate bodies, ranges and metadata are unchanged.
+#[test]
+fn small_bounds_preserve_split_and_truncate_frames() {
+    for (encoding, policy, limit) in [
+        (Encoding::Raw, OnDecodeError::Fail, 1),
+        (Encoding::Ascii, OnDecodeError::Fail, 1),
+        (Encoding::Ascii, OnDecodeError::PreserveRaw, 3),
+        (Encoding::Ascii, OnDecodeError::Replace, 3),
+        (Encoding::Utf8, OnDecodeError::PreserveRaw, 4),
+        (Encoding::Utf8, OnDecodeError::Replace, 4),
+        (Encoding::Utf8, OnDecodeError::Fail, 4),
+    ] {
+        for unit_len in 1..=limit {
+            assert!(growth(0, 0, unit_len, limit) <= limit);
+        }
+        let prefix = "x".repeat(limit);
+        let body = |value: &str, split_line: bool| {
+            if encoding == Encoding::Raw || (policy == OnDecodeError::PreserveRaw && split_line) {
+                bytes(value.as_bytes())
+            } else {
+                text(value)
+            }
+        };
+        let end = limit as u64;
+        for behavior in [OversizeBehavior::Split, OversizeBehavior::Truncate] {
+            let mut cfg = config(encoding, policy, limit);
+            cfg.oversize = behavior;
+            partitioned(
+                cfg,
+                format!("{prefix}\n").as_bytes(),
+                &[expected(
+                    body(&prefix, false),
+                    range(0, end),
+                    range(0, end + 1),
+                )],
+            );
+            let frames = match behavior {
+                OversizeBehavior::Split => vec![
+                    split(
+                        expected(body(&prefix, true), range(0, end), range(0, end)),
+                        0,
+                        0,
+                        false,
+                    ),
+                    split(
+                        expected(body("x", true), range(end, end + 1), range(end, end + 2)),
+                        0,
+                        1,
+                        true,
+                    ),
+                ],
+                OversizeBehavior::Truncate => {
+                    let mut frame =
+                        expected(body(&prefix, false), range(0, end), range(0, end + 2));
+                    frame.truncated = true;
+                    frame.discarded_source_bytes = 1;
+                    vec![frame]
+                }
+            };
+            partitioned(cfg, format!("{prefix}x\n").as_bytes(), &frames);
+        }
+    }
+}
+
 fn new_error(cfg: LineConfig) -> LineError {
     LineFramer::new(cfg, LineStart::NewStream).expect_err("expected rejection")
 }

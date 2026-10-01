@@ -127,10 +127,11 @@ Shutdown, read pauses, empty chunks and ordinary EOF never authorize completion.
 
 `CompletionInProgress` and `next`'s input-offset `Decode(OffsetDiscontinuity)`
 leave state usable: finish the active completion or correct the offset, then
-retry. Malformed-input, source-offset overflow, allocation and fragment-index
-failures latch; subsequent input/completion calls return the same error with
-zero consumption. `terminal_error()` reports this status. Recovery requires
-caller-authorized reconstruction; constructor errors create no instance.
+retry. Malformed input rejected under `OnDecodeError::Fail`, source-offset
+overflow, allocation failures and fragment-index overflow latch a terminal error.
+Subsequent input/completion calls return the same error with zero consumption.
+`terminal_error()` reports this status. Recovery requires caller-authorized
+reconstruction; constructor errors create no instance.
 
 `Decode` preserves decoder evidence but follows framer recovery rules.
 Completion drains first, so `DrainRequired` indicates an internal violation and
@@ -163,10 +164,13 @@ memory accounting owns aggregate retention.
 ## Resource bounds
 
 Text decoding uses one text buffer, plus an exact-source buffer for preserve-raw;
-raw mode uses one byte buffer. Geometric growth caps each at `B`; retained
-payload is at most `2 * B`, plus inline decoder state and one event. Truncate
-memory does not grow with the tail. There is no per-unit heap allocation,
-rescanning, synchronization or retained input borrow.
+raw mode uses one byte buffer. On first use, each buffer requests at least
+`min(64, B)` bytes, then grows geometrically. Buffer lengths and requested growth
+targets remain capped at `B` each. Combined retained body lengths are at most
+`2 * B`; memory accounting uses reported capacities, which may exceed requested
+targets. Decoder state and one retained event are inline. Truncate memory does
+not grow with the tail. There is no per-unit heap allocation, rescanning,
+synchronization or retained input borrow.
 
 `retained_capacity()` reports owned heap capacities; add `size_of::<LineFramer>()`
 for inline storage. Caller scratch, transferred output, allocator overhead and

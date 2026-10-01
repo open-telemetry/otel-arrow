@@ -9,6 +9,10 @@ use super::decoder::{
 };
 use thiserror::Error;
 
+// Measured to reduce allocation events; tiny lines retain spare capacity.
+// See docs/framer.md, "Resource bounds".
+const INITIAL_BODY_CAPACITY: usize = 64;
+
 /// Treatment of a physical line exceeding the configured body bound.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OversizeBehavior {
@@ -584,7 +588,12 @@ fn growth(len: usize, capacity: usize, additional: usize, limit: usize) -> usize
     if additional <= capacity - len {
         return 0;
     }
-    let target = (len + additional).max(capacity.saturating_mul(2).min(limit));
+    let target = (len + additional).max(
+        capacity
+            .saturating_mul(2)
+            .max(INITIAL_BODY_CAPACITY)
+            .min(limit),
+    );
     target - len
 }
 

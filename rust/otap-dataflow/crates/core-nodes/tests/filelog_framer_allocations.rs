@@ -27,7 +27,7 @@ fn discard(framer: &mut LineFramer, mut input: &[u8]) {
 }
 
 /// Scenario: A preserve-raw truncation scans four MiB after filling its bounded prefix.
-/// Guarantees: Tail scans and payload transfer allocate nothing; prefix growth stays geometric.
+/// Guarantees: Prefix growth uses at most 10 allocation events; tail scans and transfer allocate nothing.
 #[test]
 fn truncate_tail_allocates_nothing() {
     let _profiler = dhat::Profiler::builder().testing().build();
@@ -47,7 +47,7 @@ fn truncate_tail_allocates_nothing() {
     let before = dhat::HeapStats::get();
     discard(&mut framer, &scratch);
     let filled = dhat::HeapStats::get();
-    dhat::assert!(filled.total_blocks - before.total_blocks <= 24);
+    dhat::assert!(filled.total_blocks - before.total_blocks <= 10);
     dhat::assert!(framer.retained_capacity() <= 2 * limit);
     for _ in 0..1024 {
         discard(&mut framer, black_box(&scratch));

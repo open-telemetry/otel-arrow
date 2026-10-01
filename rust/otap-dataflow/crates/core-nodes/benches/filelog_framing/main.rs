@@ -3,9 +3,12 @@
 
 //! Decoder-plus-framer throughput; excludes source I/O and receiver integration.
 //!
-//! Baseline (2026-09-28, cfa9342d8, Linux AMD EPYC 7763 VM, Rust 1.98.1):
-//! 128-byte UTF-8 lines, 128-KiB chunks: 51.0 MiB/s preserve-raw, 68.6 MiB/s
-//! replace (source bytes; median of three Criterion run means).
+//! 2026-10-01, Linux Xeon 6973P-C VM, Rust 1.98.1, system allocator:
+//! df49936c3 -> 64-byte floor, 128-byte UTF-8 lines / 128-KiB chunks:
+//! preserve-raw 80.69 -> 94.88 MiB/s; replace 108.58 -> 121.21 MiB/s.
+//! Median of three run means on one pinned CPU, counting source bytes.
+//! Temporary jemalloc harness: one-byte preserve-raw ~2-3% slower;
+//! oversized truncate ~3.6% slower.
 //!
 //! Run: `cargo bench --locked -p otel-arrow-dfe-core-nodes --bench filelog_framing`
 
