@@ -20,14 +20,12 @@ use crate::context::{ControllerContext, ExtensionContext, PipelineContext};
 use crate::control::NodeControlMsg;
 use crate::runtime_services::PipelineRuntimeServices;
 use otel_arrow_dfe_channel::mpsc;
-#[cfg(any(test, feature = "test-utils"))]
-use otel_arrow_dfe_config::ExtensionId;
 use otel_arrow_dfe_config::engine::{
     ResolvedOtelDataflowSpec, ResolvedPipelineConfig, ResolvedPipelineRole,
 };
 use otel_arrow_dfe_config::node::NodeKind;
 use otel_arrow_dfe_config::pipeline::PipelineConfig;
-use otel_arrow_dfe_config::policy::Policies;
+use otel_arrow_dfe_config::policy::{DistributionTier, Policies};
 use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -81,6 +79,15 @@ pub fn test_pipeline_ctx() -> (PipelineContext, TelemetryRegistryHandle) {
 pub fn test_pipeline_ctx_with_interests(
     interests: Interests,
 ) -> (PipelineContext, TelemetryRegistryHandle) {
+    test_pipeline_ctx_with_interests_and_duration_distribution(interests, DistributionTier::Normal)
+}
+
+/// Create a minimal [`PipelineContext`] with explicit node interests and local duration tier.
+#[must_use]
+pub fn test_pipeline_ctx_with_interests_and_duration_distribution(
+    interests: Interests,
+    duration_distribution: DistributionTier,
+) -> (PipelineContext, TelemetryRegistryHandle) {
     let registry = TelemetryRegistryHandle::new();
     let controller = ControllerContext::new(registry.clone());
     let mut ctx = controller
@@ -92,6 +99,7 @@ pub fn test_pipeline_ctx_with_interests(
             HashMap::new(),
         );
     ctx.set_node_interests(interests);
+    ctx.set_node_duration_distribution(duration_distribution);
     (ctx, registry)
 }
 
@@ -140,7 +148,9 @@ pub fn test_extension_ctx() -> (ExtensionContext, TelemetryRegistryHandle) {
 /// Create a minimal extension effect handler for tests that run an extension directly.
 #[cfg(any(test, feature = "test-utils"))]
 #[must_use]
-pub fn test_extension_effect_handler(name: ExtensionId) -> crate::extension::EffectHandler {
+pub fn test_extension_effect_handler(
+    name: otel_arrow_dfe_config::ExtensionId,
+) -> crate::extension::EffectHandler {
     let (tx, _rx) = flume::bounded(1);
     crate::extension::EffectHandler::new(
         name,

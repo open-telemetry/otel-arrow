@@ -3,17 +3,15 @@
 # One of 'breaking', 'deprecation', 'new_component', 'enhancement', 'bug_fix'
 change_type: enhancement
 
-# The name of the component, or a single word describing the area of concern, (e.g. pkg/otel/arrow).
-# Must be one of the components listed in go/.chloggen/config.yaml.
-component: pkg/arrow
+# The name of the component, or a single word describing the area of concern, (e.g. engine, otap).
+# Must be one of the components listed in rust/otap-dataflow/.chloggen/config.yaml.
+component: otap
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
-note: |
-  OTAP timestamp columns are now required to be in nanoseconds with a time zone
-  set to either 'UTC', '+00:00', or no timezone. In the future no timezone will also be rejected.
+note: Validate that an OTLP exporter mTLS client certificate and private key match, failing fast on a mismatch
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
-issues: [2369]
+issues: [4160]
 
 # (Optional) One or more lines of additional information to render under the primary note.
 # These lines will be padded with 2 spaces and then inserted directly into the document.
@@ -21,6 +19,6 @@ issues: [2369]
 # section with the specific action consumers must take. Keep notes to 200
 # characters and subtext to 300 characters.
 subtext: |
-  Data produced by this library already used UTC nanosecond timestamps, so no
-  action is needed. Received data that omits the time zone is still accepted and
-  read as UTC, so upgrading senders and receivers in any order is safe.
+  Applies to both the OTLP/gRPC and OTLP/HTTP exporters. A configured client
+  certificate and key that come from different key pairs are now rejected when
+  the client is built, instead of failing later at connection time.
