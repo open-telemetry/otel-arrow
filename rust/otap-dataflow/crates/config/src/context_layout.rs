@@ -10,9 +10,6 @@ use crate::context_policy::{ContextEntryDeclaration, ContextEntryPart, ContextSc
 use crate::error::Error;
 
 /// A deterministic layout of primitive fields and composite entries.
-///
-/// Fields and entries use canonical ordering; entry members retain declaration
-/// order because that order defines their projection.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ContextLayout {
     /// Primitive elements from each domain.
@@ -100,7 +97,7 @@ pub struct ContextEntryLayout {
     pub name: ContextEntryName,
     /// Declaring scope.
     pub scope: ContextScope,
-    /// Members in definition order; all must be present for this entry to exist.
+    /// Members in canonical name order; all must be present for this entry to exist.
     pub members: Box<[ContextMember]>,
     /// Canonically ordered conditions; all must match for this entry to exist.
     pub conditions: Box<[ContextCondition]>,
@@ -111,11 +108,11 @@ pub struct ContextEntryLayout {
 pub enum ContextProjection {
     /// One independently present primitive field.
     Primitive(ContextFieldId),
-    /// All or selected fields gated by one composite entry.
+    /// All or selected fields from a composite entry.
     Composite {
         /// Composite whose members and conditions determine presence.
         entry: ContextEntryId,
-        /// Fields in configured projection order.
+        /// Fields in canonical member-name order.
         fields: Box<[ContextFieldId]>,
     },
 }
@@ -130,7 +127,7 @@ impl ContextProjection {
         }
     }
 
-    /// Returns fields in configured projection order.
+    /// Returns fields in canonical projection order.
     #[must_use]
     pub fn fields(&self) -> &[ContextFieldId] {
         match self {
@@ -273,6 +270,7 @@ impl ContextLayout {
                     declaration.name
                 )));
             }
+            members.sort_unstable_by(|left, right| left.name.cmp(&right.name));
             conditions.sort_unstable();
             let id = ContextEntryId(entries.len());
             _ = names.insert(declaration.name.clone(), ContextNameId::Composite(id));
@@ -445,6 +443,27 @@ mod tests {
         assert_eq!(
             ContextLayout::compile(fields(), &[entry()]).expect("layout"),
             ContextLayout::compile(reverse, &[entry()]).expect("layout")
+        );
+    }
+
+    /// Scenario: equivalent composites declare their value-bearing members in different orders.
+    /// Guarantees: member order does not change the compiled layout or whole-entry projection.
+    #[test]
+    fn member_input_order_does_not_change_layout_or_projection() {
+        let original = entry();
+        let mut reversed = original.clone();
+        reversed.definition.0.reverse();
+
+        let first = ContextLayout::compile(fields(), &[original]).expect("layout");
+        let second = ContextLayout::compile(fields(), &[reversed]).expect("layout");
+        assert_eq!(first, second);
+        assert_eq!(
+            first
+                .resolve(&reference("product_user"))
+                .expect("composite projection"),
+            second
+                .resolve(&reference("product_user"))
+                .expect("composite projection")
         );
     }
 
