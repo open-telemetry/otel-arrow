@@ -761,7 +761,7 @@ impl AssignPipelineStage {
         Ok(new_attrs)
     }
 
-    fn assign_to_nested_attributes<T: ArrowPrimitiveType>(
+    fn assign_to_nested_attributes(
         &mut self,
         otap_batch: &OtapArrowRecords,
         attrs_record_batch: Cow<'_, RecordBatch>,
