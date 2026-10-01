@@ -21,9 +21,12 @@ authenticated HTTP publication, exporter registration, and runtime
 configuration. The registered exporter accepts OTLP metrics payloads.
 
 The exporter requires `auth.type: bearer` and a bound
-`bearer_token_provider` supplied by the Azure Identity extension. The provider
-uses managed identity to acquire publication tokens, and the endpoint must use
-HTTPS.
+`bearer_token_provider`. Providers backed by Azure managed identity are supported, as are other bearer providers configured for the
+Geneva publication resource. The endpoint must use HTTPS.
+
+The exporter currently supports one monitoring account per OTLP request.
+Requests whose resource or data point attributes select multiple accounts are
+rejected before publication.
 
 ## Testing
 

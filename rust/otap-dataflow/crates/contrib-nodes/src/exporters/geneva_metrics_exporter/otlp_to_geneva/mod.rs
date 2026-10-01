@@ -39,9 +39,7 @@ use super::encoder::{
     Metric, MetricExemplar, MetricHistogram, MetricValues, NumericValues, Packet, SUM,
 };
 #[cfg(test)]
-use attributes::{
-    ACCOUNT_ATTRIBUTE, MAX_DIMENSION_NAME_UTF16_UNITS, MAX_DIMENSION_VALUE_UTF16_UNITS,
-};
+use attributes::{MAX_DIMENSION_NAME_UTF16_UNITS, MAX_DIMENSION_VALUE_UTF16_UNITS};
 use attributes::{
     NAMESPACE_ATTRIBUTE, apply_scope_resource_overrides, attribute_string,
     default_resource_context, point_context, resource_context, selected_scope_dimensions,
@@ -59,6 +57,8 @@ const NANOS_PER_SECOND: u64 = 1_000_000_000;
 const NANOS_PER_DOTNET_TICK: u64 = 100;
 const DOTNET_TICKS_PER_SECOND: u64 = NANOS_PER_SECOND / NANOS_PER_DOTNET_TICK;
 const MAX_METRIC_NAME_UTF16_UNITS: usize = 512;
+pub(super) const ACCOUNT_ATTRIBUTE: &str = "_microsoft_metrics_account";
+pub(super) const PREVIOUS_ACCOUNT_ATTRIBUTE: &str = "microsoft_metrics_account";
 const BANNED_MONITORING_ACCOUNTS: &[&str] = &[
     "",
     "%MDM_MONITORING_ACCOUNT%",

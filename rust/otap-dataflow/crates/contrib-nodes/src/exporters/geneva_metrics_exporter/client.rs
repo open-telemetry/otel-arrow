@@ -39,7 +39,9 @@ impl PublishError {
             Self::InvalidAuthorizationHeader(_) => false,
             Self::Request(_) => true,
             Self::Response { status } => {
-                *status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
+                *status == StatusCode::UNAUTHORIZED
+                    || *status == StatusCode::TOO_MANY_REQUESTS
+                    || status.is_server_error()
             }
         }
     }
@@ -131,31 +133,33 @@ mod tests {
             .expect("publication should succeed");
     }
 
-    /// Scenario: The endpoint rejects a packet with a client error.
-    /// Guarantees: HTTP 4xx responses other than throttling are classified as permanent.
+    /// Scenario: The endpoint rejects a packet with a non-retryable client error.
+    /// Guarantees: HTTP 400 and 403 responses are classified as permanent.
     #[tokio::test]
     async fn classifies_client_error_as_permanent() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(400))
-            .mount(&server)
-            .await;
-        let publisher =
-            MetricsPublisher::new(&server.uri(), Duration::from_secs(1)).expect("valid endpoint");
+        for status in [400, 403] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .respond_with(ResponseTemplate::new(status))
+                .mount(&server)
+                .await;
+            let publisher = MetricsPublisher::new(&server.uri(), Duration::from_secs(1))
+                .expect("valid endpoint");
 
-        let error = publisher
-            .publish("example-account", vec![6, 0], "test-token")
-            .await
-            .expect_err("publication should fail");
+            let error = publisher
+                .publish("example-account", vec![6, 0], "test-token")
+                .await
+                .expect_err("publication should fail");
 
-        assert!(!error.is_retryable());
+            assert!(!error.is_retryable(), "HTTP {status} should be permanent");
+        }
     }
 
-    /// Scenario: The endpoint is throttled or unavailable.
-    /// Guarantees: HTTP 429 and 5xx responses are classified as retryable.
+    /// Scenario: A bearer credential is rejected, the endpoint is throttled, or the service is unavailable.
+    /// Guarantees: HTTP 401, 429, and 5xx responses are classified as retryable.
     #[tokio::test]
     async fn classifies_transient_responses_as_retryable() {
-        for status in [429, 500, 503] {
+        for status in [401, 429, 500, 503] {
             let server = MockServer::start().await;
             Mock::given(method("POST"))
                 .respond_with(ResponseTemplate::new(status))

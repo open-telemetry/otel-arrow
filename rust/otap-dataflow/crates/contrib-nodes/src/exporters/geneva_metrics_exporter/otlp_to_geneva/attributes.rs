@@ -12,14 +12,15 @@ use otel_arrow_dfe_pdata_views::views::common::{
 use otel_arrow_dfe_pdata_views::views::metrics::ScopeMetricsView;
 
 use super::super::encoder::Dimension;
-use super::{CardinalityOverflow, Config, PointContext, ResourceContext};
+use super::{
+    ACCOUNT_ATTRIBUTE, CardinalityOverflow, Config, PREVIOUS_ACCOUNT_ATTRIBUTE, PointContext,
+    ResourceContext,
+};
 
 const MAX_DIMENSIONS: usize = 74;
 pub(super) const MAX_DIMENSION_NAME_UTF16_UNITS: usize = 512;
 pub(super) const MAX_DIMENSION_VALUE_UTF16_UNITS: usize = 1024;
 
-pub(super) const ACCOUNT_ATTRIBUTE: &str = "_microsoft_metrics_account";
-const PREVIOUS_ACCOUNT_ATTRIBUTE: &str = "microsoft_metrics_account";
 pub(super) const NAMESPACE_ATTRIBUTE: &str = "_microsoft_metrics_namespace";
 const PREVIOUS_NAMESPACE_ATTRIBUTE: &str = "microsoft_metrics_namespace";
 const CARDINALITY_OVERFLOW_ATTRIBUTE: &str = "otel.metric.overflow";

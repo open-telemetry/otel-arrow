@@ -22,7 +22,7 @@ pub struct ScopeAttributes {
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum AuthConfig {
-    /// Use managed identity through a bound `bearer_token_provider` capability.
+    /// Use a bound `bearer_token_provider` capability.
     Bearer,
 }
 
@@ -89,7 +89,7 @@ impl Config {
             return Err("timeout must be greater than zero".to_string());
         }
         if endpoint.scheme() != "https" {
-            return Err("managed identity authentication requires an HTTPS endpoint".to_string());
+            return Err("bearer authentication requires an HTTPS endpoint".to_string());
         }
         if self
             .scope_attributes
@@ -206,7 +206,7 @@ mod tests {
 
         assert_eq!(
             config.validate(),
-            Err("managed identity authentication requires an HTTPS endpoint".to_string())
+            Err("bearer authentication requires an HTTPS endpoint".to_string())
         );
     }
 
