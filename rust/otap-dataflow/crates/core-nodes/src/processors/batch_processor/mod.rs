@@ -728,7 +728,6 @@ impl BatchProcessor {
             .has_otlp()
             .then(|| SignalBatches::new(&config));
 
-        dbg!(&config);
         Ok(BatchProcessor {
             config,
             otap_signals,
