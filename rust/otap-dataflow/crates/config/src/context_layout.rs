@@ -62,12 +62,12 @@ impl ContextEntryId {
     }
 }
 
-/// Identity of one name in the layout's top-level namespace.
+/// Identity of one top-level name in the layout.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ContextNameId {
-    /// Independently addressable primitive field.
+    /// A primitive field.
     Primitive(ContextFieldId),
-    /// Composite entry, addressable as a whole or by qualified member.
+    /// A composite entry, addressable as a whole or by qualified member.
     Composite(ContextEntryId),
 }
 
@@ -90,10 +90,10 @@ pub struct ContextCondition {
     pub value: Box<[u8]>,
 }
 
-/// One atomic logical entry, including members and presence conditions.
+/// One composite entry.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ContextEntryLayout {
-    /// Logical entry name.
+    /// Compositeentry name.
     pub name: ContextEntryName,
     /// Declaring scope.
     pub scope: ContextScope,
@@ -106,7 +106,7 @@ pub struct ContextEntryLayout {
 /// Selected context values and their atomic presence gate.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ContextProjection {
-    /// One independently present primitive field.
+    /// One independent primitive field.
     Primitive(ContextFieldId),
     /// All or selected fields from a composite entry.
     Composite {
