@@ -159,9 +159,7 @@ A flush happens when pending data reaches `min` (size flush), when
 `max_batch_duration` elapses after the oldest pending data arrived (timer
 flush), or at shutdown.
 
-- If exactly one whole input is pending and it fits within `max`, it is
-  forwarded unchanged with its original context, as in step 2 above.
-- Otherwise all pending data is merged in arrival order. If `max_size` is set,
+- All pending data is merged in arrival order. If `max_size` is set,
   it is split so every output is at most `max_size`. Items are packed to fill
   each output to exactly `max_size` where the data allows.
 - If `max_size` is unset, everything pending is merged into a single output with
@@ -261,7 +259,7 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 | `otap.processor.batch.produced_batches_traces` | `{item}` | Total batches produced for traces signal. |
 | `otap.processor.batch.flushes_size` | `{flush}` | Number of flushes triggered by size threshold (all signals) |
 | `otap.processor.batch.flushes_timer` | `{flush}` | Number of flushes triggered by timer (all signals) |
-| `otap.processor.batch.passthrough_batches` | `{batch}` | Number of inputs forwarded as-is, without re-batching or completion tracking, because their size was already within `[min_size, max_size]` or they were flushed alone. |
+| `otap.processor.batch.passthrough_batches` | `{batch}` | Number of inputs forwarded as-is, without re-batching or completion tracking, because their size was already within `[min_size, max_size]` on arrival. |
 | `otap.processor.batch.flush_pending_requests` | `{request}` | Number of input requests pending at flush time. |
 | `otap.processor.batch.flush_pending_bytes` | `By` | Number of bytes pending at flush time when byte size is known. |
 | `otap.processor.batch.flush_age_duration` | `ns` | Time from first pending input arrival to actual flush start. |

@@ -18,8 +18,7 @@
 //! completion tracking. Other inputs are buffered; whether pending data
 //! reaches the lower bound or the timeout first, it will flush pending
 //! data. If the upper bound is set, merging and splitting will take place,
-//! otherwise only merging is performed. A flush of a single whole input
-//! that fits is likewise forwarded as-is.
+//! otherwise only merging is performed.
 //!
 //! Because in-range inputs bypass the buffer, output order is not
 //! preserved relative to data that is still buffered.
@@ -633,7 +632,7 @@ pub struct BatchProcessorMetrics {
     flushes_timer: Counter<u64>,
     /// Number of inputs forwarded as-is, without re-batching or completion
     /// tracking, because their size was already within the configured
-    /// [min_size, max_size] range or they were flushed alone.
+    /// [min_size, max_size] range on arrival.
     #[metric(unit = "{batch}")]
     passthrough_batches: Counter<u64>,
 
@@ -1149,38 +1148,6 @@ where
         }
 
         let count = inputs.requests();
-
-        // Single whole input that fits: forward it as-is with its original
-        // context, skipping batching and completion tracking. A retained
-        // residual is excluded because it shares its inbound slot with
-        // outputs already sent, so it must go through the tracked path.
-        if count == 1
-            && !inputs.context[0].retained
-            && self
-                .fmtcfg
-                .max_size
-                .is_none_or(|max| inputs.weight <= max.get())
-        {
-            let payload = inputs.pending.pop().expect("one pending");
-            let portion = inputs.context.pop().expect("one context");
-            let ctx = match portion.inkey.and_then(|k| self.buffer.inbound.take(k)) {
-                Some(bctx) => bctx.ctx,
-                None => {
-                    let mut ctx = Context::default();
-                    if let Some(addr) = portion.peer_addr {
-                        ctx.set_peer_addr(addr);
-                    }
-                    ctx
-                }
-            };
-            self.metrics.flush_output_batches.record(1.0);
-            if let Some(bytes) = payload.num_bytes() {
-                self.metrics.flush_output_bytes.record(bytes as f64);
-            }
-            self.buffer.arrival = None;
-            self.buffer.wakeup_armed = false;
-            return self.forward_as_is(effect, ctx, payload).await;
-        }
 
         let pending = inputs.take_pending();
 
@@ -2885,16 +2852,6 @@ mod tests {
                 ctx.set_pipeline_completion_sender(pipeline_completion_tx);
 
                 let mut datagen = DataGenerator::new(1);
-
-                // Buffer an unsubscribed input first so the shutdown flush
-                // merges two inputs and exercises completion tracking (a lone
-                // input would be forwarded as-is with its own context).
-                let first = datagen.generate_logs();
-                let first = encode_logs_otap_batch(&first).expect("encode logs");
-                ctx.process(Message::PData(OtapPdata::new_default(first.into())))
-                    .await
-                    .expect("process first input");
-
                 let input = datagen.generate_logs();
                 let rec = encode_logs_otap_batch(&input).expect("encode logs");
                 let pdata = OtapPdata::new_default(rec.into()).test_subscribe_to(
@@ -4826,7 +4783,8 @@ mod tests {
 
     /// Shared core: with min=4, max=8 units, input A (2 units) is buffered;
     /// input B (5 units, in range) must be forwarded immediately with its own
-    /// context while A stays buffered; A is then timer-flushed on its own.
+    /// context while A stays buffered; A is then timer-flushed as a regular
+    /// tracked batch.
     fn check_in_range_input_passes_through(fmt: ResidualFormat, response: AckPolicy) {
         let (registry, reporter, phase) =
             setup_test_runtime(passthrough_config(fmt, Some(4), Some(8), "1s"));
@@ -4864,8 +4822,12 @@ mod tests {
                 assert_eq!(outs.len(), 1, "timer flushes buffered A");
                 let a = outs.into_iter().next().expect("A");
                 assert_eq!(output_units(fmt, &a), 2);
-                let (_, cd) = respond_passthrough(a, &AckPolicy::Ack);
-                assert_eq!(cd, TestCallData::new_with(0, 0), "A's own calldata");
+                // A was buffered, so it is a regular tracked batch: its Ack
+                // goes through the batch processor, which then Acks A.
+                respond(&mut ctx, a, &AckPolicy::Ack).await;
+                done.drain(&mut rx);
+                assert_eq!(done.acks, vec![1, 0], "A acked via the processor");
+                assert_eq!(done.nacks, vec![0, 0]);
 
                 ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
                     metrics_reporter: reporter,
@@ -4877,8 +4839,8 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(50)).await;
                 assert_eq!(
                     counter_metric_value(&registry, "otap.processor.batch", "passthrough.batches"),
-                    2,
-                    "B (on arrival) and A (lone timer flush) are passed through"
+                    1,
+                    "only B (in range on arrival) is passed through"
                 );
             });
     }
@@ -4888,7 +4850,8 @@ mod tests {
     /// Guarantees: the in-range input is forwarded immediately and unchanged
     /// with its original context, so its Ack routes straight upstream with no
     /// batch-processor tracking; the buffered input is untouched and later
-    /// timer-flushed; `passthrough.batches` counts both forwards.
+    /// timer-flushed through the tracked path; `passthrough.batches` counts
+    /// only the in-range input.
     #[test]
     fn test_otap_in_range_input_passes_through() {
         check_in_range_input_passes_through(ResidualFormat::Otap, AckPolicy::Ack);
@@ -5000,67 +4963,6 @@ mod tests {
         for fmt in [ResidualFormat::Otap, ResidualFormat::Otlp] {
             let cfg = passthrough_config(fmt, Some(4), Some(4), "1s");
             assert_eq!(outputs_for_inputs(fmt, cfg, &[2, 9]), vec![4, 4]);
-        }
-    }
-
-    /// Scenario: `max_batch_duration: 0` with only max_size=4; a subscribed
-    /// 3-unit input arrives and is flushed immediately.
-    /// Guarantees: a lone whole input flushed within max_size is forwarded
-    /// with its original context (no batch-processor subscription), so its
-    /// Ack routes straight upstream.
-    #[test]
-    fn test_immediate_flush_single_input_keeps_context() {
-        for fmt in [ResidualFormat::Otap, ResidualFormat::Otlp] {
-            let (_registry, _reporter, phase) =
-                setup_test_runtime(passthrough_config(fmt, None, Some(4), "0s"));
-            phase
-                .run_test(move |mut ctx| async move {
-                    ctx.process(Message::PData(residual_pdata(fmt, &residual_logs(0, 3), 7)))
-                        .await
-                        .expect("process");
-                    let outs = ctx.drain_pdata().await;
-                    assert_eq!(outs.len(), 1);
-                    let out = outs.into_iter().next().expect("one");
-                    assert_eq!(output_units(fmt, &out), 3);
-                    let (acked, cd) = respond_passthrough(out, &AckPolicy::Ack);
-                    assert!(acked);
-                    assert_eq!(cd, TestCallData::new_with(7, 0));
-                })
-                .validate(|_| async {});
-        }
-    }
-
-    /// Scenario: min=max=10 with a timeout; one subscribed 3-unit input is
-    /// buffered and then flushed alone by Shutdown, and the output is Nacked.
-    /// Guarantees: a lone whole input flushed by shutdown is forwarded with
-    /// its original context, so the Nack routes directly to the input's
-    /// subscriber without going through batch-processor slots.
-    #[test]
-    fn test_shutdown_single_input_nack_routes_upstream() {
-        for fmt in [ResidualFormat::Otap, ResidualFormat::Otlp] {
-            let (_registry, _reporter, phase) =
-                setup_test_runtime(passthrough_config(fmt, Some(10), Some(10), "10s"));
-            phase
-                .run_test(move |mut ctx| async move {
-                    ctx.process(Message::PData(residual_pdata(fmt, &residual_logs(0, 3), 5)))
-                        .await
-                        .expect("process");
-                    assert!(ctx.drain_pdata().await.is_empty(), "buffered");
-
-                    ctx.process(Message::Control(NodeControlMsg::Shutdown {
-                        deadline: Instant::now() + Duration::from_secs(1),
-                        reason: "test".into(),
-                    }))
-                    .await
-                    .expect("shutdown");
-                    let outs = ctx.drain_pdata().await;
-                    assert_eq!(outs.len(), 1);
-                    let out = outs.into_iter().next().expect("one");
-                    let (acked, cd) = respond_passthrough(out, &AckPolicy::Nack("failed"));
-                    assert!(!acked);
-                    assert_eq!(cd, TestCallData::new_with(5, 0));
-                })
-                .validate(|_| async {});
         }
     }
 
