@@ -761,37 +761,13 @@ impl AssignPipelineStage {
         Ok(new_attrs)
     }
 
-    fn assign_to_nested_attributes(
+    fn assign_to_nested_attributes<T: ArrowPrimitiveType>(
         &mut self,
-        mut otap_batch: OtapArrowRecords,
+        otap_batch: &OtapArrowRecords,
+        attrs_record_batch: Cow<'_, RecordBatch>,
         eval_results: &mut [Option<ScopedValue>],
         dest_attrs_id: AttributesIdentifier,
-    ) -> Result<OtapArrowRecords> {
-        if otap_batch.root_record_batch().is_none() {
-            return Ok(otap_batch);
-        }
-
-        let attrs_payload_type = match dest_attrs_id {
-            AttributesIdentifier::Record(RecordScope::Signal) => match otap_batch {
-                OtapArrowRecords::Logs(_) => ArrowPayloadType::LogAttrs,
-                OtapArrowRecords::Metrics(_) => ArrowPayloadType::MetricAttrs,
-                OtapArrowRecords::Traces(_) => ArrowPayloadType::SpanAttrs,
-            },
-            AttributesIdentifier::NonRecord(payload_type) => payload_type,
-            AttributesIdentifier::Record(RecordScope::Child(child)) => {
-                return Err(Error::InvalidPipelineError {
-                    cause: format!(
-                        "Cannot assign nested attribute of child {child:?} when executing pipeline on signal"
-                    ),
-                    query_location: Default::default(),
-                });
-            }
-        };
-
-        let Some(mut attrs_record_batch) = otap_batch.get(attrs_payload_type).cloned() else {
-            return Ok(otap_batch);
-        };
-
+    ) -> Result<RecordBatch> {
         let key_column = attrs_record_batch
             .column_by_name(consts::ATTRIBUTE_KEY)
             .ok_or_else(|| Error::ExecutionError {
@@ -827,12 +803,21 @@ impl AssignPipelineStage {
                     );
                     (existing_key_mask, update_parent_ids)
                 };
-            let update_parent_ids_u16 = update_parent_ids
+            // The parent_ids column may be dictionary-encoded, so we may need to cast it
+            // to the primitive type before we can use it as a join input.
+            let update_parent_ids =
+                if matches!(update_parent_ids.data_type(), DataType::Dictionary(_, _)) {
+                    cast(&update_parent_ids, &T::DATA_TYPE)?
+                } else {
+                    update_parent_ids
+                };
+            let update_parent_ids_typed = update_parent_ids
                 .as_any()
-                .downcast_ref::<UInt16Array>()
+                .downcast_ref::<PrimitiveArray<T>>()
                 .ok_or_else(|| Error::ExecutionError {
                     cause: format!(
-                        "invalid ID column. expected u16 type, found {:?}",
+                        "invalid ID column. expected {:?} type, found {:?}",
+                        T::DATA_TYPE,
                         update_parent_ids.data_type()
                     ),
                 })?;
@@ -852,7 +837,7 @@ impl AssignPipelineStage {
             let aligned_values = if let ColumnarValue::Scalar(s) = scoped_value.values {
                 ColumnarValue::Scalar(s)
             } else {
-                let eval_result = scoped_value_to_join_input(scoped_value, &otap_batch)?;
+                let eval_result = scoped_value_to_join_input(scoped_value, otap_batch)?;
                 let ColumnarValue::Array(ref result_values) = eval_result.values else {
                     unreachable!("expected ColumnarResult::Array")
                 };
@@ -860,7 +845,7 @@ impl AssignPipelineStage {
                 let left_join_input = &JoinInput::new_with_parent_ids(
                     ColumnarValue::Scalar(ScalarValue::Null),
                     Rc::clone(&self.dest_scopes[i]),
-                    Arc::new(update_parent_ids_u16.clone()),
+                    Arc::new(update_parent_ids_typed.clone()),
                 );
 
                 let vals_take_indices = match eval_result.data_scope.as_ref() {
@@ -870,31 +855,19 @@ impl AssignPipelineStage {
                             AttributeToSameAttributeJoin::new().rows_to_take(
                                 left_join_input,
                                 &eval_result,
-                                &otap_batch,
+                                otap_batch,
                             )?
                         } else {
                             AttributeToDifferentAttributeJoin::new(dest_attrs_id, *result_attrs_id)
-                                .rows_to_take(left_join_input, &eval_result, &otap_batch)?
+                                .rows_to_take(left_join_input, &eval_result, otap_batch)?
                         }
                     }
-                    DataScope::Record(RecordScope::Signal) | DataScope::RootParent(_) => {
+                    DataScope::Record(_) | DataScope::RootParent(_) => {
                         RecordAttrsToRecordJoin::new().rows_to_take(
                             left_join_input,
                             &eval_result,
-                            &otap_batch,
+                            otap_batch,
                         )?
-                    }
-                    DataScope::Record(RecordScope::Child(_child)) => {
-                        // In the current implementation, we shouldn't end up here. The planner
-                        // should not allow us to create an expression that would evaluate on some
-                        // child record (like metric data points), and assign the result to an
-                        // attribute. Returning this error to be defensive
-                        return Err(Error::ExecutionError {
-                            cause: format!(
-                                "unexpected DataScope for attribute assignment `{:?}`",
-                                eval_result.data_scope
-                            ),
-                        });
                     }
                     DataScope::StaticScalar => unreachable!("unexpected array for scalar scope"),
                 };
@@ -916,10 +889,8 @@ impl AssignPipelineStage {
             });
         }
 
-        attrs_record_batch = mutate_serialized_attribute_values(&attrs_record_batch, &updates)?;
-        otap_batch.set(attrs_payload_type, attrs_record_batch)?;
-
-        Ok(otap_batch)
+        let new_attrs = mutate_serialized_attribute_values(&attrs_record_batch, &updates)?;
+        Ok(new_attrs)
     }
 
     /// Fills in any nulls in the root batch's ID column with newly assigned IDs.
@@ -1145,10 +1116,36 @@ impl PipelineStage for AssignPipelineStage {
                     source.execute_as_value(&otap_batch, &EvalContext::new(session_context))?;
                 eval_results.push(eval_result);
             }
-            let result =
-                self.assign_to_nested_attributes(otap_batch, &mut eval_results, *attrs_id)?;
 
-            return Ok(result);
+            let attrs_payload_type = match *attrs_id {
+                AttributesIdentifier::Record(RecordScope::Signal) => match otap_batch {
+                    OtapArrowRecords::Logs(_) => ArrowPayloadType::LogAttrs,
+                    OtapArrowRecords::Metrics(_) => ArrowPayloadType::MetricAttrs,
+                    OtapArrowRecords::Traces(_) => ArrowPayloadType::SpanAttrs,
+                },
+                AttributesIdentifier::NonRecord(payload_type) => payload_type,
+                AttributesIdentifier::Record(RecordScope::Child(child)) => {
+                    return Err(Error::InvalidPipelineError {
+                        cause: format!(
+                            "Cannot assign nested attribute of child {child:?} when executing pipeline on signal"
+                        ),
+                        query_location: Default::default(),
+                    });
+                }
+            };
+
+            let Some(attrs_record_batch) = otap_batch.get(attrs_payload_type) else {
+                return Ok(otap_batch);
+            };
+
+            let new_attrs = self.assign_to_nested_attributes::<UInt16Type>(
+                &otap_batch,
+                Cow::Borrowed(attrs_record_batch),
+                &mut eval_results,
+                *attrs_id,
+            )?;
+            otap_batch.set(attrs_payload_type, new_attrs)?;
+            return Ok(otap_batch);
         }
 
         // Assigning to the root batch.. Unlike attribute assignment this does not currently
@@ -1559,6 +1556,28 @@ impl PipelineStage for AssignPipelineStage {
                 continue;
             }
 
+            if let ColumnAccessor::NestedAttribute(attrs_id, _, _) = &self.dest_columns[0] {
+                let mut eval_results = Vec::new();
+                for source in &mut self.sources {
+                    let eval_result = source.execute_as_value(&otap_batch, &eval_ctx)?;
+                    eval_results.push(eval_result);
+                }
+
+                let attrs_payload_type = data_point_type.dp_attrs_payload_type();
+                let Some(attrs_record_batch) = otap_batch.get(attrs_payload_type) else {
+                    continue;
+                };
+
+                let new_attrs = self.assign_to_nested_attributes::<UInt32Type>(
+                    &otap_batch,
+                    Cow::Borrowed(attrs_record_batch),
+                    &mut eval_results,
+                    *attrs_id,
+                )?;
+                otap_batch.set(attrs_payload_type, new_attrs)?;
+                continue;
+            }
+
             // TODO support - add support for additional assignment targets for metric data points
             return Err(match self.dest_columns[0] {
                 ColumnAccessor::ColumnName(_) | ColumnAccessor::StructCol(_, _) => {
@@ -1566,13 +1585,9 @@ impl PipelineStage for AssignPipelineStage {
                         message: "assigning metric data point columns not yet supported".into(),
                     }
                 }
-                ColumnAccessor::NestedAttribute(_, _, _) => Error::NotYetSupportedError {
-                    message: "assigning to metric data point nested attributes not yet supported"
-                        .into(),
-                },
-                ColumnAccessor::Attributes(_, _) => {
-                    // safety: we've handled this in the block above
-                    unreachable!("already handled column accessor attributes")
+                ColumnAccessor::NestedAttribute(_, _, _) | ColumnAccessor::Attributes(_, _) => {
+                    // safety: we've handled both of these in the blocks above
+                    unreachable!("already handled column accessor attributes and nested attributes")
                 }
             });
         }
