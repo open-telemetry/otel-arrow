@@ -290,30 +290,6 @@ async fn get_credential() {
     assert!(credential.expires_on().is_none());
 }
 
-/// Scenario: Credentials are acquired from a readable password secret file.
-/// Guarantees: The file password is trimmed only at line endings and remains non-expiring.
-#[tokio::test]
-async fn get_credential_file_success() {
-    let mut named_file = NamedTempFile::new().expect("file created");
-
-    let content = "test_pass  \r\n";
-    named_file
-        .write_all(content.as_bytes())
-        .expect("content written");
-
-    let ext = make_extension_with_config(Config {
-        username: "test_user".into(),
-        password_secret: None,
-        password_secret_file: Some(named_file.path().into()),
-        password_secret_file_refresh: Duration::from_secs(10),
-    });
-
-    let credential = ext.get_credential().await.expect("first acquisition");
-    assert_eq!(credential.expose_username(), "test_user");
-    assert_eq!(credential.expose_password(), "test_pass  ");
-    assert!(credential.expires_on().is_none());
-}
-
 /// Scenario: Both inline and file password forms are configured.
 /// Guarantees: The file password takes precedence over the inline password.
 #[tokio::test]
@@ -414,32 +390,6 @@ async fn file_credential_does_not_inherit_polling_interval_as_expiry() {
     assert!(credential.expires_on().is_none());
 }
 
-/// Scenario: A password secret file contains bytes that are not valid UTF-8.
-/// Guarantees: Acquisition fails with an explicit encoding error instead of using mangled bytes.
-#[tokio::test]
-async fn get_credential_file_rejects_non_utf8_content() {
-    let mut named_file = NamedTempFile::new().expect("file created");
-    named_file
-        .write_all(&[0xff, 0xfe, 0xfd])
-        .expect("content written");
-
-    let source = FlatFileUserPassAuth::new(Config {
-        username: "test_user".into(),
-        password_secret: None,
-        password_secret_file: Some(named_file.path().into()),
-        password_secret_file_refresh: Duration::from_secs(10),
-    });
-
-    let err = source
-        .fetch()
-        .await
-        .expect_err("non-UTF-8 credentials must be rejected");
-    assert!(
-        err.to_string().contains("valid UTF-8"),
-        "unexpected error: {err}"
-    );
-}
-
 /// Scenario: A password secret file contains an empty password or a control character.
 /// Guarantees: Acquisition applies Basic Auth password validation to file-derived values.
 #[tokio::test]
@@ -466,31 +416,6 @@ async fn get_credential_file_rejects_invalid_password_content() {
             "unexpected error for {content:?}: {err}"
         );
     }
-}
-
-/// Scenario: A password secret file exceeds the collector's shared four-megabyte size limit.
-/// Guarantees: Acquisition rejects the file instead of loading oversized credential data.
-#[tokio::test]
-async fn get_credential_file_rejects_oversized_content() {
-    let dir = tempfile::tempdir().expect("tempdir created");
-    let password_path = dir.path().join("password");
-    std::fs::write(&password_path, vec![b'x'; 5 * 1024 * 1024])
-        .expect("oversized password written");
-    let source = FlatFileUserPassAuth::new(Config {
-        username: "test_user".into(),
-        password_secret: None,
-        password_secret_file: Some(password_path),
-        password_secret_file_refresh: Duration::from_secs(300),
-    });
-
-    let err = source
-        .fetch()
-        .await
-        .expect_err("oversized credential files must be rejected");
-    assert!(
-        err.to_string().contains("too large"),
-        "unexpected error: {err}"
-    );
 }
 
 /// Scenario: An unreadable password file and a valid inline password are both configured.

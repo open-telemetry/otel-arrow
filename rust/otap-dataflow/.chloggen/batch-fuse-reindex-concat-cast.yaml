@@ -1,3 +1,4 @@
+
 # Use this changelog template to create an entry for release notes.
 
 # One of 'breaking', 'deprecation', 'new_component', 'enhancement', 'bug_fix'
@@ -8,10 +9,10 @@ change_type: enhancement
 component: pdata
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
-note: Optimize the schema selection part of the otap concatenation kernel.
+note: Optimize OTAP batch concatenation by fusing reindexing, casting, and concatenation together.
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
-issues: [4150]
+issues: [4170]
 
 # (Optional) One or more lines of additional information to render under the primary note.
 # These lines will be padded with 2 spaces and then inserted directly into the document.
@@ -19,6 +20,6 @@ issues: [4150]
 # section with the specific action consumers must take. Keep notes to 200
 # characters and subtext to 300 characters.
 subtext: |
-    Optimize the schema selection part of the otap concatenation kernel by making it
-    schema aware and reducing a few sources of allocations e.g. replacing BTreeMaps
-    with fixed size slices to hold field index information.
+  Speeds up OTAP batch concatenation by up to 78% by fusing reindexing, casting, and
+  concatenation together which allows for constructing the final column data for a
+  batch in place and in one pass.

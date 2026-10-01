@@ -53,6 +53,7 @@ futures-core = { workspace = true }
 async-channel = { workspace = true }
 uuid = { workspace = true }
 data-encoding = { workspace = true }
+http = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 nix = { workspace = true, features = ["user"] }

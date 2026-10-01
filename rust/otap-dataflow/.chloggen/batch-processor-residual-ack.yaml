@@ -1,17 +1,18 @@
 # Use this changelog template to create an entry for release notes.
 
 # One of 'breaking', 'deprecation', 'new_component', 'enhancement', 'bug_fix'
-change_type: enhancement
+change_type: bug_fix
 
 # The name of the component, or a single word describing the area of concern, (e.g. engine, otap).
 # Must be one of the components listed in rust/otap-dataflow/.chloggen/config.yaml.
-component: engine
+component: pipeline
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
-note: Add optional engine.state_dir for a secure, durable absolute state root on Linux.
+note: The batch processor no longer acknowledges a request before all of its data is sent when part of it is held back for the next batch.
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
-issues: [2844]
+# TODO: replace with the PR number.
+issues: [4187]
 
 # (Optional) One or more lines of additional information to render under the primary note.
 # These lines will be padded with 2 spaces and then inserted directly into the document.
@@ -19,4 +20,5 @@ issues: [2844]
 # section with the specific action consumers must take. Keep notes to 200
 # characters and subtext to 300 characters.
 subtext: |
-  The setting has no default and requires restart to change. Configuring it on other platforms fails startup. Legacy journald and scraper checkpoints are not automatically migrated or relocated.
+  A downstream failure of the held-back data is now reported back to the
+  original request instead of being lost.

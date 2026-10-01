@@ -16,7 +16,7 @@ mod basic_auth_credential;
 mod bearer_token;
 mod deny_reason;
 
-pub use api_key::ApiKey;
+pub use api_key::{ApiKey, ApiKeyAttributeError, ApiKeyAttributes};
 pub use authorized_identity::{AuthorizedIdentity, ClaimValue};
 pub use authz_decision::AuthzDecision;
 pub use basic_auth_credential::{BasicAuthCredential, BasicAuthCredentialError};

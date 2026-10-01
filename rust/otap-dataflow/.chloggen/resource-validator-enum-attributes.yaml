@@ -1,6 +1,0 @@
-change_type: breaking
-component: pipeline
-note: "Replace resource validator outcome counters with a validation failure metric partitioned by error.type."
-issues: [3530]
-subtext: |
-  Migration: Use engine-owned node.input metrics for success, refusal, and failure counts. Use processor.resource_validator.failures for validation failure reasons.

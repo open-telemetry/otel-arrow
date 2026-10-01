@@ -1,28 +1,142 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+//! Concatenation of multiple OTAP batches into one. Concatenating OTAP batches
+//! is challenging because:
+//!
+//!   1. Each batch is a horizontal database slice containing foreign key
+//!      relationships that must be re-indexed for the batches to be combinable
+//!   2. OTAP batches may have different schemas for the same payload type which
+//!      need to be unified to be merged together
+//!   3. Data is untrusted and can be malformed in a variety of ways that are
+//!      too expensive to validate for every input batch.
+//!
+//! So in order to concatenate batches we need to:
+//!
+//!   1. Reindex all payloads so the IDs are unique across batches, while also
+//!      correcting for lurking referential integrity violations.
+//!   2. Unify the schemas of each payload type for each batch and cast columns
+//!      to their final types
+//!   3. Combine the arrays for each batch into the output
+//!
+//! Individually these operations are all relatively expensive. This module
+//! fuses all three together so that every output column is written exactly
+//! once, directly from the input arrays.
+//!
+//! # Algorithm
+//!
+//! - **P0** If there are 0 or 1 inputs, return them as-is.
+//! - **P1** If reindexing, remove transport optimized encodings from every
+//!   input (see [`reindex`]).
+//! - **P2** For each payload type, index the fields present across inputs
+//!   and select a unified schema (`index_records`, `select_schema`). This
+//!   includes dictionary key width selection from the summed physical value
+//!   counts, and nullability.
+//! - **P3** If reindexing, plan ID rewrites without modifying inputs
+//!   (`reindex::plan_ids`). This produces a row `Selection` and an
+//!   `IdRemap` per ID column for every input.
+//! - **P4** Compute the output row count per payload from the selections.
+//! - **P5** For each target field, allocate a full-size destination and copy
+//!   every selected range of every input into it, casting between native and
+//!   dictionary encodings and applying ID remaps on the fly (see
+//!   `write_column`).
+//!
+//! Only P5 writes column data (P1 only touches encoded columns, and P3 only
+//! allocates scratch space for compacted ID columns).
+//!
+//! # Plan types
+//!
+//! The planner inspects the input batches without modifying them and
+//! produces, per input and per payload, an `InputPlan`: a `Selection` of
+//! rows that survive into the output plus an `IdRemap` for each ID column.
+//! The column writers apply the selection and remaps on the fly.
+//!
+//! # Column writers
+//!
+//! Each output column is written exactly once: a destination buffer is sized
+//! for the full output and every selected range of every input is copied (and,
+//! when needed, cast and/or ID-remapped) directly into it. There is no
+//! intermediate per-input converted array and no final coalescing copy.
+//!
+//! - `ValueBuilder` implementations know how to append values of one
+//!   physical type (primitive, boolean, bytes, fixed size binary) from a
+//!   source array, either by contiguous range or by gathering through
+//!   dictionary keys.
+//! - `write_native` drives a `ValueBuilder` to produce a plain (non
+//!   dictionary) output column from native, dictionary, or missing inputs.
+//! - `write_dict` drives a `ValueBuilder` for the dictionary values and
+//!   builds output keys directly. Dictionary inputs append their whole values
+//!   array and shift their keys; native inputs append their selected values
+//!   with sequential keys. No hashing is performed.
+//! - `write_struct` recurses into struct children.
+//! - `write_fallback` handles anything else (currently only List columns)
+//!   via `MutableArrayData`.
+//!
+//! Every writer honors array offsets (sliced inputs) for both values and
+//! nulls, and null buffers are only materialized if a null is encountered.
+//!
+//! # TODO
+//!
+//! - TODO(dict-policy): Tune when dictionary vs. native output is selected and
+//!   the key width, based on the least work, and possibly make it
+//!   configurable. Today a column is a dictionary if any input is, when the
+//!   summed physical value count fits.
+//! - TODO(list-writer): List columns (metrics quantiles, histogram buckets)
+//!   use the generic `MutableArrayData` fallback (`write_fallback`). Add a
+//!   specialized writer that copies offsets and child values directly.
+//! - TODO(bytes-gather-capacity): Byte capacity for dictionary inputs is sized
+//!   from the whole values array, which (1) over-allocates when the keys don't
+//!   reference every value. This can often happen after splits. We could
+//!   instead try to pointer de-dup the dict values, try to have split indicate
+//!   which input record batches came from which output record batches (could
+//!   stamp them with some id or change the signature), or try to fuse split
+//!   and concat together. We can also (2) under-allocate if we're escalating
+//!   to a standard type and have to grow the array a bunch.
+//! - TODO(dict-trim): `write_dict` shares values arrays only between adjacent
+//!   inputs with pointer-identical values, and otherwise appends each
+//!   dictionary input's whole values array. Values not referenced by the
+//!   selected keys are never trimmed, which inflates the output dictionary
+//!   and can push the column to a wider key or to native encoding.
+//! - TODO(fused-decode): Fuse transport delta decoding into the ID statistics
+//!   and write passes instead of decoding in a separate pre-pass.
+//! - TODO(single-input): Pass a payload through unchanged (Arc reuse) when
+//!   only one input contributes and its plan is identity.
+
 use ahash::AHashSet;
 use arrow::array::{
     Array, ArrayRef, ArrowPrimitiveType, AsArray, DictionaryArray, OffsetSizeTrait, RecordBatch,
     StructArray,
 };
-use arrow::compute::kernels::cast;
 use arrow::datatypes::{
     ArrowNativeType, DurationMicrosecondType, DurationMillisecondType, DurationNanosecondType,
     DurationSecondType, Float64Type, GenericBinaryType, Int64Type, TimestampMicrosecondType,
     TimestampMillisecondType, TimestampNanosecondType, TimestampSecondType, UInt8Type, UInt16Type,
     UInt64Type,
 };
-use arrow_schema::{DataType, Field, FieldRef, Fields, Schema, SchemaBuilder};
+use arrow_schema::{DataType, Field, FieldRef, Schema, SchemaBuilder};
 use itertools::Either;
 use roaring::RoaringBitmap;
+use std::ops::Range;
 use std::sync::Arc;
+
+use arrow::array::{
+    ArrayData, ArrowNativeTypeOp, BooleanArray, BooleanBufferBuilder, FixedSizeBinaryArray,
+    GenericByteArray, MutableArrayData, PrimitiveArray, make_array,
+};
+use arrow::buffer::{Buffer, NullBuffer, OffsetBuffer, ScalarBuffer};
+use arrow::compute::kernels::cast;
+use arrow::datatypes::{
+    ArrowDictionaryKeyType, BinaryType, ByteArrayType, Int32Type, UInt32Type, Utf8Type,
+};
+use arrow_schema::{ArrowError, Fields};
+
+use crate::otap::transform::reindex;
 
 use crate::error::Error;
 use crate::otap::{Logs, Metrics, OtapBatchStore, Result, Traces};
 use crate::schema::consts::metadata::COLUMN_ENCODING;
 use crate::schema::consts::metadata::encodings::PLAIN;
-use crate::schema::consts::{ID, PARENT_ID};
+use crate::schema::consts::{ID, PARENT_ID, RESOURCE, SCOPE};
 use crate::schema::payloads;
 use crate::schema::schema::{DictKeySize, Field as SchemaField, Schema as PayloadSchema};
 
@@ -36,44 +150,57 @@ use crate::schema::schema::{DictKeySize, Field as SchemaField, Schema as Payload
 const MAX_U8_CARDINALITY: usize = 255;
 const MAX_U16_CARDINALITY: usize = 65535;
 
-/// Concatenate the provided OtapArrowRecords into a single batch.
+/// Options controlling [concatenate].
 ///
-/// # Preconditions
+/// The default is [`ConcatOptions::reindex`], which is correct for any set of
+/// inputs. Use [`ConcatOptions::preserve_ids`] only when the inputs are known
+/// to have disjoint IDs.
+#[derive(Debug, Clone, Copy)]
+pub struct ConcatOptions {
+    /// Rewrite ID / PARENT_ID columns so that IDs from different inputs do not
+    /// collide in the output. This also removes transport optimized encodings.
+    ///
+    /// Callers that concatenate disjoint pieces of the same original batch
+    /// (whose IDs are already unique across pieces) may disable this.
+    pub reindex: bool,
+}
+
+impl ConcatOptions {
+    /// Options for concatenating unrelated batches: reindex enabled.
+    #[must_use]
+    pub const fn reindex() -> Self {
+        Self { reindex: true }
+    }
+
+    /// Options for concatenating pieces with already-disjoint IDs.
+    #[must_use]
+    pub const fn preserve_ids() -> Self {
+        Self { reindex: false }
+    }
+}
+
+impl Default for ConcatOptions {
+    /// Defaults to [`ConcatOptions::reindex`] so that concatenating unrelated
+    /// batches can never silently produce colliding IDs.
+    fn default() -> Self {
+        Self::reindex()
+    }
+}
+
+/// Concatenate the provided OTAP batches into a single batch.
 ///
-/// Currently the caller is responsible for satisfying the following:
+/// See the module documentation for the algorithm. By default, this function
+/// will reindex the input batches where transport optimized encodings are
+/// removed and ID columns are rewritten so that IDs from different inputs
+/// cannot collide.
 ///
-///   1. Remove the transport optimized encodings from the columns, if any
-///   2. Reindex the ID columns so that the parent child relationships are
-///      consistent after the concatenation
+/// Reindexing behavior can be disabled with [`ConcatOptions::preserve_ids`].
+/// Be careful when doing this, as the resulting otap batch will most likely
+/// have corrupted id columns unless you can guarantee that the input IDs are
+/// decoded and non-overlapping. The most common valid scenario is when all
+/// input batches are pieces of the same original otap batch.
 ///
-/// These will be handled internally in the future as we refine the API, see
-/// https://github.com/open-telemetry/otel-arrow/issues/1926.
-///
-/// # General Algorithm
-///
-/// Concatenating multiple OtapArrowRecords involves three steps:
-///
-///   1. Reindexing the ID columns so that the parent child relationships are
-///      consistent after the concatenation
-///   2. Selecting a common schema and converting every record batch to that
-///      schema. This includes several steps:
-///         * Indexing all fields for the same ArrowPayloadType across every batch
-///         * Selecting a safe key type for each dictionary field from the
-///           physical number of dictionary values that Arrow may concatenate.
-///         * Determining nullability for each field in the final batch
-///   3. Casting every record batch to the final schema, including casting individual
-///      arrays as well as reordering the columns to match the schema.
-///
-/// # Future optimizations
-///
-/// - TODO: Re-indexing probably should not be a separate operation. We should decide
-///   within this function whether or not to do it and ensure it happens if required.
-///   This is deferred until we totally remove the old implementation in groups.rs
-///   due to interface incompatibility.
-///
-/// - TODO: Consider using new_unchecked for record batch construction if we're
-///   confident in it. We mostly unwrap those operations a lot, so skipping the
-///   checks or moving similar checks to debug asserts may be reasonable.
+/// The inputs are consumed: every slot in `items` is `None` on success.
 ///
 /// # Errors
 ///
@@ -84,16 +211,18 @@ const MAX_U16_CARDINALITY: usize = 65535;
 /// signal's payload schemas.
 pub fn concatenate<const N: usize>(
     items: &mut [[Option<RecordBatch>; N]],
+    opts: ConcatOptions,
 ) -> Result<[Option<RecordBatch>; N]> {
     // Resolve the signal up front so an unsupported width is rejected even on
     // the empty and single-batch fast paths below.
-    let concat_signal: fn(&mut [[Option<RecordBatch>; N]]) -> Result<[Option<RecordBatch>; N]> =
-        match N {
-            Logs::COUNT => concatenate_signal::<Logs, N>,
-            Metrics::COUNT => concatenate_signal::<Metrics, N>,
-            Traces::COUNT => concatenate_signal::<Traces, N>,
-            _ => return Err(Error::UnsupportedBatchStoreType { batch_width: N }),
-        };
+    type ConcatSignal<const N: usize> =
+        fn(&mut [[Option<RecordBatch>; N]], ConcatOptions) -> Result<[Option<RecordBatch>; N]>;
+    let concat_signal: ConcatSignal<N> = match N {
+        Logs::COUNT => concatenate_signal::<Logs, N>,
+        Metrics::COUNT => concatenate_signal::<Metrics, N>,
+        Traces::COUNT => concatenate_signal::<Traces, N>,
+        _ => return Err(Error::UnsupportedBatchStoreType { batch_width: N }),
+    };
 
     let mut result = [const { None }; N];
     if items.is_empty() {
@@ -107,15 +236,27 @@ pub fn concatenate<const N: usize>(
         return Ok(result);
     }
 
-    concat_signal(items)
+    concat_signal(items, opts)
 }
 
 fn concatenate_signal<S: OtapBatchStore, const N: usize>(
     items: &mut [[Option<RecordBatch>; N]],
+    opts: ConcatOptions,
 ) -> Result<[Option<RecordBatch>; N]> {
     let mut result = [const { None }; N];
 
-    #[allow(clippy::needless_range_loop)]
+    // Decode transport encodings and plan the ID rewrites. Nothing
+    // is copied here apart from decoding encoded columns and the scratch
+    // values of compacted ID columns.
+    let mut id_plan = if opts.reindex {
+        reindex::remove_transport_encodings::<S, N>(items)?;
+        Some(reindex::plan_ids::<S, N>(items)?)
+    } else {
+        None
+    };
+
+    let mut batches: Vec<&RecordBatch> = Vec::new();
+    let mut plans: Vec<InputPlan> = Vec::new();
     for i in 0..N {
         let payload_def = payloads::get(S::payload_type_at_idx(i));
 
@@ -123,155 +264,125 @@ fn concatenate_signal<S: OtapBatchStore, const N: usize>(
         if index.batch_count == 0 {
             continue;
         }
-
         let selected = select_schema(&index)?;
-        let new_schema: Arc<Schema> = Arc::from(selected.schema);
-        let mut batcher = arrow::compute::BatchCoalescer::new(new_schema.clone(), index.row_count);
-        for payload in select_all_mut(items, i) {
-            let Some(rb) = payload.take() else {
-                continue;
-            };
 
-            let (curr_schema, columns, num_rows) = rb.into_parts();
-            let converted_columns = convert(
-                columns,
-                num_rows,
-                &curr_schema.fields,
-                &new_schema.fields,
-                payload_def,
-                &selected.slot_to_target,
-            )?;
-
-            // safety: Unless we have a bug, we've satisfied all the preconditions
-            // for try_new and push_batch by converting everything to a unified
-            // schema.
-            let converted = RecordBatch::try_new(new_schema.clone(), converted_columns)
-                .expect("Valid construction");
-            batcher
-                .push_batch(converted)
-                .map_err(|source| Error::Batching { source })?;
+        batches.reserve(index.batch_count);
+        plans.reserve(index.batch_count);
+        for (j, group) in items.iter().enumerate() {
+            if let Some(rb) = group[i].as_ref() {
+                batches.push(rb);
+                plans.push(match id_plan.as_mut() {
+                    Some(p) => std::mem::take(&mut p[i][j]),
+                    None => InputPlan::default(),
+                });
+            }
         }
 
-        batcher
-            .finish_buffered_batch()
-            .map_err(|e| Error::Batching { source: e })?;
+        result[i] = Some(write_payload(&batches, &plans, payload_def, selected)?);
 
-        // safety: If if finish_buffered_batch succeeded then we can expect
-        // next_completed_batch to succeed.
-        assert!(batcher.has_completed_batch());
-        let batch = batcher.next_completed_batch().expect("complete batch");
-        result[i] = Some(batch);
+        // We can't just clear batches because of the lifetime, hence the
+        // `reuse_vec` trick to reuse the allocation.
+        batches = reuse_vec(batches);
+        plans.clear();
+
+        for payload in select_all_mut(items, i) {
+            *payload = None;
+        }
     }
 
     Ok(result)
 }
 
-/// Convert the columns of a single input batch to the unified `target_fields`.
-///
-/// The input batch conforms to `payload_def`, so instead of scanning
-/// `target_fields` for every current field (an O(fields^2) search), we look each
-/// current field up in the payload spec to get its slot, then map that slot to
-/// its position in the target schema via `slot_to_target`. Fields present in the
-/// target but absent from this batch are filled with nulls afterward.
-fn convert(
-    columns: Vec<Arc<dyn Array>>,
-    num_rows: usize,
-    curr_fields: &Fields,
-    target_fields: &Fields,
-    payload_def: &PayloadSchema,
-    slot_to_target: &[i16; MAX_SLOTS],
-) -> Result<Vec<Arc<dyn Array>>> {
-    assert_eq!(columns.len(), curr_fields.len());
-
-    // Pre-fill so every target position is initialized; positions not written
-    // by an input column are missing fields and are null-padded below.
-    let mut new_columns: Vec<Option<Arc<dyn Array>>> = vec![None; target_fields.len()];
-
-    for (curr_idx, curr_field) in curr_fields.iter().enumerate() {
-        let slot = payload_def
-            .slot_of(curr_field.name())
-            .ok_or_else(|| Error::ColumnNotFound {
-                name: curr_field.name().clone(),
-            })?;
-        let target_idx = slot_to_target[slot];
-        debug_assert!(target_idx >= 0, "indexed field must have a target position");
-        let target_idx = target_idx as usize;
-        let target_field = &target_fields[target_idx];
-
-        let converted = if curr_field.data_type() == target_field.data_type() {
-            columns[curr_idx].clone()
-        } else if let DataType::Struct(target_struct_fields) = target_field.data_type() {
-            let sub_def = payload_def
-                .fields()
-                .get(slot)
-                .and_then(|f| f.data_type.as_struct_schema())
-                .expect("struct field must have a struct sub-schema");
-            let sub_map = struct_slot_map(sub_def, target_struct_fields);
-
-            // TODO: Figure out how to avoid the clone here. as_any just returns
-            // a ref, so we cannot downcast_mut and break into parts. The clone
-            // is only a Vec<ArrayRef>.
-            let struct_array = columns[curr_idx]
-                .as_any()
-                .downcast_ref::<StructArray>()
-                .expect("Struct array")
-                .clone();
-            let (struct_fields, struct_columns, nulls) = struct_array.into_parts();
-
-            // Recursively convert the struct; depth is bounded to 1 since valid
-            // OTAP batches do not have nested structs.
-            let struct_columns = convert(
-                struct_columns,
-                num_rows,
-                &struct_fields,
-                target_struct_fields,
-                sub_def,
-                &sub_map,
-            )?;
-
-            // safety: preconditions satisfied by construction above.
-            Arc::new(
-                StructArray::try_new_with_length(
-                    target_struct_fields.clone(),
-                    struct_columns,
-                    nulls,
-                    num_rows,
-                )
-                .expect("valid struct array"),
-            )
-        } else {
-            // safety: the selected type is cast-compatible by construction.
-            cast(columns[curr_idx].as_ref(), target_field.data_type()).expect("Compatible types")
-        };
-
-        new_columns[target_idx] = Some(converted);
-    }
-
-    // Fill any target field that this batch did not carry with nulls, reusing
-    // the already-allocated Vec rather than collecting into a second one.
-    let out = new_columns
-        .into_iter()
-        .enumerate()
-        .map(|(idx, col)| match col {
-            Some(col) => col,
-            // TODO: Can we optimize here with REE support?
-            None => arrow::array::new_null_array(target_fields[idx].data_type(), num_rows),
-        })
-        .collect();
-
-    Ok(out)
+fn reuse_vec<'b, T>(mut v: Vec<&T>) -> Vec<&'b T> {
+    v.clear();
+    v.into_iter().map(|_| unreachable!()).collect()
 }
 
-/// Build the spec-slot -> target-index map for a struct sub-schema, matching
-/// child fields by name against the already-selected target struct fields.
-fn struct_slot_map(sub_def: &PayloadSchema, target_fields: &Fields) -> [i16; MAX_SLOTS] {
-    let mut map = [-1i16; MAX_SLOTS];
-    for (target_idx, field) in target_fields.iter().enumerate() {
-        if let Some(slot) = sub_def.slot_of(field.name()) {
-            map[slot] = target_idx as i16;
+/// Test helper: apply the reindex plan to every input independently, without
+/// concatenating. This lets tests verify the planner using per-input
+/// assertions (no overlaps across inputs, preserved relations).
+#[cfg(test)]
+pub(crate) fn reindex_in_place<S: OtapBatchStore, const N: usize>(
+    items: &mut [[Option<RecordBatch>; N]],
+) -> Result<()> {
+    reindex::remove_transport_encodings::<S, N>(items)?;
+    let mut id_plan = reindex::plan_ids::<S, N>(items)?;
+    for (j, group) in items.iter_mut().enumerate() {
+        for i in 0..N {
+            let Some(rb) = group[i].as_ref() else {
+                continue;
+            };
+            let payload_def = payloads::get(S::payload_type_at_idx(i));
+            let index = index_records(std::iter::once(Some(rb)), payload_def)?;
+            let selected = select_schema(&index)?;
+            let plan = std::mem::take(&mut id_plan[i][j]);
+            let out = write_payload(&[rb], &[plan], payload_def, selected)?;
+            group[i] = Some(out);
         }
     }
-    map
+    Ok(())
+}
+
+/// Write the output record batch for one payload type.
+///
+/// `batches[j]` is the j-th contributing input and `plans[j]` its row
+/// selection and ID remaps. Every output column is written exactly once.
+fn write_payload(
+    batches: &[&RecordBatch],
+    plans: &[InputPlan],
+    payload_def: &PayloadSchema,
+    selected: SelectedSchema,
+) -> Result<RecordBatch> {
+    debug_assert_eq!(batches.len(), plans.len());
+    let schema = Arc::new(selected.schema);
+    let target_fields = schema.fields();
+
+    // Resolve, for every input, the source column for each target position.
+    // This is O(fields) per input and avoids name lookups per column.
+    let mut sources: Vec<Vec<Option<&ArrayRef>>> = Vec::with_capacity(batches.len());
+    for rb in batches {
+        let mut cols = vec![None; target_fields.len()];
+        for (field, col) in rb.schema_ref().fields().iter().zip(rb.columns()) {
+            let slot = payload_def
+                .slot_of(field.name())
+                .ok_or_else(|| Error::ColumnNotFound {
+                    name: field.name().clone(),
+                })?;
+            let target_idx = selected.slot_to_target[slot];
+            debug_assert!(target_idx >= 0, "indexed field must have a target position");
+            cols[target_idx as usize] = Some(col);
+        }
+        sources.push(cols);
+    }
+
+    let rows: usize = batches
+        .iter()
+        .zip(plans)
+        .map(|(rb, plan)| plan.selection.count(rb.num_rows()))
+        .sum();
+
+    let mut columns = Vec::with_capacity(target_fields.len());
+    let mut inputs: Vec<Input<'_>> = Vec::with_capacity(batches.len());
+    for (target_idx, target) in target_fields.iter().enumerate() {
+        inputs.clear();
+        inputs.extend(
+            batches
+                .iter()
+                .zip(plans)
+                .zip(&sources)
+                .map(|((rb, plan), cols)| Input {
+                    column: cols[target_idx],
+                    num_rows: rb.num_rows(),
+                    plan,
+                }),
+        );
+        let id_col = top_level_id_col(target.name());
+        columns.push(write_column(target, &inputs, rows, id_col)?);
+    }
+
+    let options = arrow::array::RecordBatchOptions::new().with_row_count(Some(rows));
+    RecordBatch::try_new_with_options(schema, columns, &options)
+        .map_err(|source| Error::Batching { source })
 }
 
 /// The output of schema selection: the unified schema plus a map from each
@@ -333,7 +444,8 @@ fn select_struct_type(struct_index: &FieldIndex<'_>) -> Result<DataType> {
             continue;
         };
 
-        // Nested structs are rejected during indexing.
+        // Nested structs are rejected in `index_fields` with
+        // `Error::InvalidDataTypeForStruct`.
         debug_assert!(!matches!(info.value_type, DataType::Struct(_)));
 
         let typ = select_field_type(info, Some(def_field))?;
@@ -372,7 +484,6 @@ pub(crate) const MAX_SLOTS: usize = 17;
 #[derive(Debug)]
 struct RecordIndex<'a> {
     batch_count: usize,
-    row_count: usize,
     fields: FieldIndex<'a>,
 }
 
@@ -415,6 +526,10 @@ struct IndexedField<'a> {
     // all dictionary batches. Bounds the number of dictionary entries that Arrow
     // may append while coalescing, and hence the required key width.
     total_physical_value_count: usize,
+    // The dictionary values array of the most recent input carrying this
+    // column, if it was dictionary encoded. A repeat of the same values array
+    // in the next input is shared by the writer, so it is counted once.
+    last_dict_values: Option<&'a ArrayRef>,
     // For struct columns, the recursively-indexed children.
     struct_index: Option<Box<FieldIndex<'a>>>,
 }
@@ -427,7 +542,6 @@ fn index_records<'a>(
 ) -> Result<RecordIndex<'a>> {
     let mut index = RecordIndex {
         batch_count: 0,
-        row_count: 0,
         fields: FieldIndex::new(payload_def),
     };
 
@@ -437,11 +551,10 @@ fn index_records<'a>(
         };
 
         index.batch_count += 1;
-        index.row_count += rb.num_rows();
 
         let fields = rb.schema_ref().fields();
         let iter = fields.iter().zip(rb.columns());
-        index_fields(&mut index.fields, iter)?;
+        index_fields(&mut index.fields, iter, None)?;
     }
 
     // Finalize nullability: a field is nullable if it was null in any batch or
@@ -481,9 +594,14 @@ fn finalize_nullability(index: &mut FieldIndex<'_>, batch_count: usize) {
 /// across batches. A struct child whose scalar type diverges between batches is
 /// still rejected (at child granularity), as is a struct-vs-non-struct collision
 /// on the same column.
+///
+/// `parent` is the name of the enclosing struct column when indexing struct
+/// children, and `None` at the top level. Structs nested inside structs are
+/// rejected because valid OTAP batches never contain them.
 fn index_fields<'a>(
     index: &mut FieldIndex<'a>,
     fields: impl Iterator<Item = (&'a FieldRef, &'a ArrayRef)>,
+    parent: Option<&str>,
 ) -> Result<()> {
     let schema = index.schema;
 
@@ -500,20 +618,27 @@ fn index_fields<'a>(
 
         if index.slots[slot].is_none() {
             let struct_index = if matches!(value_type, DataType::Struct(_)) {
-                let sub_def = schema.fields()[slot]
-                    .data_type
-                    .as_struct_schema()
-                    .expect("spec struct field has a struct sub-schema");
+                // Valid OTAP batches never nest structs, and only spec struct
+                // fields may carry a struct column.
+                if let Some(parent) = parent {
+                    return Err(Error::InvalidDataTypeForStruct {
+                        parent: parent.to_string(),
+                        name: field.name().clone(),
+                        data_type: value_type.clone(),
+                    });
+                }
+                let Some(sub_def) = schema.fields()[slot].data_type.as_struct_schema() else {
+                    return Err(Error::ColumnDataTypeMismatch {
+                        name: field.name().clone(),
+                        expect: spec_value_type(&schema.fields()[slot].data_type),
+                        actual: value_type.clone(),
+                    });
+                };
 
-                // safety: value_type is Struct
-                let struct_array = data
-                    .as_any()
-                    .downcast_ref::<StructArray>()
-                    .expect("Struct array");
-
+                let struct_array = as_struct_column(field, data)?;
                 let mut sub = FieldIndex::new(sub_def);
                 let iter = struct_array.fields().iter().zip(struct_array.columns());
-                index_fields(&mut sub, iter)?;
+                index_fields(&mut sub, iter, Some(name))?;
                 Some(Box::new(sub))
             } else {
                 None
@@ -525,6 +650,7 @@ fn index_fields<'a>(
                 is_dictionary: is_dict,
                 present_count: 1,
                 total_physical_value_count: array.len(),
+                last_dict_values: is_dict.then_some(array),
                 struct_index,
             });
             continue;
@@ -542,13 +668,9 @@ fn index_fields<'a>(
                 });
             }
 
-            // safety: value_type is Struct (checked above)
-            let struct_array = data
-                .as_any()
-                .downcast_ref::<StructArray>()
-                .expect("Struct array");
+            let struct_array = as_struct_column(field, data)?;
             let iter = struct_array.fields().iter().zip(struct_array.columns());
-            index_fields(struct_index, iter)?;
+            index_fields(struct_index, iter, Some(name))?;
         } else {
             if existing.value_type != value_type {
                 return Err(Error::ColumnDataTypeMismatch {
@@ -563,10 +685,48 @@ fn index_fields<'a>(
 
         existing.nullable = existing.nullable || data.null_count() > 0;
         existing.present_count += 1;
-        existing.total_physical_value_count += array.len();
+
+        // Mirror the writer's sharing rule (see `WrittenDictValues`). ID
+        // columns may be remapped per input and then cannot share values,
+        // so they always count every values array.
+        let is_id_col = match parent {
+            None => top_level_id_col(name).is_some(),
+            Some(parent) => struct_child_id_col(parent, name).is_some(),
+        };
+        let shared = is_dict
+            && !is_id_col
+            && existing
+                .last_dict_values
+                .is_some_and(|prev| same_values(prev, array));
+        if !shared {
+            existing.total_physical_value_count += array.len();
+        }
+        existing.last_dict_values = is_dict.then_some(array);
     }
 
     Ok(())
+}
+
+/// Downcast a column whose value type is a struct to a [`StructArray`].
+/// Dictionary-encoded structs are not valid OTAP and are rejected.
+fn as_struct_column<'a>(field: &FieldRef, data: &'a ArrayRef) -> Result<&'a StructArray> {
+    data.as_any()
+        .downcast_ref::<StructArray>()
+        .ok_or_else(|| Error::ColumnDataTypeMismatch {
+            name: field.name().clone(),
+            expect: DataType::Struct(Default::default()),
+            actual: data.data_type().clone(),
+        })
+}
+
+/// The Arrow type used to describe a spec field in type-mismatch errors.
+fn spec_value_type(data_type: &crate::schema::schema::DataType) -> DataType {
+    use crate::schema::schema::DataType as SpecType;
+    match data_type {
+        SpecType::Simple(t) | SpecType::Dictionary { value_type: t, .. } => t.to_arrow(),
+        SpecType::Struct(_) => DataType::Struct(Default::default()),
+        SpecType::List(inner) => DataType::new_list(spec_value_type(inner), true),
+    }
 }
 
 fn get_dictionary_values(array: &ArrayRef) -> Result<&ArrayRef> {
@@ -947,13 +1107,1160 @@ fn select_all_mut<const N: usize>(
     batches.iter_mut().map(move |batches| &mut batches[i])
 }
 
-/// Benchmark-only accessors that expose the schema-unification stages
-/// (`index_records`, `select_schema`, and `convert`) so their cost can be
-/// measured separately from the row-copying performed by the coalescer.
+// ---------------------------------------------------------------------------
+// Plan types
+//
+// Shared between the ID planner (`reindex`) and the column writers below.
+// ---------------------------------------------------------------------------
+
+/// The rows of a single input record batch that survive into the output.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) enum Selection {
+    /// Every row is kept. This is the common case.
+    #[default]
+    All,
+    /// Only the rows in these sorted, disjoint, non-empty ranges are kept.
+    Ranges(Vec<Range<usize>>),
+}
+
+impl Selection {
+    /// Number of selected rows given the source length.
+    #[must_use]
+    pub(crate) fn count(&self, len: usize) -> usize {
+        match self {
+            Selection::All => len,
+            Selection::Ranges(ranges) => ranges.iter().map(|r| r.len()).sum(),
+        }
+    }
+
+    /// Iterate the selected ranges given the source length.
+    pub(crate) fn ranges(&self, len: usize) -> impl Iterator<Item = Range<usize>> + '_ {
+        let (all, ranges): (Option<Range<usize>>, &[Range<usize>]) = match self {
+            Selection::All => ((len > 0).then_some(0..len), &[]),
+            Selection::Ranges(ranges) => (None, ranges.as_slice()),
+        };
+        all.into_iter().chain(ranges.iter().cloned())
+    }
+}
+
+/// How the values of one ID column of one input are transformed on the way to
+/// the output.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum IdRemap<T: ArrowNativeType> {
+    /// Values are copied as-is.
+    Identity,
+    /// `out = in.wrapping_add(delta)`. Wrapping arithmetic is intentional:
+    /// null slots may hold arbitrary values that must not panic.
+    Offset(T),
+    /// Replacement values in source order. Indexed like the source column, or
+    /// like the dictionary values array for a dictionary-encoded column.
+    Replace(ScalarBuffer<T>),
+}
+
+/// An [IdRemap] for either of the two ID widths used by OTAP.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum AnyRemap {
+    U16(IdRemap<u16>),
+    U32(IdRemap<u32>),
+}
+
+/// The ID columns that may be remapped within a payload.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum IdCol {
+    Id = 0,
+    ResourceId = 1,
+    ScopeId = 2,
+    ParentId = 3,
+}
+
+impl IdCol {
+    pub(crate) const COUNT: usize = 4;
+}
+
+/// Plan for a single input record batch of a single payload type.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct InputPlan {
+    /// Rows that survive into the output.
+    pub(crate) selection: Selection,
+    /// Remaps for each ID column, indexed by [IdCol]. `None` means identity.
+    pub(crate) remaps: [Option<AnyRemap>; IdCol::COUNT],
+}
+
+impl InputPlan {
+    /// Look up the remap for an ID column.
+    #[must_use]
+    pub(crate) fn remap(&self, col: IdCol) -> Option<&AnyRemap> {
+        self.remaps[col as usize].as_ref()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Column writers
+// ---------------------------------------------------------------------------
+
+/// One input's contribution to an output column.
+#[derive(Clone, Copy)]
+pub(crate) struct Input<'a> {
+    /// The source column, or `None` if this input does not carry the field.
+    pub(crate) column: Option<&'a ArrayRef>,
+    /// Number of rows in the source record batch.
+    pub(crate) num_rows: usize,
+    /// Row selection and ID remaps for this input.
+    pub(crate) plan: &'a InputPlan,
+}
+
+impl Input<'_> {
+    fn selected_rows(&self) -> usize {
+        self.plan.selection.count(self.num_rows)
+    }
+
+    fn ranges(&self) -> impl Iterator<Item = Range<usize>> + '_ {
+        self.plan.selection.ranges(self.num_rows)
+    }
+}
+
+/// Resolve which ID column (if any) a top-level field corresponds to.
+#[must_use]
+pub(crate) fn top_level_id_col(name: &str) -> Option<IdCol> {
+    match name {
+        ID => Some(IdCol::Id),
+        PARENT_ID => Some(IdCol::ParentId),
+        _ => None,
+    }
+}
+
+fn struct_child_id_col(struct_name: &str, child_name: &str) -> Option<IdCol> {
+    match (struct_name, child_name) {
+        (RESOURCE, ID) => Some(IdCol::ResourceId),
+        (SCOPE, ID) => Some(IdCol::ScopeId),
+        _ => None,
+    }
+}
+
+/// Write a single output column for `target` from `inputs`.
+///
+/// `rows` must equal the sum of selected rows across `inputs`.
+pub(crate) fn write_column(
+    target: &Field,
+    inputs: &[Input<'_>],
+    rows: usize,
+    id_col: Option<IdCol>,
+) -> Result<ArrayRef> {
+    debug_assert_eq!(rows, inputs.iter().map(Input::selected_rows).sum::<usize>());
+
+    let result = match target.data_type() {
+        DataType::Struct(fields) => write_struct(target.name(), fields, inputs, rows),
+        DataType::Dictionary(key, value) => match key.as_ref() {
+            DataType::UInt8 => dispatch_value::<DictDriver<UInt8Type>>(value, inputs, rows, id_col),
+            DataType::UInt16 => {
+                dispatch_value::<DictDriver<UInt16Type>>(value, inputs, rows, id_col)
+            }
+            // Other key types are rejected when indexing and are never
+            // selected as an output type.
+            k => Err(unsupported_key(k)),
+        },
+        value => dispatch_value::<NativeDriver>(value, inputs, rows, id_col),
+    };
+
+    result.map_err(|e| with_column_name(e, target.name()))
+}
+
+/// Attach the column name to a [check_value_type] error. The value writers
+/// do not know which column they are writing, so the name is filled in here.
+/// A name already set by a nested (struct child) call is kept.
+fn with_column_name(err: Error, column: &str) -> Error {
+    match err {
+        Error::ColumnDataTypeMismatch {
+            name,
+            expect,
+            actual,
+        } if name.is_empty() => Error::ColumnDataTypeMismatch {
+            name: column.to_string(),
+            expect,
+            actual,
+        },
+        e => e,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Drivers
+// ---------------------------------------------------------------------------
+
+/// Abstraction over [write_native] and [write_dict] so value-type dispatch is
+/// written once.
+trait Driver {
+    /// True if the output is dictionary encoded.
+    const IS_DICT: bool;
+
+    fn write<B: ValueBuilder>(
+        builder: B,
+        value_type: &DataType,
+        inputs: &[Input<'_>],
+        rows: usize,
+    ) -> Result<ArrayRef>;
+}
+
+struct NativeDriver;
+impl Driver for NativeDriver {
+    const IS_DICT: bool = false;
+
+    fn write<B: ValueBuilder>(
+        builder: B,
+        value_type: &DataType,
+        inputs: &[Input<'_>],
+        rows: usize,
+    ) -> Result<ArrayRef> {
+        write_native(builder, value_type, inputs, rows)
+    }
+}
+
+struct DictDriver<K>(std::marker::PhantomData<K>);
+impl<K: ArrowDictionaryKeyType> Driver for DictDriver<K> {
+    const IS_DICT: bool = true;
+
+    fn write<B: ValueBuilder>(
+        builder: B,
+        value_type: &DataType,
+        inputs: &[Input<'_>],
+        rows: usize,
+    ) -> Result<ArrayRef> {
+        write_dict::<K, B>(builder, value_type, inputs, rows)
+    }
+}
+
+/// Upper bound on the number of values the builder will receive, used for
+/// capacity. For native output this is `rows`; for dictionary output this is
+/// the sum of dictionary value lengths plus native selected rows.
+///
+/// A values array identical to the previous input's is counted once, since
+/// [write_dict] may share it (see [WrittenDictValues]).
+fn dict_values_capacity(inputs: &[Input<'_>]) -> usize {
+    let mut prev: Option<&ArrayRef> = None;
+    inputs
+        .iter()
+        .map(|inp| match inp.column {
+            Some(col) => match dict_values(col) {
+                Some(v) => {
+                    let repeat = prev.is_some_and(|p| same_values(p, v));
+                    prev = Some(v);
+                    if repeat { 0 } else { v.len() }
+                }
+                None => {
+                    prev = None;
+                    inp.selected_rows()
+                }
+            },
+            None => 0,
+        })
+        .sum()
+}
+
+fn dispatch_value<D: Driver>(
+    value_type: &DataType,
+    inputs: &[Input<'_>],
+    rows: usize,
+    id_col: Option<IdCol>,
+) -> Result<ArrayRef> {
+    let cap = if D::IS_DICT {
+        dict_values_capacity(inputs)
+    } else {
+        rows
+    };
+
+    macro_rules! prim {
+        ($t:ty) => {
+            D::write(
+                PrimitiveBuilder::<$t>::new(cap, value_type.clone(), None),
+                value_type,
+                inputs,
+                rows,
+            )
+        };
+    }
+
+    match value_type {
+        DataType::UInt8 => prim!(UInt8Type),
+        DataType::UInt16 => D::write(
+            PrimitiveBuilder::<UInt16Type>::new(cap, value_type.clone(), id_col.map(u16_remap)),
+            value_type,
+            inputs,
+            rows,
+        ),
+        DataType::UInt32 => D::write(
+            PrimitiveBuilder::<UInt32Type>::new(cap, value_type.clone(), id_col.map(u32_remap)),
+            value_type,
+            inputs,
+            rows,
+        ),
+        DataType::UInt64 => prim!(UInt64Type),
+        DataType::Int32 => prim!(Int32Type),
+        DataType::Int64 => prim!(Int64Type),
+        DataType::Float64 => prim!(Float64Type),
+        DataType::Timestamp(arrow_schema::TimeUnit::Nanosecond, _) => {
+            prim!(TimestampNanosecondType)
+        }
+        DataType::Duration(arrow_schema::TimeUnit::Nanosecond) => prim!(DurationNanosecondType),
+        DataType::Boolean => D::write(BoolBuilder::new(cap), value_type, inputs, rows),
+        DataType::Utf8 => D::write(
+            BytesBuilder::<Utf8Type>::new(cap, inputs),
+            value_type,
+            inputs,
+            rows,
+        ),
+        DataType::Binary => D::write(
+            BytesBuilder::<BinaryType>::new(cap, inputs),
+            value_type,
+            inputs,
+            rows,
+        ),
+        DataType::FixedSizeBinary(w) => {
+            D::write(FsbBuilder::new(cap, *w as usize), value_type, inputs, rows)
+        }
+        _ if D::IS_DICT => Err(Error::UnexpectedRecordBatchState {
+            reason: format!("unsupported dictionary value type {value_type:?}"),
+        }),
+        _ => write_fallback(value_type, inputs, rows),
+    }
+}
+
+/// Produce a plain output column.
+fn write_native<B: ValueBuilder>(
+    mut builder: B,
+    value_type: &DataType,
+    inputs: &[Input<'_>],
+    rows: usize,
+) -> Result<ArrayRef> {
+    let mut nulls = LazyNulls::new(rows);
+
+    for inp in inputs {
+        builder.begin_input(inp.plan);
+        let Some(col) = inp.column else {
+            let n = inp.selected_rows();
+            builder.append_default(n);
+            nulls.append_null(n);
+            continue;
+        };
+
+        match col.data_type() {
+            DataType::Dictionary(key, _) => match key.as_ref() {
+                DataType::UInt8 => gather_dict::<UInt8Type, B>(&mut builder, &mut nulls, inp, col),
+                DataType::UInt16 => {
+                    gather_dict::<UInt16Type, B>(&mut builder, &mut nulls, inp, col)
+                }
+                k => return Err(unsupported_key(k)),
+            },
+            dt => {
+                check_value_type(dt, value_type)?;
+                let src = B::downcast(col.as_ref());
+                for r in inp.ranges() {
+                    builder.append_range(&src, r.clone());
+                    nulls.append_from(col.nulls(), r);
+                }
+            }
+        }
+    }
+
+    builder.finish(nulls.finish())
+}
+
+/// Gather values through dictionary keys into a native builder.
+fn gather_dict<K: ArrowDictionaryKeyType, B: ValueBuilder>(
+    builder: &mut B,
+    nulls: &mut LazyNulls,
+    inp: &Input<'_>,
+    col: &ArrayRef,
+) {
+    let dict = col.as_dictionary::<K>();
+    let values = dict.values();
+    let keys = dict.keys().values();
+    let values_len = values.len();
+    let src = B::downcast(values.as_ref());
+
+    for r in inp.ranges() {
+        if values_len == 0 {
+            // Every key must be null.
+            builder.append_default(r.len());
+        } else {
+            let max = values_len - 1;
+            let key_nulls = dict
+                .keys()
+                .nulls()
+                .map(|n| n.slice(r.start, r.len()))
+                .filter(|n| n.null_count() > 0);
+            match key_nulls {
+                None => builder.append_gather::<K::Native>(&src, &keys[r.clone()], max),
+                Some(key_nulls) => {
+                    // Null key slots may reference any value (often a large
+                    // one). Write placeholders for them instead of copying
+                    // the referenced value only for it to be masked.
+                    let mut pos = 0;
+                    for (s, e) in key_nulls.valid_slices() {
+                        if s > pos {
+                            builder.append_default(s - pos);
+                        }
+                        let keys = &keys[r.start + s..r.start + e];
+                        builder.append_gather::<K::Native>(&src, keys, max);
+                        pos = e;
+                    }
+                    if r.len() > pos {
+                        builder.append_default(r.len() - pos);
+                    }
+                }
+            }
+        }
+        // A null value referenced by a valid key is also null in the output.
+        match values.nulls() {
+            Some(vn) if vn.null_count() > 0 => {
+                for k in keys[r.clone()].iter().zip(r.clone()) {
+                    let (key, row) = k;
+                    let valid = dict.keys().is_valid(row)
+                        && key.as_usize() < values_len
+                        && vn.is_valid(key.as_usize());
+                    if valid {
+                        nulls.append_valid(1);
+                    } else {
+                        nulls.append_null(1);
+                    }
+                }
+            }
+            _ => nulls.append_from(dict.nulls(), r),
+        }
+    }
+}
+
+/// Produce a dictionary output column with key type `K`.
+fn write_dict<K: ArrowDictionaryKeyType, B: ValueBuilder>(
+    mut builder: B,
+    value_type: &DataType,
+    inputs: &[Input<'_>],
+    rows: usize,
+) -> Result<ArrayRef> {
+    let mut keys: Vec<K::Native> = Vec::with_capacity(rows);
+    let mut key_nulls = LazyNulls::new(rows);
+    let mut value_nulls = LazyNulls::new(dict_values_capacity(inputs));
+    let mut vbase: usize = 0;
+    let mut written = WrittenDictValues::default();
+
+    for inp in inputs {
+        builder.begin_input(inp.plan);
+        let Some(col) = inp.column else {
+            let n = inp.selected_rows();
+            keys.resize(keys.len() + n, K::Native::usize_as(0));
+            key_nulls.append_null(n);
+            continue;
+        };
+        if dict_values(col).is_none() {
+            written.set(None);
+        }
+
+        match col.data_type() {
+            DataType::Dictionary(key, _) => match key.as_ref() {
+                DataType::UInt8 => append_dict_input::<UInt8Type, K, B>(
+                    &mut builder,
+                    &mut keys,
+                    &mut key_nulls,
+                    &mut value_nulls,
+                    &mut vbase,
+                    &mut written,
+                    inp,
+                    col,
+                    value_type,
+                )?,
+                DataType::UInt16 => append_dict_input::<UInt16Type, K, B>(
+                    &mut builder,
+                    &mut keys,
+                    &mut key_nulls,
+                    &mut value_nulls,
+                    &mut vbase,
+                    &mut written,
+                    inp,
+                    col,
+                    value_type,
+                )?,
+                k => return Err(unsupported_key(k)),
+            },
+            dt => {
+                check_value_type(dt, value_type)?;
+                let src = B::downcast(col.as_ref());
+                for r in inp.ranges() {
+                    let n = r.len();
+                    builder.append_range(&src, r.clone());
+                    value_nulls.append_valid(n);
+                    keys.extend((vbase..vbase + n).map(K::Native::usize_as));
+                    key_nulls.append_from(col.nulls(), r);
+                    vbase += n;
+                }
+            }
+        }
+    }
+
+    // The schema selection bounds the total number of physical values so
+    // that they fit the chosen key type. Guard anyway rather than wrapping.
+    if vbase > 0 && K::Native::from_usize(vbase - 1).is_none() {
+        return Err(Error::Batching {
+            source: ArrowError::DictionaryKeyOverflowError,
+        });
+    }
+
+    let values = builder.finish(value_nulls.finish())?;
+    let keys = PrimitiveArray::<K>::new(ScalarBuffer::from(keys), key_nulls.finish());
+    debug_assert!(DictionaryArray::<K>::try_new(keys.clone(), values.clone()).is_ok());
+
+    // SAFETY: every valid key was produced as `vbase + k` where `k` is a
+    // valid index into the values appended for that input (either a source
+    // dictionary key, which the source array guarantees to be in bounds, or
+    // a sequential index into the values just appended). Null keys may hold
+    // arbitrary values, which Arrow permits.
+    #[expect(unsafe_code)]
+    let dict = unsafe { DictionaryArray::<K>::new_unchecked(keys, values) };
+    Ok(Arc::new(dict))
+}
+
+#[expect(clippy::too_many_arguments)]
+fn append_dict_input<Ks: ArrowDictionaryKeyType, K: ArrowDictionaryKeyType, B: ValueBuilder>(
+    builder: &mut B,
+    keys: &mut Vec<K::Native>,
+    key_nulls: &mut LazyNulls,
+    value_nulls: &mut LazyNulls,
+    vbase: &mut usize,
+    written: &mut WrittenDictValues,
+    inp: &Input<'_>,
+    col: &ArrayRef,
+    value_type: &DataType,
+) -> Result<()> {
+    let dict = col.as_dictionary::<Ks>();
+    let values = dict.values();
+    check_value_type(values.data_type(), value_type)?;
+
+    // Zero-copy slices of one dictionary (e.g. from `split`) share a values
+    // array. When this input copies values unchanged, reuse the earlier copy
+    // instead of appending the same values again. Remapped ID inputs must
+    // write their own values since the remap differs per input.
+    let reusable = builder.is_identity();
+    let base = match reusable.then(|| written.find(values)).flatten() {
+        Some(base) => base,
+        None => {
+            // Append the whole values array. This keeps key rewriting a pure
+            // add.
+            let values_len = values.len();
+            let src = B::downcast(values.as_ref());
+            builder.append_range(&src, 0..values_len);
+            value_nulls.append_from(values.nulls(), 0..values_len);
+            let base = *vbase;
+            *vbase += values_len;
+            written.set(reusable.then_some((values, base)));
+            base
+        }
+    };
+
+    let src_keys = dict.keys().values();
+    for r in inp.ranges() {
+        keys.extend(
+            src_keys[r.clone()]
+                .iter()
+                .map(|k| K::Native::usize_as(k.as_usize() + base)),
+        );
+        key_nulls.append_from(dict.nulls(), r);
+    }
+    Ok(())
+}
+
+/// The most recent dictionary values array written unchanged to a
+/// dictionary output, with the position of its first value in the output
+/// values array.
+///
+/// Only the previous input is compared: zero-copy pieces of one dictionary
+/// (e.g. from `split`) are adjacent, and a full scan would be quadratic in
+/// the number of inputs. [index_fields] applies the same rule, so the writer
+/// never writes more values than the selected key type can address.
+#[derive(Default)]
+struct WrittenDictValues {
+    last: Option<(ArrayRef, usize)>,
+}
+
+impl WrittenDictValues {
+    /// The base of the previously written values array if it is identical
+    /// to `values`.
+    fn find(&self, values: &ArrayRef) -> Option<usize> {
+        self.last
+            .as_ref()
+            .filter(|(v, _)| same_values(v, values))
+            .map(|(_, base)| *base)
+    }
+
+    /// Record the values array just written. `None` when the values were
+    /// remapped and must not be shared.
+    fn set(&mut self, last: Option<(&ArrayRef, usize)>) {
+        self.last = last.map(|(v, base)| (Arc::clone(v), base));
+    }
+}
+
+/// True if two dictionary values arrays are the same physical array: the
+/// same `Arc`, or the same buffers, offset, length and null buffer (as
+/// Arrow's own concat checks). Never compares values.
+fn same_values(a: &ArrayRef, b: &ArrayRef) -> bool {
+    Arc::ptr_eq(a, b) || (a.len() == b.len() && a.to_data().ptr_eq(&b.to_data()))
+}
+
+/// Produce a struct output column, recursing into its children.
+fn write_struct(
+    struct_name: &str,
+    fields: &Fields,
+    inputs: &[Input<'_>],
+    rows: usize,
+) -> Result<ArrayRef> {
+    let mut nulls = LazyNulls::new(rows);
+    let structs: Vec<Option<&StructArray>> = inputs
+        .iter()
+        .map(|inp| inp.column.map(|c| c.as_struct()))
+        .collect();
+
+    for (inp, s) in inputs.iter().zip(&structs) {
+        match s {
+            Some(s) => {
+                for r in inp.ranges() {
+                    nulls.append_from(s.nulls(), r);
+                }
+            }
+            None => nulls.append_null(inp.selected_rows()),
+        }
+    }
+
+    let mut children = Vec::with_capacity(fields.len());
+    let mut child_inputs: Vec<Input<'_>> = Vec::with_capacity(inputs.len());
+    for field in fields.iter() {
+        child_inputs.clear();
+        child_inputs.extend(inputs.iter().zip(&structs).map(|(inp, s)| Input {
+            column: s.and_then(|s| s.column_by_name(field.name())),
+            num_rows: inp.num_rows,
+            plan: inp.plan,
+        }));
+        let id_col = struct_child_id_col(struct_name, field.name());
+        children.push(write_column(field, &child_inputs, rows, id_col)?);
+    }
+
+    let array = StructArray::try_new_with_length(fields.clone(), children, nulls.finish(), rows)
+        .map_err(|source| Error::Batching { source })?;
+    Ok(Arc::new(array))
+}
+
+/// Generic fallback using `MutableArrayData` for native value types without a
+/// specialized builder. In valid OTAP batches this is only List columns.
+/// Inputs of a different type (e.g. dictionary encoded) are cast to `target`
+/// first.
+fn write_fallback(target: &DataType, inputs: &[Input<'_>], rows: usize) -> Result<ArrayRef> {
+    let mut casted: Vec<ArrayRef> = Vec::with_capacity(inputs.len());
+    for inp in inputs {
+        if let Some(col) = inp.column {
+            let col = if col.data_type() == target {
+                Arc::clone(col)
+            } else {
+                cast(col.as_ref(), target).map_err(|source| Error::Batching { source })?
+            };
+            casted.push(col);
+        }
+    }
+
+    let datas: Vec<ArrayData> = casted.iter().map(|a| a.to_data()).collect();
+    let refs: Vec<&ArrayData> = datas.iter().collect();
+    if refs.is_empty() {
+        return Ok(arrow::array::new_null_array(target, rows));
+    }
+
+    let mut mutable = MutableArrayData::new(refs, true, rows);
+    let mut src_idx = 0;
+    for inp in inputs {
+        match inp.column {
+            Some(_) => {
+                for r in inp.ranges() {
+                    mutable.extend(src_idx, r.start, r.end);
+                }
+                src_idx += 1;
+            }
+            None => mutable.extend_nulls(inp.selected_rows()),
+        }
+    }
+
+    Ok(make_array(mutable.freeze()))
+}
+
+/// Check that an input column's value type matches the selected output type.
+/// The returned error has an empty `name`; [write_column] fills it in.
+fn check_value_type(actual: &DataType, expected: &DataType) -> Result<()> {
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(Error::ColumnDataTypeMismatch {
+            name: String::new(),
+            expect: expected.clone(),
+            actual: actual.clone(),
+        })
+    }
+}
+
+fn unsupported_key(k: &DataType) -> Error {
+    Error::UnsupportedDictionaryKeyType {
+        expect_oneof: vec![DataType::UInt8, DataType::UInt16],
+        actual: k.clone(),
+    }
+}
+
+fn dict_values(col: &ArrayRef) -> Option<&ArrayRef> {
+    match col.data_type() {
+        DataType::Dictionary(k, _) => match k.as_ref() {
+            DataType::UInt8 => Some(col.as_dictionary::<UInt8Type>().values()),
+            DataType::UInt16 => Some(col.as_dictionary::<UInt16Type>().values()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Null buffer
+// ---------------------------------------------------------------------------
+
+/// A null buffer builder that allocates only once a null is seen.
+pub(crate) struct LazyNulls {
+    len: usize,
+    capacity: usize,
+    builder: Option<BooleanBufferBuilder>,
+}
+
+impl LazyNulls {
+    pub(crate) fn new(capacity: usize) -> Self {
+        Self {
+            len: 0,
+            capacity,
+            builder: None,
+        }
+    }
+
+    fn materialize(&mut self) -> &mut BooleanBufferBuilder {
+        let (len, capacity) = (self.len, self.capacity);
+        self.builder.get_or_insert_with(|| {
+            let mut b = BooleanBufferBuilder::new(capacity.max(len));
+            b.append_n(len, true);
+            b
+        })
+    }
+
+    pub(crate) fn append_valid(&mut self, n: usize) {
+        if let Some(b) = self.builder.as_mut() {
+            b.append_n(n, true);
+        }
+        self.len += n;
+    }
+
+    pub(crate) fn append_null(&mut self, n: usize) {
+        if n == 0 {
+            return;
+        }
+        self.materialize().append_n(n, false);
+        self.len += n;
+    }
+
+    /// Append validity for `range` (logical indices) of a source null buffer.
+    pub(crate) fn append_from(&mut self, nulls: Option<&NullBuffer>, range: Range<usize>) {
+        match nulls {
+            Some(n) if n.null_count() > 0 => {
+                let inner = n.inner();
+                let offset = inner.offset();
+                let len = range.len();
+                self.materialize()
+                    .append_packed_range(offset + range.start..offset + range.end, inner.values());
+                self.len += len;
+            }
+            _ => self.append_valid(range.len()),
+        }
+    }
+
+    pub(crate) fn finish(self) -> Option<NullBuffer> {
+        self.builder
+            .map(|mut b| NullBuffer::new(b.finish()))
+            .filter(|n| n.null_count() > 0)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Value builders
+// ---------------------------------------------------------------------------
+
+/// Appends values of a single physical type into a pre-sized destination.
+trait ValueBuilder {
+    /// Typed view of a source array.
+    type Src<'a>;
+
+    fn downcast(array: &dyn Array) -> Self::Src<'_>;
+
+    /// Called before each input is processed.
+    fn begin_input(&mut self, _plan: &InputPlan) {}
+
+    /// True if the current input's values are copied unchanged, i.e. no ID
+    /// remap applies. Only then can a dictionary values array already
+    /// written for an earlier input be shared by this one.
+    fn is_identity(&self) -> bool {
+        true
+    }
+
+    /// Append logical indices `range` of `src`.
+    fn append_range(&mut self, src: &Self::Src<'_>, range: Range<usize>);
+
+    /// Append `src[min(k, max)]` for each dictionary key `k` in `keys`.
+    fn append_gather<K: ArrowNativeType>(&mut self, src: &Self::Src<'_>, keys: &[K], max: usize);
+
+    /// Append `n` placeholder values (masked by nulls).
+    fn append_default(&mut self, n: usize);
+
+    fn finish(self, nulls: Option<NullBuffer>) -> Result<ArrayRef>;
+}
+
+/// Extracts the typed remap for an ID column from an [InputPlan].
+type RemapFn<T> = fn(&InputPlan, IdCol) -> Option<IdRemap<T>>;
+
+fn u16_remap(col: IdCol) -> (IdCol, RemapFn<u16>) {
+    (col, |plan, col| match plan.remap(col) {
+        Some(AnyRemap::U16(r)) => Some(r.clone()),
+        _ => None,
+    })
+}
+
+fn u32_remap(col: IdCol) -> (IdCol, RemapFn<u32>) {
+    (col, |plan, col| match plan.remap(col) {
+        Some(AnyRemap::U32(r)) => Some(r.clone()),
+        _ => None,
+    })
+}
+
+/// Split dictionary keys into maximal runs of consecutive value indices and
+/// call `f` with each run as a range of value indices, in key order.
+///
+/// Keys are clamped to `max` as a bounds guard (see
+/// [ValueBuilder::append_gather]). A run of
+/// length 1 is a single value.
+#[inline]
+fn for_each_key_run<K: ArrowNativeType>(keys: &[K], max: usize, mut f: impl FnMut(Range<usize>)) {
+    let mut iter = keys.iter().map(|k| k.as_usize().min(max));
+    let Some(first) = iter.next() else {
+        return;
+    };
+    let mut start = first;
+    let mut end = first + 1;
+    for k in iter {
+        if k == end {
+            end += 1;
+        } else {
+            f(start..end);
+            start = k;
+            end = k + 1;
+        }
+    }
+    f(start..end);
+}
+
+struct PrimitiveBuilder<T: ArrowPrimitiveType> {
+    values: Vec<T::Native>,
+    data_type: DataType,
+    remap_source: Option<(IdCol, RemapFn<T::Native>)>,
+    remap: IdRemap<T::Native>,
+}
+
+impl<T: ArrowPrimitiveType> PrimitiveBuilder<T> {
+    fn new(
+        capacity: usize,
+        data_type: DataType,
+        remap_source: Option<(IdCol, RemapFn<T::Native>)>,
+    ) -> Self {
+        Self {
+            values: Vec::with_capacity(capacity),
+            data_type,
+            remap_source,
+            remap: IdRemap::Identity,
+        }
+    }
+}
+
+impl<T: ArrowPrimitiveType> ValueBuilder for PrimitiveBuilder<T> {
+    type Src<'a> = &'a [T::Native];
+
+    fn downcast(array: &dyn Array) -> Self::Src<'_> {
+        array.as_primitive::<T>().values()
+    }
+
+    fn begin_input(&mut self, plan: &InputPlan) {
+        if let Some((col, f)) = self.remap_source {
+            self.remap = f(plan, col).unwrap_or(IdRemap::Identity);
+        }
+    }
+
+    fn is_identity(&self) -> bool {
+        match &self.remap {
+            IdRemap::Identity => true,
+            IdRemap::Offset(d) => d.is_zero(),
+            IdRemap::Replace(_) => false,
+        }
+    }
+
+    #[inline]
+    fn append_range(&mut self, src: &Self::Src<'_>, range: Range<usize>) {
+        match &self.remap {
+            IdRemap::Identity => self.values.extend_from_slice(&src[range]),
+            IdRemap::Offset(d) => {
+                let d = *d;
+                self.values
+                    .extend(src[range].iter().map(|v| v.add_wrapping(d)));
+            }
+            IdRemap::Replace(buf) => self.values.extend_from_slice(&buf[range]),
+        }
+    }
+
+    #[inline]
+    fn append_gather<K: ArrowNativeType>(&mut self, src: &Self::Src<'_>, keys: &[K], max: usize) {
+        let indices = keys.iter().map(|k| k.as_usize().min(max));
+        match &self.remap {
+            IdRemap::Identity => self.values.extend(indices.map(|i| src[i])),
+            IdRemap::Offset(d) => {
+                let d = *d;
+                self.values.extend(indices.map(|i| src[i].add_wrapping(d)));
+            }
+            IdRemap::Replace(buf) => self.values.extend(indices.map(|i| buf[i])),
+        }
+    }
+
+    fn append_default(&mut self, n: usize) {
+        self.values
+            .resize(self.values.len() + n, T::Native::default());
+    }
+
+    fn finish(self, nulls: Option<NullBuffer>) -> Result<ArrayRef> {
+        let array = PrimitiveArray::<T>::new(ScalarBuffer::from(self.values), nulls)
+            .with_data_type(self.data_type);
+        Ok(Arc::new(array))
+    }
+}
+
+struct BoolBuilder {
+    values: BooleanBufferBuilder,
+}
+
+impl BoolBuilder {
+    fn new(capacity: usize) -> Self {
+        Self {
+            values: BooleanBufferBuilder::new(capacity),
+        }
+    }
+}
+
+impl ValueBuilder for BoolBuilder {
+    type Src<'a> = &'a BooleanArray;
+
+    fn downcast(array: &dyn Array) -> Self::Src<'_> {
+        array.as_boolean()
+    }
+
+    fn append_range(&mut self, src: &Self::Src<'_>, range: Range<usize>) {
+        let bits = src.values();
+        let offset = bits.offset();
+        self.values
+            .append_packed_range(offset + range.start..offset + range.end, bits.values());
+    }
+
+    fn append_gather<K: ArrowNativeType>(&mut self, src: &Self::Src<'_>, keys: &[K], max: usize) {
+        let bits = src.values();
+        for k in keys {
+            self.values.append(bits.value(k.as_usize().min(max)));
+        }
+    }
+
+    fn append_default(&mut self, n: usize) {
+        self.values.append_n(n, false);
+    }
+
+    fn finish(mut self, nulls: Option<NullBuffer>) -> Result<ArrayRef> {
+        Ok(Arc::new(BooleanArray::new(self.values.finish(), nulls)))
+    }
+}
+
+struct BytesBuilder<T: ByteArrayType<Offset = i32>> {
+    offsets: Vec<i32>,
+    data: Vec<u8>,
+    _phantom: std::marker::PhantomData<T>,
+}
+
+impl<T: ByteArrayType<Offset = i32>> BytesBuilder<T> {
+    fn new(capacity: usize, inputs: &[Input<'_>]) -> Self {
+        // Exact byte capacity for native inputs; dictionary inputs are either
+        // gathered (unknown, grows) or appended whole (exact). Inputs of an
+        // unexpected type are skipped here; the writer rejects them with
+        // `check_value_type`.
+        let mut bytes = 0usize;
+        let mut prev: Option<&ArrayRef> = None;
+        for inp in inputs {
+            let Some(col) = inp.column else { continue };
+            match col.data_type() {
+                DataType::Dictionary(_, _) => {
+                    let Some(values) = dict_values(col) else {
+                        continue;
+                    };
+                    // Values shared with the previous input are written once.
+                    let repeat = prev.is_some_and(|p| same_values(p, values));
+                    prev = Some(values);
+                    if repeat {
+                        continue;
+                    }
+                    if let Some(v) = values.as_bytes_opt::<T>() {
+                        let o = v.value_offsets();
+                        bytes += (o[o.len() - 1] - o[0]) as usize;
+                    }
+                }
+                _ => {
+                    let Some(b) = col.as_bytes_opt::<T>() else {
+                        continue;
+                    };
+                    let o = b.value_offsets();
+                    for r in inp.ranges() {
+                        bytes += (o[r.end] - o[r.start]) as usize;
+                    }
+                }
+            }
+        }
+
+        let mut offsets = Vec::with_capacity(capacity + 1);
+        offsets.push(0);
+        Self {
+            offsets,
+            data: Vec::with_capacity(bytes),
+            _phantom: std::marker::PhantomData,
+        }
+    }
+
+    #[inline]
+    fn last(&self) -> i32 {
+        // safety: always contains the initial 0
+        *self.offsets.last().expect("non-empty offsets")
+    }
+}
+
+impl<T: ByteArrayType<Offset = i32>> ValueBuilder for BytesBuilder<T> {
+    type Src<'a> = &'a GenericByteArray<T>;
+
+    fn downcast(array: &dyn Array) -> Self::Src<'_> {
+        array.as_bytes::<T>()
+    }
+
+    fn append_range(&mut self, src: &Self::Src<'_>, range: Range<usize>) {
+        let o = src.value_offsets();
+        let start = o[range.start];
+        let end = o[range.end];
+        self.data
+            .extend_from_slice(&src.value_data()[start as usize..end as usize]);
+        // Offsets may overflow i32 only if the output exceeds 2GiB; this is
+        // checked in `finish`.
+        let delta = self.last().wrapping_sub(start);
+        self.offsets.extend(
+            o[range.start + 1..=range.end]
+                .iter()
+                .map(|x| x.wrapping_add(delta)),
+        );
+    }
+
+    fn append_gather<K: ArrowNativeType>(&mut self, src: &Self::Src<'_>, keys: &[K], max: usize) {
+        // Runs of consecutive keys reference contiguous values, so each run
+        // is copied like `append_range`: one memcpy for the bytes and one
+        // shifted copy of the offsets.
+        for_each_key_run(keys, max, |run| self.append_range(src, run));
+    }
+
+    fn append_default(&mut self, n: usize) {
+        let last = self.last();
+        self.offsets.resize(self.offsets.len() + n, last);
+    }
+
+    fn finish(self, nulls: Option<NullBuffer>) -> Result<ArrayRef> {
+        if i32::try_from(self.data.len()).is_err() {
+            return Err(Error::Batching {
+                source: ArrowError::OffsetOverflowError(self.data.len()),
+            });
+        }
+
+        let offsets = ScalarBuffer::from(self.offsets);
+        let values = Buffer::from_vec(self.data);
+        #[cfg(debug_assertions)]
+        {
+            let checked = OffsetBuffer::new(offsets.clone());
+            debug_assert!(
+                GenericByteArray::<T>::try_new(checked, values.clone(), nulls.clone()).is_ok()
+            );
+        }
+
+        // SAFETY: offsets start at 0, are monotonically non-decreasing (each
+        // appended value has non-negative length), and the last offset equals
+        // `values.len()` which fits in i32 (checked above). Every value was
+        // copied whole from a valid source array of the same type `T`, so for
+        // Utf8 each value is valid UTF-8 and boundaries fall on char
+        // boundaries.
+        #[allow(unsafe_code)]
+        let array = unsafe {
+            let offsets = OffsetBuffer::new_unchecked(offsets);
+            GenericByteArray::<T>::new_unchecked(offsets, values, nulls)
+        };
+        Ok(Arc::new(array))
+    }
+}
+
+struct FsbBuilder {
+    width: usize,
+    data: Vec<u8>,
+}
+
+impl FsbBuilder {
+    fn new(capacity: usize, width: usize) -> Self {
+        Self {
+            width,
+            data: Vec::with_capacity(capacity * width),
+        }
+    }
+}
+
+impl ValueBuilder for FsbBuilder {
+    type Src<'a> = &'a FixedSizeBinaryArray;
+
+    fn downcast(array: &dyn Array) -> Self::Src<'_> {
+        array.as_fixed_size_binary()
+    }
+
+    fn append_range(&mut self, src: &Self::Src<'_>, range: Range<usize>) {
+        let w = self.width;
+        self.data
+            .extend_from_slice(&src.value_data()[range.start * w..range.end * w]);
+    }
+
+    fn append_gather<K: ArrowNativeType>(&mut self, src: &Self::Src<'_>, keys: &[K], max: usize) {
+        // Runs of consecutive keys reference contiguous values: one memcpy per
+        // run.
+        for_each_key_run(keys, max, |run| self.append_range(src, run));
+    }
+
+    fn append_default(&mut self, n: usize) {
+        self.data.resize(self.data.len() + n * self.width, 0);
+    }
+
+    fn finish(self, nulls: Option<NullBuffer>) -> Result<ArrayRef> {
+        let array =
+            FixedSizeBinaryArray::try_new(self.width as i32, Buffer::from_vec(self.data), nulls)
+                .map_err(|source| Error::Batching { source })?;
+        Ok(Arc::new(array))
+    }
+}
+
+/// Benchmark-only accessors that expose the concatenation stages
+/// (`index_records`, `select_schema`, and writing the output) so their cost can
+/// be measured separately.
 ///
 /// Each stage consumes the previous stage's output, so each accessor runs a
 /// cumulative prefix of the pipeline: `bench_index_records` runs indexing,
-/// `bench_select_schema` runs indexing + selection, and `bench_convert_all`
+/// `bench_select_schema` runs indexing + selection, and `bench_write_payload`
 /// runs all three. Per-stage cost is the difference between adjacent results.
 ///
 /// These are gated behind the `bench` feature and are not part of the public
@@ -987,34 +2294,19 @@ pub mod bench_exports {
         Ok(select_schema(&index)?.schema)
     }
 
-    /// Run the full schema unification (index + select + convert) for payload
-    /// slot `i`, returning the converted columns for every input batch. The
-    /// timing includes `index_records` and `select_schema`, and isolates the
-    /// schema-unification work from the `BatchCoalescer` row copy.
-    pub fn bench_convert_all<S: OtapBatchStore, const N: usize>(
+    /// Run the full per-payload pipeline (index + select + write) for payload
+    /// slot `i`, returning the concatenated output batch. The timing includes
+    /// `index_records` and `select_schema`.
+    pub fn bench_write_payload<S: OtapBatchStore, const N: usize>(
         items: &[[Option<RecordBatch>; N]],
         i: usize,
-    ) -> Result<Vec<Vec<ArrayRef>>> {
+    ) -> Result<RecordBatch> {
         let payload_def = payloads::get(S::payload_type_at_idx(i));
         let index = index_records(select_all(items, i), payload_def)?;
         let selected = select_schema(&index)?;
-        let new_schema = Arc::new(selected.schema);
-
-        let mut converted = Vec::new();
-        for payload in select_all(items, i).flatten() {
-            let columns = payload.columns().to_vec();
-            let num_rows = payload.num_rows();
-            let curr_fields = payload.schema_ref().fields.clone();
-            converted.push(convert(
-                columns,
-                num_rows,
-                &curr_fields,
-                &new_schema.fields,
-                payload_def,
-                &selected.slot_to_target,
-            )?);
-        }
-        Ok(converted)
+        let batches: Vec<&RecordBatch> = select_all(items, i).flatten().collect();
+        let plans = vec![InputPlan::default(); batches.len()];
+        write_payload(&batches, &plans, payload_def, selected)
     }
 }
 
@@ -1031,7 +2323,7 @@ mod batch_width_tests {
     fn unsupported_batch_width_returns_error() {
         for num_batches in 0..=2 {
             let mut items: Vec<[Option<RecordBatch>; 1]> = vec![[None]; num_batches];
-            let err = concatenate::<1>(&mut items).unwrap_err();
+            let err = concatenate::<1>(&mut items, ConcatOptions::preserve_ids()).unwrap_err();
             assert!(
                 matches!(err, Error::UnsupportedBatchStoreType { batch_width: 1 }),
                 "{num_batches} batches: unexpected error: {err:?}"
@@ -1154,7 +2446,7 @@ mod schema_tests {
     /// Build a single-column record batch carrying `column` as a dictionary of
     /// the given keys/values. The column name must be a real OTAP field so the
     /// spec-indexed `index_records` accepts it.
-    fn create_dict_batch<K: arrow::datatypes::ArrowDictionaryKeyType>(
+    fn create_dict_batch<K: ArrowDictionaryKeyType>(
         name: &str,
         keys: PrimitiveArray<K>,
         values: Arc<dyn Array>,
@@ -1185,7 +2477,8 @@ mod schema_tests {
         a[LOGS_ROOT_IDX] = Some(batch1);
         b[LOGS_ROOT_IDX] = Some(batch2);
         let mut batches = vec![a, b];
-        let result = concatenate::<LOGS_COUNT>(&mut batches).unwrap();
+        let result =
+            concatenate::<LOGS_COUNT>(&mut batches, ConcatOptions::preserve_ids()).unwrap();
         result[LOGS_ROOT_IDX]
             .as_ref()
             .expect("concatenated root logs batch")
@@ -1484,6 +2777,36 @@ mod schema_tests {
                 .unwrap()
                 .is_nullable()
         );
+    }
+
+    /// Scenario: a root Logs batch with a u8 `severity_text` dictionary of 200
+    /// values is sliced into two zero-copy pieces (as `split` does), which
+    /// share one values array, and the pieces are concatenated back together.
+    /// Guarantees: the shared values array is counted and written once, so the
+    /// output keeps u8 keys and holds 200 dictionary values rather than
+    /// widening the key or duplicating the values per piece.
+    #[test]
+    fn test_split_then_concat_dict_values_not_amplified() {
+        let count = 200usize;
+        let values: Arc<dyn Array> = Arc::new(StringArray::from(
+            (0..count).map(|i| format!("sev-{i}")).collect::<Vec<_>>(),
+        ));
+        let keys = UInt8Array::from((0..count).map(|i| i as u8).collect::<Vec<_>>());
+        let batch = create_dict_batch(SEVERITY_TEXT, keys, values, DataType::Utf8);
+
+        let half = count / 2;
+        let out = concat_logs_root(batch.slice(0, half), batch.slice(half, count - half));
+
+        assert_eq!(out.num_rows(), count);
+        let col = out.column_by_name(SEVERITY_TEXT).unwrap();
+        assert_eq!(
+            col.data_type(),
+            &DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+        );
+        assert_eq!(col.as_dictionary::<UInt8Type>().values().len(), count);
+        let actual = cast(col, &DataType::Utf8).unwrap();
+        let expected = cast(batch.column(0), &DataType::Utf8).unwrap();
+        assert_eq!(actual.as_ref(), expected.as_ref());
     }
 
     /// Scenario: the same real dictionary column (str) is carried with u8 keys in
@@ -2023,6 +3346,75 @@ mod index_tests {
                 assert!(matches!(actual, DataType::Struct { .. }));
             }
             _ => panic!("Expected ColumnDataTypeMismatch error, got: {:?}", result),
+        }
+    }
+
+    /// Scenario: the Logs "flags" column, which the spec defines as a scalar,
+    /// arrives as a struct in an unvalidated batch.
+    /// Guarantees: index_records returns ColumnDataTypeMismatch for "flags"
+    /// instead of panicking on the missing struct sub-schema.
+    #[test]
+    fn test_struct_in_scalar_spec_slot_is_error() {
+        let child = Field::new(ATTRIBUTE_INT, DataType::Int32, true);
+        let struct_array = StructArray::from(vec![(
+            Arc::new(child.clone()),
+            Arc::new(Int32Array::from(vec![1, 2, 3])) as ArrayRef,
+        )]);
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            FLAGS,
+            DataType::Struct(vec![child].into()),
+            true,
+        )]));
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(struct_array)]).unwrap();
+
+        let result = index_records(std::iter::once(Some(&batch)), payloads::get(Logs));
+
+        match result {
+            Err(Error::ColumnDataTypeMismatch { name, actual, .. }) => {
+                assert_eq!(name, FLAGS);
+                assert!(matches!(actual, DataType::Struct(_)));
+            }
+            _ => panic!("Expected ColumnDataTypeMismatch error, got: {:?}", result),
+        }
+    }
+
+    /// Scenario: the Logs "resource" struct carries an "id" child that is itself
+    /// a struct (a nested struct, which valid OTAP never contains) in an
+    /// unvalidated batch.
+    /// Guarantees: index_records returns InvalidDataTypeForStruct naming the
+    /// parent "resource" and child "id" instead of panicking.
+    #[test]
+    fn test_nested_struct_is_error() {
+        let leaf = Field::new(ATTRIBUTE_INT, DataType::Int32, true);
+        let inner = StructArray::from(vec![(
+            Arc::new(leaf.clone()),
+            Arc::new(Int32Array::from(vec![1, 2, 3])) as ArrayRef,
+        )]);
+        let inner_field = Field::new(ID, DataType::Struct(vec![leaf].into()), true);
+        let outer = StructArray::from(vec![(
+            Arc::new(inner_field.clone()),
+            Arc::new(inner) as ArrayRef,
+        )]);
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            RESOURCE,
+            DataType::Struct(vec![inner_field].into()),
+            true,
+        )]));
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(outer)]).unwrap();
+
+        let result = index_records(std::iter::once(Some(&batch)), payloads::get(Logs));
+
+        match result {
+            Err(Error::InvalidDataTypeForStruct {
+                parent,
+                name,
+                data_type,
+            }) => {
+                assert_eq!(parent, RESOURCE);
+                assert_eq!(name, ID);
+                assert!(matches!(data_type, DataType::Struct(_)));
+            }
+            _ => panic!("Expected InvalidDataTypeForStruct error, got: {:?}", result),
         }
     }
 
@@ -3021,5 +4413,680 @@ mod struct_field_tests {
 
         assert!(schema.field_with_name(RESOURCE).is_ok());
         assert!(schema.field_with_name(SCOPE).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod write_tests {
+    use super::*;
+    use arrow::array::{
+        BinaryArray, Float64Array, Int32Array, ListArray, StringArray, UInt8Array, UInt16Array,
+        UInt32Array,
+    };
+    use arrow::datatypes::Int32Type as I32;
+
+    fn plan_all() -> InputPlan {
+        InputPlan::default()
+    }
+
+    fn plan_ranges(ranges: Vec<Range<usize>>) -> InputPlan {
+        InputPlan {
+            selection: Selection::Ranges(ranges),
+            ..Default::default()
+        }
+    }
+
+    fn plan_remap(col: IdCol, remap: AnyRemap) -> InputPlan {
+        let mut plan = InputPlan::default();
+        plan.remaps[col as usize] = Some(remap);
+        plan
+    }
+
+    fn dict_u8(keys: Vec<Option<u8>>, values: ArrayRef) -> ArrayRef {
+        Arc::new(DictionaryArray::<UInt8Type>::new(
+            UInt8Array::from(keys),
+            values,
+        ))
+    }
+
+    fn dict_u16(keys: Vec<Option<u16>>, values: ArrayRef) -> ArrayRef {
+        Arc::new(DictionaryArray::<UInt16Type>::new(
+            UInt16Array::from(keys),
+            values,
+        ))
+    }
+
+    fn write(
+        target: DataType,
+        cols: &[(Option<ArrayRef>, usize, InputPlan)],
+        id_col: Option<IdCol>,
+    ) -> ArrayRef {
+        let field = Field::new("f", target, true);
+        let inputs: Vec<Input<'_>> = cols
+            .iter()
+            .map(|(c, n, p)| Input {
+                column: c.as_ref(),
+                num_rows: *n,
+                plan: p,
+            })
+            .collect();
+        let rows = inputs.iter().map(Input::selected_rows).sum();
+        let out = write_column(&field, &inputs, rows, id_col).unwrap();
+        assert_eq!(out.len(), rows);
+        assert_eq!(out.data_type(), field.data_type());
+        out.to_data().validate_full().unwrap();
+        out
+    }
+
+    /// Decode any (possibly dictionary) column to its logical value array.
+    fn logical(array: &ArrayRef) -> ArrayRef {
+        match array.data_type() {
+            DataType::Dictionary(_, v) => cast(array.as_ref(), v).unwrap(),
+            _ => Arc::clone(array),
+        }
+    }
+
+    fn utf8(v: Vec<Option<&str>>) -> ArrayRef {
+        Arc::new(StringArray::from(v))
+    }
+
+    /// Scenario: write_column is asked to write an Int64 target column from an
+    /// input column whose value type is Int32 (indexing and writing disagree).
+    /// Guarantees: the ColumnDataTypeMismatch error names the target column
+    /// rather than leaving `name` empty.
+    #[test]
+    fn test_value_type_mismatch_names_column() {
+        let field = Field::new("my_col", DataType::Int64, true);
+        let col: ArrayRef = Arc::new(Int32Array::from(vec![1, 2]));
+        let plan = plan_all();
+        let inputs = [Input {
+            column: Some(&col),
+            num_rows: 2,
+            plan: &plan,
+        }];
+
+        match write_column(&field, &inputs, 2, None) {
+            Err(Error::ColumnDataTypeMismatch {
+                name,
+                expect,
+                actual,
+            }) => {
+                assert_eq!(name, "my_col");
+                assert_eq!(expect, DataType::Int64);
+                assert_eq!(actual, DataType::Int32);
+            }
+            other => panic!("Expected ColumnDataTypeMismatch, got: {:?}", other),
+        }
+    }
+
+    /// Scenario: write_column is asked to write a Utf8 target column from an
+    /// Int32 input column, which exercises the byte-array builder's capacity
+    /// pre-scan before the value type check.
+    /// Guarantees: the mismatch surfaces as a named ColumnDataTypeMismatch
+    /// instead of a downcast panic in the capacity pre-scan.
+    #[test]
+    fn test_bytes_value_type_mismatch_is_error() {
+        let field = Field::new("my_col", DataType::Utf8, true);
+        let col: ArrayRef = Arc::new(Int32Array::from(vec![1, 2]));
+        let plan = plan_all();
+        let inputs = [Input {
+            column: Some(&col),
+            num_rows: 2,
+            plan: &plan,
+        }];
+
+        match write_column(&field, &inputs, 2, None) {
+            Err(Error::ColumnDataTypeMismatch { name, actual, .. }) => {
+                assert_eq!(name, "my_col");
+                assert_eq!(actual, DataType::Int32);
+            }
+            other => panic!("Expected ColumnDataTypeMismatch, got: {:?}", other),
+        }
+    }
+
+    /// Scenario: every source encoding (native, Dict(u8), Dict(u16), missing)
+    /// is written into each target encoding (native, Dict(u8), Dict(u16)) for
+    /// a Utf8 column.
+    /// Guarantees: the logical values and nulls of the output match the
+    /// concatenation of the inputs regardless of input/output encoding.
+    #[test]
+    fn test_encoding_matrix_utf8() {
+        let native = utf8(vec![Some("a"), None, Some("b")]);
+        let d8 = dict_u8(
+            vec![Some(1), None, Some(0)],
+            utf8(vec![Some("x"), Some("y")]),
+        );
+        let d16 = dict_u16(vec![Some(0), Some(0)], utf8(vec![Some("z")]));
+        let expected = utf8(vec![
+            Some("a"),
+            None,
+            Some("b"),
+            Some("y"),
+            None,
+            Some("x"),
+            Some("z"),
+            Some("z"),
+            None,
+            None,
+        ]);
+
+        for target in [
+            DataType::Utf8,
+            DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+        ] {
+            let out = write(
+                target.clone(),
+                &[
+                    (Some(native.clone()), 3, plan_all()),
+                    (Some(d8.clone()), 3, plan_all()),
+                    (Some(d16.clone()), 2, plan_all()),
+                    (None, 2, plan_all()),
+                ],
+                None,
+            );
+            assert_eq!(logical(&out).as_ref(), expected.as_ref(), "{target:?}");
+        }
+    }
+
+    /// Scenario: primitive, boolean, binary and fixed size binary columns with
+    /// sliced (non-zero offset) sources and nulls are concatenated.
+    /// Guarantees: writers honor array offsets for both values and null
+    /// buffers.
+    #[test]
+    fn test_sliced_sources() {
+        let prim: ArrayRef = Arc::new(Float64Array::from(vec![
+            Some(0.0),
+            None,
+            Some(2.0),
+            Some(3.0),
+            None,
+        ]));
+        let out = write(
+            DataType::Float64,
+            &[
+                (Some(prim.slice(1, 3)), 3, plan_all()),
+                (Some(prim.slice(3, 2)), 2, plan_all()),
+            ],
+            None,
+        );
+        let expected: ArrayRef = Arc::new(Float64Array::from(vec![
+            None,
+            Some(2.0),
+            Some(3.0),
+            Some(3.0),
+            None,
+        ]));
+        assert_eq!(out.as_ref(), expected.as_ref());
+
+        let b: ArrayRef = Arc::new(BooleanArray::from(vec![
+            Some(true),
+            None,
+            Some(false),
+            Some(true),
+            Some(true),
+            Some(false),
+            None,
+            Some(true),
+            Some(false),
+            Some(true),
+        ]));
+        let out = write(
+            DataType::Boolean,
+            &[
+                (Some(b.slice(3, 7)), 7, plan_all()),
+                (Some(b.slice(1, 3)), 3, plan_all()),
+            ],
+            None,
+        );
+        let mut expected: Vec<Option<bool>> = b.as_boolean().slice(3, 7).iter().collect();
+        expected.extend(b.as_boolean().slice(1, 3).iter());
+        let expected: ArrayRef = Arc::new(BooleanArray::from(expected));
+        assert_eq!(out.as_ref(), expected.as_ref());
+
+        let bin: ArrayRef = Arc::new(BinaryArray::from(vec![
+            Some(&b"aa"[..]),
+            None,
+            Some(b"ccc"),
+            Some(b""),
+            Some(b"e"),
+        ]));
+        let out = write(
+            DataType::Binary,
+            &[
+                (Some(bin.slice(2, 3)), 3, plan_all()),
+                (Some(bin.slice(0, 2)), 2, plan_all()),
+            ],
+            None,
+        );
+        let expected: ArrayRef = Arc::new(BinaryArray::from(vec![
+            Some(&b"ccc"[..]),
+            Some(b""),
+            Some(b"e"),
+            Some(b"aa"),
+            None,
+        ]));
+        assert_eq!(out.as_ref(), expected.as_ref());
+
+        let fsb: ArrayRef = Arc::new(
+            FixedSizeBinaryArray::try_from_sparse_iter_with_size(
+                vec![Some([1u8, 1]), None, Some([3, 3]), Some([4, 4])].into_iter(),
+                2,
+            )
+            .unwrap(),
+        );
+        let out = write(
+            DataType::FixedSizeBinary(2),
+            &[
+                (Some(fsb.slice(1, 3)), 3, plan_all()),
+                (None, 1, plan_all()),
+            ],
+            None,
+        );
+        let expected: ArrayRef = Arc::new(
+            FixedSizeBinaryArray::try_from_sparse_iter_with_size(
+                vec![None, Some([3u8, 3]), Some([4, 4]), None].into_iter(),
+                2,
+            )
+            .unwrap(),
+        );
+        assert_eq!(out.as_ref(), expected.as_ref());
+    }
+
+    /// Scenario: inputs carry `Selection::Ranges` for native, dictionary, and
+    /// struct columns.
+    /// Guarantees: only rows inside the selected ranges are written, in order,
+    /// and nulls follow their rows.
+    #[test]
+    fn test_selection_ranges() {
+        let native: ArrayRef = Arc::new(UInt8Array::from(vec![
+            Some(0),
+            Some(1),
+            None,
+            Some(3),
+            Some(4),
+        ]));
+        let out = write(
+            DataType::UInt8,
+            &[(Some(native.clone()), 5, plan_ranges(vec![0..1, 2..4]))],
+            None,
+        );
+        let expected: ArrayRef = Arc::new(UInt8Array::from(vec![Some(0), None, Some(3)]));
+        assert_eq!(out.as_ref(), expected.as_ref());
+
+        let dict = dict_u8(
+            vec![Some(0), Some(1), None, Some(0)],
+            utf8(vec![Some("a"), Some("b")]),
+        );
+        for target in [
+            DataType::Utf8,
+            DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+        ] {
+            let out = write(
+                target,
+                &[(
+                    Some(dict.clone()),
+                    4,
+                    plan_ranges(std::iter::once(1..3).collect()),
+                )],
+                None,
+            );
+            assert_eq!(logical(&out).as_ref(), utf8(vec![Some("b"), None]).as_ref());
+        }
+
+        let child = Field::new("c", DataType::UInt8, true);
+        let s: ArrayRef = Arc::new(StructArray::new(
+            vec![child.clone()].into(),
+            vec![native],
+            Some(NullBuffer::from(vec![true, false, true, true, true])),
+        ));
+        let target = DataType::Struct(vec![child].into());
+        let out = write(target, &[(Some(s), 5, plan_ranges(vec![1..2, 3..5]))], None);
+        let out = out.as_struct();
+        assert!(out.is_null(0));
+        assert!(out.is_valid(1));
+        let expected: ArrayRef = Arc::new(UInt8Array::from(vec![Some(1), Some(3), Some(4)]));
+        assert_eq!(out.column(0).as_ref(), expected.as_ref());
+    }
+
+    /// Scenario: a struct target has children that are absent from some
+    /// inputs, and one input lacks the struct entirely.
+    /// Guarantees: missing children and missing structs are written as nulls
+    /// of the correct length without affecting present data.
+    #[test]
+    fn test_missing_struct_children() {
+        let a = Field::new("a", DataType::Int32, true);
+        let b = Field::new("b", DataType::Utf8, true);
+        let s1: ArrayRef = Arc::new(StructArray::new(
+            vec![a.clone()].into(),
+            vec![Arc::new(PrimitiveArray::<I32>::from(vec![1, 2]))],
+            None,
+        ));
+        let s2: ArrayRef = Arc::new(StructArray::new(
+            vec![b.clone()].into(),
+            vec![utf8(vec![Some("x")])],
+            None,
+        ));
+        let target = DataType::Struct(vec![a, b].into());
+        let out = write(
+            target,
+            &[
+                (Some(s1), 2, plan_all()),
+                (Some(s2), 1, plan_all()),
+                (None, 2, plan_all()),
+            ],
+            None,
+        );
+        let out = out.as_struct();
+        assert_eq!(out.null_count(), 2);
+        let expected_a: ArrayRef = Arc::new(PrimitiveArray::<I32>::from(vec![
+            Some(1),
+            Some(2),
+            None,
+            None,
+            None,
+        ]));
+        assert_eq!(out.column(0).as_ref(), expected_a.as_ref());
+        assert_eq!(
+            out.column(1).as_ref(),
+            utf8(vec![None, None, Some("x"), None, None]).as_ref()
+        );
+    }
+
+    /// Scenario: inputs without nulls are written; then a null appears only in
+    /// the last input.
+    /// Guarantees: no null buffer is allocated when no input has nulls, and
+    /// earlier rows are backfilled as valid when the first null appears late.
+    #[test]
+    fn test_lazy_nulls() {
+        let a: ArrayRef = Arc::new(UInt32Array::from(vec![1, 2]));
+        let out = write(
+            DataType::UInt32,
+            &[
+                (Some(a.clone()), 2, plan_all()),
+                (Some(a.clone()), 2, plan_all()),
+            ],
+            None,
+        );
+        assert!(out.nulls().is_none());
+
+        let b: ArrayRef = Arc::new(UInt32Array::from(vec![None, Some(9)]));
+        let out = write(
+            DataType::UInt32,
+            &[(Some(a), 2, plan_all()), (Some(b), 2, plan_all())],
+            None,
+        );
+        let expected: ArrayRef = Arc::new(UInt32Array::from(vec![Some(1), Some(2), None, Some(9)]));
+        assert_eq!(out.as_ref(), expected.as_ref());
+    }
+
+    /// Scenario: ID remaps (Offset including wraparound on a null slot, and
+    /// Replace) are applied to a native u16 id column and a dictionary u32
+    /// parent_id column.
+    /// Guarantees: remaps apply to values (dictionary values for dictionary
+    /// columns) in both native and dictionary output, null slots never panic,
+    /// and nulls are preserved.
+    #[test]
+    fn test_id_remaps() {
+        let ids: ArrayRef = Arc::new(UInt16Array::from(vec![Some(5), None, Some(6)]));
+        let out = write(
+            DataType::UInt16,
+            &[
+                (
+                    Some(ids.clone()),
+                    3,
+                    plan_remap(
+                        IdCol::Id,
+                        AnyRemap::U16(IdRemap::Offset(0u16.wrapping_sub(5))),
+                    ),
+                ),
+                (
+                    Some(ids),
+                    3,
+                    plan_remap(
+                        IdCol::Id,
+                        AnyRemap::U16(IdRemap::Replace(vec![10u16, 0, 11].into())),
+                    ),
+                ),
+            ],
+            Some(IdCol::Id),
+        );
+        let expected: ArrayRef = Arc::new(UInt16Array::from(vec![
+            Some(0),
+            None,
+            Some(1),
+            Some(10),
+            None,
+            Some(11),
+        ]));
+        assert_eq!(out.as_ref(), expected.as_ref());
+
+        let values: ArrayRef = Arc::new(UInt32Array::from(vec![100, 200]));
+        let pid = dict_u8(vec![Some(1), Some(0), Some(1)], values);
+        let plan = plan_remap(IdCol::ParentId, AnyRemap::U32(IdRemap::Offset(7)));
+        let expected: ArrayRef = Arc::new(UInt32Array::from(vec![207, 107, 207]));
+        for target in [
+            DataType::UInt32,
+            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::UInt32)),
+        ] {
+            let out = write(
+                target,
+                &[(Some(pid.clone()), 3, plan.clone())],
+                Some(IdCol::ParentId),
+            );
+            assert_eq!(logical(&out).as_ref(), expected.as_ref());
+        }
+    }
+
+    /// Scenario: a remap is present in the plan for `id` but the column being
+    /// written is a non-ID column of the same type.
+    /// Guarantees: remaps are only applied to the ID column they target.
+    #[test]
+    fn test_remap_not_applied_to_other_columns() {
+        let a: ArrayRef = Arc::new(UInt32Array::from(vec![1, 2]));
+        let out = write(
+            DataType::UInt32,
+            &[(
+                Some(a.clone()),
+                2,
+                plan_remap(IdCol::Id, AnyRemap::U32(IdRemap::Offset(10))),
+            )],
+            None,
+        );
+        assert_eq!(out.as_ref(), a.as_ref());
+    }
+
+    /// Scenario: List columns are concatenated via the generic fallback with
+    /// a selection and a missing input.
+    /// Guarantees: the fallback honors selections and null-pads missing
+    /// inputs.
+    #[test]
+    fn test_list_fallback() {
+        let list: ArrayRef = Arc::new(ListArray::from_iter_primitive::<Float64Type, _, _>(vec![
+            Some(vec![Some(1.0)]),
+            Some(vec![Some(2.0), Some(3.0)]),
+            None,
+        ]));
+        let target = list.data_type().clone();
+        let out = write(
+            target,
+            &[
+                (Some(list), 3, plan_ranges(std::iter::once(1..3).collect())),
+                (None, 1, plan_all()),
+            ],
+            None,
+        );
+        let expected: ArrayRef =
+            Arc::new(ListArray::from_iter_primitive::<Float64Type, _, _>(vec![
+                Some(vec![Some(2.0), Some(3.0)]),
+                None,
+                None,
+            ]));
+        assert_eq!(out.as_ref(), expected.as_ref());
+    }
+
+    /// Scenario: dictionary inputs whose keys contain sequential runs,
+    /// descending and repeated keys, null keys with out-of-range values, and
+    /// a sliced key array are gathered into native Utf8 and FixedSizeBinary
+    /// outputs, with and without a row selection.
+    /// Guarantees: run-coalesced gathering produces exactly the logical
+    /// values of the inputs, in row order, with nulls preserved.
+    #[test]
+    fn test_dict_gather_runs() {
+        let values: Vec<String> = (0..12).map(|i| format!("v{i}{}", "x".repeat(i))).collect();
+        let str_values: ArrayRef = Arc::new(StringArray::from(values.clone()));
+        let fsb_values: ArrayRef = Arc::new(
+            FixedSizeBinaryArray::try_from_iter((0u8..12).map(|i| [i, i.wrapping_mul(7)])).unwrap(),
+        );
+
+        // Runs [2,3,4], [9], descending [8,7], repeats [5,5], a null key that
+        // holds an out-of-range value, then a run to the end [10,11].
+        let key_data: Vec<Option<u8>> = vec![
+            Some(2),
+            Some(3),
+            Some(4),
+            Some(9),
+            Some(8),
+            Some(7),
+            Some(5),
+            Some(5),
+            None,
+            Some(10),
+            Some(11),
+        ];
+        let mut keys = UInt8Array::from(key_data.clone());
+        // Give the null slot an out-of-range key value.
+        let (dt, mut raw, nulls) = keys.into_parts();
+        let mut v = raw.to_vec();
+        v[8] = 200;
+        raw = v.into();
+        keys = UInt8Array::new(raw, nulls).with_data_type(dt);
+
+        for (values, target) in [
+            (str_values, DataType::Utf8),
+            (fsb_values, DataType::FixedSizeBinary(2)),
+        ] {
+            let dict: ArrayRef = Arc::new(DictionaryArray::<UInt8Type>::new(
+                keys.clone(),
+                values.clone(),
+            ));
+            let expected_full = cast(dict.as_ref(), &target).unwrap();
+
+            // Whole input.
+            let out = write(
+                target.clone(),
+                &[(Some(dict.clone()), 11, plan_all())],
+                None,
+            );
+            assert_eq!(out.as_ref(), expected_full.as_ref(), "{target:?} full");
+
+            // Sliced keys (non-zero key offset) plus a selection.
+            let sliced = dict.slice(1, 9);
+            let out = write(
+                target.clone(),
+                &[(Some(sliced.clone()), 9, plan_ranges(vec![0..3, 5..9]))],
+                None,
+            );
+            let exp = cast(sliced.as_ref(), &target).unwrap();
+            let exp = arrow::compute::concat(&[&exp.slice(0, 3), &exp.slice(5, 4)]).unwrap();
+            assert_eq!(out.as_ref(), exp.as_ref(), "{target:?} sliced");
+        }
+    }
+
+    /// Scenario: a dictionary source has a null in its values array that is
+    /// referenced by a valid key, gathered into a native output.
+    /// Guarantees: the row is null in the output.
+    #[test]
+    fn test_dict_null_value_gather() {
+        let d = dict_u8(vec![Some(0), Some(1)], utf8(vec![None, Some("a")]));
+        let out = write(DataType::Utf8, &[(Some(d), 2, plan_all())], None);
+        assert_eq!(out.as_ref(), utf8(vec![None, Some("a")]).as_ref());
+    }
+
+    /// Scenario: one dictionary column is sliced into several zero-copy
+    /// pieces (as `split` does) that all share the same values array, and the
+    /// pieces are written back into a single dictionary output.
+    /// Guarantees: the shared values array is written to the output once, not
+    /// once per piece, and every row keeps its logical value and null state.
+    #[test]
+    fn test_dict_shared_values_written_once() {
+        let values: ArrayRef = Arc::new(StringArray::from(
+            (0..50).map(|i| format!("value-{i}")).collect::<Vec<_>>(),
+        ));
+        let keys: Vec<Option<u16>> = (0u16..30)
+            .map(|i| (i % 7 != 3).then_some(i * 13 % 50))
+            .collect();
+        let dict = dict_u16(keys, values.clone());
+        let target = DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8));
+
+        let pieces: Vec<ArrayRef> = [0..10, 10..20, 20..30]
+            .into_iter()
+            .map(|r| dict.slice(r.start, r.len()))
+            .collect();
+        let plans = [plan_all(), plan_ranges(vec![1..4, 6..9]), plan_all()];
+        let cols: Vec<_> = pieces
+            .iter()
+            .zip(&plans)
+            .map(|(p, plan)| (Some(p.clone()), p.len(), plan.clone()))
+            .collect();
+        let out = write(target, &cols, None);
+
+        let out_dict = out.as_dictionary::<UInt16Type>();
+        assert_eq!(
+            out_dict.values().len(),
+            values.len(),
+            "shared dictionary values must not be duplicated per input"
+        );
+
+        let expected_parts: Vec<ArrayRef> = [
+            pieces[0].clone(),
+            pieces[1].slice(1, 3),
+            pieces[1].slice(6, 3),
+            pieces[2].clone(),
+        ]
+        .iter()
+        .map(|p| cast(p.as_ref(), &DataType::Utf8).unwrap())
+        .collect();
+        let expected_refs: Vec<&dyn Array> = expected_parts.iter().map(|a| a.as_ref()).collect();
+        let expected = arrow::compute::concat(&expected_refs).unwrap();
+        let actual = cast(out.as_ref(), &DataType::Utf8).unwrap();
+        assert_eq!(actual.as_ref(), expected.as_ref());
+    }
+
+    /// Scenario: two slices of one dictionary-encoded u32 `parent_id` column
+    /// share a values array but receive different ID remaps (`Offset(0)` and
+    /// `Offset(100)`).
+    /// Guarantees: shared values are not reused across inputs whose remaps
+    /// differ -- the second input's rows come out shifted by 100 -- while the
+    /// identity-remapped first input still produces the source values.
+    #[test]
+    fn test_dict_shared_values_remapped_id_not_shared() {
+        let values: ArrayRef = Arc::new(UInt32Array::from(vec![0u32, 1, 2, 3]));
+        let dict = dict_u8(
+            vec![Some(0), Some(1), Some(2), Some(3), Some(1), Some(0)],
+            values,
+        );
+        let a = dict.slice(0, 3);
+        let b = dict.slice(3, 3);
+        let target = DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::UInt32));
+        let out = write(
+            target,
+            &[
+                (
+                    Some(a),
+                    3,
+                    plan_remap(IdCol::ParentId, AnyRemap::U32(IdRemap::Offset(0))),
+                ),
+                (
+                    Some(b),
+                    3,
+                    plan_remap(IdCol::ParentId, AnyRemap::U32(IdRemap::Offset(100))),
+                ),
+            ],
+            Some(IdCol::ParentId),
+        );
+        let actual = cast(out.as_ref(), &DataType::UInt32).unwrap();
+        let expected = UInt32Array::from(vec![0u32, 1, 2, 103, 101, 100]);
+        assert_eq!(actual.as_primitive::<UInt32Type>(), &expected);
     }
 }
