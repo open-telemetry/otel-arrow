@@ -323,6 +323,10 @@ mod tests {
         );
         let cloned_snapshot = snapshot.clone();
         let first_consumer = provider(&snapshot, "provider");
+        let debug_snapshot = format!("{snapshot:?}");
+        assert!(debug_snapshot.contains("known_extensions"));
+        assert!(debug_snapshot.contains("registered_extensions"));
+        assert!(debug_snapshot.contains("provider"));
 
         let error = cloned_registry
             .install(ExtensionScopeCatalog {
@@ -355,6 +359,8 @@ mod tests {
         for inherited in [&snapshot, &cloned_snapshot, &after_rejection] {
             let consumer = provider(inherited, "provider");
             assert_eq!(consumer.name(), "original");
+            assert_eq!(consumer.echo(7), 7);
+            assert_eq!(consumer.echo_async("value".to_owned()).await, "value");
             assert_eq!(consumer.ping().await, 42);
         }
         assert_eq!(first_consumer.ping().await, 42);

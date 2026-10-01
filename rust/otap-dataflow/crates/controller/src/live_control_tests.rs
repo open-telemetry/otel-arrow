@@ -5246,6 +5246,37 @@ fn create_group_rejects_payload_with_pipelines() {
     assert!(runtime.group_details_snapshot(&group_id).is_none());
 }
 
+/// Scenario: a control-plane caller creates a group with a hosted extension declaration.
+/// Guarantees: live group creation rejects restart-owned extension hosts and leaves config unchanged.
+#[test]
+fn create_group_rejects_payload_with_extensions() {
+    let config = empty_engine_config();
+    let runtime = test_runtime(&config);
+    let desired = OtelDataflowSpec::from_yaml(
+        r#"
+version: otel_dataflow/v1
+groups:
+  g1:
+    extensions:
+      group_auth:
+        type: urn:test:extension:scope-shared
+"#,
+    )
+    .expect("desired config should parse");
+    let group = desired.groups[&PipelineGroupId::from("g1")].clone();
+
+    let err = runtime
+        .create_group("g1", group)
+        .expect_err("group extension creation should require restart");
+
+    assert!(matches!(
+        err,
+        ControlPlaneError::InvalidRequest { ref message }
+            if message == "pipeline group creation with extensions requires an engine restart"
+    ));
+    assert_eq!(runtime.engine_config_snapshot(), config);
+}
+
 /// Scenario: generation 0 prunes an unconsumed local extension variant, then
 /// live reload adds a node that consumes the local capability.
 /// Guarantees: the replacement generation constructs and starts a fresh local
@@ -6634,6 +6665,35 @@ groups:
     );
 }
 
+/// Scenario: a control-plane caller deletes a group that owns a running-lifetime extension host.
+/// Guarantees: live deletion rejects the restart-owned host and preserves committed group config.
+#[test]
+fn delete_group_rejects_hosted_extensions() {
+    let config = OtelDataflowSpec::from_yaml(
+        r#"
+version: otel_dataflow/v1
+groups:
+  g1:
+    extensions:
+      group_auth:
+        type: urn:test:extension:scope-shared
+"#,
+    )
+    .expect("config should parse");
+    let runtime = test_runtime(&config);
+
+    let err = runtime
+        .request_delete_group("g1", 5)
+        .expect_err("group extension deletion should require restart");
+
+    assert!(matches!(
+        err,
+        ControlPlaneError::InvalidRequest { ref message }
+            if message.contains("deleting pipeline group `g1` with hosted extensions")
+    ));
+    assert_eq!(runtime.engine_config_snapshot(), config);
+}
+
 /// Scenario: a full-config reconciliation request matches the current live
 /// pipeline configuration and runtime assignment.
 /// Guarantees: reconciliation records a no-op change and leaves committed
@@ -6891,6 +6951,90 @@ groups:
     assert_eq!(runtime.engine_config_snapshot(), config);
 }
 
+/// Scenario: full-config reconciliation adds a group with a hosted extension declaration.
+/// Guarantees: the new restart-owned host is rejected before the group enters committed config.
+#[test]
+fn reconcile_rejects_new_pipeline_group_with_extensions() {
+    let config = empty_engine_config();
+    let desired = OtelDataflowSpec::from_yaml(
+        r#"
+version: otel_dataflow/v1
+groups:
+  g1:
+    extensions:
+      group_auth:
+        type: urn:test:extension:scope-shared
+"#,
+    )
+    .expect("desired config should parse");
+    let runtime = test_runtime(&config);
+
+    let err = runtime
+        .reconcile_engine_config(reconcile_request(desired, true))
+        .expect_err("new group extension host should require restart");
+
+    assert!(matches!(
+        err,
+        ControlPlaneError::InvalidRequest { ref message }
+            if message.contains("creating pipeline group `g1` with extensions")
+    ));
+    assert_eq!(runtime.engine_config_snapshot(), config);
+}
+
+/// Scenario: full-config reconciliation omits a group with a hosted extension declaration.
+/// Guarantees: deleting the restart-owned host is rejected before committed config changes.
+#[test]
+fn reconcile_rejects_deleting_pipeline_group_with_extensions() {
+    let config = OtelDataflowSpec::from_yaml(
+        r#"
+version: otel_dataflow/v1
+groups:
+  g1:
+    extensions:
+      group_auth:
+        type: urn:test:extension:scope-shared
+"#,
+    )
+    .expect("config should parse");
+    let runtime = test_runtime(&config);
+
+    let err = runtime
+        .reconcile_engine_config(reconcile_request(empty_engine_config(), true))
+        .expect_err("group extension host deletion should require restart");
+
+    assert!(matches!(
+        err,
+        ControlPlaneError::InvalidRequest { ref message }
+            if message.contains("deleting pipeline group `g1` with hosted extensions")
+    ));
+    assert_eq!(runtime.engine_config_snapshot(), config);
+}
+
+/// Scenario: partial reconciliation omits an entire group with a hosted extension declaration.
+/// Guarantees: `delete_missing: false` retains the group and its restart-owned host configuration.
+#[test]
+fn reconcile_preserves_omitted_group_with_extensions() {
+    let config = OtelDataflowSpec::from_yaml(
+        r#"
+version: otel_dataflow/v1
+groups:
+  g1:
+    extensions:
+      group_auth:
+        type: urn:test:extension:scope-shared
+"#,
+    )
+    .expect("config should parse");
+    let runtime = test_runtime(&config);
+
+    let status = runtime
+        .reconcile_engine_config(reconcile_request(empty_engine_config(), false))
+        .expect("omitted group extension host should be retained");
+
+    assert_eq!(status.state, EngineConfigReconcileState::Succeeded);
+    assert_eq!(runtime.engine_config_snapshot(), config);
+}
+
 /// Scenario: partial reconciliation omits immutable engine and group extension
 /// declarations while retaining their declaration scopes.
 /// Guarantees: `delete_missing: false` preserves engine and pipeline-group
@@ -6984,6 +7128,60 @@ extensions:
         err,
         ControlPlaneError::InvalidRequest { ref message }
             if message.contains("policies used by hosted engine extensions")
+    ));
+    assert_eq!(runtime.engine_config_snapshot(), config);
+}
+
+/// Scenario: full-config reconciliation changes group-local channel policy used by a hosted extension.
+/// Guarantees: group host policy mutation is rejected without changing committed configuration.
+#[test]
+fn reconcile_rejects_pipeline_group_extension_host_policy_mutation() {
+    let config = OtelDataflowSpec::from_yaml(
+        r#"
+version: otel_dataflow/v1
+groups:
+  g1:
+    policies:
+      channel_capacity:
+        control:
+          node: 100
+          pipeline: 101
+          completion: 103
+        pdata: 102
+    extensions:
+      group_auth:
+        type: urn:test:extension:scope-shared
+"#,
+    )
+    .expect("config should parse");
+    let desired = OtelDataflowSpec::from_yaml(
+        r#"
+version: otel_dataflow/v1
+groups:
+  g1:
+    policies:
+      channel_capacity:
+        control:
+          node: 200
+          pipeline: 201
+          completion: 203
+        pdata: 202
+    extensions:
+      group_auth:
+        type: urn:test:extension:scope-shared
+"#,
+    )
+    .expect("desired config should parse");
+    let runtime = test_runtime(&config);
+
+    let err = runtime
+        .reconcile_engine_config(reconcile_request(desired, true))
+        .expect_err("group host runtime policy mutation should require restart");
+
+    assert!(matches!(
+        err,
+        ControlPlaneError::InvalidRequest { ref message }
+            if message.contains("hosted extensions in pipeline group `g1`")
     ));
     assert_eq!(runtime.engine_config_snapshot(), config);
 }
@@ -8962,6 +9160,38 @@ fn launch_reservation_counts_liveness_before_activation() {
     assert!(!state.launching_instances.contains_key(&deployed_key));
 }
 
+/// Scenario: the same pipeline instance is reserved twice before activation.
+/// Guarantees: duplicate admission is rejected, liveness is counted once, and zero-timeout drain observes it.
+#[test]
+fn launch_reservation_rejects_duplicate_pending_instance() {
+    let runtime = test_runtime(&empty_engine_config());
+    let deployed_key = deployed_key("g1", "p1", 0, 7);
+    let context_bindings = current_test_context_bindings(&runtime);
+
+    runtime
+        .reserve_instance_launch(&deployed_key, Arc::clone(&context_bindings))
+        .expect("first launch reservation should succeed");
+    let error = runtime
+        .reserve_instance_launch(&deployed_key, context_bindings)
+        .expect_err("duplicate launch reservation should fail");
+
+    assert!(
+        error
+            .to_string()
+            .contains("pipeline instance is already launching or active")
+    );
+    assert!(!runtime.wait_until_all_producer_instances_exit_for(Duration::ZERO));
+    {
+        let state = runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert_eq!(state.active_instances, 1);
+        assert_eq!(state.launching_instances.len(), 1);
+    }
+    runtime.abort_instance_launch(&deployed_key);
+    assert!(runtime.wait_until_all_producer_instances_exit_for(Duration::ZERO));
+}
 /// Scenario: the controller's latest context snapshot changes between launch reservation and activation.
 /// Guarantees: the activated runtime retains the reserved generation's snapshot rather than the latest one.
 #[test]

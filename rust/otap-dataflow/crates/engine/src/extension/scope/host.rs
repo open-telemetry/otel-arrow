@@ -328,13 +328,51 @@ mod tests {
         ChannelSenderMetricSets, ChannelSenderMetricsState, ControlChannelReceiverMetricSets,
         ControlChannelSenderMetricSets, LocalChannelQueueDepth,
     };
+    use crate::config::ExtensionConfig;
     use crate::context::ControllerContext;
     use crate::extension::wrapper::ExtensionVariant;
+    use crate::extension::{EffectHandler, ExtensionWrapper};
+    use crate::shared::extension as shared_ext;
+    use crate::terminal_state::TerminalState;
+    use async_trait::async_trait;
+    use otel_arrow_dfe_config::extension::ExtensionUserConfig;
     use otel_arrow_dfe_config::pipeline::telemetry::TelemetryConfig;
     use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
     use otel_arrow_dfe_telemetry::{InternalTelemetrySystem, LogContext};
     use std::cell::RefCell;
     use std::rc::Rc;
+    use std::sync::Arc;
+
+    fn empty_running_host() -> (InternalTelemetrySystem, RunningExtensionScopeHost) {
+        let telemetry = InternalTelemetrySystem::default();
+        let host = PreparedExtensionScopeHost {
+            context: ControllerContext::new(telemetry.registry()).engine_extension_context(),
+            extensions: Vec::new(),
+            channel_metrics: Vec::new(),
+            runtime_policy: ExtensionHostRuntimePolicy {
+                control_node_capacity: 1,
+                pipeline_metrics: false,
+                channel_metrics_enabled: false,
+            },
+        }
+        .start(&telemetry.reporter());
+        (telemetry, host)
+    }
+
+    #[derive(Clone)]
+    struct NonTerminatingExtension;
+
+    #[async_trait]
+    impl shared_ext::Extension for NonTerminatingExtension {
+        async fn start(
+            self: Box<Self>,
+            _control: shared_ext::ControlChannel,
+            effects: EffectHandler,
+        ) -> Result<TerminalState, Error> {
+            effects.signal_ready();
+            std::future::pending().await
+        }
+    }
 
     fn host_with_pending_channel_metrics() -> (InternalTelemetrySystem, RunningExtensionScopeHost) {
         let config = TelemetryConfig {
@@ -504,6 +542,149 @@ mod tests {
                 );
                 reporter_deadline.record(shutdown_deadline + Duration::from_secs(1));
                 assert_eq!(reporter_deadline.get(), shutdown_deadline);
+                collector.abort();
+                assert!(
+                    collector
+                        .await
+                        .expect_err("collector should run until stopped")
+                        .is_cancelled()
+                );
+            })
+            .await;
+    }
+
+    /// Scenario: the supervisor drops its readiness event receiver before an empty host reports ready.
+    /// Guarantees: the host treats the lost observer as shutdown and exits cleanly without waiting for cancellation.
+    #[tokio::test(flavor = "current_thread")]
+    async fn readiness_observer_drop_stops_host() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let (telemetry, host) = empty_running_host();
+                let collector =
+                    tokio::task::spawn_local(telemetry.collector().run_collection_loop());
+                let (events_tx, events_rx) = mpsc::unbounded_channel();
+                drop(events_rx);
+                let (_shutdown_tx, shutdown_rx) = oneshot::channel();
+
+                host.run(ExtensionDeclarationScope::Engine, events_tx, shutdown_rx)
+                    .await
+                    .expect("lost readiness observer should trigger clean shutdown");
+
+                collector.abort();
+                assert!(
+                    collector
+                        .await
+                        .expect_err("collector should run until stopped")
+                        .is_cancelled()
+                );
+            })
+            .await;
+    }
+
+    /// Scenario: an empty host reports ready and its shutdown sender is then dropped.
+    /// Guarantees: channel closure is treated as an ordinary host shutdown after readiness.
+    #[tokio::test(flavor = "current_thread")]
+    async fn dropped_shutdown_sender_stops_ready_host() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let (telemetry, host) = empty_running_host();
+                let collector =
+                    tokio::task::spawn_local(telemetry.collector().run_collection_loop());
+                let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+                let (shutdown_tx, shutdown_rx) = oneshot::channel();
+                let host_task = tokio::task::spawn_local(host.run(
+                    ExtensionDeclarationScope::Engine,
+                    events_tx,
+                    shutdown_rx,
+                ));
+
+                assert!(matches!(
+                    events_rx.recv().await,
+                    Some(ScopeEvent::Ready(ExtensionDeclarationScope::Engine))
+                ));
+                drop(shutdown_tx);
+                host_task
+                    .await
+                    .expect("host task should join")
+                    .expect("closed shutdown sender should stop the host");
+
+                collector.abort();
+                assert!(
+                    collector
+                        .await
+                        .expect_err("collector should run until stopped")
+                        .is_cancelled()
+                );
+            })
+            .await;
+    }
+
+    /// Scenario: runtime channel metrics use their independent periodic interval.
+    /// Guarantees: the optional interval helper completes a configured tick instead of remaining pending.
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn optional_channel_metrics_interval_ticks_when_enabled() {
+        let start = tokio::time::Instant::now() + Duration::from_secs(1);
+        let mut interval = Some(interval_at(start, Duration::from_secs(1)));
+        tokio::time::advance(Duration::from_secs(1)).await;
+        next_optional_interval_tick(&mut interval).await;
+    }
+
+    /// Scenario: a provider ignores shutdown beyond the host's absolute deadline.
+    /// Guarantees: host shutdown forcibly aborts the task and reports the named scope timeout.
+    #[tokio::test(flavor = "current_thread")]
+    async fn shutdown_reports_non_terminating_extension_timeout() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let telemetry = InternalTelemetrySystem::default();
+                let context =
+                    ControllerContext::new(telemetry.registry()).engine_extension_context();
+                let runtime_config = ExtensionConfig::new("non-terminating");
+                let mut bundle = ExtensionWrapper::builder(
+                    "non-terminating".into(),
+                    Arc::new(ExtensionUserConfig::with_type(
+                        "urn:test:extension:non-terminating",
+                    )),
+                    &runtime_config,
+                )
+                .background()
+                .with_readiness_probe()
+                .shared(NonTerminatingExtension)
+                .build()
+                .expect("non-terminating extension should build");
+                let shared = bundle.take_shared().expect("shared extension variant");
+                let entity_key =
+                    context.register_extension_entity("non-terminating".into(), shared.variant());
+                let mut host = PreparedExtensionScopeHost {
+                    context,
+                    extensions: vec![(shared, entity_key)],
+                    channel_metrics: Vec::new(),
+                    runtime_policy: ExtensionHostRuntimePolicy {
+                        control_node_capacity: 1,
+                        pipeline_metrics: false,
+                        channel_metrics_enabled: false,
+                    },
+                }
+                .start(&telemetry.reporter());
+                host.wait_ready()
+                    .await
+                    .expect("extension should report ready");
+                let collector =
+                    tokio::task::spawn_local(telemetry.collector().run_collection_loop());
+
+                let error = host
+                    .shutdown_until(
+                        &ExtensionDeclarationScope::Engine,
+                        Instant::now() + Duration::from_millis(20),
+                    )
+                    .await
+                    .expect_err("non-terminating extension should exceed shutdown grace");
+                assert!(matches!(
+                    error,
+                    Error::InternalError { ref message }
+                        if message.contains("extension shutdown timed out")
+                            && message.contains("forcibly aborted 1 task(s)")
+                ));
+
                 collector.abort();
                 assert!(
                     collector
