@@ -344,6 +344,7 @@ kafka = ["otel-arrow-dfe-contrib-nodes/kafka"]
 # Contrib receivers.
 etw = ["otel-arrow-dfe-contrib-nodes/etw"]
 user-events = ["otel-arrow-dfe-contrib-nodes/user-events"]
+windowsperfcounters = ["otel-arrow-dfe-contrib-nodes/windowsperfcounters"]
 
 # Contrib processors.
 condense-attributes = ["otel-arrow-dfe-contrib-nodes/condense-attributes"]

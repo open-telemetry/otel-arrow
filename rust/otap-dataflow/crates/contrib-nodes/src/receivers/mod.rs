@@ -12,3 +12,7 @@ pub mod kafka_receiver;
 /// Linux user_events receiver.
 #[cfg(all(feature = "user-events", target_os = "linux"))]
 pub mod user_events_receiver;
+
+/// Windows performance-counter receiver.
+#[cfg(all(feature = "windowsperfcounters", target_os = "windows"))]
+pub mod windowsperfcounters_receiver;

@@ -40,6 +40,7 @@ tokio.workspace = true
 tracing.workspace = true
 base64 = { workspace = true, optional = true }
 chrono = { workspace = true, optional = true }
+humantime = { workspace = true, optional = true }
 humantime-serde = { workspace = true, optional = true }
 itoa = { workspace = true, optional = true }
 geneva-uploader = { workspace = true, optional = true }
@@ -101,6 +102,7 @@ contrib-receivers = [
     "etw",
     "kafka",
     "user-events",
+    "windowsperfcounters",
 ]
 contrib-processors = [
     "condense-attributes",
@@ -139,6 +141,7 @@ user-events = [
     "dep:one_collect",
     "dep:tracepoint_decode",
 ]
+windowsperfcounters = ["dep:humantime", "dep:humantime-serde"]
 
 # Processors.
 condense-attributes = []
