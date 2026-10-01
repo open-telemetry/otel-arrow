@@ -110,7 +110,7 @@ mod tests {
         assert!((GENEVA_METRICS_EXPORTER.validate_config)(&config).is_ok());
     }
 
-    /// Scenario: Exporter configuration omits the required managed identity marker.
+    /// Scenario: Exporter configuration omits the required bearer authentication marker.
     /// Guarantees: The exporter cannot start without explicitly selecting bearer authentication.
     #[test]
     fn rejects_missing_bearer_authentication_config() {
@@ -126,7 +126,7 @@ mod tests {
     }
 
     /// Scenario: Configuration selects an unauthenticated publication mode.
-    /// Guarantees: Only the managed identity bearer marker is accepted.
+    /// Guarantees: Only the bearer authentication marker is accepted.
     #[test]
     fn rejects_unauthenticated_config() {
         let config = json!({

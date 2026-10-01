@@ -13,17 +13,37 @@ use otel_arrow_dfe_engine::local::capability::auth::bearer_token_provider::Beare
 use otel_arrow_dfe_engine::local::exporter::{EffectHandler, Exporter};
 use otel_arrow_dfe_engine::message::{ExporterInbox, Message};
 use otel_arrow_dfe_engine::terminal_state::TerminalState;
+use otel_arrow_dfe_otap::http_client_auth::{
+    HttpClientAuthProvider, HttpClientAuthProviderEvents,
+    new_http_client_auth_provider_from_bearer_token_provider,
+};
 use otel_arrow_dfe_otap::pdata::OtapPdata;
 use otel_arrow_dfe_telemetry::otel_warn;
+use std::future::poll_fn;
+use std::time::Instant;
 
 const UNSUPPORTED_SIGNAL_MESSAGE: &str = "Geneva metrics exporter accepts metrics only";
 const UNSUPPORTED_FORMAT_MESSAGE: &str = "Geneva metrics exporter accepts OTLP only";
+
+const GENEVA_METRICS_AUTH_EVENTS: HttpClientAuthProviderEvents = HttpClientAuthProviderEvents {
+    validate_header_name: |_| Ok(()),
+    on_invalid: |source, error| {
+        otel_warn!("geneva_metrics_exporter.auth.invalid", source = %source, error = %error);
+    },
+    on_stream_closed: |source| {
+        otel_warn!(
+            "geneva_metrics_exporter.auth.stream_closed",
+            source = %source,
+            message = "auth provider closed its stream; no further auth refreshes will arrive"
+        );
+    },
+};
 
 /// Pipeline exporter that converts OTLP metrics to Geneva protocol v6 packets.
 pub struct GenevaMetricsExporter {
     mapping_config: Config,
     publisher: MetricsPublisher,
-    token_provider: Box<dyn LocalBearerTokenProvider>,
+    auth: Box<dyn HttpClientAuthProvider>,
 }
 
 impl GenevaMetricsExporter {
@@ -35,12 +55,14 @@ impl GenevaMetricsExporter {
         Self {
             mapping_config,
             publisher,
-            token_provider,
+            auth: Box::new(new_http_client_auth_provider_from_bearer_token_provider(
+                token_provider,
+            )),
         }
     }
 
     async fn handle_pdata(
-        &self,
+        &mut self,
         data: OtapPdata,
         effect_handler: &EffectHandler<OtapPdata>,
     ) -> Result<(), EngineError> {
@@ -52,6 +74,13 @@ impl GenevaMetricsExporter {
         }
         if signal_format != SignalFormat::OtlpBytes {
             let nack = NackMsg::new_permanent(UNSUPPORTED_FORMAT_MESSAGE, data);
+            return effect_handler.notify_nack(nack).await;
+        }
+
+        // ExporterInbox force-drains pdata during shutdown even when normal
+        // admission is closed, so re-check auth before doing publication work.
+        if !self.auth.is_ready() {
+            let nack = NackMsg::new(self.auth.not_ready_reason(), data);
             return effect_handler.notify_nack(nack).await;
         }
 
@@ -73,23 +102,26 @@ impl GenevaMetricsExporter {
             return effect_handler.notify_ack(AckMsg::new(data)).await;
         };
 
-        let bearer_token = match self.token_provider.get_token().await {
-            Ok(token) => token,
-            Err(error) => {
-                let nack = NackMsg::new(
-                    format!("failed to acquire Geneva metrics bearer token: {error}"),
-                    data,
-                );
-                return effect_handler.notify_nack(nack).await;
-            }
+        let Some((auth_header_name, auth_header_value, auth_generation)) = self.auth.header()
+        else {
+            let nack = NackMsg::new(self.auth.not_ready_reason(), data);
+            return effect_handler.notify_nack(nack).await;
         };
         match self
             .publisher
-            .publish(&monitoring_account, packet, bearer_token.expose_token())
+            .publish(
+                &monitoring_account,
+                packet,
+                auth_header_name,
+                auth_header_value,
+            )
             .await
         {
             Ok(()) => effect_handler.notify_ack(AckMsg::new(data)).await,
             Err(error) => {
+                if error.is_unauthorized() {
+                    self.auth.invalidate(auth_generation);
+                }
                 let reason = format!(
                     "failed to publish Geneva metrics for account {monitoring_account}: {error}"
                 );
@@ -107,12 +139,43 @@ impl GenevaMetricsExporter {
 #[async_trait(?Send)]
 impl Exporter<OtapPdata> for GenevaMetricsExporter {
     async fn start(
-        self: Box<Self>,
+        mut self: Box<Self>,
         mut msg_chan: ExporterInbox<OtapPdata>,
         effect_handler: EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, EngineError> {
+        let margin_sleep = tokio::time::sleep_until(tokio::time::Instant::now());
+        tokio::pin!(margin_sleep);
+        let mut armed_margin_deadline: Option<Instant> = None;
+
         loop {
-            match msg_chan.recv().await? {
+            let accepting_pdata = self.auth.is_ready();
+            let auth_margin_deadline = self.auth.refresh_deadline();
+            if auth_margin_deadline != armed_margin_deadline {
+                if let Some(deadline) = auth_margin_deadline {
+                    margin_sleep
+                        .as_mut()
+                        .reset(tokio::time::Instant::from_std(deadline));
+                }
+                armed_margin_deadline = auth_margin_deadline;
+            }
+
+            let msg = tokio::select! {
+                biased;
+
+                () = &mut margin_sleep, if auth_margin_deadline.is_some() => {
+                    continue;
+                }
+
+                () = async {
+                    _ = poll_fn(|cx| self.auth.poll_refresh(cx, &GENEVA_METRICS_AUTH_EVENTS)).await;
+                }, if self.auth.is_active() => {
+                    continue;
+                }
+
+                msg = msg_chan.recv_when(accepting_pdata) => msg?,
+            };
+
+            match msg {
                 Message::Control(NodeControlMsg::Shutdown { .. }) => break,
                 Message::PData(data) => {
                     self.handle_pdata(data, &effect_handler).await?;
@@ -129,16 +192,18 @@ impl Exporter<OtapPdata> for GenevaMetricsExporter {
 mod tests {
     use super::*;
     use bytes::Bytes;
-    use futures::{StreamExt, stream};
+    use futures::StreamExt;
+    use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
+    use otel_arrow_dfe_channel::mpsc;
     use otel_arrow_dfe_engine::Interests;
+    use otel_arrow_dfe_engine::capability::CapabilityError;
     use otel_arrow_dfe_engine::capability::auth::BearerToken;
-    use otel_arrow_dfe_engine::capability::auth::bearer_token_provider::{
-        BearerTokenProvider as BearerTokenProviderCapability, TokenStream,
-    };
-    use otel_arrow_dfe_engine::capability::{CapabilityError, CapabilityErrorSource};
+    use otel_arrow_dfe_engine::capability::auth::bearer_token_provider::TokenStream;
     use otel_arrow_dfe_engine::control::{
         PipelineCompletionMsg, PipelineCompletionMsgReceiver, pipeline_completion_msg_channel,
     };
+    use otel_arrow_dfe_engine::local::message::LocalReceiver;
+    use otel_arrow_dfe_engine::message::Receiver;
     use otel_arrow_dfe_engine::node::NodeId;
     use otel_arrow_dfe_otap::testing::TestCallData;
     use otel_arrow_dfe_pdata::OtlpProtoBytes;
@@ -149,46 +214,77 @@ mod tests {
     };
     use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
     use prost::Message as _;
-    use std::cell::{Cell, RefCell};
-    use std::collections::VecDeque;
-    use std::rc::Rc;
-    use std::time::Duration;
+    use std::cell::RefCell;
+    use std::time::{Duration, Instant};
     use wiremock::matchers::{header, method};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    struct SequenceTokenProvider {
-        tokens: RefCell<VecDeque<String>>,
-        calls: Rc<Cell<usize>>,
-        errors: CapabilityErrorSource<BearerTokenProviderCapability>,
+    struct TestTokenProvider {
+        updates: RefCell<Option<UnboundedReceiver<BearerToken>>>,
+        observations: UnboundedSender<()>,
     }
 
-    impl SequenceTokenProvider {
-        fn new(tokens: impl IntoIterator<Item = &'static str>) -> (Self, Rc<Cell<usize>>) {
-            let calls = Rc::new(Cell::new(0));
+    struct TokenController {
+        updates: UnboundedSender<BearerToken>,
+        observations: UnboundedReceiver<()>,
+    }
+
+    impl TokenController {
+        fn publish(&self, value: &str) {
+            let token = BearerToken::without_expiry(value.to_string());
+            self.updates
+                .unbounded_send(token)
+                .expect("test token stream should remain open");
+        }
+
+        async fn wait_until_observed(&mut self) {
+            self.observations
+                .next()
+                .await
+                .expect("exporter should observe the test token update");
+        }
+    }
+
+    impl TestTokenProvider {
+        fn new(initial_token: Option<&str>) -> (Self, TokenController) {
+            let (updates_tx, updates_rx) = unbounded();
+            let (observations_tx, observations_rx) = unbounded();
+            let controller = TokenController {
+                updates: updates_tx,
+                observations: observations_rx,
+            };
+            if let Some(token) = initial_token {
+                controller.publish(token);
+            }
             (
                 Self {
-                    tokens: RefCell::new(tokens.into_iter().map(str::to_string).collect()),
-                    calls: calls.clone(),
-                    errors: CapabilityErrorSource::new("geneva-metrics-test".into()),
+                    updates: RefCell::new(Some(updates_rx)),
+                    observations: observations_tx,
                 },
-                calls,
+                controller,
             )
         }
     }
 
     #[async_trait(?Send)]
-    impl LocalBearerTokenProvider for SequenceTokenProvider {
+    impl LocalBearerTokenProvider for TestTokenProvider {
         async fn get_token(&self) -> Result<BearerToken, CapabilityError> {
-            self.calls.set(self.calls.get() + 1);
-            self.tokens
-                .borrow_mut()
-                .pop_front()
-                .map(BearerToken::without_expiry)
-                .ok_or_else(|| self.errors.error("no test token available"))
+            panic!("the shared HTTP auth adapter should consume the token stream")
         }
 
         fn token_stream(&self) -> TokenStream {
-            stream::pending().boxed()
+            let observations = self.observations.clone();
+            let updates = self
+                .updates
+                .borrow_mut()
+                .take()
+                .expect("test token stream should be subscribed once")
+                .inspect(move |_| {
+                    observations
+                        .unbounded_send(())
+                        .expect("test token observer should remain open");
+                });
+            Box::pin(updates)
         }
     }
 
@@ -268,7 +364,28 @@ mod tests {
         (effect_handler, completion_rx)
     }
 
-    fn exporter(endpoint: &str, token_provider: SequenceTokenProvider) -> GenevaMetricsExporter {
+    fn message_channel(
+        capacity: usize,
+    ) -> (
+        mpsc::Sender<NodeControlMsg<OtapPdata>>,
+        mpsc::Sender<OtapPdata>,
+        ExporterInbox<OtapPdata>,
+    ) {
+        let (control_tx, control_rx) = mpsc::Channel::new(capacity);
+        let (pdata_tx, pdata_rx) = mpsc::Channel::new(capacity);
+        (
+            control_tx,
+            pdata_tx,
+            ExporterInbox::new(
+                Receiver::Local(LocalReceiver::mpsc(control_rx)),
+                Receiver::Local(LocalReceiver::mpsc(pdata_rx)),
+                0,
+                Interests::empty(),
+            ),
+        )
+    }
+
+    fn exporter(endpoint: &str, token_provider: TestTokenProvider) -> GenevaMetricsExporter {
         GenevaMetricsExporter::new(
             mapping_config(),
             MetricsPublisher::new(endpoint, Duration::from_secs(1))
@@ -277,8 +394,16 @@ mod tests {
         )
     }
 
+    async fn ready_exporter(endpoint: &str) -> GenevaMetricsExporter {
+        let (provider, mut controller) = TestTokenProvider::new(Some("ready-token"));
+        let mut exporter = exporter(endpoint, provider);
+        assert!(poll_fn(|cx| exporter.auth.poll_refresh(cx, &GENEVA_METRICS_AUTH_EVENTS)).await);
+        controller.wait_until_observed().await;
+        exporter
+    }
+
     /// Scenario: One OTLP request selects two different monitoring accounts.
-    /// Guarantees: The exporter permanently NACKs before acquiring a token or publishing either account.
+    /// Guarantees: The exporter permanently NACKs without issuing an HTTP request.
     #[tokio::test]
     async fn rejects_multiple_accounts_before_publication() {
         let server = MockServer::start().await;
@@ -287,8 +412,7 @@ mod tests {
             .expect(0)
             .mount(&server)
             .await;
-        let (provider, calls) = SequenceTokenProvider::new(["unused-token"]);
-        let exporter = exporter(&server.uri(), provider);
+        let mut exporter = ready_exporter(&server.uri()).await;
         let (effect_handler, mut completions) = completion_harness();
 
         exporter
@@ -309,45 +433,134 @@ mod tests {
             }
             PipelineCompletionMsg::DeliverAck { .. } => panic!("expected permanent NACK"),
         }
-        assert_eq!(calls.get(), 0);
     }
 
-    /// Scenario: The bound bearer provider cannot supply a token for a valid single-account request.
-    /// Guarantees: The exporter returns a transient NACK without issuing an HTTP request.
+    /// Scenario: Pdata is queued before the bearer provider publishes its initial token.
+    /// Guarantees: The start loop backpressures the inbox and ACKs that same pdata after auth becomes ready.
     #[tokio::test]
-    async fn token_acquisition_failure_is_retryable() {
+    async fn start_loop_waits_for_initial_auth() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .respond_with(ResponseTemplate::new(200))
-            .expect(0)
+            .expect(1)
             .mount(&server)
             .await;
-        let (provider, calls) = SequenceTokenProvider::new([]);
+        let (provider, mut controller) = TestTokenProvider::new(None);
         let exporter = exporter(&server.uri(), provider);
         let (effect_handler, mut completions) = completion_harness();
+        let (control_tx, pdata_tx, msg_chan) = message_channel(4);
+        let control_guard = control_tx.clone();
 
-        exporter
-            .handle_pdata(metrics_pdata(&["account-a"], 1), &effect_handler)
-            .await
-            .expect("NACK should be routed");
+        let driver = async move {
+            pdata_tx
+                .send_async(metrics_pdata(&["account-a"], 1))
+                .await
+                .expect("pdata should be queued before auth is ready");
+            controller.publish("fresh-token");
+            controller.wait_until_observed().await;
 
-        match completions.recv().await.expect("completion should arrive") {
-            PipelineCompletionMsg::DeliverNack { nack } => {
-                assert!(!nack.permanent);
-                assert!(
-                    nack.reason
-                        .contains("failed to acquire Geneva metrics bearer token")
-                );
+            match completions.recv().await.expect("completion should arrive") {
+                PipelineCompletionMsg::DeliverAck { .. } => {}
+                PipelineCompletionMsg::DeliverNack { .. } => {
+                    panic!("pdata should wait for auth rather than be NACKed")
+                }
             }
-            PipelineCompletionMsg::DeliverAck { .. } => panic!("expected transient NACK"),
-        }
-        assert_eq!(calls.get(), 1);
+
+            control_tx
+                .send_async(NodeControlMsg::Shutdown {
+                    deadline: Instant::now(),
+                    reason: "test complete".to_owned(),
+                })
+                .await
+                .expect("shutdown should be queued");
+            drop(pdata_tx);
+        };
+
+        let (start_result, ()) = tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::join!(Box::new(exporter).start(msg_chan, effect_handler), driver)
+        })
+        .await
+        .expect("exporter should finish after initial auth arrives");
+        drop(control_guard);
+        let _terminal_state = start_result.expect("exporter should shut down cleanly");
     }
 
-    /// Scenario: A bearer token is rejected with HTTP 401 and the replay obtains a replacement token.
-    /// Guarantees: The first attempt is transiently NACKed, the replay is ACKed, and each attempt acquires a token.
+    /// Scenario: The token stream closes after HTTP 401 while refused pdata is buffered and shutdown begins.
+    /// Guarantees: The exporter avoids a closed-stream busy loop, keeps shutdown responsive, and never reacquires or republishes the rejected token.
     #[tokio::test]
-    async fn unauthorized_request_retries_with_a_new_token() {
+    async fn closed_token_stream_keeps_shutdown_responsive() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(401))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let (provider, mut controller) = TestTokenProvider::new(Some("stale-token"));
+        let exporter = exporter(&server.uri(), provider);
+        let (effect_handler, mut completions) = completion_harness();
+        let (control_tx, pdata_tx, msg_chan) = message_channel(4);
+        // Keep the control channel alive while the pending shutdown drains pdata.
+        let control_guard = control_tx.clone();
+
+        let driver = async move {
+            controller.wait_until_observed().await;
+            pdata_tx
+                .send_async(metrics_pdata(&["account-a"], 1))
+                .await
+                .expect("initial pdata should be queued");
+            let replay = match completions
+                .recv()
+                .await
+                .expect("first completion should arrive")
+            {
+                PipelineCompletionMsg::DeliverNack { nack } => {
+                    assert!(!nack.permanent);
+                    *nack.refused
+                }
+                PipelineCompletionMsg::DeliverAck { .. } => panic!("expected transient NACK"),
+            };
+
+            pdata_tx
+                .send_async(replay)
+                .await
+                .expect("replay should be queued");
+            drop(controller);
+            control_tx
+                .send_async(NodeControlMsg::Shutdown {
+                    deadline: Instant::now() + Duration::from_secs(1),
+                    reason: "test shutdown".to_owned(),
+                })
+                .await
+                .expect("shutdown should be queued");
+
+            match completions
+                .recv()
+                .await
+                .expect("forced-drain completion should arrive")
+            {
+                PipelineCompletionMsg::DeliverNack { nack } => {
+                    assert!(!nack.permanent);
+                    assert!(nack.reason.contains("bearer token unavailable"));
+                }
+                PipelineCompletionMsg::DeliverAck { .. } => panic!("expected transient NACK"),
+            }
+
+            drop(pdata_tx);
+        };
+
+        let (start_result, ()) = tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::join!(Box::new(exporter).start(msg_chan, effect_handler), driver)
+        })
+        .await
+        .expect("exporter should finish before the shutdown deadline");
+        drop(control_guard);
+        let _terminal_state = start_result.expect("exporter should shut down cleanly");
+    }
+
+    /// Scenario: The start loop receives a replay after HTTP 401 and the provider publishes refreshed auth.
+    /// Guarantees: The rejected auth generation gates the inbox until refreshed auth releases and ACKs the same refused payload.
+    #[tokio::test]
+    async fn start_loop_releases_replay_after_auth_refresh() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(header("authorization", "Bearer stale-token"))
@@ -361,39 +574,63 @@ mod tests {
             .expect(1)
             .mount(&server)
             .await;
-        let (provider, calls) = SequenceTokenProvider::new(["stale-token", "fresh-token"]);
+        let (provider, mut controller) = TestTokenProvider::new(Some("stale-token"));
         let exporter = exporter(&server.uri(), provider);
         let (effect_handler, mut completions) = completion_harness();
+        let (control_tx, pdata_tx, msg_chan) = message_channel(4);
+        // Keep the control channel alive until the exporter consumes shutdown.
+        let control_guard = control_tx.clone();
 
-        exporter
-            .handle_pdata(metrics_pdata(&["account-a"], 1), &effect_handler)
-            .await
-            .expect("first completion should be routed");
-        let replay = match completions
-            .recv()
-            .await
-            .expect("first completion should arrive")
-        {
-            PipelineCompletionMsg::DeliverNack { nack } => {
-                assert!(!nack.permanent);
-                assert!(nack.reason.contains("HTTP 401"));
-                *nack.refused
+        let driver = async move {
+            controller.wait_until_observed().await;
+            pdata_tx
+                .send_async(metrics_pdata(&["account-a"], 1))
+                .await
+                .expect("initial pdata should be queued");
+            let replay = match completions
+                .recv()
+                .await
+                .expect("first completion should arrive")
+            {
+                PipelineCompletionMsg::DeliverNack { nack } => {
+                    assert!(!nack.permanent);
+                    assert!(nack.reason.contains("HTTP 401"));
+                    *nack.refused
+                }
+                PipelineCompletionMsg::DeliverAck { .. } => panic!("expected transient NACK"),
+            };
+
+            pdata_tx
+                .send_async(replay)
+                .await
+                .expect("replay should be queued");
+            controller.publish("fresh-token");
+            controller.wait_until_observed().await;
+            match completions
+                .recv()
+                .await
+                .expect("replay completion should arrive")
+            {
+                PipelineCompletionMsg::DeliverAck { .. } => {}
+                PipelineCompletionMsg::DeliverNack { .. } => panic!("expected replay ACK"),
             }
-            PipelineCompletionMsg::DeliverAck { .. } => panic!("expected transient NACK"),
+
+            control_tx
+                .send_async(NodeControlMsg::Shutdown {
+                    deadline: Instant::now(),
+                    reason: "test complete".to_owned(),
+                })
+                .await
+                .expect("shutdown should be queued");
+            drop(pdata_tx);
         };
 
-        exporter
-            .handle_pdata(replay, &effect_handler)
-            .await
-            .expect("replay completion should be routed");
-        match completions
-            .recv()
-            .await
-            .expect("replay completion should arrive")
-        {
-            PipelineCompletionMsg::DeliverAck { .. } => {}
-            PipelineCompletionMsg::DeliverNack { .. } => panic!("expected replay ACK"),
-        }
-        assert_eq!(calls.get(), 2);
+        let (start_result, ()) = tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::join!(Box::new(exporter).start(msg_chan, effect_handler), driver)
+        })
+        .await
+        .expect("exporter should finish after replacement-token replay");
+        drop(control_guard);
+        let _terminal_state = start_result.expect("exporter should shut down cleanly");
     }
 }

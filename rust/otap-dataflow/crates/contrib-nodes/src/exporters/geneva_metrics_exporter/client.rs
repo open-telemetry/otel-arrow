@@ -1,6 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+use reqwest::header::{HeaderName, HeaderValue};
 use reqwest::{Client, StatusCode};
 use std::time::Duration;
 use thiserror::Error;
@@ -25,8 +26,6 @@ pub(crate) enum PublisherBuildError {
 #[derive(Debug, Error)]
 #[allow(variant_size_differences)]
 pub(crate) enum PublishError {
-    #[error("Geneva metrics bearer token cannot be represented as an HTTP header")]
-    InvalidAuthorizationHeader(#[source] reqwest::header::InvalidHeaderValue),
     #[error("Geneva metrics request failed: {0}")]
     Request(#[source] Box<reqwest::Error>),
     #[error("Geneva metrics endpoint returned HTTP {status}")]
@@ -34,9 +33,17 @@ pub(crate) enum PublishError {
 }
 
 impl PublishError {
+    pub(crate) fn is_unauthorized(&self) -> bool {
+        matches!(
+            self,
+            Self::Response {
+                status: StatusCode::UNAUTHORIZED
+            }
+        )
+    }
+
     pub(crate) fn is_retryable(&self) -> bool {
         match self {
-            Self::InvalidAuthorizationHeader(_) => false,
             Self::Request(_) => true,
             Self::Response { status } => {
                 *status == StatusCode::UNAUTHORIZED
@@ -67,24 +74,21 @@ impl MetricsPublisher {
         &self,
         monitoring_account: &str,
         packet: Vec<u8>,
-        bearer_token: &str,
+        auth_header_name: HeaderName,
+        auth_header_value: HeaderValue,
     ) -> Result<(), PublishError> {
         let original_size = packet.len();
         let endpoint = self.endpoint.replace(
             "{monitoring_account}",
             &urlencoding::encode(monitoring_account),
         );
-        let mut request = self
+        let request = self
             .client
             .post(endpoint)
             .header(reqwest::header::CONTENT_TYPE, CONTENT_TYPE)
             .header(ORIGINAL_CONTENT_SIZE_HEADER, original_size)
+            .header(auth_header_name, auth_header_value)
             .body(packet);
-        let mut authorization =
-            reqwest::header::HeaderValue::from_str(&format!("Bearer {bearer_token}"))
-                .map_err(PublishError::InvalidAuthorizationHeader)?;
-        authorization.set_sensitive(true);
-        request = request.header(reqwest::header::AUTHORIZATION, authorization);
         let response = request
             .send()
             .await
@@ -106,6 +110,10 @@ mod tests {
     use wiremock::matchers::{body_bytes, header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
+    fn authorization_header() -> HeaderValue {
+        HeaderValue::from_static("test-authorization")
+    }
+
     /// Scenario: A protocol v6 packet is published to a healthy endpoint.
     /// Guarantees: The C++-compatible content headers and packet bytes are sent unchanged.
     #[tokio::test]
@@ -116,7 +124,7 @@ mod tests {
             .and(path("/metrics"))
             .and(header("content-type", CONTENT_TYPE))
             .and(header(ORIGINAL_CONTENT_SIZE_HEADER, "5"))
-            .and(header("authorization", "Bearer test-token"))
+            .and(header("authorization", "test-authorization"))
             .and(body_bytes(packet.clone()))
             .respond_with(ResponseTemplate::new(200))
             .expect(1)
@@ -128,7 +136,12 @@ mod tests {
                 .expect("publisher should be created");
 
         publisher
-            .publish("example-account", packet, "test-token")
+            .publish(
+                "example-account",
+                packet,
+                reqwest::header::AUTHORIZATION,
+                authorization_header(),
+            )
             .await
             .expect("publication should succeed");
     }
@@ -147,11 +160,17 @@ mod tests {
                 .expect("valid endpoint");
 
             let error = publisher
-                .publish("example-account", vec![6, 0], "test-token")
+                .publish(
+                    "example-account",
+                    vec![6, 0],
+                    reqwest::header::AUTHORIZATION,
+                    authorization_header(),
+                )
                 .await
                 .expect_err("publication should fail");
 
             assert!(!error.is_retryable(), "HTTP {status} should be permanent");
+            assert!(!error.is_unauthorized());
         }
     }
 
@@ -169,22 +188,28 @@ mod tests {
                 .expect("valid endpoint");
 
             let error = publisher
-                .publish("example-account", vec![6, 0], "test-token")
+                .publish(
+                    "example-account",
+                    vec![6, 0],
+                    reqwest::header::AUTHORIZATION,
+                    authorization_header(),
+                )
                 .await
                 .expect_err("publication should fail");
 
             assert!(error.is_retryable(), "HTTP {status} should be retryable");
+            assert_eq!(error.is_unauthorized(), status == 401);
         }
     }
 
     /// Scenario: An authenticated account publication uses an endpoint template.
-    /// Guarantees: The account is path-encoded and the bearer credential is sent in a sensitive Authorization header.
+    /// Guarantees: The account is path-encoded and the supplied authorization header is sent.
     #[tokio::test]
-    async fn publishes_with_bearer_token_and_account_routing() {
+    async fn publishes_with_authorization_header_and_account_routing() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/metrics/account%20name"))
-            .and(header("authorization", "Bearer test-token"))
+            .and(header("authorization", "test-authorization"))
             .respond_with(ResponseTemplate::new(200))
             .expect(1)
             .mount(&server)
@@ -196,7 +221,12 @@ mod tests {
         .expect("valid endpoint");
 
         publisher
-            .publish("account name", vec![6, 0], "test-token")
+            .publish(
+                "account name",
+                vec![6, 0],
+                reqwest::header::AUTHORIZATION,
+                authorization_header(),
+            )
             .await
             .expect("authenticated publication should succeed");
     }
