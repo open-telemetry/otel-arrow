@@ -1,8 +1,0 @@
-case,source_bytes,frames,body_bytes,allocation_events,allocated_bytes,peak_live_bytes,allocations_per_frame
-utf8_short_preserve,264192,2048,262144,32768,1044480,256,16.0000
-utf8_short_replace,264192,2048,262144,16384,522240,128,8.0000
-utf8_multibyte_preserve,296960,2048,294912,28672,1298432,320,14.0000
-utf16le_preserve,266240,2048,229376,28672,972800,240,14.0000
-utf8_malformed_preserve,264192,2048,262144,16393,522751,384,8.0044
-utf8_oversize_split,262160,256,262144,2827,526079,2048,11.0430
-utf8_oversize_truncate,262160,16,16384,352,65504,2048,22.0000
