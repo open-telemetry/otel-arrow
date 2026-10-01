@@ -1632,6 +1632,8 @@ async fn test_scale_metric_positive_fraction_without_unit() {
             .finish(),
     ];
     assert_metrics_eq(result, to_metrics_data(expected));
+}
+
 /// Scenario: Filter all metric data point types by a nested serialized attribute leaf.
 /// Guarantees: Only data points whose nested leaf matches are kept.
 #[tokio::test]
