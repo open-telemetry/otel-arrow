@@ -959,7 +959,8 @@ mod test {
                 target_rows_per_file: Some(50),
                 ..Default::default()
             }),
-        }).with_dummy_metrics();
+        })
+        .with_dummy_metrics();
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
         let mut exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
             exporter,
@@ -1121,7 +1122,8 @@ mod test {
                 target_rows_per_file: None,
                 flush_when_older_than: Some(Duration::from_millis(200)),
             }),
-        }).with_dummy_metrics();
+        })
+        .with_dummy_metrics();
 
         let test_runtime = TestRuntime::<OtapPdata>::new();
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
@@ -1310,12 +1312,9 @@ mod test {
                         .await
                         .expect("Failed to send  logs message");
 
-                    ctx.send_shutdown(
-                        Instant::now().add(Duration::from_secs(5)),
-                        "test completed",
-                    )
-                    .await
-                    .unwrap();
+                    ctx.send_shutdown(Instant::now().add(Duration::from_secs(5)), "test completed")
+                        .await
+                        .unwrap();
                 })
             })
             .run_validation(move |_ctx, exporter_result| {
@@ -1382,12 +1381,9 @@ mod test {
                         .await
                         .expect("Failed to send  logs message");
 
-                    ctx.send_shutdown(
-                        Instant::now().add(Duration::from_secs(5)),
-                        "test completed",
-                    )
-                    .await
-                    .unwrap();
+                    ctx.send_shutdown(Instant::now().add(Duration::from_secs(5)), "test completed")
+                        .await
+                        .unwrap();
                 })
             })
             .run_validation(move |_ctx, exporter_result| {
@@ -1741,12 +1737,9 @@ mod test {
                     ctx.send_pdata(OtapPdata::new_default(otap_batch.into()))
                         .await
                         .unwrap();
-                    ctx.send_shutdown(
-                        Instant::now().add(Duration::from_secs(5)),
-                        "test complete",
-                    )
-                    .await
-                    .unwrap();
+                    ctx.send_shutdown(Instant::now().add(Duration::from_secs(5)), "test complete")
+                        .await
+                        .unwrap();
                 })
             })
             .run_validation(move |_ctx, exporter_result| {
