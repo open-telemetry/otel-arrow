@@ -498,6 +498,13 @@ impl QuiverEngine {
             registry.force_complete_segments(&deleted_during_scan);
         }
 
+        // Progress files may reference segments whose files were already
+        // cleaned up. Allocate above them so that restored acknowledgements
+        // cannot hide new segments that would otherwise reuse those numbers.
+        if let Some(highest) = registry.highest_progress_segment() {
+            next_segment_seq = next_segment_seq.max(highest.raw().saturating_add(1));
+        }
+
         // Start with empty open segment and default cursor
         // WAL replay will populate these through the normal ingest path
         let engine = Arc::new(Self {
@@ -5740,6 +5747,134 @@ mod tests {
                 segments_created
             );
         }
+    }
+
+    /// Scenario: All acknowledged segments are cleaned up before a process restart.
+    /// Guarantees: Surviving acknowledgements never suppress newly written telemetry in either durability mode.
+    #[tokio::test]
+    async fn cleanup_restart_delivers_new_data() {
+        for mode in [DurabilityMode::SegmentOnly, DurabilityMode::Wal] {
+            let dir = tempdir().unwrap();
+            let id = SubscriberId::new("restart").unwrap();
+            let config = QuiverConfig::builder()
+                .data_dir(dir.path())
+                .durability(mode)
+                .build()
+                .unwrap();
+            let engine = QuiverEngine::open(config.clone(), test_budget())
+                .await
+                .unwrap();
+            engine.register_subscriber(id.clone()).unwrap();
+            engine.activate_subscriber(&id).unwrap();
+            engine.ingest(&DummyBundle::with_rows(1)).await.unwrap();
+            engine.flush().await.unwrap();
+            let old = engine.poll_next_bundle(&id).unwrap().unwrap();
+            let old_seq = old.bundle_ref().segment_seq;
+            old.ack();
+            assert_eq!(engine.flush_progress().await.unwrap(), 1);
+            assert_eq!(engine.cleanup_completed_segments().unwrap(), 1);
+            assert_eq!(engine.segment_store().segment_count(), 0);
+            drop(engine);
+
+            let engine = QuiverEngine::open(config, test_budget()).await.unwrap();
+            engine.activate_subscriber(&id).unwrap();
+            engine.ingest(&DummyBundle::with_rows(3)).await.unwrap();
+            engine.flush().await.unwrap();
+            let new = engine
+                .poll_next_bundle(&id)
+                .unwrap()
+                .expect("new telemetry");
+            assert!(new.bundle_ref().segment_seq > old_seq);
+            assert_eq!(new.item_count(), 3);
+            new.ack();
+            assert!(engine.poll_next_bundle(&id).unwrap().is_none());
+        }
+    }
+
+    /// Scenario: Persisted progress and a segment filename supply different allocation floors.
+    /// Guarantees: Startup uses their maximum, including inactive subscribers.
+    #[tokio::test]
+    async fn startup_combines_progress_and_filename_floors() {
+        for (disk, progress) in [(7, 20), (20, 7)] {
+            let dir = tempdir().unwrap();
+            let config = QuiverConfig::builder()
+                .data_dir(dir.path())
+                .build()
+                .unwrap();
+            let engine = QuiverEngine::open(config.clone(), test_budget())
+                .await
+                .unwrap();
+            engine.next_segment_seq.store(disk, Ordering::Relaxed);
+            engine.ingest(&DummyBundle::with_rows(1)).await.unwrap();
+            engine.flush().await.unwrap();
+            drop(engine);
+            let id = SubscriberId::new("inactive").unwrap();
+            crate::subscriber::write_progress_file(dir.path(), &id, SegmentSeq::new(progress), &[])
+                .await
+                .unwrap();
+            let engine = QuiverEngine::open(config, test_budget()).await.unwrap();
+            assert_eq!(engine.next_segment_seq.load(Ordering::Relaxed), 21);
+            engine.ingest(&DummyBundle::with_rows(3)).await.unwrap();
+            engine.flush().await.unwrap();
+            assert!(
+                engine
+                    .segment_store()
+                    .segment_sequences()
+                    .contains(&SegmentSeq::new(21))
+            );
+        }
+    }
+
+    /// Scenario: A stale acknowledged checkpoint survives cleanup while new telemetry remains only in the WAL.
+    /// Guarantees: Replay finalization during open allocates above that checkpoint and delivers the WAL tail.
+    #[tokio::test]
+    async fn restart_progress_floor_precedes_wal_replay() {
+        let dir = tempdir().unwrap();
+        let id = SubscriberId::new("wal-tail").unwrap();
+        let config = QuiverConfig::builder()
+            .data_dir(dir.path())
+            .build()
+            .unwrap();
+        let engine = QuiverEngine::open(config, test_budget()).await.unwrap();
+        engine.register_subscriber(id.clone()).unwrap();
+        engine.activate_subscriber(&id).unwrap();
+        engine.ingest(&DummyBundle::with_rows(1)).await.unwrap();
+        engine.flush().await.unwrap();
+        let old = engine.poll_next_bundle(&id).unwrap().unwrap();
+        let old_seq = old.bundle_ref().segment_seq;
+        old.ack();
+        assert_eq!(engine.maintain().await.unwrap().deleted, 1);
+        engine.ingest(&DummyBundle::with_rows(3)).await.unwrap();
+        assert_eq!(engine.open_segment.lock().bundle_count(), 1);
+        drop(engine);
+        let config = QuiverConfig::builder()
+            .data_dir(dir.path())
+            .segment(SegmentConfig {
+                target_size_bytes: NonZeroU64::new(1).unwrap(),
+                ..Default::default()
+            })
+            .build()
+            .unwrap();
+        let engine = QuiverEngine::builder(config)
+            .with_budget(test_budget())
+            .with_wal_item_counter(Arc::new(|bundle| {
+                bundle
+                    .payload(SlotId::new(0))
+                    .map(|payload| payload.batch.num_rows() as u64)
+            }))
+            .build()
+            .await
+            .unwrap();
+        assert_eq!(engine.segment_store().segment_count(), 1);
+        engine.activate_subscriber(&id).unwrap();
+        let handle = engine
+            .poll_next_bundle(&id)
+            .unwrap()
+            .expect("replayed telemetry");
+        assert!(handle.bundle_ref().segment_seq > old_seq);
+        assert_eq!(handle.item_count(), 3);
+        handle.ack();
+        assert!(engine.poll_next_bundle(&id).unwrap().is_none());
     }
 
     // -----------------------------------------------------------------------------

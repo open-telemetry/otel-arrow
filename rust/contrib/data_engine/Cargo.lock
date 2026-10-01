@@ -716,7 +716,7 @@ checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
 name = "otel-arrow-contrib-data-engine-columnar"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "ahash",
  "arrow",
@@ -732,7 +732,7 @@ dependencies = [
 
 [[package]]
 name = "otel-arrow-contrib-data-engine-expressions"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "caseless",
  "chrono",
@@ -743,7 +743,7 @@ dependencies = [
 
 [[package]]
 name = "otel-arrow-contrib-data-engine-kql-parser"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "chrono",
  "otel-arrow-contrib-data-engine-expressions",
@@ -755,7 +755,7 @@ dependencies = [
 
 [[package]]
 name = "otel-arrow-contrib-data-engine-parser-abstractions"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "chrono",
  "otel-arrow-contrib-data-engine-expressions",
@@ -766,7 +766,7 @@ dependencies = [
 
 [[package]]
 name = "otel-arrow-contrib-data-engine-recordset"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "chrono",
  "hex",
@@ -1010,18 +1010,18 @@ dependencies = [
 
 [[package]]
 name = "thiserror"
-version = "2.0.20"
+version = "2.0.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ec86235f5fcc2a73650310756d2ac5b138a5780bbbdfae3eeccec992c435ba4f"
+checksum = "09e52cb86a36cede5cb101bf8908837b3e4c6e5e59fe7fd85c23fb56200d189e"
 dependencies = [
  "thiserror-impl",
 ]
 
 [[package]]
 name = "thiserror-impl"
-version = "2.0.20"
+version = "2.0.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bc04cd3e1236dd4a98afca4569f2deb3f120e5422a4023be2cb683f8486292af"
+checksum = "fe5197923287db20a58125f0bc85c062f7f2c892de97b18c356f9efb14b28524"
 dependencies = [
  "proc-macro2",
  "quote",

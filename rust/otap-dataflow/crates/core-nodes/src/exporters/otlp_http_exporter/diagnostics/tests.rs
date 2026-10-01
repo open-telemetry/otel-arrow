@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::exporters::otlp_http_exporter::{
-    CompletedExport, RequestAuth, ServiceRequestError, finalize_completed_export,
+    CompletedExport, ServiceRequestError, finalize_completed_export,
     metrics::OtlpHttpExporterMetrics,
 };
 use bytes::Bytes;
@@ -299,8 +299,8 @@ fn preparation_and_notification_event_contracts() {
     }
 }
 
-/// Scenario: HTTP statuses are finalized with static, bearer-provider, and agent-fed credentials.
-/// Guarantees: Diagnostic retryability matches Nacks and credential invalidation regardless of metric interests.
+/// Scenario: HTTP statuses are finalized with static and dynamic credentials.
+/// Guarantees: Diagnostic retryability matches Nacks and auth invalidation regardless of metric interests.
 #[test]
 fn delivery_retryability_matches_auth_aware_nacks() {
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -308,14 +308,14 @@ fn delivery_retryability_matches_auth_aware_nacks() {
         .build()
         .unwrap();
     for interests in [Interests::empty(), Interests::NODE_INPUT_METRICS] {
-        for (status, request_auth, retryable) in [
-            (401, RequestAuth::None, false),
-            (401, RequestAuth::BearerProvider { generation: 7 }, true),
-            (401, RequestAuth::AgentFed { generation: 8 }, true),
-            (403, RequestAuth::AgentFed { generation: 8 }, false),
-            (429, RequestAuth::None, true),
-            (503, RequestAuth::None, true),
-            (400, RequestAuth::None, false),
+        for (status, auth_generation, retryable) in [
+            (401, None, false),
+            (401, Some(7), true),
+            (401, Some(8), true),
+            (403, Some(8), false),
+            (429, None, true),
+            (503, None, true),
+            (400, None, false),
         ] {
             let capture = Capture::default();
             tracing::subscriber::with_default(
@@ -323,7 +323,7 @@ fn delivery_retryability_matches_auth_aware_nacks() {
                 || {
                     runtime.block_on(async {
                         let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(interests);
-                        let mut metrics = OtlpHttpExporterMetrics::register(&pipeline_ctx);
+                        let mut metrics = OtlpHttpExporterMetrics::register(&pipeline_ctx, None);
                         let (_metrics_rx, reporter) = MetricsReporter::create_new_and_receiver(1);
                         let mut effects = EffectHandler::new(
                             test_node("test-exporter"),
@@ -368,19 +368,16 @@ fn delivery_retryability_matches_auth_aware_nacks() {
                                 context,
                                 saved_payload,
                                 signal_type: SignalType::Logs,
-                                request_auth,
+                                auth_generation,
                             },
                             &effects,
                             &mut metrics,
                         )
                         .await;
                         assert_eq!(
-                            rejected.is_some(),
-                            status == 401 && request_auth.is_dynamic()
+                            rejected,
+                            (status == 401).then_some(auth_generation).flatten()
                         );
-                        if let Some(rejected) = rejected {
-                            assert_eq!(format!("{rejected:?}"), format!("{request_auth:?}"));
-                        }
                         let PipelineCompletionMsg::DeliverNack { nack } = rx.recv().await.unwrap()
                         else {
                             panic!("failed export must Nack");
@@ -397,7 +394,7 @@ fn delivery_retryability_matches_auth_aware_nacks() {
                         );
                         assert_eq!(events[0].fields["message"], message);
                         assert_eq!(events[0].fields["retryable"], retryable);
-                        let snapshots = metrics.terminal_snapshots();
+                        let snapshots = metrics.terminal_snapshots(None);
                         assert!(snapshots.iter().any(|snapshot| {
                             snapshot.descriptor().name == "exporter.otlp_http.failures"
                                 && snapshot.get_metrics()[0].to_u64_lossy() == 1
@@ -430,7 +427,7 @@ fn notification_failure_does_not_redefine_delivery() {
             || {
                 runtime.block_on(async {
                     let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(Interests::empty());
-                    let mut metrics = OtlpHttpExporterMetrics::register(&pipeline_ctx);
+                    let mut metrics = OtlpHttpExporterMetrics::register(&pipeline_ctx, None);
                     let (_metrics_rx, reporter) = MetricsReporter::create_new_and_receiver(1);
                     let mut effects = EffectHandler::new(
                         test_node("test-exporter"),
@@ -470,7 +467,7 @@ fn notification_failure_does_not_redefine_delivery() {
                             context,
                             saved_payload,
                             signal_type: SignalType::Logs,
-                            request_auth: RequestAuth::None,
+                            auth_generation: None,
                         },
                         &effects,
                         &mut metrics,

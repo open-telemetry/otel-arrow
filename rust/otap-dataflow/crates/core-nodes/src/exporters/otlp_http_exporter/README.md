@@ -248,11 +248,10 @@ successes, and Ack/Nack notification failures do not emit this metric.
 
 | Metric | Unit | Attributes | Description |
 | --- | --- | --- | --- |
-| `exporter.otlp_http.authentication.failures` | `{attempt}` | `error.type` | Agent-fed credential checks that did not produce a usable snapshot, including failures before a signal batch is admitted. |
+| `exporter.otlp_http.authentication.ready` | `{1}` | `source` | Whether authenticated progress is currently possible (`0` for not ready, `1` for ready). |
 
-Authentication `error.type` is one of `credential_unavailable`,
-`lookup_timeout`, `empty_token`, `token_near_expiry`, `invalid_token`, or
-`rejected_credential_unchanged`.
+Authentication `source` is the name of the HTTP client auth implementation (ex:
+`BearerAuth`) selected based on the auth capability configured.
 
 ### Events
 
@@ -267,9 +266,8 @@ Authentication `error.type` is one of `credential_unavailable`,
 | `otlp.exporter.http.export_recovered` | `info` | Confirmed recovery after 30 failure-free seconds and fresh success. |
 | `otlp.exporter.http.notification_error` | `warn` | Independently bounded Ack/Nack notification failures. |
 | `otlp.exporter.http.preparation_error` | `warn` | Independently bounded encoding and compression failures. |
-| `otlp.exporter.http.invalid_bearer_token` | `warn` | A bearer token from the provider could not be turned into a valid `Authorization` header. |
-| `otlp.exporter.http.token_stream_closed` | `warn` | The bearer token provider closed its refresh stream; the last token (if any) is reused and no longer refreshes. |
-| `otlp.exporter.http.agent_fed_credential_unavailable` | `warn` | An agent-fed credential check failed; repeated failures are sampled at powers of two. |
+| `otlp.exporter.http.auth.invalid` | `warn` | A credential from the auth provider could not be turned into a valid header. |
+| `otlp.exporter.http.auth.stream_closed` | `warn` | The auth provider closed its refresh stream; the last credential (if any) is reused and no longer refreshes. |
 
 Export, preparation, and notification diagnostics include `diagnostic_kind`
 (`first_failure`, `summary`, or `recovery`) and interval/episode counts.

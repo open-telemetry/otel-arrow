@@ -13,11 +13,12 @@ This directory contains the repository's main CI workflows:
 | Event | Rust | Go | Repository |
 | --- | --- | --- | --- |
 | Pull request | Required and non-required jobs | Required jobs | Lint and changelog |
-| Merge queue | Required jobs only | Required jobs | Lint and changelog |
+| Merge queue | Required jobs and coverage | Required jobs | Lint and changelog |
 | Merge to `main` | Shared-cache maintenance | CodeQL | - |
 
-Pull requests provide broad feedback. Merge-queue runs validate only what is
-required for merging. Post-merge workflows avoid repeating validation that
+Pull requests provide broad feedback. Merge-queue runs validate what is
+required for merging and upload complete Rust and Go coverage for the commit
+that will reach `main`. Post-merge workflows avoid repeating validation that
 already passed in the merge queue.
 
 ## Required checks
