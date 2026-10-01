@@ -5,6 +5,8 @@
 //! uses the lower-level otel_arrow_dfe_pdata::otap::groups module for
 //! merging and splitting batches.
 //!
+//! # Configuration
+//!
 //! Configuration is modelled on the (original) OpenTelemetry batch
 //! processor, not the relatively-new exporterhelper batcher, which
 //! supports batching by a sizer "bytes", "requests", or "items".
@@ -14,21 +16,22 @@
 //! defaults to `max_size`. Together they define the range of acceptable
 //! batch sizes `[min_size, max_size]` (unbounded above when `max_size` is
 //! unset). An arriving input already within that range is forwarded as-is
-//! with its original context: no buffering, merging, splitting, or
-//! completion tracking. Other inputs are buffered; whether pending data
-//! reaches the lower bound or the timeout first, it will flush pending
-//! data. If the upper bound is set, merging and splitting will take place,
-//! otherwise only merging is performed.
+//! with its original context. All other inputs are buffered and then re-batched
+//! and flushed when either pending data reaches the lower bound required to
+//! make at least one batch or the max_batch_duration is reached.
 //!
 //! Because in-range inputs bypass the buffer, output order is not
 //! preserved relative to data that is still buffered.
 //!
-//! When this component flushes because it has reached a limit, and
-//! splitting is configured, it means there can be residual data left
-//! after flushing. Retained data is always "first in line" for
-//! considering in the next flush event. Note that the lower-level
-//! function in otel_arrow_dfe_pdata::otap::groups is required to support
-//! "in-line" batching (see that component for the definition).
+//! # Flush behavior
+//!
+//! When this component flushes because it has reached a limit then there
+//! can be residual data left after the flush. This retained data is always
+//! "first in line" for considering in the next flush event and is guaranteed
+//! to be flushed in the next batch. The implication of this is that a batch
+//! can sit in the batch_processor for up to `2 * max_batch_duration`.
+//!
+//! # Pipeline Placement
 //!
 //! This component should be installed before any retry processor
 //! (i.e., only retry after batching). This component does not support
@@ -129,12 +132,10 @@ const fn signal_from_wakeup_slot(slot: WakeupSlot) -> Option<(SignalFormat, Sign
 /// Min/max size for a specific format
 #[derive(Debug, Clone, Deserialize)]
 pub struct FormatConfig {
-    /// Lower bound of the acceptable batch size. Measures the quantity
+    /// Lower bound of the acceptable batch size. Measured in the quantity
     /// indicated by `sizer`. When pending data reaches this threshold a
-    /// new batch will form and be sent. An input whose size is already
-    /// within `[min_size, max_size]` is forwarded as-is without being
-    /// buffered. When unset, defaults to `max_size`. Zero is allowed and
-    /// means any input up to `max_size` is forwarded as-is.
+    /// new batch will form and be sent. When unset, defaults to `max_size`.
+    /// Zero is allowed and means any input up to `max_size` is forwarded as-is.
     pub min_size: Option<usize>,
 
     /// Optionally limit batch sizes to an upper bound. Measured in
@@ -499,10 +500,6 @@ impl FormatConfig {
                     error: "min_size > 0 requires max_batch_duration is set".into(),
                 });
             }
-            // Past this point min_size is unset or zero. An unset max_size
-            // is only reachable with an explicit min_size: 0, which is
-            // allowed (with a warning at build time) as a deliberate
-            // pass-through configuration.
         }
 
         Ok(())
@@ -990,10 +987,7 @@ where
         }
 
         // Pass-through: an input that is already an acceptable batch is
-        // forwarded as-is with its original context. It needs no splitting,
-        // concatenation, or completion tracking, and any pending data is left
-        // in place to be flushed by size or timer as usual. Note this means a
-        // passed-through input may be sent ahead of older, still-buffered data.
+        // forwarded as-is with its original context.
         if self.fmtcfg.in_passthrough_range(weight) {
             return self.forward_as_is(effect, ctx, payload).await;
         }
@@ -2063,15 +2057,15 @@ mod tests {
         let both = FormatConfig::new_items(Some(5), 10);
         assert_eq!(both.lower_limit(), 5);
         assert!(!both.in_passthrough_range(4));
+        assert!(!both.in_passthrough_range(11));
         assert!(both.in_passthrough_range(5));
         assert!(both.in_passthrough_range(10));
-        assert!(!both.in_passthrough_range(11));
 
         let max_only = FormatConfig::new_items(None, 10);
         assert_eq!(max_only.lower_limit(), 10);
         assert!(!max_only.in_passthrough_range(9));
-        assert!(max_only.in_passthrough_range(10));
         assert!(!max_only.in_passthrough_range(11));
+        assert!(max_only.in_passthrough_range(10));
 
         let min_only = FormatConfig::new_items(Some(5), 0);
         assert_eq!(min_only.lower_limit(), 5);
@@ -4781,11 +4775,18 @@ mod tests {
         }
     }
 
-    /// Shared core: with min=4, max=8 units, input A (2 units) is buffered;
-    /// input B (5 units, in range) must be forwarded immediately with its own
-    /// context while A stays buffered; A is then timer-flushed as a regular
-    /// tracked batch.
-    fn check_in_range_input_passes_through(fmt: ResidualFormat, response: AckPolicy) {
+    /// A shared helper that exercises the below scenario for multiple formats
+    /// and with either an ack or nack.
+    ///
+    /// Scenario: min=4/max=8; a 2-item input is buffered, then a
+    /// 5-item input arrives and either a downstream Ack or downstream nack
+    /// are delivered.
+    /// Guarantees: the in-range input is forwarded immediately and unchanged
+    /// with its original context, so its Ack/nack routes straight upstream with
+    /// no batch-processor tracking. The buffered input is untouched and later
+    /// timer-flushed through the tracked path; `passthrough.batches` counts
+    /// only the in-range input.
+    fn test_in_range_input_passes_through(fmt: ResidualFormat, response: AckPolicy) {
         let (registry, reporter, phase) =
             setup_test_runtime(passthrough_config(fmt, Some(4), Some(8), "1s"));
         phase
@@ -4845,39 +4846,32 @@ mod tests {
             });
     }
 
-    /// Scenario: OTAP, min=4/max=8; a 2-item input is buffered, then a
-    /// 5-item input arrives and its downstream Ack is delivered.
-    /// Guarantees: the in-range input is forwarded immediately and unchanged
-    /// with its original context, so its Ack routes straight upstream with no
-    /// batch-processor tracking; the buffered input is untouched and later
-    /// timer-flushed through the tracked path; `passthrough.batches` counts
-    /// only the in-range input.
+    /// Scenario: See [`test_in_range_input_passes_through`] for OTAP + Ack
+    /// Guarantees: See [`test_in_range_input_passes_through`] for OTAP + Ack
     #[test]
     fn test_otap_in_range_input_passes_through() {
-        check_in_range_input_passes_through(ResidualFormat::Otap, AckPolicy::Ack);
+        test_in_range_input_passes_through(ResidualFormat::Otap, AckPolicy::Ack);
     }
 
-    /// Scenario: as above for OTAP, but the passed-through output is Nacked.
-    /// Guarantees: the Nack routes directly to the passed-through input's
-    /// subscriber and does not involve the batch processor.
+    /// Scenario: See [`test_in_range_input_passes_through`] for OTAP + Nack
+    /// Guarantees: See [`test_in_range_input_passes_through`] for OTAP + Nack
     #[test]
     fn test_otap_in_range_input_nack_routes_upstream() {
-        check_in_range_input_passes_through(ResidualFormat::Otap, AckPolicy::Nack("failed"));
+        test_in_range_input_passes_through(ResidualFormat::Otap, AckPolicy::Nack("failed"));
     }
 
-    /// Scenario: OTLP bytes, min=4/max=8 units; a 2-unit input is buffered,
-    /// then a 5-unit input arrives and its downstream Ack is delivered.
-    /// Guarantees: same pass-through behavior as OTAP, measured in bytes.
+    /// Scenario: See [`test_in_range_input_passes_through`] for OTLP + Ack
+    /// Guarantees: See [`test_in_range_input_passes_through`] for OTLP + Ack
     #[test]
     fn test_otlp_in_range_input_passes_through() {
-        check_in_range_input_passes_through(ResidualFormat::Otlp, AckPolicy::Ack);
+        test_in_range_input_passes_through(ResidualFormat::Otlp, AckPolicy::Ack);
     }
 
-    /// Scenario: as above for OTLP, but the passed-through output is Nacked.
-    /// Guarantees: the Nack routes directly to the passed-through input.
+    /// Scenario: See [`test_in_range_input_passes_through`] for OTLP + Nack
+    /// Guarantees: See [`test_in_range_input_passes_through`] for OTLP + Nack
     #[test]
     fn test_otlp_in_range_input_nack_routes_upstream() {
-        check_in_range_input_passes_through(ResidualFormat::Otlp, AckPolicy::Nack("failed"));
+        test_in_range_input_passes_through(ResidualFormat::Otlp, AckPolicy::Nack("failed"));
     }
 
     /// Drives `inputs` (sizes in units) through a processor configured with
@@ -4950,19 +4944,6 @@ mod tests {
                 outputs_for_inputs(fmt, cfg, &[1, 3, 4, 9]),
                 vec![1, 3, 4, 4, 4, 1]
             );
-        }
-    }
-
-    /// Scenario: min=max=4 with a timeout; a 2-unit input is buffered, then a
-    /// 9-unit input arrives (above max_size).
-    /// Guarantees: an oversize input keeps the existing merge-and-split path,
-    /// concatenating with buffered data and emitting full max_size batches
-    /// (2 + 9 = 11 -> [4, 4] sent, 3 retained).
-    #[test]
-    fn test_oversize_input_unchanged_behavior() {
-        for fmt in [ResidualFormat::Otap, ResidualFormat::Otlp] {
-            let cfg = passthrough_config(fmt, Some(4), Some(4), "1s");
-            assert_eq!(outputs_for_inputs(fmt, cfg, &[2, 9]), vec![4, 4]);
         }
     }
 
