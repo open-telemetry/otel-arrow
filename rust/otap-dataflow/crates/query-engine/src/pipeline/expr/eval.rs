@@ -17,11 +17,11 @@ use std::sync::Arc;
 
 use arrow::array::{
     Array, ArrayRef, AsArray, BooleanArray, BooleanBufferBuilder, RecordBatch, StringArray,
-    StructArray, UInt32Array,
+    StructArray, UInt8Array, UInt32Array,
 };
 use arrow::compute::filter_record_batch;
 use arrow::compute::kernels::cmp::eq;
-use arrow::datatypes::{DataType, Field, Schema, UInt8Type, UInt16Type, UInt32Type};
+use arrow::datatypes::{DataType, Field, Fields, Schema, UInt8Type, UInt16Type, UInt32Type};
 use datafusion::common::DFSchema;
 use datafusion::logical_expr::{ColumnarValue, Expr};
 use datafusion::physical_expr::{PhysicalExprRef, create_physical_expr};
@@ -29,7 +29,12 @@ use datafusion::prelude::SessionContext;
 use datafusion::scalar::ScalarValue;
 use otel_arrow_dfe_pdata::OtapArrowRecords;
 use otel_arrow_dfe_pdata::arrays::{
-    get_optional_array_from_struct_array_from_record_batch, get_required_array,
+    ByteArrayAccessor, get_optional_array_from_struct_array_from_record_batch, get_required_array,
+};
+use otel_arrow_dfe_pdata::encode::record::attributes::AnyValuesRecordsBuilder;
+use otel_arrow_dfe_pdata::otlp::attributes::AttributeValueType;
+use otel_arrow_dfe_pdata::otlp::attributes::cbor::{
+    SerializedAttributeScalarValue, SerializedValuePathElement, read_cbor_scalar,
 };
 use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otel_arrow_dfe_pdata::schema::consts;
@@ -192,12 +197,12 @@ pub(super) fn eval_datafusion_expr_value(
                         }
                     },
                 },
-                DataScope::Attribute(attrs_id, key) => {
+                DataScope::Attribute(attrs_id, key, path) => {
                     let attrs_payload_type =
                         resolve_attrs_payload_type(attrs_id, otap_batch, eval_ctx)?;
                     otap_batch
                         .get(attrs_payload_type)
-                        .map(|rb| project_attrs(rb, key.as_str(), *attr_key_case_sensitive))
+                        .map(|rb| project_attrs(rb, key.as_str(), path, *attr_key_case_sensitive))
                         .transpose()?
                         .flatten()
                         .map(Cow::Owned)
@@ -308,8 +313,8 @@ pub(super) fn join_and_eval_value(
                 // because it's handled by the join below
                 if align_children_to_record && matches!(result.values, ColumnarValue::Array(_)) {
                     // result = pre_join_align_to_record(result, otap_batch)?;
-                    if let DataScope::Attribute(attrs_id, _) | DataScope::AttributesAll(attrs_id) =
-                        result.scope
+                    if let DataScope::Attribute(attrs_id, _, _)
+                    | DataScope::AttributesAll(attrs_id) = result.scope
                     {
                         result = align_attrs_to_record(result, attrs_id, otap_batch, eval_ctx)?
                     }
@@ -446,7 +451,7 @@ fn resolve_or_with_absent_child(
         Some(mut sv) => {
             if align_children_to_root
                 && matches!(sv.values, ColumnarValue::Array(_))
-                && let DataScope::Attribute(attrs_id, _) | DataScope::AttributesAll(attrs_id) =
+                && let DataScope::Attribute(attrs_id, _, _) | DataScope::AttributesAll(attrs_id) =
                     sv.scope
             {
                 sv = align_attrs_to_record(sv, attrs_id, otap_batch, eval_ctx)?
@@ -770,7 +775,7 @@ fn materialize_id_mask_to_value(
                 cause: "invalid scalar scope encountered when materializing expression value from bitmap".into(),
             })
         }
-        Some(DataScope::Attribute(attrs_id, _)) | Some(DataScope::AttributesAll(attrs_id)) => {
+        Some(DataScope::Attribute(attrs_id, _, _)) | Some(DataScope::AttributesAll(attrs_id)) => {
             match attrs_id {
                 AttributesIdentifier::Record(RecordScope::Signal) => {
                     Ok((root_rb.column_by_name(consts::ID), RecordScope::Signal))
@@ -971,9 +976,13 @@ fn selection_vec_from_id_iter<I: ExactSizeIterator<Item = Option<u32>>>(
 /// value:     Struct { type: [1, 1], str: ["y", "z"], ... }  (tagged as AnyValue)
 ///
 /// When `case_sensitive` is false, the key comparison is case-insensitive.
+///
+/// A non-empty `path` projects scalar leaves from serialized values instead. Rows whose path is
+/// missing, crosses an incompatible container, or resolves to null or a container are omitted.
 fn project_attrs(
     record_batch: &RecordBatch,
     key: &str,
+    path: &[SerializedValuePathElement],
     case_sensitive: bool,
 ) -> Result<Option<RecordBatch>> {
     // Get the key column and create a mask for rows matching the specified key
@@ -1004,7 +1013,14 @@ fn project_attrs(
         })?;
 
     // Build the AnyValue struct from the type + value sub-columns
-    let any_value_struct = build_any_value_struct(&filtered_batch)?;
+    let (parent_id_col, any_value_struct) = if path.is_empty() {
+        (parent_id_col, build_any_value_struct(&filtered_batch)?)
+    } else {
+        match project_serialized_path(&filtered_batch, &parent_id_col, key, path)? {
+            Some(projected) => projected,
+            None => return Ok(None),
+        }
+    };
 
     let mut fields: Vec<Arc<Field>> = Vec::with_capacity(2);
     let mut columns: Vec<ArrayRef> = Vec::with_capacity(2);
@@ -1027,6 +1043,85 @@ fn project_attrs(
     let projected_batch = RecordBatch::try_new(schema, columns)?;
 
     Ok(Some(projected_batch))
+}
+
+/// Build `(parent_id, AnyValue)` columns for scalar leaves resolved from serialized values.
+fn project_serialized_path(
+    filtered_batch: &RecordBatch,
+    parent_id_col: &ArrayRef,
+    key: &str,
+    path: &[SerializedValuePathElement],
+) -> Result<Option<(ArrayRef, StructArray)>> {
+    let Some(ser_col) = filtered_batch.column_by_name(consts::ATTRIBUTE_SER) else {
+        return Ok(None);
+    };
+    let type_col = get_required_array(filtered_batch, consts::ATTRIBUTE_TYPE)
+        .map_err(|e| Error::ExecutionError {
+            cause: e.to_string(),
+        })?
+        .as_any()
+        .downcast_ref::<UInt8Array>()
+        .ok_or_else(|| Error::ExecutionError {
+            cause: "attribute type column must be UInt8".into(),
+        })?;
+    let ser_values = ByteArrayAccessor::try_new(ser_col)?;
+    let container_type = match path.first() {
+        Some(SerializedValuePathElement::Index(_)) => AttributeValueType::Slice,
+        _ => AttributeValueType::Map,
+    } as u8;
+
+    let mut resolved_rows = BooleanBufferBuilder::new(filtered_batch.num_rows());
+    let mut values = AnyValuesRecordsBuilder::new();
+    for row in 0..filtered_batch.num_rows() {
+        let value = match ser_values.slice_at(row) {
+            Some(bytes) if type_col.value(row) == container_type => {
+                read_cbor_scalar(bytes, path).map_err(|e| Error::ExecutionError {
+                    cause: format!(
+                        "failed to read serialized attribute {key:?} at path {path:?}: {e}"
+                    ),
+                })?
+            }
+            _ => None,
+        };
+
+        let resolved = match value {
+            Some(SerializedAttributeScalarValue::Text(value)) => {
+                values.append_str(value.as_bytes());
+                true
+            }
+            Some(SerializedAttributeScalarValue::Integer(value)) => {
+                values.append_int(value);
+                true
+            }
+            Some(SerializedAttributeScalarValue::Float(value)) => {
+                values.append_double(value);
+                true
+            }
+            Some(SerializedAttributeScalarValue::Bool(value)) => {
+                values.append_bool(value);
+                true
+            }
+            Some(SerializedAttributeScalarValue::Bytes(value)) => {
+                values.append_bytes(&value);
+                true
+            }
+            Some(SerializedAttributeScalarValue::Null) | None => false,
+        };
+        resolved_rows.append(resolved);
+    }
+
+    let resolved_rows = BooleanArray::new(resolved_rows.finish(), None);
+    if resolved_rows.true_count() == 0 {
+        return Ok(None);
+    }
+
+    let parent_ids = arrow::compute::filter(parent_id_col.as_ref(), &resolved_rows)?;
+    let mut columns = Vec::new();
+    let mut fields = Vec::new();
+    values.finish(&mut columns, &mut fields)?;
+    let any_value_struct = StructArray::try_new(Fields::from(fields), columns, None)?;
+
+    Ok(Some((parent_ids, any_value_struct)))
 }
 
 /// Build a `BooleanArray` mask for case-insensitive string matching against a key column.

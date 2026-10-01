@@ -787,7 +787,7 @@ impl PipelinePlanner {
 
             match source_op {
                 ScopedExpr::Eval { scope, eval } => match scope {
-                    DataScope::Attribute(_, key) => {
+                    DataScope::Attribute(_, key, _) => {
                         referenced.contains(&ReferencedDestination::Attribute(key.clone()))
                     }
                     DataScope::AttributesAll(_) => {

@@ -1,0 +1,5 @@
+change_type: bug_fix
+component: otap
+note: Return an error from the OTAP decoder when a payload decodes to no record batch, instead of silently dropping it while the batch still reports success
+issues: [4212]
+subtext: consume_bar now returns RecordBatchNotFound for such a payload, which previously fell into an empty else arm that dropped the record and still returned success
