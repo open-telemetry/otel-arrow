@@ -803,24 +803,6 @@ impl AssignPipelineStage {
                     );
                     (existing_key_mask, update_parent_ids)
                 };
-            // The parent_ids column may be dictionary-encoded, so we may need to cast it
-            // to the primitive type before we can use it as a join input.
-            let update_parent_ids =
-                if matches!(update_parent_ids.data_type(), DataType::Dictionary(_, _)) {
-                    cast(&update_parent_ids, &T::DATA_TYPE)?
-                } else {
-                    update_parent_ids
-                };
-            let update_parent_ids_typed = update_parent_ids
-                .as_any()
-                .downcast_ref::<PrimitiveArray<T>>()
-                .ok_or_else(|| Error::ExecutionError {
-                    cause: format!(
-                        "invalid ID column. expected {:?} type, found {:?}",
-                        T::DATA_TYPE,
-                        update_parent_ids.data_type()
-                    ),
-                })?;
 
             let mut scoped_value = eval_result
                 .take()
@@ -845,7 +827,7 @@ impl AssignPipelineStage {
                 let left_join_input = &JoinInput::new_with_parent_ids(
                     ColumnarValue::Scalar(ScalarValue::Null),
                     Rc::clone(&self.dest_scopes[i]),
-                    Arc::new(update_parent_ids_typed.clone()),
+                    Arc::clone(&update_parent_ids),
                 );
 
                 let vals_take_indices = match eval_result.data_scope.as_ref() {
