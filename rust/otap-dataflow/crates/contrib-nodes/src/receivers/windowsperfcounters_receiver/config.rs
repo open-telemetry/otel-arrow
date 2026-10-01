@@ -6,6 +6,7 @@
 use otel_arrow_dfe_config::error::Error;
 use serde::Deserialize;
 use std::collections::{BTreeMap, HashSet};
+use std::sync::Arc;
 use std::time::Duration;
 
 const MAX_COUNTER_PATH_LEN: usize = 2_047;
@@ -37,12 +38,13 @@ pub struct CounterConfig {
     pub name: String,
     /// OTel metric unit.
     pub unit: String,
-    /// OTel metric description.
-    pub description: String,
+    /// OTel metric description, shared by every counter mapped to this metric.
+    pub description: Arc<str>,
     /// OTel metric kind.
     pub kind: MetricKind,
-    /// Static attributes added to every point from this counter.
-    pub attributes: BTreeMap<String, String>,
+    /// Static attributes added to every point, shared by every path expanded
+    /// from one counter mapping.
+    pub attributes: Arc<BTreeMap<String, String>>,
     /// Base-10 scaling applied after PDH calculates the native value.
     pub scale_power10: i32,
 }
@@ -266,7 +268,7 @@ fn normalize_attributes(
 
 /// A metric definition after trimming and validation.
 struct NormalizedMetric<'a> {
-    description: &'a str,
+    description: Arc<str>,
     unit: &'a str,
     kind: MetricKind,
 }
@@ -335,7 +337,7 @@ impl RuntimeConfig {
             let _ = metrics.insert(
                 name,
                 NormalizedMetric {
-                    description,
+                    description: Arc::from(description),
                     unit,
                     kind,
                 },
@@ -392,7 +394,8 @@ impl RuntimeConfig {
                     ))
                 })?;
                 let _ = referenced_metrics.insert(metric_name);
-                let attributes = normalize_attributes(&counter_field, &mapping.attributes)?;
+                let attributes =
+                    Arc::new(normalize_attributes(&counter_field, &mapping.attributes)?);
                 for instance in &instances {
                     let path = match instance {
                         Some(instance) => {
@@ -404,9 +407,9 @@ impl RuntimeConfig {
                         path,
                         name: metric_name.to_owned(),
                         unit: metric.unit.to_owned(),
-                        description: metric.description.to_owned(),
+                        description: Arc::clone(&metric.description),
                         kind: metric.kind,
-                        attributes: attributes.clone(),
+                        attributes: Arc::clone(&attributes),
                         scale_power10: mapping.scale_power10,
                     });
                 }
@@ -859,12 +862,33 @@ mod tests {
         .unwrap();
         let counter = &config.counters[0];
         assert_eq!(counter.name, "available");
-        assert_eq!(counter.description, "Available memory.");
+        assert_eq!(&*counter.description, "Available memory.");
         assert_eq!(counter.unit, "By");
         assert_eq!(
-            counter.attributes,
+            *counter.attributes,
             BTreeMap::from([("state".to_owned(), " free ".to_owned())])
         );
+    }
+
+    /// Scenario: One counter mapping expands across several instances.
+    /// Guarantees: Expanded counters share metadata instead of cloning it per path.
+    #[test]
+    fn shares_metadata_across_expanded_counters() {
+        let config = RuntimeConfig::from_json(&gauge_config(json!({
+            "object": "Process",
+            "instances": ["a", "b"],
+            "counters": [{
+                "name": "Private Bytes",
+                "metric": "available",
+                "attributes": {"state": "used"}
+            }]
+        })))
+        .unwrap();
+        let [first, second] = config.counters.as_slice() else {
+            panic!("expected two expanded counters");
+        };
+        assert!(Arc::ptr_eq(&first.attributes, &second.attributes));
+        assert!(Arc::ptr_eq(&first.description, &second.description));
     }
 
     /// Scenario: Metric names or attribute keys collide after trimming or case folding.
