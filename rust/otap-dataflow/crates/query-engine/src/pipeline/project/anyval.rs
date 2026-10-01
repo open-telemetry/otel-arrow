@@ -795,7 +795,7 @@ fn stitch_as_any_value_struct(
 }
 
 impl Projection {
-    /// Ensure that any referenced columns exists of an AnyValue is present in the projected
+    /// Ensure that any referenced columns exists if an `AnyValue` is present in the projected
     /// columns.
     ///
     /// When handling `AnyValue`s, there's a unique situation where there is a `type` column

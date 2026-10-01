@@ -91,7 +91,7 @@ impl Projection {
     /// This is most appropriately invoked during evaluation of a nested pipeline applied to
     /// attributes such as in the OPL query `logs | apply attributes { where <expr> }`. In this
     /// case, we'd evaluate the expression (which would be planned as a datafusion expression) on
-    /// the attributes record batch. This evaluation requires some special because there is a
+    /// the attributes record batch. This evaluation requires special treatment because there is a
     /// virtual "value" column that can be used in expressions, which must be replaced with the
     /// actual column that contains the attribute values.
     ///
