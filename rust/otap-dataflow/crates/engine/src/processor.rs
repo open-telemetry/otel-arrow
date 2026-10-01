@@ -24,6 +24,7 @@ use crate::flow_metrics::{
     FlowDroppedItemsMetrics, FlowDurationMetricSet, FlowInputItemsMetrics, FlowInputMessageMetrics,
     FlowInputSizeMetrics, FlowOutputItemsMetrics, FlowOutputMessageMetrics, FlowOutputSizeMetrics,
 };
+use crate::forced_shutdown::ForcedShutdownSignal;
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::local::processor as local;
 use crate::message::{Message, ProcessorInbox, Receiver, Sender};
@@ -608,6 +609,7 @@ impl<PData> ProcessorWrapper<PData> {
         flow_metrics_active: bool,
         flow_needs_timing: bool,
         terminal_metrics_deadline: TerminalMetricsDeadline,
+        forced_shutdown_signal: ForcedShutdownSignal,
         runtime_services: PipelineRuntimeServices,
     ) -> Result<(), Error>
     where
@@ -617,7 +619,6 @@ impl<PData> ProcessorWrapper<PData> {
             .prepare_runtime(metrics_reporter.clone(), node_interests, runtime_services)
             .await?;
 
-        let shutdown_deadline = terminal_metrics_deadline.clone();
         let mut processing_error: Option<Error> = None;
         let run = async {
             match runtime {
@@ -808,7 +809,7 @@ impl<PData> ProcessorWrapper<PData> {
         };
         let result = tokio::select! {
             biased;
-            _ = shutdown_deadline.expired() => Ok(()),
+            _ = forced_shutdown_signal.triggered() => Ok(()),
             result = run => result,
         };
         // Return the original processing error if present; otherwise surface
@@ -1492,6 +1493,8 @@ mod tests {
         local_tasks
             .run_until(async move {
                 let processor_task = tokio::task::spawn_local(async move {
+                    let (_, forced_shutdown_signal) =
+                        crate::forced_shutdown::new_forced_shutdown_signal();
                     processor
                         .start_with_completion_metrics(
                             runtime_ctrl_tx,
@@ -1512,6 +1515,7 @@ mod tests {
                             true,
                             true,
                             crate::terminal_state::TerminalMetricsDeadline::default(),
+                            forced_shutdown_signal,
                             crate::testing::test_pipeline_runtime_services(),
                         )
                         .await
@@ -1682,6 +1686,8 @@ mod tests {
         let (completion_tx, _completion_rx) = pipeline_completion_msg_channel(4);
         let _control_keepalive = wrapper.control_sender();
         let deadline = crate::terminal_state::TerminalMetricsDeadline::default();
+        let (forced_shutdown_trigger, forced_shutdown_signal) =
+            crate::forced_shutdown::new_forced_shutdown_signal();
         let start = tokio::time::Instant::now();
         let run = wrapper.start_with_completion_metrics(
             runtime_tx,
@@ -1702,13 +1708,16 @@ mod tests {
             false,
             false,
             deadline.clone(),
+            forced_shutdown_signal,
             crate::testing::test_pipeline_runtime_services(),
         );
-        let shutdown = async {
+        let shutdown = tokio::spawn(async move {
             started_rx.await.expect("handler started before shutdown");
-            deadline.record_shutdown((start + Duration::from_secs(deadline_secs)).into_std());
-        };
-        let (result, ()) = tokio::join!(run, shutdown);
+            tokio::time::sleep_until(start + Duration::from_secs(deadline_secs)).await;
+            forced_shutdown_trigger.trigger();
+        });
+        let result = run.await;
+        shutdown.abort();
         if fail_before_final_metrics {
             let Error::ProcessorError { error, .. } = result.expect_err("original error survives")
             else {
@@ -1909,6 +1918,7 @@ mod tests {
 
         let _ctrl_keepalive = p.control_sender();
 
+        let (_, forced_shutdown_signal) = crate::forced_shutdown::new_forced_shutdown_signal();
         let result = p
             .start_with_completion_metrics(
                 runtime_ctrl_tx,
@@ -1929,6 +1939,7 @@ mod tests {
                 true, // flow_metrics_active
                 false,
                 crate::terminal_state::TerminalMetricsDeadline::default(),
+                forced_shutdown_signal,
                 crate::testing::test_pipeline_runtime_services(),
             )
             .await;
@@ -2151,6 +2162,7 @@ mod tests {
         drop(input_tx);
         let _ctrl_keepalive = p.control_sender();
 
+        let (_, forced_shutdown_signal) = crate::forced_shutdown::new_forced_shutdown_signal();
         let result = p
             .start_with_completion_metrics(
                 runtime_ctrl_tx,
@@ -2171,6 +2183,7 @@ mod tests {
                 true,
                 false,
                 crate::terminal_state::TerminalMetricsDeadline::default(),
+                forced_shutdown_signal,
                 crate::testing::test_pipeline_runtime_services(),
             )
             .await;

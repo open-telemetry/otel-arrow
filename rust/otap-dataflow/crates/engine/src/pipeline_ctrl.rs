@@ -24,6 +24,7 @@ use crate::control::{
 };
 use crate::control_plane_metrics::{PipelineCompletionMetricsState, RuntimeControlMetricsState};
 use crate::error::Error;
+use crate::forced_shutdown::ForcedShutdownTrigger;
 use crate::memory_limiter::MemoryPressureChanged;
 use crate::pipeline_metrics::PipelineMetricsMonitor;
 use crate::terminal_state::TerminalMetricsDeadline;
@@ -353,6 +354,8 @@ pub struct RuntimeCtrlMsgManager<PData> {
     runtime_control_metrics: RuntimeControlMetricsState,
     /// One absolute deadline shared by all pipeline terminal metric handoffs.
     terminal_metrics_deadline: TerminalMetricsDeadline,
+    /// Retained pipeline lifecycle notification emitted when graceful shutdown expires.
+    forced_shutdown_trigger: ForcedShutdownTrigger,
 }
 
 impl<PData> RuntimeCtrlMsgManager<PData> {
@@ -372,6 +375,7 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
         admission_metrics: Vec<crate::admission::metrics::AdmissionMetricsHandle>,
         node_metric_handles: Rc<RefCell<Vec<Option<NodeMetricHandles>>>>,
         terminal_metrics_deadline: TerminalMetricsDeadline,
+        forced_shutdown_trigger: ForcedShutdownTrigger,
     ) -> Self {
         let mut result = Self {
             runtime_control_metrics: RuntimeControlMetricsState::new(
@@ -397,6 +401,7 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
             telemetry: telemetry_policy,
             pending_sends: VecDeque::new(),
             terminal_metrics_deadline,
+            forced_shutdown_trigger,
         };
 
         // Register telemetry timers for all nodes centrally, using the
@@ -463,6 +468,7 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
             if let Some(deadline) = shutdown_deadline
                 && now >= deadline
             {
+                self.forced_shutdown_trigger.trigger();
                 shutdown_deadline_forced = true;
                 self.runtime_control_metrics
                     .record_shutdown_deadline_forced(now);
@@ -527,7 +533,7 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
                             if is_draining_ingress {
                                 continue;
                             }
-                            self.terminal_metrics_deadline.record_shutdown(deadline);
+                            self.terminal_metrics_deadline.record(deadline);
                             self.event_reporter.report(EngineEvent::shutdown_requested(
                                 self.pipeline_key.clone(),
                                 Some(reason.clone()),
@@ -1499,6 +1505,7 @@ mod tests {
             pipeline_entity_key,
         );
 
+        let (forced_shutdown_trigger, _) = crate::forced_shutdown::new_forced_shutdown_signal();
         let manager = RuntimeCtrlMsgManager::new(
             DeployedPipelineKey {
                 pipeline_group_id,
@@ -1518,6 +1525,7 @@ mod tests {
             Vec::new(),
             empty_node_metric_handles(),
             TerminalMetricsDeadline::default(),
+            forced_shutdown_trigger,
         );
 
         (manager, pipeline_tx, pipeline_entity_guard)
@@ -1985,6 +1993,8 @@ mod tests {
                     watch::channel(MemoryPressureChanged::initial());
 
                 // Create manager with empty control_senders map (no registered nodes)
+                let (forced_shutdown_trigger, _) =
+                    crate::forced_shutdown::new_forced_shutdown_signal();
                 let manager = RuntimeCtrlMsgManager::<()>::new(
                     pipeline_key,
                     pipeline_context,
@@ -1999,6 +2009,7 @@ mod tests {
                     Vec::new(),
                     empty_node_metric_handles(),
                     TerminalMetricsDeadline::default(),
+                    forced_shutdown_trigger,
                 );
                 let duration = Duration::from_millis(50);
 
@@ -2449,7 +2460,7 @@ mod tests {
     }
 
     /// Scenario: A second shutdown request specifies an earlier deadline while the manager drains.
-    /// Guarantees: Duplicate requests cannot shorten processor cancellation or terminal metrics deadlines.
+    /// Guarantees: Duplicate requests cannot shorten forced shutdown or terminal metrics deadlines.
     #[tokio::test(start_paused = true)]
     async fn duplicate_shutdown_preserves_original_deadline() {
         LocalSet::new()
@@ -2457,7 +2468,7 @@ mod tests {
                 let (manager, pipeline_tx, _control_receivers, _nodes, _pipeline_entity_guard) =
                     setup_test_manager::<()>();
                 let deadline = manager.terminal_metrics_deadline.clone();
-                let original = tokio::time::Instant::now() + Duration::from_secs(10);
+                let original = tokio::time::Instant::now() + Duration::from_millis(100);
                 pipeline_tx
                     .send(RuntimeControlMsg::Shutdown {
                         deadline: original.into_std(),
@@ -2467,21 +2478,14 @@ mod tests {
                     .unwrap();
                 pipeline_tx
                     .send(RuntimeControlMsg::Shutdown {
-                        deadline: (original - Duration::from_secs(8)).into_std(),
+                        deadline: (original - Duration::from_millis(80)).into_std(),
                         reason: "duplicate shutdown".to_owned(),
                     })
                     .await
                     .unwrap();
-                drop(pipeline_tx);
                 manager.run().await.unwrap();
+                drop(pipeline_tx);
                 assert_eq!(deadline.get(), original.into_std());
-                assert!(
-                    timeout(Duration::from_secs(3), deadline.expired())
-                        .await
-                        .is_err(),
-                    "duplicate request must not cancel processors early"
-                );
-                deadline.expired().await;
                 assert_eq!(tokio::time::Instant::now(), original);
             })
             .await;
@@ -3130,6 +3134,7 @@ mod tests {
         let (_memory_pressure_tx, memory_pressure_rx) =
             watch::channel(MemoryPressureChanged::initial());
 
+        let (forced_shutdown_trigger, _) = crate::forced_shutdown::new_forced_shutdown_signal();
         let manager = RuntimeCtrlMsgManager::new(
             DeployedPipelineKey {
                 pipeline_group_id,
@@ -3149,6 +3154,7 @@ mod tests {
             Vec::new(),
             node_metric_handles.clone(),
             TerminalMetricsDeadline::default(),
+            forced_shutdown_trigger,
         );
 
         MetricsTestHarness {
@@ -3402,6 +3408,7 @@ mod tests {
         let (_memory_pressure_tx, memory_pressure_rx) =
             watch::channel(MemoryPressureChanged::initial());
 
+        let (forced_shutdown_trigger, _) = crate::forced_shutdown::new_forced_shutdown_signal();
         let manager = RuntimeCtrlMsgManager::new(
             DeployedPipelineKey {
                 pipeline_group_id,
@@ -3426,6 +3433,7 @@ mod tests {
             Vec::new(),
             empty_node_metric_handles(),
             TerminalMetricsDeadline::default(),
+            forced_shutdown_trigger,
         );
         let runtime_metrics_key = manager.runtime_control_metrics.metric_set_key();
 
@@ -3483,6 +3491,7 @@ mod tests {
         let (memory_pressure_tx, memory_pressure_rx) =
             watch::channel(MemoryPressureChanged::initial());
 
+        let (forced_shutdown_trigger, _) = crate::forced_shutdown::new_forced_shutdown_signal();
         let manager = RuntimeCtrlMsgManager::new(
             DeployedPipelineKey {
                 pipeline_group_id,
@@ -3507,6 +3516,7 @@ mod tests {
             Vec::new(),
             empty_node_metric_handles(),
             TerminalMetricsDeadline::default(),
+            forced_shutdown_trigger,
         );
 
         MemoryPressureFanoutHarness {

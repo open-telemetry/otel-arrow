@@ -526,6 +526,8 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
         // awaits the registered probes via `wait_all_ready` before
         // spawning data-path tasks.
         let terminal_metrics_deadline = TerminalMetricsDeadline::default();
+        let (forced_shutdown_trigger, forced_shutdown_signal) =
+            crate::forced_shutdown::new_forced_shutdown_signal();
         let mut extension_lifecycle = crate::extension_lifecycle::ExtensionLifecycle::spawn(
             extensions,
             &local_tasks,
@@ -711,6 +713,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
             let metrics_reporter = metrics_reporter.clone();
             let final_metrics_reporter = metrics_reporter.clone();
             let processor_terminal_metrics_deadline = terminal_metrics_deadline.clone();
+            let processor_forced_shutdown_signal = forced_shutdown_signal.clone();
             let processor_runtime_services = runtime_services.clone();
             // Extract flow metric roles for this processor node.
             // Compute pipeline-wide flags before moving metric sets into handlers.
@@ -790,6 +793,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                         flow_active,
                         flow_needs_timing,
                         processor_terminal_metrics_deadline.clone(),
+                        processor_forced_shutdown_signal,
                         processor_runtime_services,
                     )
                     .await;
@@ -944,6 +948,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                 admission_metrics,
                 node_metric_handles,
                 manager_terminal_metrics_deadline,
+                forced_shutdown_trigger,
             );
             manager.run().await
         }));

@@ -9,7 +9,6 @@ use otel_arrow_dfe_telemetry::metrics::MetricSetSnapshot;
 use std::ops::Add;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tokio::sync::watch;
 
 /// Pipeline-wide deadline shared by every terminal metrics handoff.
 ///
@@ -17,19 +16,9 @@ use tokio::sync::watch;
 /// it accepts shutdown. Error paths that terminate without a shutdown message
 /// lazily establish one finite fallback. Every final reporter then uses the
 /// same absolute deadline instead of receiving a fresh timeout.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct TerminalMetricsDeadline {
     deadline: Arc<Mutex<Option<Instant>>>,
-    shutdown_deadline: watch::Sender<Option<Instant>>,
-}
-
-impl Default for TerminalMetricsDeadline {
-    fn default() -> Self {
-        Self {
-            deadline: Arc::default(),
-            shutdown_deadline: watch::channel(None).0,
-        }
-    }
 }
 
 impl TerminalMetricsDeadline {
@@ -44,14 +33,6 @@ impl TerminalMetricsDeadline {
         *current = Some(current.map_or(deadline, |current| current.min(deadline)));
     }
 
-    /// Records a pipeline shutdown deadline for both cancellation and terminal metrics.
-    pub(crate) fn record_shutdown(&self, deadline: Instant) {
-        self.record(deadline);
-        self.shutdown_deadline.send_modify(|current| {
-            *current = Some(current.map_or(deadline, |current| current.min(deadline)));
-        });
-    }
-
     /// Returns the shared deadline, installing a finite fallback if necessary.
     pub(crate) fn get(&self) -> Instant {
         let mut deadline = self
@@ -59,23 +40,6 @@ impl TerminalMetricsDeadline {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         *deadline.get_or_insert_with(|| Instant::now() + Self::FALLBACK)
-    }
-
-    /// Waits for an explicit shutdown deadline, ignoring terminal metrics fallback deadlines.
-    pub(crate) async fn expired(&self) {
-        let mut updates = self.shutdown_deadline.subscribe();
-        loop {
-            let deadline = *updates.borrow_and_update();
-            if let Some(deadline) = deadline {
-                tokio::select! {
-                    biased;
-                    _ = crate::clock::sleep_until(deadline) => return,
-                    _ = updates.changed() => {}
-                }
-            } else {
-                let _ = updates.changed().await;
-            }
-        }
     }
 }
 
@@ -136,46 +100,8 @@ impl Default for TerminalState {
 mod tests {
     use super::*;
 
-    /// Scenario: Metric fallback and node terminal deadlines precede a pipeline shutdown request.
-    /// Guarantees: Only the explicit pipeline shutdown deadline wakes cancellation waiters.
-    #[tokio::test(start_paused = true)]
-    async fn deadline_waiters_observe_shutdown() {
-        let deadline = TerminalMetricsDeadline::default();
-        let _ = deadline.get();
-        deadline.record(tokio::time::Instant::now().into_std() + Duration::from_secs(1));
-        let first = deadline.clone();
-        let second = deadline.clone();
-        let first = tokio::spawn(async move { first.expired().await });
-        let second = tokio::spawn(async move { second.expired().await });
-        tokio::task::yield_now().await;
-        tokio::time::advance(Duration::from_secs(60)).await;
-        assert!(!first.is_finished());
-        assert!(!second.is_finished());
-        deadline.record_shutdown(tokio::time::Instant::now().into_std() + Duration::from_secs(2));
-        tokio::task::yield_now().await;
-        tokio::time::advance(Duration::from_secs(2)).await;
-        first.await.expect("first waiter completes");
-        second.await.expect("second waiter completes");
-    }
-
-    /// Scenario: An existing shutdown deadline is shortened while a waiter is sleeping.
-    /// Guarantees: The waiter observes the earlier deadline instead of the original timeout.
-    #[tokio::test(start_paused = true)]
-    async fn deadline_waiter_observes_shortened_deadline() {
-        let deadline = TerminalMetricsDeadline::default();
-        let now = tokio::time::Instant::now();
-        deadline.record_shutdown((now + Duration::from_secs(60)).into_std());
-        let waiter = deadline.clone();
-        let waiter = tokio::spawn(async move { waiter.expired().await });
-        tokio::task::yield_now().await;
-        deadline.record_shutdown((now + Duration::from_secs(2)).into_std());
-        tokio::time::timeout(Duration::from_secs(3), waiter)
-            .await
-            .expect("shortened deadline is honored")
-            .expect("waiter completes");
-        assert!(tokio::time::Instant::now() < now + Duration::from_secs(3));
-    }
-
+    /// Scenario: Multiple terminal metric producers record different absolute deadlines.
+    /// Guarantees: Every producer observes the earliest recorded deadline.
     #[test]
     fn terminal_metrics_deadline_preserves_the_earliest_recorded_deadline() {
         let deadline = TerminalMetricsDeadline::default();
@@ -188,6 +114,8 @@ mod tests {
         assert_eq!(deadline.clone().get(), now + Duration::from_secs(1));
     }
 
+    /// Scenario: Terminal metrics are requested without an explicit pipeline shutdown deadline.
+    /// Guarantees: All terminal reporters share one finite fallback deadline.
     #[test]
     fn terminal_metrics_deadline_installs_only_one_fallback() {
         let deadline = TerminalMetricsDeadline::default();
