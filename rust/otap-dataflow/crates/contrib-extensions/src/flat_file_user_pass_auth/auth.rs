@@ -12,12 +12,11 @@ use otel_arrow_dfe_engine::capability::CapabilityError;
 use otel_arrow_dfe_engine::capability::auth::BasicAuthCredential;
 use otel_arrow_dfe_engine::capability::auth::basic_auth_provider::BasicAuthCredentialStream;
 use otel_arrow_dfe_engine::shared::capability::auth::basic_auth_provider::BasicAuthProvider as SharedBasicAuthProvider;
-use otel_arrow_dfe_otap::tls_utils::read_file_with_limit_async;
 use secrecy::SecretString;
-use secrecy::zeroize::Zeroize;
 use tokio_stream::wrappers::WatchStream;
 
 use crate::common::background_refresh::BackgroundProviderSource;
+use crate::common::secret_file::{ReadSecretFileError, read_secret_file};
 use crate::flat_file_user_pass_auth::FlatFileUserPassAuthExtension;
 use crate::flat_file_user_pass_auth::config::Config;
 use crate::flat_file_user_pass_auth::error::Error;
@@ -46,27 +45,15 @@ async fn read_credential(
     field: &str,
 ) -> Result<SecretString, Error> {
     if let Some(path) = file {
-        let contents =
-            read_file_with_limit_async(path)
-                .await
-                .map_err(|source| Error::ReadCredentialFile {
-                    path: path.clone(),
-                    source,
-                })?;
-        let mut contents_str = String::from_utf8(contents).map_err(|e| {
-            // Note: Clear out password bytes from memory
-            e.into_bytes().zeroize();
-            Error::CredentialAcquisition {
+        return read_secret_file(path).await.map_err(|error| match error {
+            ReadSecretFileError::Read(source) => Error::ReadCredentialFile {
+                path: path.clone(),
+                source,
+            },
+            ReadSecretFileError::InvalidUtf8 => Error::CredentialAcquisition {
                 message: format!("`{field}_file` does not contain valid UTF-8"),
-            }
-        })?;
-        let password: SecretString = contents_str
-            .trim_end_matches(&['\r', '\n'][..])
-            .to_string()
-            .into();
-        // Note: Clear out first password string from memory
-        contents_str.zeroize();
-        return Ok(password);
+            },
+        });
     }
     if let Some(value) = inline {
         return Ok(value.clone());

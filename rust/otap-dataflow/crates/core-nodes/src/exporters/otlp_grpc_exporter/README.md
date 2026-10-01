@@ -191,7 +191,7 @@ this metric.
 
 | Metric | Unit | Attributes | Description |
 | --- | --- | --- | --- |
-| `exporter.otlp_grpc.authentication.failures` | `{attempt}` | `source` | Auth credential polls that did not produce a usable credential, including failures before a signal batch is admitted. |
+| `exporter.otlp_grpc.authentication.ready` | `{1}` | `source` | Whether authenticated progress is currently possible (`0` for not ready, `1` for ready). |
 
 Authentication `source` is the name of the HTTP client auth implementation (ex:
 `BearerAuth`) selected based on the auth capability configured.
