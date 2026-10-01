@@ -1548,14 +1548,14 @@ async fn test_scale_metric_integer_saturation() {
     .await;
 }
 
-/// Scenario: Scale integer, floating-point, and histogram values by a negative fraction without
+/// Scenario: Scale integer, floating-point, and histogram values by a positive fraction without
 /// requesting a replacement unit.
 /// Guarantees: Integer results truncate toward zero, histogram bounds retain their original
 /// ordering, and the existing unit is preserved.
 #[tokio::test]
-async fn test_scale_metric_negative_fraction_without_unit() {
+async fn test_scale_metric_positive_fraction_without_unit() {
     let pipeline_expr =
-        OplParser::parse_with_options("metrics | scale_metric -0.5", default_parser_options())
+        OplParser::parse_with_options("metrics | scale_metric 0.5", default_parser_options())
             .unwrap()
             .pipeline;
     let mut pipeline = Pipeline::new(pipeline_expr);
@@ -1607,8 +1607,8 @@ async fn test_scale_metric_negative_fraction_without_unit() {
             .unit("widgets")
             .data_gauge(Gauge {
                 data_points: vec![
-                    NumberDataPoint::build().value_int(-2).finish(),
-                    NumberDataPoint::build().value_double(-1.5).finish(),
+                    NumberDataPoint::build().value_int(2).finish(),
+                    NumberDataPoint::build().value_double(1.5).finish(),
                 ],
             })
             .finish(),
@@ -1619,12 +1619,12 @@ async fn test_scale_metric_negative_fraction_without_unit() {
                 data_points: vec![
                     HistogramDataPoint::build()
                         .count(6u64)
-                        .sum(-4.0)
-                        .min(-0.5)
-                        .max(-2.5)
+                        .sum(4.0)
+                        .min(0.5)
+                        .max(2.5)
                         .bucket_counts([2, 4])
-                        .explicit_bounds([-0.5, -2.0])
-                        .exemplars(vec![Exemplar::build().value_int(-2).finish()])
+                        .explicit_bounds([0.5, 2.0])
+                        .exemplars(vec![Exemplar::build().value_int(2).finish()])
                         .finish(),
                 ],
                 ..Default::default()

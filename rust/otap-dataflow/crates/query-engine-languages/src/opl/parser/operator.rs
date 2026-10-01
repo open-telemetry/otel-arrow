@@ -80,13 +80,14 @@ pub(crate) fn parse_scale_metric_operator_call(
                         format!("invalid scale_metric multiplier: {error}"),
                     )
                 })?;
-                if !value.is_finite() {
+                let value = if negative { -value } else { value };
+                if !value.is_finite() || value <= 0.0 {
                     return Err(ParserError::SyntaxError(
                         to_query_location(&rule),
-                        "scale_metric multiplier must be finite".to_string(),
+                        "scale_metric multiplier must be finite and greater than zero".to_string(),
                     ));
                 }
-                multiplier = Some(if negative { -value } else { value });
+                multiplier = Some(value);
             }
             Rule::string_literal => {
                 unit = match parse_standard_string_literal(rule)? {
@@ -724,11 +725,11 @@ mod tests {
         assert_eq!(&expressions[0], &expected);
     }
 
-    /// Scenario: Parse scale_metric with a negative multiplier and unit.
+    /// Scenario: Parse scale_metric with a positive multiplier and unit.
     /// Guarantees: The parser emits a dedicated scale metric transform with both arguments.
     #[test]
     fn test_parse_scale_metric_operator_call() {
-        let query = "scale_metric -1000.0 \"ms\"";
+        let query = "scale_metric 1000.0 \"ms\"";
         let mut state = ParserState::new(query);
         let parse_result = OplPestParser::parse(Rule::operator_call, query).unwrap();
         let rule = parse_result.into_iter().next().unwrap();
@@ -738,7 +739,7 @@ mod tests {
         let expected =
             DataExpression::Transform(TransformExpression::Scale(ScaleTransformExpression::new(
                 QueryLocation::new_fake(),
-                -1000.0,
+                1000.0,
                 Some("ms".to_string()),
             )));
         assert_eq!(result.get_expressions(), &[expected]);
@@ -771,6 +772,8 @@ mod tests {
             "scale_metric 2 3",
             "scale_metric 2 \"ms\" \"extra\"",
             "scale_metric(2)",
+            "scale_metric 0",
+            "scale_metric -0.5",
             "scale_metric 1e309",
         ] {
             assert!(

@@ -100,11 +100,11 @@ impl ScaleMetricPipelineStage {
 }
 
 fn validate_multiplier(multiplier: f64) -> Result<()> {
-    if multiplier.is_finite() {
+    if multiplier.is_finite() && multiplier > 0.0 {
         Ok(())
     } else {
         Err(Error::ExecutionError {
-            cause: "scale_metric multiplier must be finite".into(),
+            cause: "scale_metric multiplier must be finite and greater than zero".into(),
         })
     }
 }
@@ -402,20 +402,28 @@ fn replace_column(
 mod tests {
     use super::validate_multiplier;
 
-    /// Scenario: Validate finite positive, negative, and zero scale multipliers.
-    /// Guarantees: Every finite multiplier is accepted by the execution stage.
+    /// Scenario: Validate finite positive scale multipliers.
+    /// Guarantees: Positive finite multipliers are accepted by the execution stage.
     #[test]
-    fn test_validate_finite_multiplier() {
-        for multiplier in [f64::MIN, -1.0, -0.0, 0.0, 1.0, f64::MAX] {
+    fn test_accept_positive_finite_multiplier() {
+        for multiplier in [f64::MIN_POSITIVE, 1.0, f64::MAX] {
             assert!(validate_multiplier(multiplier).is_ok());
         }
     }
 
-    /// Scenario: Validate NaN and infinite scale multipliers.
-    /// Guarantees: Non-finite multipliers are rejected before metric data is mutated.
+    /// Scenario: Validate non-positive and non-finite scale multipliers.
+    /// Guarantees: Multipliers that cannot preserve metric semantics are rejected before mutation.
     #[test]
-    fn test_reject_non_finite_multiplier() {
-        for multiplier in [f64::NAN, f64::NEG_INFINITY, f64::INFINITY] {
+    fn test_reject_invalid_multiplier() {
+        for multiplier in [
+            f64::MIN,
+            -1.0,
+            -0.0,
+            0.0,
+            f64::NAN,
+            f64::NEG_INFINITY,
+            f64::INFINITY,
+        ] {
             assert!(validate_multiplier(multiplier).is_err());
         }
     }
