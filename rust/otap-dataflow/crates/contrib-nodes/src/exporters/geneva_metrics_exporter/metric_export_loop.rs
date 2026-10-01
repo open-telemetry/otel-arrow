@@ -166,9 +166,7 @@ impl Exporter<OtapPdata> for GenevaMetricsExporter {
                     continue;
                 }
 
-                () = async {
-                    _ = poll_fn(|cx| self.auth.poll_refresh(cx, &GENEVA_METRICS_AUTH_EVENTS)).await;
-                }, if self.auth.is_active() => {
+                () = poll_fn(|cx| self.auth.poll_refresh(cx, &GENEVA_METRICS_AUTH_EVENTS)), if self.auth.is_active() => {
                     continue;
                 }
 
@@ -397,7 +395,7 @@ mod tests {
     async fn ready_exporter(endpoint: &str) -> GenevaMetricsExporter {
         let (provider, mut controller) = TestTokenProvider::new(Some("ready-token"));
         let mut exporter = exporter(endpoint, provider);
-        assert!(poll_fn(|cx| exporter.auth.poll_refresh(cx, &GENEVA_METRICS_AUTH_EVENTS)).await);
+        poll_fn(|cx| exporter.auth.poll_refresh(cx, &GENEVA_METRICS_AUTH_EVENTS)).await;
         controller.wait_until_observed().await;
         exporter
     }
