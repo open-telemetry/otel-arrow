@@ -591,7 +591,7 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                     continue;
                 }
 
-                () = async {_ = poll_fn(|cx| auth.poll_refresh(cx, &AZURE_MONITOR_AUTH_EVENTS)).await;}, if auth.is_active() => {
+                () = poll_fn(|cx| auth.poll_refresh(cx, &AZURE_MONITOR_AUTH_EVENTS)), if auth.is_active() => {
                     continue;
                 }
 
@@ -828,7 +828,7 @@ mod tests {
     async fn auth_with_cached_token() -> impl HttpClientAuthProvider {
         let mut auth =
             new_http_client_auth_provider_from_bearer_token_provider(Box::new(MockTokenProvider));
-        assert!(poll_fn(|cx| auth.poll_refresh(cx, &AZURE_MONITOR_AUTH_EVENTS)).await);
+        poll_fn(|cx| auth.poll_refresh(cx, &AZURE_MONITOR_AUTH_EVENTS)).await;
         assert!(auth.is_ready());
         auth
     }
@@ -993,7 +993,7 @@ mod tests {
             AzureMonitorExporter::new(pipeline_ctx, config, Box::new(MockTokenProvider)).unwrap();
         let mut auth =
             new_http_client_auth_provider_from_bearer_token_provider(Box::new(MockTokenProvider));
-        assert!(poll_fn(|cx| auth.poll_refresh(cx, &AZURE_MONITOR_AUTH_EVENTS)).await);
+        poll_fn(|cx| auth.poll_refresh(cx, &AZURE_MONITOR_AUTH_EVENTS)).await;
         let (_, _, token_generation) = auth.header().expect("mock provider publishes a token");
 
         let (_, reporter) = MetricsReporter::create_new_and_receiver(10);
