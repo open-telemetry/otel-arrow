@@ -1,0 +1,4 @@
+change_type: enhancement
+component: query-engine
+note: Supports reading scalar leaves from nested serialized map and array attributes in transform expressions.
+issues: [4043]

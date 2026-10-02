@@ -955,6 +955,38 @@ async fn wal_writer_flushes_after_unflushed_byte_threshold() {
     assert!(writer.test_last_flush() > before);
 }
 
+/// Scenario: A duration-based WAL policy leaves an appended entry pending until explicitly flushed.
+/// Guarantees: Explicit flush synchronizes the entry and makes it readable after the writer closes.
+#[tokio::test]
+async fn wal_writer_explicit_flush_persists_pending_entry() {
+    writer_test_support::reset_flush_notifications();
+
+    let (_dir, wal_path) = temp_wal("explicit_flush.wal");
+    let descriptor = logs_descriptor();
+    let mut writer = WalWriter::open(WalWriterOptions::new(
+        wal_path.clone(),
+        [0; 16],
+        FlushPolicy::EveryDuration(Duration::from_secs(3600)),
+    ))
+    .await
+    .expect("writer");
+    let bundle = FixtureBundle::new(
+        descriptor,
+        vec![FixtureSlot::new(SlotId::new(0), 0x55, &[42])],
+    );
+
+    let _ = writer.append_bundle(&bundle).await.expect("append");
+    assert!(!writer_test_support::take_sync_data_notification());
+
+    writer.flush().await.expect("explicit flush");
+    assert!(writer_test_support::take_sync_data_notification());
+    drop(writer);
+
+    let entries = read_all_entries(&wal_path);
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].sequence, 0);
+}
+
 #[tokio::test]
 async fn wal_writer_flushes_pending_bytes_on_drop() {
     writer_test_support::reset_flush_notifications();
