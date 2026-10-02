@@ -1,0 +1,25 @@
+# Use this changelog template to create an entry for release notes.
+
+# One of 'breaking', 'deprecation', 'new_component', 'enhancement', 'bug_fix'
+change_type: bug_fix
+
+# The name of the component, or a single word describing the area of concern, (e.g. engine, otap).
+# Must be one of the components listed in rust/otap-dataflow/.chloggen/config.yaml.
+component: observability
+
+# A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
+note: "Fix silent loss of internal log message bodies and raise the per-event encoding budget to 2KiB."
+
+# Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
+issues: [1746]
+
+# (Optional) One or more lines of additional information to render under the primary note.
+# These lines will be padded with 2 spaces and then inserted directly into the document.
+# Use pipe (|) for multiline entries. Breaking entries must include a `Migration:`
+# section with the specific action consumers must take. Keep notes to 200
+# characters and subtext to 300 characters.
+subtext: |
+  Internal log events (otel_info!/otel_warn!/etc.) had a hard, non-growing
+  256-byte encode budget with no signal when content was dropped. LogRecord
+  now encodes into a 2KiB stack buffer (zero heap allocation) and counts
+  truncation/drops via dropped_attributes_count, like attribute fields do.

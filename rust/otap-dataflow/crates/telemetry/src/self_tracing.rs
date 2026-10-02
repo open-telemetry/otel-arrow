@@ -12,7 +12,7 @@ pub mod formatter;
 
 use crate::registry::EntityKey;
 use encoder::DirectFieldVisitor;
-use otel_arrow_dfe_pdata::otlp::common::{ProtoBuffer, StackProtoBuffer};
+use otel_arrow_dfe_pdata::otlp::common::StackProtoBuffer;
 use serde::Serialize;
 use serde::ser::Serializer;
 use smallvec::SmallVec;
@@ -28,17 +28,31 @@ pub use formatter::{
     format_log_record_to_string,
 };
 
-/// Inline buffer size for the encoding phase.
+/// Hard limit on a `LogRecord`'s encoded body+attributes size.
 ///
-/// During encoding, `ProtoBuffer<LOG_ARGUMENTS_ENCODE_INLINE>` keeps data on the
-/// stack.  After encoding the result is converted to `Bytes` for
-/// cheap reference-counted storage.
-pub const LOG_ARGUMENTS_ENCODE_INLINE: usize = 256;
+/// Encoding happens into a fixed-size stack buffer -- zero heap allocation
+/// during encoding, matching the design direction of
+/// [#1746](https://github.com/open-telemetry/otel-arrow/issues/1746)'s
+/// "pre-allocated `&mut [u8]`" goal. Exactly one heap allocation occurs at
+/// the end, sized to the actual encoded length via `Bytes::copy_from_slice`,
+/// not a fixed worst-case size. Content beyond this limit is safely
+/// truncated (with a `[...]` suffix) or, for attributes that don't fit at
+/// all, dropped; both cases are counted via `dropped_attributes_count`.
+pub const LOG_ARGUMENTS_ENCODE_LIMIT: usize = 2048;
 
 /// Default buffer size for log formatting. Note that we truncate and
 /// recognize dropped_attributes_count at the top-level of each log
 /// record.
-pub const LOG_BUFFER_SIZE: usize = 1024;
+///
+/// Must comfortably exceed [`LOG_ARGUMENTS_ENCODE_LIMIT`]: a single
+/// attribute can consume up to roughly half of that encode budget, and the
+/// rendered text form adds `key=`/separator overhead on top of the raw
+/// value bytes. If this buffer is too small, [`StyledBufWriter`] silently
+/// clips the rendered line with no truncation marker (a second, independent
+/// silent-truncation point from the encoder's own `[...]`-marked
+/// truncation), so it is sized with headroom above the encode limit rather
+/// than tracking it 1:1.
+pub const LOG_BUFFER_SIZE: usize = LOG_ARGUMENTS_ENCODE_LIMIT * 2;
 
 /// A log record with structural metadata and pre-encoded body/attributes.
 /// A SystemTime value for the event is presumed to be external.
@@ -138,7 +152,7 @@ impl SavedCallsite {
 /// - [`into_record()`](Self::into_record) to produce an owned `LogRecord`
 ///   with reference-counted `Bytes` storage
 pub struct StackLogRecord {
-    buf: StackProtoBuffer<LOG_ARGUMENTS_ENCODE_INLINE>,
+    buf: StackProtoBuffer<LOG_ARGUMENTS_ENCODE_LIMIT>,
     callsite_id: Identifier,
     dropped_count: u32,
 }
@@ -147,7 +161,7 @@ impl StackLogRecord {
     /// Construct from an event, encoding body/attributes on the stack.
     #[must_use]
     pub fn new(event: &Event<'_>) -> Self {
-        let mut buf = StackProtoBuffer::<LOG_ARGUMENTS_ENCODE_INLINE>::default();
+        let mut buf = StackProtoBuffer::<LOG_ARGUMENTS_ENCODE_LIMIT>::default();
         let dropped_count;
         {
             let mut visitor = DirectFieldVisitor::new(&mut buf);
@@ -184,26 +198,18 @@ impl StackLogRecord {
 }
 
 impl LogRecord {
-    /// Construct a log record with entity context, partially encoding its dynamic content.
+    /// Construct a log record with entity context, encoding its dynamic
+    /// content into a fixed-size stack buffer (zero heap allocation during
+    /// encoding) before converting to an owned, exactly-sized `Bytes`.
     ///
-    /// Uses stack-allocated inline storage for the protobuf buffer.
-    /// Attributes that don't fit are counted via `dropped_attributes_count`.
+    /// Content exceeding [`LOG_ARGUMENTS_ENCODE_LIMIT`] is safely truncated
+    /// or, for attributes that don't fit at all, dropped; both cases are
+    /// counted via `dropped_attributes_count`.
     #[must_use]
     pub fn new(event: &Event<'_>, context: LogContext) -> Self {
-        Self::new_bounded::<LOG_ARGUMENTS_ENCODE_INLINE>(event, context)
-    }
-
-    /// Construct a log record encoding into a heap buffer pre-allocated to
-    /// `INLINE` bytes and bounded by `INLINE`.
-    ///
-    /// The pre-allocation ensures the encoder never grows the Vec on the hot
-    /// path. Attributes that don't fit are counted via
-    /// `dropped_attributes_count`.
-    #[must_use]
-    pub fn new_bounded<const INLINE: usize>(event: &Event<'_>, context: LogContext) -> Self {
         let metadata = event.metadata();
 
-        let mut buf = ProtoBuffer::with_capacity_and_limit(INLINE, INLINE);
+        let mut buf = StackProtoBuffer::<LOG_ARGUMENTS_ENCODE_LIMIT>::default();
         let dropped_count;
         {
             let mut visitor = DirectFieldVisitor::new(&mut buf);
@@ -214,7 +220,7 @@ impl LogRecord {
         Self {
             callsite_id: metadata.callsite(),
             dropped_attributes_count: dropped_count as u16,
-            body_attrs_bytes: buf.into_bytes(),
+            body_attrs_bytes: buf.to_bytes(),
             context,
         }
     }
