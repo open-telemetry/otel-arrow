@@ -68,6 +68,9 @@ pub const WASM_PROCESSOR_URN: &str = "urn:otel:processor:wasm_processor";
 /// properly as part of limits-and-cache follow-on work; revisit this
 /// constant (and consider making it configurable) there.
 const GUEST_FUEL_PER_CALL: u64 = 10_000_000;
+/// Error returned when a caller attempts to re-enter a terminal instance.
+const WASM_INSTANCE_POISONED: &str =
+    "WASM plugin instance is unavailable after a previous terminal process failure";
 
 /// Fold one `drain_counter_add_calls()` result into the processor's telemetry
 /// counters.
@@ -311,6 +314,9 @@ impl WasmProcessor {
         &mut self,
         otap_batch: OtapArrowRecords,
     ) -> wasmtime::Result<Option<OtapArrowRecords>> {
+        if self.poisoned {
+            return Err(wasmtime::Error::msg(WASM_INSTANCE_POISONED));
+        }
         self.store.set_fuel(GUEST_FUEL_PER_CALL)?;
         self.store.data_mut().begin_guest_call();
         let input = self.store.data_mut().table.push(HostPdata { otap_batch })?;
@@ -991,9 +997,8 @@ mod tests {
     /// test plugin does this when its config sets `spin`), consuming its
     /// whole `GUEST_FUEL_PER_CALL` budget.
     /// Guarantees: The call traps and returns an error in bounded time
-    /// instead of hanging the pipeline thread forever, and the instance is
-    /// marked poisoned because Wasmtime refuses every later entry into a
-    /// trapped instance.
+    /// instead of hanging the pipeline thread forever; the instance is marked
+    /// poisoned and the host rejects a later call before re-entering Wasmtime.
     #[test]
     fn runaway_guest_exhausts_its_fuel_budget_and_poisons_the_instance() {
         let wasm_path = build_test_guest_wasm_for_unit_tests();
@@ -1025,12 +1030,17 @@ mod tests {
             processor.poisoned,
             "a trapped instance must be marked unusable"
         );
+
+        let retry_error =
+            futures::executor::block_on(processor.run_guest(build_logs_batch(&["ERROR"])))
+                .expect_err("a poisoned instance must reject later process calls");
+        assert_eq!(retry_error.to_string(), WASM_INSTANCE_POISONED);
     }
 
     /// Scenario: A guest stores its owned pdata resource instead of returning
     /// or dropping it before `process` completes.
     /// Guarantees: The host rejects cross-call resource retention, poisons the
-    /// instance, and prevents accumulation of host-side batches.
+    /// instance, and rejects a later call before inserting another batch.
     #[test]
     fn guest_cannot_retain_pdata_across_process_calls() {
         let wasm_path = build_test_guest_wasm_for_unit_tests();
@@ -1062,6 +1072,15 @@ mod tests {
             processor.poisoned,
             "a retained host resource must make the instance terminal"
         );
+        assert!(
+            !processor.store.data().table.is_empty(),
+            "the test guest must retain the first pdata resource"
+        );
+
+        let retry_error =
+            futures::executor::block_on(processor.run_guest(build_logs_batch(&["ERROR"])))
+                .expect_err("a poisoned instance must reject later process calls");
+        assert_eq!(retry_error.to_string(), WASM_INSTANCE_POISONED);
     }
 
     /// Scenario: A processor intentionally drops a pdata item.
