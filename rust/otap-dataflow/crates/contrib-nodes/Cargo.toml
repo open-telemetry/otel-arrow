@@ -135,7 +135,7 @@ kafka = [
 
 # Receivers.
 # Oracle requires separately provisioned native client libraries and is explicitly opt-in.
-oracle-receiver = [
+oracle = [
     "dep:otel-arrow-dfe-scraper",
     "dep:oracle",
     "dep:blake3",
@@ -297,4 +297,4 @@ required-features = ["user-events"]
 [[example]]
 name = "oracle_load_generator"
 path = "examples/oracle_load_generator.rs"
-required-features = ["oracle-receiver"]
+required-features = ["oracle"]

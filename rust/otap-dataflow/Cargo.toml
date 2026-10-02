@@ -305,11 +305,6 @@ opentelemetry-resource-detectors = "0.13.0"
 otel-arrow-dfe-pdata-views = { path = "crates/pdata-views" }
 
 [features]
-# Bundle the file-based credential provider without coupling the receiver to it.
-oracle-receiver = [
-    "otel-arrow-dfe-contrib-nodes/oracle-receiver",
-    "flat-file-user-pass-auth",
-]
 default = ["core-nodes", "dev-tools", "admin-live-logs-ws", "jemalloc", "crypto-ring"]
 
 # Core-node feature forwarding. Keep these lists aligned with
@@ -350,6 +345,10 @@ kafka = ["otel-arrow-dfe-contrib-nodes/kafka"]
 
 # Contrib receivers.
 etw = ["otel-arrow-dfe-contrib-nodes/etw"]
+oracle = [
+    "otel-arrow-dfe-contrib-nodes/oracle",
+    "flat-file-user-pass-auth",
+]
 user-events = ["otel-arrow-dfe-contrib-nodes/user-events"]
 
 # Contrib processors.

@@ -9,7 +9,7 @@ releases.
 
 - Type: `urn:otel:receiver:oracle`
 - Crate: `otel-arrow-dfe-contrib-nodes`
-- Feature gate: `oracle-receiver` (opt-in; not enabled by `contrib-receivers`)
+- Feature gate: `oracle` (opt-in; not enabled by `contrib-receivers`)
 - Stability: Experimental
 - Output: OTLP logs, one log record per selected database row
 - Execution: One query per receiver, in a single-core pipeline
@@ -553,7 +553,7 @@ $env:ORACLE_INSTANT_CLIENT_DIR = "C:\oracle\instantclient"
 $env:PATH = "$env:ORACLE_INSTANT_CLIENT_DIR;$env:PATH"
 $env:ORACLE_CONNECT_STRING = "//database.example.com:1521/ORCL"
 $env:ORACLE_PASSWORD_FILE = "C:\secrets\oracle-password"
-cargo run --no-default-features --features crypto-ring,oracle-receiver -- `
+cargo run --no-default-features --features crypto-ring,oracle -- `
   --config configs\oracle-oci-console.yaml --num-cores 1
 ```
 
@@ -565,7 +565,7 @@ export ORACLE_INSTANT_CLIENT_DIR=/opt/oracle/instantclient
 export LD_LIBRARY_PATH="$ORACLE_INSTANT_CLIENT_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 export ORACLE_CONNECT_STRING=//database.example.com:1521/ORCL
 export ORACLE_PASSWORD_FILE=/run/oracle-secrets/password
-cargo run --no-default-features --features crypto-ring,oracle-receiver -- \
+cargo run --no-default-features --features crypto-ring,oracle -- \
   --config configs/oracle-oci-console.yaml --num-cores 1
 ```
 
@@ -587,7 +587,7 @@ the native library path. This developer tool uses environment credentials;
 the receiver itself uses mounted files.
 
 ```sh
-cargo run -p otel-arrow-dfe-contrib-nodes --features oracle-receiver --example oracle_load_generator -- --rows 10000 --collision-size 100
+cargo run -p otel-arrow-dfe-contrib-nodes --features oracle --example oracle_load_generator -- --rows 10000 --collision-size 100
 ```
 
 The optional `--reset` flag **drops and recreates the table**. Never use it on
@@ -600,9 +600,9 @@ ordering.
 Unit tests do not require a database or an installed Instant Client:
 
 ```sh
-cargo test -p otel-arrow-dfe-contrib-nodes --features oracle-receiver --lib oracle_receiver
+cargo test -p otel-arrow-dfe-contrib-nodes --features oracle --lib oracle_receiver
 cargo test -p otel-arrow-dfe-scraper
-cargo test -p otel-arrow-dfe-contrib-nodes --features oracle-receiver --example oracle_load_generator
+cargo test -p otel-arrow-dfe-contrib-nodes --features oracle --example oracle_load_generator
 ```
 
 The factory tests cover existing shared checkpoints, exact lease ownership and
@@ -615,7 +615,7 @@ set `OTAP_ORACLE_RECEIVER_E2E=1`, `ORACLE_CONNECT_STRING`,
 `ORACLE_PASSWORD_FILE`:
 
 ```sh
-cargo test -p otel-arrow-dfe-contrib-nodes --features oracle-receiver emits_oracle_rows_when_live_test_is_enabled -- --nocapture
+cargo test -p otel-arrow-dfe-contrib-nodes --features oracle emits_oracle_rows_when_live_test_is_enabled -- --nocapture
 ```
 
 ## Telemetry

@@ -58,7 +58,7 @@ Receivers ingest data into a pipeline.
 | --- | --- | --- | --- |
 | `receiver:etw` | `etw` | Experimental | Ingests Event Tracing for Windows events as logs. |
 | [`receiver:kafka`](src/receivers/kafka_receiver/README.md) | `kafka` | Experimental | Consumes traces, metrics, and logs from Kafka. |
-| [`urn:otel:receiver:oracle`](src/receivers/oracle_receiver/README.md) | `oracle-receiver` | Experimental | Polls Oracle queries into logs; explicitly opt-in and requires separately installed Oracle Client libraries. |
+| [`urn:otel:receiver:oracle`](src/receivers/oracle_receiver/README.md) | `oracle` | Experimental | Polls Oracle queries into logs; explicitly opt-in and requires separately installed Oracle Client libraries. |
 | [`receiver:user_events`](src/receivers/user_events_receiver/README.md) | `user-events` | Experimental | Ingests Linux `user_events` tracepoints as logs. |
 
 ## Processors
@@ -91,7 +91,7 @@ Exporters send data out of a pipeline.
 - `contrib-exporters`: enables all contrib exporters.
 - `kafka`: enables both the Kafka receiver and exporter.
 
-Enable `oracle-receiver` explicitly to include Oracle. It is excluded from both
+Enable `oracle` explicitly to include Oracle. It is excluded from both
 `contrib-receivers` and `contrib-nodes` because Oracle Client libraries must be
 provisioned separately.
 
