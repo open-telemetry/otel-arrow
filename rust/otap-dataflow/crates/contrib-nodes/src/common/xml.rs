@@ -49,7 +49,11 @@
 //! re-serialized with the bindings it relies on.
 
 use quick_xml::{events::Event, name::ResolveResult, reader::NsReader};
-use std::{collections::HashMap, ops::Range, rc::Rc};
+use std::{
+    collections::{HashMap, HashSet},
+    ops::Range,
+    rc::Rc,
+};
 
 const XML_NAMESPACE: &str = "http://www.w3.org/XML/1998/namespace";
 const XMLNS_NAMESPACE: &str = "http://www.w3.org/2000/xmlns/";
@@ -244,6 +248,8 @@ impl<'input> Document<'input> {
                     let name = resolve_name(&reader, element.name(), false, &mut budget)?;
                     let mut attributes = Vec::new();
                     let mut namespaces = Vec::new();
+                    // Reject duplicate expanded attribute names in O(1) per attribute.
+                    let mut seen_attributes: HashSet<(Option<Rc<str>>, String)> = HashSet::new();
                     for attribute in element.attributes() {
                         let attribute = attribute.map_err(quick_xml::Error::from)?;
                         let key = std::str::from_utf8(attribute.key.as_ref())
@@ -271,10 +277,8 @@ impl<'input> Document<'input> {
                             });
                         } else {
                             let name = resolve_name(&reader, attribute.key, true, &mut budget)?;
-                            if attributes.iter().any(|previous: &Attribute| {
-                                previous.name.local == name.local
-                                    && previous.name.namespace == name.namespace
-                            }) {
+                            if !seen_attributes.insert((name.namespace.clone(), name.local.clone()))
+                            {
                                 return Err(Error::Invalid("duplicate expanded attribute"));
                             }
                             attributes.push(Attribute { name, value });
