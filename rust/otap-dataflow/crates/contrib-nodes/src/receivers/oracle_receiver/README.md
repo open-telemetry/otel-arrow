@@ -102,7 +102,7 @@ is process-global.
 
 For mounted secrets, use the
 [flat-file username/password extension](../../../../contrib-extensions/src/flat_file_user_pass_auth/README.md)
-with `username` in YAML and `password_secret_file`. 
+with `username` in YAML and `password_secret_file`.
 
 The extension owns password-file loading, validation, caching, and periodic
 refresh. Configure the username and password-file path like the following example:
@@ -228,8 +228,8 @@ commit ordering, or immutability.
 | `checkpoint.nack_backoff` | duration string | **required** | Between `1ms` and `5m`, inclusive. Fixed NACK replay delay; also used between checkpoint-write retries. |
 | `checkpoint.max_consecutive_failures` | integer | **required** | Between `1` and `1000`. Consecutive checkpoint-write failures before termination; not a query-error or NACK retry limit. |
 
-See [Checkpoints and ownership](#checkpoints-and-ownership) for identity,
-durability, and recovery behavior.
+See [Live configuration changes](#live-configuration-changes) for source
+ownership and [Delivery guarantees](#delivery-guarantees) for recovery behavior.
 
 ### Required Query Shape
 
@@ -671,7 +671,6 @@ Common engine resource and node context may still accompany them.
 | `database_receiver.drain_deadline_reached` | `warn` | Drain deadline reached during unresolved delivery. |
 | `database_receiver.cancellation_failed` | `warn` | An active operation could not be interrupted. |
 | `database_receiver.worker_abandoned` | `warn` | Worker cleanup could not be joined; ownership retained until process exit. |
-
 
 ## Limits
 
