@@ -215,13 +215,15 @@ fn get_value_from_array(value: &Arc<dyn Array>, index: usize) -> ValueOrRef<'sta
                     .values()
                     .get_unchecked(index) as i64,
             ),
-            DataType::UInt64 => ValueOrRef::Integer(
+            DataType::UInt64 => match TryInto::<i64>::try_into(
                 *value
                     .as_primitive::<UInt64Type>()
                     .values()
-                    .get_unchecked(index) as i64,
-            ),
-
+                    .get_unchecked(index),
+            ) {
+                Ok(v) => ValueOrRef::Integer(v),
+                Err(_) => ValueOrRef::Null,
+            },
             DataType::Float16 => ValueOrRef::Double(
                 (*value
                     .as_primitive::<Float16Type>()
@@ -305,7 +307,9 @@ fn get_value_from_array(value: &Arc<dyn Array>, index: usize) -> ValueOrRef<'sta
 
 #[cfg(test)]
 mod tests {
-    use arrow::array::{FixedSizeBinaryArray, Int32Array, StringArray, TimestampMillisecondArray};
+    use arrow::array::{
+        FixedSizeBinaryArray, Int32Array, StringArray, TimestampMillisecondArray, UInt64Array,
+    };
 
     use super::*;
 
@@ -329,6 +333,25 @@ mod tests {
         );
         assert_eq!(strings.get_value_at(1), ValueOrRef::Null);
         assert_eq!(strings.get_value_at(3), ValueOrRef::Null);
+    }
+
+    /// Scenario: Arrow UInt64 values straddle the largest value representable by the engine's i64 integer type.
+    /// Guarantees: Representable values are preserved while larger values, including u64::MAX, convert to Null without wrapping.
+    #[test]
+    fn uint64_values_outside_i64_range_convert_to_null() {
+        let values = DictionaryValueArray::from(&UInt64Array::from(vec![
+            Some(0),
+            Some(i64::MAX as u64),
+            Some(i64::MAX as u64 + 1),
+            Some(u64::MAX),
+            None,
+        ]));
+
+        assert_eq!(values.get_value_at(0), ValueOrRef::Integer(0));
+        assert_eq!(values.get_value_at(1), ValueOrRef::Integer(i64::MAX));
+        assert_eq!(values.get_value_at(2), ValueOrRef::Null);
+        assert_eq!(values.get_value_at(3), ValueOrRef::Null);
+        assert_eq!(values.get_value_at(4), ValueOrRef::Null);
     }
 
     /// Scenario: Arrow timestamp and fixed-size binary arrays are used as dictionary values.
