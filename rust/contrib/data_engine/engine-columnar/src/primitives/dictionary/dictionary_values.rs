@@ -199,6 +199,9 @@ fn get_value_from_array(
 
     unsafe {
         match value.data_type() {
+            DataType::Boolean => Ok(ValueOrRef::Boolean(
+                value.as_boolean().value_unchecked(index),
+            )),
             DataType::Int8 => Ok(ValueOrRef::Integer(
                 *value
                     .as_primitive::<Int8Type>()

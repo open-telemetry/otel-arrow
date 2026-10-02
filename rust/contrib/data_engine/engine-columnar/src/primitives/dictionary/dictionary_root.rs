@@ -24,7 +24,12 @@ impl Dictionary<'_> {
     }
 
     pub fn is_null(&self) -> bool {
-        self.keys.is_null() || self.values.is_null()
+        if self.keys.is_null() || self.values.is_null() {
+            return true;
+        }
+
+        self.nulls()
+            .is_some_and(|nulls| nulls.null_count() == self.len())
     }
 
     pub fn nulls(&self) -> Option<NullBuffer> {
@@ -225,6 +230,8 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
 
     /// Scenario: Dictionary keys include both null keys and keys that point to a null dictionary value.
@@ -300,6 +307,61 @@ mod tests {
         assert!(nulls.is_valid(0));
         assert!(nulls.is_null(1));
         assert!(nulls.is_null(2));
+    }
+
+    /// Scenario: Dictionary rows reference only a null value while an unused non-null value remains in the value table.
+    /// Guarantees: Nullness is computed from effective rows for repeated, mixed-null, non-null, and empty dictionaries.
+    #[test]
+    fn dictionary_is_null_uses_effective_row_validity() {
+        let repeated_null = Dictionary::new(
+            DictionaryKeyArray::from(Int8Array::from(vec![Some(0), Some(0)])),
+            DictionaryValueArray::from(vec![ValueOrRef::Null, ValueOrRef::Integer(10)]),
+        );
+        assert!(repeated_null.is_null());
+
+        let key_and_value_null = Dictionary::new(
+            DictionaryKeyArray::from(Int8Array::from(vec![Some(0), None])),
+            DictionaryValueArray::from(vec![ValueOrRef::Null, ValueOrRef::Integer(10)]),
+        );
+        assert!(key_and_value_null.is_null());
+
+        let includes_non_null = Dictionary::new(
+            DictionaryKeyArray::from(Int8Array::from(vec![Some(0), Some(1)])),
+            DictionaryValueArray::from(vec![ValueOrRef::Null, ValueOrRef::Integer(10)]),
+        );
+        assert!(!includes_non_null.is_null());
+
+        let empty = Dictionary::new(
+            DictionaryKeyArray::from(Int8Array::from(Vec::<i8>::new())),
+            DictionaryValueArray::from(Vec::new()),
+        );
+        assert!(empty.is_null());
+    }
+
+    /// Scenario: A real Arrow dictionary contains false, true, repeated, null-valued, and null-key Boolean rows.
+    /// Guarantees: Arrow-backed Boolean values convert without panicking and preserve both values and null semantics.
+    #[test]
+    fn arrow_boolean_dictionary_values_are_supported() {
+        let arrow = DictionaryArray::<Int8Type>::try_new(
+            Int8Array::from(vec![Some(0), Some(1), Some(0), Some(2), None]),
+            Arc::new(BooleanArray::from(vec![Some(false), Some(true), None])),
+        )
+        .unwrap();
+        let dictionary = Dictionary::from(&arrow);
+
+        assert_eq!(dictionary.get_value(0), Ok(ValueOrRef::Boolean(false)));
+        assert_eq!(dictionary.get_value(1), Ok(ValueOrRef::Boolean(true)));
+        assert_eq!(dictionary.get_value(2), Ok(ValueOrRef::Boolean(false)));
+        assert_eq!(dictionary.get_value(3), Ok(ValueOrRef::Null));
+        assert_eq!(dictionary.get_value(4), Ok(ValueOrRef::Null));
+
+        let nulls = dictionary.nulls().unwrap();
+        assert_eq!(nulls.null_count(), 2);
+        assert!(nulls.is_valid(0));
+        assert!(nulls.is_valid(1));
+        assert!(nulls.is_valid(2));
+        assert!(nulls.is_null(3));
+        assert!(nulls.is_null(4));
     }
 
     /// Scenario: Scalar and null dictionaries are synthesized for a requested Arrow key type.

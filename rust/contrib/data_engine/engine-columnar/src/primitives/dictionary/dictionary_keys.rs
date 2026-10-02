@@ -186,7 +186,7 @@ impl From<&dyn Array> for DictionaryKeyArray {
     }
 }
 
-impl<'a, T: ArrowPrimitiveType> From<&'a PrimitiveArray<T>> for DictionaryKeyArray {
+impl<'a, T: ArrowDictionaryKeyType> From<&'a PrimitiveArray<T>> for DictionaryKeyArray {
     fn from(value: &'a PrimitiveArray<T>) -> DictionaryKeyArray {
         DictionaryKeyArray::KeyArray((value as &dyn Array).slice(0, value.len()))
     }
