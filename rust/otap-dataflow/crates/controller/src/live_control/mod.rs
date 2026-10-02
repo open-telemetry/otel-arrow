@@ -229,6 +229,7 @@ impl<
                 first_error: None,
                 instance_wait_released: false,
                 global_shutdown_requested: false,
+                global_shutdown_deadline: None,
                 global_shutdown_coordinators: 0,
                 controller_telemetry_pending: false,
             }),
@@ -534,6 +535,15 @@ impl<
 {
     fn shutdown_all(&self, timeout_secs: u64) -> Result<(), ControlPlaneError> {
         self.runtime.request_shutdown_all(timeout_secs)
+    }
+
+    fn has_active_instances(&self) -> bool {
+        let state = self
+            .runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.has_pending_lifecycle_work()
     }
 
     fn shutdown_pipeline(
