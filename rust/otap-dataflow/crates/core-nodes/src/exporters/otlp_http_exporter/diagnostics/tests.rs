@@ -18,12 +18,15 @@ use otel_arrow_dfe_otap::metrics::ErrorWithOutcome;
 use otel_arrow_dfe_otap::pdata::OtapPdata;
 use otel_arrow_dfe_otap::testing::TestCallData;
 use otel_arrow_dfe_pdata::OtlpProtoBytes;
+use otel_arrow_dfe_pdata::views::otlp::bytes::logs::RawLogRecord;
+use otel_arrow_dfe_pdata_views::views::common::{AnyValueView, AttributeView, ValueType};
+use otel_arrow_dfe_pdata_views::views::logs::LogRecordView;
 use otel_arrow_dfe_telemetry::diagnostics::SignalSet;
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
+use otel_arrow_dfe_telemetry::self_tracing::{LogContext, LogRecord};
 use serde_json::{Map, Value, json};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tracing::field::{Field, Visit};
 use tracing::{Event, Level, Subscriber};
 use tracing_subscriber::{Layer, layer::Context, prelude::*};
 
@@ -35,31 +38,45 @@ struct CapturedEvent {
     fields: Map<String, Value>,
 }
 
-impl Visit for CapturedEvent {
-    fn record_str(&mut self, field: &Field, value: &str) {
-        _ = self.fields.insert(field.name().into(), json!(value));
-    }
-
-    fn record_bool(&mut self, field: &Field, value: bool) {
-        _ = self.fields.insert(field.name().into(), json!(value));
-    }
-
-    fn record_u64(&mut self, field: &Field, value: u64) {
-        _ = self.fields.insert(field.name().into(), json!(value));
-    }
-
-    fn record_f64(&mut self, field: &Field, value: f64) {
-        _ = self.fields.insert(field.name().into(), json!(value));
-    }
-
-    fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
-        _ = self
-            .fields
-            .insert(field.name().into(), json!(format!("{value:?}")));
-    }
-}
-
 impl CapturedEvent {
+    /// Decode a captured event through the same `LogRecord` encoding and
+    /// OTLP-bytes view that production formatting/export paths use, rather
+    /// than a bespoke `tracing::field::Visit` implementation. `message` is
+    /// read back from the body: the production encoder (`DirectFieldVisitor`)
+    /// diverts a field literally named `message` into the OTLP body instead
+    /// of encoding it as an attribute.
+    fn from_log_record(record: &LogRecord) -> Self {
+        let callsite = record.callsite();
+        let view = RawLogRecord::new(record.body_attrs_bytes.as_ref());
+        let mut fields = Map::new();
+        let body = view.body();
+        if let Some(message) = body.as_ref().and_then(|body| body.as_string()) {
+            _ = fields.insert(
+                "message".into(),
+                json!(String::from_utf8_lossy(message).into_owned()),
+            );
+        }
+        for attr in view.attributes() {
+            let Some(value) = attr.value() else { continue };
+            let json_value = match value.value_type() {
+                ValueType::String => {
+                    json!(String::from_utf8_lossy(value.as_string().unwrap()).into_owned())
+                }
+                ValueType::Bool => json!(value.as_bool().unwrap()),
+                ValueType::Int64 => json!(value.as_int64().unwrap()),
+                ValueType::Double => json!(value.as_double().unwrap()),
+                _ => continue,
+            };
+            _ = fields.insert(String::from_utf8_lossy(attr.key()).into_owned(), json_value);
+        }
+        Self {
+            name: callsite.name(),
+            target: callsite.target(),
+            level: *callsite.level(),
+            fields,
+        }
+    }
+
     fn assert_contract(&self, name: &str, level: Level, kind: &str) {
         assert_eq!(self.name, name);
         assert_eq!(self.target, "otel.exporter.otlp_http");
@@ -90,17 +107,22 @@ impl CapturedEvent {
 #[derive(Clone, Default)]
 struct Capture(Arc<Mutex<Vec<CapturedEvent>>>);
 
+/// Builds a bounded [`LogRecord`] detail sample for tests, mirroring how a
+/// real caller builds one with `otel_diagnostic_detail!` at its failure site.
+fn detail(message: &str) -> LogRecord {
+    otel_arrow_dfe_telemetry::otel_diagnostic_detail!(
+        "otlp.exporter.http.test.detail",
+        message = %message
+    )
+}
+
 impl<S: Subscriber> Layer<S> for Capture {
     fn on_event(&self, event: &Event<'_>, _context: Context<'_, S>) {
-        let metadata = event.metadata();
-        let mut captured = CapturedEvent {
-            name: metadata.name(),
-            target: metadata.target(),
-            level: *metadata.level(),
-            fields: Map::new(),
-        };
-        event.record(&mut captured);
-        self.0.lock().unwrap().push(captured);
+        let record = LogRecord::new(event, LogContext::default());
+        self.0
+            .lock()
+            .unwrap()
+            .push(CapturedEvent::from_log_record(&record));
     }
 }
 
@@ -115,7 +137,7 @@ fn delivery_event_contract_and_retained_samples() {
         let at = |seconds| start + Duration::from_secs(seconds);
         let mut diagnostics = SignalSet::<DeliveryDiagnostic>::default();
         let logs = diagnostics.signal(SignalType::Logs);
-        let report = logs.failure(at(0), Transport, true, || "connection refused");
+        let report = logs.failure(at(0), Transport, true, || detail("connection refused"));
         logs.emit(report, SignalType::Logs);
         assert!(
             logs.failure(at(10), PartialRejection, false, || panic!("suppressed"))
@@ -127,7 +149,9 @@ fn delivery_event_contract_and_retained_samples() {
             logs.failure(at(61), Transport, true, || panic!("suppressed"))
                 .is_none()
         );
-        let report = logs.failure(at(120), PartialRejection, false, || "partial acceptance");
+        let report = logs.failure(at(120), PartialRejection, false, || {
+            detail("partial acceptance")
+        });
         logs.emit(report, SignalType::Logs);
         assert!(
             logs.failure(at(121), Transport, true, || panic!("suppressed"))
@@ -135,7 +159,9 @@ fn delivery_event_contract_and_retained_samples() {
         );
 
         let traces = diagnostics.signal(SignalType::Traces);
-        let report = traces.failure(at(130), Transport, true, || "trace connection refused");
+        let report = traces.failure(at(130), Transport, true, || {
+            detail("trace connection refused")
+        });
         traces.emit(report, SignalType::Traces);
 
         let logs = diagnostics.signal(SignalType::Logs);
@@ -201,19 +227,15 @@ fn preparation_and_notification_event_contracts() {
         let mut preparation = DiagnosticTracker::default();
         let mut notifications = DiagnosticTracker::default();
         emit_preparation(
-            preparation.failure(
-                start,
-                OtlpHttpExporterErrorType::Encoding,
-                || "encoding failed",
-            ),
+            preparation.failure(start, OtlpHttpExporterErrorType::Encoding, || {
+                detail("encoding failed")
+            }),
             SignalType::Logs,
         );
         emit_notification(
-            notifications.failure(
-                start,
-                DiagnosticErrorKind::Notification,
-                || "Ack channel closed",
-            ),
+            notifications.failure(start, DiagnosticErrorKind::Notification, || {
+                detail("Ack channel closed")
+            }),
             SignalType::Logs,
             NotificationOperation::Ack,
         );
@@ -233,19 +255,15 @@ fn preparation_and_notification_event_contracts() {
         );
         let later = start + Duration::from_secs(60);
         emit_preparation(
-            preparation.failure(
-                later,
-                OtlpHttpExporterErrorType::Compression,
-                || "compression failed",
-            ),
+            preparation.failure(later, OtlpHttpExporterErrorType::Compression, || {
+                detail("compression failed")
+            }),
             SignalType::Logs,
         );
         emit_notification(
-            notifications.failure(
-                later,
-                DiagnosticErrorKind::Notification,
-                || "Nack channel closed",
-            ),
+            notifications.failure(later, DiagnosticErrorKind::Notification, || {
+                detail("Nack channel closed")
+            }),
             SignalType::Logs,
             NotificationOperation::Nack,
         );

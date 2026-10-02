@@ -30,10 +30,20 @@ pub use formatter::{
 
 /// Inline buffer size for the encoding phase.
 ///
-/// During encoding, `ProtoBuffer<LOG_ARGUMENTS_ENCODE_INLINE>` keeps data on the
-/// stack.  After encoding the result is converted to `Bytes` for
-/// cheap reference-counted storage.
+/// `LogRecord::new()` pre-allocates a heap buffer of this size so that
+/// ordinary, few-field events never trigger a reallocation. After encoding
+/// the result is converted to `Bytes` for cheap reference-counted storage.
 pub const LOG_ARGUMENTS_ENCODE_INLINE: usize = 256;
+
+/// Hard limit on a `LogRecord`'s encoded body+attributes size.
+///
+/// This is larger than [`LOG_ARGUMENTS_ENCODE_INLINE`] so that a less common,
+/// field-heavy event (e.g. a bounded diagnostic summary) can still grow the
+/// heap-backed buffer -- via ordinary `Vec` reallocation, at most once per
+/// event -- instead of silently dropping attributes or the log body once the
+/// inline pre-allocation is exceeded. Events with few/short fields never
+/// reach this limit and so never pay for the reallocation.
+pub const LOG_ARGUMENTS_ENCODE_LIMIT: usize = 2048;
 
 /// Default buffer size for log formatting. Note that we truncate and
 /// recognize dropped_attributes_count at the top-level of each log
@@ -194,16 +204,19 @@ impl LogRecord {
     }
 
     /// Construct a log record encoding into a heap buffer pre-allocated to
-    /// `INLINE` bytes and bounded by `INLINE`.
+    /// `INLINE` bytes, but allowed to grow up to [`LOG_ARGUMENTS_ENCODE_LIMIT`]
+    /// bytes (or `INLINE`, if larger).
     ///
-    /// The pre-allocation ensures the encoder never grows the Vec on the hot
-    /// path. Attributes that don't fit are counted via
+    /// The pre-allocation ensures the encoder never grows the Vec for
+    /// ordinary, few-field events on the hot path. Attributes that still
+    /// don't fit after growing to the limit are counted via
     /// `dropped_attributes_count`.
     #[must_use]
     pub fn new_bounded<const INLINE: usize>(event: &Event<'_>, context: LogContext) -> Self {
         let metadata = event.metadata();
 
-        let mut buf = ProtoBuffer::with_capacity_and_limit(INLINE, INLINE);
+        let limit = LOG_ARGUMENTS_ENCODE_LIMIT.max(INLINE);
+        let mut buf = ProtoBuffer::with_capacity_and_limit(INLINE, limit);
         let dropped_count;
         {
             let mut visitor = DirectFieldVisitor::new(&mut buf);

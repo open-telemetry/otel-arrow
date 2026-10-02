@@ -562,7 +562,12 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                                     self.metrics.preparation.signal(signal_type).failure(
                                         Instant::now(),
                                         error_type,
-                                        || &error,
+                                        || {
+                                            otel_arrow_dfe_telemetry::otel_diagnostic_detail!(
+                                                "otlp.exporter.http.encoding_failed",
+                                                message = %error
+                                            )
+                                        },
                                     ),
                                     signal_type,
                                 );
@@ -615,7 +620,12 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                                     self.metrics.preparation.signal(signal_type).failure(
                                         Instant::now(),
                                         error_type,
-                                        || &error,
+                                        || {
+                                            otel_arrow_dfe_telemetry::otel_diagnostic_detail!(
+                                                "otlp.exporter.http.compression_failed",
+                                                message = %error
+                                            )
+                                        },
                                     ),
                                     signal_type,
                                 );
@@ -1086,7 +1096,12 @@ async fn finalize_completed_export(
     let delivery_diagnostic = metrics.diagnostics.signal(signal_type);
     let report = match &result {
         Ok(()) => delivery_diagnostic.success(diagnostic_started_at, now),
-        Err(error) => delivery_diagnostic.failure(now, error.error_type(), retryable, || error),
+        Err(error) => delivery_diagnostic.failure(now, error.error_type(), retryable, || {
+            otel_arrow_dfe_telemetry::otel_diagnostic_detail!(
+                "otlp.exporter.http.delivery_failed",
+                message = %error
+            )
+        }),
     };
     // Emit immediately while the selected report and retained retryability sample
     // still describe the same completed export.
@@ -1115,7 +1130,12 @@ async fn finalize_completed_export(
                     metrics.notifications.signal(signal_type).failure(
                         Instant::now(),
                         DiagnosticErrorKind::Notification,
-                        || &error,
+                        || {
+                            otel_arrow_dfe_telemetry::otel_diagnostic_detail!(
+                                "otlp.exporter.http.notification_ack_failed",
+                                message = %error
+                            )
+                        },
                     ),
                     signal_type,
                     NotificationOperation::Ack,
@@ -1151,7 +1171,12 @@ async fn notify_nack_with_diagnostics(
             metrics.notifications.signal(signal_type).failure(
                 Instant::now(),
                 DiagnosticErrorKind::Notification,
-                || &error,
+                || {
+                    otel_arrow_dfe_telemetry::otel_diagnostic_detail!(
+                        "otlp.exporter.http.notification_nack_failed",
+                        message = %error
+                    )
+                },
             ),
             signal_type,
             NotificationOperation::Nack,
@@ -3221,7 +3246,12 @@ mod test {
                     Instant::now() + Duration::from_secs(60),
                     OtlpHttpExporterErrorType::PartialRejection,
                     false,
-                    || "test summary",
+                    || {
+                        otel_arrow_dfe_telemetry::otel_diagnostic_detail!(
+                            "otlp.exporter.http.test.detail",
+                            message = "test summary"
+                        )
+                    },
                 )
                 .unwrap();
             assert_eq!(report.total.failures, 1001);
@@ -3317,7 +3347,12 @@ mod test {
         let report = metrics
             .notifications
             .signal(SignalType::Logs)
-            .failure(later, DiagnosticErrorKind::Notification, || "still closed")
+            .failure(later, DiagnosticErrorKind::Notification, || {
+                otel_arrow_dfe_telemetry::otel_diagnostic_detail!(
+                    "otlp.exporter.http.test.detail",
+                    message = "still closed"
+                )
+            })
             .unwrap();
         assert_eq!(
             report.kind,

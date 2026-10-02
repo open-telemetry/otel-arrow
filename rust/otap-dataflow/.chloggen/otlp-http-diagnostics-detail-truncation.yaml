@@ -1,0 +1,13 @@
+change_type: bug_fix
+
+component: observability
+
+note: Fix OTLP HTTP exporter diagnostic reports silently dropping their message when the detail exceeded the internal log encoding budget.
+
+issues: [4151]
+
+subtext: |
+  Reports now capture their sample as a bounded LogRecord built at the true
+  failure site (correct file/line), and the encoder's hard byte limit was
+  decoupled from its preallocation size so large, rare events are safely
+  truncated instead of losing the message field entirely.

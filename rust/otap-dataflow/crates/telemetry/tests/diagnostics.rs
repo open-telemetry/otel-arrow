@@ -63,7 +63,10 @@ fn suppression_precedes_all_subscribers() {
                     DiagnosticErrorKind::Transport,
                     || {
                         formats.set(formats.get() + 1);
-                        "connection refused"
+                        otel_arrow_dfe_telemetry::otel_diagnostic_detail!(
+                            "test.detail",
+                            message = "connection refused"
+                        )
                     },
                 ) {
                     otel_arrow_dfe_telemetry::otel_diagnostic_report!(
@@ -111,14 +114,18 @@ fn priority_detail_survives_bounded_its_encoding() {
         let mut tracker = DiagnosticTracker::default();
         let report = tracker
             .failure(Instant::now(), DiagnosticErrorKind::Transport, || {
-                format!("root cause: {}", "x".repeat(2_000))
+                let root_cause = format!("root cause: {}", "x".repeat(2_000));
+                otel_arrow_dfe_telemetry::otel_diagnostic_detail!(
+                    "test.detail",
+                    message = %root_cause
+                )
             })
             .expect("first failure must produce a report");
         otel_arrow_dfe_telemetry::otel_diagnostic_report!(
             target: "otel.exporter.test", emit: otel_warn,
             name: "test.export_error", report: &report,
             signal = "logs", retryable = true,
-            diagnostic_kind = "first_failure", message = %report.detail.as_str()
+            diagnostic_kind = "first_failure", message = %report.detail_str()
         );
     });
 

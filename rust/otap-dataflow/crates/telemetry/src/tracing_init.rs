@@ -531,18 +531,21 @@ mod tests {
             let (reporter, receiver) = test_reporter();
             let setup = test_setup(internal_async_provider(reporter), level("info"));
 
-            // Use enough long-string attributes to overflow any reasonable
-            // LOG_ARGUMENTS_ENCODE_INLINE (well above 256 bytes worth of payload).
+            // Use enough long-string attributes to overflow not just
+            // LOG_ARGUMENTS_ENCODE_INLINE but also LOG_ARGUMENTS_ENCODE_LIMIT,
+            // the hard cap beyond which the heap buffer is no longer allowed
+            // to grow (well above 2048 bytes worth of payload).
+            let long = "a".repeat(400);
             setup.with_subscriber_ignoring_env(|| {
                 otel_info!(
                     "overflow.test",
-                    a = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                    b = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-                    c = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-                    d = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
-                    e = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
-                    f = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
-                    g = "gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg",
+                    a = long.clone(),
+                    b = long.clone(),
+                    c = long.clone(),
+                    d = long.clone(),
+                    e = long.clone(),
+                    f = long.clone(),
+                    g = long.clone(),
                     message = "Body that itself is fairly long and may not fit alongside the attributes above"
                 );
             });
