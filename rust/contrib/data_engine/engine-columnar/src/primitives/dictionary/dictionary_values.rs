@@ -308,8 +308,10 @@ fn get_value_from_array(value: &Arc<dyn Array>, index: usize) -> ValueOrRef<'sta
 #[cfg(test)]
 mod tests {
     use arrow::array::{
-        FixedSizeBinaryArray, Int32Array, StringArray, TimestampMillisecondArray, UInt64Array,
+        FixedSizeBinaryArray, Float16Array, Float32Array, Float64Array, Int32Array,
+        LargeStringArray, StringArray, TimestampMillisecondArray, UInt64Array,
     };
+    use half::f16;
 
     use super::*;
 
@@ -352,6 +354,66 @@ mod tests {
         assert_eq!(values.get_value_at(2), ValueOrRef::Null);
         assert_eq!(values.get_value_at(3), ValueOrRef::Null);
         assert_eq!(values.get_value_at(4), ValueOrRef::Null);
+    }
+
+    /// Scenario: Arrow Float16, Float32, and Float64 arrays contain finite values, infinities, negative zero, NaN, and null.
+    /// Guarantees: Every width converts to f64 without losing special-value semantics or changing null handling.
+    #[test]
+    fn arrow_float_values_preserve_special_values() {
+        let float16 = DictionaryValueArray::from(&Float16Array::from(vec![
+            Some(f16::from_f32(1.5)),
+            Some(f16::NEG_INFINITY),
+            None,
+        ]));
+        assert_eq!(float16.get_value_at(0), ValueOrRef::Double(1.5));
+        assert_eq!(
+            float16.get_value_at(1),
+            ValueOrRef::Double(f64::NEG_INFINITY)
+        );
+        assert_eq!(float16.get_value_at(2), ValueOrRef::Null);
+
+        let float32_nan = f32::from_bits(0x7fc0_0001);
+        let float32 =
+            DictionaryValueArray::from(&Float32Array::from(vec![Some(-0.0), Some(float32_nan)]));
+        assert_eq!(float32.get_value_at(0), ValueOrRef::Double(-0.0));
+        assert_eq!(
+            float32.get_value_at(1),
+            ValueOrRef::Double(float32_nan as f64)
+        );
+
+        let float64_nan = f64::from_bits(0x7ff8_0000_0000_0001);
+        let float64 = DictionaryValueArray::from(&Float64Array::from(vec![
+            Some(f64::INFINITY),
+            Some(float64_nan),
+        ]));
+        assert_eq!(float64.get_value_at(0), ValueOrRef::Double(f64::INFINITY));
+        assert_eq!(float64.get_value_at(1), ValueOrRef::Double(float64_nan));
+    }
+
+    /// Scenario: A LargeUtf8 Arrow array contains adjacent ASCII and multibyte strings with an intervening null.
+    /// Guarantees: Large offsets select exactly each value's UTF-8 bytes and preserve null entries.
+    #[test]
+    fn large_utf8_values_preserve_offsets_and_multibyte_text() {
+        let values = DictionaryValueArray::from(&LargeStringArray::from(vec![
+            Some("prefix"),
+            Some("\u{e9}\u{65e5}"),
+            None,
+            Some("suffix"),
+        ]));
+
+        assert_eq!(
+            values.get_value_at(0),
+            ValueOrRef::String(StringValueOrRef::new_ref("prefix"))
+        );
+        assert_eq!(
+            values.get_value_at(1),
+            ValueOrRef::String(StringValueOrRef::new_ref("\u{e9}\u{65e5}"))
+        );
+        assert_eq!(values.get_value_at(2), ValueOrRef::Null);
+        assert_eq!(
+            values.get_value_at(3),
+            ValueOrRef::String(StringValueOrRef::new_ref("suffix"))
+        );
     }
 
     /// Scenario: Arrow timestamp and fixed-size binary arrays are used as dictionary values.

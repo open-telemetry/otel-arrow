@@ -378,6 +378,16 @@ impl<'a> ArrayValueOrRefSlice<'a> {
         range_start_inclusive: usize,
         range_end_exclusive: usize,
     ) -> ArrayValueOrRefSlice<'a> {
+        assert!(
+            range_start_inclusive <= range_end_exclusive,
+            "range start index {range_start_inclusive} exceeds range end index {range_end_exclusive}"
+        );
+        assert!(
+            range_end_exclusive <= value.len(),
+            "range end index {range_end_exclusive} out of range for array of length {}",
+            value.len()
+        );
+
         Self {
             value: value.into(),
             range_start_inclusive,
@@ -440,26 +450,25 @@ impl ArrayValue for ArrayValueOrRefSlice<'_> {
         range: ArrayRange,
         item_callback: &mut ArrayValueIteratorCallback<'a, '_>,
     ) -> bool {
-        let start = range
-            .get_start_range_inclusize()
-            .map(|v| v + self.range_start_inclusive)
-            .unwrap_or(self.range_start_inclusive);
-        let end = range
-            .get_end_range_exclusive()
-            .map(|v| v + self.range_start_inclusive)
-            .unwrap_or(self.range_end_exclusive);
+        let len = self.len();
+        let relative_start = range.get_start_range_inclusize().unwrap_or(0);
+        let relative_end = range.get_end_range_exclusive().unwrap_or(len);
 
-        if end > self.range_end_exclusive {
-            panic!(
-                "range end index {} out of range for slice of length {}",
-                range.get_end_range_exclusive().unwrap_or(0),
-                self.range_end_exclusive - self.range_start_inclusive
-            )
-        }
+        assert!(
+            relative_start <= relative_end,
+            "range start index {relative_start} exceeds range end index {relative_end}"
+        );
+        assert!(
+            relative_end <= len,
+            "range end index {relative_end} out of range for slice of length {len}"
+        );
 
-        self.value
-            .as_array_value()
-            .get_item_range((start..end).into(), item_callback)
+        self.value.as_array_value().get_item_range(
+            (self.range_start_inclusive + relative_start
+                ..self.range_start_inclusive + relative_end)
+                .into(),
+            item_callback,
+        )
     }
 }
 
@@ -531,6 +540,44 @@ mod tests {
         assert!(nested.get_static(1).unwrap().is_none());
     }
 
+    /// Scenario: Empty slices are constructed at both valid boundaries of an owned array.
+    /// Guarantees: Empty ranges are accepted and expose no values without accessing adjacent storage.
+    #[test]
+    fn array_slice_constructor_accepts_valid_empty_ranges() {
+        let start =
+            ArrayValueOrRefSlice::new(ArrayValueOrRef::from([ValueOrRef::Integer(10)]), 0, 0);
+        let end = ArrayValueOrRefSlice::new(ArrayValueOrRef::from([ValueOrRef::Integer(10)]), 1, 1);
+
+        assert!(start.is_empty());
+        assert!(end.is_empty());
+        assert_eq!(start.get(0), ValueOrRef::Null);
+        assert_eq!(end.get(0), ValueOrRef::Null);
+    }
+
+    /// Scenario: An array slice is constructed with its start after its end.
+    /// Guarantees: Reversed ranges are rejected immediately instead of underflowing during length calculation.
+    #[test]
+    #[should_panic(expected = "range start index 2 exceeds range end index 1")]
+    fn array_slice_constructor_rejects_reversed_ranges() {
+        let _ = ArrayValueOrRefSlice::new(
+            ArrayValueOrRef::from([ValueOrRef::Integer(10), ValueOrRef::Integer(20)]),
+            2,
+            1,
+        );
+    }
+
+    /// Scenario: An array slice ends beyond the length of its backing array.
+    /// Guarantees: Out-of-bounds ranges are rejected at construction rather than producing deferred nulls or panics.
+    #[test]
+    #[should_panic(expected = "range end index 3 out of range for array of length 2")]
+    fn array_slice_constructor_rejects_ranges_beyond_backing_array() {
+        let _ = ArrayValueOrRefSlice::new(
+            ArrayValueOrRef::from([ValueOrRef::Integer(10), ValueOrRef::Integer(20)]),
+            0,
+            3,
+        );
+    }
+
     /// Scenario: Iteration and ownership conversion operate on a nested slice surrounded by values in its backing array.
     /// Guarantees: Both operations expose only the nested range, use slice-relative indexes, and propagate callback termination.
     #[test]
@@ -567,6 +614,87 @@ mod tests {
             owned.get_values(),
             &[ValueOrRef::Integer(30), ValueOrRef::Integer(40)]
         );
+    }
+
+    /// Scenario: Explicit interior, empty, and full-boundary ranges are iterated from a non-zero-offset slice.
+    /// Guarantees: Range translation remains slice-relative and emits only the requested values with zero-based indexes.
+    #[test]
+    fn array_slice_explicit_range_iteration_is_slice_relative() {
+        let slice = ArrayValueOrRefSlice::new(
+            ArrayValueOrRef::from([
+                ValueOrRef::Integer(10),
+                ValueOrRef::Integer(20),
+                ValueOrRef::Integer(30),
+                ValueOrRef::Integer(40),
+            ]),
+            1,
+            4,
+        );
+
+        let mut interior = Vec::new();
+        assert!(slice.get_item_range((1..2).into(), &mut |index, value| {
+            interior.push((index, ValueOrRef::from(value)));
+            true
+        }));
+        assert_eq!(interior, vec![(0, ValueOrRef::Integer(30))]);
+
+        let mut empty_visits = 0;
+        assert!(slice.get_item_range((2..2).into(), &mut |_, _| {
+            empty_visits += 1;
+            true
+        }));
+        assert_eq!(empty_visits, 0);
+
+        let mut full = Vec::new();
+        assert!(slice.get_item_range((0..3).into(), &mut |index, value| {
+            full.push((index, ValueOrRef::from(value)));
+            true
+        }));
+        assert_eq!(
+            full,
+            vec![
+                (0, ValueOrRef::Integer(20)),
+                (1, ValueOrRef::Integer(30)),
+                (2, ValueOrRef::Integer(40))
+            ]
+        );
+    }
+
+    /// Scenario: Explicit iteration requests a range ending beyond the slice boundary.
+    /// Guarantees: The slice rejects the range instead of exposing adjacent backing-array values.
+    #[test]
+    #[should_panic(expected = "range end index 3 out of range for slice of length 2")]
+    fn array_slice_range_iteration_rejects_end_beyond_slice() {
+        let slice = ArrayValueOrRefSlice::new(
+            ArrayValueOrRef::from([
+                ValueOrRef::Integer(10),
+                ValueOrRef::Integer(20),
+                ValueOrRef::Integer(30),
+                ValueOrRef::Integer(40),
+            ]),
+            1,
+            3,
+        );
+
+        slice.get_item_range((0..3).into(), &mut |_, _| true);
+    }
+
+    /// Scenario: Explicit iteration requests a range whose start follows its end.
+    /// Guarantees: Reversed subranges are rejected before translating indexes into the backing array.
+    #[test]
+    #[should_panic(expected = "range start index 2 exceeds range end index 1")]
+    fn array_slice_range_iteration_rejects_reversed_range() {
+        let slice = ArrayValueOrRefSlice::new(
+            ArrayValueOrRef::from([
+                ValueOrRef::Integer(10),
+                ValueOrRef::Integer(20),
+                ValueOrRef::Integer(30),
+            ]),
+            0,
+            3,
+        );
+
+        slice.get_item_range((2..1).into(), &mut |_, _| true);
     }
 
     /// Scenario: The same integer sequence uses Arrow-buffered and owned array representations.
