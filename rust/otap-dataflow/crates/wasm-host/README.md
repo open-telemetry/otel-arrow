@@ -173,6 +173,10 @@ call, and the engine terminates a node whose `process` returns an error. The
 host records the instance as poisoned. Plugins should treat traps as fatal
 rather than as a per-batch error channel.
 
+Host-detected output cleanup failures and retained-resource violations also
+poison the instance, even when Wasmtime itself has not trapped. Later calls
+are rejected before inserting pdata or resetting execution budgets.
+
 Correspondingly, host kernel implementations return traps rather than
 panicking on guest-controlled input: the bindings are generated with trappable
 imports so an unsupported `attr-scope`, an absent attribute key, or a stale
@@ -277,8 +281,10 @@ Also deferred, and more pressing:
 
 - **A real resource-limit design.** The fuel and memory constants here are
   unprofiled placeholders, are not configurable per plugin or pipeline, and
-  have no epoch-interruption backstop for blocking that fuel does not
-  account for.
+  do not bound native-kernel latency. Follow-on work must account for batch
+  sizes and cumulative native work, and provide cooperative kernel execution
+  where needed. Epoch interruption only interrupts guest Wasm execution;
+  it is not a backstop for synchronous host work.
 - **A trap recovery policy.** Today any trap is terminal for the node. Whether
   a plugin should instead be re-instantiated, restarted with backoff, or
   bypassed is an open question.

@@ -269,9 +269,14 @@ interface lifecycle {
 /// - a cap on host-managed resources during each call, plus a post-`process`
 ///   requirement that no host resource remains after the returned `pdata` is
 ///   reclaimed, so complete host-side batches cannot accumulate across calls;
-/// - a per-entry cap on native `otel-kernels` invocations, which bounds how
-///   many host-side Arrow operations one guest call can request;
+/// - a provisional per-entry cap on native `otel-kernels` invocations,
+///   including `pdata-num-rows`, limiting the number of requested operations;
 /// - the shared `host-services` token bucket described above.
+///
+/// These bounds do not guarantee processing latency: a single synchronous
+/// native kernel can process a large host-side batch. Guest memory limits do
+/// not bound that batch, and fuel/epochs cannot preempt native host execution.
+/// Data-size/work budgets and cooperative kernels remain follow-on work.
 ///
 /// Trap semantics: a trap -- from exhausting the fuel or kernel-call budget,
 /// from a guest panic, or from violating a kernel contract -- is terminal for

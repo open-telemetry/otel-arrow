@@ -98,9 +98,13 @@ const MAX_GUEST_TABLES: usize = 2;
 /// the previous per-table limit.
 const MAX_GUEST_CORE_TABLE_ELEMENTS: usize = MAX_GUEST_TABLE_ELEMENTS / MAX_GUEST_TABLES;
 /// Maximum number of native host-kernel calls allowed during one guest entry
-/// point. Fuel only accounts for guest Wasm instructions, so this separate
-/// bound prevents a guest from amplifying one `process` call into unbounded
-/// native Arrow work.
+/// point. This is a provisional invocation-count guard, not a CPU-time bound.
+///
+/// TODO: Revisit in the upcoming resource-limits PR. Kernel costs depend on
+/// input size, and fuel/epochs cannot interrupt a synchronous host kernel.
+/// Define limits using representative plugin workloads, data-size/work
+/// accounting, and cooperative execution as needed. This cap does not
+/// guarantee pipeline responsiveness.
 const MAX_KERNEL_CALLS_PER_GUEST_CALL: u64 = 100_000;
 /// Version of the host-services ABI this host implements, returned by
 /// `host-services.host-abi-version`. Guests can branch on (or reject) it from

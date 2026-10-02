@@ -145,9 +145,8 @@ pub struct WasmProcessor {
     // in the hot path.
     _engine: Engine,
     _component: Component,
-    // Set once any guest call traps. Wasmtime marks a store unusable after a
-    // trap: every later entry into the instance fails with
-    // `Trap::CannotEnterComponent` regardless of what it is asked to do.
+    // Terminal after a guest-call or output-cleanup failure, including
+    // host-detected violations that do not themselves trap Wasmtime.
     poisoned: bool,
 }
 
@@ -350,9 +349,24 @@ impl WasmProcessor {
             }
         };
 
+        self.finish_guest_call(output)
+    }
+
+    fn finish_guest_call(
+        &mut self,
+        output: Option<wasmtime::component::Resource<HostPdata>>,
+    ) -> wasmtime::Result<Option<OtapArrowRecords>> {
         let result = match output {
             Some(handle) => {
-                let data = self.store.data_mut().table.delete(handle)?;
+                let data = self
+                    .store
+                    .data_mut()
+                    .table
+                    .delete(handle)
+                    .map_err(|error| {
+                        self.poisoned = true;
+                        wasmtime::Error::from(error).context("failed to reclaim guest output pdata")
+                    })?;
                 Some(data.otap_batch)
             }
             None => None,
@@ -1081,6 +1095,50 @@ mod tests {
             futures::executor::block_on(processor.run_guest(build_logs_batch(&["ERROR"])))
                 .expect_err("a poisoned instance must reject later process calls");
         assert_eq!(retry_error.to_string(), WASM_INSTANCE_POISONED);
+    }
+
+    /// Scenario: Host-side fault injection supplies a missing output resource
+    /// after a guest call; this does not demonstrate a guest-reachable failure.
+    /// Guarantees: Cleanup preserves the underlying error, poisons the instance,
+    /// and a retry neither resets fuel/budgets nor inserts another pdata.
+    #[test]
+    fn output_cleanup_failure_poisons_instance() {
+        let wasm_path = build_test_guest_wasm_for_unit_tests();
+        let controller_ctx = ControllerContext::new(
+            otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle::new(),
+        );
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let mut processor = WasmProcessor::from_path(
+            &wasm_path,
+            None,
+            "output-cleanup-test".to_string(),
+            WasmProcessorAllMetrics::new(&pipeline_ctx),
+        )
+        .expect("guest initializes");
+        let invalid = wasmtime::component::Resource::<HostPdata>::new_own(u32::MAX);
+        let error = processor
+            .finish_guest_call(Some(invalid))
+            .expect_err("missing output must fail cleanup");
+        assert!(
+            error
+                .to_string()
+                .contains("failed to reclaim guest output pdata")
+        );
+        assert!(matches!(
+            error.downcast_ref::<wasmtime::component::ResourceTableError>(),
+            Some(wasmtime::component::ResourceTableError::NotPresent)
+        ));
+        assert!(processor.poisoned);
+        processor.store.set_fuel(123).expect("set sentinel fuel");
+        processor.store.data_mut().kernel_calls = 7;
+
+        let retry = futures::executor::block_on(processor.run_guest(build_logs_batch(&["ERROR"])))
+            .expect_err("terminal instance must reject retry");
+        assert_eq!(retry.to_string(), WASM_INSTANCE_POISONED);
+        assert_eq!(processor.store.get_fuel().unwrap(), 123);
+        assert_eq!(processor.store.data().kernel_calls, 7);
+        assert!(processor.store.data().table.is_empty());
     }
 
     /// Scenario: A processor intentionally drops a pdata item.
