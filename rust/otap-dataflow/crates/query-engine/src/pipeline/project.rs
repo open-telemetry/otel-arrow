@@ -11,6 +11,7 @@ use arrow::datatypes::{DataType, Field, Schema};
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion, TreeNodeVisitor};
 use datafusion::common::{HashMap, HashSet};
 use datafusion::error::DataFusionError;
+use datafusion::functions::core::getfield::GetFieldFunc;
 use datafusion::logical_expr::Expr;
 use datafusion::scalar::ScalarValue;
 use otel_arrow_dfe_pdata::arrays::sanitize::sanitize_column;
@@ -276,7 +277,11 @@ impl<'a> TreeNodeVisitor<'a> for ProjectedSchemaExprVisitor {
         // `col("scope").field("name")` which produces a ScalarFunction expression invoking the
         // `GetFieldFunc` function with arguments ("scope", "name").
         if let Expr::ScalarFunction(scalar_udf) = node
-            && scalar_udf.func.name() == "get_field"
+            && scalar_udf
+                .func
+                .as_ref()
+                .inner()
+                .is::<GetFieldFunc>()
         {
             let source = scalar_udf.args.first();
             let field = scalar_udf.args.get(1);
