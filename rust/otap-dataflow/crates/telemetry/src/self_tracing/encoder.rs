@@ -1619,7 +1619,7 @@ mod tests {
     /// Scenario: a bare `&str` `message` body overflows the available
     /// buffer.
     /// Guarantees: the body is truncated with a `[...]` suffix instead of
-    /// being hard-dropped entirely, and `dropped_count` is incremented --
+    /// being hard-dropped entirely, and `dropped_count` is incremented,
     /// matching `record_debug`'s overflow behavior for the `message` field.
     #[test]
     fn record_str_message_overflow_truncates_with_suffix() {
