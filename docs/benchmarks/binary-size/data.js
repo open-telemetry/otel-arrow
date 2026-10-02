@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790961458223,
+  "lastUpdate": 1790962470279,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -50419,6 +50419,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 104.98,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "jmacd@users.noreply.github.com",
+            "name": "Joshua MacDonald",
+            "username": "jmacd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ba2ad466e5034d57f9c13788ef4b71bc3fdf552f",
+          "message": "chore(context): move compiled header propagation into the engine (#4228)\n\n# Chore Summary\n\n**Relocation with no functional change.**\n\nCurrently the transport header mechanism compiles its policies in the\nconfig directory; these belong in the engine.\nThis just moves that code.\n\n| Area | Change |\n| --- | --- |\n| Qualified header-selector resolution, compiled bindings, condition\nmatching/cache, propagation, and original-name requirement queries |\nMove from `config/src/transport_headers_policy.rs` to\n`engine/src/context_declaration/propagation.rs`. The existing resolver\nand request-time algorithms are retained. |\n| Propagation behavior tests | Move with the implementation, including\nfive tests previously in `config/src/transport_headers.rs`. Parsing,\nshape validation, capture, and storage tests stay in config. |\n| Configured `HeaderPropagationPolicy` | Stays in config with its\nserialized settings, constructor, and shape validation; no longer\ncarries runtime compiled state. |\n| Existing `engine/src/context_declaration.rs` machinery | Stays where\nit was: declarations, retention requirements, bindings, and\nstartup/live-update preparation are not relocated or replaced. |\n| Capture, transport-header storage, authorized-identity storage, and\ncontext declaration vocabulary | Unchanged. In particular, this PR does\nnot rename `ContextEntryPartKind` or introduce `ContextDomain`. |\n\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>\nCopilot-Session: b7396e9c-c440-4ebf-be52-e159f3ac1c5b",
+          "timestamp": "2026-10-02T16:44:19Z",
+          "tree_id": "e4610317c8823716ab651dd591972e4f5760edde",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/ba2ad466e5034d57f9c13788ef4b71bc3fdf552f"
+        },
+        "date": 1790962453561,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 85.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.79,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.23,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.01,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.98,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.77,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 72.51,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.88,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.56,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.16,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.35,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 117.8,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 104.92,
             "unit": "MB"
           }
         ]
