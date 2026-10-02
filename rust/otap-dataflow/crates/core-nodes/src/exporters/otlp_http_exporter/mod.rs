@@ -478,7 +478,13 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                         // `NackMsg::new` is retryable by construction.
                         let nack =
                             NackMsg::new(a.not_ready_reason(), OtapPdata::new(context, payload));
-                        _ = effect_handler.notify_nack(nack).await;
+                        notify_nack_with_diagnostics(
+                            &effect_handler,
+                            &mut self.metrics,
+                            signal_type,
+                            nack,
+                        )
+                        .await;
                         continue;
                     }
 
@@ -566,7 +572,13 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                                     OtapPdata::new(context, otap_batch.into()),
                                 );
                                 nack.permanent = true;
-                                _ = effect_handler.notify_nack(nack).await;
+                                notify_nack_with_diagnostics(
+                                    &effect_handler,
+                                    &mut self.metrics,
+                                    signal_type,
+                                    nack,
+                                )
+                                .await;
                                 continue;
                             }
 
@@ -612,7 +624,13 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                                     OtapPdata::new(context, saved_payload),
                                 );
                                 nack.permanent = true;
-                                _ = effect_handler.notify_nack(nack).await;
+                                notify_nack_with_diagnostics(
+                                    &effect_handler,
+                                    &mut self.metrics,
+                                    signal_type,
+                                    nack,
+                                )
+                                .await;
                                 continue;
                             }
                             Bytes::copy_from_slice(&compressed_buffer)
@@ -1109,21 +1127,36 @@ async fn finalize_completed_export(
 
             let mut nack = NackMsg::new(&message, pdata);
             nack.permanent = !retryable;
-            if let Err(error) = effect_handler.notify_nack(nack).await {
-                emit_notification(
-                    metrics.notifications.signal(signal_type).failure(
-                        Instant::now(),
-                        DiagnosticErrorKind::Notification,
-                        || &error,
-                    ),
-                    signal_type,
-                    NotificationOperation::Nack,
-                );
-            }
+            notify_nack_with_diagnostics(effect_handler, metrics, signal_type, nack).await;
         }
     }
 
     rejected_generation
+}
+
+/// Routes a terminal Nack and records a bounded diagnostic if routing fails.
+///
+/// Preparation, authentication, and backend failures all use this path so a
+/// closed upstream notification channel is observable regardless of where the
+/// export attempt stopped. Notification failure does not alter attempt metrics
+/// or delivery diagnostics.
+async fn notify_nack_with_diagnostics(
+    effect_handler: &EffectHandler<OtapPdata>,
+    metrics: &mut OtlpHttpExporterMetrics,
+    signal_type: SignalType,
+    nack: NackMsg<OtapPdata>,
+) {
+    if let Err(error) = effect_handler.notify_nack(nack).await {
+        emit_notification(
+            metrics.notifications.signal(signal_type).failure(
+                Instant::now(),
+                DiagnosticErrorKind::Notification,
+                || &error,
+            ),
+            signal_type,
+            NotificationOperation::Nack,
+        );
+    }
 }
 
 /// A simple pool of HTTP clients to allow for concurrent exports.

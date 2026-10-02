@@ -269,6 +269,29 @@ Authentication `source` is the name of the HTTP client auth implementation (ex:
 | `otlp.exporter.http.auth.invalid` | `warn` | A credential from the auth provider could not be turned into a valid header. |
 | `otlp.exporter.http.auth.stream_closed` | `warn` | The auth provider closed its refresh stream; the last credential (if any) is reused and no longer refreshes. |
 
+#### Bounded failure diagnostics
+
+The exporter applies the
+[shared repeated-operation policy](../../../../../docs/telemetry/events-guide.md#repeated-operation-failures)
+at three independent boundaries: HTTP delivery, payload preparation, and
+upstream Ack/Nack notification. State is local to an exporter instance/core,
+signal, and configured destination. A success for one signal or boundary cannot
+clear failures for another. The `signal` field uses the canonical lowercase
+values `logs`, `metrics`, and `traces`; `stage` identifies the boundary.
+
+`otlp.exporter.http.export_error` reports the first failed delivery and further
+summaries at most once every 60 seconds while new failures are observed.
+`otlp.exporter.http.export_recovered` confirms recovery only after 30 seconds
+without an observed failure and a successful request that started after the
+latest failure. An older in-flight success cannot clear a newer failure.
+Preparation and notification failures have independent bounded summaries and
+cannot establish delivery recovery.
+
+Successful delivery before the first failure is silent. Reports are evaluated
+on completions without probes or timers, so idle periods produce no reports and
+do not establish recovery. Changing error categories does not restart an
+episode or bypass the summary interval.
+
 Export, preparation, and notification diagnostics include `diagnostic_kind`
 (`first_failure`, `summary`, or `recovery`) and interval/episode counts.
 Existing export and notification error event names are preserved. Export errors
@@ -294,4 +317,4 @@ failure metrics for rates; existing error-event filters do not need renaming.
 - [Core node catalog](../../../README.md)
 
 See the [shared operation diagnostic policy](../../../../../docs/telemetry/events-guide.md#repeated-operation-failures)
-for report fields, scope, operation stages, and recovery semantics.
+for generic report fields, scoping guidance, and recovery semantics.

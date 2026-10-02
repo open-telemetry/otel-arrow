@@ -10,6 +10,7 @@
 
 use super::metrics::OtlpHttpExporterErrorType;
 use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_telemetry::attributes::AttributeEnum;
 use otel_arrow_dfe_telemetry::diagnostics::{
     DiagnosticErrorKind, DiagnosticReport, DiagnosticTracker, ReportKind,
 };
@@ -109,7 +110,7 @@ impl DeliveryDiagnostic {
             otel_arrow_dfe_telemetry::otel_diagnostic_report!(
                 target: "otel.exporter.otlp_http", level: otel_info,
                 name: "otlp.exporter.http.export_recovered", report: &report,
-                diagnostic_kind = "recovery", signal = ?signal, stage = "delivery",
+                diagnostic_kind = "recovery", signal = signal.as_str(), stage = "delivery",
                 message = "OTLP HTTP export recovered",
                 error = report.detail.as_str()
             );
@@ -117,7 +118,7 @@ impl DeliveryDiagnostic {
             otel_arrow_dfe_telemetry::otel_diagnostic_report!(
                 target: "otel.exporter.otlp_http", level: otel_warn,
                 name: "otlp.exporter.http.export_error", report: &report,
-                diagnostic_kind = diagnostic_kind(report.kind), signal = ?signal, stage = "delivery",
+                diagnostic_kind = diagnostic_kind(report.kind), signal = signal.as_str(), stage = "delivery",
                 message = report.detail.as_str(), retryable = self.sample_retryable
             );
         }
@@ -146,7 +147,7 @@ pub(super) fn emit_preparation(
         otel_arrow_dfe_telemetry::otel_diagnostic_report!(
             target: "otel.exporter.otlp_http", level: otel_warn,
             name: "otlp.exporter.http.preparation_error", report: &report,
-            diagnostic_kind = diagnostic_kind(report.kind), signal = ?signal, stage = "preparation",
+            diagnostic_kind = diagnostic_kind(report.kind), signal = signal.as_str(), stage = "preparation",
             message = "Failed to prepare OTLP HTTP export", error = report.detail.as_str()
         );
     }
@@ -181,7 +182,7 @@ pub(super) fn emit_notification(
         otel_arrow_dfe_telemetry::otel_diagnostic_report!(
             target: "otel.exporter.otlp_http", level: otel_warn,
             name: "otlp.exporter.http.notification_error", report: &report,
-            diagnostic_kind = diagnostic_kind(report.kind), signal = ?signal, stage = "notification",
+            diagnostic_kind = diagnostic_kind(report.kind), signal = signal.as_str(), stage = "notification",
             message = message, error = report.detail.as_str()
         );
     }

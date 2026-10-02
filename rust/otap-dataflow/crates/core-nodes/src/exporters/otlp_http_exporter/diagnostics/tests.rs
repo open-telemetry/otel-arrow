@@ -4,11 +4,13 @@
 use super::*;
 use crate::exporters::otlp_http_exporter::{
     CompletedExport, ServiceRequestError, finalize_completed_export,
-    metrics::OtlpHttpExporterMetrics,
+    metrics::OtlpHttpExporterMetrics, notify_nack_with_diagnostics,
 };
 use bytes::Bytes;
 use otel_arrow_dfe_engine::Interests;
-use otel_arrow_dfe_engine::control::{PipelineCompletionMsg, pipeline_completion_msg_channel};
+use otel_arrow_dfe_engine::control::{
+    NackMsg, PipelineCompletionMsg, pipeline_completion_msg_channel,
+};
 use otel_arrow_dfe_engine::local::exporter::EffectHandler;
 use otel_arrow_dfe_engine::testing::node::test_node;
 use otel_arrow_dfe_engine::testing::test_pipeline_ctx_with_interests;
@@ -172,11 +174,11 @@ fn delivery_event_contract_and_retained_samples() {
     for index in [2, 4] {
         assert_eq!(events[index].fields["message"], "partial acceptance");
         assert_eq!(events[index].fields["retryable"], false);
-        assert_eq!(events[index].fields["signal"], "Logs");
+        assert_eq!(events[index].fields["signal"], "logs");
     }
     assert_eq!(events[2].fields["error_sample_age_seconds"], 0.0);
     assert_eq!(events[3].fields["retryable"], true);
-    assert_eq!(events[3].fields["signal"], "Traces");
+    assert_eq!(events[3].fields["signal"], "traces");
     assert_eq!(events[4].fields["error_sample_age_seconds"], 60.0);
     assert_eq!(events[4].fields["failed_attempts"], 1);
     assert_eq!(events[4].fields["successful_attempts"], 1);
@@ -510,4 +512,60 @@ fn notification_failure_does_not_redefine_delivery() {
         );
         assert!(!notification.fields.contains_key("retryable"));
     }
+}
+
+/// Scenario: An early export failure cannot route its terminal Nack upstream.
+/// Guarantees: The shared Nack path emits a bounded notification diagnostic with canonical signal data.
+#[test]
+fn early_nack_notification_failure_is_observable() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let capture = Capture::default();
+    tracing::subscriber::with_default(tracing_subscriber::registry().with(capture.clone()), || {
+        runtime.block_on(async {
+            let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(Interests::empty());
+            let mut metrics = OtlpHttpExporterMetrics::register(&pipeline_ctx, None);
+            let (_metrics_rx, reporter) = MetricsReporter::create_new_and_receiver(1);
+            let mut effects = EffectHandler::new(
+                test_node("test-exporter"),
+                reporter,
+                otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+            );
+            let (tx, rx) = pipeline_completion_msg_channel(1);
+            drop(rx);
+            effects.set_pipeline_completion_msg_sender(tx);
+            let pdata =
+                OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(Bytes::new()).into())
+                    .test_subscribe_to(Interests::NACKS, TestCallData::default().into(), 123);
+
+            notify_nack_with_diagnostics(
+                &effects,
+                &mut metrics,
+                SignalType::Logs,
+                NackMsg::new("preparation failed", pdata),
+            )
+            .await;
+        });
+    });
+
+    let events = capture.0.lock().unwrap();
+    assert_eq!(events.len(), 1);
+    events[0].assert_contract(
+        "otlp.exporter.http.notification_error",
+        Level::WARN,
+        "first_failure",
+        "notification",
+    );
+    assert_eq!(events[0].fields["signal"], "logs");
+    assert_eq!(
+        events[0].fields["message"],
+        "Failed to route the terminal OTLP HTTP Nack notification"
+    );
+    assert!(
+        events[0].fields["error"]
+            .as_str()
+            .is_some_and(|error| !error.is_empty())
+    );
 }
