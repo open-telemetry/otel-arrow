@@ -386,6 +386,10 @@ impl<'a> ArrayValueOrRefSlice<'a> {
     }
 
     pub fn get(&self, index: usize) -> ValueOrRef<'a> {
+        if index >= self.len() {
+            return ValueOrRef::Null;
+        }
+
         match self.value.as_ref() {
             ArrayValueOrRef::Ref(a) => a
                 .get(self.range_start_inclusive + index)
@@ -412,12 +416,20 @@ impl ArrayValue for ArrayValueOrRefSlice<'_> {
     }
 
     fn get(&self, index: usize) -> Option<&dyn AsValue> {
+        if index >= self.len() {
+            return None;
+        }
+
         self.value
             .as_array_value()
             .get(self.range_start_inclusive + index)
     }
 
     fn get_static(&self, index: usize) -> Result<Option<&(dyn AsStaticValue + 'static)>, String> {
+        if index >= self.len() {
+            return Ok(None);
+        }
+
         self.value
             .as_array_value()
             .get_static(self.range_start_inclusive + index)
