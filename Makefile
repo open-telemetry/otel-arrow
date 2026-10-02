@@ -121,16 +121,20 @@ chlog-preview:
 	@echo "=== $(CHANGELOG_RUST) ==="
 	$(CHLOGGEN) update --config $(CHLOGGEN_RUST_CONFIG) --dry
 
-# Render pending entries into the configured CHANGELOG files for VERSION
-# and delete the consumed entry files. Invoked by the release workflow.
-.PHONY: chlog-update
-chlog-update:
+# Render pending entries for one component into its CHANGELOG file and delete
+# the consumed entry files. Invoked by the release workflow.
+.PHONY: chlog-update-go
+chlog-update-go:
 	$(CHLOGGEN) update --config $(CHLOGGEN_GO_CONFIG) --version $(VERSION)
+	sed -i.bak 's/[[:space:]]*$$//' $(CHANGELOG_GO) && rm -f $(CHANGELOG_GO).bak
+	cat -s $(CHANGELOG_GO) > $(CHANGELOG_GO).tmp && mv $(CHANGELOG_GO).tmp $(CHANGELOG_GO)
+
+.PHONY: chlog-update-rust
+chlog-update-rust:
 	$(CHLOGGEN) update --config $(CHLOGGEN_RUST_CONFIG) --version $(VERSION)
-	# chloggen's indent function leaves trailing whitespace on blank sub-text
-	# lines and the template emits consecutive blank lines; fix both so the
-	# sanity check and markdownlint pass.
-	for f in $(CHANGELOG_GO) $(CHANGELOG_RUST); do \
-		sed -i.bak 's/[[:space:]]*$$//' $$f && rm -f $$f.bak; \
-		cat -s $$f > $$f.tmp && mv $$f.tmp $$f; \
-	done
+	sed -i.bak 's/[[:space:]]*$$//' $(CHANGELOG_RUST) && rm -f $(CHANGELOG_RUST).bak
+	cat -s $(CHANGELOG_RUST) > $(CHANGELOG_RUST).tmp && mv $(CHANGELOG_RUST).tmp $(CHANGELOG_RUST)
+
+# Backward-compatible combined target for coordinated releases.
+.PHONY: chlog-update
+chlog-update: chlog-update-go chlog-update-rust
