@@ -7394,6 +7394,7 @@ dependencies = [
  "paste",
  "pretty_assertions",
  "prost 0.14.4",
+ "quick-xml",
  "rand 0.10.3",
  "rdkafka",
  "regex",
