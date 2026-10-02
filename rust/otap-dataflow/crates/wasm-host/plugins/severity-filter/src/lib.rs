@@ -5,9 +5,8 @@
 //!
 //! Keeps only log records whose `severity_text` equals `"ERROR"` by
 //! orchestrating a native host kernel over a host-managed pdata resource.
-//! It also demonstrates the normal lifecycle and host-services contract:
-//! `initialize` checks the host ABI, logs, and records a counter; `shutdown`
-//! logs and records a counter.
+//! It also demonstrates the initialization and host-services contract:
+//! `initialize` checks the host ABI, logs, and records a counter.
 //!
 //! Built as a Rust-nightly `wasm32-wasip3` component using `std`. It is not a
 //! Cargo workspace member.
@@ -63,11 +62,6 @@ impl Lifecycle for SeverityFilter {
         .await;
         counter_add(String::from("severity_filter.initialize"), 1).await;
         Ok(())
-    }
-
-    async fn shutdown() {
-        log(LogLevel::Info, String::from("severity-filter shutdown")).await;
-        counter_add(String::from("severity_filter.shutdown"), 1).await;
     }
 }
 

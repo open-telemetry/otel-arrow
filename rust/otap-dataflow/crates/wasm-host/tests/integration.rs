@@ -115,9 +115,8 @@ fn severities_of(pdata: OtapPdata) -> Vec<String> {
 /// Scenario: A full pipeline node runs the reference guest end to end,
 /// processing a batch of log records with mixed severities.
 /// Guarantees: Only `severity_text == "ERROR"` records survive, proving the
-/// wasm processor factory, guest instantiation (including the new
-/// `initialize`/`shutdown` lifecycle calls), and the `otel-kernels` filter
-/// kernel all work together against the real engine.
+/// wasm processor factory, guest instantiation and initialization, and the
+/// `otel-kernels` filter kernel all work together against the real engine.
 #[test]
 fn wasm_processor_filters_error_severity_end_to_end() {
     let wasm_path = build_reference_guest_wasm();
@@ -249,8 +248,11 @@ fn guest_imports_only_the_sandboxed_interfaces() {
     let unexpected: Vec<&String> = imports
         .iter()
         .filter(|name| {
-            !name.starts_with("otel:otap-dataflow-plugin/")
-                && !(name.starts_with("wasi:cli/") && name.ends_with("@0.3.0"))
+            !matches!(
+                name.as_str(),
+                "otel:otap-dataflow-plugin/otel-kernels@0.1.0"
+                    | "otel:otap-dataflow-plugin/host-services@0.1.0"
+            ) && !(name.starts_with("wasi:cli/") && name.ends_with("@0.3.0"))
                 && !(name.starts_with("wasi:clocks/") && name.ends_with("@0.3.0"))
         })
         .collect();
@@ -261,9 +263,12 @@ fn guest_imports_only_the_sandboxed_interfaces() {
          (full import list: {imports:?})"
     );
 
-    for required in ["otel-kernels", "host-services"] {
+    for required in [
+        "otel:otap-dataflow-plugin/otel-kernels@0.1.0",
+        "otel:otap-dataflow-plugin/host-services@0.1.0",
+    ] {
         assert!(
-            imports.iter().any(|name| name.contains(required)),
+            imports.iter().any(|name| name == required),
             "expected the guest to import `{required}`, got: {imports:?}"
         );
     }

@@ -55,7 +55,7 @@ pub struct WasmProcessorMetrics {
     /// Number of guest `log`/`counter-add`/`get-config` calls rejected
     /// (silently no-op'd) because the shared token-bucket rate limiter was
     /// empty. The limiter is scoped to the plugin instance's whole lifetime,
-    /// not reset per `initialize`/`process`/`shutdown` call. A non-zero value
+    /// not reset per `initialize`/`process` call. A non-zero value
     /// is how an operator tells a throttled plugin apart from a quiet one.
     #[metric(unit = "{item}")]
     pub guest_host_service_calls_rejected: Counter<u64>,

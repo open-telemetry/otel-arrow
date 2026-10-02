@@ -10,8 +10,8 @@
 //! the hot path.
 //!
 //! Execution is in-core: `process` directly awaits the guest on the pipeline's
-//! per-core runtime, while synchronous initialization and teardown reject
-//! suspending clock waits. Store-owned state is never shared across threads.
+//! per-core runtime. Clock reads are available, but suspending clock waits are
+//! rejected in every phase. Store-owned state is never shared across threads.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -49,7 +49,7 @@ use crate::metrics::WasmProcessorAllMetrics;
 pub const WASM_PROCESSOR_URN: &str = "urn:otel:processor:wasm_processor";
 
 /// Wasmtime "fuel" budget granted before each guest entry point call
-/// (`initialize`, `process`, `shutdown`). Wasmtime charges roughly one unit
+/// (`initialize` and `process`). Wasmtime charges roughly one unit
 /// of fuel per interpreted Wasm instruction (with some instructions costing
 /// more), so this bounds guest Wasm instructions per call and turns
 /// runaway/infinite guest loops into a catchable `Trap::OutOfFuel` instead of
@@ -142,15 +142,9 @@ pub struct WasmProcessor {
     // in the hot path.
     _engine: Engine,
     _component: Component,
-    // Tracks whether the guest's `shutdown` export has run, so the teardown
-    // path (see `Drop for WasmProcessor`) never double-calls the guest.
-    shutdown_called: bool,
     // Set once any guest call traps. Wasmtime marks a store unusable after a
     // trap: every later entry into the instance fails with
-    // `Trap::CannotEnterComponent` regardless of what it is asked to do. We
-    // track it explicitly so teardown can skip a guest `shutdown` that could
-    // only fail, rather than emitting a confusing second error for the same
-    // underlying fault.
+    // `Trap::CannotEnterComponent` regardless of what it is asked to do.
     poisoned: bool,
 }
 
@@ -244,7 +238,6 @@ impl WasmProcessor {
             })?;
         // Call the guest's `initialize` export exactly once, before any
         // `process` call is ever attempted.
-        store.data_mut().set_clock_waits_enabled(false);
         store.data_mut().begin_guest_call();
         let init_result = futures::executor::block_on(store.run_concurrent(async |accessor| {
             instance
@@ -301,59 +294,8 @@ impl WasmProcessor {
             metrics,
             _engine: engine,
             _component: component,
-            shutdown_called: false,
             poisoned: false,
         })
-    }
-
-    /// Call the guest's `shutdown` export exactly once. Safe to call multiple
-    /// times; subsequent calls are no-ops.
-    ///
-    /// Teardown ordering: this is deliberately *not* called from the
-    /// `NodeControlMsg::Shutdown` arm of `process` below. That control
-    /// message begins a drain rather than ending the node -- the engine
-    /// broadcasts it to every non-receiver node at once so upstream nodes can
-    /// flush buffered data, and the node loop keeps delivering messages until
-    /// the inbox closes. Buffering processors upstream (the batch and
-    /// temporal-reaggregation processors, for example) emit pdata precisely
-    /// on that signal, so a downstream plugin that shut down on `Shutdown`
-    /// would then be asked to `process` data with its state already torn
-    /// down. `wit/plugin.wit` promises `shutdown` runs after the last
-    /// `process` call, so it runs from `Drop` instead: the engine drops the
-    /// processor once its loop ends, which is the first point at which that
-    /// promise actually holds.
-    ///
-    /// Skipped entirely if a previous guest call trapped: Wasmtime marks the
-    /// instance permanently unusable after a trap, so calling in could only
-    /// produce a second, misleading error for the same fault.
-    fn shutdown_guest(&mut self) {
-        if self.shutdown_called {
-            return;
-        }
-        self.shutdown_called = true;
-        if self.poisoned {
-            otel_warn!("wasm_processor.shutdown_skipped_after_trap");
-            return;
-        }
-        if let Err(e) = self.store.set_fuel(GUEST_FUEL_PER_CALL) {
-            otel_warn!("wasm_processor.shutdown_fuel_setup_failed", error = %e);
-            self.drain_host_service_counters();
-            return;
-        }
-        self.store.data_mut().set_clock_waits_enabled(false);
-        self.store.data_mut().begin_guest_call();
-        if let Err(e) = futures::executor::block_on(self.store.run_concurrent(async |accessor| {
-            self.instance
-                .otel_otap_dataflow_plugin_lifecycle()
-                .call_shutdown(accessor)
-                .await
-        }))
-        .and_then(|result| result)
-        {
-            self.poisoned = true;
-            otel_warn!("wasm_processor.shutdown_trap", error = format!("{e:#}"));
-        }
-        self.drain_host_service_counters();
     }
 
     fn drain_host_service_counters(&mut self) {
@@ -373,7 +315,6 @@ impl WasmProcessor {
         self.store.data_mut().begin_guest_call();
         let input = self.store.data_mut().table.push(HostPdata { otap_batch })?;
         let input_rep = input.rep();
-        self.store.data_mut().set_clock_waits_enabled(true);
 
         let call_result = self
             .store
@@ -385,15 +326,13 @@ impl WasmProcessor {
             })
             .await
             .and_then(|result| result);
-        self.store.data_mut().set_clock_waits_enabled(false);
 
         let output = match call_result {
             Ok(output) => output,
             Err(err) => {
                 // Any error out of `call_process` is a trap (fuel exhaustion,
                 // a guest panic, or a kernel contract violation), and a trap
-                // makes the whole instance permanently unusable. Record that
-                // so teardown does not try to re-enter the guest.
+                // makes the whole instance permanently unusable.
                 self.poisoned = true;
                 // Best-effort cleanup: the guest may already have consumed or
                 // dropped this handle before trapping.
@@ -405,36 +344,22 @@ impl WasmProcessor {
             }
         };
 
-        match output {
+        let result = match output {
             Some(handle) => {
                 let data = self.store.data_mut().table.delete(handle)?;
-                Ok(Some(data.otap_batch))
+                Some(data.otap_batch)
             }
-            None => Ok(None),
-        }
-    }
-}
+            None => None,
+        };
 
-impl Drop for WasmProcessor {
-    /// Primary teardown path for the guest's `shutdown` export.
-    ///
-    /// The engine drops the processor after its message loop ends, which is
-    /// the first moment `wit/plugin.wit`'s "after the last `process` call has
-    /// returned" guarantee actually holds -- see [`WasmProcessor::shutdown_guest`]
-    /// for why the `NodeControlMsg::Shutdown` control message is the wrong
-    /// place for it.
-    ///
-    /// Skipped while the thread is already panicking. `shutdown_guest` runs
-    /// guest code, and guest code can trap; if the host is unwinding from a
-    /// panic, a panic raised here would be a panic-during-unwind and abort
-    /// the process, replacing a recoverable node failure with a hard crash.
-    /// `wit/plugin.wit` documents `shutdown` as best-effort for exactly this
-    /// case.
-    fn drop(&mut self) {
-        if std::thread::panicking() {
-            return;
+        if !self.store.data().table.is_empty() {
+            self.poisoned = true;
+            return Err(wasmtime::Error::msg(
+                "guest retained host resources after process returned",
+            ));
         }
-        self.shutdown_guest();
+
+        Ok(result)
     }
 }
 
@@ -446,11 +371,6 @@ impl local::Processor<OtapPdata> for WasmProcessor {
         effect_handler: &mut local::EffectHandler<OtapPdata>,
     ) -> Result<(), EngineError> {
         match msg {
-            // `Shutdown` starts a pipeline drain, not this node's teardown:
-            // upstream nodes flush on the same signal, so more pdata can
-            // still arrive. The guest's `shutdown` therefore runs from `Drop`
-            // (see `shutdown_guest`), once the node loop has actually ended.
-            Message::Control(NodeControlMsg::Shutdown { .. }) => Ok(()),
             Message::Control(NodeControlMsg::CollectTelemetry {
                 mut metrics_reporter,
             }) => {
@@ -847,12 +767,11 @@ mod tests {
         }
     }
 
-    /// Scenario: A guest calls `std::thread::sleep` while processing pdata on
-    /// the engine's Tokio current-thread runtime.
-    /// Guarantees: The guest wait yields to another task on that same runtime
-    /// and processing resumes after the finite wait without deadlocking.
+    /// Scenario: A guest calls `std::thread::sleep` while processing pdata.
+    /// Guarantees: The host rejects the future clock wait immediately and
+    /// poisons the instance instead of allowing an unbounded suspension.
     #[test]
-    fn process_clock_wait_yields_on_current_thread_runtime() {
+    fn process_rejects_suspending_clock_waits() {
         let wasm_path = build_test_guest_wasm_for_unit_tests();
         let controller_ctx = ControllerContext::new(
             otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle::new(),
@@ -866,46 +785,18 @@ mod tests {
             "sleep-process-test".to_string(),
             WasmProcessorAllMetrics::new(&pipeline_ctx),
         )
-        .expect("process clock waits are allowed after initialization");
-
-        let runtime: TestRuntime<OtapPdata> = TestRuntime::new();
-        let wrapper = ProcessorWrapper::local(
-            processor,
-            test_node("wasm-process-wait"),
-            Arc::new(NodeUserConfig::new_processor_config(WASM_PROCESSOR_URN)),
-            runtime.config(),
-        );
-        let peer_task_ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
-
-        runtime
-            .set_processor(wrapper)
-            .run_test({
-                let peer_task_ran = Arc::clone(&peer_task_ran);
-                |mut ctx| async move {
-                    let peer_task_flag = Arc::clone(&peer_task_ran);
-                    let peer_task = tokio::spawn(async move {
-                        tokio::time::sleep(Duration::from_millis(5)).await;
-                        peer_task_flag.store(true, std::sync::atomic::Ordering::SeqCst);
-                    });
-
-                    ctx.process(Message::PData(OtapPdata::new(
-                        Context::default(),
-                        build_logs_batch(&["ERROR", "INFO"]).into(),
-                    )))
-                    .await
-                    .expect("finite guest clock wait should complete");
-                    assert!(
-                        peer_task_ran.load(std::sync::atomic::Ordering::SeqCst),
-                        "the peer task must run before guest processing returns"
-                    );
-                    peer_task.await.expect("peer task should complete");
-                }
-            })
-            .validate(|_| async move {});
-
+        .expect("guest should initialize before its process wait");
+        let mut processor = processor;
+        let error =
+            futures::executor::block_on(processor.run_guest(build_logs_batch(&["ERROR", "INFO"])))
+                .expect_err("process clock wait must fail");
         assert!(
-            peer_task_ran.load(std::sync::atomic::Ordering::SeqCst),
-            "another task must run while the guest is suspended"
+            format!("{error:#}").contains(crate::host::WASI_CLOCK_WAIT_UNSUPPORTED),
+            "process clock wait should report the capability restriction: {error:#}"
+        );
+        assert!(
+            processor.poisoned,
+            "a rejected process wait must poison the trapped instance"
         );
     }
 
@@ -951,142 +842,6 @@ mod tests {
             Some(1),
             "initialize must run exactly once per instance, not once per process() call"
         );
-    }
-
-    /// Scenario: A processor is torn down twice over -- `shutdown_guest` is
-    /// invoked repeatedly, as happens when an explicit teardown is followed
-    /// by the `Drop` impl running.
-    /// Guarantees: The guest's `shutdown` export runs exactly once; the
-    /// idempotency guard prevents a second invocation on the same store.
-    #[test]
-    fn shutdown_guest_is_idempotent() {
-        let wasm_path = build_test_guest_wasm_for_unit_tests();
-        let controller_ctx = ControllerContext::new(
-            otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle::new(),
-        );
-        let pipeline_ctx =
-            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
-        let metrics = WasmProcessorAllMetrics::new(&pipeline_ctx);
-
-        let mut processor =
-            WasmProcessor::from_path(&wasm_path, None, "test_wasm_node".to_string(), metrics)
-                .expect("valid guest config");
-        assert_eq!(
-            processor.store.data().guest_counter("test_plugin.shutdown"),
-            None,
-            "shutdown must not run during construction"
-        );
-
-        processor.shutdown_guest();
-        assert_eq!(
-            processor.store.data().guest_counter("test_plugin.shutdown"),
-            Some(1),
-            "the first shutdown must invoke the guest export"
-        );
-
-        // Simulates `Drop` firing after an explicit teardown.
-        processor.shutdown_guest();
-        processor.shutdown_guest();
-        assert_eq!(
-            processor.store.data().guest_counter("test_plugin.shutdown"),
-            Some(1),
-            "subsequent shutdowns must be no-ops, never re-entering the guest"
-        );
-    }
-
-    /// Scenario: A guest attempts `std::thread::sleep` from its synchronous
-    /// `shutdown` lifecycle hook after the processor loop has ended.
-    /// Guarantees: Teardown rejects the wait immediately, marks the instance
-    /// poisoned, and does not execute guest code after the rejected wait.
-    #[test]
-    fn shutdown_rejects_suspending_clock_waits() {
-        let wasm_path = build_test_guest_wasm_for_unit_tests();
-        let controller_ctx = ControllerContext::new(
-            otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle::new(),
-        );
-        let pipeline_ctx =
-            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
-        let plugin_config = serde_json::json!({ "sleep_shutdown": true });
-        let mut processor = WasmProcessor::from_path(
-            &wasm_path,
-            Some(&plugin_config),
-            "sleep-shutdown-test".to_string(),
-            WasmProcessorAllMetrics::new(&pipeline_ctx),
-        )
-        .expect("guest should initialize before its shutdown wait");
-
-        processor.shutdown_guest();
-
-        assert!(
-            processor.poisoned,
-            "a rejected shutdown wait must poison the trapped instance"
-        );
-        assert_eq!(
-            processor.store.data().guest_counter("test_plugin.shutdown"),
-            None,
-            "guest code after the rejected shutdown wait must not run"
-        );
-    }
-
-    /// Scenario: A running plugin node receives the pipeline's `Shutdown`
-    /// control message and is then handed more pdata, which is exactly what
-    /// the engine does: `Shutdown` starts a *drain*, is broadcast to every
-    /// non-receiver node at once so buffering upstream processors can flush,
-    /// and the node loop keeps delivering messages until its inbox closes.
-    /// Guarantees: The guest's `shutdown` export has NOT run when that later
-    /// pdata arrives, and the pdata is still processed correctly. This is the
-    /// regression guard for `wit/plugin.wit`'s promise that `shutdown` is
-    /// called only after the last `process` call has returned -- calling it
-    /// from the `Shutdown` arm would hand post-teardown data to the guest.
-    #[test]
-    fn shutdown_control_message_does_not_tear_down_the_guest_mid_drain() {
-        let wasm_path = build_test_guest_wasm_for_unit_tests();
-        let controller_ctx = ControllerContext::new(
-            otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle::new(),
-        );
-        let pipeline_ctx =
-            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
-        let metrics = WasmProcessorAllMetrics::new(&pipeline_ctx);
-        let processor =
-            WasmProcessor::from_path(&wasm_path, None, "test_wasm_node".to_string(), metrics)
-                .expect("valid guest config");
-
-        let runtime: TestRuntime<OtapPdata> = TestRuntime::new();
-        let wrapper = ProcessorWrapper::local(
-            processor,
-            test_node("wasm-drain"),
-            Arc::new(NodeUserConfig::new_processor_config(WASM_PROCESSOR_URN)),
-            runtime.config(),
-        );
-
-        runtime
-            .set_processor(wrapper)
-            .run_test(|mut ctx| async move {
-                ctx.process(Message::Control(NodeControlMsg::Shutdown {
-                    deadline: std::time::Instant::now() + Duration::from_secs(5),
-                    reason: "pipeline drain".to_string(),
-                }))
-                .await
-                .expect("shutdown control message is accepted");
-
-                // Upstream buffering nodes flush on the same signal, so this
-                // is ordinary in-drain traffic, not a protocol violation.
-                let records = build_logs_batch(&["ERROR", "INFO", "ERROR"]);
-                ctx.process(Message::PData(OtapPdata::new(
-                    Context::default(),
-                    records.into(),
-                )))
-                .await
-                .expect("pdata arriving during the drain must still be processed");
-
-                let out = ctx.drain_pdata().await;
-                assert_eq!(
-                    out.len(),
-                    1,
-                    "the guest must still produce output after the drain signal"
-                );
-            })
-            .validate(|_| async move {});
     }
 
     /// Scenario: A guest's `initialize` traps (the test plugin panics
@@ -1237,9 +992,8 @@ mod tests {
     /// whole `GUEST_FUEL_PER_CALL` budget.
     /// Guarantees: The call traps and returns an error in bounded time
     /// instead of hanging the pipeline thread forever, and the instance is
-    /// marked poisoned -- Wasmtime refuses every later entry into a trapped
-    /// instance, so teardown must not try to call the guest's `shutdown`
-    /// again and produce a second, misleading error for the same fault.
+    /// marked poisoned because Wasmtime refuses every later entry into a
+    /// trapped instance.
     #[test]
     fn runaway_guest_exhausts_its_fuel_budget_and_poisons_the_instance() {
         let wasm_path = build_test_guest_wasm_for_unit_tests();
@@ -1271,13 +1025,42 @@ mod tests {
             processor.poisoned,
             "a trapped instance must be marked unusable"
         );
+    }
 
-        // Teardown must not re-enter the trapped instance.
-        processor.shutdown_guest();
-        assert_eq!(
-            processor.store.data().guest_counter("test_plugin.shutdown"),
-            None,
-            "shutdown must be skipped for a poisoned instance"
+    /// Scenario: A guest stores its owned pdata resource instead of returning
+    /// or dropping it before `process` completes.
+    /// Guarantees: The host rejects cross-call resource retention, poisons the
+    /// instance, and prevents accumulation of host-side batches.
+    #[test]
+    fn guest_cannot_retain_pdata_across_process_calls() {
+        let wasm_path = build_test_guest_wasm_for_unit_tests();
+        let controller_ctx = ControllerContext::new(
+            otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle::new(),
+        );
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let plugin_config = serde_json::json!({ "retain_pdata": true });
+        let mut processor = WasmProcessor::from_path(
+            &wasm_path,
+            Some(&plugin_config),
+            "retain-pdata-test".to_string(),
+            WasmProcessorAllMetrics::new(&pipeline_ctx),
+        )
+        .expect("retaining guest should initialize");
+
+        let error =
+            futures::executor::block_on(processor.run_guest(build_logs_batch(&["ERROR", "INFO"])))
+                .expect_err("retaining pdata across calls must fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("retained host resources after process returned"),
+            "unexpected retained-resource error: {error:#}"
+        );
+        assert!(
+            processor.poisoned,
+            "a retained host resource must make the instance terminal"
         );
     }
 

@@ -36,9 +36,8 @@ otel_arrow_dfe_telemetry::otel_component_scope!(
 /// pipeline node (unit tests, and the `Default`/`new` convenience paths).
 const UNATTRIBUTED_NODE: &str = "unattributed";
 
-/// Error returned when a synchronous guest lifecycle call attempts to wait.
-pub(crate) const WASI_CLOCK_WAIT_UNSUPPORTED: &str =
-    "WASI clock waits are unavailable during synchronous guest lifecycle calls";
+/// Error returned when a guest attempts a future clock wait.
+pub(crate) const WASI_CLOCK_WAIT_UNSUPPORTED: &str = "WASI clock waits are unavailable to plugins";
 
 /// Maximum number of distinct guest-created counter names accepted per
 /// plugin instance. See the `counter-add` doc comment in `wit/plugin.wit`
@@ -55,6 +54,8 @@ const MAX_GUEST_COUNTER_NAME_LEN: usize = 256;
 /// Transient argument copies are bounded separately by
 /// [`MAX_GUEST_HOSTCALL_BYTES`] and [`GuestCopyBudget`].
 const MAX_GUEST_LOG_MESSAGE_LEN: usize = 4096;
+/// Marker appended to guest log messages truncated by the host.
+const GUEST_LOG_TRUNCATION_MARKER: &str = " ...[truncated]";
 /// Canonical-ABI input-byte budget per lift, checked before string allocation.
 /// This world exchanges control strings, not bulk telemetry payloads.
 /// Non-UTF-8 canonical encodings can expand during conversion to UTF-8.
@@ -133,8 +134,7 @@ const HOST_SERVICE_CALL_BURST: f64 = 2_000.0;
 /// guest's *sustained* host-service call rate to
 /// `HOST_SERVICE_CALL_RATE_PER_SEC` while still tolerating short bursts up
 /// to `HOST_SERVICE_CALL_BURST`, independent of how calls are distributed
-/// across `initialize`/`process`/`shutdown` invocations over the
-/// instance's lifetime.
+/// across `initialize`/`process` invocations over the instance's lifetime.
 ///
 /// This bounds accepted calls and telemetry volume, not argument copies:
 /// even rejected calls have already lifted their arguments. Those copies
@@ -264,15 +264,12 @@ pub struct HostState {
     wasi_cli: WasiCliCtx,
     /// Origin used for guest-observable monotonic clock reads.
     ///
-    /// Clock reads remain available for Rust `std`. Future waits are enabled
-    /// only while the engine is directly awaiting the guest's `process`
-    /// export; waits during synchronous initialization and teardown trap.
+    /// Clock reads remain available for Rust `std`, while future waits trap in
+    /// every guest entry point.
     ///
     /// TODO: Replace real-time reads with frozen host clocks when the plugin
     /// determinism policy is implemented.
     wasi_monotonic_origin: std::time::Instant,
-    /// Whether a future WASI clock wait may suspend the current guest call.
-    clock_waits_enabled: bool,
     /// Reusable bitmap pool for OTAP child-batch filtering propagation.
     pub id_bitmap_pool: IdBitmapPool,
     /// Accumulator for total host kernel invocations during a single guest call.
@@ -352,7 +349,6 @@ impl HostState {
             table,
             wasi_cli: WasiCliCtx::default(),
             wasi_monotonic_origin: std::time::Instant::now(),
-            clock_waits_enabled: false,
             id_bitmap_pool: IdBitmapPool::new(),
             kernel_calls: 0,
             config,
@@ -418,12 +414,6 @@ impl HostState {
     pub fn begin_guest_call(&mut self) {
         self.kernel_calls = 0;
         self.guest_copy_budget.remaining = GUEST_COPY_BYTE_BURST;
-    }
-
-    /// Enable or disable suspending WASI clock waits for the current guest
-    /// entry point.
-    pub(crate) fn set_clock_waits_enabled(&mut self, enabled: bool) {
-        self.clock_waits_enabled = enabled;
     }
 
     fn consume_kernel_call_budget(&mut self) -> wasmtime::Result<()> {
@@ -563,22 +553,15 @@ impl monotonic_clock::HostWithStore<HostState> for HasSelf<HostState> {
         accessor: &Accessor<HostState, Self>,
         when: monotonic_clock::Mark,
     ) -> wasmtime::Result<()> {
-        let (enabled, elapsed) = accessor.with(|mut access| {
+        let elapsed = accessor.with(|mut access| {
             let state = access.get();
-            (
-                state.clock_waits_enabled,
-                std::time::Instant::now().saturating_duration_since(state.wasi_monotonic_origin),
-            )
+            std::time::Instant::now().saturating_duration_since(state.wasi_monotonic_origin)
         });
         let now: monotonic_clock::Mark = elapsed.as_nanos().try_into()?;
         if when <= now {
             return Ok(());
         }
-        if !enabled {
-            return reject_wasi_clock_wait();
-        }
-        tokio::time::sleep(std::time::Duration::from_nanos(when - now)).await;
-        Ok(())
+        reject_wasi_clock_wait()
     }
 
     async fn wait_for(
@@ -588,12 +571,8 @@ impl monotonic_clock::HostWithStore<HostState> for HasSelf<HostState> {
         if duration == 0 {
             return Ok(());
         }
-        let enabled = accessor.with(|mut access| access.get().clock_waits_enabled);
-        if !enabled {
-            return reject_wasi_clock_wait();
-        }
-        tokio::time::sleep(std::time::Duration::from_nanos(duration)).await;
-        Ok(())
+        let _ = accessor;
+        reject_wasi_clock_wait()
     }
 }
 
@@ -741,19 +720,7 @@ impl HostState {
         if !self.consume_host_service_call_budget() {
             return Ok(());
         }
-        if message.len() > MAX_GUEST_LOG_MESSAGE_LEN {
-            // Truncate at a char boundary so the retained prefix is still
-            // valid UTF-8, and mark it as truncated rather than silently
-            // dropping the tail: unlike a counter name, a log message's
-            // value to an operator is in its content, so bounding host
-            // memory/telemetry payload size by truncating (not discarding
-            // the whole record) keeps the guest's intent partially visible.
-            let mut truncate_at = MAX_GUEST_LOG_MESSAGE_LEN;
-            while truncate_at > 0 && !message.is_char_boundary(truncate_at) {
-                truncate_at -= 1;
-            }
-            message.truncate(truncate_at);
-            message.push_str(" ...[truncated]");
+        if truncate_guest_log_message(&mut message) {
             self.log_message_truncated += 1;
         }
         // Route every guest log line through this host's own component-scoped
@@ -782,6 +749,7 @@ impl HostState {
                 otel_error!("wasm_processor.guest_log", node = node, message = message)
             }
         }
+
         Ok(())
     }
 
@@ -820,6 +788,21 @@ impl HostState {
         self.counter_add_value = self.counter_add_value.saturating_add(value);
         Ok(())
     }
+}
+
+/// Truncate an oversized guest log message, including the marker in the limit.
+fn truncate_guest_log_message(message: &mut String) -> bool {
+    if message.len() <= MAX_GUEST_LOG_MESSAGE_LEN {
+        return false;
+    }
+
+    let mut truncate_at = MAX_GUEST_LOG_MESSAGE_LEN - GUEST_LOG_TRUNCATION_MARKER.len();
+    while truncate_at > 0 && !message.is_char_boundary(truncate_at) {
+        truncate_at -= 1;
+    }
+    message.truncate(truncate_at);
+    message.push_str(GUEST_LOG_TRUNCATION_MARKER);
+    true
 }
 
 impl otel_kernels::HostWithStore<HostState> for HasSelf<HostState> {
@@ -1576,12 +1559,16 @@ mod tests {
 
     /// Scenario: A guest submits a `log` message larger than the host
     /// retention limit.
-    /// Guarantees: The message is truncated to a valid UTF-8 prefix (never
-    /// panics on a multi-byte boundary) and the truncation is counted; the
-    /// call itself is still accepted (not dropped, unlike an oversized
-    /// counter name) so the guest's log intent remains partially visible.
+    /// Guarantees: The message is truncated to a valid UTF-8 prefix, the
+    /// complete marked message remains within the byte limit, and the
+    /// truncation is counted.
     #[test]
     fn log_truncates_oversized_message() {
+        let mut message = "x".repeat(MAX_GUEST_LOG_MESSAGE_LEN + 1);
+        assert!(truncate_guest_log_message(&mut message));
+        assert_eq!(message.len(), MAX_GUEST_LOG_MESSAGE_LEN);
+        assert!(message.ends_with(GUEST_LOG_TRUNCATION_MARKER));
+
         let mut host = HostState::new();
         log(
             &mut host,
@@ -1594,18 +1581,17 @@ mod tests {
     /// Scenario: A guest submits a `log` message that ends exactly on a
     /// multi-byte UTF-8 character straddling the truncation bound.
     /// Guarantees: Truncation backs off to the nearest char boundary rather
-    /// than panicking (`String::truncate` requires a char-boundary index).
+    /// than panicking, and the marked result remains within the byte limit.
     #[test]
     fn log_truncates_multi_byte_message_at_char_boundary() {
-        let mut host = HostState::new();
-        // Pad with single-byte characters up to one short of the bound, then
-        // append a multi-byte character so the raw byte-length bound falls
-        // inside it.
-        let mut message = "a".repeat(MAX_GUEST_LOG_MESSAGE_LEN - 1);
+        let prefix_limit = MAX_GUEST_LOG_MESSAGE_LEN - GUEST_LOG_TRUNCATION_MARKER.len();
+        let mut message = "a".repeat(prefix_limit - 1);
         message.push('\u{20AC}'); // 3-byte UTF-8 character (Euro sign).
+        message.push_str(&"b".repeat(GUEST_LOG_TRUNCATION_MARKER.len()));
         assert!(message.len() > MAX_GUEST_LOG_MESSAGE_LEN);
-        log(&mut host, LogLevel::Info, message);
-        assert_eq!(host.drain_host_service_budget_calls(), (0, 1));
+        assert!(truncate_guest_log_message(&mut message));
+        assert!(message.len() <= MAX_GUEST_LOG_MESSAGE_LEN);
+        assert!(message.ends_with(GUEST_LOG_TRUNCATION_MARKER));
     }
 
     /// Scenario: A guest calls `host-services.counter-add` in a tight loop,

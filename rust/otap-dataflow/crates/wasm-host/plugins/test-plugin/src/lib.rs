@@ -32,7 +32,8 @@ const BALLOON_BYTES: usize = 256 * 1024 * 1024;
 
 static mut SPIN_IN_PROCESS: bool = false;
 static mut SLEEP_IN_PROCESS: bool = false;
-static mut SLEEP_IN_SHUTDOWN: bool = false;
+static mut RETAIN_PDATA: bool = false;
+static mut RETAINED_PDATA: Option<Pdata> = None;
 
 fn config_flag_set(config: &str, flag: &str) -> bool {
     let compact = format!("\"{flag}\":true");
@@ -51,6 +52,10 @@ impl Plugin for TestPlugin {
         }
         if unsafe { SLEEP_IN_PROCESS } {
             std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        if unsafe { RETAIN_PDATA } {
+            unsafe { RETAINED_PDATA = Some(data) };
+            return None;
         }
         Some(
             filter_by_attribute_eq(
@@ -99,8 +104,8 @@ impl Lifecycle for TestPlugin {
         if config_flag_set(&config, "sleep_process") {
             unsafe { SLEEP_IN_PROCESS = true };
         }
-        if config_flag_set(&config, "sleep_shutdown") {
-            unsafe { SLEEP_IN_SHUTDOWN = true };
+        if config_flag_set(&config, "retain_pdata") {
+            unsafe { RETAIN_PDATA = true };
         }
         if config_flag_set(&config, "balloon") {
             let mut balloon: Vec<u8> = Vec::new();
@@ -137,14 +142,6 @@ impl Lifecycle for TestPlugin {
 
         counter_add(String::from("test_plugin.initialize"), 1).await;
         Ok(())
-    }
-
-    async fn shutdown() {
-        if unsafe { SLEEP_IN_SHUTDOWN } {
-            std::thread::sleep(std::time::Duration::from_millis(25));
-        }
-        log(LogLevel::Info, String::from("test-plugin shutdown")).await;
-        counter_add(String::from("test_plugin.shutdown"), 1).await;
     }
 }
 

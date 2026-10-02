@@ -15,7 +15,7 @@ rust-version.workspace = true
 # contract and host surface are unstable and subject to breaking changes while
 # the binary plugin system is in development.
 default = []
-wasm = ["dep:tokio", "dep:wasmtime", "dep:wasmtime-wasi"]
+wasm = ["dep:wasmtime", "dep:wasmtime-wasi"]
 
 [dependencies]
 otel-arrow-dfe-config.workspace = true
@@ -35,11 +35,11 @@ linkme.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, optional = true }
 
 [dev-dependencies]
 otel-arrow-dfe-engine = { workspace = true, features = ["test-utils"] }
 otel-arrow-dfe-pdata = { workspace = true, features = ["testing"] }
+tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["registry", "std"] }
 

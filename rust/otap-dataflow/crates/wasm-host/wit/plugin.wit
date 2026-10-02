@@ -75,9 +75,8 @@ interface processor {
 /// `wasi:clocks@0.3.0`. The host links only those adapter-provided WASI
 /// interfaces: CLI state has empty arguments and environment, no initial
 /// working directory, and empty stdio; clocks currently expose real wall and
-/// monotonic time. Future clock waits are awaited during `process`, but fail
-/// immediately during synchronous `initialize` and `shutdown` lifecycle
-/// calls. Filesystem, sockets, random, network access, and every other ambient
+/// monotonic time. Future clock waits fail immediately in every guest entry
+/// point. Filesystem, sockets, random, network access, and every other ambient
 /// WASI capability remain unavailable.
 ///
 /// Every project-owned operation below is capability-limited by design:
@@ -214,9 +213,9 @@ interface host-services {
     counter-add: async func(name: string, value: u64);
 }
 
-/// Plugin lifecycle hooks, exported by every plugin so the host can drive
-/// one-time setup/teardown around the (possibly many) `process` calls made
-/// against a single instantiated guest.
+/// Plugin initialization, exported by every plugin so the host can drive
+/// one-time setup before the (possibly many) `process` calls made against a
+/// single instantiated guest.
 interface lifecycle {
     /// Structured error returned when a plugin fails to initialize (for
     /// example, because its configuration -- fetched via
@@ -248,32 +247,6 @@ interface lifecycle {
     /// errors. Guests must not perform future clock waits here; the host
     /// rejects them immediately.
     initialize: async func() -> result<_, init-error>;
-
-    /// Called at most once, after the last `process` call for this instance
-    /// has returned and the host is discarding the instance.
-    ///
-    /// Ordering note: the host does *not* call this when the pipeline's
-    /// shutdown signal first arrives. That signal starts a drain, during
-    /// which upstream nodes flush buffered data, so further `process` calls
-    /// can still reach this plugin afterwards. Calling `shutdown` then would
-    /// break the guarantee above. The host instead defers it to the point
-    /// where the node is actually torn down.
-    ///
-    /// Guests should treat this as best-effort: the component-model gives no
-    /// unwind guarantee, so the host may be unable to invoke `shutdown` if
-    /// the pipeline is torn down abnormally (for example, process abort), if
-    /// the host is already unwinding from a panic, or if a previous guest
-    /// call trapped (a trap leaves the instance unusable -- see the
-    /// `kernel-processor` world below).
-    ///
-    /// `shutdown` cannot emit or forward pdata; it exists for guest-side
-    /// cleanup only. Flushing buffered telemetry from a plugin is not
-    /// supported by this contract yet.
-    ///
-    /// Teardown follows the engine's synchronous processor `Drop` lifecycle.
-    /// Guests must not perform future clock waits here; the host rejects them
-    /// immediately rather than blocking the pipeline runtime.
-    shutdown: async func();
 }
 
 /// Capability tier for kernel-only processor plugins.
@@ -288,13 +261,14 @@ interface lifecycle {
 /// compute sandbox.
 ///
 /// Resource bounds the host applies to every instance of this world:
-/// - a Wasmtime fuel budget per `initialize`/`process`/`shutdown` call, which
-///   bounds guest Wasm instructions;
+/// - a Wasmtime fuel budget per `initialize`/`process` call, which bounds guest
+///   Wasm instructions;
 /// - a linear-memory cap on guest allocation;
 /// - a 16 KiB encoded-input budget per canonical lift, including exported
 ///   results, and the aggregate string-copy byte budgets described above;
-/// - a cap on retained host-managed `pdata` resource handles, so a guest
-///   cannot retain complete host-side batches without bound;
+/// - a cap on host-managed resources during each call, plus a post-`process`
+///   requirement that no host resource remains after the returned `pdata` is
+///   reclaimed, so complete host-side batches cannot accumulate across calls;
 /// - a per-entry cap on native `otel-kernels` invocations, which bounds how
 ///   many host-side Arrow operations one guest call can request;
 /// - the shared `host-services` token bucket described above.
@@ -308,10 +282,9 @@ interface lifecycle {
 /// channel; return `none` from `process` to drop data, and an `init-error`
 /// from `initialize` to reject configuration.
 ///
-/// `process` is directly awaited by the engine, so finite clock waits yield
-/// other tasks on the current pipeline runtime. Each store still permits only
-/// one in-flight guest invocation, and the host does not promise that an outer
-/// timeout can forcibly interrupt every suspended Wasmtime host call.
+/// `process` is directly awaited by the engine. Each store permits only one
+/// in-flight guest invocation, and future clock waits are rejected so a guest
+/// cannot suspend that invocation indefinitely.
 world kernel-processor {
     import otel-kernels;
     import host-services;

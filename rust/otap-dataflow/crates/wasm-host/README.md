@@ -70,12 +70,11 @@ slice needs:
 - The host also links only the WASI 0.3 CLI and clocks interfaces needed by
   Rust `std`. CLI state is inert (empty arguments/environment, no cwd, and
   empty stdio). Filesystem, sockets, random, and all other WASI capabilities
-  remain unavailable. Clock reads are available in every guest entry point.
-  Future clock waits are awaited during `process`, but rejected immediately
-  during synchronous `initialize` and `shutdown` lifecycle calls.
+  remain unavailable. Clock reads are available in every guest entry point,
+  but future clock waits are rejected immediately in every phase.
 - `lifecycle`: a guest-exported interface with `initialize` (called exactly
   once per plugin instance, after instantiation and before any `process`
-  call) and `shutdown` (called at most once, after the last `process` call).
+  call).
 - the `kernel-processor` world (`import otel-kernels; import host-services;
   export processor; export lifecycle;`).
 
@@ -103,9 +102,8 @@ Current experimental behavior is intentionally narrow:
   `wasm_processor` factory fails at pipeline *construction* time with a
   config error -- misconfigured plugins never reach the `process` hot path.
 - Guest `process` calls are awaited directly by the engine's existing async
-  processor method. This allows finite WASI clock waits to yield the
-  current-thread pipeline runtime instead of blocking other tasks on that
-  core.
+  processor method. WASI clock reads are available, but future waits such as
+  `std::thread::sleep` trap instead of suspending a node indefinitely.
 - Guest `log` records, and the per-name counter totals, are emitted under the
   same component scope as native `wasm_processor` telemetry and are stamped
   by the host with the emitting pipeline node name (a `node` attribute).
@@ -117,7 +115,7 @@ Current experimental behavior is intentionally narrow:
 Every plugin instance runs under the following bounds. They are deliberately blunt;
 see "Deferred to later phases" for what a real limits design still owes.
 
-- **Fuel.** Each `initialize`/`process`/`shutdown` call is granted a fixed
+- **Fuel.** Each `initialize`/`process` call is granted a fixed
   Wasmtime fuel budget, so a runaway guest traps instead of hanging the
   pipeline thread.
 - **Linear memory.** Each instance has a 64 MiB guest-memory cap.
@@ -136,10 +134,11 @@ see "Deferred to later phases" for what a real limits design still owes.
   token-bucket limiter scoped to the instance's lifetime (sustained rate plus
   a burst allowance). Throttled calls within the copy budgets are silent no-ops.
 - **Resource handles.** The host-managed component resource table is capped at
-  10,000 entries. Retaining a `pdata` handle retains its complete host-side
-  batch, so exceeding this cap traps instead of allowing unbounded host memory
-  growth.
-- **Kernel invocations.** Each `initialize`/`process`/`shutdown` call has a
+  10,000 entries during a guest call, and must be empty after the returned
+  `pdata` is reclaimed. A guest that retains any host resource across
+  `process` calls fails the node, so complete host-side batches cannot
+  accumulate across messages.
+- **Kernel invocations.** Each `initialize`/`process` call has a
   separate cap on native `otel-kernels` invocations. This is required because
   fuel accounts for guest Wasm instructions, not time spent inside native
   host imports; exceeding the cap traps the guest.
@@ -171,9 +170,8 @@ host telemetry.
 any trap, and this host does not re-instantiate. A trap during `process`
 (fuel exhaustion, a guest panic, or a kernel contract violation) fails that
 call, and the engine terminates a node whose `process` returns an error. The
-host records the instance as poisoned and skips the guest's `shutdown`, which
-could only produce a second error for the same fault. Plugins should treat
-traps as fatal rather than as a per-batch error channel.
+host records the instance as poisoned. Plugins should treat traps as fatal
+rather than as a per-batch error channel.
 
 Correspondingly, host kernel implementations return traps rather than
 panicking on guest-controlled input: the bindings are generated with trappable
@@ -181,25 +179,14 @@ imports so an unsupported `attr-scope`, an absent attribute key, or a stale
 resource handle fails only that plugin, instead of aborting the collector
 process.
 
-**Teardown ordering.** `shutdown` runs from the processor's `Drop`, not from
-the `NodeControlMsg::Shutdown` control message. That message begins a pipeline
-*drain*: the engine broadcasts it to every non-receiver node at once so
-buffering upstream processors (batch, temporal reaggregation, ...) can flush,
-and the node loop keeps delivering messages until its inbox closes. Calling
-the guest's `shutdown` there would hand it further `process` calls after it
-had already torn down its state, breaking the contract in `wit/plugin.wit`.
-`Drop` runs after the node loop ends, which is the first point at which that
-contract holds. It is idempotent, and is skipped while the thread is already
-panicking (re-entering the guest during unwind risks a double-panic abort).
-Because `Drop` is synchronous, a future clock wait from `shutdown` traps
-immediately rather than blocking teardown. The same restriction applies to
-synchronous startup and `initialize`.
+Future clock waits trap immediately in `initialize` and `process`. This keeps
+clock reads available for Rust `std` without introducing a guest-controlled
+suspension that requires host cancellation support.
 
-**Async wait limitation.** A processing clock wait yields the pipeline runtime,
-but it does not make the Wasmtime store concurrently accessible. The host keeps
-one in-flight guest invocation per store and does not claim that an outer Tokio
-timeout can forcibly interrupt every suspended Wasmtime host call. General
-deadline and cancellation policy remains follow-on runtime hardening.
+There is currently no guest finalization export. The engine's processor API
+does not expose a post-drain lifecycle point after the last `process` call, so
+the experimental WIT contract defers guest teardown rather than approximating
+it through `Drop`.
 
 ## Enabling in `df_engine`
 
@@ -238,8 +225,7 @@ with Rust nightly that filters log records where `severity_text == "ERROR"`.
 The WASM binary is intentionally excluded from the Cargo workspace and built
 on demand by the integration test. It also demonstrates the
 `lifecycle` and `host-services` contract: `initialize` checks
-`host-abi-version`, logs, and records a `counter-add` call; `shutdown` logs a
-single message and records a counter.
+`host-abi-version`, logs, and records a `counter-add` call.
 
 The reference plugin intentionally contains no synthetic failure switches or
 resource-abuse paths, so it remains a small example of normal plugin code.
@@ -249,9 +235,9 @@ resource-abuse paths, so it remains a small example of normal plugin code.
 `plugins/test-plugin/` is a separate guest used only by host tests. It contains
 deliberately abnormal behavior selected through config flags: returned
 initialization errors, panics, fuel-exhausting loops, oversized allocations and
-strings, copy floods, and clock waits in each lifecycle phase. Keeping those
-paths in a test fixture prevents test requirements from turning the reference
-plugin into an example that real plugin authors should not follow.
+strings, copy floods, and clock waits during initialization and processing.
+Keeping those paths in a test fixture prevents test requirements from turning
+the reference plugin into an example that real plugin authors should not follow.
 
 ### Building a guest plugin
 
@@ -301,8 +287,9 @@ Also deferred, and more pressing:
   frozen host clocks.
 - **A guest SDK.** The reference plugin is deliberately only an example, not a
   reusable authoring SDK.
-- **Flushing from `shutdown`.** The current `shutdown` cannot emit pdata, so a
-  plugin that buffers data has no way to drain it.
+- **Post-drain guest finalization.** Add a teardown export only after the
+  processor lifecycle has an explicit point after the final `process` call and
+  before final telemetry collection.
 
 [parent]: https://github.com/open-telemetry/otel-arrow/issues/2973
 [wit]: https://github.com/open-telemetry/otel-arrow/issues/3227
