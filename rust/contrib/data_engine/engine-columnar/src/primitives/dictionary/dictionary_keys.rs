@@ -136,7 +136,7 @@ impl DictionaryKeyArray {
                 data_type: _,
                 length,
             } => {
-                if index > *length {
+                if index >= *length {
                     None
                 } else {
                     Some(index)
@@ -147,7 +147,7 @@ impl DictionaryKeyArray {
                 length,
                 value_index,
             } => {
-                if index > *length {
+                if index >= *length {
                     None
                 } else {
                     *value_index
@@ -176,7 +176,7 @@ impl<'a, T: ArrowPrimitiveType> From<&'a PrimitiveArray<T>> for DictionaryKeyArr
 }
 
 fn get_key_array_value_index_for_key_index(array: &dyn Array, key_index: usize) -> Option<usize> {
-    if key_index > array.len() || array.is_null(key_index) {
+    if key_index >= array.len() || array.is_null(key_index) {
         return None;
     }
 
@@ -233,11 +233,61 @@ fn get_bool_array_value_index_for_key_index(
     array: &BooleanArray,
     key_index: usize,
 ) -> Option<usize> {
-    if key_index > array.len() || array.is_null(key_index) {
+    if key_index >= array.len() || array.is_null(key_index) {
         return None;
     }
     Some(match unsafe { array.value_unchecked(key_index) } {
         true => 1,
         false => 0,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Scenario: Primitive and Boolean key arrays contain valid keys, null keys, and boundary indexes.
+    /// Guarantees: Key lookup maps valid values, preserves nulls, and safely rejects the first out-of-range index.
+    #[test]
+    fn key_arrays_map_values_and_enforce_bounds() {
+        let primitive = DictionaryKeyArray::from(Int16Array::from(vec![Some(2), None, Some(0)]));
+        assert_eq!(primitive.get_value_index_for_key_index(0), Some(2));
+        assert_eq!(primitive.get_value_index_for_key_index(1), None);
+        assert_eq!(primitive.get_value_index_for_key_index(3), None);
+
+        let boolean = DictionaryKeyArray::BooleanArray {
+            data_type: DataType::Int8,
+            values: Arc::new(BooleanArray::from(vec![Some(false), Some(true), None])),
+        };
+        assert_eq!(boolean.get_value_index_for_key_index(0), Some(0));
+        assert_eq!(boolean.get_value_index_for_key_index(1), Some(1));
+        assert_eq!(boolean.get_value_index_for_key_index(2), None);
+        assert_eq!(boolean.get_value_index_for_key_index(3), None);
+    }
+
+    /// Scenario: Synthetic unique, scalar, and null key layouts represent dictionary columns without Arrow buffers.
+    /// Guarantees: Metadata, validity, and boundary lookup are correct for every synthetic layout.
+    #[test]
+    fn synthetic_key_arrays_report_metadata_and_validity() {
+        let unique = DictionaryKeyArray::UniqueValues {
+            data_type: DataType::UInt16,
+            length: 2,
+        };
+        assert_eq!(unique.len(), 2);
+        assert!(!unique.is_empty());
+        assert!(!unique.is_null());
+        assert!(unique.nulls().is_none());
+        assert_eq!(unique.data_type(), DataType::UInt16);
+        assert_eq!(unique.get_value_index_for_key_index(1), Some(1));
+        assert_eq!(unique.get_value_index_for_key_index(2), None);
+
+        let null = DictionaryKeyArray::SingleValue {
+            data_type: DataType::Int32,
+            length: 2,
+            value_index: None,
+        };
+        assert!(null.is_null());
+        assert_eq!(null.nulls().unwrap().null_count(), 2);
+        assert_eq!(null.get_value_index_for_key_index(2), None);
+    }
 }

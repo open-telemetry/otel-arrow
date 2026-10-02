@@ -114,7 +114,11 @@ impl<'a> DictionaryValueArray<'a> {
             DictionaryValueArray::Array(a) => get_value_from_array(a, index),
             DictionaryValueArray::Vec(a) => a.get(index).cloned().unwrap_or(ValueOrRef::Null),
             DictionaryValueArray::Set(a) => a.get_index(index).cloned().unwrap_or(ValueOrRef::Null),
-            DictionaryValueArray::Boolean => ValueOrRef::Boolean(index != 0),
+            DictionaryValueArray::Boolean => match index {
+                0 => ValueOrRef::Boolean(false),
+                1 => ValueOrRef::Boolean(true),
+                _ => ValueOrRef::Null,
+            },
         }
     }
 }
@@ -162,7 +166,7 @@ impl<'a> From<Vec<ValueOrRef<'a>>> for DictionaryValueArray<'a> {
 }
 
 fn get_value_from_array(value: &Arc<dyn Array>, index: usize) -> ValueOrRef<'static> {
-    if index > value.len() || value.nulls().map(|n| n.is_null(index)).unwrap_or(false) {
+    if index >= value.len() || value.nulls().map(|n| n.is_null(index)).unwrap_or(false) {
         return ValueOrRef::Null;
     }
 
@@ -296,5 +300,81 @@ fn get_value_from_array(value: &Arc<dyn Array>, index: usize) -> ValueOrRef<'sta
 
             d => todo!("{d} is not implemented"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use arrow::array::{FixedSizeBinaryArray, Int32Array, StringArray, TimestampMillisecondArray};
+
+    use super::*;
+
+    /// Scenario: Arrow numeric and string arrays contain ordinary values, nulls, and boundary indexes.
+    /// Guarantees: Values are converted to engine primitives while null and out-of-range access returns Null.
+    #[test]
+    fn arrow_values_convert_numbers_strings_and_nulls() {
+        let integers = DictionaryValueArray::from(&Int32Array::from(vec![Some(-7), None, Some(9)]));
+        assert_eq!(integers.get_value_at(0), ValueOrRef::Integer(-7));
+        assert_eq!(integers.get_value_at(1), ValueOrRef::Null);
+        assert_eq!(integers.get_value_at(3), ValueOrRef::Null);
+
+        let strings = DictionaryValueArray::from(&StringArray::from(vec![
+            Some("alpha"),
+            None,
+            Some("omega"),
+        ]));
+        assert_eq!(
+            strings.get_value_at(0),
+            ValueOrRef::String(StringValueOrRef::new_ref("alpha"))
+        );
+        assert_eq!(strings.get_value_at(1), ValueOrRef::Null);
+        assert_eq!(strings.get_value_at(3), ValueOrRef::Null);
+    }
+
+    /// Scenario: Arrow timestamp and fixed-size binary arrays are used as dictionary values.
+    /// Guarantees: Time units and binary byte sequences are preserved by conversion.
+    #[test]
+    fn arrow_values_convert_timestamps_and_fixed_binary() {
+        let timestamps =
+            DictionaryValueArray::from(&TimestampMillisecondArray::from(vec![1_500_i64]));
+        let timestamp = timestamps.get_value_at(0);
+        match timestamp {
+            ValueOrRef::DateTime(value) => assert_eq!(value.timestamp_millis(), 1_500),
+            value => panic!("expected datetime, got {value:?}"),
+        }
+
+        let binary =
+            FixedSizeBinaryArray::try_from_iter([b"abc".as_slice(), b"def".as_slice()].into_iter())
+                .unwrap();
+        let values = DictionaryValueArray::from(&binary);
+        assert_eq!(
+            values.get_value_at(1),
+            ValueOrRef::Array(ArrayValueOrRef::from([
+                ValueOrRef::Integer(b'd' as i64),
+                ValueOrRef::Integer(b'e' as i64),
+                ValueOrRef::Integer(b'f' as i64),
+            ]))
+        );
+    }
+
+    /// Scenario: Engine-owned and Boolean dictionary values are queried for validity and bounds.
+    /// Guarantees: Validity marks only Null entries and Boolean lookup rejects indexes outside its two-value domain.
+    #[test]
+    fn owned_and_boolean_values_report_nulls_and_bounds() {
+        let values = DictionaryValueArray::from(vec![
+            ValueOrRef::Integer(1),
+            ValueOrRef::Null,
+            ValueOrRef::Integer(3),
+        ]);
+        let nulls = values.nulls().unwrap();
+        assert_eq!(nulls.null_count(), 1);
+        assert!(nulls.is_valid(0));
+        assert!(nulls.is_null(1));
+        assert!(nulls.is_valid(2));
+
+        let boolean = DictionaryValueArray::Boolean;
+        assert_eq!(boolean.get_value_at(0), ValueOrRef::Boolean(false));
+        assert_eq!(boolean.get_value_at(1), ValueOrRef::Boolean(true));
+        assert_eq!(boolean.get_value_at(2), ValueOrRef::Null);
     }
 }

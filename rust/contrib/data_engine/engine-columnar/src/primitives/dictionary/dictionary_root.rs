@@ -213,3 +213,63 @@ where
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Scenario: Dictionary keys include both null keys and keys that point to a null dictionary value.
+    /// Guarantees: Row validity combines key and value validity, and value lookup returns Null for both cases.
+    #[test]
+    fn dictionary_combines_key_and_value_nulls() {
+        let dictionary = Dictionary::new(
+            DictionaryKeyArray::from(Int8Array::from(vec![Some(0), Some(1), None, Some(0)])),
+            DictionaryValueArray::from(vec![ValueOrRef::Integer(10), ValueOrRef::Null]),
+        );
+
+        let nulls = dictionary.nulls().unwrap();
+        assert_eq!(nulls.null_count(), 2);
+        assert!(nulls.is_valid(0));
+        assert!(nulls.is_null(1));
+        assert!(nulls.is_null(2));
+        assert!(nulls.is_valid(3));
+        assert_eq!(dictionary.get_value(0), ValueOrRef::Integer(10));
+        assert_eq!(dictionary.get_value(1), ValueOrRef::Null);
+        assert_eq!(dictionary.get_value(2), ValueOrRef::Null);
+        assert_eq!(dictionary.get_value(4), ValueOrRef::Null);
+    }
+
+    /// Scenario: Scalar and null dictionaries are synthesized for a requested Arrow key type.
+    /// Guarantees: Every row resolves to the scalar or Null and retains the requested key data type.
+    #[test]
+    fn scalar_and_null_dictionary_constructors_preserve_shape() {
+        let scalar =
+            Dictionary::new_scalar_with_data_type(DataType::UInt16, 3, ValueOrRef::Integer(42));
+        assert_eq!(scalar.len(), 3);
+        assert_eq!(scalar.keys().data_type(), DataType::UInt16);
+        assert!(!scalar.is_null());
+        assert_eq!(scalar.get_value(2), ValueOrRef::Integer(42));
+        assert_eq!(scalar.get_value(3), ValueOrRef::Null);
+
+        let null = Dictionary::new_null_with_data_type(3, DataType::Int32);
+        assert_eq!(null.len(), 3);
+        assert_eq!(null.keys().data_type(), DataType::Int32);
+        assert!(null.is_null());
+        assert_eq!(null.nulls().unwrap().null_count(), 3);
+        assert_eq!(null.get_value(0), ValueOrRef::Null);
+    }
+
+    /// Scenario: A primitive Arrow array is represented as a dictionary with one unique key per row.
+    /// Guarantees: Row indexes map directly to source values and the first boundary index is rejected.
+    #[test]
+    fn primitive_array_dictionary_uses_unique_keys() {
+        let values = Int32Array::from(vec![5, 8, 13]);
+        let dictionary = Dictionary::from_array::<UInt8Type, Int32Type>(&values);
+
+        assert_eq!(dictionary.len(), 3);
+        assert_eq!(dictionary.get_value_index(2), Some(2));
+        assert_eq!(dictionary.get_value(2), ValueOrRef::Integer(13));
+        assert_eq!(dictionary.get_value_index(3), None);
+        assert_eq!(dictionary.get_value(3), ValueOrRef::Null);
+    }
+}

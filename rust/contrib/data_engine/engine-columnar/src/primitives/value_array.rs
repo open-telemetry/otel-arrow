@@ -450,3 +450,87 @@ impl ArrayValue for ArrayValueOrRefSlice<'_> {
             .get_item_range((start..end).into(), item_callback)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::hash_map::DefaultHasher;
+
+    use super::*;
+
+    fn hash(value: &ArrayValueOrRef<'_>) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        value.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    /// Scenario: A byte buffer is viewed through the columnar array abstraction and converted to owned values.
+    /// Guarantees: Length, indexed access, iteration, and ownership conversion preserve every byte.
+    #[test]
+    fn buffer_array_preserves_byte_values() {
+        let buffer = BufferArray::new_u8(Buffer::from(vec![1_u8, 2, 255]));
+        let array = ArrayValueOrRef::Buffer(buffer.clone());
+
+        assert_eq!(array.len(), 3);
+        assert_eq!(array.get(1), ValueOrRef::Integer(2));
+        assert_eq!(array.get(3), ValueOrRef::Null);
+
+        let mut visited = Vec::new();
+        assert!(buffer.as_array_value().get_items(&mut |index, value| {
+            visited.push((index, ValueOrRef::from(value)));
+            true
+        }));
+        assert_eq!(
+            visited,
+            vec![
+                (0, ValueOrRef::Integer(1)),
+                (1, ValueOrRef::Integer(2)),
+                (2, ValueOrRef::Integer(255))
+            ]
+        );
+
+        let owned = OwnedArrayValue::from(buffer);
+        assert_eq!(
+            owned.get_values(),
+            &[
+                ValueOrRef::Integer(1),
+                ValueOrRef::Integer(2),
+                ValueOrRef::Integer(255)
+            ]
+        );
+    }
+
+    /// Scenario: An array slice is taken from a larger owned array and then sliced again.
+    /// Guarantees: Nested slices expose only their declared ranges and reject indexes at the slice boundary.
+    #[test]
+    fn nested_array_slices_enforce_their_bounds() {
+        let source = ArrayValueOrRef::from([
+            ValueOrRef::Integer(10),
+            ValueOrRef::Integer(20),
+            ValueOrRef::Integer(30),
+            ValueOrRef::Integer(40),
+        ]);
+        let first = ArrayValueOrRefSlice::new(source, 1, 4);
+        let nested = ArrayValueOrRefSlice::new(ArrayValueOrRef::Slice(first), 1, 2);
+
+        assert_eq!(nested.len(), 1);
+        assert_eq!(nested.get(0), ValueOrRef::Integer(30));
+        assert_eq!(nested.get(1), ValueOrRef::Null);
+        assert!(ArrayValue::get(&nested, 1).is_none());
+        assert!(nested.get_static(1).unwrap().is_none());
+    }
+
+    /// Scenario: The same integer sequence uses Arrow-buffered and owned array representations.
+    /// Guarantees: Representation-independent equality also preserves the equal-values/equal-hash contract.
+    #[test]
+    fn array_equality_and_hash_are_representation_independent() {
+        let buffered = ArrayValueOrRef::Buffer(BufferArray::new_u8(Buffer::from(vec![4_u8, 5, 6])));
+        let owned = ArrayValueOrRef::from([
+            ValueOrRef::Integer(4),
+            ValueOrRef::Integer(5),
+            ValueOrRef::Integer(6),
+        ]);
+
+        assert_eq!(buffered, owned);
+        assert_eq!(hash(&buffered), hash(&owned));
+    }
+}
