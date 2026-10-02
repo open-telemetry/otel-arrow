@@ -171,7 +171,7 @@ impl ExprPlanner {
                     }
                     ColumnAccessor::Attributes(attrs_id, key) => Ok(PlannedOp {
                         expr: ScopedExpr::Eval {
-                            scope: DataScope::Attribute(attrs_id, key),
+                            scope: DataScope::Attribute(attrs_id, key, Vec::new()),
                             eval: LeafEval::new_df_expr_with_key_case(
                                 col(VALUE_COLUMN_NAME),
                                 false,
@@ -181,9 +181,17 @@ impl ExprPlanner {
                         expr_type: ExprLogicalType::AnyValue,
                         requires_dict_downcast: false,
                     }),
-                    ColumnAccessor::NestedAttribute(_, _, _) => Err(Error::NotYetSupportedError {
-                        message: "reading nested serialized attribute paths is not yet supported"
-                            .into(),
+                    ColumnAccessor::NestedAttribute(attrs_id, key, path) => Ok(PlannedOp {
+                        expr: ScopedExpr::Eval {
+                            scope: DataScope::Attribute(attrs_id, key, path),
+                            eval: LeafEval::new_df_expr_with_key_case(
+                                col(VALUE_COLUMN_NAME),
+                                false,
+                                self.attr_key_case_sensitive,
+                            )?,
+                        },
+                        expr_type: ExprLogicalType::AnyValue,
+                        requires_dict_downcast: false,
                     }),
                 }
             }
@@ -1243,7 +1251,7 @@ impl ExprPlanner {
                         // We use a trivial "true" predicate in the attribute scope to
                         // check for key existence (key filtering is done at the scope level).
                         Ok(Some(ScopedExpr::BitmapNot(Box::new(ScopedExpr::Eval {
-                            scope: DataScope::Attribute(attrs_id, key),
+                            scope: DataScope::Attribute(attrs_id, key, Vec::new()),
                             eval: LeafEval::new_df_expr_with_key_case(
                                 lit(true),
                                 false,
@@ -1251,7 +1259,17 @@ impl ExprPlanner {
                             )?,
                         }))))
                     }
-                    ColumnAccessor::NestedAttribute(_, _, _) => Ok(None),
+                    // Unresolved paths and null leaves are omitted during projection.
+                    ColumnAccessor::NestedAttribute(attrs_id, key, path) => {
+                        Ok(Some(ScopedExpr::BitmapNot(Box::new(ScopedExpr::Eval {
+                            scope: DataScope::Attribute(attrs_id, key, path),
+                            eval: LeafEval::new_df_expr_with_key_case(
+                                lit(true),
+                                false,
+                                self.attr_key_case_sensitive,
+                            )?,
+                        }))))
+                    }
                 };
             }
         }
@@ -1279,10 +1297,14 @@ impl ExprPlanner {
         // Identify which side is the attribute access and which is the literal.
         let (attrs_op, literal_op, attrs_on_left) =
             match (left.expr.eval_scope(), right.expr.eval_scope()) {
-                (Some(DataScope::Attribute(_, _)), Some(DataScope::StaticScalar)) => {
+                (Some(DataScope::Attribute(_, _, path)), Some(DataScope::StaticScalar))
+                    if path.is_empty() =>
+                {
                     (left, right, true)
                 }
-                (Some(DataScope::StaticScalar), Some(DataScope::Attribute(_, _))) => {
+                (Some(DataScope::StaticScalar), Some(DataScope::Attribute(_, _, path)))
+                    if path.is_empty() =>
+                {
                     (right, left, false)
                 }
                 _ => return Ok(None),
@@ -1301,7 +1323,7 @@ impl ExprPlanner {
 
         // Extract the attribute key and attrs_id
         let (attrs_id, key) = match attrs_op.expr.eval_scope() {
-            Some(DataScope::Attribute(id, key)) => (*id, key.clone()),
+            Some(DataScope::Attribute(id, key, path)) if path.is_empty() => (*id, key.clone()),
             _ => return Ok(None),
         };
 
@@ -1450,7 +1472,7 @@ impl ExprPlanner {
     ) -> Result<Option<ScopedExpr>> {
         // Haystack must be an attribute access, needle must be a static string literal
         let (attrs_id, key) = match haystack.expr.eval_scope() {
-            Some(DataScope::Attribute(id, key)) => (*id, key.clone()),
+            Some(DataScope::Attribute(id, key, path)) if path.is_empty() => (*id, key.clone()),
             _ => return Ok(None),
         };
 
@@ -1564,7 +1586,7 @@ impl ExprPlanner {
         pattern: &Expr,
     ) -> Result<Option<ScopedExpr>> {
         let (attrs_id, key) = match haystack.expr.eval_scope() {
-            Some(DataScope::Attribute(id, key)) => (*id, key.clone()),
+            Some(DataScope::Attribute(id, key, path)) if path.is_empty() => (*id, key.clone()),
             _ => return Ok(None),
         };
 
@@ -2074,8 +2096,8 @@ impl ScopedExpr {
                         (_, DataScope::StaticScalar | DataScope::AttributesAll(_)) => curr_scope,
                         (DataScope::StaticScalar | DataScope::AttributesAll(_), _) => next_scope,
                         (
-                            DataScope::Attribute(left_attrs_id, _),
-                            DataScope::Attribute(right_attrs_id, _),
+                            DataScope::Attribute(left_attrs_id, _, _),
+                            DataScope::Attribute(right_attrs_id, _, _),
                         ) => {
                             if left_attrs_id == right_attrs_id {
                                 curr_scope
@@ -2087,10 +2109,10 @@ impl ScopedExpr {
                         }
                         (
                             DataScope::Record(_) | DataScope::RootParent(_),
-                            DataScope::Attribute(_, _),
+                            DataScope::Attribute(_, _, _),
                         ) => curr_scope,
                         (
-                            DataScope::Attribute(attr_id, _),
+                            DataScope::Attribute(attr_id, _, _),
                             DataScope::Record(_) | DataScope::RootParent(_),
                         ) => match attr_id {
                             AttributesIdentifier::Record(_) => curr_scope,
@@ -2268,7 +2290,7 @@ fn is_simple_attr_value_column(planned: &PlannedOp) -> bool {
     matches!(
         &planned.expr,
         ScopedExpr::Eval {
-            scope: DataScope::Attribute(_, _),
+            scope: DataScope::Attribute(_, _, _),
             eval: LeafEval::DatafusionExpr { logical_expr: Expr::Column(c), .. },
         } if c.name() == VALUE_COLUMN_NAME
     )
@@ -2566,7 +2588,11 @@ mod test {
         assert!(matches!(
             planned.expr,
             ScopedExpr::Eval {
-                scope: DataScope::Attribute(AttributesIdentifier::Record(RecordScope::Signal), _),
+                scope: DataScope::Attribute(
+                    AttributesIdentifier::Record(RecordScope::Signal),
+                    _,
+                    _
+                ),
                 ..
             }
         ));
@@ -2582,7 +2608,7 @@ mod test {
             .unwrap();
         assert!(matches!(
             result.scope,
-            DataScope::Attribute(AttributesIdentifier::Record(RecordScope::Signal), _)
+            DataScope::Attribute(AttributesIdentifier::Record(RecordScope::Signal), _, _)
         ));
         // 3 attribute rows (one per log record, each has key "x")
         match &result.values {
