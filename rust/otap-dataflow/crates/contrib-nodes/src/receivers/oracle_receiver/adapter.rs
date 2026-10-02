@@ -8,15 +8,15 @@ use async_trait::async_trait;
 use chrono::{Datelike, NaiveDate, Timelike};
 use oracle::sql_type::{IntervalDS, IntervalYM, OracleType, Timestamp};
 use oracle::{Connection, Row as OracleRow};
+use otel_arrow_dfe_engine::capability::auth::BasicAuthCredential;
+use otel_arrow_dfe_engine::capability::auth::basic_auth_provider::BASIC_AUTH_CREDENTIAL_USABLE_MARGIN;
 use otel_arrow_dfe_engine::error::ReceiverErrorKind;
+use otel_arrow_dfe_engine::local::capability::auth::basic_auth_provider::BasicAuthProvider;
 use otel_arrow_dfe_scraper::database::{
     CellValue, ColumnMetadata, CompiledQuery, CompositeCursor, CursorRow, DatabaseSystem,
     DriverAdapter, DriverCancellation, QueryPage, Row,
 };
-use secrecy::{ExposeSecret, SecretString, zeroize::Zeroizing};
-use std::io::Read;
 use std::mem::size_of;
-use std::path::Path;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
@@ -24,15 +24,12 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 // the one-time directory choice when multiple pipeline instances start.
 static ORACLE_CLIENT_DIRECTORY: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 const MAX_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
-const MAX_CREDENTIAL_BYTES: u64 = 64 * 1024;
 const MAX_TIMESTAMP_COMPONENT_DIGITS: usize = 9;
 
 #[derive(Clone)]
 pub(crate) struct OracleAdapterConfig {
     pub(crate) connect_string: String,
     pub(crate) instant_client_dir: String,
-    pub(crate) username_file: String,
-    pub(crate) password_file: String,
 }
 
 /// Oracle adapter that reuses one connection across non-overlapping polls.
@@ -43,6 +40,7 @@ pub(crate) struct OracleAdapterConfig {
 /// the shared controller retains source ownership when its deadline expires.
 pub struct OracleAdapter {
     config: OracleAdapterConfig,
+    credentials: Box<dyn BasicAuthProvider>,
     worker: Option<NativeWorker<Option<OracleSession>>>,
     cancellation: OracleCancellation,
     stopping_cancellation: Option<NativeWorker<()>>,
@@ -66,13 +64,43 @@ struct OraclePreparedQuery {
 
 impl OracleAdapter {
     /// Creates an adapter whose connection is opened lazily on first use.
-    pub(crate) fn new(config: OracleAdapterConfig) -> Self {
+    pub(crate) fn new(
+        config: OracleAdapterConfig,
+        credentials: Box<dyn BasicAuthProvider>,
+    ) -> Self {
         Self {
             config,
+            credentials,
             worker: None,
             cancellation: OracleCancellation::default(),
             stopping_cancellation: None,
         }
+    }
+
+    /// Acquires a snapshot on the local runtime without delaying cancellation or native work.
+    async fn credential(
+        &self,
+        timeout: std::time::Duration,
+    ) -> Result<BasicAuthCredential, OracleAdapterError> {
+        let cancelled = self.cancellation.requested.notified();
+        self.cancellation.ensure_not_requested()?;
+        let credential = tokio::select! {
+            biased;
+            _ = cancelled => return Err(OracleAdapterError::Cancelled),
+            result = tokio::time::timeout(timeout, self.credentials.get_credential()) => {
+                result
+                    .map_err(|_| OracleAdapterError::CredentialTimeout)?
+                    .map_err(|_| OracleAdapterError::CredentialUnavailable)?
+            }
+        };
+        self.cancellation.ensure_not_requested()?;
+        if credential.expires_on().is_some_and(|expiry| {
+            expiry.saturating_duration_since(std::time::Instant::now())
+                <= BASIC_AUTH_CREDENTIAL_USABLE_MARGIN
+        }) {
+            return Err(OracleAdapterError::CredentialUnavailable);
+        }
+        Ok(credential)
     }
 
     /// Runs one synchronous Oracle operation without blocking the local engine core.
@@ -83,6 +111,7 @@ impl OracleAdapter {
         operation: fn(
             Option<OracleSession>,
             &OracleAdapterConfig,
+            &BasicAuthCredential,
             &CompiledQuery,
             &CompositeCursor,
             &OracleCancellation,
@@ -92,6 +121,7 @@ impl OracleAdapter {
         T: Send + 'static,
     {
         self.cancellation.ensure_not_requested()?;
+        let credential = self.credential(query.timeout()).await?;
         if self.worker.is_none() {
             self.worker = Some(
                 NativeWorker::new("oracle-query")
@@ -106,8 +136,14 @@ impl OracleAdapter {
         let cancellation = self.cancellation.clone();
         let result = worker
             .run(move |session| {
-                let (next, value) =
-                    operation(session.take(), &config, &query, &cursor, &cancellation)?;
+                let (next, value) = operation(
+                    session.take(),
+                    &config,
+                    &credential,
+                    &query,
+                    &cursor,
+                    &cancellation,
+                )?;
                 *session = Some(next);
                 Ok(value)
             })
@@ -124,6 +160,8 @@ impl OracleAdapter {
 #[derive(Clone, Default)]
 pub struct OracleCancellation {
     state: Arc<Mutex<CancellationState>>,
+    // Wake local credential waits before a native connection exists to cancel.
+    requested: Arc<tokio::sync::Notify>,
     generation: u64,
 }
 
@@ -205,6 +243,7 @@ impl OracleCancellation {
             .map_err(|_| OracleAdapterError::CancellationState)?;
         state.requested = true;
         state.stopped = true;
+        self.requested.notify_waiters();
         Ok(state.worker.take())
     }
 }
@@ -227,6 +266,7 @@ impl DriverCancellation for OracleCancellation {
                 return Ok(());
             }
             state.requested = true;
+            self.requested.notify_waiters();
             if state.cancelling {
                 return Ok(());
             }
@@ -376,11 +416,8 @@ impl DriverAdapter for OracleAdapter {
     fn classify_error(error: &Self::Error) -> ReceiverErrorKind {
         match error {
             OracleAdapterError::Connect(_) => ReceiverErrorKind::Connect,
-            OracleAdapterError::Credential { .. }
-            | OracleAdapterError::CredentialNotRegularFile(_)
-            | OracleAdapterError::CredentialTooLarge(_)
-            | OracleAdapterError::InvalidCredentialEncoding(_)
-            | OracleAdapterError::EmptyCredential(_)
+            OracleAdapterError::CredentialUnavailable
+            | OracleAdapterError::CredentialTimeout
             | OracleAdapterError::Initialize(_)
             | OracleAdapterError::ClientAlreadyInitialized
             | OracleAdapterError::ClientDirectoryConflict
@@ -449,13 +486,14 @@ fn transient_native_error(oci: Option<i32>, dpi: Option<i32>) -> bool {
 fn reconnect_blocking(
     session: Option<OracleSession>,
     config: &OracleAdapterConfig,
+    credential: &BasicAuthCredential,
     query: &CompiledQuery,
     _cursor: &CompositeCursor,
     cancellation: &OracleCancellation,
 ) -> Result<(OracleSession, ()), OracleAdapterError> {
     cancellation.ensure_not_requested()?;
     drop(session);
-    let (session, _active) = prepare_session(None, config, query, cancellation)?;
+    let (session, _active) = prepare_session(None, config, credential, query, cancellation)?;
     cancellation.native_call(|| finish_session(&session.connection))?;
     Ok((session, ()))
 }
@@ -464,13 +502,14 @@ fn reconnect_blocking(
 fn validate_blocking(
     session: Option<OracleSession>,
     config: &OracleAdapterConfig,
+    credential: &BasicAuthCredential,
     query: &CompiledQuery,
     cursor: &CompositeCursor,
     cancellation: &OracleCancellation,
 ) -> Result<(OracleSession, Vec<ColumnMetadata>), OracleAdapterError> {
     // Executing the prepared SELECT is required because Oracle exposes result
     // metadata on the result set. No row is fetched during startup validation.
-    let (mut session, _active) = prepare_session(session, config, query, cancellation)?;
+    let (mut session, _active) = prepare_session(session, config, credential, query, cancellation)?;
     ensure_prepared(&mut session, query, cursor, cancellation)?;
     let columns = session
         .prepared
@@ -486,11 +525,12 @@ fn validate_blocking(
 fn execute_blocking(
     session: Option<OracleSession>,
     config: &OracleAdapterConfig,
+    credential: &BasicAuthCredential,
     query: &CompiledQuery,
     cursor: &CompositeCursor,
     cancellation: &OracleCancellation,
 ) -> Result<(OracleSession, QueryPage), OracleAdapterError> {
-    let (mut session, _active) = prepare_session(session, config, query, cancellation)?;
+    let (mut session, _active) = prepare_session(session, config, credential, query, cancellation)?;
     ensure_prepared(&mut session, query, cursor, cancellation)?;
     let prepared = session.prepared.as_mut().expect("query was prepared");
     let mut result_set = bind_cursor(
@@ -905,6 +945,7 @@ fn extract_normalized_cursor(
 fn prepare_session(
     session: Option<OracleSession>,
     config: &OracleAdapterConfig,
+    credential: &BasicAuthCredential,
     query: &CompiledQuery,
     cancellation: &OracleCancellation,
 ) -> Result<(OracleSession, ActiveConnection), OracleAdapterError> {
@@ -913,7 +954,7 @@ fn prepare_session(
     let session = match session {
         Some(session) => session,
         None => OracleSession {
-            connection: Arc::new(connect(config, query.timeout(), cancellation)?),
+            connection: Arc::new(connect(config, credential, query.timeout(), cancellation)?),
             prepared: None,
         },
     };
@@ -1002,24 +1043,19 @@ fn column_metadata(column: &oracle::ColumnInfo) -> ColumnMetadata {
     }
 }
 
-/// Initializes the client, reads mounted credentials, and opens a connection.
+/// Initializes the client and opens a connection using the provider's credential snapshot.
 fn connect(
     config: &OracleAdapterConfig,
+    credential: &BasicAuthCredential,
     timeout: std::time::Duration,
     cancellation: &OracleCancellation,
 ) -> Result<Connection, OracleAdapterError> {
     cancellation.native_call(|| initialize_client(&config.instant_client_dir))?;
-    // Mounted files are read for each new connection so secret rotation takes
-    // effect after a reconnect without placing credentials in configuration.
-    let username =
-        cancellation.native_call(|| read_credential(&config.username_file, "username"))?;
-    let password =
-        cancellation.native_call(|| read_credential(&config.password_file, "password"))?;
     let connect_string = bounded_connect_string(&config.connect_string, timeout)?;
     cancellation.native_call(|| {
         Connection::connect(
-            username.expose_secret(),
-            password.expose_secret(),
+            credential.expose_username(),
+            credential.expose_password(),
             connect_string,
         )
         .map_err(|error| OracleAdapterError::Connect(error.into()))
@@ -1093,53 +1129,6 @@ fn initialize_client(directory: &str) -> Result<(), OracleAdapterError> {
         .map_err(|error| OracleAdapterError::Initialize(error.into()))?;
     *selected = Some(directory.to_owned());
     Ok(())
-}
-
-/// Reads one bounded UTF-8 credential and zeroizes its storage on drop.
-fn read_credential(path: &str, kind: &'static str) -> Result<SecretString, OracleAdapterError> {
-    let path = Path::new(path);
-    let metadata = std::fs::metadata(path).map_err(|source| OracleAdapterError::Credential {
-        kind,
-        failure: source.into(),
-    })?;
-    if !metadata.is_file() {
-        return Err(OracleAdapterError::CredentialNotRegularFile(kind));
-    }
-    if metadata.len() > MAX_CREDENTIAL_BYTES {
-        return Err(OracleAdapterError::CredentialTooLarge(kind));
-    }
-    let file = std::fs::File::open(path).map_err(|source| OracleAdapterError::Credential {
-        kind,
-        failure: source.into(),
-    })?;
-    if !file
-        .metadata()
-        .map_err(|source| OracleAdapterError::Credential {
-            kind,
-            failure: source.into(),
-        })?
-        .is_file()
-    {
-        return Err(OracleAdapterError::CredentialNotRegularFile(kind));
-    }
-    let mut bytes = Zeroizing::new(Vec::with_capacity(metadata.len() as usize));
-    _ = file
-        .take(MAX_CREDENTIAL_BYTES + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|source| OracleAdapterError::Credential {
-            kind,
-            failure: source.into(),
-        })?;
-    if bytes.len() as u64 > MAX_CREDENTIAL_BYTES {
-        return Err(OracleAdapterError::CredentialTooLarge(kind));
-    }
-    let value = std::str::from_utf8(&bytes)
-        .map_err(|_| OracleAdapterError::InvalidCredentialEncoding(kind))?
-        .trim_end_matches(['\r', '\n']);
-    if value.is_empty() {
-        return Err(OracleAdapterError::EmptyCredential(kind));
-    }
-    Ok(value.to_owned().into())
 }
 
 /// Rejects result types that lack a precision-preserving normalization path.
@@ -1329,26 +1318,12 @@ impl From<std::io::Error> for OracleIoError {
 /// Expose only the operation and numeric codes, never native Debug/source chains.
 #[derive(thiserror::Error)]
 pub enum OracleAdapterError {
-    /// A mounted credential file could not be read.
-    #[error("failed to read Oracle {kind} file (kind {io_kind:?}, OS {code:?})", io_kind = .failure.kind, code = .failure.code)]
-    Credential {
-        /// Credential kind without its configured path.
-        kind: &'static str,
-        /// Sanitized file error category and numeric code.
-        failure: OracleIoError,
-    },
-    /// A mounted credential path is not a regular file.
-    #[error("Oracle {0} path must reference a regular file")]
-    CredentialNotRegularFile(&'static str),
-    /// A mounted credential file exceeds the fixed allocation bound.
-    #[error("Oracle {0} file must not exceed 64 KiB")]
-    CredentialTooLarge(&'static str),
-    /// A mounted credential file is not UTF-8.
-    #[error("Oracle {0} file must contain valid UTF-8")]
-    InvalidCredentialEncoding(&'static str),
-    /// A mounted credential file was empty.
-    #[error("Oracle {0} file must not be empty")]
-    EmptyCredential(&'static str),
+    /// The bound provider could not supply a usable credential.
+    #[error("Oracle authentication provider has no usable credential")]
+    CredentialUnavailable,
+    /// Credential acquisition exceeded the configured query timeout.
+    #[error("Oracle authentication provider acquisition timed out")]
+    CredentialTimeout,
     /// Oracle client initialization failed.
     #[error("Oracle client initialization failed (OCI {oci:?}, DPI {dpi:?})", oci = .0.oci_code(), dpi = .0.dpi_code())]
     Initialize(OracleErrorCodes),

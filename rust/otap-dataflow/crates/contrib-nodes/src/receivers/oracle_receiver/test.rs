@@ -8,12 +8,11 @@ macro_rules! oracle_module_tests {
             use super::{
                 CellValue, OracleAdapterError, OracleType, bounded_connect_string,
                 cursor_bind_timestamp, cursor_bind_type, discovery_cursor_bind_type,
-                extract_normalized_cursor, finite_float, parse_cursor_timestamp, read_credential,
+                extract_normalized_cursor, finite_float, parse_cursor_timestamp,
                 validate_described_cursor_columns, validate_types,
             };
             use oracle::sql_type::Timestamp;
             use otel_arrow_dfe_scraper::database::{CompositeCursor, CompositeWatermark, Row};
-            use secrecy::ExposeSecret;
             use std::fs;
             use std::str::FromStr;
             use std::time::Duration;
@@ -67,16 +66,12 @@ macro_rules! oracle_module_tests {
                 }
             }
 
-            /// Scenario: Credential or worker I/O errors contain custom sensitive messages.
+            /// Scenario: Worker I/O errors contain custom sensitive messages.
             /// Guarantees: Only OS categories/codes survive, with no raw source chain in engine diagnostics.
             #[test]
             fn io_errors_do_not_expose_messages_or_sources() {
                 const SENTINEL: &str = "PRIVATE_IO_PATH_AND_CONTENT";
                 for error in [
-                    OracleAdapterError::Credential {
-                        kind: "password",
-                        failure: std::io::Error::other(SENTINEL).into(),
-                    },
                     OracleAdapterError::Worker(std::io::Error::other(SENTINEL).into()),
                     OracleAdapterError::CancellationWorker(std::io::Error::other(SENTINEL).into()),
                 ] {
@@ -154,9 +149,123 @@ macro_rules! oracle_module_tests {
                 super::OracleAdapter::new(super::OracleAdapterConfig {
                     connect_string: String::new(),
                     instant_client_dir: String::new(),
-                    username_file: String::new(),
-                    password_file: String::new(),
-                })
+                }, super::super::tests::test_provider())
+            }
+
+            struct UnavailableProvider {
+                pending: bool,
+            }
+
+            #[async_trait::async_trait(?Send)]
+            impl otel_arrow_dfe_engine::local::capability::auth::basic_auth_provider::BasicAuthProvider
+                for UnavailableProvider
+            {
+                async fn get_credential(&self) -> Result<super::BasicAuthCredential, otel_arrow_dfe_engine::capability::CapabilityError> {
+                    if self.pending {
+                        return futures::future::pending().await;
+                    }
+                    Err(otel_arrow_dfe_engine::capability::CapabilityErrorSource::<
+                        otel_arrow_dfe_engine::capability::auth::basic_auth_provider::BasicAuthProvider
+                    >::new("PRIVATE_PROVIDER".into()).error("PRIVATE_CREDENTIAL_CONTENT"))
+                }
+
+                fn credential_stream(&self) -> otel_arrow_dfe_engine::capability::auth::basic_auth_provider::BasicAuthCredentialStream {
+                    Box::pin(futures::stream::pending())
+                }
+            }
+
+            /// Scenario: A credential provider fails with sensitive diagnostics before a native operation starts.
+            /// Guarantees: The adapter reports a terminal redacted error without creating a native worker.
+            #[tokio::test]
+            async fn provider_failures_are_redacted_before_native_work() {
+                use otel_arrow_dfe_scraper::database::DriverAdapter;
+                let mut adapter = test_adapter();
+                adapter.credentials = Box::new(UnavailableProvider { pending: false });
+                let config: super::super::OracleReceiverConfig =
+                    serde_json::from_value(super::super::tests::documented_config()).expect("config");
+                _ = adapter.begin_operation().expect("operation");
+                let error = adapter.validate_query(&config.query()).await.expect_err("provider failure");
+                assert!(matches!(error, OracleAdapterError::CredentialUnavailable));
+                assert!(!super::OracleAdapter::is_retryable(&error));
+                assert_redacted(error, "PRIVATE_PROVIDER PRIVATE_CREDENTIAL_CONTENT");
+                assert!(adapter.worker.is_none());
+                adapter.shutdown().await.expect("cleanup");
+            }
+
+            /// Scenario: A provider never completes acquisition and stop arrives before a connection exists.
+            /// Guarantees: Cancellation wakes the wait promptly and no worker or connection is started.
+            #[tokio::test]
+            async fn credential_acquisition_is_cancellable() {
+                use otel_arrow_dfe_scraper::database::{DriverAdapter, DriverCancellation};
+                let mut adapter = test_adapter();
+                adapter.credentials = Box::new(UnavailableProvider { pending: true });
+                let cancellation = adapter.begin_operation().expect("operation");
+                {
+                    let acquisition = adapter.credential(Duration::from_secs(300));
+                    tokio::pin!(acquisition);
+                    assert!(futures::poll!(&mut acquisition).is_pending());
+                    cancellation.cancel().await.expect("cancel");
+                    assert!(matches!(
+                        tokio::time::timeout(Duration::from_secs(1), acquisition).await.expect("prompt cancellation"),
+                        Err(OracleAdapterError::Cancelled),
+                    ));
+                }
+                assert!(adapter.worker.is_none());
+                adapter.shutdown().await.expect("cleanup");
+            }
+
+            /// Scenario: Cancellation from an earlier operation arrives while a new credential request waits.
+            /// Guarantees: A stale handle cannot wake or cancel the new request; the matching handle still stops it.
+            #[tokio::test]
+            async fn stale_cancellation_does_not_wake_new_credential_wait() {
+                use otel_arrow_dfe_scraper::database::{DriverAdapter, DriverCancellation};
+                let mut adapter = test_adapter();
+                adapter.credentials = Box::new(UnavailableProvider { pending: true });
+                let previous = adapter.begin_operation().expect("previous operation");
+                let current = adapter.begin_operation().expect("current operation");
+                {
+                    let acquisition = adapter.credential(Duration::from_secs(300));
+                    tokio::pin!(acquisition);
+                    assert!(futures::poll!(&mut acquisition).is_pending());
+                    previous.cancel().await.expect("stale cancellation ignored");
+                    assert!(futures::poll!(&mut acquisition).is_pending());
+                    current.cancel().await.expect("matching cancellation");
+                    assert!(matches!(
+                        tokio::time::timeout(Duration::from_secs(1), acquisition).await.expect("prompt cancellation"),
+                        Err(OracleAdapterError::Cancelled),
+                    ));
+                }
+                assert!(adapter.worker.is_none());
+                adapter.shutdown().await.expect("cleanup");
+            }
+
+            /// Scenario: A provider never completes acquisition without an external cancellation.
+            /// Guarantees: The configured acquisition deadline produces a terminal error rather than an unbounded wait.
+            #[tokio::test(start_paused = true)]
+            async fn credential_acquisition_has_a_deadline() {
+                let mut adapter = test_adapter();
+                adapter.credentials = Box::new(UnavailableProvider { pending: true });
+                assert!(matches!(
+                    adapter.credential(Duration::from_secs(1)).await,
+                    Err(OracleAdapterError::CredentialTimeout),
+                ));
+                assert!(adapter.worker.is_none());
+            }
+
+            /// Scenario: A provider returns a credential inside the shared expiry safety margin.
+            /// Guarantees: Oracle rejects the snapshot before native work even if the provider fails to enforce expiry.
+            #[tokio::test]
+            async fn near_expiry_credentials_are_rejected() {
+                let mut adapter = test_adapter();
+                adapter.credentials = super::super::tests::credential_provider(
+                    super::BasicAuthCredential::new("user", "password").expect("credential")
+                        .with_expiry(std::time::Instant::now() + Duration::from_secs(20)),
+                );
+                assert!(matches!(
+                    adapter.credential(Duration::from_secs(1)).await,
+                    Err(OracleAdapterError::CredentialUnavailable),
+                ));
+                assert!(adapter.worker.is_none());
             }
 
             /// Scenario: Oracle errors include known outages alongside authorization, SQL and schema failures.
@@ -296,37 +405,33 @@ macro_rules! oracle_module_tests {
             /// Scenario: A disposable Oracle source widens its cursor timestamp between two adapter executions.
             /// Guarantees: The database or adapter rejects incompatible DDL before returning another page.
             #[tokio::test]
-            #[ignore = "requires ORACLE_SCHEMA_TEST_CONFIG pointing to a disposable OTAP_SCHEMA_DRIFT fixture"]
+            #[ignore = "requires ORACLE_SCHEMA_TEST_CONFIG, ORACLE_USERNAME, and ORACLE_PASSWORD_FILE for a disposable OTAP_SCHEMA_DRIFT fixture"]
             async fn live_timestamp_precision_change_is_rejected() -> Result<(), Box<dyn std::error::Error>> {
                 use otel_arrow_dfe_scraper::database::DriverAdapter;
 
                 let path = std::env::var("ORACLE_SCHEMA_TEST_CONFIG")
                     .map_err(|_| "ORACLE_SCHEMA_TEST_CONFIG is required and must contain valid Unicode")?;
-                let bytes = fs::read(path).map_err(|error| OracleAdapterError::Credential {
-                    kind: "schema test configuration", failure: error.into(),
-                })?;
+                let bytes = fs::read(path).map_err(|_| "cannot read schema test configuration")?;
                 let value: serde_json::Value = serde_json::from_slice(&bytes)
                     .map_err(|_| "schema test configuration must contain valid JSON")?;
+                let credential = super::super::tests::fixture_credential(
+                    &std::env::var("ORACLE_USERNAME")
+                        .map_err(|_| "ORACLE_USERNAME is required and must contain valid Unicode")?,
+                    &std::env::var("ORACLE_PASSWORD_FILE")
+                        .map_err(|_| "ORACLE_PASSWORD_FILE is required and must contain valid Unicode")?,
+                );
                 let config: super::super::OracleReceiverConfig = serde_json::from_value(value.clone())?;
                 let query = config.query();
-                let mut adapter = config.adapter();
+                let mut adapter = config.adapter(super::super::tests::credential_provider(credential.clone()));
                 let result = async {
                     _ = adapter.begin_operation()?;
                     _ = adapter.validate_query(&query).await?;
                     _ = adapter.begin_operation()?;
                     let page = adapter.execute(&query, &query.watermark().initial).await?;
                     let cursor = page.rows.last().ok_or("fixture must contain one row")?.cursor.clone();
-                    let username = read_credential(
-                        value["authentication"]["username_file"].as_str().ok_or("username file")?,
-                        "username",
-                    )?;
-                    let password = read_credential(
-                        value["authentication"]["password_file"].as_str().ok_or("password file")?,
-                        "password",
-                    )?;
                     let writer = oracle::Connection::connect(
-                        username.expose_secret(),
-                        password.expose_secret(),
+                        credential.expose_username(),
+                        credential.expose_password(),
                         value["connection"]["connect_string"].as_str().ok_or("connect string")?,
                     ).map_err(|error| OracleAdapterError::Connect(error.into()))?;
                     _ = writer.execute(
@@ -952,49 +1057,6 @@ macro_rules! oracle_module_tests {
                 }
             }
 
-            /// Scenario: A mounted credential contains a trailing newline.
-            /// Guarantees: Kubernetes-style secret files load without adding the line ending to the credential.
-            #[test]
-            fn trims_credential_line_endings() {
-                let directory = tempfile::tempdir().expect("temporary directory");
-                let path = directory.path().join("password");
-                fs::write(&path, b"secret\r\n").expect("write credential");
-
-                assert_eq!(
-                    read_credential(path.to_str().expect("UTF-8 path"), "password")
-                        .expect("credential should load")
-                        .expose_secret(),
-                    "secret"
-                );
-            }
-
-            /// Scenario: A mounted credential exceeds the receiver's fixed secret-file ceiling.
-            /// Guarantees: The adapter rejects the file before allocating or retaining unbounded secret data.
-            #[test]
-            fn rejects_oversized_credential() {
-                let directory = tempfile::tempdir().expect("temporary directory");
-                let path = directory.path().join("password");
-                fs::write(&path, vec![b'x'; 64 * 1024 + 1]).expect("write credential");
-
-                assert!(matches!(
-                    read_credential(path.to_str().expect("UTF-8 path"), "password"),
-                    Err(OracleAdapterError::CredentialTooLarge("password"))
-                ));
-            }
-
-            /// Scenario: A mounted credential is not valid UTF-8.
-            /// Guarantees: Invalid text is rejected without including credential bytes in diagnostics.
-            #[test]
-            fn rejects_non_utf8_credential() {
-                let directory = tempfile::tempdir().expect("temporary directory");
-                let path = directory.path().join("password");
-                fs::write(&path, [0xff]).expect("write credential");
-
-                assert!(matches!(
-                    read_credential(path.to_str().expect("UTF-8 path"), "password"),
-                    Err(OracleAdapterError::InvalidCredentialEncoding("password"))
-                ));
-            }
         }
     };
     (worker) => {
@@ -1170,7 +1232,11 @@ macro_rules! oracle_module_tests {
 }
 
 use super::*;
+use otel_arrow_dfe_engine::capability::CapabilityError;
+use otel_arrow_dfe_engine::capability::auth::BasicAuthCredential;
+use otel_arrow_dfe_engine::capability::auth::basic_auth_provider::BasicAuthCredentialStream;
 use otel_arrow_dfe_engine::context::ControllerContext;
+use otel_arrow_dfe_engine::local::capability::auth::basic_auth_provider::BasicAuthProvider as LocalBasicAuthProvider;
 use otel_arrow_dfe_engine::receiver::ReceiverWrapper;
 use otel_arrow_dfe_engine::testing::{receiver::TestRuntime, test_node};
 use otel_arrow_dfe_scraper::SourceLease;
@@ -1183,16 +1249,66 @@ const COMPOSITE_STATEMENT: &str = "SELECT AUDIT_ID, LAST_UPDATED, PAYLOAD FROM A
      OR (LAST_UPDATED = :last_timestamp AND AUDIT_ID > :last_tie_breaker)) \
      ORDER BY LAST_UPDATED ASC, AUDIT_ID ASC";
 
+struct FixedCredentials(BasicAuthCredential);
+
+#[async_trait::async_trait(?Send)]
+impl LocalBasicAuthProvider for FixedCredentials {
+    async fn get_credential(&self) -> Result<BasicAuthCredential, CapabilityError> {
+        Ok(self.0.clone())
+    }
+
+    fn credential_stream(&self) -> BasicAuthCredentialStream {
+        Box::pin(futures::stream::iter([self.0.clone()]))
+    }
+}
+
+pub(super) fn credential_provider(
+    credential: BasicAuthCredential,
+) -> Box<dyn LocalBasicAuthProvider> {
+    Box::new(FixedCredentials(credential))
+}
+
+pub(super) fn test_provider() -> Box<dyn LocalBasicAuthProvider> {
+    credential_provider(BasicAuthCredential::new("test-user", "test-password").expect("credential"))
+}
+
+fn build(pipeline: &PipelineContext, name: &str, config: &Value) -> Result<Receiver, ConfigError> {
+    super::build(pipeline, name, config, test_provider())
+}
+
+pub(super) fn fixture_credential(username: &str, password_file: &str) -> BasicAuthCredential {
+    use secrecy::ExposeSecret;
+    let password = secrecy::SecretString::from(
+        std::fs::read_to_string(password_file).expect("fixture password"),
+    );
+    BasicAuthCredential::new(
+        username,
+        password.expose_secret().trim_end_matches(['\r', '\n']),
+    )
+    .expect("fixture credentials")
+}
+
+/// Scenario: A live-test fixture supplies a username value and a newline-terminated password file.
+/// Guarantees: Only the password is read from disk; the username is used verbatim like extension YAML.
+#[test]
+fn fixture_credential_uses_inline_username() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let password_file = directory.path().join("password");
+    std::fs::write(&password_file, "fixture-password\r\n").expect("write fixture password");
+    let credential = fixture_credential(
+        "fixture-user",
+        password_file.to_str().expect("UTF-8 fixture path"),
+    );
+    assert_eq!(credential.expose_username(), "fixture-user");
+    assert_eq!(credential.expose_password(), "fixture-password");
+}
+
 pub(super) fn documented_config() -> Value {
     serde_json::json!({
         "source_id": "oracle-audit",
         "connection": {
             "connect_string": "database.contoso.com:1521/ORCL",
             "instant_client_dir": "/opt/oracle/instantclient"
-        },
-        "authentication": {
-            "username_file": "/var/run/secrets/oracle/oracle-audit/username",
-            "password_file": "/var/run/secrets/oracle/oracle-audit/password"
         },
         "query": {
             "statement": COMPOSITE_STATEMENT,
@@ -1363,6 +1479,34 @@ fn factory_rejects_multi_core_placement() {
         result,
         Err(ConfigError::InvalidUserConfig { error }) if error.contains("single-core")
     ));
+}
+
+/// Scenario: A single-core Oracle receiver has no basic_auth_provider binding.
+/// Guarantees: Construction fails with an actionable capability error before checkpoint or native work.
+#[test]
+fn factory_requires_authentication_capability() {
+    let runtime = TestRuntime::<OtapPdata>::new();
+    let result = (ORACLE_RECEIVER.create)(
+        pipeline_context(),
+        test_node("oracle-test"),
+        Arc::new(NodeUserConfig::new_receiver_config(ORACLE_RECEIVER_URN)),
+        runtime.config(),
+        &otel_arrow_dfe_engine::capability::registry::Capabilities::empty(),
+    );
+    assert!(matches!(
+        result,
+        Err(ConfigError::InvalidUserConfig { error }) if error.contains("basic_auth_provider"),
+    ));
+}
+
+/// Scenario: A configuration still supplies Oracle's removed credential-file block.
+/// Guarantees: Legacy authentication is rejected rather than silently ignored alongside a capability binding.
+#[test]
+fn rejects_legacy_authentication_configuration() {
+    let mut config = documented_config();
+    config["authentication"] =
+        serde_json::json!({"username_file": "username", "password_file": "password"});
+    assert!(parsed(config).is_err());
 }
 
 /// Scenario: The receiver loads the complete documented composite configuration.
@@ -1855,18 +1999,20 @@ fn rejects_oversized_source_id() {
     assert!(parsed(config).is_err());
 }
 
-/// Scenario: Two configurations differ only in mounted credential paths, or only in semantics.
-/// Guarantees: Rotating a secret preserves the durable checkpoint, while changing the query or a
+/// Scenario: Two configurations differ only in the client installation, or only in semantics.
+/// Guarantees: Changing the client location preserves the durable checkpoint, while changing the query or a
 /// cursor definition invalidates it so an unrelated position is never resumed.
 #[test]
-fn fingerprint_tracks_semantics_and_ignores_credential_paths() {
+fn fingerprint_tracks_semantics_and_ignores_client_location() {
     let baseline = parsed(documented_config()).expect("baseline should parse");
 
-    let mut rotated = documented_config();
-    rotated["authentication"]["password_file"] = serde_json::json!("/var/run/secrets/rotated");
-    rotated["connection"]["instant_client_dir"] = serde_json::json!("/opt/oracle/ic-23");
-    let rotated = parsed(rotated).expect("rotated credentials should parse");
-    assert_eq!(baseline.config_fingerprint(), rotated.config_fingerprint());
+    let mut relocated = documented_config();
+    relocated["connection"]["instant_client_dir"] = serde_json::json!("/opt/oracle/ic-23");
+    let relocated = parsed(relocated).expect("relocated client should parse");
+    assert_eq!(
+        baseline.config_fingerprint(),
+        relocated.config_fingerprint()
+    );
 
     let mut different_cursor = documented_config();
     different_cursor["watermark"]["tie_breaker"]["initial"] = serde_json::json!(100);
@@ -1998,9 +2144,8 @@ fn factory_preserves_case_distinct_source_ownership() {
     drop(lower);
 }
 
-/// Scenario: A live Oracle database is explicitly configured for an end-to-end smoke test.
-/// Guarantees: The registered receiver validates cursor metadata, binds the committed composite
-/// cursor, and emits OTLP logs for the selected rows.
+/// Scenario: A live Oracle receiver uses a fixed provider with an inline username and a password file.
+/// Guarantees: The receiver validates metadata, binds the cursor, and emits logs before shutdown.
 #[test]
 fn emits_oracle_rows_when_live_test_is_enabled() {
     if std::env::var_os("OTAP_ORACLE_RECEIVER_E2E").is_none() {
@@ -2014,12 +2159,6 @@ fn emits_oracle_rows_when_live_test_is_enabled() {
                 .unwrap_or_else(|_| "//localhost:1521/FREEPDB1".to_owned()),
             "instant_client_dir": std::env::var("ORACLE_INSTANT_CLIENT_DIR")
                 .unwrap_or_else(|_| "C:\\oracle\\instantclient".to_owned())
-        },
-        "authentication": {
-            "username_file": std::env::var("ORACLE_USERNAME_FILE")
-                .unwrap_or_else(|_| "C:\\secrets\\oracle-username".to_owned()),
-            "password_file": std::env::var("ORACLE_PASSWORD_FILE")
-                .unwrap_or_else(|_| "C:\\secrets\\oracle-password".to_owned())
         },
         "query": {
             "statement": "SELECT EVENT_ID, EVENT_TS, PAYLOAD FROM OTAP_ORACLE_EVENTS \
@@ -2052,8 +2191,17 @@ fn emits_oracle_rows_when_live_test_is_enabled() {
             "max_consecutive_failures": 5
         }
     });
-    let receiver =
-        build(&pipeline_context(), "oracle-e2e", &config).expect("receiver config should build");
+    let credential = fixture_credential(
+        &std::env::var("ORACLE_USERNAME").expect("inline fixture username"),
+        &std::env::var("ORACLE_PASSWORD_FILE").expect("password fixture file"),
+    );
+    let receiver = super::build(
+        &pipeline_context(),
+        "oracle-e2e",
+        &config,
+        credential_provider(credential),
+    )
+    .expect("receiver config should build");
     let test_runtime = TestRuntime::<OtapPdata>::new();
     let node_config = Arc::new(NodeUserConfig::new_receiver_config(ORACLE_RECEIVER_URN));
     let receiver_wrapper = ReceiverWrapper::local(
@@ -2063,19 +2211,24 @@ fn emits_oracle_rows_when_live_test_is_enabled() {
         test_runtime.config(),
     );
 
+    let (emitted, received) = tokio::sync::oneshot::channel();
     test_runtime
         .set_receiver(receiver_wrapper)
         .run_test(|ctx| async move {
-            ctx.sleep(Duration::from_millis(500)).await;
+            let emission = tokio::time::timeout(Duration::from_secs(20), received).await;
             ctx.send_shutdown(
                 Instant::now() + Duration::from_secs(5),
                 "Oracle receiver E2E complete",
             )
             .await
             .expect("shutdown should enqueue");
+            emission
+                .expect("receiver should emit within the smoke-test deadline")
+                .expect("validation should signal emission");
         })
-        .run_validation(|mut ctx| async move {
+        .run_validation_concurrent(|mut ctx| async move {
             let mut pdata = ctx.recv().await.expect("receiver should emit pdata");
             assert!(pdata.num_items() >= 1);
+            emitted.send(()).expect("signal emission");
         });
 }

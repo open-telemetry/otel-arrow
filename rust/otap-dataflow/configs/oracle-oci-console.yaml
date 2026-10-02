@@ -9,17 +9,23 @@ groups:
   default:
     pipelines:
       main:
+        extensions:
+          oracle-credentials:
+            type: urn:otel:extension:flat_file_user_pass_auth
+            config:
+              username: oracle_reader
+              password_secret_file: '${env:ORACLE_PASSWORD_FILE:-/run/oracle-secrets/password}'
+              password_secret_file_refresh: 1m
         nodes:
           oracle-audit:
             type: urn:otel:receiver:oracle
+            capabilities:
+              basic_auth_provider: oracle-credentials
             config:
               source_id: oracle-audit
               connection:
                 connect_string: '${env:ORACLE_CONNECT_STRING:-//localhost:1521/FREEPDB1}'
                 instant_client_dir: '${env:ORACLE_INSTANT_CLIENT_DIR:-/opt/oracle/instantclient}'
-              authentication:
-                username_file: '${env:ORACLE_USERNAME_FILE:-/run/oracle-secrets/username}'
-                password_file: '${env:ORACLE_PASSWORD_FILE:-/run/oracle-secrets/password}'
               query:
                 statement: >
                   SELECT EVENT_ID, EVENT_TS, PAYLOAD

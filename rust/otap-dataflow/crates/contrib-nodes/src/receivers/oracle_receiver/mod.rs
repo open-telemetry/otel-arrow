@@ -21,6 +21,7 @@ use linkme::distributed_slice;
 use otel_arrow_dfe_config::error::Error as ConfigError;
 use otel_arrow_dfe_config::node::NodeUserConfig;
 use otel_arrow_dfe_engine::ReceiverFactory;
+use otel_arrow_dfe_engine::capability::auth::basic_auth_provider::BasicAuthProvider;
 use otel_arrow_dfe_engine::config::ReceiverConfig;
 use otel_arrow_dfe_engine::context::PipelineContext;
 use otel_arrow_dfe_engine::memory_limiter::LocalReceiverAdmissionState;
@@ -54,6 +55,9 @@ fn build(
     pipeline: &PipelineContext,
     receiver_name: &str,
     config: &Value,
+    credentials: Box<
+        dyn otel_arrow_dfe_engine::local::capability::auth::basic_auth_provider::BasicAuthProvider,
+    >,
 ) -> Result<Receiver, ConfigError> {
     let config = parse(config)?;
     let query = config.query();
@@ -69,7 +73,7 @@ fn build(
     let source = SourceBinding::acquire(store).map_err(invalid_source_lease)?;
     let metrics = Some(pipeline.register_metric_set::<DatabaseReceiverMetrics>());
     Ok(DatabaseReceiver::new(
-        config.adapter(),
+        config.adapter(credentials),
         query,
         source,
         checkpoint.nack_backoff,
@@ -119,29 +123,31 @@ fn invalid_source_lease(error: LeaseError) -> ConfigError {
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
 pub static ORACLE_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
     name: ORACLE_RECEIVER_URN,
-    create:
-        |pipeline: PipelineContext,
-         node: NodeId,
-         node_config: Arc<NodeUserConfig>,
-         receiver_config: &ReceiverConfig,
-         _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities| {
-            if pipeline.num_cores() != 1 {
-                return Err(ConfigError::InvalidUserConfig {
-                    error: "the Oracle receiver requires a single-core pipeline".to_owned(),
-                });
-            }
-            let receiver = build(
-                &pipeline,
-                receiver_config.name.as_ref(),
-                &node_config.config,
-            )?;
-            Ok(ReceiverWrapper::local(
-                receiver,
-                node,
-                node_config,
-                receiver_config,
-            ))
-        },
+    create: |pipeline: PipelineContext,
+             node: NodeId,
+             node_config: Arc<NodeUserConfig>,
+             receiver_config: &ReceiverConfig,
+             capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities| {
+        if pipeline.num_cores() != 1 {
+            return Err(ConfigError::InvalidUserConfig {
+                error: "the Oracle receiver requires a single-core pipeline".to_owned(),
+            });
+        }
+        let receiver = build(
+            &pipeline,
+            receiver_config.name.as_ref(),
+            &node_config.config,
+            capabilities
+                .require_local::<BasicAuthProvider>()
+                .map_err(invalid_config)?,
+        )?;
+        Ok(ReceiverWrapper::local(
+            receiver,
+            node,
+            node_config,
+            receiver_config,
+        ))
+    },
     validate_config: validate,
     context_declarations: None,
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,

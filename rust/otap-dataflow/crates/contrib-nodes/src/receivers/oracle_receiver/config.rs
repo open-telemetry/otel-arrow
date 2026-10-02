@@ -11,6 +11,7 @@
 //! that requirement.
 
 use super::adapter::{OracleAdapter, OracleAdapterConfig, normalize_cursor_timestamp};
+use otel_arrow_dfe_engine::local::capability::auth::basic_auth_provider::BasicAuthProvider;
 use otel_arrow_dfe_scraper::database::{
     CatchUpConfig, CheckpointConfig, CompiledQuery, OutputConfig, PollingConfig, WatermarkConfig,
 };
@@ -41,7 +42,6 @@ const fn default_fetch_size_rows() -> usize {
 pub struct OracleReceiverConfig {
     source_id: String,
     connection: OracleConnectionConfig,
-    authentication: OracleAuthenticationConfig,
     query: CompiledQuery,
     checkpoint: CheckpointConfig,
     config_fingerprint: String,
@@ -92,13 +92,14 @@ impl OracleReceiverConfig {
 
     /// Builds the Oracle adapter for this configuration.
     #[must_use]
-    pub fn adapter(&self) -> OracleAdapter {
-        OracleAdapter::new(OracleAdapterConfig {
-            connect_string: self.connection.connect_string.clone(),
-            instant_client_dir: self.connection.instant_client_dir.clone(),
-            username_file: self.authentication.username_file.clone(),
-            password_file: self.authentication.password_file.clone(),
-        })
+    pub fn adapter(&self, credentials: Box<dyn BasicAuthProvider>) -> OracleAdapter {
+        OracleAdapter::new(
+            OracleAdapterConfig {
+                connect_string: self.connection.connect_string.clone(),
+                instant_client_dir: self.connection.instant_client_dir.clone(),
+            },
+            credentials,
+        )
     }
 }
 
@@ -120,14 +121,6 @@ impl TryFrom<RawOracleConfig> for OracleReceiverConfig {
         required(
             "connection.instant_client_dir",
             &config.connection.instant_client_dir,
-        )?;
-        required(
-            "authentication.username_file",
-            &config.authentication.username_file,
-        )?;
-        required(
-            "authentication.password_file",
-            &config.authentication.password_file,
         )?;
         required("query.statement", &config.query.statement)?;
         if !(MIN_ORACLE_INTERVAL..=MAX_ORACLE_INTERVAL).contains(&config.query.interval)
@@ -194,7 +187,6 @@ impl TryFrom<RawOracleConfig> for OracleReceiverConfig {
         Ok(Self {
             source_id: config.source_id,
             connection: config.connection,
-            authentication: config.authentication,
             query,
             checkpoint: config.checkpoint,
             config_fingerprint,
@@ -224,7 +216,6 @@ struct FingerprintInput<'a> {
 struct RawOracleConfig {
     source_id: String,
     connection: OracleConnectionConfig,
-    authentication: OracleAuthenticationConfig,
     query: OracleQueryConfig,
     watermark: WatermarkConfig,
     checkpoint: CheckpointConfig,
@@ -235,13 +226,6 @@ struct RawOracleConfig {
 struct OracleConnectionConfig {
     connect_string: String,
     instant_client_dir: String,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct OracleAuthenticationConfig {
-    username_file: String,
-    password_file: String,
 }
 
 #[derive(Deserialize)]

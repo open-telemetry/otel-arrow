@@ -39,8 +39,10 @@ exactly once and does not implement every capability proposed in the
 2. Install [Oracle Instant Client](#oracle-instant-client-installation) on the
    engine host and provision a least-privileged account with read access to the
    selected data.
-3. Mount the username and password as files readable by the engine, and provide
-   a persistent, writable checkpoint directory.
+3. Set the username in a shared credential extension's YAML and mount its
+   password file so the engine can read it. Provide a persistent, writable
+   checkpoint directory and bind the receiver's `basic_auth_provider`
+   capability to the extension.
 4. Adapt the [complete pipeline example](#full-configuration), then use the
    [Windows or Linux commands](#running) to start it on one core.
 
@@ -49,27 +51,19 @@ fetch size and catch-up budgets have defaults. Unknown fields are rejected.
 
 ## Configuration
 
-### Native Schema and Design Proposals
+### Native Configuration
 
-This reference documents the implemented native OTEL-Arrow schema, matching the
-updated **composite** configuration design. An upstream deployment system may
-translate customer settings into this YAML and provision credentials and
-checkpoint storage; pre-DCR/DCR translation and mount orchestration are separate
-deployment work, not implemented by this receiver.
+This reference describes the YAML accepted by the OTEL-Arrow engine.
 
-Do not copy proposed or older schema variants into the native configuration:
+Configure database connectivity, one query, its composite watermark, and
+checkpoint behavior in the receiver's `config` block. Configure credential
+acquisition through a pipeline extension and capability binding, and choose
+destination routing in the pipeline's connections and exporters.
 
-- `credentialReference`, `tnsAdminReference`, `startAt`, and destination `stream`
-  are not native receiver fields. Credentials use file paths; destination
-  routing belongs to the surrounding pipeline/exporter configuration.
-- `connection.instant_client_dir` is required, even if the loader can already
-  find the Oracle libraries. `connection.tns_admin` is not supported.
-- Watermarks use nested `timestamp` and `tie_breaker` objects, explicit `bind`
-  and `initial` values, and `mode: composite`; flat `timestamp_column`,
-  `tie_breaker_column`, and `start_at` fields are not accepted.
-- Scalar and snapshot configurations are proposals, not implemented modes.
-- A deployment system may choose defaults, but the native schema requires all
-  fields marked required, including `max_batch_bytes` and `nack_backoff`.
+`connection.instant_client_dir` selects the native Oracle libraries. The
+watermark uses nested `timestamp` and `tie_breaker` objects, each with explicit
+`bind` and `initial` values, under `mode: composite`. Supply every field marked
+required below, including `max_batch_bytes` and `nack_backoff`.
 
 ### Top-Level Fields
 
@@ -77,7 +71,6 @@ Do not copy proposed or older schema variants into the native configuration:
 | --- | --- | --- | --- |
 | `source_id` | string | **required** | Non-empty logical source identity, at most 256 UTF-8 bytes. Used in checkpoints and emitted telemetry; do not include credentials or sensitive connection details. |
 | `connection` | object | **required** | Oracle connection string and Instant Client directory. |
-| `authentication` | object | **required** | Paths to mounted username and password files. |
 | `query` | object | **required** | One SQL statement and its polling, row, byte, and timeout limits. |
 | `watermark` | object | **required** | Composite timestamp/tie-breaker cursor definition and initial position. |
 | `checkpoint` | object | **required** | State directory, NACK policy, replay backoff, and checkpoint-write failure limit. |
@@ -107,22 +100,47 @@ is process-global.
 
 ### Authentication
 
-| Field | Type | Default | Description |
-| --- | --- | --- | --- |
-| `authentication.username_file` | string | **required** | Path to a regular UTF-8 file containing the Oracle username. |
-| `authentication.password_file` | string | **required** | Path to a regular UTF-8 file containing the Oracle password. |
+For mounted secrets, use the
+[flat-file username/password extension](../../../../contrib-extensions/src/flat_file_user_pass_auth/README.md)
+with `username` in YAML and `password_secret_file`. 
 
-Each file must be non-empty after removing trailing CR/LF characters and no
-larger than 64 KiB. Restrict file permissions to the engine's identity. Configure
-file paths, not secret values, in YAML or environment-variable substitutions.
+The extension owns password-file loading, validation, caching, and periodic
+refresh. Configure the username and password-file path like the following example:
 
-Files are read when opening a connection. Replacing a mounted secret does not
-invalidate the checkpoint, but an already-open session continues using its
-existing credentials; new values are used on the next connection.
+```yaml
+version: otel_dataflow/v1
+engine: {}
+policies:
+  resources:
+    core_allocation:
+      type: core_count
+      count: 1
+groups:
+  default:
+    pipelines:
+      main:
+        extensions:
+          oracle-credentials:
+            type: urn:otel:extension:flat_file_user_pass_auth
+            config:
+              username: oracle_reader
+              password_secret_file: '${env:ORACLE_PASSWORD_FILE:-/run/oracle-secrets/password}'
+              password_secret_file_refresh: 1m
+        nodes:
+          oracle-audit:
+            type: urn:otel:receiver:oracle
+            capabilities:
+              basic_auth_provider: oracle-credentials
+            config:
+              source_id: oracle-audit
+            ....
+```
 
-There are no receiver-level shared-auth-extension, wallet, or TLS configuration
-blocks. Do not assume these examples establish encrypted transport; qualify
-your Oracle client and connection security separately for the deployment.
+An already-open Oracle session is reused, not reauthenticated on each refresh.
+New connections and reconnects use the current provider snapshot. Password
+rotation does not change checkpoint identity. A username change must still
+refer to the same logical source; use schema-qualified queries and do not
+reuse a checkpoint for a different schema or source.
 
 ### Query
 
@@ -147,8 +165,8 @@ rejected, not replaced with defaults or rounded. A configured page limit below
 300 requires an explicitly smaller fetch size. Product configuration may hold
 the timeout and fetch size fixed while still using these native defaults.
 
-There is no independent `query.max_normalized_bytes` setting. For example,
-`max_batch_bytes: 10 MiB` caps each of the normalized-row and encoded-payload
+`query.max_batch_bytes` controls both row-normalization and encoding budgets.
+For example, `max_batch_bytes: 10 MiB` caps each of the normalized-row and encoded-payload
 representations at 10 MiB separately; it does not cap their combined memory use.
 
 The encoder emits the largest non-empty row prefix that fits the encoded
@@ -353,8 +371,8 @@ and unconfirmed worker cleanup are not retryable. A native operation must
 finish and drop failed session state on its worker before reporting a retryable
 failure; a stuck operation follows shared bounded cleanup and ownership quarantine.
 
-Reconnect replaces the session on the existing query worker and rereads
-credentials. Shared code revalidates metadata before fetching again.
+Reconnect replaces the session on the existing query worker using the current
+provider credentials. Shared code revalidates metadata before fetching again.
 After a recovered execution page is acknowledged, subsequent catch-up waits
 for the normal polling interval. Late cancellation from a previous attempt
 cannot cancel a newer attempt.
@@ -364,42 +382,6 @@ restarting the receiver; repair the destination and restart the source.
 With `retry`, shared capped backoff continues until a matching ACK is durably
 committed. The engine's separate runtime recovery policy can restart terminal
 pipeline failures; disable it when testing source-local recovery in isolation.
-
-## Checkpoints and Ownership
-
-Checkpoint identity includes the state directory, pipeline group, pipeline,
-receiver name, and `source_id`. Revisioned, checksummed files record the cursor
-and configuration fingerprint. Corruption, unsupported versions, and
-revision/source/fingerprint mismatches fail explicitly instead of resetting to
-the initial cursor.
-
-The receiver acquires a shared `SourceBinding` in the factory. It couples the
-checkpoint store with its native-path lease and derives emitted source identity
-from that store rather than accepting independent identity arguments.
-Its current checkpoint namespace distinguishes IDs that differ
-only in case, including on Windows. The factory, checkpoint writer and ownership
-lock therefore refer to the same storage identity. The shared store owns layout
-compatibility and recovery; Oracle has no separate checkpoint implementation.
-
-Writes use a same-directory temporary file, file synchronization, and rename.
-The store attempts to retain the newest two revisions; cleanup failures are
-reported. Unix also synchronizes the checkpoint's parent directory, but newly
-created ancestor directories are not synchronized. Windows has no portable
-directory-fsync step. Power loss can therefore lose a new state tree or an
-installation and cause replay. Power-loss behavior has not been experimentally
-qualified; retention must account for that recovery window.
-
-The fingerprint includes the source ID, connection string, SQL, and cursor
-column/bind/initial values. Credential paths, Instant Client directory, and
-polling interval are excluded. Changing semantic fields can invalidate saved
-state; do not remove checkpoints merely to bypass that protection.
-
-A process-local registry and advisory filesystem lock exclude competing owners
-of the **same checkpoint identity**, provided the filesystem honors the lock.
-They do not discover overlapping database queries. Different pipeline names,
-receiver names, state directories, or unshared replica filesystems can still
-poll the same data. Enforce one active poller per logical source range.
-Renaming a receiver or moving its state directory does not transfer its progress.
 
 ## Live configuration changes
 
@@ -497,17 +479,23 @@ groups:
   default:
     pipelines:
       main:
+        extensions:
+          oracle-credentials:
+            type: urn:otel:extension:flat_file_user_pass_auth
+            config:
+              username: oracle_reader
+              password_secret_file: '${env:ORACLE_PASSWORD_FILE:-/run/oracle-secrets/password}'
+              password_secret_file_refresh: 1m
         nodes:
           oracle-audit:
             type: urn:otel:receiver:oracle
+            capabilities:
+              basic_auth_provider: oracle-credentials
             config:
               source_id: oracle-audit
               connection:
                 connect_string: '${env:ORACLE_CONNECT_STRING:-//localhost:1521/FREEPDB1}'
                 instant_client_dir: '${env:ORACLE_INSTANT_CLIENT_DIR:-/opt/oracle/instantclient}'
-              authentication:
-                username_file: '${env:ORACLE_USERNAME_FILE:-/run/oracle-secrets/username}'
-                password_file: '${env:ORACLE_PASSWORD_FILE:-/run/oracle-secrets/password}'
               query:
                 statement: >
                   SELECT EVENT_ID, EVENT_TS, PAYLOAD
@@ -552,9 +540,10 @@ groups:
 
 ### Running
 
-Install Instant Client first, ensure the source table exists, and provision the
-credential files. Run these commands from the repository root. The environment
-variables below override the paths and connection string in the example.
+Install Instant Client first, ensure the source table exists, set the
+extension's `username` in the example YAML to your database account, and
+provision its password file. Run these commands from the repository root.
+The environment variables below override the paths and connection string.
 
 **Windows (PowerShell):**
 
@@ -563,7 +552,6 @@ Set-Location rust\otap-dataflow
 $env:ORACLE_INSTANT_CLIENT_DIR = "C:\oracle\instantclient"
 $env:PATH = "$env:ORACLE_INSTANT_CLIENT_DIR;$env:PATH"
 $env:ORACLE_CONNECT_STRING = "//database.example.com:1521/ORCL"
-$env:ORACLE_USERNAME_FILE = "C:\secrets\oracle-username"
 $env:ORACLE_PASSWORD_FILE = "C:\secrets\oracle-password"
 cargo run --no-default-features --features crypto-ring,oracle-receiver -- `
   --config configs\oracle-oci-console.yaml --num-cores 1
@@ -576,7 +564,6 @@ cd rust/otap-dataflow
 export ORACLE_INSTANT_CLIENT_DIR=/opt/oracle/instantclient
 export LD_LIBRARY_PATH="$ORACLE_INSTANT_CLIENT_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 export ORACLE_CONNECT_STRING=//database.example.com:1521/ORCL
-export ORACLE_USERNAME_FILE=/run/oracle-secrets/username
 export ORACLE_PASSWORD_FILE=/run/oracle-secrets/password
 cargo run --no-default-features --features crypto-ring,oracle-receiver -- \
   --config configs/oracle-oci-console.yaml --num-cores 1
@@ -624,14 +611,12 @@ cursor compatible with the adapter's supported integer precision.
 
 For the opt-in live smoke test, provision Instant Client and source data, then
 set `OTAP_ORACLE_RECEIVER_E2E=1`, `ORACLE_CONNECT_STRING`,
-`ORACLE_INSTANT_CLIENT_DIR`, `ORACLE_USERNAME_FILE`, and `ORACLE_PASSWORD_FILE`:
+`ORACLE_INSTANT_CLIENT_DIR`, `ORACLE_USERNAME` (the username value), and
+`ORACLE_PASSWORD_FILE`:
 
 ```sh
 cargo test -p otel-arrow-dfe-contrib-nodes --features oracle-receiver emits_oracle_rows_when_live_test_is_enabled -- --nocapture
 ```
-
-Without `OTAP_ORACLE_RECEIVER_E2E`, that test returns without contacting Oracle;
-a passing unit-test run is not a live-database qualification.
 
 ## Telemetry
 
@@ -687,19 +672,6 @@ Common engine resource and node context may still accompany them.
 | `database_receiver.cancellation_failed` | `warn` | An active operation could not be interrupted. |
 | `database_receiver.worker_abandoned` | `warn` | Worker cleanup could not be joined; ownership retained until process exit. |
 
-Native Oracle failures expose the operation and available numeric OCI/DPI codes,
-not raw native messages or their error-source chains. Native and OS error
-payloads are discarded after extracting safe codes/categories. Oracle-specific
-validation errors do not echo configured bind or column names, and factory
-lease-acquisition errors do not echo checkpoint paths. The development load
-generator uses the same sanitized Oracle failures and does not echo unknown
-argument values.
-
-This is diagnostic redaction, not filtering of exported database rows: selected
-columns still form the intended telemetry payload. `source_id`, pipeline/node
-identifiers and checkpoint paths must be safe to expose. The unchanged shared
-runtime can include source identity and filesystem paths in its own events and
-checkpoint errors; the Oracle adapter does not rewrite those diagnostics.
 
 ## Limits
 
