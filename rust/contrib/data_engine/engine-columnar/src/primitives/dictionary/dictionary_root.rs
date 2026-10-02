@@ -43,14 +43,14 @@ impl Dictionary<'_> {
 
             let mut builder: BooleanBufferBuilder = key_nulls.map_or_else(
                 || {
-                    let mut buffer = MutableBuffer::new_null(key_length);
-                    buffer.fill(0xFF);
-                    BooleanBufferBuilder::new_from_buffer(buffer, key_length)
+                    let mut builder = BooleanBufferBuilder::new(key_length);
+                    builder.append_n(key_length, true);
+                    builder
                 },
                 |v| {
-                    let mut b = MutableBuffer::with_capacity(v.len());
-                    b.extend_from_slice(v.validity());
-                    BooleanBufferBuilder::new_from_buffer(b, v.len())
+                    let mut builder = BooleanBufferBuilder::new(v.len());
+                    builder.append_buffer(v.inner());
+                    builder
                 },
             );
 
@@ -238,6 +238,23 @@ mod tests {
         assert_eq!(dictionary.get_value(1), Ok(ValueOrRef::Null));
         assert_eq!(dictionary.get_value(2), Ok(ValueOrRef::Null));
         assert_eq!(dictionary.get_value(4), Ok(ValueOrRef::Null));
+    }
+
+    /// Scenario: A non-byte-aligned slice of nullable keys references one valid and one null dictionary value.
+    /// Guarantees: Combined row validity preserves the sliced key bitmap offset and value-level nulls.
+    #[test]
+    fn dictionary_nulls_preserve_sliced_key_validity_offset() {
+        let keys = Int8Array::from(vec![None, Some(0), None, Some(1)]).slice(1, 3);
+        let dictionary = Dictionary::new(
+            DictionaryKeyArray::from(&keys),
+            DictionaryValueArray::from(vec![ValueOrRef::Integer(10), ValueOrRef::Null]),
+        );
+
+        let nulls = dictionary.nulls().unwrap();
+        assert_eq!(nulls.len(), 3);
+        assert!(nulls.is_valid(0));
+        assert!(nulls.is_null(1));
+        assert!(nulls.is_null(2));
     }
 
     /// Scenario: Scalar and null dictionaries are synthesized for a requested Arrow key type.
