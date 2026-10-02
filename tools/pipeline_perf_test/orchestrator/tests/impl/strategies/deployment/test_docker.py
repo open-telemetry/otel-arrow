@@ -96,6 +96,39 @@ def test_start_successful(
     mock_set_runtime.assert_called_once_with(mock_context, mock_runtime)
 
 
+# Scenario: A docker deployment config specifies extra_hosts (e.g. mapping
+#   host.docker.internal to host-gateway).
+# Guarantees: The mapping is forwarded unchanged to containers.run as the
+#   extra_hosts kwarg so containers can reach services on the docker host.
+@patch("lib.impl.strategies.deployment.docker.get_or_create_docker_client")
+@patch("lib.impl.strategies.deployment.docker.get_component_docker_runtime")
+@patch("lib.impl.strategies.deployment.docker.set_component_docker_runtime_data")
+@patch(
+    "lib.impl.strategies.deployment.docker.sanitize_docker_name",
+    side_effect=lambda x: x,
+)
+def test_start_passes_extra_hosts(
+    mock_sanitize,
+    mock_set_runtime,
+    mock_get_runtime,
+    mock_docker_client,
+    mock_component,
+    mock_context,
+):
+    mock_client = MagicMock()
+    mock_docker_client.return_value = mock_client
+    config = DockerDeploymentConfig(
+        image="my-image:latest",
+        network="test-network",
+        extra_hosts={"host.docker.internal": "host-gateway"},
+    )
+
+    DockerDeployment(config=config).start(mock_component, mock_context)
+
+    kwargs = mock_client.containers.run.call_args.kwargs
+    assert kwargs["extra_hosts"] == {"host.docker.internal": "host-gateway"}
+
+
 @patch("lib.impl.strategies.deployment.docker.get_or_create_docker_client")
 @patch("lib.impl.strategies.deployment.docker.get_component_docker_runtime")
 @patch(

@@ -147,6 +147,14 @@ class DockerDeploymentConfig(DeploymentStrategyConfig):
         None,
         description="CPUs the container may run on (docker --cpuset-cpus), e.g. '0' or '0-2'",
     )
+    extra_hosts: Optional[Dict[str, str]] = Field(
+        None,
+        description=(
+            "Additional /etc/hosts entries (docker --add-host), e.g. "
+            "{'host.docker.internal': 'host-gateway'} to let the container "
+            "reach services running on the docker host."
+        ),
+    )
 
 
 @deployment_registry.register_class(STRATEGY_NAME)
@@ -243,6 +251,8 @@ components:
         )
         if self.config.cpuset_cpus is not None:
             run_kwargs["cpuset_cpus"] = self.config.cpuset_cpus
+        if self.config.extra_hosts:
+            run_kwargs["extra_hosts"] = dict(self.config.extra_hosts)
 
         try:
             container = client.containers.run(**run_kwargs)

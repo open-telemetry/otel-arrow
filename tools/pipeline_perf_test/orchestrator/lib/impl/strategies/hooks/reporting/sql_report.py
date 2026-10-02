@@ -69,6 +69,7 @@ from .....core.telemetry.telemetry_client import TelemetryClient
 from .....runner.registry import hook_registry, PluginMeta, ReportMeta
 from .....runner.schema.reporting_hook_config import StandardReportingHookStrategyConfig
 from .standard_reporting_strategy import StandardReportingStrategy
+from ..otlp_metrics_sink import PUSHED_METRIC_COLUMNS, get_otlp_metrics_sink
 
 
 STRATEGY_NAME = "sql_report"
@@ -316,11 +317,24 @@ hooks:
             logger.debug("Running sql query %s", query.name)
             self.conn.execute(query.sql)
 
-    def _register_in_memory_tables(self, metrics, spans, events):
+    def _register_in_memory_tables(self, metrics, spans, events, ctx: BaseContext):
         """Flatten and register in-memory telemetry tables and regaister in duckdb
 
         This method extracts the various attribute dicts into their own columns for easier querying.
+
+        Metrics pushed via OTLP to the suite's metrics sink (if one is running)
+        are concatenated onto the framework 'metrics' rows before flattening, so
+        a single 'metrics' table serves both scrape-based and push-based reports.
+        A run uses one collection method, so the table is homogeneous: either
+        Prometheus-style names (scrape) or OTLP names (push).
         """
+        # Append OTLP-pushed rows (if any) to the framework metrics rows. The
+        # sink already emits MetricRow-shaped rows, so a plain concat lines the
+        # columns up; flatten_columns then explodes the shared attribute dicts.
+        pushed = self._pushed_metrics_rows(ctx)
+        if not pushed.empty:
+            metrics = pd.concat([metrics, pushed], ignore_index=True)
+
         # Flatten and register metrics
         metrics = flatten_columns(
             metrics, ["metric_attributes", "resource_attributes", "scope_attributes"]
@@ -337,6 +351,15 @@ hooks:
         # Flatten and register events
         events = flatten_columns(events, ["attributes"])
         self.conn.register("events", events)
+
+    @staticmethod
+    def _pushed_metrics_rows(ctx: BaseContext) -> pd.DataFrame:
+        """Return OTLP-pushed metric rows from the suite's sink, or an empty
+        frame when no sink is running."""
+        sink = get_otlp_metrics_sink(ctx)
+        if sink is None:
+            return pd.DataFrame(columns=PUSHED_METRIC_COLUMNS)
+        return sink.to_dataframe().reset_index(drop=True)
 
     def _build_result_dataframes(self):
         """Loop through the result_tables config and convert them to result dataframes"""
@@ -475,7 +498,7 @@ hooks:
         events = tc.spans.query_span_events(
             where=lambda df: df[df["name"] != "log"].reset_index(drop=True)
         )
-        self._register_in_memory_tables(metrics, spans, events)
+        self._register_in_memory_tables(metrics, spans, events, ctx)
 
         self._run_sql_queries(logger)
 
