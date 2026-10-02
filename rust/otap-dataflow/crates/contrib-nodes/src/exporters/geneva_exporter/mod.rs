@@ -41,7 +41,7 @@ use otel_arrow_dfe_engine::ExporterFactory;
 use otel_arrow_dfe_engine::config::ExporterConfig;
 use otel_arrow_dfe_engine::context::PipelineContext;
 use otel_arrow_dfe_engine::control::NodeControlMsg;
-use otel_arrow_dfe_engine::control::{AckMsg, NackMsg};
+use otel_arrow_dfe_engine::control::{AckMsg, NackCause, NackMsg};
 use otel_arrow_dfe_engine::error::Error;
 use otel_arrow_dfe_engine::exporter::ExporterWrapper;
 use otel_arrow_dfe_engine::local::exporter::{EffectHandler, Exporter};
@@ -1090,8 +1090,15 @@ fn create_geneva_client(
 
 #[derive(Debug)]
 enum GenevaExportError {
+    /// Failed before any upload attempt (decode/convert/encode/unsupported
+    /// signal). These are always caused by the payload itself, so retrying
+    /// the identical bytes can never succeed.
     Preparation { message: String, outcome: Outcome },
-    AttemptAlreadyRecorded { message: String },
+    /// Failed during upload; the outcome was already recorded against the
+    /// exporter-attempt metrics boundary. `permanent` reflects whether the
+    /// first recorded error is one that retrying the identical payload can
+    /// never resolve (see [`GenevaExporterErrorType::is_permanent`]).
+    AttemptAlreadyRecorded { message: String, permanent: bool },
 }
 
 impl GenevaExportError {
@@ -1109,8 +1116,8 @@ impl GenevaExportError {
         }
     }
 
-    fn attempt_already_recorded(message: String) -> Self {
-        Self::AttemptAlreadyRecorded { message }
+    fn attempt_already_recorded(message: String, permanent: bool) -> Self {
+        Self::AttemptAlreadyRecorded { message, permanent }
     }
 
     const fn unsubmitted_outcome(&self) -> Option<Outcome> {
@@ -1122,7 +1129,19 @@ impl GenevaExportError {
 
     fn message(&self) -> &str {
         match self {
-            Self::Preparation { message, .. } | Self::AttemptAlreadyRecorded { message } => message,
+            Self::Preparation { message, .. } | Self::AttemptAlreadyRecorded { message, .. } => {
+                message
+            }
+        }
+    }
+
+    /// Returns whether a retry processor resending the identical payload can
+    /// never succeed. `Preparation` failures are always permanent because
+    /// they stem from the payload itself, not a transient backend condition.
+    const fn is_permanent(&self) -> bool {
+        match self {
+            Self::Preparation { .. } => true,
+            Self::AttemptAlreadyRecorded { permanent, .. } => *permanent,
         }
     }
 }
@@ -1167,12 +1186,14 @@ fn record_completed_upload(
         u64,
         (GenevaExporterErrorType, String),
     >,
-    first_error: &mut Option<String>,
+    // `(permanent, message)` for the first recorded error, so the NACK
+    // sent upstream can reflect whether retrying is worthwhile.
+    first_error: &mut Option<(bool, String)>,
 ) {
     if let Err((error_type, error)) = metrics.boundary.record(completed) {
         metrics.record_failure(signal, error_type);
         if first_error.is_none() {
-            *first_error = Some(error);
+            *first_error = Some((error_type.is_permanent(), error));
         }
     }
 }
@@ -1266,6 +1287,13 @@ impl GenevaExporter {
     /// batches with no sharing. The real fix requires engine-level support for
     /// per-batch retry tracking (partial ACK/NACK or exporter-attached retry
     /// context on `OtapPdata`).
+    ///
+    /// The permanence of the returned error is derived only from the first
+    /// completed failure (batches complete in arbitrary order). If a
+    /// permanent failure (e.g. an unresolved account group) races with a
+    /// transient one (e.g. throttling) and the transient failure completes
+    /// first, the whole payload is retried even though one batch can never
+    /// succeed.
     async fn upload_batches_concurrent(
         &mut self,
         batches: &[EncodedBatch],
@@ -1293,7 +1321,7 @@ impl GenevaExporter {
             uploads.push(upload_batch_attempt(client, batch, signal_type, attempt));
         }
 
-        let mut first_error: Option<String> = None;
+        let mut first_error: Option<(bool, String)> = None;
 
         while let Some(completed) = uploads.next().await {
             record_completed_upload(&mut self.metrics, signal_type, completed, &mut first_error);
@@ -1307,8 +1335,10 @@ impl GenevaExporter {
             }
         }
 
-        if let Some(error) = first_error {
-            Err(GenevaExportError::attempt_already_recorded(error))
+        if let Some((permanent, error)) = first_error {
+            Err(GenevaExportError::attempt_already_recorded(
+                error, permanent,
+            ))
         } else {
             Ok(batches_encoded)
         }
@@ -1673,14 +1703,24 @@ impl Exporter<OtapPdata> for GenevaExporter {
                             otel_info!(
                                 "geneva_exporter.error",
                                 error = error.message(),
+                                permanent = error.is_permanent(),
                                 message = "Failed to export to Geneva"
                             );
-                            effect_handler
-                                .notify_nack(NackMsg::new(
+                            // A permanent failure (malformed/unsupported payload, a
+                            // rejected request, or unresolved account routing) will
+                            // reproduce identically on every retry, so mark the NACK
+                            // permanent to tell a retry processor not to retry it.
+                            let refused = OtapPdata::new(context, saved_payload);
+                            let nack = if error.is_permanent() {
+                                NackMsg::new_permanent_with_cause(
                                     error.message(),
-                                    OtapPdata::new(context, saved_payload),
-                                ))
-                                .await?;
+                                    refused,
+                                    NackCause::Refused,
+                                )
+                            } else {
+                                NackMsg::new(error.message(), refused)
+                            };
+                            effect_handler.notify_nack(nack).await?;
                         }
                     }
                 }
@@ -2039,7 +2079,11 @@ mod tests {
             record_completed_upload(&mut metrics, SignalType::Logs, completed, &mut first_error);
         }
 
-        assert_eq!(first_error.as_deref(), Some("throttled"));
+        assert_eq!(
+            first_error,
+            Some((false, "throttled".to_string())),
+            "throttled errors are transient, so the outer NACK must remain retryable"
+        );
         let snapshots = metrics.terminal_snapshots();
         for outcome in ["success", "refused", "failure"] {
             assert!(snapshots.iter().any(|snapshot| {
@@ -2114,8 +2158,9 @@ mod tests {
             });
     }
 
-    /// Scenario: The exporter receives malformed non-empty OTLP log bytes.
-    /// Guarantees: Decode failure returns a NACK with the original subscriber route.
+    /// Scenario: A decode failure precedes any upload attempt (invalid protobuf bytes).
+    /// Guarantees: The resulting NACK is marked permanent with `NackCause::Refused` so a
+    /// retry processor does not retry a payload that can never decode successfully.
     #[test]
     fn geneva_exporter_emits_nack_for_decode_failure() {
         // The Geneva uploader uses rustls (tls-rustls); reqwest needs a
@@ -2157,6 +2202,11 @@ mod tests {
                                 "unexpected nack reason: {}",
                                 nack.reason
                             );
+                            assert!(
+                                nack.permanent,
+                                "decode failures can never succeed on retry and must be permanent"
+                            );
+                            assert_eq!(nack.cause, NackCause::Refused);
                             assert_eq!(nack.refused.num_items(), 0);
                             break;
                         }
