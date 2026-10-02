@@ -1,0 +1,21 @@
+groups:
+  - id: event.otlp.exporter.http.export_error
+    type: event
+    name: otlp.exporter.http.export_error
+    stability: development
+    brief: First failed OTLP HTTP export or periodic summary of further export failures.
+  - id: event.otlp.exporter.http.export_recovered
+    type: event
+    name: otlp.exporter.http.export_recovered
+    stability: development
+    brief: Fresh successful OTLP HTTP export after the recovery confirmation interval.
+  - id: event.otlp.exporter.http.notification_error
+    type: event
+    name: otlp.exporter.http.notification_error
+    stability: development
+    brief: First failed OTLP HTTP Ack or Nack notification or periodic summary of further notification failures.
+  - id: event.otlp.exporter.http.preparation_error
+    type: event
+    name: otlp.exporter.http.preparation_error
+    stability: development
+    brief: First OTLP HTTP encoding or compression failure or periodic summary of further preparation failures.

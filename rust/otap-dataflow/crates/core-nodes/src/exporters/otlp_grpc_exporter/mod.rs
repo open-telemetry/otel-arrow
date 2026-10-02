@@ -317,6 +317,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
             // first publish, and its watch stream stays live while we hold the
             // provider handle -- so waiting (not dropping) is always correct here.
             let accepting_pdata = auth.as_ref().is_none_or(|a| a.is_ready());
+            self.metrics.record_auth_readiness(accepting_pdata);
 
             // Instant at which a currently-usable auth crosses the usability
             // margin. Used to wake the loop so `accepting_pdata` re-evaluates
@@ -362,13 +363,10 @@ impl Exporter<OtapPdata> for OTLPExporter {
 
                     // Pick up auth refreshes (initial + subsequent) even while pdata
                     // intake is gated, so a pending auth can arrive and unblock us.
-                    refreshed = poll_fn(|cx| match auth.as_mut() {
+                    _ = poll_fn(|cx| match auth.as_mut() {
                         Some(auth) => auth.poll_refresh(cx, &GRPC_AUTH_EVENTS),
                         None => Poll::Pending,
                     }), if auth.as_ref().is_some_and(|auth| auth.is_active()) => {
-                        if !refreshed {
-                            self.metrics.record_auth_failure();
-                        }
                         // A refresh was drained (the adapter caches it and logs any
                         // anomaly); loop to re-evaluate intake readiness.
                         continue;
@@ -446,7 +444,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                     }
                     return Ok(TerminalState::new(
                         deadline,
-                        self.metrics.terminal_snapshots(),
+                        self.metrics.terminal_snapshots(auth.as_deref()),
                     ));
                 }
                 Message::Control(NodeControlMsg::CollectTelemetry {
@@ -1402,11 +1400,12 @@ mod tests {
     };
     use otel_arrow_dfe_config::transport_headers_policy::PropagationSelectorType;
     use otel_arrow_dfe_config::transport_headers_policy::{
-        HeaderPropagationPolicy, PropagationAction, PropagationDefault, PropagationMatch,
+        HeaderPropagationPolicy as HeaderPropagationConfig, PropagationAction, PropagationDefault, PropagationMatch,
         PropagationOverride, PropagationSelector,
     };
     use otel_arrow_dfe_engine::Interests;
     use otel_arrow_dfe_engine::context::ControllerContext;
+    use otel_arrow_dfe_engine::context_declaration::CompiledHeaderPropagationPolicy as HeaderPropagationPolicy;
     use otel_arrow_dfe_engine::control::PipelineCompletionMsg;
     use otel_arrow_dfe_engine::control::{
         Controllable, PipelineCompletionMsgSender, RuntimeCtrlMsgSender,
@@ -3112,9 +3111,9 @@ mod tests {
     #[test]
     fn unauthenticated_generation_recovers_after_provider_refresh() {
         let (runtime, mut metrics, effect_handler, mut auth) = rejection_test_context();
-        assert!(runtime.block_on(poll_fn(|cx| {
+        runtime.block_on(poll_fn(|cx| {
             auth.as_mut().unwrap().poll_refresh(cx, &GRPC_AUTH_EVENTS)
-        })));
+        }));
         let rejected_generation = auth.as_ref().unwrap().header().unwrap().2;
 
         let rejected_generation = finalize_unauthenticated_generation(
@@ -3126,9 +3125,9 @@ mod tests {
         apply_auth_rejection(&mut auth, rejected_generation);
         assert!(!auth.as_ref().unwrap().is_ready());
 
-        assert!(runtime.block_on(poll_fn(|cx| {
+        runtime.block_on(poll_fn(|cx| {
             auth.as_mut().unwrap().poll_refresh(cx, &GRPC_AUTH_EVENTS)
-        })));
+        }));
         let (_, value, generation) = auth.as_ref().unwrap().header().unwrap();
         assert_eq!(value, "Bearer replacement");
         assert_eq!(generation, 2);
@@ -3141,9 +3140,9 @@ mod tests {
     #[test]
     fn stale_unauthenticated_generation_keeps_newer_auth() {
         let (runtime, mut metrics, effect_handler, mut auth) = rejection_test_context();
-        assert!(runtime.block_on(poll_fn(|cx| {
+        runtime.block_on(poll_fn(|cx| {
             auth.as_mut().unwrap().poll_refresh(cx, &GRPC_AUTH_EVENTS)
-        })));
+        }));
         let rejected_generation = auth.as_ref().unwrap().header().unwrap().2;
 
         let rejected_generation = finalize_unauthenticated_generation(
@@ -3152,9 +3151,9 @@ mod tests {
             &effect_handler,
             rejected_generation,
         );
-        assert!(runtime.block_on(poll_fn(|cx| {
+        runtime.block_on(poll_fn(|cx| {
             auth.as_mut().unwrap().poll_refresh(cx, &GRPC_AUTH_EVENTS)
-        })));
+        }));
         apply_auth_rejection(&mut auth, rejected_generation);
 
         assert!(auth.as_ref().unwrap().is_ready());
@@ -3197,7 +3196,7 @@ mod tests {
 
     /// Helper: Propagation policy that propagates all captured headers.
     fn propagate_all_policy() -> HeaderPropagationPolicy {
-        HeaderPropagationPolicy::new(
+        let policy = HeaderPropagationConfig::new(
             PropagationDefault {
                 selector: PropagationSelector {
                     selector_type: PropagationSelectorType::AllCaptured,
@@ -3206,7 +3205,8 @@ mod tests {
                 ..PropagationDefault::default()
             },
             vec![],
-        )
+        );
+        HeaderPropagationPolicy::compile(policy, &[]).expect("propagation policy compiles")
     }
 
     fn conditional_workspace_policy() -> HeaderPropagationPolicy {
@@ -3228,7 +3228,7 @@ mod tests {
         }))
         .expect("valid conditional context policy");
         let (name, definition) = context.entries.into_iter().next().expect("declaration");
-        let policy: HeaderPropagationPolicy = serde_json::from_value(serde_json::json!({
+        let policy: HeaderPropagationConfig = serde_json::from_value(serde_json::json!({
             "default": {
                 "selector": {
                     "type": "named",
@@ -3238,13 +3238,15 @@ mod tests {
             }
         }))
         .expect("valid conditional propagation policy");
-        policy
-            .compile_context(&[ContextEntryDeclaration {
+        HeaderPropagationPolicy::compile(
+            policy,
+            &[ContextEntryDeclaration {
                 scope: ContextScope::Engine,
                 name,
                 definition,
-            }])
-            .expect("conditional propagation policy compiles")
+            }],
+        )
+        .expect("conditional propagation policy compiles")
     }
 
     #[test]
@@ -3324,9 +3326,11 @@ mod tests {
         assert!(matching.get("workspace_id").is_none());
     }
 
+    /// Scenario: propagation selects all captured headers with an authorization drop override.
+    /// Guarantees: outgoing metadata contains the tenant header but no authorization header.
     #[test]
     fn test_build_grpc_metadata_drops_filtered_headers() {
-        let policy = HeaderPropagationPolicy::new(
+        let policy = HeaderPropagationConfig::new(
             PropagationDefault {
                 selector: PropagationSelector {
                     selector_type: PropagationSelectorType::AllCaptured,
@@ -3343,6 +3347,8 @@ mod tests {
                 on_error: None,
             }],
         );
+        let policy =
+            HeaderPropagationPolicy::compile(policy, &[]).expect("propagation policy compiles");
         let handler = make_effect_handler_with_policy(Some(policy));
 
         let mut headers = TransportHeaders::new();
@@ -3453,10 +3459,12 @@ mod tests {
         );
     }
 
+    /// Scenario: captured headers are present but the propagation selector is `none`.
+    /// Guarantees: no outgoing metadata is produced.
     #[test]
     fn test_build_grpc_metadata_returns_none_when_all_dropped() {
         // Policy that drops everything (selector = None means no headers are selected).
-        let policy = HeaderPropagationPolicy::new(
+        let policy = HeaderPropagationConfig::new(
             PropagationDefault {
                 selector: PropagationSelector {
                     selector_type: PropagationSelectorType::None,
@@ -3466,6 +3474,8 @@ mod tests {
             },
             vec![],
         );
+        let policy =
+            HeaderPropagationPolicy::compile(policy, &[]).expect("propagation policy compiles");
         let handler = make_effect_handler_with_policy(Some(policy));
 
         let mut headers = TransportHeaders::new();

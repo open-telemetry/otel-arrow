@@ -110,7 +110,7 @@ pub trait HttpClientAuthProvider {
         &mut self,
         cx: &mut Context<'_>,
         events: &HttpClientAuthProviderEvents,
-    ) -> Poll<bool>;
+    ) -> Poll<()>;
 }
 
 bitflags! {
@@ -382,7 +382,7 @@ impl<TProvider: HttpClientStreamAuthProviderBuilder> HttpClientAuthProvider
         &mut self,
         cx: &mut Context<'_>,
         events: &HttpClientAuthProviderEvents,
-    ) -> Poll<bool> {
+    ) -> Poll<()> {
         match self.stream.as_mut().poll_next(cx) {
             Poll::Pending => Poll::Pending,
             Poll::Ready(Some(auth)) => {
@@ -390,7 +390,7 @@ impl<TProvider: HttpClientStreamAuthProviderBuilder> HttpClientAuthProvider
                     Ok(mut auth_header) => {
                         if let Err(e) = (events.validate_header_name)(&auth_header.header_name) {
                             events.emit_invalid(self, &e);
-                            return Poll::Ready(false);
+                            return Poll::Ready(());
                         }
                         // Redact in `Debug`, exclude from HPACK indexing.
                         auth_header.header_value.set_sensitive(true);
@@ -400,12 +400,12 @@ impl<TProvider: HttpClientStreamAuthProviderBuilder> HttpClientAuthProvider
                         // A new cached auth starts a new generation, so a 401 for
                         // an earlier auth no longer matches and is ignored.
                         self.generation = self.generation.wrapping_add(1);
-                        Poll::Ready(true)
+                        Poll::Ready(())
                     }
                     Err(e) => {
                         // Malformed header: keep the previous cached auth (if any).
                         events.emit_invalid(self, &e);
-                        Poll::Ready(false)
+                        Poll::Ready(())
                     }
                 }
             }
@@ -415,7 +415,7 @@ impl<TProvider: HttpClientStreamAuthProviderBuilder> HttpClientAuthProvider
                 // watch-backed provider while we hold its handle, so warn.
                 self.stream_active = false;
                 events.emit_stream_closed(self);
-                Poll::Ready(false)
+                Poll::Ready(())
             }
         }
     }
@@ -561,7 +561,7 @@ pub mod test_support {
             &mut self,
             cx: &mut Context<'_>,
             events: &HttpClientAuthProviderEvents,
-        ) -> Poll<bool> {
+        ) -> Poll<()> {
             match self.stream.as_mut().poll_next(cx) {
                 Poll::Pending => Poll::Pending,
                 Poll::Ready(Some((value, duration))) => {
@@ -574,12 +574,12 @@ pub mod test_support {
                             // A new cached token starts a new generation, so a 401 for
                             // an earlier token no longer matches and is ignored.
                             self.generation = self.generation.wrapping_add(1);
-                            Poll::Ready(true)
+                            Poll::Ready(())
                         }
                         Err(e) => {
                             // Malformed token: keep the previous cached token (if any).
                             events.emit_invalid(self, &format!("Malformed token: {e}"));
-                            Poll::Ready(false)
+                            Poll::Ready(())
                         }
                     }
                 }
@@ -593,7 +593,7 @@ pub mod test_support {
                         .closed_flag
                         .as_ref()
                         .inspect(|v| v.store(true, std::sync::atomic::Ordering::Release));
-                    Poll::Ready(false)
+                    Poll::Ready(())
                 }
             }
         }
@@ -1036,7 +1036,7 @@ mod tests {
     async fn poll_refresh_caches_the_published_token_as_a_sensitive_header() {
         let mut auth = auth_over(vec![BearerToken::without_expiry("first")]);
 
-        assert!(poll_fn(|cx| auth.poll_refresh(cx, &TEST_EVENTS)).await);
+        poll_fn(|cx| auth.poll_refresh(cx, &TEST_EVENTS)).await;
 
         assert!(
             auth.is_ready(),
@@ -1067,8 +1067,8 @@ mod tests {
             BearerToken::without_expiry("bad\nvalue"),
         ]);
 
-        assert!(poll_fn(|cx| auth.poll_refresh(cx, &TEST_EVENTS)).await);
-        assert!(!poll_fn(|cx| auth.poll_refresh(cx, &TEST_EVENTS)).await);
+        poll_fn(|cx| auth.poll_refresh(cx, &TEST_EVENTS)).await;
+        poll_fn(|cx| auth.poll_refresh(cx, &TEST_EVENTS)).await;
 
         assert_eq!(
             INVALID.get(),
@@ -1094,8 +1094,8 @@ mod tests {
             BearerToken::without_expiry("reserved"),
         ]);
 
-        assert!(poll_fn(|cx| auth.poll_refresh(cx, &TEST_EVENTS)).await);
-        assert!(!poll_fn(|cx| auth.poll_refresh(cx, &REJECTING_TEST_EVENTS)).await);
+        poll_fn(|cx| auth.poll_refresh(cx, &TEST_EVENTS)).await;
+        poll_fn(|cx| auth.poll_refresh(cx, &REJECTING_TEST_EVENTS)).await;
 
         assert_eq!(INVALID.get(), 1);
         let (_, header, generation) = auth.header().expect("the earlier token must be kept");
@@ -1111,8 +1111,8 @@ mod tests {
     async fn a_closed_stream_is_reported_and_the_last_token_stays_usable() {
         let mut auth = auth_over(vec![BearerToken::without_expiry("last")]);
 
-        assert!(poll_fn(|cx| auth.poll_refresh(cx, &TEST_EVENTS)).await);
-        assert!(!poll_fn(|cx| auth.poll_refresh(cx, &TEST_EVENTS)).await);
+        poll_fn(|cx| auth.poll_refresh(cx, &TEST_EVENTS)).await;
+        poll_fn(|cx| auth.poll_refresh(cx, &TEST_EVENTS)).await;
 
         assert_eq!(
             STREAM_CLOSURES.get(),
@@ -1155,7 +1155,7 @@ mod tests {
             Some(Instant::now() + MockHttpClientStreamAuthProviderBuilder::AUTH_USABLE_MARGIN / 2),
         )]);
 
-        assert!(poll_fn(|cx| auth.poll_refresh(cx, &TEST_EVENTS)).await);
+        poll_fn(|cx| auth.poll_refresh(cx, &TEST_EVENTS)).await;
 
         assert!(
             !auth.is_ready(),
@@ -1185,7 +1185,7 @@ mod tests {
             Some(expires_on),
         )]);
 
-        assert!(poll_fn(|cx| auth.poll_refresh(cx, &TEST_EVENTS)).await);
+        poll_fn(|cx| auth.poll_refresh(cx, &TEST_EVENTS)).await;
 
         assert!(auth.is_ready());
         assert_eq!(
@@ -1202,7 +1202,7 @@ mod tests {
     async fn a_non_expiring_token_arms_no_refresh_deadline() {
         let mut auth = auth_over(vec![BearerToken::without_expiry("forever")]);
 
-        assert!(poll_fn(|cx| auth.poll_refresh(cx, &TEST_EVENTS)).await);
+        poll_fn(|cx| auth.poll_refresh(cx, &TEST_EVENTS)).await;
 
         assert!(auth.is_ready());
         assert!(auth.refresh_deadline().is_none());
