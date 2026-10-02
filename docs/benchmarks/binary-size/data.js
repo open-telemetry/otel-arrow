@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790897451439,
+  "lastUpdate": 1790900951035,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -49869,6 +49869,148 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/open-telemetry/otel-arrow/commit/b71bd6731ff421ceba2f37f750618c936dd1431f"
         },
         "date": 1790897433582,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 85.35,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.78,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.22,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.73,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.01,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.98,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_pdata",
+            "value": 2.78,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 72.42,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.88,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.56,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.16,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.35,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 117.8,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 104.92,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Ben Du",
+            "username": "bendu",
+            "email": "5668844+bendu@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "7e7a6d6ace9b8157bb8c1280ab6b0f8d59c5383d",
+          "message": "chore(pdata): add OTAP wire round-trip regression for structured log bodies (#4218)\n\n# Change summary\n\nAdd a wire round-trip regression test for structured log bodies in\n`OtapLogsView`, following the fix in #4134.\n\nThe existing map and array body tests exercise in-memory OTLP-to-OTAP\nencoding. This test additionally passes both bodies through the\nproduction\n`Producer` and `Consumer`, including Arrow IPC serialization and\nprotobuf\nencoding/decoding of `BatchArrowRecords`, before constructing\n`OtapLogsView`\nfrom the reconstructed records.\n\nThe test verifies:\n\n- The map body from #4106 retains all keys and values.\n- The array body retains its string, integer, and boolean elements in\norder.\n- Both bodies remain accessible through native view iteration rather\nthan\n  being exposed as `Empty`.\n- Each expected record appears exactly once, matched by `event_name`\nrather\nthan record position, so transport reordering does not affect\nassertions.\n\nThis is a codec-level wire round trip, not a network/gRPC integration\ntest.\nNo production behavior changes.\n\n## Related issue\n\n- Related to #4106.\n- Follow-up regression coverage for #4134.\n\n## Validation\n\nPassed from `rust\\otap-dataflow`:\n\n- `cargo test --locked -p otel-arrow-dfe-pdata --lib\nviews::otap::logs::tests`\n  — all 14 tests passed.\n- `cargo check --locked -p otel-arrow-dfe-pdata`\n- `cargo clippy --locked -p otel-arrow-dfe-pdata --lib --tests -- -D\nwarnings`\n- `cargo fmt --all -- --check`\n- `git diff --check`\n\nAlso temporarily reversed the fixture order and confirmed the test\npasses\nwith the array record decoded first; the temporary control was removed.\n\n## User-facing changes\n\nNone.\n\nCo-authored-by: albertlockett <a.lockett@f5.com>",
+          "timestamp": "2026-10-01T23:53:12Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/7e7a6d6ace9b8157bb8c1280ab6b0f8d59c5383d"
+        },
+        "date": 1790900933082,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
