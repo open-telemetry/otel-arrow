@@ -531,6 +531,44 @@ mod tests {
         assert!(nested.get_static(1).unwrap().is_none());
     }
 
+    /// Scenario: Iteration and ownership conversion operate on a nested slice surrounded by values in its backing array.
+    /// Guarantees: Both operations expose only the nested range, use slice-relative indexes, and propagate callback termination.
+    #[test]
+    fn nested_array_slice_iteration_and_ownership_preserve_bounds() {
+        let source = ArrayValueOrRef::from([
+            ValueOrRef::Integer(10),
+            ValueOrRef::Integer(20),
+            ValueOrRef::Integer(30),
+            ValueOrRef::Integer(40),
+            ValueOrRef::Integer(50),
+        ]);
+        let first = ArrayValueOrRefSlice::new(source, 1, 5);
+        let nested = ArrayValueOrRefSlice::new(ArrayValueOrRef::Slice(first), 1, 3);
+
+        let mut visited = Vec::new();
+        assert!(nested.get_items(&mut |index, value| {
+            visited.push((index, ValueOrRef::from(value)));
+            true
+        }));
+        assert_eq!(
+            visited,
+            vec![(0, ValueOrRef::Integer(30)), (1, ValueOrRef::Integer(40))]
+        );
+
+        let mut visits = 0;
+        assert!(!nested.get_items(&mut |_, _| {
+            visits += 1;
+            false
+        }));
+        assert_eq!(visits, 1);
+
+        let owned = OwnedArrayValue::from(ArrayValueOrRef::Slice(nested));
+        assert_eq!(
+            owned.get_values(),
+            &[ValueOrRef::Integer(30), ValueOrRef::Integer(40)]
+        );
+    }
+
     /// Scenario: The same integer sequence uses Arrow-buffered and owned array representations.
     /// Guarantees: Representation-independent equality also preserves the equal-values/equal-hash contract.
     #[test]

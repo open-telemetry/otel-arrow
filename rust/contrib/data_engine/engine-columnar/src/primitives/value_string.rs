@@ -197,9 +197,17 @@ impl StringValue for StringValueOrRefSlice<'_> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::hash_map::DefaultHasher;
+
     use arrow::buffer::Buffer;
 
     use super::*;
+
+    fn hash(value: &StringValueOrRef<'_>) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        value.hash(&mut hasher);
+        hasher.finish()
+    }
 
     /// Scenario: Equivalent text is stored as an empty, borrowed, Arrow-buffered, or owned value.
     /// Guarantees: All representations report consistent byte and character lengths and convert to the same text.
@@ -232,6 +240,54 @@ mod tests {
             assert_eq!(value.char_indices().collect::<Vec<_>>()[1], (1, '\u{e9}'));
             assert_eq!(String::from(value), text);
         }
+    }
+
+    /// Scenario: Identical text uses borrowed, Arrow-buffered, owned, and sliced representations.
+    /// Guarantees: Equality, hashing, string access, appending, and ownership conversion are representation-independent.
+    #[test]
+    fn string_equality_hash_and_conversion_are_representation_independent() {
+        let expected = StringValueOrRef::new_ref("otel");
+        let values = [
+            StringValueOrRef::new_ref("otel"),
+            StringValueOrRef::new_utf8(Buffer::from("otel".as_bytes())),
+            StringValueOrRef::new_owned("otel".to_string()),
+            StringValueOrRef::Slice(StringValueOrRefSlice {
+                value: Box::new(StringValueOrRef::new_ref("xotelz")),
+                byte_start_inclusive: 1,
+                byte_end_exclusive: 5,
+                char_len: 4,
+            }),
+        ];
+
+        for value in values {
+            assert_eq!(value, expected);
+            assert_eq!(hash(&value), hash(&expected));
+            assert_eq!(value.as_ref(), "otel");
+
+            let mut appended = String::from("prefix:");
+            value.clone().append_to(&mut appended);
+            assert_eq!(appended, "prefix:otel");
+            assert_eq!(String::from(value), "otel");
+        }
+    }
+
+    /// Scenario: Owned text is converted while another Rc reference remains, and non-string values are stringified.
+    /// Guarantees: Shared ownership conversion copies safely and ValueOrRef conversion preserves null, string, and integer semantics.
+    #[test]
+    fn string_conversion_handles_shared_ownership_and_value_types() {
+        let owned = StringValueOrRef::new_owned("shared".to_string());
+        let retained = owned.clone();
+
+        assert_eq!(String::from(owned), "shared");
+        assert_eq!(retained.as_ref(), "shared");
+
+        assert!(StringValueOrRef::from(&ValueOrRef::Null).is_empty());
+
+        let borrowed = ValueOrRef::String(StringValueOrRef::new_ref("borrowed"));
+        assert_eq!(StringValueOrRef::from(&borrowed).as_ref(), "borrowed");
+
+        let integer = ValueOrRef::Integer(42);
+        assert_eq!(StringValueOrRef::from(&integer).as_ref(), "42");
     }
 
     /// Scenario: A slice spans multiple variable-width UTF-8 characters inside an owned string.
