@@ -1674,13 +1674,13 @@ mod test {
         let mut saw_exports = false;
         telemetry_registry.visit_current_metrics(|desc, _attrs, iter| {
             let has_positive_value = iter.into_iter().any(|(_, value)| value.to_f64() > 0.0);
-            if desc.name == "otap.exporter.parquet.rows" && has_positive_value {
+            if desc.name == "exporter.parquet.rows" && has_positive_value {
                 saw_exports = true;
             }
         });
         assert!(
             saw_exports,
-            "expected otap.exporter.parquet.rows metrics to be reported"
+            "expected exporter.parquet.rows metrics to be reported"
         );
     }
 

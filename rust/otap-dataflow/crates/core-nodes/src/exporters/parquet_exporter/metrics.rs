@@ -41,9 +41,9 @@ pub struct ParquetExporterFileAttributes {
 }
 
 /// Parquet exporter file IO metrics.
-/// Grouped under `otap.exporter.parquet.files`.
+/// Grouped under `exporter.parquet.files`.
 #[metric_set(
-    name = "otap.exporter.parquet.files",
+    name = "exporter.parquet.files",
     measurement_attributes = ParquetExporterFileAttributes
 )]
 #[derive(Debug, Default, Clone)]
@@ -54,8 +54,8 @@ pub struct ParquetExporterFileMetrics {
 }
 
 /// Parquet exporter row IO metrics.
-/// Grouped under `otap.exporter.parquet.rows`.
-#[metric_set(name = "otap.exporter.parquet.rows")]
+/// Grouped under `exporter.parquet.rows`.
+#[metric_set(name = "exporter.parquet.rows")]
 #[derive(Debug, Default, Clone)]
 pub struct ParquetExporterRowMetrics {
     /// Total number of rows written into Parquet writers (appended, not necessarily flushed yet).
@@ -280,7 +280,7 @@ mod tests {
 
         let file_snapshot = snapshots
             .iter()
-            .find(|s| s.descriptor().name == "otap.exporter.parquet.files")
+            .find(|s| s.descriptor().name == "exporter.parquet.files")
             .expect("expected file metrics snapshot");
         assert_eq!(file_snapshot.descriptor().metrics[0].name, "count");
         assert_eq!(file_snapshot.descriptor().metrics[0].unit, "{file}");
@@ -291,7 +291,7 @@ mod tests {
 
         let row_snapshot = snapshots
             .iter()
-            .find(|s| s.descriptor().name == "otap.exporter.parquet.rows")
+            .find(|s| s.descriptor().name == "exporter.parquet.rows")
             .expect("expected row metrics snapshot");
         assert_eq!(row_snapshot.descriptor().metrics[0].name, "written");
         assert_eq!(row_snapshot.descriptor().metrics[0].unit, "{row}");
