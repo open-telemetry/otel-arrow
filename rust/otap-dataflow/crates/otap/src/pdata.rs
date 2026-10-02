@@ -24,6 +24,7 @@ use otel_arrow_dfe_config::transport_headers::TransportHeaders;
 use otel_arrow_dfe_config::{PortName, SignalFormat, SignalType};
 use otel_arrow_dfe_engine::_private::AckNackRouting;
 use otel_arrow_dfe_engine::capability::auth::{AuthorizedIdentity, ClaimValue};
+use otel_arrow_dfe_engine::context_declaration::ContextValues;
 use otel_arrow_dfe_engine::control::{
     AckMsg, CallData, Frame, NackMsg, RouteData, nanos_since_birth,
 };
@@ -843,6 +844,16 @@ impl Context {
             flow_compute_ns: None,
             signal: None,
         }
+    }
+}
+
+impl ContextValues for Context {
+    fn transport_headers(&self) -> Option<&TransportHeaders> {
+        self.transport_headers()
+    }
+
+    fn has_authorized_identity(&self, name: &otel_arrow_dfe_config::ContextEntryName) -> bool {
+        self.authorized_identity.get(name.as_str()).is_some()
     }
 }
 
@@ -2979,6 +2990,62 @@ mod test {
         // processor's slot map and Acks upstream once its outbounds settle.
         assert!(context.has_ack_or_nack_subscribers());
         assert_eq!(context.signal(), Some(SignalType::Logs));
+    }
+
+    /// Scenario: a composite selects a header but also requires an authorized-identity member.
+    /// Guarantees: headers cannot impersonate claims, identity names are exact, and detached
+    /// contexts preserve the gate while clearing identity makes the projection absent again.
+    #[test]
+    fn composite_context_projection_requires_verified_identity_presence() {
+        use otel_arrow_dfe_config::context_policy::{
+            ContextEntryDeclaration, ContextPolicy, ContextScope,
+        };
+        use otel_arrow_dfe_config::transport_headers_policy::HeaderPropagationPolicy;
+        use otel_arrow_dfe_engine::context_declaration::CompiledHeaderPropagationPolicy;
+
+        let context_policy: ContextPolicy = serde_json::from_value(serde_json::json!({
+            "entries": {"tenant": [
+                {"type": "transport_header", "name": "workspace"},
+                {"type": "authorized_identity", "name": "customer"}
+            ]}
+        }))
+        .expect("context policy");
+        let entries = context_policy
+            .entries
+            .into_iter()
+            .map(|(name, definition)| ContextEntryDeclaration {
+                scope: ContextScope::Engine,
+                name,
+                definition,
+            })
+            .collect::<Vec<_>>();
+        let policy: HeaderPropagationPolicy = serde_json::from_value(serde_json::json!({
+            "default": {"selector": {"type": "named", "named": ["tenant:workspace"]}}
+        }))
+        .expect("propagation policy");
+        let policy = CompiledHeaderPropagationPolicy::compile(policy, &entries).expect("compiled");
+        let mut headers = TransportHeaders::new();
+        for name in ["workspace", "customer"] {
+            headers.push(TransportHeader::text(
+                name.try_into().expect("name"),
+                b"untrusted",
+            ));
+        }
+        let mut context = Context::default();
+        context.set_transport_headers(headers);
+        assert_eq!(policy.propagate(&context).count(), 0);
+        let identity = AuthorizedIdentity::new().with_subject("verified");
+        for (name, expected) in [("Customer", 0), ("customer", 1)] {
+            let identity_policy = serde_json::from_value(serde_json::json!([
+                {"claim": "sub", "store_as": name}
+            ]))
+            .expect("identity policy");
+            context.capture_authorized_identity(&identity_policy, &identity);
+            assert_eq!(policy.propagate(&context).count(), expected);
+        }
+        assert_eq!(policy.propagate(&context.clone_detached()).count(), 1);
+        context.capture_authorized_identity(&AuthorizedIdentityPolicy::default(), &identity);
+        assert_eq!(policy.propagate(&context).count(), 0);
     }
 
     /// Scenario: an identity contains one selected multi-valued claim while

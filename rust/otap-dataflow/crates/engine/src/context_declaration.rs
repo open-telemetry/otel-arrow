@@ -20,11 +20,14 @@
 //! - `ContextRuntimeRequirements`: immutable engine-lifetime requirements for binding preparation.
 //! - `OriginalNameRetention`: the default and per-name original-header retention disposition.
 //! - `PreparedContext`: requirements and bindings prepared from one resolved configuration.
+//! - `ContextLayout`: resolved primitive and composite projections with atomic presence gates.
 //! - `CompiledHeaderPropagationPolicy`: exporter propagation resolved from configured selectors.
 //! - `TestDeclarationConfig`: test-only typed configuration used to verify declaration matching.
 
+mod layout;
 mod propagation;
 
+pub use layout::*;
 pub use propagation::CompiledHeaderPropagationPolicy;
 use propagation::CompiledHeaderPropagationPolicy as HeaderPropagationPolicy;
 
@@ -1366,8 +1369,8 @@ default:
         assert_eq!(propagated[0].value, b"acme");
     }
 
-    /// Scenario: complete YAML changes a composite condition or selected member during a live update.
-    /// Guarantees: resolution compiles an effective exporter binding and reconciliation detects both changes.
+    /// Scenario: a live update changes a composite condition, selection, or unselected member.
+    /// Guarantees: propagation requires every member and reconciliation detects each gate change.
     #[test]
     fn full_yaml_compilation_tracks_conditional_composite_changes() {
         let current_composite = "[{type: transport_header, name: workspace, store_as: workspace_id}, \
@@ -1390,6 +1393,8 @@ default:
             context_name("environment"),
             b"production",
         ));
+        assert_eq!(policy.propagate(&headers).count(), 0);
+        headers.push(TransportHeader::text(context_name("account"), b"customer"));
         let propagated = policy.propagate(&headers).collect::<Vec<_>>();
         assert_eq!(propagated.len(), 1);
         assert_eq!(propagated[0].header_name, "workspace_id");
@@ -1417,6 +1422,19 @@ default:
             !installed
                 .bindings
                 .pipeline_bindings_match(&member_candidate.bindings, &pipeline)
+        );
+
+        let changed_unselected = resolve_conditional_pipeline(
+            &current_composite.replace("name: account,", "name: other_account,"),
+            "tenant:workspace_id",
+        );
+        let unselected_candidate = factory
+            .compile_candidate_context(&changed_unselected, &installed.runtime_requirements)
+            .expect("changed presence gate compiles");
+        assert!(
+            !installed
+                .bindings
+                .pipeline_bindings_match(&unselected_candidate.bindings, &pipeline)
         );
     }
 
@@ -1464,7 +1482,7 @@ default:
             (
                 "[{type: transport_header, name: workspace, store_as: workspace_id}]",
                 "tenant:missing",
-                "context entry reference `tenant:missing` does not select a transport-header member",
+                "unknown context member `tenant:missing`",
             ),
             (
                 "[{type: authorized_identity, name: customer_id}]",
@@ -1638,5 +1656,176 @@ default:
                 .validate_node_declarations(&key, &node, &declarations)
                 .is_err()
         );
+    }
+
+    /// Scenario: unused composite definitions change while an exporter keeps the same binding.
+    /// Guarantees: startup leaves unused definitions inert and candidate bindings remain compatible.
+    #[test]
+    fn full_yaml_compilation_ignores_unused_composites() {
+        let composite = "[{type: transport_header, name: workspace}]";
+        let original = conditional_pipeline_yaml(composite, "tenant:workspace");
+        let changed = original.replace(
+            "tenant: ",
+            "unused: [{type: transport_header, name: unsupported:nested}]\n      tenant: ",
+        );
+        let resolve = |yaml: &str| {
+            otel_arrow_dfe_config::engine::OtelDataflowSpec::from_yaml(yaml)
+                .expect("valid config")
+                .resolve()
+        };
+        let factory = test_pipeline_factory();
+        let installed = factory
+            .compile_initial_context(&resolve(&original))
+            .expect("initial");
+        let candidate = factory
+            .compile_candidate_context(&resolve(&changed), &installed.runtime_requirements)
+            .expect("unused nested definition stays inert");
+        assert!(
+            installed
+                .bindings
+                .pipeline_bindings_match(&candidate.bindings, &pipeline("default", "main"))
+        );
+    }
+
+    /// Scenario: two exporters select independent composites using one name in different domains.
+    /// Guarantees: each binding resolves only its own dependencies without cross-exporter collisions.
+    #[test]
+    fn full_yaml_compilation_keeps_exporter_layouts_independent() {
+        let yaml = conditional_pipeline_yaml(
+            "[{type: transport_header, name: workspace}]",
+            "tenant:workspace",
+        )
+        .replace(
+            "      tenant: ",
+            "      other: [{type: authorized_identity, name: workspace}, {type: transport_header, name: account}]\n      tenant: ",
+        )
+        .replace(
+            "        connections:",
+            "          other_exporter:\n            type: urn:test:exporter:example\n            config: {}\n            header_propagation:\n              default:\n                selector: {type: named, named: ['other:account']}\n        connections:",
+        )
+        .replace(
+            "            to: exporter",
+            "            to: exporter\n          - from: receiver\n            to: other_exporter",
+        );
+        let resolved = otel_arrow_dfe_config::engine::OtelDataflowSpec::from_yaml(&yaml)
+            .expect("valid pipeline")
+            .resolve();
+        let installed = test_pipeline_factory()
+            .compile_initial_context(&resolved)
+            .expect("independent dependencies compile");
+        let key = pipeline("default", "main");
+        let first = installed
+            .bindings
+            .header_propagation_policy(&key, &"exporter".into())
+            .expect("first binding");
+        let second = installed
+            .bindings
+            .header_propagation_policy(&key, &"other_exporter".into())
+            .expect("second binding");
+        let mut headers = TransportHeaders::new();
+        headers.push(TransportHeader::text(
+            context_name("workspace"),
+            b"untrusted",
+        ));
+        headers.push(TransportHeader::text(context_name("account"), b"selected"));
+        assert_eq!(first.propagate(&headers).count(), 1);
+        assert_eq!(second.propagate(&headers).count(), 0);
+    }
+
+    /// Scenario: node capture overrides mask a conflicting pipeline capture alias.
+    /// Guarantees: binding compilation preserves capture precedence and original wire names.
+    #[test]
+    fn full_yaml_compilation_uses_effective_capture_and_retention() {
+        let yaml = conditional_pipeline_yaml(
+            "[{type: transport_header, name: WORKSPACE, store_as: workspace_id}]",
+            "tenant:workspace_id",
+        )
+        .replace("name: stored_name", "name: preserve")
+        .replace(
+            "          receiver:\n",
+            "          receiver:\n            header_capture:\n              headers:\n                - match_names: [X-Workspace]\n                  store_as: Workspace\n",
+        )
+        .replace(
+            "policies:\n",
+            "policies:\n  transport_headers:\n    header_capture:\n      headers:\n        - match_names: [X-Workspace]\n          store_as: customer\n  authorized_identity:\n    - claim: sub\n      store_as: customer\n",
+        );
+        let resolved = otel_arrow_dfe_config::engine::OtelDataflowSpec::from_yaml(&yaml)
+            .expect("valid config")
+            .resolve();
+        let installed = test_pipeline_factory()
+            .compile_initial_context(&resolved)
+            .expect("effective aliases do not collide");
+        let key = pipeline("default", "main");
+        let capture = installed
+            .bindings
+            .header_capture_policy(&key, &"receiver".into())
+            .expect("capture");
+        let propagation = installed
+            .bindings
+            .header_propagation_policy(&key, &"exporter".into())
+            .expect("propagation");
+        let mut headers = TransportHeaders::new();
+        assert!(
+            capture
+                .capture_from_pairs(
+                    [("X-Workspace", b"acme".as_slice())].into_iter(),
+                    &mut headers
+                )
+                .is_none()
+        );
+        let output = propagation.propagate(&headers).collect::<Vec<_>>();
+        assert_eq!(output.len(), 1);
+        assert_eq!(output[0].header_name, "X-Workspace");
+        assert_eq!(headers.get(0).expect("captured").name.as_str(), "Workspace");
+    }
+
+    /// Scenario: capture aliases differ only by case and an unselected identity uses the same name.
+    /// Guarantees: composite compilation does not impose a new namespace on unrelated source policies.
+    #[test]
+    fn full_yaml_compilation_preserves_independent_source_names() {
+        let yaml = conditional_pipeline_yaml(
+            "[{type: transport_header, name: workspace, store_as: workspace_id}]",
+            "tenant:workspace_id",
+        ).replace(
+            "policies:\n",
+            "policies:\n  transport_headers:\n    header_capture:\n      headers:\n        - {match_names: [x-first], store_as: Workspace}\n        - {match_names: [x-second], store_as: workspace}\n  authorized_identity:\n    - {claim: sub, store_as: workspace}\n",
+        );
+        let resolved = otel_arrow_dfe_config::engine::OtelDataflowSpec::from_yaml(&yaml)
+            .expect("valid config")
+            .resolve();
+        let installed = test_pipeline_factory()
+            .compile_initial_context(&resolved)
+            .expect("independent source names remain valid");
+        let key = pipeline("default", "main");
+        let capture = installed
+            .bindings
+            .header_capture_policy(&key, &"receiver".into())
+            .expect("capture");
+        let policy = installed
+            .bindings
+            .header_propagation_policy(&key, &"exporter".into())
+            .expect("propagation");
+        let mut headers = TransportHeaders::new();
+        assert!(
+            capture
+                .capture_from_pairs(
+                    [
+                        ("x-first", b"first".as_slice()),
+                        ("x-second", b"second".as_slice())
+                    ]
+                    .into_iter(),
+                    &mut headers,
+                )
+                .is_none()
+        );
+        let output = policy.propagate(&headers).collect::<Vec<_>>();
+        assert_eq!(output.len(), 2);
+        assert!(
+            output
+                .iter()
+                .all(|header| header.header_name == "workspace_id")
+        );
+        assert_eq!(output[0].value, b"first");
+        assert_eq!(output[1].value, b"second");
     }
 }

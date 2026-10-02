@@ -107,6 +107,15 @@ pub fn create_test_pdata() -> OtapPdata {
     OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(Bytes::from(otlp_bytes)).into())
 }
 
+/// Projects a test identity without exposing the receiver-only capture API in production.
+pub fn capture_test_authorized_identity(
+    pdata: &mut OtapPdata,
+    policy: &otel_arrow_dfe_config::authorized_identity_policy::AuthorizedIdentityPolicy,
+    identity: &otel_arrow_dfe_engine::capability::auth::AuthorizedIdentity,
+) {
+    pdata.capture_authorized_identity(policy, identity);
+}
+
 /// Create empty test pdata (a logs request with zero log records).
 #[must_use]
 pub fn create_empty_test_pdata() -> OtapPdata {

@@ -203,7 +203,7 @@ header_propagation:
 | --- | --- |
 | `all_captured` | Propagate all captured headers. |
 | `none` | Propagate nothing by default (default). |
-| `named` | Unqualified entries select captured headers by stored name. Qualified `composite:member` entries select the member's primitive transport header and apply its conditions. |
+| `named` | Unqualified entries select captured headers by stored name. Qualified `composite:member` entries select the member's primitive transport header only when the whole composite is present. |
 
 When `none` is used, only headers explicitly matched by an override
 with `action: propagate` are included on egress.
@@ -227,6 +227,9 @@ entry using `composite:member` syntax:
 
 ```yaml
 policies:
+  authorized_identity:
+    - claim: sub
+      store_as: customer_id
   context:
     entries:
       product_user:
@@ -253,23 +256,42 @@ policies:
         name: stored_name
 ```
 
-The composite header binding is active when the selected transport-header
-member exists and every `transport_header_match` condition has at least one
-matching captured value. Other value-bearing members, such as `customer_id`
-above, are not evaluated by transport-header propagation. Whole-composite
-presence and other composite consumers are separate features.
+The composite header binding is active only when **every value-bearing member**
+exists and every `transport_header_match` condition has at least one matching
+captured value. Selecting one member does not bypass the whole composite's
+presence requirement. In the example, the receiver must successfully authorize
+the request and capture the verified `sub` claim as `customer_id`; a transport
+header named `customer_id` cannot substitute for that identity.
 
-The selected member's primitive source and every condition header must have a
-matching `header_capture` rule. In the example, `x-workspace` is stored as
-`workspace` and `x-environment` is stored as `environment`.
+During startup and live-update preparation, the existing engine context
+compiler resolves each exporter's selected composite definitions into a
+logical layout. Unused definitions remain inactive for that exporter.
+Capture and producer policies keep their existing behavior, and selected
+source fields may arrive from another pipeline. Missing values make the
+composite absent rather than invalidating startup.
+
+Configuration remains separate from execution: serialized propagation policies
+contain only settings, while engine bindings hold the resolved layout and
+propagation implementation. Exporters accept only compiled bindings, so an
+unresolved qualified selector cannot reach propagation.
+
+Presence is evaluated at export time using the existing header and identity
+storage and cached for that propagation call. This does not introduce a new
+storage format, ingestion-time presence computation, or precomputed hashes.
+
+For values captured by this pipeline, every header member and condition source
+needs a matching `header_capture` rule. In the example, `x-workspace` is stored
+as `workspace` and `x-environment` is stored as `environment`.
 
 Matching has these semantics:
 
 - Stored header names use ASCII case-insensitive comparison.
+- Composite names, member aliases, and authorized-identity names are
+  case-sensitive.
 - Configured values are compared exactly as UTF-8 bytes.
 - When a condition header has duplicate values, any exact match satisfies that
   condition.
-- Every condition must be satisfied.
+- Every value-bearing member must be present and every condition satisfied.
 - A qualified composite selector must not resolve to a primitive source also
   selected by another qualified or unqualified entry.
 - Repeated unqualified selectors, including ASCII case variants, are accepted
@@ -278,6 +300,24 @@ Matching has these semantics:
 Overrides retain precedence over the default selector. An override that selects
 the primitive `workspace` header can propagate it independently even when
 `product_user` conditions do not match.
+
+Previously, qualified header propagation checked only the selected header and
+explicit conditions. Configurations that intentionally propagate a header
+without the other composite members should select the primitive name instead,
+or define a separate composite containing only the required members.
+
+#### Compiled Namespace
+
+Within one exporter's selected composite definitions, primitive fields and
+composites share one unqualified namespace. Use distinct names for a composite
+and its source fields, and distinct stored names for header and identity fields.
+This prevents an unqualified reference from identifying two different entries.
+Use capture or identity `store_as` to rename a source; a member alias only
+changes its qualified output name.
+
+This constraint applies to that exporter's selected dependencies, not every
+captured or produced value in the pipeline or another exporter's independent
+bindings. Unrelated source policies do not acquire new collision checks.
 
 ### Name Strategy
 

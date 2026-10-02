@@ -550,9 +550,9 @@ impl KafkaExporter {
         // Propagate transport headers onto the Kafka record if a propagation
         // policy is configured and the pdata context carries transport headers.
         if let Some(policy) = effect_handler.and_then(|eh| eh.propagation_policy())
-            && let Some(transport_headers) = context.transport_headers()
+            && context.transport_headers().is_some()
         {
-            for propagated in policy.propagate(transport_headers) {
+            for propagated in policy.propagate(context) {
                 // Skip propagated headers that collide with the format header.
                 if propagated.header_name == format_header_key {
                     continue;
@@ -7066,6 +7066,72 @@ pub mod test_support {
                     .any(|(k, v)| k == "X-Tenant-Id" && v == b"acme"),
                 "the tenant transport header should be propagated onto the record"
             );
+        }
+
+        /// Scenario: a Kafka header is selected through an identity-bearing composite.
+        /// Guarantees: missing identity suppresses the header; verified identity enables it without
+        /// exposing claims or replacing the format header.
+        #[test]
+        fn build_kafka_headers_requires_composite_identity() {
+            use otel_arrow_dfe_config::context_policy::{
+                ContextEntryDeclaration, ContextPolicy, ContextScope,
+            };
+            use otel_arrow_dfe_engine::capability::auth::AuthorizedIdentity;
+            let context_policy: ContextPolicy = serde_yaml::from_str(
+                "entries:\n  tenant:\n    - {type: transport_header, name: workspace}\n    - {type: authorized_identity, name: customer}",
+            ).expect("context policy");
+            let declarations = context_policy
+                .entries
+                .into_iter()
+                .map(|(name, definition)| ContextEntryDeclaration {
+                    scope: ContextScope::Engine,
+                    name,
+                    definition,
+                })
+                .collect::<Vec<_>>();
+            let policy: HeaderPropagationPolicy = serde_yaml::from_str(
+                "default:\n  selector: {type: named, named: ['tenant:workspace']}\n  name: stored_name",
+            ).expect("propagation policy");
+            let (_rx, reporter) = MetricsReporter::create_new_and_receiver(1);
+            let mut handler = EffectHandler::new(
+                test_node("identity-header"),
+                reporter,
+                otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+            );
+            handler.set_propagation_policy(Some(
+                CompiledHeaderPropagationPolicy::compile(policy, &declarations).expect("compiled"),
+            ));
+            let mut transport = TransportHeaders::new();
+            transport.push(transport_header("workspace", "X-Workspace", b"acme"));
+            transport.push(transport_header("customer", "X-Customer", b"untrusted"));
+            let mut pdata =
+                otel_arrow_dfe_otap::testing::create_test_pdata().with_transport_headers(transport);
+            let headers = KafkaExporter::build_kafka_headers(
+                MessageFormat::OtlpProto,
+                MSG_FORMAT_HEADER,
+                pdata.context_mut(),
+                Some(&handler),
+            );
+            assert_eq!(headers.count(), 1);
+            let identity_policy = serde_json::from_value(serde_json::json!([
+                {"claim": "sub", "store_as": "customer"}
+            ]))
+            .expect("identity policy");
+            otel_arrow_dfe_otap::testing::capture_test_authorized_identity(
+                &mut pdata,
+                &identity_policy,
+                &AuthorizedIdentity::new().with_subject("verified"),
+            );
+            let headers = KafkaExporter::build_kafka_headers(
+                MessageFormat::OtlpProto,
+                MSG_FORMAT_HEADER,
+                pdata.context_mut(),
+                Some(&handler),
+            );
+            assert_eq!(headers.count(), 2);
+            assert_eq!(headers.get(0).key, MSG_FORMAT_HEADER);
+            assert_eq!(headers.get(1).key, "workspace");
+            assert_eq!(headers.get(1).value, Some(b"acme".as_slice()));
         }
 
         /// Scenario (Kafka integration: encodings and routing): `build_kafka_headers` runs with no propagation policy
