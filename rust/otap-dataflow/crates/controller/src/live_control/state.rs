@@ -564,6 +564,8 @@ pub(super) struct ControllerRuntimeState {
     pub(super) active_instances: usize,
     /// Whether at least one engine-wide shutdown request has been accepted.
     pub(super) global_shutdown_requested: bool,
+    /// The deadline for the global shutdown, if requested.
+    pub(super) global_shutdown_deadline: Option<Instant>,
     /// Number of phased global-shutdown coordinators still running.
     pub(super) global_shutdown_coordinators: usize,
     /// Active engine-scoped live operation, if any.
@@ -612,6 +614,20 @@ impl ControllerRuntimeState {
                 .pipeline_operation_reservations
                 .get(pipeline_key)
                 .is_some_and(|reservation| reservation.kind == PipelineOperationKind::Shutdown)
+    }
+
+    /// Returns true if there is pending lifecycle work that prevents immediate shutdown completion.
+    pub(super) fn has_pending_lifecycle_work(&self) -> bool {
+        self.active_instances > 0
+            || self
+                .runtime_instances
+                .values()
+                .any(|instance| matches!(instance.lifecycle, RuntimeInstanceLifecycle::Active))
+            || !self.active_rollouts.is_empty()
+            || !self.active_shutdowns.is_empty()
+            || self.active_engine_operation.is_some()
+            || !self.pipeline_operation_reservations.is_empty()
+            || self.global_shutdown_coordinators > 0
     }
 }
 
