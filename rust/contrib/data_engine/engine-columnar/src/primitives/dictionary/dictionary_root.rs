@@ -273,4 +273,21 @@ mod tests {
         assert_eq!(dictionary.get_value_index(3), None);
         assert_eq!(dictionary.get_value(3), Ok(ValueOrRef::Null));
     }
+
+    /// Scenario: A dictionary key resolves to an Arrow UInt64 value that cannot fit in the engine integer type.
+    /// Guarantees: Dictionary lookup propagates the typed value-conversion error instead of replacing it with Null.
+    #[test]
+    fn dictionary_lookup_propagates_value_conversion_errors() {
+        let dictionary = Dictionary::new(
+            DictionaryKeyArray::from(Int8Array::from(vec![0])),
+            DictionaryValueArray::from(&UInt64Array::from(vec![u64::MAX])),
+        );
+
+        assert_eq!(
+            dictionary.get_value(0),
+            Err(ValueError::IntegerConversionFailure {
+                original_value: u64::MAX,
+            })
+        );
+    }
 }

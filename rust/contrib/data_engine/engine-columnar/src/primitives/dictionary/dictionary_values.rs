@@ -356,6 +356,7 @@ mod tests {
         LargeStringArray, StringArray, TimestampMicrosecondArray, TimestampMillisecondArray,
         TimestampNanosecondArray, TimestampSecondArray, UInt64Array,
     };
+    use chrono::DateTime;
     use half::f16;
 
     use super::*;
@@ -380,6 +381,41 @@ mod tests {
         );
         assert_eq!(strings.get_value_at(1), Ok(ValueOrRef::Null));
         assert_eq!(strings.get_value_at(3), Ok(ValueOrRef::Null));
+    }
+
+    /// Scenario: Values are accessed from Arrow, Vec, Set, and Boolean dictionary storage at valid, null, and invalid indexes.
+    /// Guarantees: Every storage variant returns values and Null consistently while invalid Boolean indexes remain typed errors.
+    #[test]
+    fn dictionary_value_storage_variants_share_result_contract() {
+        let array = DictionaryValueArray::from(&Int32Array::from(vec![Some(7), None, Some(9)]));
+        assert_eq!(array.get_value_at(0), Ok(ValueOrRef::Integer(7)));
+        assert_eq!(array.get_value_at(1), Ok(ValueOrRef::Null));
+        assert_eq!(array.get_value_at(3), Ok(ValueOrRef::Null));
+
+        let values = DictionaryValueArray::from(vec![
+            ValueOrRef::Integer(7),
+            ValueOrRef::Null,
+            ValueOrRef::Integer(9),
+        ]);
+        assert_eq!(values.get_value_at(0), Ok(ValueOrRef::Integer(7)));
+        assert_eq!(values.get_value_at(1), Ok(ValueOrRef::Null));
+        assert_eq!(values.get_value_at(3), Ok(ValueOrRef::Null));
+
+        let mut set = ValueOrRefSet::default();
+        set.insert(ValueOrRef::Integer(7));
+        set.insert(ValueOrRef::Null);
+        let set = DictionaryValueArray::from(set);
+        assert_eq!(set.get_value_at(0), Ok(ValueOrRef::Integer(7)));
+        assert_eq!(set.get_value_at(1), Ok(ValueOrRef::Null));
+        assert_eq!(set.get_value_at(2), Ok(ValueOrRef::Null));
+
+        let boolean = DictionaryValueArray::Boolean;
+        assert_eq!(boolean.get_value_at(0), Ok(ValueOrRef::Boolean(false)));
+        assert_eq!(boolean.get_value_at(1), Ok(ValueOrRef::Boolean(true)));
+        assert_eq!(
+            boolean.get_value_at(2),
+            Err(ValueError::InvalidBoolean { index_value: 2 })
+        );
     }
 
     /// Scenario: Arrow UInt64 values straddle the largest value representable by the engine's i64 integer type.
@@ -409,6 +445,27 @@ mod tests {
             })
         );
         assert_eq!(values.get_value_at(4), Ok(ValueOrRef::Null));
+    }
+
+    /// Scenario: Dictionary arrays produce matching errors, different integer errors, different timestamp-unit errors, and Null.
+    /// Guarantees: Equality compares typed conversion failures exactly and never equates a conversion failure with Null.
+    #[test]
+    fn dictionary_value_equality_distinguishes_conversion_failures() {
+        let integer_error =
+            DictionaryValueArray::from(&UInt64Array::from(vec![i64::MAX as u64 + 1]));
+        let same_integer_error =
+            DictionaryValueArray::from(&UInt64Array::from(vec![i64::MAX as u64 + 1]));
+        let different_integer_error =
+            DictionaryValueArray::from(&UInt64Array::from(vec![u64::MAX]));
+        let second_error = DictionaryValueArray::from(&TimestampSecondArray::from(vec![i64::MAX]));
+        let millisecond_error =
+            DictionaryValueArray::from(&TimestampMillisecondArray::from(vec![i64::MAX]));
+        let null = DictionaryValueArray::from(&UInt64Array::from(vec![None]));
+
+        assert_eq!(integer_error, same_integer_error);
+        assert_ne!(integer_error, different_integer_error);
+        assert_ne!(second_error, millisecond_error);
+        assert_ne!(integer_error, null);
     }
 
     /// Scenario: Arrow Float16, Float32, and Float64 arrays contain finite values, infinities, negative zero, NaN, and null.
@@ -553,6 +610,92 @@ mod tests {
                 })
             );
         }
+    }
+
+    /// Scenario: Timestamp values sit at and immediately beyond Chrono's exact second, millisecond, and microsecond limits.
+    /// Guarantees: The final representable values succeed while their adjacent out-of-range values return typed errors.
+    #[test]
+    fn arrow_timestamps_enforce_exact_chrono_boundaries() {
+        let min = DateTime::<Utc>::MIN_UTC;
+        let max = DateTime::<Utc>::MAX_UTC;
+
+        let cases = [
+            (
+                DictionaryValueArray::from(&TimestampSecondArray::from(vec![
+                    min.timestamp(),
+                    min.timestamp() - 1,
+                    max.timestamp(),
+                    max.timestamp() + 1,
+                ])),
+                TimeUnit::Second,
+                min.timestamp() - 1,
+                max.timestamp() + 1,
+            ),
+            (
+                DictionaryValueArray::from(&TimestampMillisecondArray::from(vec![
+                    min.timestamp_millis(),
+                    min.timestamp_millis() - 1,
+                    max.timestamp_millis(),
+                    max.timestamp_millis() + 1,
+                ])),
+                TimeUnit::Millisecond,
+                min.timestamp_millis() - 1,
+                max.timestamp_millis() + 1,
+            ),
+            (
+                DictionaryValueArray::from(&TimestampMicrosecondArray::from(vec![
+                    min.timestamp_micros(),
+                    min.timestamp_micros() - 1,
+                    max.timestamp_micros(),
+                    max.timestamp_micros() + 1,
+                ])),
+                TimeUnit::Microsecond,
+                min.timestamp_micros() - 1,
+                max.timestamp_micros() + 1,
+            ),
+        ];
+
+        for (values, time_unit, below_min, above_max) in cases {
+            assert!(matches!(
+                values.get_value_at(0),
+                Ok(ValueOrRef::DateTime(_))
+            ));
+            assert_eq!(
+                values.get_value_at(1),
+                Err(ValueError::TimestampConversionFailure {
+                    original_value: below_min,
+                    time_unit,
+                })
+            );
+            assert!(matches!(
+                values.get_value_at(2),
+                Ok(ValueOrRef::DateTime(_))
+            ));
+            assert_eq!(
+                values.get_value_at(3),
+                Err(ValueError::TimestampConversionFailure {
+                    original_value: above_max,
+                    time_unit,
+                })
+            );
+        }
+    }
+
+    /// Scenario: Equal Arrow timestamp values carry no timezone, UTC, and a non-UTC timezone metadata string.
+    /// Guarantees: Timezone metadata does not alter the represented instant during conversion to the engine DateTime value.
+    #[test]
+    fn arrow_timestamp_timezone_metadata_preserves_instant() {
+        let without_timezone = DictionaryValueArray::from(&TimestampSecondArray::from(vec![1_500]));
+        let utc = DictionaryValueArray::from(
+            &TimestampSecondArray::from(vec![1_500]).with_timezone("UTC"),
+        );
+        let offset = DictionaryValueArray::from(
+            &TimestampSecondArray::from(vec![1_500]).with_timezone("+02:00"),
+        );
+
+        let expected = without_timezone.get_value_at(0).unwrap();
+        assert_eq!(utc.get_value_at(0), Ok(expected.clone()));
+        assert_eq!(offset.get_value_at(0), Ok(expected));
     }
 
     /// Scenario: Arrow timestamp and fixed-size binary arrays are used as dictionary values.
