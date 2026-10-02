@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790979377790,
+  "lastUpdate": 1790981111460,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -50995,6 +50995,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 104.98,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "76450334+andborja@users.noreply.github.com",
+            "name": "Andres Borja",
+            "username": "andborja"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "ab3dba92dc2815cc9d4e89038b48c2260c7c2fc2",
+          "message": "fix(engine): cancel pending processor work at shutdown deadline (#4142)\n\nCancel local and shared processor runtimes when the explicit shutdown\ndeadline expires, preventing late sends to closed downstream channels.\n\nPreserve graceful processing before the deadline.\n\nAdd regression tests for forced cancellation and graceful completion.\n\nFixes https://github.com/open-telemetry/otel-arrow/issues/4141\n\n# Change summary\n\nCancel pending local and shared processor work when the explicit\nshutdown deadline expires, preventing delayed sends to closed downstream\nchannels.\n\nPreserve graceful processing before the deadline and retain earlier\nprocessing errors if final metrics collection is cancelled. Ignore\nduplicate shutdown requests without changing the accepted deadline.\n\nAdd regression tests for forced cancellation, graceful completion, error\npreservation, and duplicate shutdown requests.\n\n## Related issue\n\n* Closes #4141\n\n## Validation\n\n- All 692 engine library tests pass.\n- Engine-scoped Clippy passes with warnings denied.\n- Rust formatting and commit whitespace checks pass.\n- Existing-component reproduction demonstrated shutdown improving from\n10.18 seconds with a closed-channel error and exit code 1 to 2.23\nseconds with exit code 0. This was measured before the final review\nfixes; the amended commit passed the regression tests above.\n\n\n## User-facing changes\n\nProcessors no longer wait for pending asynchronous handlers to finish\nafter the forced shutdown deadline. Graceful processing continues before\nthe deadline.\n\nForced shutdown may discard unfinished batches and final processor\nmetrics. Cancellation is cooperative and does not preempt synchronously\nblocking code.\n\nIncludes an engine bug-fix changelog entry referencing #4141.\n\n---------\n\nCo-authored-by: Copilot Autofix powered by AI <175728472+Copilot@users.noreply.github.com>",
+          "timestamp": "2026-10-02T21:40:26Z",
+          "tree_id": "6a6dba86dbbcd2eebe4c207a9470b5f3cd443314",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/ab3dba92dc2815cc9d4e89038b48c2260c7c2fc2"
+        },
+        "date": 1790981095300,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 85.39,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.85,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.21,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.01,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.98,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.77,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 72.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.95,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.57,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.56,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.16,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.35,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 117.88,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 105.04,
             "unit": "MB"
           }
         ]
