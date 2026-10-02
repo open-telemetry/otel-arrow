@@ -28,8 +28,15 @@ impl Dictionary<'_> {
             return true;
         }
 
-        self.nulls()
-            .is_some_and(|nulls| nulls.null_count() == self.len())
+        for key_index in 0..self.len() {
+            if let Some(value_index) = self.keys.get_value_index_for_key_index(key_index)
+                && !self.values.is_null_at(value_index)
+            {
+                return false;
+            }
+        }
+
+        true
     }
 
     pub fn nulls(&self) -> Option<NullBuffer> {

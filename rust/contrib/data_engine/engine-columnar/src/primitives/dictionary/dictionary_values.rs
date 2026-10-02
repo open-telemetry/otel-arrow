@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use std::{cell::OnceCell, rc::Rc, sync::Arc};
+use std::{rc::Rc, sync::Arc};
 
 use ahash::{AHashMap, RandomState};
 use arrow::{array::*, buffer::*, datatypes::*};
@@ -55,56 +55,25 @@ impl DictionaryValueArray<'_> {
         match self {
             DictionaryValueArray::Array(a) => a.nulls().cloned(),
             DictionaryValueArray::Vec(a) => {
-                let mut buffer = OnceCell::new();
-
-                for (index, value) in a.iter().enumerate() {
-                    if matches!(value, ValueOrRef::Null) {
-                        buffer.get_or_init(|| {
-                            let l = a.len();
-                            BooleanBufferBuilder::new_from_buffer(
-                                MutableBuffer::new_null(a.len()),
-                                l,
-                            )
-                        });
-                        let buffer = buffer.get_mut().expect("has buffer");
-                        buffer.set_bit(index, true);
-                    }
-                }
-
-                buffer.take().map(|mut b| {
-                    for byte in b.as_slice_mut() {
-                        *byte = !*byte;
-                    }
-
-                    NullBuffer::new(b.build())
-                })
+                build_null_buffer(a.iter().map(|value| matches!(value, ValueOrRef::Null)))
             }
             DictionaryValueArray::Set(a) => {
-                let mut buffer = OnceCell::new();
-
-                for (index, value) in a.iter().enumerate() {
-                    if matches!(value, ValueOrRef::Null) {
-                        buffer.get_or_init(|| {
-                            let l = a.len();
-                            BooleanBufferBuilder::new_from_buffer(
-                                MutableBuffer::new_null(a.len()),
-                                l,
-                            )
-                        });
-                        let buffer = buffer.get_mut().expect("has buffer");
-                        buffer.set_bit(index, true);
-                    }
-                }
-
-                buffer.take().map(|mut b| {
-                    for byte in b.as_slice_mut() {
-                        *byte = !*byte;
-                    }
-
-                    NullBuffer::new(b.build())
-                })
+                build_null_buffer(a.iter().map(|value| matches!(value, ValueOrRef::Null)))
             }
             DictionaryValueArray::Boolean => None,
+        }
+    }
+
+    pub(crate) fn is_null_at(&self, index: usize) -> bool {
+        match self {
+            DictionaryValueArray::Array(a) => index >= a.len() || a.is_null(index),
+            DictionaryValueArray::Vec(a) => a
+                .get(index)
+                .is_none_or(|value| matches!(value, ValueOrRef::Null)),
+            DictionaryValueArray::Set(a) => a
+                .get_index(index)
+                .is_none_or(|value| matches!(value, ValueOrRef::Null)),
+            DictionaryValueArray::Boolean => index >= 2,
         }
     }
 }
@@ -128,6 +97,26 @@ impl<'a> DictionaryValueArray<'a> {
 
 impl PartialEq for DictionaryValueArray<'_> {
     fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (DictionaryValueArray::Array(left), DictionaryValueArray::Array(right))
+                if Arc::ptr_eq(left, right) =>
+            {
+                return true;
+            }
+            (DictionaryValueArray::Vec(left), DictionaryValueArray::Vec(right))
+                if Rc::ptr_eq(left, right) =>
+            {
+                return true;
+            }
+            (DictionaryValueArray::Set(left), DictionaryValueArray::Set(right))
+                if Rc::ptr_eq(left, right) =>
+            {
+                return true;
+            }
+            (DictionaryValueArray::Boolean, DictionaryValueArray::Boolean) => return true,
+            _ => {}
+        }
+
         let length = self.len();
 
         if length != other.len() {
@@ -350,6 +339,26 @@ fn get_value_from_array(
             d => todo!("{d} is not implemented"),
         }
     }
+}
+
+fn build_null_buffer(nulls: impl ExactSizeIterator<Item = bool>) -> Option<NullBuffer> {
+    let len = nulls.len();
+    let mut builder = None;
+
+    for (index, is_null) in nulls.enumerate() {
+        if is_null {
+            let builder = builder.get_or_insert_with(|| {
+                let mut builder = BooleanBufferBuilder::new(len);
+                builder.append_n(index, true);
+                builder
+            });
+            builder.append(false);
+        } else if let Some(builder) = builder.as_mut() {
+            builder.append(true);
+        }
+    }
+
+    builder.map(|builder| NullBuffer::new(builder.build()))
 }
 
 #[cfg(test)]
@@ -732,11 +741,24 @@ mod tests {
     #[test]
     fn owned_and_boolean_values_report_nulls_and_bounds() {
         let values = DictionaryValueArray::from(vec![
+            ValueOrRef::Null,
             ValueOrRef::Integer(1),
             ValueOrRef::Null,
             ValueOrRef::Integer(3),
         ]);
         let nulls = values.nulls().unwrap();
+        assert_eq!(nulls.null_count(), 2);
+        assert!(nulls.is_null(0));
+        assert!(nulls.is_valid(1));
+        assert!(nulls.is_null(2));
+        assert!(nulls.is_valid(3));
+
+        let mut set = ValueOrRefSet::default();
+        set.insert(ValueOrRef::Integer(1));
+        set.insert(ValueOrRef::Null);
+        set.insert(ValueOrRef::Integer(3));
+        let set = DictionaryValueArray::from(set);
+        let nulls = set.nulls().unwrap();
         assert_eq!(nulls.null_count(), 1);
         assert!(nulls.is_valid(0));
         assert!(nulls.is_null(1));

@@ -130,7 +130,7 @@ impl From<StringValueOrRef<'_>> for String {
                 Err(o) => (*o).clone(),
             },
             StringValueOrRef::Slice(s) => {
-                let mut v = String::new();
+                let mut v = String::with_capacity(s.len());
                 s.append_to(&mut v);
                 v
             }
