@@ -277,7 +277,7 @@ at three independent boundaries: HTTP delivery, payload preparation, and
 upstream Ack/Nack notification. State is local to an exporter instance/core,
 signal, and configured destination. A success for one signal or boundary cannot
 clear failures for another. The `signal` field uses the canonical lowercase
-values `logs`, `metrics`, and `traces`; `stage` identifies the boundary.
+values `logs`, `metrics`, and `traces`; the event name identifies the boundary.
 
 `otlp.exporter.http.export_error` reports the first failed delivery and further
 summaries at most once every 60 seconds while new failures are observed.
@@ -298,7 +298,12 @@ Existing export and notification error event names are preserved. Export errors
 retain a string `message` and boolean `retryable` describing the representative
 failure, which may differ from other failures counted in the summary. Recovery
 events retain that error sample and its age but omit `retryable`. Notification
-errors retain their Ack/Nack-specific `message` and `error` sample.
+errors retain a lowercase `operation` (`ack` or `nack`) and the representative
+`error` sample. Preparation errors retain their representative `error` sample.
+
+Operation-specific fields are encoded before interval and episode counters so
+the bounded ITS record preserves actionable error details. Oversized details
+are truncated with an explicit suffix instead of being dropped.
 
 Diagnostic frequency is bounded before logs reach subscribers. No reports are
 emitted during idle periods, and silence does not establish recovery. Use

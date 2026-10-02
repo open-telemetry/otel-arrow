@@ -20,27 +20,6 @@ use std::time::Instant;
 #[cfg(test)]
 mod tests;
 
-/// Independent delivery diagnostics for one exporter instance/core's signals.
-///
-/// Signals have separate episodes even when they share a destination, so success
-/// for one cannot clear another's failures. The fixed set bounds state size.
-#[derive(Default)]
-pub(super) struct DeliveryDiagnostics {
-    /// Per-signal state in logs, metrics, and traces order.
-    signals: [DeliveryDiagnostic; 3],
-}
-
-impl DeliveryDiagnostics {
-    /// Returns the signal's delivery tracker without allocating a new scope.
-    pub(super) fn signal(&mut self, signal: SignalType) -> &mut DeliveryDiagnostic {
-        &mut self.signals[match signal {
-            SignalType::Logs => 0,
-            SignalType::Metrics => 1,
-            SignalType::Traces => 2,
-        }]
-    }
-}
-
 /// A delivery episode and its HTTP-specific sample metadata for one signal.
 ///
 /// Retryability describes the representative error selected by the tracker,
@@ -94,8 +73,9 @@ impl DeliveryDiagnostic {
     ///
     /// Warnings retain `export_error` with a string `message` and boolean
     /// `retryable` describing the sample. Recovery uses `export_recovered` at
-    /// INFO, retains the error sample, and omits `retryable`. `None` emits
-    /// nothing, keeping suppression ahead of all log subscribers.
+    /// INFO, retains the error sample, and omits `retryable`. Operation fields
+    /// precede shared counters so bounded ITS encoding preserves the error.
+    /// `None` emits nothing, keeping suppression ahead of all log subscribers.
     ///
     /// Emit immediately after observation, before recording another completion,
     /// so the report and stored sample retryability remain paired. `signal`
@@ -108,18 +88,18 @@ impl DeliveryDiagnostic {
         let Some(report) = report else { return };
         if report.kind == ReportKind::Recovered {
             otel_arrow_dfe_telemetry::otel_diagnostic_report!(
-                target: "otel.exporter.otlp_http", level: otel_info,
+                target: "otel.exporter.otlp_http", emit: otel_info,
                 name: "otlp.exporter.http.export_recovered", report: &report,
-                diagnostic_kind = "recovery", signal = signal.as_str(), stage = "delivery",
-                message = "OTLP HTTP export recovered",
-                error = report.detail.as_str()
+                error = report.detail.as_str(), signal = signal.as_str(),
+                diagnostic_kind = "recovery"
             );
         } else {
             otel_arrow_dfe_telemetry::otel_diagnostic_report!(
-                target: "otel.exporter.otlp_http", level: otel_warn,
+                target: "otel.exporter.otlp_http", emit: otel_warn,
                 name: "otlp.exporter.http.export_error", report: &report,
-                diagnostic_kind = diagnostic_kind(report.kind), signal = signal.as_str(), stage = "delivery",
-                message = report.detail.as_str(), retryable = self.sample_retryable
+                signal = signal.as_str(), retryable = self.sample_retryable,
+                diagnostic_kind = diagnostic_kind(report.kind),
+                message = %report.detail.as_str()
             );
         }
     }
@@ -136,19 +116,20 @@ fn diagnostic_kind(kind: ReportKind) -> &'static str {
 
 /// Emits a WARN selected by the independent encoding/compression failure tracker.
 ///
-/// The report's bounded sample becomes `error` alongside a descriptive message.
-/// Pass `None` for suppressed failures. Preparation reports do not participate
-/// in delivery recovery and make no claim about destination availability.
+/// The report's bounded sample becomes `error`; the event name supplies the
+/// operation context without a redundant message or stage. Pass `None` for
+/// suppressed failures. Preparation reports do not participate in delivery
+/// recovery and make no claim about destination availability.
 pub(super) fn emit_preparation(
     report: Option<DiagnosticReport<OtlpHttpExporterErrorType>>,
     signal: SignalType,
 ) {
     if let Some(report) = report {
         otel_arrow_dfe_telemetry::otel_diagnostic_report!(
-            target: "otel.exporter.otlp_http", level: otel_warn,
+            target: "otel.exporter.otlp_http", emit: otel_warn,
             name: "otlp.exporter.http.preparation_error", report: &report,
-            diagnostic_kind = diagnostic_kind(report.kind), signal = signal.as_str(), stage = "preparation",
-            message = "Failed to prepare OTLP HTTP export", error = report.detail.as_str()
+            error = report.detail.as_str(), signal = signal.as_str(),
+            diagnostic_kind = diagnostic_kind(report.kind)
         );
     }
 }
@@ -164,8 +145,8 @@ pub(super) enum NotificationOperation {
 
 /// Emits a WARN selected by the independent Ack/Nack notification failure tracker.
 ///
-/// `operation` must match the sampled failure, preserving the legacy Ack/Nack
-/// message and bounded `error` field. `None` emits nothing. Notification
+/// `operation` must match the sampled failure and is emitted as a compact
+/// bounded attribute alongside `error`. `None` emits nothing. Notification
 /// reporting does not change the recorded delivery result or its recovery state.
 pub(super) fn emit_notification(
     report: Option<DiagnosticReport<DiagnosticErrorKind>>,
@@ -173,17 +154,15 @@ pub(super) fn emit_notification(
     operation: NotificationOperation,
 ) {
     if let Some(report) = report {
-        let message = match operation {
-            NotificationOperation::Ack => "Failed to route the terminal OTLP HTTP Ack notification",
-            NotificationOperation::Nack => {
-                "Failed to route the terminal OTLP HTTP Nack notification"
-            }
+        let operation = match operation {
+            NotificationOperation::Ack => "ack",
+            NotificationOperation::Nack => "nack",
         };
         otel_arrow_dfe_telemetry::otel_diagnostic_report!(
-            target: "otel.exporter.otlp_http", level: otel_warn,
+            target: "otel.exporter.otlp_http", emit: otel_warn,
             name: "otlp.exporter.http.notification_error", report: &report,
-            diagnostic_kind = diagnostic_kind(report.kind), signal = signal.as_str(), stage = "notification",
-            message = message, error = report.detail.as_str()
+            error = report.detail.as_str(), operation = operation,
+            signal = signal.as_str(), diagnostic_kind = diagnostic_kind(report.kind)
         );
     }
 }

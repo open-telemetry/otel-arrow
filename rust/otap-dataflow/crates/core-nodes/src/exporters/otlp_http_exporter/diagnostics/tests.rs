@@ -18,6 +18,7 @@ use otel_arrow_dfe_otap::metrics::ErrorWithOutcome;
 use otel_arrow_dfe_otap::pdata::OtapPdata;
 use otel_arrow_dfe_otap::testing::TestCallData;
 use otel_arrow_dfe_pdata::OtlpProtoBytes;
+use otel_arrow_dfe_telemetry::diagnostics::SignalSet;
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use serde_json::{Map, Value, json};
 use std::sync::{Arc, Mutex};
@@ -59,13 +60,11 @@ impl Visit for CapturedEvent {
 }
 
 impl CapturedEvent {
-    fn assert_contract(&self, name: &str, level: Level, kind: &str, stage: &str) {
+    fn assert_contract(&self, name: &str, level: Level, kind: &str) {
         assert_eq!(self.name, name);
         assert_eq!(self.target, "otel.exporter.otlp_http");
         assert_eq!(self.level, level);
         assert_eq!(self.fields["diagnostic_kind"], kind);
-        assert_eq!(self.fields["stage"], stage);
-        assert!(self.fields["message"].is_string());
         for field in [
             "episode_seconds",
             "interval_seconds",
@@ -114,7 +113,7 @@ fn delivery_event_contract_and_retained_samples() {
     tracing::subscriber::with_default(tracing_subscriber::registry().with(capture.clone()), || {
         let start = Instant::now();
         let at = |seconds| start + Duration::from_secs(seconds);
-        let mut diagnostics = DeliveryDiagnostics::default();
+        let mut diagnostics = SignalSet::<DeliveryDiagnostic>::default();
         let logs = diagnostics.signal(SignalType::Logs);
         let report = logs.failure(at(0), Transport, true, || "connection refused");
         logs.emit(report, SignalType::Logs);
@@ -154,12 +153,7 @@ fn delivery_event_contract_and_retained_samples() {
         (3, "first_failure"),
         (4, "summary"),
     ] {
-        events[index].assert_contract(
-            "otlp.exporter.http.export_error",
-            Level::WARN,
-            kind,
-            "delivery",
-        );
+        events[index].assert_contract("otlp.exporter.http.export_error", Level::WARN, kind);
     }
     for index in [0, 1] {
         assert_eq!(events[index].fields["message"], "connection refused");
@@ -187,9 +181,7 @@ fn delivery_event_contract_and_retained_samples() {
         "otlp.exporter.http.export_recovered",
         Level::INFO,
         "recovery",
-        "delivery",
     );
-    assert_eq!(events[5].fields["message"], "OTLP HTTP export recovered");
     assert_eq!(events[5].fields["error"], "partial acceptance");
     assert_eq!(events[5].fields["error_sample_age_seconds"], 61.0);
     assert_eq!(events[5].fields["episode_seconds"], 181.0);
@@ -200,7 +192,7 @@ fn delivery_event_contract_and_retained_samples() {
 }
 
 /// Scenario: Preparation, Ack routing, and Nack routing fail during one reporting interval.
-/// Guarantees: Separate bounded events retain Ack/Nack context and descriptive preparation errors.
+/// Guarantees: Separate bounded events retain compact Ack/Nack context and preparation errors.
 #[test]
 fn preparation_and_notification_event_contracts() {
     let capture = Capture::default();
@@ -261,31 +253,17 @@ fn preparation_and_notification_event_contracts() {
     let events = capture.0.lock().unwrap();
     assert_eq!(events.len(), 4);
     for (index, kind) in [(0, "first_failure"), (2, "summary")] {
-        events[index].assert_contract(
-            "otlp.exporter.http.preparation_error",
-            Level::WARN,
-            kind,
-            "preparation",
-        );
-        assert_eq!(
-            events[index].fields["message"],
-            "Failed to prepare OTLP HTTP export"
-        );
+        events[index].assert_contract("otlp.exporter.http.preparation_error", Level::WARN, kind);
     }
-    for (index, kind, operation) in [(1, "first_failure", "Ack"), (3, "summary", "Nack")] {
-        events[index].assert_contract(
-            "otlp.exporter.http.notification_error",
-            Level::WARN,
-            kind,
-            "notification",
-        );
-        assert_eq!(
-            events[index].fields["message"],
-            format!("Failed to route the terminal OTLP HTTP {operation} notification")
-        );
+    for (index, kind, operation, error_operation) in [
+        (1, "first_failure", "ack", "Ack"),
+        (3, "summary", "nack", "Nack"),
+    ] {
+        events[index].assert_contract("otlp.exporter.http.notification_error", Level::WARN, kind);
+        assert_eq!(events[index].fields["operation"], operation);
         assert_eq!(
             events[index].fields["error"],
-            format!("{operation} channel closed")
+            format!("{error_operation} channel closed")
         );
     }
     assert_eq!(events[0].fields["error"], "encoding failed");
@@ -392,7 +370,6 @@ fn delivery_retryability_matches_auth_aware_nacks() {
                             "otlp.exporter.http.export_error",
                             Level::WARN,
                             "first_failure",
-                            "delivery",
                         );
                         assert_eq!(events[0].fields["message"], message);
                         assert_eq!(events[0].fields["retryable"], retryable);
@@ -485,7 +462,6 @@ fn notification_failure_does_not_redefine_delivery() {
                 "otlp.exporter.http.export_error",
                 Level::WARN,
                 "first_failure",
-                "delivery",
             );
             assert_eq!(events[0].fields["retryable"], false);
             assert_eq!(
@@ -498,13 +474,9 @@ fn notification_failure_does_not_redefine_delivery() {
             "otlp.exporter.http.notification_error",
             Level::WARN,
             "first_failure",
-            "notification",
         );
-        let operation = if rejected { "Nack" } else { "Ack" };
-        assert_eq!(
-            notification.fields["message"],
-            format!("Failed to route the terminal OTLP HTTP {operation} notification")
-        );
+        let operation = if rejected { "nack" } else { "ack" };
+        assert_eq!(notification.fields["operation"], operation);
         assert!(
             notification.fields["error"]
                 .as_str()
@@ -556,13 +528,9 @@ fn early_nack_notification_failure_is_observable() {
         "otlp.exporter.http.notification_error",
         Level::WARN,
         "first_failure",
-        "notification",
     );
     assert_eq!(events[0].fields["signal"], "logs");
-    assert_eq!(
-        events[0].fields["message"],
-        "Failed to route the terminal OTLP HTTP Nack notification"
-    );
+    assert_eq!(events[0].fields["operation"], "nack");
     assert!(
         events[0].fields["error"]
             .as_str()

@@ -1072,11 +1072,14 @@ async fn finalize_completed_export(
     // cannot declare recovery from a failure observed after that attempt started.
     let now = Instant::now();
 
-    // Compute retryability once so the retained diagnostic sample and terminal
-    // Nack agree, including the special handling of a 401 from dynamic auth.
-    let retryable = result.as_ref().is_err_and(|error| {
-        error.is_retryable() || (auth_generation.is_some() && error.is_auth_failure())
-    });
+    // Compute the dynamic-auth rejection once so invalidation, the retained
+    // diagnostic sample, and the terminal Nack cannot diverge.
+    let auth_failure = result
+        .as_ref()
+        .is_err_and(|error| auth_generation.is_some() && error.is_auth_failure());
+    let retryable = result
+        .as_ref()
+        .is_err_and(|error| error.is_retryable() || auth_failure);
 
     // Success is normally silent and only selects a summary or confirmed recovery.
     // Failure detail is formatted only when the first warning or a summary is due.
@@ -1096,9 +1099,6 @@ async fn finalize_completed_export(
     let err = match result {
         Ok(()) => None,
         Err(error) => {
-            // A 401 for either dynamic source is retryable and carries the exact
-            // request generation back to the owning authentication variant.
-            let auth_failure = auth_generation.is_some() && error.is_auth_failure();
             if auth_failure {
                 rejected_generation = auth_generation;
             }

@@ -13,7 +13,8 @@
 //! Integrations own event names, error classifications, and observation
 //! boundaries. Keep distinct operations in separate trackers; a successful
 //! enqueue, for example, cannot establish recovery of a failing storage write.
-//! [`SignalDiagnostics`] optionally groups trackers by telemetry signal.
+//! [`SignalSet`] optionally groups state by telemetry signal, and
+//! [`SignalDiagnostics`] specializes it for diagnostic trackers.
 //!
 //! A tracker has no timers, locks, or metric-interest dependency. Only emitted
 //! reports allocate or format diagnostic text after an episode has started.
@@ -255,26 +256,27 @@ impl<E: AttributeEnum> DiagnosticTracker<E> {
     }
 }
 
-/// Optional grouping of independent signal trackers for one operation's scope.
+/// Fixed, allocation-free state for the three telemetry signals.
 ///
-/// Callers whose operation has no telemetry signal can use [`DiagnosticTracker`]
-/// directly. This wrapper adds a fixed set of scopes without dynamic keys.
+/// This container keeps signal indexing consistent for component-specific state
+/// as well as shared diagnostic trackers. It avoids dynamic keys while allowing
+/// each integration to attach the metadata its operation requires.
 #[derive(Debug)]
-pub struct SignalDiagnostics<E> {
-    signals: [DiagnosticTracker<E>; 3],
+pub struct SignalSet<T> {
+    signals: [T; 3],
 }
 
-impl<E> Default for SignalDiagnostics<E> {
+impl<T: Default> Default for SignalSet<T> {
     fn default() -> Self {
         Self {
-            signals: std::array::from_fn(|_| DiagnosticTracker::default()),
+            signals: std::array::from_fn(|_| T::default()),
         }
     }
 }
 
-impl<E> SignalDiagnostics<E> {
-    /// Select a signal without allocating dynamic scope or error keys.
-    pub fn signal(&mut self, signal: SignalType) -> &mut DiagnosticTracker<E> {
+impl<T> SignalSet<T> {
+    /// Selects one signal's state.
+    pub fn signal(&mut self, signal: SignalType) -> &mut T {
         &mut self.signals[match signal {
             SignalType::Logs => 0,
             SignalType::Metrics => 1,
@@ -282,6 +284,12 @@ impl<E> SignalDiagnostics<E> {
         }]
     }
 }
+
+/// Independent diagnostic trackers for the three telemetry signals.
+///
+/// Callers whose operation has no telemetry signal can use [`DiagnosticTracker`]
+/// directly. This alias adds a fixed set of scopes without dynamic keys.
+pub type SignalDiagnostics<E> = SignalSet<DiagnosticTracker<E>>;
 
 fn bounded_detail(detail: impl fmt::Display) -> String {
     struct Bounded(String);
@@ -304,15 +312,18 @@ fn bounded_detail(detail: impl fmt::Display) -> String {
     output.0
 }
 
-/// Emit common fields for a selected report through the chosen `otel_*` macro.
-/// The caller selects the literal event name, severity macro (`otel_warn` or
-/// `otel_info`), and operation-specific fields after the tracker selects a report.
+/// Emit priority operation fields followed by common fields for a selected report.
+///
+/// The caller selects the literal event name and emitter macro (`otel_warn` or
+/// `otel_info`). Operation-specific fields are encoded first so bounded ITS
+/// encoding preserves the actionable error detail before lower-priority counts.
 /// Pass a report reference so its representative detail can also be used in fields.
 #[macro_export]
 macro_rules! otel_diagnostic_report {
-    (target: $target:expr, level: $level:ident, name: $name:literal, report: $report:expr, $($fields:tt)+) => {{
+    (target: $target:expr, emit: $emit:ident, name: $name:literal, report: $report:expr, $($fields:tt)+) => {{
         let diagnostic_report = $report;
-        $crate::$level!(target: $target, $name,
+        $crate::$emit!(target: $target, $name,
+            $($fields)+,
             episode_seconds = diagnostic_report.episode_duration.as_secs_f64(),
             interval_seconds = diagnostic_report.interval_duration.as_secs_f64(),
             successful_attempts = diagnostic_report.interval.successes,
@@ -323,8 +334,7 @@ macro_rules! otel_diagnostic_report {
             total_suppressed_diagnostics = diagnostic_report.total.suppressed,
             error_counts = %diagnostic_report.interval,
             total_error_counts = %diagnostic_report.total,
-            error_sample_age_seconds = diagnostic_report.detail_age.as_secs_f64(),
-            $($fields)+
+            error_sample_age_seconds = diagnostic_report.detail_age.as_secs_f64()
         );
     }};
 }

@@ -8,7 +8,7 @@ use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_engine::context::PipelineContext;
 use otel_arrow_dfe_otap::http_client_auth::HttpClientAuthProvider;
 use otel_arrow_dfe_otap::metrics::ExporterMetrics;
-use otel_arrow_dfe_telemetry::diagnostics::{DiagnosticErrorKind, SignalDiagnostics};
+use otel_arrow_dfe_telemetry::diagnostics::{DiagnosticErrorKind, SignalDiagnostics, SignalSet};
 use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
 use otel_arrow_dfe_telemetry::instrument::{Counter, UpDownCounter};
 use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSet, MetricSetSnapshot};
@@ -16,7 +16,7 @@ use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use otel_arrow_dfe_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
 use std::borrow::Cow;
 
-use super::diagnostics::DeliveryDiagnostics;
+use super::diagnostics::DeliveryDiagnostic;
 
 /// Actionable category for a failed OTLP HTTP export.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, AttributeEnum)]
@@ -125,7 +125,7 @@ struct OtlpHttpExporterAuthMetrics {
 /// Terminal outcome and failure metrics emitted by an OTLP HTTP exporter.
 pub(super) struct OtlpHttpExporterMetrics {
     /// Per-signal delivery state for bounded failure summaries and recovery confirmation.
-    pub(super) diagnostics: DeliveryDiagnostics,
+    pub(super) diagnostics: SignalSet<DeliveryDiagnostic>,
     /// Per-signal preparation state that independently bounds encoding/compression failures.
     pub(super) preparation: SignalDiagnostics<OtlpHttpExporterErrorType>,
     /// Per-signal notification state that independently bounds Ack/Nack routing failures.
@@ -143,7 +143,7 @@ impl OtlpHttpExporterMetrics {
         auth: Option<&dyn HttpClientAuthProvider>,
     ) -> Self {
         Self {
-            diagnostics: DeliveryDiagnostics::default(),
+            diagnostics: SignalSet::default(),
             preparation: SignalDiagnostics::default(),
             notifications: SignalDiagnostics::default(),
             boundary: ExporterMetrics::register(pipeline_ctx),
