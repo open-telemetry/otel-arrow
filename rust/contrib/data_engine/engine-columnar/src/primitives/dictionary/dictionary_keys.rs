@@ -155,6 +155,23 @@ impl DictionaryKeyArray {
             }
         }
     }
+
+    pub(crate) fn has_value_index_out_of_bounds(&self, value_count: usize) -> bool {
+        match self {
+            DictionaryKeyArray::KeyArray(_) | DictionaryKeyArray::BooleanArray { .. } => {
+                (0..self.len()).any(|key_index| {
+                    self.get_value_index_for_key_index(key_index)
+                        .is_some_and(|value_index| value_index >= value_count)
+                })
+            }
+            DictionaryKeyArray::UniqueValues { length, .. } => *length > value_count,
+            DictionaryKeyArray::SingleValue {
+                length,
+                value_index,
+                ..
+            } => *length > 0 && value_index.is_some_and(|value_index| value_index >= value_count),
+        }
+    }
 }
 
 impl<T: ArrowDictionaryKeyType> From<PrimitiveArray<T>> for DictionaryKeyArray {
@@ -289,5 +306,32 @@ mod tests {
         assert!(null.is_null());
         assert_eq!(null.nulls().unwrap().null_count(), 2);
         assert_eq!(null.get_value_index_for_key_index(2), None);
+    }
+
+    /// Scenario: Synthetic unique and scalar key layouts are checked against shorter and equal-length value tables.
+    /// Guarantees: Their out-of-bounds fast paths detect invalid references without scanning individual rows.
+    #[test]
+    fn synthetic_key_arrays_detect_out_of_bounds_value_indices() {
+        let unique = DictionaryKeyArray::UniqueValues {
+            data_type: DataType::UInt16,
+            length: 2,
+        };
+        assert!(!unique.has_value_index_out_of_bounds(2));
+        assert!(unique.has_value_index_out_of_bounds(1));
+
+        let scalar = DictionaryKeyArray::SingleValue {
+            data_type: DataType::Int32,
+            length: 3,
+            value_index: Some(1),
+        };
+        assert!(!scalar.has_value_index_out_of_bounds(2));
+        assert!(scalar.has_value_index_out_of_bounds(1));
+
+        let empty = DictionaryKeyArray::SingleValue {
+            data_type: DataType::Int32,
+            length: 0,
+            value_index: Some(1),
+        };
+        assert!(!empty.has_value_index_out_of_bounds(0));
     }
 }

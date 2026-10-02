@@ -36,9 +36,14 @@ impl Dictionary<'_> {
             return key_nulls;
         }
 
-        if let Some(value_nulls) = self.values.nulls()
-            && value_nulls.null_count() > 0
-        {
+        let value_nulls = self.values.nulls();
+        let has_value_nulls = value_nulls
+            .as_ref()
+            .is_some_and(|nulls| nulls.null_count() > 0);
+        let has_invalid_value_indices =
+            !has_value_nulls && self.keys.has_value_index_out_of_bounds(self.values.len());
+
+        if has_value_nulls || has_invalid_value_indices {
             let key_length = self.keys.len();
 
             let mut builder: BooleanBufferBuilder = key_nulls.map_or_else(
@@ -56,7 +61,10 @@ impl Dictionary<'_> {
 
             for key_index in 0..key_length {
                 if let Some(value_index) = self.keys.get_value_index_for_key_index(key_index)
-                    && value_nulls.is_null(value_index)
+                    && (value_index >= self.values.len()
+                        || value_nulls
+                            .as_ref()
+                            .is_some_and(|nulls| nulls.is_null(value_index)))
                 {
                     builder.set_bit(key_index, false);
                 }
@@ -252,6 +260,43 @@ mod tests {
 
         let nulls = dictionary.nulls().unwrap();
         assert_eq!(nulls.len(), 3);
+        assert!(nulls.is_valid(0));
+        assert!(nulls.is_null(1));
+        assert!(nulls.is_null(2));
+    }
+
+    /// Scenario: Valid, oversized, negative, and null keys reference a value table with no intrinsic nulls.
+    /// Guarantees: Invalid references resolve to Null and contribute null row validity without requiring constructor validation.
+    #[test]
+    fn dictionary_handles_invalid_references_without_value_nulls() {
+        let dictionary = Dictionary::new(
+            DictionaryKeyArray::from(Int8Array::from(vec![Some(0), Some(1), Some(-1), None])),
+            DictionaryValueArray::from(vec![ValueOrRef::Integer(10)]),
+        );
+
+        let nulls = dictionary.nulls().unwrap();
+        assert_eq!(nulls.null_count(), 3);
+        assert!(nulls.is_valid(0));
+        assert!(nulls.is_null(1));
+        assert!(nulls.is_null(2));
+        assert!(nulls.is_null(3));
+        assert_eq!(dictionary.get_value(0), Ok(ValueOrRef::Integer(10)));
+        assert_eq!(dictionary.get_value(1), Ok(ValueOrRef::Null));
+        assert_eq!(dictionary.get_value(2), Ok(ValueOrRef::Null));
+        assert_eq!(dictionary.get_value(3), Ok(ValueOrRef::Null));
+    }
+
+    /// Scenario: Dictionary keys reference a valid value, a null value, and an index beyond a nullable value table.
+    /// Guarantees: Value nulls and invalid references are combined into one effective row-validity buffer.
+    #[test]
+    fn dictionary_combines_value_nulls_and_invalid_references() {
+        let dictionary = Dictionary::new(
+            DictionaryKeyArray::from(Int8Array::from(vec![0, 1, 2])),
+            DictionaryValueArray::from(vec![ValueOrRef::Integer(10), ValueOrRef::Null]),
+        );
+
+        let nulls = dictionary.nulls().unwrap();
+        assert_eq!(nulls.null_count(), 2);
         assert!(nulls.is_valid(0));
         assert!(nulls.is_null(1));
         assert!(nulls.is_null(2));
