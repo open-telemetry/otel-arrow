@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790981111460,
+  "lastUpdate": 1790982329461,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -51019,6 +51019,150 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/open-telemetry/otel-arrow/commit/ab3dba92dc2815cc9d4e89038b48c2260c7c2fc2"
         },
         "date": 1790981095300,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 85.39,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.85,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.21,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.01,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.98,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.77,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 72.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.95,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.57,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.56,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.16,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.35,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 117.88,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 105.04,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "49699333+dependabot[bot]@users.noreply.github.com",
+            "name": "dependabot[bot]",
+            "username": "dependabot[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "3d4e2b85d3d14f1795af5700d3097fe4ed465413",
+          "message": "chore(deps): bump oauthlib from 3.3.1 to 4.0.0 in /tools/pipeline_perf_test/orchestrator (#4188)\n\nBumps [oauthlib](https://github.com/oauthlib/oauthlib) from 3.3.1 to\n4.0.0.\n<details>\n<summary>Release notes</summary>\n<p><em>Sourced from <a\nhref=\"https://github.com/oauthlib/oauthlib/releases\">oauthlib's\nreleases</a>.</em></p>\n<blockquote>\n<h2>4.0.0</h2>\n<h2>Introduction</h2>\n<p>The release 4.0.0 defines the foundation that enables AI\ncontributions and will improve the maintenance of oauthlib by using AI\nagents, skills, code for both contributors and maintainers. It includes\ndevcontainer, skills and cleanup of instructions.</p>\n<h2>What's Changed</h2>\n<p><strong>Important</strong>: this release contains 2 breaking changes.\nSee CHANGELOG.rst for details:</p>\n<ul>\n<li>Removed JSONP support from token revocation endpoint (<a\nhref=\"https://redirect.github.com/oauthlib/oauthlib/issues/951\">#951</a>)</li>\n<li>Client authentication validation reorganized across grants (<a\nhref=\"https://redirect.github.com/oauthlib/oauthlib/issues/919\">#919</a>,\n<a\nhref=\"https://redirect.github.com/oauthlib/oauthlib/issues/920\">#920</a>):\nthe <code>grant_type</code> parameter is now validated before client\nauthentication.</li>\n</ul>\n<ul>\n<li>Replace pyenv with uv in documentation and tooling by <a\nhref=\"https://github.com/JonathanHuot\"><code>@​JonathanHuot</code></a>\nin <a\nhref=\"https://redirect.github.com/oauthlib/oauthlib/pull/910\">oauthlib/oauthlib#910</a></li>\n<li>Improve github action to publish package by <a\nhref=\"https://github.com/JonathanHuot\"><code>@​JonathanHuot</code></a>\nin <a\nhref=\"https://redirect.github.com/oauthlib/oauthlib/pull/915\">oauthlib/oauthlib#915</a></li>\n<li>Add pre-commit to run linters, formatters, etc. on code changes by\n<a href=\"https://github.com/cclauss\"><code>@​cclauss</code></a> in <a\nhref=\"https://redirect.github.com/oauthlib/oauthlib/pull/918\">oauthlib/oauthlib#918</a></li>\n<li>Fix client authentication for DeviceCodeGrant when getting a token\nby <a href=\"https://github.com/hekhuisk\"><code>@​hekhuisk</code></a> in\n<a\nhref=\"https://redirect.github.com/oauthlib/oauthlib/pull/920\">oauthlib/oauthlib#920</a></li>\n<li>Add project URLs to this project's PyPI page by <a\nhref=\"https://github.com/Flimm\"><code>@​Flimm</code></a> in <a\nhref=\"https://redirect.github.com/oauthlib/oauthlib/pull/921\">oauthlib/oauthlib#921</a></li>\n<li>Fix a typo in ServiceApplicationClient docstring. by <a\nhref=\"https://github.com/rafalkrupinski\"><code>@​rafalkrupinski</code></a>\nin <a\nhref=\"https://redirect.github.com/oauthlib/oauthlib/pull/923\">oauthlib/oauthlib#923</a></li>\n<li>Correct grammar in function help by <a\nhref=\"https://github.com/verhovsky\"><code>@​verhovsky</code></a> in <a\nhref=\"https://redirect.github.com/oauthlib/oauthlib/pull/924\">oauthlib/oauthlib#924</a></li>\n<li>Add Python 3.14 to the testing by <a\nhref=\"https://github.com/cclauss\"><code>@​cclauss</code></a> in <a\nhref=\"https://redirect.github.com/oauthlib/oauthlib/pull/925\">oauthlib/oauthlib#925</a></li>\n<li>Initial python/uv/tox devcontainer by <a\nhref=\"https://github.com/JonathanHuot\"><code>@​JonathanHuot</code></a>\nin <a\nhref=\"https://redirect.github.com/oauthlib/oauthlib/pull/930\">oauthlib/oauthlib#930</a></li>\n<li>Fix ruff checks about unused variables by <a\nhref=\"https://github.com/JonathanHuot\"><code>@​JonathanHuot</code></a>\nin <a\nhref=\"https://redirect.github.com/oauthlib/oauthlib/pull/931\">oauthlib/oauthlib#931</a></li>\n<li>Drop EOL Python 3.8 from CI by <a\nhref=\"https://github.com/auvipy\"><code>@​auvipy</code></a> in <a\nhref=\"https://redirect.github.com/oauthlib/oauthlib/pull/932\">oauthlib/oauthlib#932</a></li>\n<li>Set Open Collective username to 'oauthlib' by <a\nhref=\"https://github.com/auvipy\"><code>@​auvipy</code></a> in <a\nhref=\"https://redirect.github.com/oauthlib/oauthlib/pull/933\">oauthlib/oauthlib#933</a></li>\n<li>pre-commit autoupdate 2026_02_21 by <a\nhref=\"https://github.com/cclauss\"><code>@​cclauss</code></a> in <a\nhref=\"https://redirect.github.com/oauthlib/oauthlib/pull/934\">oauthlib/oauthlib#934</a></li>\n<li>Remove a trailing whitespace fo fix failing pre-commit by <a\nhref=\"https://github.com/cclauss\"><code>@​cclauss</code></a> in <a\nhref=\"https://redirect.github.com/oauthlib/oauthlib/pull/935\">oauthlib/oauthlib#935</a></li>\n<li>Fix typos discovered by typos by <a\nhref=\"https://github.com/cclauss\"><code>@​cclauss</code></a> in <a\nhref=\"https://redirect.github.com/oauthlib/oauthlib/pull/938\">oauthlib/oauthlib#938</a></li>\n<li>Add <code>resource</code> to Request._params by <a\nhref=\"https://github.com/juannyG\"><code>@​juannyG</code></a> in <a\nhref=\"https://redirect.github.com/oauthlib/oauthlib/pull/942\">oauthlib/oauthlib#942</a></li>\n<li>Release 3.4.0: Add OAuthLib Maintainer agent by <a\nhref=\"https://github.com/JonathanHuot\"><code>@​JonathanHuot</code></a>\nin <a\nhref=\"https://redirect.github.com/oauthlib/oauthlib/pull/950\">oauthlib/oauthlib#950</a></li>\n<li>Remove JSONP support from token revocation by <a\nhref=\"https://github.com/JonathanHuot\"><code>@​JonathanHuot</code></a>\nin <a\nhref=\"https://redirect.github.com/oauthlib/oauthlib/pull/951\">oauthlib/oauthlib#951</a></li>\n<li>Improve PKCE code comparison by <a\nhref=\"https://github.com/JonathanHuot\"><code>@​JonathanHuot</code></a>\nin <a\nhref=\"https://redirect.github.com/oauthlib/oauthlib/pull/963\">oauthlib/oauthlib#963</a></li>\n<li>Release 4.0.0: bump and update changelog by <a\nhref=\"https://github.com/JonathanHuot\"><code>@​JonathanHuot</code></a>\nin <a\nhref=\"https://redirect.github.com/oauthlib/oauthlib/pull/976\">oauthlib/oauthlib#976</a></li>\n</ul>\n<h2>New Contributors</h2>\n<ul>\n<li><a href=\"https://github.com/hekhuisk\"><code>@​hekhuisk</code></a>\nmade their first contribution in <a\nhref=\"https://redirect.github.com/oauthlib/oauthlib/pull/920\">oauthlib/oauthlib#920</a></li>\n<li><a href=\"https://github.com/Flimm\"><code>@​Flimm</code></a> made\ntheir first contribution in <a\nhref=\"https://redirect.github.com/oauthlib/oauthlib/pull/921\">oauthlib/oauthlib#921</a></li>\n<li><a href=\"https://github.com/verhovsky\"><code>@​verhovsky</code></a>\nmade their first contribution in <a\nhref=\"https://redirect.github.com/oauthlib/oauthlib/pull/924\">oauthlib/oauthlib#924</a></li>\n<li><a href=\"https://github.com/juannyG\"><code>@​juannyG</code></a> made\ntheir first contribution in <a\nhref=\"https://redirect.github.com/oauthlib/oauthlib/pull/942\">oauthlib/oauthlib#942</a></li>\n</ul>\n<p><strong>Full Changelog</strong>: <a\nhref=\"https://github.com/oauthlib/oauthlib/compare/v3.3.1...v4.0.0\">https://github.com/oauthlib/oauthlib/compare/v3.3.1...v4.0.0</a></p>\n</blockquote>\n</details>\n<details>\n<summary>Changelog</summary>\n<p><em>Sourced from <a\nhref=\"https://github.com/oauthlib/oauthlib/blob/master/CHANGELOG.rst\">oauthlib's\nchangelog</a>.</em></p>\n<blockquote>\n<h2>4.0.0 (2026-09-28):</h2>\n<p>OAuth2.0 Provider:</p>\n<ul>\n<li><strong>Breaking</strong>: <a\nhref=\"https://redirect.github.com/oauthlib/oauthlib/issues/951\">#951</a>:\nRemoved JSONP support from token revocation endpoint.\nJSONP has been superseded by CORS for cross-origin requests.\nThe <code>enable_jsonp</code> parameter has been removed from\n<code>RevocationEndpoint</code>\nand the <code>callback</code> parameter has been removed from\n<code>prepare_token_revocation_request</code>.</li>\n<li><strong>Breaking</strong>: <a\nhref=\"https://redirect.github.com/oauthlib/oauthlib/issues/919\">#919</a>,\n<a\nhref=\"https://redirect.github.com/oauthlib/oauthlib/issues/920\">#920</a>:\nFixed <code>DeviceCodeGrant.validate_token_request</code>\ntrying to authenticate public clients.\nClient authentication validation has been reorganized and is now shared\nacross <code>AuthorizationCodeGrant</code>,\n<code>DeviceCodeGrant</code>, <code>RefreshTokenGrant</code>\nand <code>ResourceOwnerPasswordCredentialsGrant</code>: the\n<code>grant_type</code> parameter\nis validated before client authentication, so requests missing\n<code>grant_type</code> now return <code>400 invalid_request</code>\ninstead of\n<code>401 invalid_client</code>.</li>\n<li><a\nhref=\"https://redirect.github.com/oauthlib/oauthlib/issues/963\">#963</a>:\nImproved PKCE code comparison</li>\n</ul>\n<p>Misc:</p>\n<ul>\n<li><a\nhref=\"https://redirect.github.com/oauthlib/oauthlib/issues/904\">#904</a>:\nStop installing <code>examples</code> into\n<code>site-packages</code>.</li>\n<li><a\nhref=\"https://redirect.github.com/oauthlib/oauthlib/issues/930\">#930</a>:\nAdd devcontainer, Add Python3.14, Python3.14t.</li>\n<li><a\nhref=\"https://redirect.github.com/oauthlib/oauthlib/issues/931\">#931</a>:\nFix ruff checks about unused variables.</li>\n<li><a\nhref=\"https://redirect.github.com/oauthlib/oauthlib/issues/932\">#932</a>:\nDropped EOL Python 3.8 from CI.</li>\n<li><a\nhref=\"https://redirect.github.com/oauthlib/oauthlib/issues/934\">#934</a>:\nPre-commit hooks autoupdate.</li>\n<li><a\nhref=\"https://redirect.github.com/oauthlib/oauthlib/issues/938\">#938</a>:\nFix typos discovered by typos.</li>\n<li>Add OAuthLib Maintainer agent for automated issue/PR triage and\nrelease\nmanagement.</li>\n</ul>\n</blockquote>\n</details>\n<details>\n<summary>Commits</summary>\n<ul>\n<li><a\nhref=\"https://github.com/oauthlib/oauthlib/commit/145a9a4690cb4d9de30d15fcc2984e34c49df741\"><code>145a9a4</code></a>\nRelease 4.0.0: clarify changelog breaking changes and reformat\nentries</li>\n<li><a\nhref=\"https://github.com/oauthlib/oauthlib/commit/c8344d61492c7ae708cf378ecabab7ee6ab62812\"><code>c8344d6</code></a>\nUpdate CHANGELOG.rst</li>\n<li><a\nhref=\"https://github.com/oauthlib/oauthlib/commit/e172830efd66a2dc1bb34b3bbbf8ee53036a9dac\"><code>e172830</code></a>\nRelease 4.0.0: bump version to 4.0.0 and update changelog</li>\n<li><a\nhref=\"https://github.com/oauthlib/oauthlib/commit/40b0ab56da3682c2484a4b78bbff309f8025d950\"><code>40b0ab5</code></a>\nMerge pull request <a\nhref=\"https://redirect.github.com/oauthlib/oauthlib/issues/963\">#963</a>\nfrom oauthlib/ft/pkcecode</li>\n<li><a\nhref=\"https://github.com/oauthlib/oauthlib/commit/1b68ceaae02fe62aeaaa3468a8f8082c73830a3a\"><code>1b68cea</code></a>\nMerge pull request <a\nhref=\"https://redirect.github.com/oauthlib/oauthlib/issues/920\">#920</a>\nfrom hekhuisk/validate-client-authentication</li>\n<li><a\nhref=\"https://github.com/oauthlib/oauthlib/commit/c951a1d09f99f14e3240973fa83c4f4287d4753d\"><code>c951a1d</code></a>\nOrganized validate_client functions for all grant to avoid mistake in\ngrnat i...</li>\n<li><a\nhref=\"https://github.com/oauthlib/oauthlib/commit/74664d3fe037a354e180e305135c6bab1747a6b0\"><code>74664d3</code></a>\nImprove PKCE code comparison</li>\n<li><a\nhref=\"https://github.com/oauthlib/oauthlib/commit/9859b057ecc5d1ad42711af7d58ee471d708ea36\"><code>9859b05</code></a>\nMerge pull request <a\nhref=\"https://redirect.github.com/oauthlib/oauthlib/issues/950\">#950</a>\nfrom oauthlib/feature/3.4.0-maintainer-agent</li>\n<li><a\nhref=\"https://github.com/oauthlib/oauthlib/commit/9bf9b974e0797d2d03cba05854f46e314c730ba6\"><code>9bf9b97</code></a>\nMerge branch 'master' into feature/3.4.0-maintainer-agent</li>\n<li><a\nhref=\"https://github.com/oauthlib/oauthlib/commit/1ba7429ad79019289540fd7be27866d7e59f2564\"><code>1ba7429</code></a>\nClarify agent instructions</li>\n<li>Additional commits viewable in <a\nhref=\"https://github.com/oauthlib/oauthlib/compare/v3.3.1...v4.0.0\">compare\nview</a></li>\n</ul>\n</details>\n<br />\n\n\n[![Dependabot compatibility\nscore](https://dependabot-badges.githubapp.com/badges/compatibility_score?dependency-name=oauthlib&package-manager=pip&previous-version=3.3.1&new-version=4.0.0)](https://docs.github.com/en/github/managing-security-vulnerabilities/about-dependabot-security-updates#about-compatibility-scores)\n\nDependabot will resolve any conflicts with this PR as long as you don't\nalter it yourself. You can also trigger a rebase manually by commenting\n`@dependabot rebase`.\n\n[//]: # (dependabot-automerge-start)\n[//]: # (dependabot-automerge-end)\n\n---\n\n<details>\n<summary>Dependabot commands and options</summary>\n<br />\n\nYou can trigger Dependabot actions by commenting on this PR:\n- `@dependabot rebase` will rebase this PR\n- `@dependabot recreate` will recreate this PR, overwriting any edits\nthat have been made to it\n- `@dependabot show <dependency name> ignore conditions` will show all\nof the ignore conditions of the specified dependency\n- `@dependabot ignore this major version` will close this PR and stop\nDependabot creating any more for this major version (unless you reopen\nthe PR or upgrade to it yourself)\n- `@dependabot ignore this minor version` will close this PR and stop\nDependabot creating any more for this minor version (unless you reopen\nthe PR or upgrade to it yourself)\n- `@dependabot ignore this dependency` will close this PR and stop\nDependabot creating any more for this dependency (unless you reopen the\nPR or upgrade to it yourself)\nYou can disable automated security fix PRs for this repo from the\n[Security Alerts\npage](https://github.com/open-telemetry/otel-arrow/network/alerts).\n\n</details>\n\nSigned-off-by: dependabot[bot] <support@github.com>\nCo-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>",
+          "timestamp": "2026-10-02T22:09:58Z",
+          "tree_id": "7a92b4f3314d1e56541cdcb246b8632aaeef842d",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/3d4e2b85d3d14f1795af5700d3097fe4ed465413"
+        },
+        "date": 1790982313620,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
