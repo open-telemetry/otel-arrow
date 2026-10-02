@@ -77,10 +77,10 @@ otel-arrow-dfe-pdata-codec = { version = "0.58.0", path = "crates/pdata-codec" }
 otel-arrow-dfe-pdata-views = { version = "0.54.1", path = "crates/pdata-views" }
 otel-arrow-dfe-telemetry = { version = "0.58.0", path = "crates/telemetry" }
 otel-arrow-dfe-quiver = { version = "0.58.0", path = "crates/quiver" }
-otel-arrow-contrib-data-engine-expressions = "0.1.0"
-otel-arrow-contrib-data-engine-kql-parser = "0.1.0"
-otel-arrow-contrib-data-engine-parser-abstractions = "0.1.0"
-otel-arrow-contrib-data-engine-recordset = "0.1.0"
+otel-arrow-contrib-data-engine-expressions = "0.1.1"
+otel-arrow-contrib-data-engine-kql-parser = "0.1.1"
+otel-arrow-contrib-data-engine-parser-abstractions = "0.1.1"
+otel-arrow-contrib-data-engine-recordset = "0.1.1"
 
 aws-config = "1.0"
 aws-msk-iam-sasl-signer = "1.0.1"
