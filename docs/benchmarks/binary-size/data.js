@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790962470279,
+  "lastUpdate": 1790969995316,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -50558,6 +50558,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-amd64-binary-size",
             "value": 117.8,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 104.92,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "l.querel@f5.com",
+            "name": "Laurent Quérel",
+            "username": "lquerel"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e9678cf76a48711817568ba6f6d34a0d9a20ddbd",
+          "message": "feat(otlp-http): bound exporter diagnostics with summaries and recovery events (#4151)\n\n# Change summary\n\nReduce repetitive OTLP HTTP exporter warnings using bounded failure\nsummaries\nand confirmed recovery events. Introduce a shared helper for adoption by\nother\nexporters, receivers, and processors in future PRs.\n\n## Related issue\n\nCloses #4148.\n\n## Reporting logic\n\nAn episode begins with the first failed export and ends with confirmed\nrecovery.\nThe diagram shows the delivery state for one exporter instance/core,\nsignal,\nand configured destination.\n\n```mermaid\nstateDiagram-v2\n    [*] --> Unknown\n\n    Unknown --> Delivering: Success / no log\n    Unknown --> Degraded: First failure / open episode, WARN\n    Delivering --> Degraded: First failure / open episode, WARN\n\n    Degraded --> Degraded: Completion without confirmed recovery\n    Degraded --> Delivering: Confirmed recovery / INFO, clear episode\n\n    note right of Degraded\n        Count every completion in interval + episode totals.\n        First failure or summary due: WARN, reset interval only.\n        Otherwise: no log; count suppressed failures.\n        Episode totals remain until recovery.\n    end note\n```\n\n- **Bounded volume:** the first failure emits a WARN. Further WARN\nsummaries\nrequire a completion, unreported failures, and at least 60 seconds since\nthe\nlast report. Recovery takes priority over a due summary. Suppression\nhappens\n  before log subscribers receive events.\n- **Accurate counts:** while an episode is active, every success or\nfailure is\n  counted before reporting in both interval counters and episode totals.\nFailures also update error-category counts and, when no warning is\nemitted,\n  suppressed counts. Each report resets interval counters only; recovery\nincludes its triggering success in the final totals, then clears the\nepisode.\n- **Recovery:** every failure restarts the 30-second failure-free\nwindow.\nRecovery also requires a successful attempt started after the latest\nfailure.\n  Idle time alone produces no reports or state changes.\n\n## Validation\n\n- Tests cover reporting bounds, recovery, event compatibility, and\nunchanged\n  Ack/Nack and metric accounting.\n- cargo xtask check\n\n## User-facing changes\n\nFewer repetitive warnings while preserving existing error-event names\nand adding\nrecovery notifications. Retry and delivery behavior remain unchanged.\nIncludes\nan observability changelog entry.\n\n## Follow-up PRs\n\nThis PR integrates the policy only in OTLP HTTP. The shared helper is\nintended\nfor recurring operation failures across node types, with follow-up PRs\nfor:\n\n- **Configurable intervals:** reusable, per-node diagnostics settings\nfor summary\nand recovery intervals, retaining the 60s/30s defaults. Validate\nconfiguration\nand test custom timing; recovery settings apply only to operations with\n  meaningful recovery evidence.\n- **Other exporters:** adopt the tracker in OTLP gRPC, OTAP, and\nremaining\n  exporters at actual delivery/write completion boundaries.\n- **Receivers and processors:** adopt the tracker operation by\noperation, using\nthe reporting behavior below. Each integration retains its event names,\n  error classifications, retry decisions, Ack/Nack behavior, and metric\n  accounting, with tests at the relevant completion boundary.\n\n| Operation | Examples | Reporting behavior |\n| --- | --- | --- |\n| Receiver scraping, polling, or checkpointing | Host metrics scrapes;\njournald checkpoint commits | Failure episodes, summaries, and confirmed\nrecovery |\n| Processor storage writes or calls to external services | Durable\nbuffer writes; external service requests | Failure episodes, summaries,\nand confirmed recovery |\n| Payload parsing, validation, or transformation errors | Malformed\ninput; OTLP-to-Arrow conversion failures | Bounded failure summaries;\nvalid input does not establish recovery for other payloads |\n| Ack/Nack notification failures | Upstream completion routing |\nIndependent bounded failure summaries |\n\nTrack distinct operations in separate, bounded scopes: a successful\nenqueue\ncannot clear failing storage writes. Preserve immediate diagnostics for\nstartup/configuration failures and terminal errors.",
+          "timestamp": "2026-10-02T18:50:50Z",
+          "tree_id": "590903fd8b1eb3769a62b7a33fabc82fa002d6ba",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/e9678cf76a48711817568ba6f6d34a0d9a20ddbd"
+        },
+        "date": 1790969977028,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 85.37,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.8,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.24,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.01,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.98,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.77,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 72.5,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.89,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.57,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.56,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.16,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.35,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 117.82,
             "unit": "MB"
           },
           {
