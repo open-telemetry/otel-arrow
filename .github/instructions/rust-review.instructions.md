@@ -40,10 +40,18 @@ Both statements must be specific enough for a reviewer to understand the test's
 intent, and what must not regress, without reading its implementation. Flag new
 tests that omit them or that restate the test name.
 
+## 4. Review metric instrumentation
+
+When reviewing additions or changes to metrics, follow the
+[system metrics guide][metrics-guide] and
+[item attributes guide][item-attributes-guide].
+
 ## Out of scope for review comments
 
 Do not comment on non-ASCII characters in Rust source, or on missing changelog
 entries. Continuous integration already enforces both and fails the build, so
 review comments about them add noise without adding signal.
 
+[item-attributes-guide]: ../../rust/otap-dataflow/docs/telemetry/item-attributes.md
+[metrics-guide]: ../../rust/otap-dataflow/docs/telemetry/metrics-guide.md
 [review-guide]: ../../rust/otap-dataflow/docs/ai/ai-assisted-pr-review.md

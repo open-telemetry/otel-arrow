@@ -66,7 +66,10 @@ use self::identity::{
     HashBuffer, MetricId, MetricIdRef, ResourceId, ScopeId, ScopeIdRef, StreamId, StreamIdRef,
     metric_id_of, resource_id_of, scope_id_of, stream_id_of,
 };
-use self::telemetry::{ErrorType, FlushReason, TemporalReaggregationMetrics};
+use self::telemetry::{
+    Aggregable, ErrorType, FlushReason, MetricAttributes, MetricTemporality, MetricType,
+    TemporalReaggregationMetrics,
+};
 
 /// Errors that can occur during view processing.
 #[derive(thiserror::Error, Debug)]
@@ -142,6 +145,7 @@ pub static TEMPORAL_REAGGREGATION_PROCESSOR_FACTORY: otel_arrow_dfe_engine::Proc
          _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities| {
             create_temporal_reaggregation_processor(pipeline_ctx, node, node_config, proc_cfg)
         },
+    context_declarations: None,
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<Config>,
 };
@@ -915,7 +919,8 @@ impl TemporalReaggregationProcessor {
         effect_handler: &mut local::EffectHandler<OtapPdata>,
         view: &V,
     ) -> Result<AggregationResult, ProcessingError> {
-        if !has_aggregatable_metrics(view) {
+        let has_aggregatable = classify_metrics(view, &mut self.metrics);
+        if !has_aggregatable {
             return Ok(AggregationResult::NoAggregations);
         }
 
@@ -1510,22 +1515,65 @@ fn is_data_aggregatable<'a, D: DataView<'a>>(data: &D) -> bool {
     }
 }
 
-/// Returns `true` if the view contains at least one aggregatable metric.
-/// This is a preflight check to determine if we can skip processing entirely
-/// and pass the whole batch through unchanged.
-fn has_aggregatable_metrics<V: MetricsView>(view: &V) -> bool {
+/// Convert input aggregation temporality to the bounded telemetry value.
+fn metric_temporality(temporality: AggregationTemporality) -> MetricTemporality {
+    match temporality {
+        AggregationTemporality::Delta => MetricTemporality::Delta,
+        AggregationTemporality::Cumulative => MetricTemporality::Cumulative,
+        AggregationTemporality::Unspecified => MetricTemporality::Unspecified,
+    }
+}
+
+/// Classify a metric record using its data variant and the aggregation predicate.
+fn metric_attributes<'a, D: DataView<'a>>(data: &D) -> MetricAttributes {
+    let (metric_type, temporality) = match data.value_type() {
+        DataType::Gauge => (MetricType::Gauge, MetricTemporality::Unspecified),
+        DataType::Sum => (
+            MetricType::Sum,
+            data.as_sum().map_or(MetricTemporality::Unspecified, |sum| {
+                metric_temporality(sum.aggregation_temporality())
+            }),
+        ),
+        DataType::Histogram => (
+            MetricType::Histogram,
+            data.as_histogram()
+                .map_or(MetricTemporality::Unspecified, |histogram| {
+                    metric_temporality(histogram.aggregation_temporality())
+                }),
+        ),
+        DataType::ExponentialHistogram => (
+            MetricType::ExpHistogram,
+            data.as_exponential_histogram()
+                .map_or(MetricTemporality::Unspecified, |histogram| {
+                    metric_temporality(histogram.aggregation_temporality())
+                }),
+        ),
+        DataType::Summary => (MetricType::Summary, MetricTemporality::Unspecified),
+    };
+
+    MetricAttributes {
+        metric_type,
+        aggregable: is_data_aggregatable(data).into(),
+        temporality,
+    }
+}
+
+/// Record every input metric containing data and determine whether aggregation is needed.
+/// Metrics without data are skipped, as in `aggregate_view`.
+fn classify_metrics<V: MetricsView>(view: &V, metrics: &mut TemporalReaggregationMetrics) -> bool {
+    let mut has_aggregatable = false;
     for resource_metrics in view.resources() {
         for scope_metrics in resource_metrics.scopes() {
             for metric in scope_metrics.metrics() {
-                if let Some(data) = metric.data()
-                    && is_data_aggregatable(&data)
-                {
-                    return true;
+                if let Some(data) = metric.data() {
+                    let attributes = metric_attributes(&data);
+                    has_aggregatable |= attributes.aggregable == Aggregable::True;
+                    metrics.record_metric_population(attributes, 1);
                 }
             }
         }
     }
-    false
+    has_aggregatable
 }
 
 #[cfg(test)]
@@ -1726,6 +1774,8 @@ mod tests {
         });
     }
 
+    /// Scenario: Two cumulative histogram records belong to the same stream.
+    /// Guarantees: Both are classified as aggregable cumulative histograms.
     #[test]
     fn test_cumulative_histogram_correlation() {
         // Two batches with the same cumulative histogram. The later timestamp wins.
@@ -1785,9 +1835,25 @@ mod tests {
             let output = ctx.drain_pdata().await;
             assert_eq!(output.len(), 1);
             assert_output_otlp_equivalent(&output[0], expected_data);
+
+            let snaps = collect_telemetry(&mut ctx).await;
+            assert_eq!(
+                metric_count_with_attributes(
+                    &snaps,
+                    "metrics",
+                    &[
+                        ("type", "histogram"),
+                        ("aggregable", "true"),
+                        ("temporality", "cumulative"),
+                    ],
+                ),
+                2
+            );
         });
     }
 
+    /// Scenario: Two cumulative exponential histograms belong to the same stream.
+    /// Guarantees: Both use the approved type and cumulative classification.
     #[test]
     fn test_cumulative_exp_histogram_correlation() {
         // Two batches with the same cumulative exp histogram. The later
@@ -1850,9 +1916,25 @@ mod tests {
             let output = ctx.drain_pdata().await;
             assert_eq!(output.len(), 1);
             assert_output_otlp_equivalent(&output[0], expected_data);
+
+            let snaps = collect_telemetry(&mut ctx).await;
+            assert_eq!(
+                metric_count_with_attributes(
+                    &snaps,
+                    "metrics",
+                    &[
+                        ("type", "exp_histogram"),
+                        ("aggregable", "true"),
+                        ("temporality", "cumulative"),
+                    ],
+                ),
+                2
+            );
         });
     }
 
+    /// Scenario: Two summary records belong to the same stream.
+    /// Guarantees: Both are classified as aggregable with unspecified temporality.
     #[test]
     fn test_summary_correlation() {
         // Two batches with the same summary stream. The later timestamp wins.
@@ -1910,6 +1992,20 @@ mod tests {
             let output = ctx.drain_pdata().await;
             assert_eq!(output.len(), 1);
             assert_output_otlp_equivalent(&output[0], expected_data);
+
+            let snaps = collect_telemetry(&mut ctx).await;
+            assert_eq!(
+                metric_count_with_attributes(
+                    &snaps,
+                    "metrics",
+                    &[
+                        ("type", "summary"),
+                        ("aggregable", "true"),
+                        ("temporality", "unspecified"),
+                    ],
+                ),
+                2
+            );
         });
     }
 
@@ -2220,6 +2316,8 @@ mod tests {
         assert_fn(res);
     }
 
+    /// Scenario: A metric ID overflow flushes state and retries the second input.
+    /// Guarantees: Retried gauge records are counted once and both flushes are correct.
     #[test]
     fn test_metric_id_overflow_triggers_early_flush() {
         // Fill the accumulator with u16::MAX - 1 unique metrics (the maximum
@@ -2262,6 +2360,18 @@ mod tests {
                         None
                     ),
                     1
+                );
+                assert_eq!(
+                    metric_count_with_attributes(
+                        &snaps,
+                        "metrics",
+                        &[
+                            ("type", "gauge"),
+                            ("aggregable", "true"),
+                            ("temporality", "unspecified"),
+                        ],
+                    ),
+                    (max_metrics + 2) as u64
                 );
             },
         );
@@ -2760,6 +2870,8 @@ mod tests {
         });
     }
 
+    /// Scenario: An input contains only a non-aggregatable delta sum.
+    /// Guarantees: The record is unchanged and classified as a non-aggregable delta sum.
     #[test]
     fn test_full_passthrough_delta_sum() {
         // A batch containing only a delta sum (non-aggregatable) should be
@@ -2803,6 +2915,18 @@ mod tests {
                 1
             );
             assert_eq!(metric_count(&snaps, "failures", None, None, None), 0);
+            assert_eq!(
+                metric_count_with_attributes(
+                    &snaps,
+                    "metrics",
+                    &[
+                        ("type", "sum"),
+                        ("aggregable", "false"),
+                        ("temporality", "delta"),
+                    ],
+                ),
+                1
+            );
         });
     }
 
@@ -2846,6 +2970,8 @@ mod tests {
         });
     }
 
+    /// Scenario: An input contains only a delta histogram.
+    /// Guarantees: The record is unchanged and classified as a non-aggregable histogram.
     #[test]
     fn test_full_passthrough_delta_histogram() {
         // A delta histogram should pass through immediately.
@@ -2879,14 +3005,30 @@ mod tests {
                 "delta histogram should pass through immediately"
             );
             assert_output_otlp_equivalent(&output[0], input_data);
+
+            let snaps = collect_telemetry(&mut ctx).await;
+            assert_eq!(
+                metric_count_with_attributes(
+                    &snaps,
+                    "metrics",
+                    &[
+                        ("type", "histogram"),
+                        ("aggregable", "false"),
+                        ("temporality", "delta"),
+                    ],
+                ),
+                1
+            );
         });
     }
 
+    /// Scenario: An input contains a cumulative monotonic sum and two identical delta sums.
+    /// Guarantees: Duplicate delta records and the cumulative record occupy distinct buckets.
     #[test]
     fn test_mixed_aggregatable_and_passthrough() {
-        // A batch with both a cumulative monotonic sum (aggregatable) and a
-        // delta sum (passthrough) in the same resource and scope. The delta
-        // sum should be passed through immediately while the cumulative sum
+        // A batch with both a cumulative monotonic sum (aggregatable) and
+        // two delta sums (passthrough) in the same resource and scope. The delta
+        // sums should be passed through immediately while the cumulative sum
         // should be buffered.
         run_processor_test(json!({}), |mut ctx| async move {
             let aggregatable = make_sum("requests.total", true, 100, vec![]);
@@ -2896,14 +3038,18 @@ mod tests {
                 Resource::build().finish(),
                 vec![ScopeMetrics::new(
                     InstrumentationScope::build().finish(),
-                    vec![aggregatable.clone(), passthrough.clone()],
+                    vec![
+                        aggregatable.clone(),
+                        passthrough.clone(),
+                        passthrough.clone(),
+                    ],
                 )],
             )]);
 
             let pdata = make_otlp_pdata(input_data);
             ctx.process(Message::PData(pdata)).await.unwrap();
 
-            // The passthrough batch with only the delta sum should arrive
+            // The passthrough batch with only the delta sums should arrive
             // immediately.
             let output = ctx.drain_pdata().await;
             assert_eq!(
@@ -2916,7 +3062,7 @@ mod tests {
                 Resource::build().finish(),
                 vec![ScopeMetrics::new(
                     InstrumentationScope::build().finish(),
-                    vec![passthrough],
+                    vec![passthrough.clone(), passthrough],
                 )],
             )]);
             assert_output_otlp_equivalent(&output[0], expected_passthrough);
@@ -2934,9 +3080,37 @@ mod tests {
                 )],
             )]);
             assert_output_otlp_equivalent(&flushed[0], expected_aggregated);
+            let snaps = collect_telemetry(&mut ctx).await;
+            assert_eq!(
+                metric_count_with_attributes(
+                    &snaps,
+                    "metrics",
+                    &[
+                        ("type", "sum"),
+                        ("aggregable", "true"),
+                        ("temporality", "cumulative"),
+                    ],
+                ),
+                1
+            );
+            assert_eq!(
+                metric_count_with_attributes(
+                    &snaps,
+                    "metrics",
+                    &[
+                        ("type", "sum"),
+                        ("aggregable", "false"),
+                        ("temporality", "delta"),
+                    ],
+                ),
+                2
+            );
+            assert_eq!(metric_count_with_attributes(&snaps, "metrics", &[]), 3);
         });
     }
 
+    /// Scenario: An input contains only an aggregatable gauge.
+    /// Guarantees: The gauge is counted as aggregable with unspecified temporality.
     #[test]
     fn test_passthrough_all_aggregated_no_immediate_output() {
         // When a batch contains only aggregatable metrics, nothing should be
@@ -2961,12 +3135,30 @@ mod tests {
             let _ = ctx.fire_wakeup().await.unwrap();
             let snaps = collect_telemetry(&mut ctx).await;
             assert_eq!(
+                metric_count_with_attributes(
+                    &snaps,
+                    "metrics",
+                    &[
+                        ("type", "gauge"),
+                        ("aggregable", "true"),
+                        ("temporality", "unspecified"),
+                    ],
+                ),
+                1
+            );
+            assert_eq!(
+                metric_count_with_attributes(&snaps, "metrics", &[("aggregable", "false")],),
+                0
+            );
+            assert_eq!(
                 metric_count(&snaps, "flushes", Some("success"), Some("timer"), None),
                 1
             );
         });
     }
 
+    /// Scenario: An input contains only a delta exponential histogram.
+    /// Guarantees: The record is unchanged and classified with the approved type spelling.
     #[test]
     fn test_passthrough_delta_exp_histogram() {
         // A delta exponential histogram should pass through.
@@ -3004,6 +3196,20 @@ mod tests {
                 "delta exp histogram should pass through immediately"
             );
             assert_output_otlp_equivalent(&output[0], input_data);
+
+            let snaps = collect_telemetry(&mut ctx).await;
+            assert_eq!(
+                metric_count_with_attributes(
+                    &snaps,
+                    "metrics",
+                    &[
+                        ("type", "exp_histogram"),
+                        ("aggregable", "false"),
+                        ("temporality", "delta"),
+                    ],
+                ),
+                1
+            );
         });
     }
 
@@ -3958,6 +4164,25 @@ mod tests {
         reason: Option<&str>,
         error_type: Option<&str>,
     ) -> u64 {
+        let mut attributes = Vec::with_capacity(3);
+        if let Some(outcome) = outcome {
+            attributes.push(("outcome", outcome));
+        }
+        if let Some(reason) = reason {
+            attributes.push(("reason", reason));
+        }
+        if let Some(error_type) = error_type {
+            attributes.push(("error.type", error_type));
+        }
+        metric_count_with_attributes(snaps, metric_name, &attributes)
+    }
+
+    /// Helper to count a metric with an arbitrary set of measurement attributes.
+    fn metric_count_with_attributes(
+        snaps: &[otel_arrow_dfe_telemetry::metrics::MetricSetSnapshot],
+        metric_name: &str,
+        attributes: &[(&str, &str)],
+    ) -> u64 {
         let mut total = 0;
         for s in snaps {
             if s.descriptor().name != "processor.temporal_reaggregation" {
@@ -3968,30 +4193,11 @@ mod tests {
                 .metrics
                 .iter()
                 .position(|f| f.name == metric_name)
+                && attributes
+                    .iter()
+                    .all(|(key, value)| s.measurement_attribute_value(key) == Some(*value))
             {
-                let mut match_outcome = true;
-                let mut match_reason = true;
-                let mut match_error = true;
-
-                if let Some(o) = outcome
-                    && s.measurement_attribute_value("outcome") != Some(o)
-                {
-                    match_outcome = false;
-                }
-                if let Some(r) = reason
-                    && s.measurement_attribute_value("reason") != Some(r)
-                {
-                    match_reason = false;
-                }
-                if let Some(e) = error_type
-                    && s.measurement_attribute_value("error.type") != Some(e)
-                {
-                    match_error = false;
-                }
-
-                if match_outcome && match_reason && match_error {
-                    total += s.get_metrics()[idx].to_u64_lossy();
-                }
+                total += s.get_metrics()[idx].to_u64_lossy();
             }
         }
         total

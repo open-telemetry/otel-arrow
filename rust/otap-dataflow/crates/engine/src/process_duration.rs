@@ -6,7 +6,7 @@
 //! Processors that perform meaningful synchronous compute can add a
 //! [`ComputeDuration`] field and call [`ComputeDuration::timed`] to
 //! measure the wall-clock duration of that work.  Timing is gated on
-//! the `COMPONENT_DURATION` interest at the detailed metric level or through
+//! the `NODE_LOCAL_DURATION` interest at the detailed metric level or through
 //! the node's `policies.telemetry.duration` opt-in.
 //!
 //! Duration is grouped by outcome so operators can distinguish compute time
@@ -69,7 +69,7 @@ impl ComputeDuration {
     }
 
     /// Time a synchronous, fallible closure for the process-duration outcome
-    /// split if interests includes `COMPONENT_DURATION`, otherwise just call
+    /// split if interests includes `NODE_LOCAL_DURATION`, otherwise just call
     /// `f` directly.
     ///
     /// The elapsed time is recorded into the `success` or `failed`
@@ -88,7 +88,7 @@ impl ComputeDuration {
         interests: Interests,
         f: impl FnOnce() -> Result<T, E>,
     ) -> Result<T, E> {
-        if interests.contains(Interests::COMPONENT_DURATION) {
+        if interests.contains(Interests::NODE_LOCAL_DURATION) {
             let timer = Timer::start();
             let result = f();
             let elapsed_seconds = timer.elapsed_nanos() / 1e9;
@@ -139,7 +139,7 @@ mod tests {
     fn timed_splits_by_outcome() {
         let (ctx, _) = test_pipeline_ctx();
         let cd = ComputeDuration::new(&ctx);
-        let active = Interests::COMPONENT_DURATION;
+        let active = Interests::NODE_LOCAL_DURATION;
 
         // Two Ok results and one Err.
         let _ = cd.timed(active, || Ok::<_, &str>(std::hint::black_box(42)));
@@ -155,7 +155,7 @@ mod tests {
         assert!(failed_min >= 0.0);
     }
 
-    /// Scenario: processor compute timing runs without the component-duration interest.
+    /// Scenario: processor compute timing runs without the node-duration interest.
     /// Guarantees: the closure executes without recording any duration observations.
     #[test]
     fn timed_noop_when_disabled() {
@@ -175,7 +175,7 @@ mod tests {
     fn report_emits_expected_metric_names() {
         let (ctx, _) = test_pipeline_ctx();
         let mut cd = ComputeDuration::new(&ctx);
-        let active = Interests::COMPONENT_DURATION;
+        let active = Interests::NODE_LOCAL_DURATION;
 
         let _ = cd.timed(active, || Ok::<_, &str>(1));
         let _ = cd.timed(active, || Err::<i32, _>("fail"));

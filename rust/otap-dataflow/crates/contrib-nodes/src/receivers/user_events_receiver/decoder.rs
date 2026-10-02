@@ -68,7 +68,6 @@ use std::borrow::Cow;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
-#[cfg(feature = "user_events-eventheader")]
 use tracepoint_decode::{
     EventHeaderEnumeratorContext, EventHeaderEnumeratorState, EventHeaderItemInfo,
 };
@@ -77,23 +76,15 @@ use super::FormatConfig;
 use super::session::{RawUserEventsRecord, TracefsField, TracefsFieldLocation};
 
 // FieldEncoding raw values (from eventheader_types, avoids a new dep)
-#[cfg(feature = "user_events-eventheader")]
 const ENC_VALUE8: u8 = 2;
-#[cfg(feature = "user_events-eventheader")]
 const ENC_VALUE16: u8 = 3;
-#[cfg(feature = "user_events-eventheader")]
 const ENC_VALUE32: u8 = 4;
-#[cfg(feature = "user_events-eventheader")]
 const ENC_VALUE64: u8 = 5;
-#[cfg(feature = "user_events-eventheader")]
 const ENC_STRING_LENGTH16_CHAR8: u8 = 10;
 
 // FieldFormat raw values
-#[cfg(feature = "user_events-eventheader")]
 const FMT_SIGNED_INT: u8 = 2;
-#[cfg(feature = "user_events-eventheader")]
 const FMT_BOOLEAN: u8 = 7;
-#[cfg(feature = "user_events-eventheader")]
 const FMT_FLOAT: u8 = 8;
 
 /// Typed attribute value carried on a decoded user_events record.
@@ -155,7 +146,6 @@ impl DecodedUserEventsRecord {
     ) -> Self {
         match format {
             FormatConfig::Tracefs => Self::from_tracefs(tracepoint, value),
-            #[cfg(feature = "user_events-eventheader")]
             FormatConfig::EventHeader => Self::from_eventheader(tracepoint, value),
         }
     }
@@ -208,7 +198,6 @@ impl DecodedUserEventsRecord {
         Self::base_record(tracepoint, value, attributes)
     }
 
-    #[cfg(feature = "user_events-eventheader")]
     fn from_eventheader(tracepoint: &str, value: RawUserEventsRecord) -> Self {
         let payload = value
             .event_data
@@ -318,7 +307,6 @@ fn until_nul(bytes: &[u8]) -> &[u8] {
         .map_or(bytes, |end| &bytes[..end])
 }
 
-#[cfg(feature = "user_events-eventheader")]
 fn decode_eventheader_attrs(
     tracepoint: &str,
     payload: &[u8],
@@ -369,7 +357,6 @@ fn decode_eventheader_attrs(
     attrs
 }
 
-#[cfg(feature = "user_events-eventheader")]
 fn item_as_any_scalar_value(item: &EventHeaderItemInfo<'_>) -> Option<DecodedAttrValue> {
     let enc = item.metadata().encoding().without_flags().as_int();
     let fmt = item.metadata().format().as_int();
@@ -431,9 +418,7 @@ mod tests {
 
     use super::*;
 
-    #[cfg(feature = "user_events-eventheader")]
     const ENC_STRUCT: u8 = 1;
-    #[cfg(feature = "user_events-eventheader")]
     const FMT_DEFAULT: u8 = 0;
 
     fn raw_record(fields: Vec<TracefsField>, event_data: Vec<u8>) -> RawUserEventsRecord {
@@ -488,7 +473,6 @@ mod tests {
             .find_map(|(attr_key, value)| (attr_key == key).then_some(value))
     }
 
-    #[cfg(feature = "user_events-eventheader")]
     fn add_value_field_meta(meta: &mut Vec<u8>, name: &str, encoding: u8, format: u8) {
         meta.extend_from_slice(name.as_bytes());
         meta.push(0);
@@ -496,14 +480,12 @@ mod tests {
         meta.push(format);
     }
 
-    #[cfg(feature = "user_events-eventheader")]
     fn add_string_field_meta(meta: &mut Vec<u8>, name: &str) {
         meta.extend_from_slice(name.as_bytes());
         meta.push(0);
         meta.push(ENC_STRING_LENGTH16_CHAR8);
     }
 
-    #[cfg(feature = "user_events-eventheader")]
     fn add_struct_meta(meta: &mut Vec<u8>, name: &str, field_count: u8) {
         meta.extend_from_slice(name.as_bytes());
         meta.push(0);
@@ -511,13 +493,11 @@ mod tests {
         meta.push(field_count);
     }
 
-    #[cfg(feature = "user_events-eventheader")]
     fn add_string_data(data: &mut Vec<u8>, value: &str) {
         data.extend_from_slice(&(value.len() as u16).to_le_bytes());
         data.extend_from_slice(value.as_bytes());
     }
 
-    #[cfg(feature = "user_events-eventheader")]
     fn build_eventheader_payload(
         event_name: &str,
         level: u8,
@@ -730,7 +710,6 @@ mod tests {
         assert!(decoded.attributes.is_empty());
     }
 
-    #[cfg(feature = "user_events-eventheader")]
     #[test]
     fn eventheader_decodes_microsoft_common_schema_shape_as_flattened_attributes() {
         let mut meta = Vec::new();
@@ -840,7 +819,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "user_events-eventheader")]
     #[test]
     fn eventheader_decodes_float_and_boolean_scalar_paths() {
         let mut meta = Vec::new();
@@ -920,7 +898,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "user_events-eventheader")]
     #[test]
     fn eventheader_invalid_payload_is_preserved_as_attribute() {
         let decoded = DecodedUserEventsRecord::from_raw(

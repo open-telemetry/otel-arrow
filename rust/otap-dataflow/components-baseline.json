@@ -168,6 +168,12 @@
     "attributes": {}
   },
   {
+    "id": "urn:otel:processor:log_parser",
+    "category": "Processor",
+    "description": null,
+    "attributes": {}
+  },
+  {
     "id": "urn:otel:processor:log_sampling",
     "category": "Processor",
     "description": null,

@@ -112,6 +112,7 @@ pub static PARQUET_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
             exporter_config,
         ))
     },
+    context_declarations: None,
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<config::Config>,
 };
@@ -142,7 +143,7 @@ impl ParquetExporter {
         })?;
 
         let pdata_metrics = ExporterExportMetrics::register(&pipeline_ctx);
-        let io_metrics = pipeline_ctx.register_metrics::<metrics::ParquetExporterMetrics>();
+        let io_metrics = metrics::ParquetExporterMetrics::register(&pipeline_ctx);
 
         Ok(ParquetExporter {
             config,

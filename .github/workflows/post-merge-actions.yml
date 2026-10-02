@@ -31,6 +31,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           submodules: true
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
           toolchain: stable
@@ -67,6 +68,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           submodules: true
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
           toolchain: stable
@@ -81,7 +83,7 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       # Exact hits already contain the reusable dependency artifacts. A miss
       # or fallback restore must compile so the post step can save the new key.
-      - name: Install SymCrypt
+      - name: Install SymCrypt # zizmor: ignore[self-repository] This job intentionally runs the checked-in CI action.
         if: steps.rust-cache.outputs.cache-hit != 'true'
         uses: ./.github/actions/install-symcrypt
       - name: Free disk space
@@ -99,5 +101,5 @@ jobs:
       - name: Warm required build cache
         if: steps.rust-cache.outputs.cache-hit != 'true'
         # Keep the feature set synchronized with rust-ci.yml's required Windows build.
-        run: cargo nextest list --locked --no-default-features --features=crypto-symcrypt,mimalloc,azure,aws,azure-monitor-exporter,geneva-exporter,contrib-processors,unsafe-optimizations --workspace --list-type binaries-only --message-format json
+        run: cargo nextest list --locked --no-default-features --features=crypto-symcrypt,mimalloc,azure,aws,azure-monitor,geneva,contrib-processors,unsafe-optimizations --workspace --exclude otel-arrow-dfe-component-inventory --list-type binaries-only --message-format json
         working-directory: ./rust/otap-dataflow

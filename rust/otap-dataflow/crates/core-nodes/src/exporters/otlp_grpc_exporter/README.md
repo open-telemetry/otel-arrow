@@ -5,7 +5,7 @@
 ## Metadata
 
 - Type: `exporter:otlp_grpc` (`urn:otel:exporter:otlp_grpc`)
-- Feature gate: Default
+- Feature gate: `otlp`
 - Stability: Experimental
 
 ## Overview
@@ -167,12 +167,14 @@ Input PData message volume is reported by the engine through
 `channel.receiver.messages` with its `signal` attribute on the PData input
 channel and is not duplicated by the exporter.
 
-#### `exporter.exports`
+#### `exporter.attempted`
 
 | Metric | Unit | Attributes | Description |
 | --- | --- | --- | --- |
-| `exporter.exports.messages` | `{message}` | `signal`, `outcome` | Number of PData messages whose export reached a terminal outcome. |
-| `exporter.exports.duration` | `s` | `signal`, `outcome` | Time from dequeuing PData through the terminal gRPC export result, including encoding and in-flight queueing but excluding Ack/Nack notification. |
+| `exporter.attempted.messages` | `{message}` | `signal`, `outcome` | Number of component-local gRPC delivery attempts, including preparation failures. |
+| `exporter.attempted.duration` | `s` | `signal`, `outcome` | Attempt time through the terminal local or backend result, excluding Ack/Nack notification. Emitted when component duration is enabled. |
+| `exporter.attempted.payload.size` | `By` | `signal`, `outcome` | Uncompressed OTLP protobuf payload bytes submitted by the attempt before transport compression. Emitted when size measurement is enabled. |
+| `exporter.attempted.items` | `{item}` | `signal`, `outcome` | Signal items handled by the attempt. Emitted when item counting is enabled. |
 
 #### `exporter.otlp_grpc.failures`
 
@@ -185,6 +187,15 @@ channel and is not duplicated by the exporter.
 or `other`. Successful exports and Ack/Nack notification failures do not emit
 this metric.
 
+#### `exporter.otlp_grpc.authentication`
+
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `exporter.otlp_grpc.authentication.ready` | `{1}` | `source` | Whether authenticated progress is currently possible (`0` for not ready, `1` for ready). |
+
+Authentication `source` is the name of the HTTP client auth implementation (ex:
+`BearerAuth`) selected based on the auth capability configured.
+
 ### Events
 
 | Event | Severity | Description |
@@ -195,8 +206,8 @@ this metric.
 | `otlp.exporter.grpc.shutdown` | `info` | Exporter shutdown. |
 | `otlp.exporter.grpc.export_error` | `warn` | A gRPC export request did not complete successfully. |
 | `otlp.exporter.grpc.header_skip` | `debug` | A propagated transport header was skipped while building gRPC metadata. |
-| `otlp.exporter.grpc.invalid_bearer_token` | `warn` | A bearer token from the provider could not be turned into a valid `authorization` header. |
-| `otlp.exporter.grpc.token_stream_closed` | `warn` | The bearer token provider closed its refresh stream; the last token (if any) is reused and no longer refreshes. |
+| `otlp.exporter.grpc.auth.invalid` | `warn` | A credential from the auth provider could not be turned into a valid header. |
+| `otlp.exporter.grpc.auth.stream_closed` | `warn` | The auth provider closed its refresh stream; the last credential (if any) is reused and no longer refreshes. |
 
 ## Limits
 

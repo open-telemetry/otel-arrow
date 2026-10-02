@@ -32,6 +32,7 @@
 //! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline
 //! in parallel on different cores, each with its own exporter instance.
 
+use crate::context_declaration::CompiledHeaderPropagationPolicy as HeaderPropagationPolicy;
 use crate::control::{AckMsg, NackMsg, NodeControlMsg};
 use crate::effect_handler::{EffectHandlerCore, TelemetryTimerCancelHandle, TimerCancelHandle};
 use crate::error::Error;
@@ -43,12 +44,12 @@ use crate::terminal_state::TerminalState;
 use crate::{Interests, ReceivedAtNode};
 use async_trait::async_trait;
 use otel_arrow_dfe_channel::error::RecvError;
-use otel_arrow_dfe_config::transport_headers_policy::HeaderPropagationPolicy;
 use otel_arrow_dfe_pdata_codec::CodecService;
 use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
 use otel_arrow_dfe_telemetry::metrics::{MetricSet, MetricSetHandler};
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use std::marker::PhantomData;
+use std::sync::Arc;
 use std::time::Duration;
 
 /// Send-friendly exporter inbox for shared exporter runtimes.
@@ -100,14 +101,13 @@ pub trait Exporter<PData> {
 pub struct EffectHandler<PData> {
     pub(crate) core: EffectHandlerCore<PData>,
     _pd: PhantomData<PData>,
-    /// Propagation policy for filtering captured headers on egress.
-    /// `None` when no propagation policy is configured (zero overhead).
-    propagation_policy: Option<HeaderPropagationPolicy>,
+    /// Immutable propagation policy shared by handler clones.
+    /// `None` disables propagation.
+    propagation_policy: Option<Arc<HeaderPropagationPolicy>>,
 }
 
 impl<PData> EffectHandler<PData> {
-    /// Creates a new shared (Send) `EffectHandler` with the given exporter node id and the metrics
-    /// exporter and pipeline runtime services.
+    /// Creates a sendable exporter effect handler.
     #[must_use]
     pub fn new(
         node_id: NodeId,
@@ -133,17 +133,17 @@ impl<PData> EffectHandler<PData> {
         self.core.node_interests()
     }
 
-    /// Returns the propagation policy if a header propagation policy is configured.
+    /// Returns the propagation policy.
     ///
-    /// Returns `None` when no propagation policy is active (zero overhead).
+    /// `None` disables propagation.
     #[must_use]
     pub fn propagation_policy(&self) -> Option<&HeaderPropagationPolicy> {
-        self.propagation_policy.as_ref()
+        self.propagation_policy.as_deref()
     }
 
     /// Sets the propagation policy for transport header filtering.
     pub fn set_propagation_policy(&mut self, policy: Option<HeaderPropagationPolicy>) {
-        self.propagation_policy = policy;
+        self.propagation_policy = policy.map(Arc::new);
     }
 
     /// Print an info message to stdout.

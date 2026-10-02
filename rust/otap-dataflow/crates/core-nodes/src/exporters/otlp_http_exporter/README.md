@@ -5,7 +5,7 @@
 ## Metadata
 
 - Type: `exporter:otlp_http` (`urn:otel:exporter:otlp_http`)
-- Feature gate: Default
+- Feature gate: `otlp`
 - Stability: Experimental
 
 ## Overview
@@ -223,12 +223,14 @@ Input PData message volume is reported by the engine through
 `channel.receiver.messages` with its `signal` attribute on the PData input
 channel and is not duplicated by the exporter.
 
-#### `exporter.exports`
+#### `exporter.attempted`
 
 | Metric | Unit | Attributes | Description |
 | --- | --- | --- | --- |
-| `exporter.exports.messages` | `{message}` | `signal`, `outcome` | Number of PData messages whose export reached a terminal outcome. |
-| `exporter.exports.duration` | `s` | `signal`, `outcome` | Time from dequeuing PData through the terminal HTTP export result, including encoding, compression, and in-flight queueing but excluding Ack/Nack notification. |
+| `exporter.attempted.messages` | `{message}` | `signal`, `outcome` | Number of component-local HTTP delivery attempts, including preparation failures. |
+| `exporter.attempted.duration` | `s` | `signal`, `outcome` | Attempt time through the terminal local or backend result, excluding Ack/Nack notification. Emitted when component duration is enabled. |
+| `exporter.attempted.payload.size` | `By` | `signal`, `outcome` | Uncompressed OTLP protobuf payload bytes produced or submitted by the attempt. Emitted when size measurement is enabled and bytes are available. |
+| `exporter.attempted.items` | `{item}` | `signal`, `outcome` | Signal items handled by the attempt. Emitted when item counting is enabled. |
 
 #### `exporter.otlp_http.failures`
 
@@ -246,11 +248,10 @@ successes, and Ack/Nack notification failures do not emit this metric.
 
 | Metric | Unit | Attributes | Description |
 | --- | --- | --- | --- |
-| `exporter.otlp_http.authentication.failures` | `{attempt}` | `error.type` | Agent-fed credential checks that did not produce a usable snapshot, including failures before a signal batch is admitted. |
+| `exporter.otlp_http.authentication.ready` | `{1}` | `source` | Whether authenticated progress is currently possible (`0` for not ready, `1` for ready). |
 
-Authentication `error.type` is one of `credential_unavailable`,
-`lookup_timeout`, `empty_token`, `token_near_expiry`, `invalid_token`, or
-`rejected_credential_unchanged`.
+Authentication `source` is the name of the HTTP client auth implementation (ex:
+`BearerAuth`) selected based on the auth capability configured.
 
 ### Events
 
@@ -261,10 +262,52 @@ Authentication `error.type` is one of `credential_unavailable`,
 | `otlp.exporter.http.receive` | `debug` | A pdata batch was received by the exporter loop. |
 | `otlp.exporter.http.shutdown` | `info` | Exporter shutdown and terminal reason. |
 | `otlp.exporter.http.zero_partial_rejected` | `debug` | A zero-length partial-success response was rejected. |
-| `otlp.exporter.http.export_error` | `warn` | An HTTP export request failed; non-success responses include bounded backend error details when available. |
-| `otlp.exporter.http.invalid_bearer_token` | `warn` | A bearer token from the provider could not be turned into a valid `Authorization` header. |
-| `otlp.exporter.http.token_stream_closed` | `warn` | The bearer token provider closed its refresh stream; the last token (if any) is reused and no longer refreshes. |
-| `otlp.exporter.http.agent_fed_credential_unavailable` | `warn` | An agent-fed credential check failed; repeated failures are sampled at powers of two. |
+| `otlp.exporter.http.export_error` | `warn` | First failed export and further failure summaries at most once per 60 seconds. |
+| `otlp.exporter.http.export_recovered` | `info` | Confirmed recovery after 30 failure-free seconds and fresh success. |
+| `otlp.exporter.http.notification_error` | `warn` | Independently bounded Ack/Nack notification failures. |
+| `otlp.exporter.http.preparation_error` | `warn` | Independently bounded encoding and compression failures. |
+| `otlp.exporter.http.auth.invalid` | `warn` | A credential from the auth provider could not be turned into a valid header. |
+| `otlp.exporter.http.auth.stream_closed` | `warn` | The auth provider closed its refresh stream; the last credential (if any) is reused and no longer refreshes. |
+
+#### Bounded failure diagnostics
+
+The exporter applies the
+[shared repeated-operation policy](../../../../../docs/telemetry/events-guide.md#repeated-operation-failures)
+at three independent boundaries: HTTP delivery, payload preparation, and
+upstream Ack/Nack notification. State is local to an exporter instance/core,
+signal, and configured destination. A success for one signal or boundary cannot
+clear failures for another. The `signal` field uses the canonical lowercase
+values `logs`, `metrics`, and `traces`; the event name identifies the boundary.
+
+`otlp.exporter.http.export_error` reports the first failed delivery and further
+summaries at most once every 60 seconds while new failures are observed.
+`otlp.exporter.http.export_recovered` confirms recovery only after 30 seconds
+without an observed failure and a successful request that started after the
+latest failure. An older in-flight success cannot clear a newer failure.
+Preparation and notification failures have independent bounded summaries and
+cannot establish delivery recovery.
+
+Successful delivery before the first failure is silent. Reports are evaluated
+on completions without probes or timers, so idle periods produce no reports and
+do not establish recovery. Changing error categories does not restart an
+episode or bypass the summary interval.
+
+Export, preparation, and notification diagnostics include `diagnostic_kind`
+(`first_failure`, `summary`, or `recovery`) and interval/episode counts.
+Existing export and notification error event names are preserved. Export errors
+retain a string `message` and boolean `retryable` describing the representative
+failure, which may differ from other failures counted in the summary. Recovery
+events retain that error sample and its age but omit `retryable`. Notification
+errors retain a lowercase `operation` (`ack` or `nack`) and the representative
+`error` sample. Preparation errors retain their representative `error` sample.
+
+Operation-specific fields are encoded before interval and episode counters so
+the bounded ITS record preserves actionable error details. Oversized details
+are truncated with an explicit suffix instead of being dropped.
+
+Diagnostic frequency is bounded before logs reach subscribers. No reports are
+emitted during idle periods, and silence does not establish recovery. Use
+failure metrics for rates; existing error-event filters do not need renaming.
 
 ## Limits
 
@@ -277,3 +320,6 @@ Authentication `error.type` is one of `credential_unavailable`,
 - [Configuration model](../../../../../docs/configuration-model.md)
 - [Proxy support](../../../../../docs/proxy-support.md)
 - [Core node catalog](../../../README.md)
+
+See the [shared operation diagnostic policy](../../../../../docs/telemetry/events-guide.md#repeated-operation-failures)
+for generic report fields, scoping guidance, and recovery semantics.

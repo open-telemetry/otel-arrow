@@ -113,7 +113,9 @@ jobs:
       - name: Run pipeline performance test suite
         run: |
           cd tools/pipeline_perf_test
-          python orchestrator/run_orchestrator.py --config "${{ inputs.suite_config }}"
+          python orchestrator/run_orchestrator.py --config "${INPUTS_SUITE_CONFIG}"
+        env:
+          INPUTS_SUITE_CONFIG: ${{ inputs.suite_config }}
 
       - name: Set PR status based on result
         if: always()

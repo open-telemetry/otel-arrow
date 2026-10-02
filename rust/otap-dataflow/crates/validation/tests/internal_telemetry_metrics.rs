@@ -105,6 +105,7 @@ fn create_capture_exporter(
 static CAPTURE_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     name: CAPTURE_EXPORTER_URN,
     create: create_capture_exporter,
+    context_declarations: None,
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config: otel_arrow_dfe_config::validation::no_config,
 };
@@ -311,7 +312,6 @@ groups: {{}}
             observability_pipeline.pipeline,
             channel_capacity.clone(),
             telemetry_policy,
-            None,
             std::collections::BTreeMap::new(),
             None,
             Some(internal_settings),

@@ -20,11 +20,11 @@ use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use std::sync::Arc;
 
 use crate::error::{Error, Result};
-use crate::pipeline::planner::PipelinePlanner;
+use crate::pipeline::planner::{PipelinePlanner, RecordType};
 use crate::pipeline::state::ExecutionState;
 use crate::table::RecordBatchPartitionStream;
 
-mod apply_attrs;
+mod apply;
 mod assign;
 mod attributes;
 mod concat;
@@ -36,10 +36,19 @@ mod functions;
 pub(crate) mod id_mask;
 mod planner;
 mod project;
+mod scale_metric;
 
 pub mod partition;
 pub mod routing;
 pub mod state;
+
+#[cfg(feature = "bench")]
+#[doc(hidden)]
+pub mod bench_support {
+    pub mod join {
+        pub use crate::pipeline::expr::join::bench_support::*;
+    }
+}
 
 /// A stage in the pipeline.
 ///
@@ -81,21 +90,44 @@ pub trait PipelineStage {
         _session_context: &SessionContext,
         _config_options: &ConfigOptions,
         _task_context: Arc<TaskContext>,
-        _exec_options: &mut ExecutionState,
+        _exec_state: &mut ExecutionState,
     ) -> Result<RecordBatch> {
         return Err(Error::ExecutionError {
             cause: "Unexpected invocation of pipeline stage that does not support processing attributes".into()
         });
     }
 
-    /// Returns a flag indicating that this stage of the pipeline on a [`RecordBatch`] containing
-    /// a set of attributes. This will be used during planning to determine if invalid pipeline
-    /// stages have been specified in a pipeline handling attributes record batches.
+    /// Execute this stage on the data points of the metric.
     ///
-    /// If a type chooses to implement this method and return true, it should also add an
-    /// implementation for `execute_on_attributes`.
-    fn supports_exec_on_attributes(&self) -> bool {
-        false
+    /// When the pipeline stage is executed via this method call, it should perform its operation
+    /// as if the "root" of any expression is the metric data points record batch. It may need to
+    /// perform multiple evaluations on each of the various metric data point types.
+    async fn execute_on_metric_data_points(
+        &mut self,
+        _otap_batch: OtapArrowRecords,
+        _session_context: &SessionContext,
+        _config_options: &ConfigOptions,
+        _task_context: Arc<TaskContext>,
+        _exec_state: &mut ExecutionState,
+    ) -> Result<OtapArrowRecords> {
+        return Err(Error::ExecutionError {
+            cause: "Unexpected invocation of pipeline stage that does not support execution on metric data points".into()
+         });
+    }
+
+    /// Returns a flag indicating that this stage of the pipeline can execute where the passed
+    /// type of record would be the root of the expression.
+    ///
+    /// This is used by the planner to reject invalid/unsupported operations applied to some type
+    /// of record. For example, if some pipeline stage returns true/false when record type is
+    /// the `Attributes` variant, the planner will either accept/reject this type of pipeline stage
+    /// being used in an operation call like `apply attributes { ... }`
+    ///
+    /// If an implementation overrides this to return `true` for `RecordType::Attributes`,
+    /// should also implement `execute_on_attributes`. Likewise for `RecordType::Child(DataPoint)`
+    /// and `execute_on_metric_data_points`.
+    fn supports_exec_on(&self, record_type: &RecordType) -> bool {
+        matches!(record_type, RecordType::Signal)
     }
 
     /// When pipeline stages execute within the context of a conditional branch, they will only see
@@ -382,6 +414,7 @@ mod test {
     use datafusion::logical_expr::{col, lit};
     use otel_arrow_contrib_data_engine_parser_abstractions::Parser;
     use otel_arrow_dfe_pdata::OtlpProtoBytes;
+    use otel_arrow_dfe_pdata::TryIntoWithOptions;
     use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
     use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
     use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::{LogRecord, LogsData};
@@ -399,7 +432,6 @@ mod test {
     use crate::parser::default_parser_options;
 
     use super::*;
-    use otel_arrow_dfe_pdata::TryIntoWithOptions;
 
     /// helper function for converting [`OtapArrowRecords`] to [`LogsData`]
     pub fn otap_to_logs_data(otap_batch: OtapArrowRecords) -> LogsData {
@@ -595,5 +627,22 @@ mod test {
                 sum_metric.clone(),
             ]
         );
+    }
+
+    /// Scenario: Execute scale_metric against a logs batch.
+    /// Guarantees: The metric-only operation returns an explicit pipeline error for other signals.
+    #[tokio::test]
+    async fn test_scale_metric_rejects_non_metric_signals() {
+        let parser_result = OplParser::parse("logs | scale_metric 2").unwrap();
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
+        let result = pipeline
+            .execute(to_otap_logs(vec![LogRecord::build().finish()]))
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(Error::InvalidPipelineError { cause, .. })
+                if cause == "scale_metric can only be applied to metrics"
+        ));
     }
 }

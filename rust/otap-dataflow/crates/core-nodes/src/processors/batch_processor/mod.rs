@@ -492,6 +492,12 @@ struct BatchPortion {
     peer_addr: Option<SocketAddr>,
     /// Weight of this portion in the active sizer's unit.
     weight: usize,
+    /// True if this portion is a residual retained by a size flush. A
+    /// retained portion holds one `outbound` reference on its inbound slot
+    /// so the input cannot complete while its data is buffered. The
+    /// reference is handed to the first output that carries the portion
+    /// (see [`SignalBuffer::drain_context`]).
+    retained: bool,
 }
 
 struct Inputs<T: OtapPayloadHelpers> {
@@ -1300,7 +1306,7 @@ pub fn create_otap_batch_processor(
     node_config: Arc<NodeUserConfig>,
     processor_config: &ProcessorConfig,
 ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
-    let metrics = pipeline_ctx.register_metrics::<BatchProcessorMetrics>();
+    let metrics = BatchProcessorMetrics::register(&pipeline_ctx);
     let proc = BatchProcessor::build_from_json(&node_config.config, metrics)?;
     Ok(ProcessorWrapper::local(
         proc,
@@ -1428,6 +1434,7 @@ impl BatchPortion {
             inkey,
             peer_addr,
             weight,
+            retained: false,
         }
     }
 }
@@ -1544,7 +1551,26 @@ where
                 break;
             }
         }
-        let new_part = BatchPortion::new(last_input.inkey, peer_merger.finish(), last_weight);
+        // A size flush is triggered by the input that arrives last, and every
+        // earlier pending input totals less than `lower_limit <= max_size`,
+        // so they all pack into the first output. With more than one output,
+        // the retained last output therefore comes entirely from the last
+        // input, and attributing it to `last_input.inkey` is exact.
+        debug_assert!(
+            last_weight <= last_input.weight,
+            "retained residual must come from the last input only"
+        );
+        let mut new_part = BatchPortion::new(last_input.inkey, peer_merger.finish(), last_weight);
+
+        // Hold the input open while its residual is buffered: take one
+        // outbound reference now, which is handed to the output that carries
+        // the residual on a later flush (see `drain_context`).
+        if let Some(inkey) = new_part.inkey
+            && let Some(batch) = self.inbound.get_mut(inkey)
+        {
+            batch.outbound += 1;
+            new_part.retained = true;
+        }
 
         from_inputs.weight -= last_weight;
 
@@ -1583,10 +1609,18 @@ where
                 contexts.pos += 1;
             }
 
+            // A retained residual already holds one outbound reference on
+            // its input so we hand it to this output instead of taking another.
+            // Any later output carrying more of the same portion takes its
+            // own reference as usual.
+            let handed_over = std::mem::take(&mut bp.retained);
+
             if let Some(inkey) = bp.inkey
                 && let Some(batch) = self.inbound.get_mut(inkey)
             {
-                batch.outbound += 1;
+                if !handed_over {
+                    batch.outbound += 1;
+                }
 
                 out.push(BatchPortion::new(Some(inkey), peer_addr, take));
             }
@@ -1676,6 +1710,7 @@ pub static OTAP_BATCH_PROCESSOR_FACTORY: otel_arrow_dfe_engine::ProcessorFactory
              _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities| {
                 create_otap_batch_processor(pipeline_ctx, node, node_config, proc_cfg)
             },
+        context_declarations: None,
         wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
         validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<Config>,
     };
@@ -4134,17 +4169,18 @@ mod tests {
             .validate(|_| async {});
     }
 
-    /// take_remaining retained-partial path, multiple contributing inputs
-    /// that all share one peer.
+    /// take_remaining retained-partial path, followed by a merge of several
+    /// inputs that all share one peer.
     ///
-    /// Scenario: three inputs of sizes [3, 3, 2] all from peer A
-    /// (total 8 items) -> `make_batches` splits into `[5, 3]`. The 3-item
-    /// tail spans inputs #2 and #3 -- both peer A. A follow-up 2-item input
-    /// from peer A triggers a second size flush over the retained portion.
+    /// Scenario: inputs of sizes [3, 3] from peer A size-flush at 6 items
+    /// -> `make_batches` splits into `[5, 1]` and input #2's final item is
+    /// retained. A 2-item input from peer A is buffered (3 < min_size), and
+    /// a follow-up 2-item input from peer A triggers a second size flush of
+    /// the retained item plus both new inputs.
     ///
     /// Guarantee: the second flush's batch carries `peer_addr = A`, even
-    /// though the retained portion spans more than one input -- because all
-    /// contributors agreed.
+    /// though it merges the retained portion with more than one input --
+    /// because all contributors agreed.
     #[test]
     fn test_take_remaining_preserves_peer_addr_multi_input_same_peer() {
         let (_telemetry_registry, _metrics_reporter, phase) = setup_test_runtime(json!({
@@ -4193,17 +4229,18 @@ mod tests {
             .validate(|_| async {});
     }
 
-    /// take_remaining retained-partial path, multiple contributing inputs
+    /// take_remaining retained-partial path, followed by a merge of inputs
     /// from distinct peers.
     ///
-    /// Scenario: inputs of sizes [3, 3, 2] from peers [A, A, B]
-    /// (total 8 items) -> `make_batches` splits into `[5, 3]`. The 3-item
-    /// tail spans inputs #2 (peer A) and #3 (peer B) -- mixed peers. A
-    /// follow-up 2-item input from peer A triggers a second size flush.
+    /// Scenario: inputs of sizes [3, 3] from peer A size-flush at 6 items
+    /// -> `make_batches` splits into `[5, 1]` and input #2's final item
+    /// (peer A) is retained. A 2-item input from peer B is buffered, and a
+    /// follow-up 2-item input from peer A triggers a second size flush that
+    /// merges the retained item (A), the peer B input, and the new input (A).
     ///
     /// Guarantee: the second flush's batch carries `peer_addr = None` --
-    /// the retained portion correctly recorded the mixed-peer merge as
-    /// `None` rather than misattributing to one arbitrary contributor.
+    /// the retained portion merged with a different peer is not
+    /// misattributed to one arbitrary contributor.
     #[test]
     fn test_take_remaining_drops_peer_addr_multi_input_different_peers() {
         let (_telemetry_registry, _metrics_reporter, phase) = setup_test_runtime(json!({
@@ -4250,5 +4287,255 @@ mod tests {
                 );
             })
             .validate(|_| async {});
+    }
+
+    // ---------------------------------------------------------------------
+    // Ack/Nack tracking of a retained residual. The same scenario is run for
+    // OTAP (items sizer) and OTLP (bytes sizer) inputs.
+    // ---------------------------------------------------------------------
+
+    /// Input format fed to [`check_residual_holds_input`].
+    #[derive(Clone, Copy)]
+    enum ResidualFormat {
+        Otap,
+        Otlp,
+    }
+
+    /// Logs with `units` resource entries holding one log record each. Every
+    /// entry encodes to the same OTLP size (`time_unix_nano` is fixed64), so
+    /// one entry is one sizer unit for both formats: 1 item for OTAP and
+    /// [`residual_unit_size`] bytes for OTLP. The OTLP batcher packs whole
+    /// resource entries, so both formats produce the same batch layout.
+    fn residual_logs(base_id: usize, units: usize) -> LogsData {
+        LogsData {
+            resource_logs: (0..units)
+                .map(|i| ResourceLogs {
+                    scope_logs: vec![ScopeLogs {
+                        log_records: vec![LogRecord {
+                            time_unix_nano: 1_000_000_000 + (base_id * 1000 + i) as u64,
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                })
+                .collect(),
+        }
+    }
+
+    /// Size of one [`residual_logs`] unit in the format's sizer unit.
+    fn residual_unit_size(fmt: ResidualFormat) -> usize {
+        match fmt {
+            ResidualFormat::Otap => 1,
+            ResidualFormat::Otlp => {
+                otlp_message_to_bytes(&OtlpProtoMessage::Logs(residual_logs(0, 1))).num_bytes()
+            }
+        }
+    }
+
+    /// Batch processor config with `min_size = max_size = units` sizer units.
+    fn residual_config(fmt: ResidualFormat, units: usize) -> Value {
+        let size = units * residual_unit_size(fmt);
+        match fmt {
+            ResidualFormat::Otap => json!({
+                "format": "otap",
+                "otap": { "min_size": size, "max_size": size, "sizer": "items" },
+                "max_batch_duration": "1s"
+            }),
+            ResidualFormat::Otlp => json!({
+                "format": "otlp",
+                "otlp": { "min_size": size, "max_size": size, "sizer": "bytes" },
+                "max_batch_duration": "1s"
+            }),
+        }
+    }
+
+    /// Encode `logs` in `fmt` and subscribe it with calldata index `idx`.
+    fn residual_pdata(fmt: ResidualFormat, logs: &LogsData, idx: usize) -> OtapPdata {
+        let pdata = match fmt {
+            ResidualFormat::Otap => {
+                OtapPdata::new_default(encode_logs_otap_batch(logs).expect("encode").into())
+            }
+            ResidualFormat::Otlp => OtapPdata::new_default(
+                otlp_message_to_bytes(&OtlpProtoMessage::Logs(logs.clone())).into(),
+            ),
+        };
+        pdata.test_subscribe_to(
+            Interests::ACKS | Interests::NACKS,
+            TestCallData::new_with(idx as u64, 0).into(),
+            1,
+        )
+    }
+
+    /// Ack/Nack counts delivered upstream, indexed by the input's calldata
+    /// index (see [`residual_pdata`]).
+    #[derive(Debug, Default)]
+    struct Completions {
+        acks: Vec<usize>,
+        nacks: Vec<usize>,
+    }
+
+    impl Completions {
+        fn new(n: usize) -> Self {
+            Self {
+                acks: vec![0; n],
+                nacks: vec![0; n],
+            }
+        }
+
+        fn index(&self, cd: &TestCallData) -> usize {
+            (0..self.acks.len())
+                .find(|&i| *cd == TestCallData::new_with(i as u64, 0))
+                .expect("known calldata")
+        }
+
+        fn drain(
+            &mut self,
+            rx: &mut otel_arrow_dfe_engine::control::PipelineCompletionMsgReceiver<OtapPdata>,
+        ) {
+            while let Ok(msg) = rx.try_recv() {
+                match msg {
+                    PipelineCompletionMsg::DeliverAck { ack } => {
+                        if let Some((_, ack)) = next_ack(ack) {
+                            let cd = ack.unwind.route.calldata.try_into().expect("calldata");
+                            let i = self.index(&cd);
+                            self.acks[i] += 1;
+                        }
+                    }
+                    PipelineCompletionMsg::DeliverNack { nack } => {
+                        if let Some((_, nack)) = next_nack(nack) {
+                            let cd = nack.unwind.route.calldata.try_into().expect("calldata");
+                            let i = self.index(&cd);
+                            self.nacks[i] += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Deliver an Ack or Nack for `out` back to the processor.
+    async fn respond(
+        ctx: &mut otel_arrow_dfe_engine::testing::processor::TestContext<OtapPdata>,
+        out: OtapPdata,
+        policy: &AckPolicy,
+    ) {
+        let msg = match policy {
+            AckPolicy::Ack => NodeControlMsg::Ack(next_ack(AckMsg::new(out)).expect("subs").1),
+            AckPolicy::Nack(reason) => {
+                NodeControlMsg::Nack(next_nack(NackMsg::new(*reason, out)).expect("subs").1)
+            }
+        };
+        ctx.process(Message::Control(msg))
+            .await
+            .expect("process response");
+    }
+
+    /// Deliver an expired wakeup for every slot, forcing a timer flush.
+    async fn flush_timer(
+        ctx: &mut otel_arrow_dfe_engine::testing::processor::TestContext<OtapPdata>,
+    ) {
+        for slot in all_wakeup_slots() {
+            ctx.process(Message::Control(NodeControlMsg::Wakeup {
+                slot,
+                when: Instant::now() + Duration::from_secs(10),
+                revision: 0,
+            }))
+            .await
+            .expect("process wakeup");
+        }
+    }
+
+    /// Shared core for the residual Ack/Nack tests.
+    ///
+    /// With min_size = max_size = 4 units, input A (3 units) is buffered and
+    /// input B (6 units) triggers a size flush of 9 units: outputs [4, 4] are
+    /// sent and B's final unit is retained as a residual. Both outputs are
+    /// Acked; B must not complete while its residual is buffered. A timer
+    /// flush then sends the residual, which must still be tracked, and
+    /// `final_response` is applied to it; B must complete accordingly.
+    fn check_residual_holds_input(fmt: ResidualFormat, final_response: AckPolicy) {
+        let (_registry, _reporter, phase) = setup_test_runtime(residual_config(fmt, 4));
+        phase
+            .run_test(move |mut ctx| async move {
+                let (tx, mut rx) = pipeline_completion_msg_channel(16);
+                ctx.set_pipeline_completion_sender(tx);
+                let mut done = Completions::new(2);
+
+                ctx.process(Message::PData(residual_pdata(fmt, &residual_logs(0, 3), 0)))
+                    .await
+                    .expect("process A");
+                ctx.process(Message::PData(residual_pdata(fmt, &residual_logs(1, 6), 1)))
+                    .await
+                    .expect("process B");
+
+                let outs = ctx.drain_pdata().await;
+                assert_eq!(outs.len(), 2, "size flush sends [4, 4] and retains 1");
+                for out in outs {
+                    respond(&mut ctx, out, &AckPolicy::Ack).await;
+                }
+                done.drain(&mut rx);
+                assert_eq!(done.acks, vec![1, 0], "B must wait for its residual");
+                assert_eq!(done.nacks, vec![0, 0]);
+
+                flush_timer(&mut ctx).await;
+                let outs = ctx.drain_pdata().await;
+                assert_eq!(outs.len(), 1, "timer flush sends the residual");
+                let residual = outs.into_iter().next().expect("one output");
+                assert!(
+                    residual.has_ack_or_nack_interests(),
+                    "residual output must be tracked back to B"
+                );
+                let expect_nack = matches!(final_response, AckPolicy::Nack(_));
+                respond(&mut ctx, residual, &final_response).await;
+                done.drain(&mut rx);
+
+                if expect_nack {
+                    assert_eq!(done.acks, vec![1, 0], "B must never be acked");
+                    assert_eq!(done.nacks, vec![0, 1], "B nacked exactly once");
+                } else {
+                    assert_eq!(done.acks, vec![1, 1], "B acked exactly once");
+                    assert_eq!(done.nacks, vec![0, 0]);
+                }
+            })
+            .validate(|_| async {});
+    }
+
+    /// Scenario: an OTAP size flush sends two full outputs and retains the
+    /// final item of input B as a residual; both outputs are Acked, then the
+    /// residual is timer-flushed and Acked.
+    /// Guarantees: B is not Acked while part of its data is still buffered,
+    /// and is Acked exactly once after its residual output is Acked.
+    #[test]
+    fn test_otap_residual_holds_input_until_flushed() {
+        check_residual_holds_input(ResidualFormat::Otap, AckPolicy::Ack);
+    }
+
+    /// Scenario: as above for OTAP, but the output carrying B's residual is
+    /// Nacked downstream.
+    /// Guarantees: the residual output is subscribed on B's behalf, so the
+    /// Nack reaches B exactly once and B is never Acked.
+    #[test]
+    fn test_otap_residual_nack_propagates_to_input() {
+        check_residual_holds_input(ResidualFormat::Otap, AckPolicy::Nack("downstream failed"));
+    }
+
+    /// Scenario: an OTLP bytes size flush sends two full outputs and retains
+    /// input B's final resource entry as a residual; both outputs are Acked,
+    /// then the residual is timer-flushed and Acked.
+    /// Guarantees: B is not Acked while part of its data is still buffered,
+    /// and is Acked exactly once after its residual output is Acked.
+    #[test]
+    fn test_otlp_residual_holds_input_until_flushed() {
+        check_residual_holds_input(ResidualFormat::Otlp, AckPolicy::Ack);
+    }
+
+    /// Scenario: as above for OTLP, but the output carrying B's residual is
+    /// Nacked downstream.
+    /// Guarantees: the residual output is subscribed on B's behalf, so the
+    /// Nack reaches B exactly once and B is never Acked.
+    #[test]
+    fn test_otlp_residual_nack_propagates_to_input() {
+        check_residual_holds_input(ResidualFormat::Otlp, AckPolicy::Nack("downstream failed"));
     }
 }
