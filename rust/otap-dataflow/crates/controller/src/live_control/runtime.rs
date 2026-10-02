@@ -127,6 +127,7 @@ impl<
             thread_id,
             None,
         )?;
+
         self.register_launched_instance(launched);
         Ok(deployed_key)
     }
@@ -141,15 +142,19 @@ impl<
         launched: LaunchedPipelineThread<PData>,
     ) {
         let context_bindings = Arc::clone(&launched.context_bindings);
-        let (should_compact, pending_exit) = {
+        let (should_compact, pending_exit, shutdown_sender, shutdown_deadline) = {
             let mut state = self
                 .state
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+            let should_shutdown = state.global_shutdown_requested;
+            let control_sender = Some(launched.control_sender.clone());
+
             _ = state.runtime_instances.insert(
                 launched.pipeline_key.clone(),
                 RuntimeInstanceRecord {
-                    control_sender: Some(launched.control_sender.clone()),
+                    control_sender,
                     context_bindings: launched.context_bindings,
                     lifecycle: RuntimeInstanceLifecycle::Active,
                 },
@@ -162,8 +167,41 @@ impl<
                 false
             };
             self.state_changed.notify_all();
-            (should_compact, pending_exit)
+
+            let shutdown_sender = if should_shutdown {
+                Some(launched.control_sender)
+            } else {
+                None
+            };
+            let shutdown_deadline = state.global_shutdown_deadline;
+
+            (
+                should_compact,
+                pending_exit,
+                shutdown_sender,
+                shutdown_deadline,
+            )
         };
+
+        if let Some(sender) = shutdown_sender {
+            // Send shutdown after releasing the state lock to avoid lock contention or deadlocks.
+            let deadline =
+                shutdown_deadline.unwrap_or_else(|| Instant::now() + Duration::from_secs(60));
+            if let Err(err) =
+                sender.try_send_shutdown(deadline, "global shutdown (late registration)".to_owned())
+            {
+                otel_warn!(
+                    "otelcol.pipeline.shutdown.dispatch_failed",
+                    pipeline_group_id = %launched.pipeline_key.pipeline_group_id,
+                    pipeline_id = %launched.pipeline_key.pipeline_id,
+                    core_id = launched.pipeline_key.core_id,
+                    error = ?err,
+                    message = "Failed to dispatch global shutdown to pipeline instance.",
+                );
+            } else {
+                self.release_instance_control_sender(&launched.pipeline_key);
+            }
+        }
 
         if should_compact {
             let logical_pipeline_key = PipelineKey::new(
@@ -1543,6 +1581,9 @@ impl<
             let coordinator_reserved = !coordinator_active
                 && (!producer_keys.is_empty() || !observability_senders.is_empty());
             state.global_shutdown_requested = true;
+            if state.global_shutdown_deadline.is_none() {
+                state.global_shutdown_deadline = Some(deadline);
+            }
             if coordinator_reserved {
                 state.global_shutdown_coordinators += 1;
             }
@@ -1665,13 +1706,50 @@ impl<
     ) {
         let mut wait_failures = Vec::new();
         let producer_completion_deadline = pipeline_shutdown_completion_deadline(producer_deadline);
+        let mut waited_keys = HashSet::new();
         for deployed_key in &producer_keys {
+            _ = waited_keys.insert(deployed_key.clone());
             if let Err(error) =
                 self.wait_for_global_shutdown_exit(deployed_key, producer_completion_deadline)
             {
                 wait_failures.push(error);
             }
         }
+
+        loop {
+            let late_keys = {
+                let state = self
+                    .state
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                let mut keys = Vec::new();
+                for (key, instance) in &state.runtime_instances {
+                    if !waited_keys.contains(key)
+                        && matches!(instance.lifecycle, RuntimeInstanceLifecycle::Active)
+                    {
+                        let is_observability = key.pipeline_group_id.as_ref()
+                            == SYSTEM_PIPELINE_GROUP_ID
+                            && key.pipeline_id.as_ref() == SYSTEM_OBSERVABILITY_PIPELINE_ID;
+                        if !is_observability {
+                            keys.push(key.clone());
+                        }
+                    }
+                }
+                keys
+            };
+            if late_keys.is_empty() {
+                break;
+            }
+            for deployed_key in late_keys {
+                _ = waited_keys.insert(deployed_key.clone());
+                if let Err(error) =
+                    self.wait_for_global_shutdown_exit(&deployed_key, producer_completion_deadline)
+                {
+                    wait_failures.push(error);
+                }
+            }
+        }
+
         if !wait_failures.is_empty() {
             self.record_async_global_shutdown_failure(format!(
                 "producer shutdown failed before system observability shutdown: {}",
@@ -1684,18 +1762,15 @@ impl<
                 .state
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            producer_keys
+            state
+                .runtime_instances
                 .iter()
-                .filter(|deployed_key| {
-                    matches!(
-                        state.runtime_instances.get(*deployed_key),
-                        Some(RuntimeInstanceRecord {
-                            lifecycle: RuntimeInstanceLifecycle::Active,
-                            ..
-                        })
-                    )
+                .filter(|(key, instance)| {
+                    matches!(instance.lifecycle, RuntimeInstanceLifecycle::Active)
+                        && !(key.pipeline_group_id.as_ref() == SYSTEM_PIPELINE_GROUP_ID
+                            && key.pipeline_id.as_ref() == SYSTEM_OBSERVABILITY_PIPELINE_ID)
                 })
-                .map(deployed_instance_label)
+                .map(|(key, _)| deployed_instance_label(key))
                 .collect::<Vec<_>>()
         };
         if !active_producers.is_empty() {

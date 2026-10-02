@@ -316,7 +316,7 @@ pub(crate) fn align_selection_to_root(
             {
                 // copy out the attrs_id before moving value, since AttributesIdentifier is Copy
                 let maybe_attrs_id = match &scoped_value.scope {
-                    DataScope::Attribute(attrs_id, _) | DataScope::AttributesAll(attrs_id) => {
+                    DataScope::Attribute(attrs_id, _, _) | DataScope::AttributesAll(attrs_id) => {
                         Some(*attrs_id)
                     }
                     _ => None,
@@ -6282,6 +6282,104 @@ mod test {
                 "value_type={value_type}"
             );
         }
+    }
+
+    /// Scenario: Filter logs by resolved and null nested serialized attributes.
+    /// Guarantees: Nested comparisons and null predicates select the expected logs.
+    #[tokio::test]
+    async fn test_filter_by_nested_serialized_attribute() {
+        let log_records = vec![
+            LogRecord::build()
+                .attributes([KeyValue::new(
+                    "complex",
+                    AnyValue::new_kvlist(vec![
+                        KeyValue::new("name", AnyValue::new_string("a")),
+                        KeyValue::new("count", AnyValue::new_int(2)),
+                    ]),
+                )])
+                .finish(),
+            LogRecord::build()
+                .attributes([KeyValue::new(
+                    "complex",
+                    AnyValue::new_kvlist(vec![KeyValue::new("name", AnyValue::new_string("b"))]),
+                )])
+                .finish(),
+            LogRecord::build()
+                .attributes([KeyValue::new("complex", AnyValue::new_string("a"))])
+                .finish(),
+            LogRecord::build().finish(),
+            LogRecord::build()
+                .attributes([KeyValue::new(
+                    "complex",
+                    AnyValue::new_kvlist(vec![KeyValue::new("name", AnyValue::default())]),
+                )])
+                .finish(),
+        ];
+
+        let cases = [
+            (
+                r#"logs | where attributes["complex"]["name"] == "a""#,
+                vec![0],
+            ),
+            (
+                r#"logs | where attributes["complex"]["count"] > 1"#,
+                vec![0],
+            ),
+            (
+                r#"logs | where attributes["complex"]["name"] == null"#,
+                vec![2, 3, 4],
+            ),
+            (
+                r#"logs | where not(attributes["complex"]["name"] == null)"#,
+                vec![0, 1],
+            ),
+        ];
+
+        for (query, expected_indices) in cases {
+            let result =
+                exec_logs_pipeline::<OplParser>(query, to_logs_data(log_records.clone())).await;
+            let expected = expected_indices
+                .into_iter()
+                .map(|index| log_records[index].clone())
+                .collect::<Vec<_>>();
+            let actual = &result.resource_logs[0].scope_logs[0].log_records;
+            assert_eq!(actual.len(), expected.len(), "{query}");
+            for expected_record in &expected {
+                assert!(actual.contains(expected_record), "{query}");
+            }
+        }
+    }
+
+    /// Scenario: Filter spans by a nested serialized attribute leaf.
+    /// Guarantees: Only spans whose nested leaf matches are kept.
+    #[tokio::test]
+    async fn test_filter_spans_by_nested_serialized_attribute() {
+        let span = |name: &str| {
+            Span::build()
+                .trace_id(vec![1; 16])
+                .span_id(vec![1; 8])
+                .status(Status::default())
+                .attributes(vec![KeyValue::new(
+                    "complex",
+                    AnyValue::new_kvlist(vec![KeyValue::new("name", AnyValue::new_string(name))]),
+                )])
+                .finish()
+        };
+        let spans = vec![span("a"), span("b")];
+
+        let parser_result =
+            OplParser::parse(r#"traces | where attributes["complex"]["name"] == "b""#).unwrap();
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
+        let result = pipeline
+            .execute(to_otap_traces(spans.clone()))
+            .await
+            .unwrap();
+
+        let traces_data = otap_to_traces_data(result);
+        pretty_assertions::assert_eq!(
+            &traces_data.resource_spans[0].scope_spans[0].spans,
+            &[spans[1].clone()]
+        );
     }
 
     #[tokio::test]
