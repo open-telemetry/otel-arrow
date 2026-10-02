@@ -162,7 +162,7 @@ pub fn join<'a>(
             Ok((join_result, right.data_scope.clone()))
         }
 
-        (DataScope::Attribute(left_attrs_id, _), DataScope::Attribute(right_attrs_id, _)) => {
+        (DataScope::Attribute(left_attrs_id, _, _), DataScope::Attribute(right_attrs_id, _, _)) => {
             if left_attrs_id == right_attrs_id {
                 let join_exec = AttributeToSameAttributeJoin::new();
                 let join_result = join_exec.join(left, right, otap_batch)?;
@@ -179,12 +179,12 @@ pub fn join<'a>(
                 Ok((join_result, left.data_scope.clone()))
             }
         }
-        (DataScope::Record(_) | DataScope::RootParent(_), DataScope::Attribute(attr_id, _)) => {
+        (DataScope::Record(_) | DataScope::RootParent(_), DataScope::Attribute(attr_id, _, _)) => {
             let join_exec = RecordToAttributesJoin::new(*attr_id);
             let join_result = join_exec.join(left, right, otap_batch)?;
             Ok((join_result, left.data_scope.clone()))
         }
-        (DataScope::Attribute(attr_id, _), DataScope::Record(_) | DataScope::RootParent(_)) => {
+        (DataScope::Attribute(attr_id, _, _), DataScope::Record(_) | DataScope::RootParent(_)) => {
             match attr_id {
                 AttributesIdentifier::Record(_) => {
                     let join_exec = RecordAttrsToRecordJoin::new();
@@ -272,7 +272,7 @@ fn compute_join_alignment(
     }
 
     match (left.data_scope.as_ref(), right.data_scope.as_ref()) {
-        (DataScope::Attribute(left_attrs_id, _), DataScope::Attribute(right_attrs_id, _)) => {
+        (DataScope::Attribute(left_attrs_id, _, _), DataScope::Attribute(right_attrs_id, _, _)) => {
             if left_attrs_id == right_attrs_id {
                 let exec = AttributeToSameAttributeJoin::new();
                 let indices = exec.rows_to_take(left, right, otap_batch)?;
@@ -297,7 +297,7 @@ fn compute_join_alignment(
                 ))
             }
         }
-        (DataScope::Record(_) | DataScope::RootParent(_), DataScope::Attribute(attr_id, _)) => {
+        (DataScope::Record(_) | DataScope::RootParent(_), DataScope::Attribute(attr_id, _, _)) => {
             let exec = RecordToAttributesJoin::new(*attr_id);
             let indices = exec.rows_to_take(left, right, otap_batch)?;
             Ok((
@@ -305,7 +305,7 @@ fn compute_join_alignment(
                 left.data_scope.clone(),
             ))
         }
-        (DataScope::Attribute(attr_id, _), DataScope::Record(_) | DataScope::RootParent(_)) => {
+        (DataScope::Attribute(attr_id, _, _), DataScope::Record(_) | DataScope::RootParent(_)) => {
             match attr_id {
                 AttributesIdentifier::Record(_) => {
                     let exec = RecordAttrsToRecordJoin::new();
@@ -1056,7 +1056,7 @@ impl JoinExec for RecordAttrsToRecordJoin {
         // a u16 ID column
         let is_u32_ids = matches!(
             left.data_scope.as_ref(),
-            DataScope::Attribute(AttributesIdentifier::Record(RecordScope::Child(_)), _)
+            DataScope::Attribute(AttributesIdentifier::Record(RecordScope::Child(_)), _, _)
         );
 
         if is_u32_ids {
@@ -1260,7 +1260,7 @@ impl JoinExec for AttributeToSameAttributeJoin {
         // a u16 ID column
         let is_u32_ids = matches!(
             left.data_scope.as_ref(),
-            DataScope::Attribute(AttributesIdentifier::Record(RecordScope::Child(_)), _)
+            DataScope::Attribute(AttributesIdentifier::Record(RecordScope::Child(_)), _, _)
         );
 
         if is_u32_ids {

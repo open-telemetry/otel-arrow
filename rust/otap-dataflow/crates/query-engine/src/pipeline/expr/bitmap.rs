@@ -127,8 +127,8 @@ pub fn combine_scope(left: Option<DataScope>, right: Option<DataScope>) -> Optio
     #[cfg(debug_assertions)]
     {
         if let (
-            Some(DataScope::Attribute(l_attr_id, _) | DataScope::AttributesAll(l_attr_id)),
-            Some(DataScope::Attribute(r_attr_id, _) | DataScope::AttributesAll(r_attr_id)),
+            Some(DataScope::Attribute(l_attr_id, _, _) | DataScope::AttributesAll(l_attr_id)),
+            Some(DataScope::Attribute(r_attr_id, _, _) | DataScope::AttributesAll(r_attr_id)),
         ) = (&left, &right)
         {
             debug_assert!(l_attr_id == r_attr_id);
@@ -224,7 +224,7 @@ fn scoped_value_to_id_mask(
                 // For attribute-scoped scalars, "all true" means "all rows that matched
                 // the key filter pass", not ALL rows in the batch. We need to build an
                 // IdMask from the parent_ids of the matching rows.
-                if matches!(sv.scope, DataScope::Attribute(_, _))
+                if matches!(sv.scope, DataScope::Attribute(_, _, _))
                     && let Some(parent_ids) = &sv.parent_ids
                 {
                     let mut bitmap = pool.acquire();
@@ -322,7 +322,7 @@ fn scoped_value_to_id_mask(
                 message: "conversion of child record scoped expression values to bitmap".into(),
             })
         }
-        DataScope::Attribute(_, _) | DataScope::AttributesAll(_) => {
+        DataScope::Attribute(_, _, _) | DataScope::AttributesAll(_) => {
             // attribute-scoped: use parent_ids to populate an IdBitmap
             let parent_ids = sv
                 .parent_ids
