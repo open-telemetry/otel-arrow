@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790902179263,
+  "lastUpdate": 1790961458223,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -50275,6 +50275,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 104.92,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "drewrelmas@gmail.com",
+            "name": "Drew Relmas",
+            "username": "drewrelmas"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "5f091c0e506df1be6667a42070f3db0d2440f542",
+          "message": "feat(query-engine): Add scale_metric support (#4217)\n\n# Change summary\n\nAdd the OPL `scale_metric multiplier [unit]` operation for gauge, sum,\nexplicit histogram, and summary metrics. Exponential histograms return\nan unsupported error for now.\n\nThe operation scales value-bearing fields across the related OTAP Arrow\nbatches, preserves counts and quantile coordinates, and optionally\nreplaces units.\n\n```opl\nmetrics | if (name == \"http.server.request.duration\") {\n    scale_metric 1000 \"ms\"\n}\n```\n\nCompatibility with Go implementation:\n\n| Behavior | OTAP Dataflow | Go Collector |\n| --- | --- | --- |\n| Gauge and sum values | Scaled | Scaled |\n| Explicit histogram sum, min, max, and bounds | Scaled | Scaled |\n| Summary sum and quantile values | Scaled | Scaled |\n| Counts, bucket counts, and quantile coordinates | Preserved |\nPreserved |\n| Histogram exemplars | Scaled | Scaled |\n| Gauge and sum exemplars | Scaled* | Unchanged |\n| Exponential histograms | Returns an error | Returns an error |\n| Empty metrics | Returns an error | Returns an error |\n| Non-finite or negative multiplier | Returns an error** | Accepted by\nthe function |\n| Out-of-range integer result | Saturates at the `i64` boundary*** |\nUses Go's float-to-integer conversion |\n\n\\*\n[Exemplars](https://opentelemetry.io/docs/specs/otel/metrics/data-model/#exemplars)\nhave no independent unit. Scaling them prevents their values from being\nreinterpreted when the metric unit changes. The [Collector\nimplementation](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/processor/transformprocessor/internal/metrics/func_scale.go)\ndoes this for histograms but not gauges or sums.\n\n\\** Rejecting NaN and infinity prevents non-finite metric values and\nambiguous integer conversions. Validation occurs before mutation.\n\n\\***\n[Rust](https://doc.rust-lang.org/reference/expressions/operator-expr.html#numeric-cast)\ndefines out-of-range conversion as saturation;\n[Go](https://go.dev/ref/spec#Conversions_between_numeric_types) leaves\nthe result implementation-dependent. Saturation keeps behavior\ndeterministic.\n\nExponential histograms and metrics without a data type are rejected\nbefore any batch is mutated.\n\n## Related issue\n\n<!--We highly recommend correlation of every PR to an issue-->\n\n* Closes #4203\n\n## Validation\n\n- Unit tests\n- Ran a sample pipeline that scaled the `uptime` metric from `s` to `ms`\nand inspected debug metric results\n\n## User-facing changes\n\nOPL transforms can now use `scale_metric`",
+          "timestamp": "2026-10-02T16:26:20Z",
+          "tree_id": "3f69612d25bfb3ee5d812d1d706735c679857cf0",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/5f091c0e506df1be6667a42070f3db0d2440f542"
+        },
+        "date": 1790961437534,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 85.37,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.78,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.19,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.01,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.98,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.77,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 72.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.87,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.56,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.56,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.16,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.36,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 117.83,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 104.98,
             "unit": "MB"
           }
         ]
