@@ -206,9 +206,12 @@ fn scale_columns(
                         cause: format!("{column_name} is not an Int64 array"),
                     }
                 })?;
-                Arc::new(Int64Array::from_iter(values.iter().map(|value| {
-                    value.map(|value| (value as f64 * multiplier) as i64)
-                })))
+                let new_values = values
+                    .values()
+                    .iter()
+                    .map(|value| (*value as f64 * multiplier) as i64)
+                    .collect::<Vec<_>>();
+                Arc::new(Int64Array::new(new_values.into(), values.nulls().cloned()))
             }
             DataType::Float64 => mul(array, &Float64Array::new_scalar(multiplier))?,
             data_type => {
