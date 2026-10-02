@@ -1104,8 +1104,8 @@ fn build_grpc_metadata(
         None => MetadataMap::new(),
     };
 
-    if let Some((policy, transport_headers)) = propagation {
-        for header in policy.propagate(transport_headers) {
+    if let Some((policy, _)) = propagation {
+        for header in policy.propagate(context) {
             match header.value_kind {
                 ValueKind::Text => {
                     // ASCII metadata: parse the header name and value.
@@ -3247,6 +3247,52 @@ mod tests {
             }],
         )
         .expect("conditional propagation policy compiles")
+    }
+
+    /// Scenario: an outgoing gRPC header belongs to a composite requiring verified identity.
+    /// Guarantees: the exporter supplies full context to the gate and emits only the selected header.
+    #[test]
+    fn build_grpc_metadata_requires_composite_identity() {
+        use otel_arrow_dfe_engine::capability::auth::AuthorizedIdentity;
+        let declaration: ContextPolicy = serde_yaml::from_str(
+            "entries:\n  tenant:\n    - {type: transport_header, name: workspace}\n    - {type: authorized_identity, name: customer}",
+        ).expect("context policy");
+        let declarations = declaration
+            .entries
+            .into_iter()
+            .map(|(name, definition)| ContextEntryDeclaration {
+                scope: ContextScope::Engine,
+                name,
+                definition,
+            })
+            .collect::<Vec<_>>();
+        let policy: HeaderPropagationConfig = serde_yaml::from_str(
+            "default:\n  selector: {type: named, named: ['tenant:workspace']}\n  name: stored_name",
+        )
+        .expect("propagation policy");
+        let handler = make_effect_handler_with_policy(Some(
+            HeaderPropagationPolicy::compile(policy, &declarations).expect("compiled policy"),
+        ));
+        let mut headers = TransportHeaders::new();
+        headers.push(text_header("workspace", "X-Workspace", b"acme"));
+        headers.push(text_header("customer", "X-Customer", b"untrusted"));
+        let mut pdata =
+            OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(Bytes::new()).into())
+                .with_transport_headers(headers);
+        assert!(build_grpc_metadata(&handler, pdata.context_mut(), None, None).is_none());
+        let identity_policy = serde_json::from_value(serde_json::json!([
+            {"claim": "sub", "store_as": "customer"}
+        ]))
+        .expect("identity policy");
+        otel_arrow_dfe_otap::testing::capture_test_authorized_identity(
+            &mut pdata,
+            &identity_policy,
+            &AuthorizedIdentity::new().with_subject("verified"),
+        );
+        let metadata =
+            build_grpc_metadata(&handler, pdata.context_mut(), None, None).expect("metadata");
+        assert_eq!(metadata.get("workspace").expect("selected header"), "acme");
+        assert_eq!(metadata.len(), 1);
     }
 
     #[test]

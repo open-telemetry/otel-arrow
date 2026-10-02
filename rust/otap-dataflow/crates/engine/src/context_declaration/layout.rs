@@ -5,19 +5,20 @@
 //!
 //! A projection identifies selected fields and the enclosing composite whose
 //! presence a consumer must establish. This module compiles and resolves that
-//! model; it does not evaluate message values or change header propagation.
+//! model and evaluates atomic presence against existing message context.
 //!
 //! Layout-local IDs are not offsets into message storage. Runtime presence
 //! evaluation, consumer integration, and precomputed hashes are separate work.
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use otel_arrow_dfe_config::context::ContextEntryName;
+use otel_arrow_dfe_config::context::{ContextEntryName, ContextEntryRef};
 pub use otel_arrow_dfe_config::context_policy::ContextDomain;
 use otel_arrow_dfe_config::context_policy::{
     ContextEntryDeclaration, ContextEntryPart, ContextScope,
 };
 use otel_arrow_dfe_config::error::Error;
+use otel_arrow_dfe_config::transport_headers::TransportHeaders;
 
 /// A deterministic logical layout of primitive fields and composite entries.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Ord, PartialOrd, Hash)]
@@ -146,6 +147,25 @@ fn invalid(message: impl Into<String>) -> Error {
     }
 }
 
+/// Read-only presence information from a message's separate authority domains.
+pub trait ContextValues {
+    /// Captured or produced transport headers.
+    fn transport_headers(&self) -> Option<&TransportHeaders>;
+
+    /// Whether an exact stored authorized-identity name is present.
+    fn has_authorized_identity(&self, name: &ContextEntryName) -> bool;
+}
+
+impl ContextValues for TransportHeaders {
+    fn transport_headers(&self) -> Option<&TransportHeaders> {
+        Some(self)
+    }
+
+    fn has_authorized_identity(&self, _name: &ContextEntryName) -> bool {
+        false
+    }
+}
+
 pub(super) fn validate_definition(declaration: &ContextEntryDeclaration) -> Result<(), Error> {
     let errors = declaration
         .definition
@@ -166,6 +186,42 @@ pub(super) fn validate_definition(declaration: &ContextEntryDeclaration) -> Resu
 }
 
 impl ContextLayout {
+    /// Compiles composites selected by qualified references, leaving unused definitions inert.
+    ///
+    /// Only selected definitions contribute fields. Missing runtime values make
+    /// a composite absent rather than invalidating startup.
+    pub(crate) fn for_references<'a>(
+        declarations: &[ContextEntryDeclaration],
+        references: impl IntoIterator<Item = &'a ContextEntryRef>,
+    ) -> Result<Self, Error> {
+        let requested = references
+            .into_iter()
+            .filter_map(ContextEntryRef::scope)
+            .collect::<BTreeSet<_>>();
+        for name in &requested {
+            if !declarations
+                .iter()
+                .any(|declaration| &declaration.name == *name)
+            {
+                return Err(invalid(format!("unknown composite context entry `{name}`")));
+            }
+        }
+        let selected = declarations
+            .iter()
+            .filter(|declaration| requested.contains(&declaration.name))
+            .cloned()
+            .collect::<Vec<_>>();
+        let fields = selected
+            .iter()
+            .flat_map(|declaration| &declaration.definition.0)
+            .map(|part| ContextFieldLayout {
+                name: part.reference().name().clone(),
+                domain: part.domain(),
+            })
+            .collect::<BTreeSet<_>>();
+        Self::compile(fields, &selected)
+    }
+
     /// Compiles a binding's fields and entry declarations into a logical layout.
     pub fn compile(
         fields: impl IntoIterator<Item = ContextFieldLayout>,
@@ -277,6 +333,64 @@ impl ContextLayout {
     #[must_use]
     pub fn entries(&self) -> &[ContextEntryLayout] {
         &self.entries
+    }
+
+    /// Evaluates a composite atomically, including members not selected for output.
+    #[must_use]
+    pub fn is_present(&self, entry: ContextEntryId, context: &impl ContextValues) -> bool {
+        let entry = &self.entries[entry.index()];
+        let headers = context.transport_headers();
+        entry.members.iter().all(|member| {
+            let field = &self.fields[member.field.index()];
+            match field.domain {
+                ContextDomain::TransportHeader => headers.is_some_and(|headers| {
+                    headers.iter().any(|header| {
+                        header
+                            .name
+                            .as_str()
+                            .eq_ignore_ascii_case(field.name.as_str())
+                    })
+                }),
+                ContextDomain::AuthorizedIdentity => context.has_authorized_identity(&field.name),
+            }
+        }) && entry.conditions.iter().all(|condition| {
+            let field = &self.fields[condition.field.index()];
+            headers.is_some_and(|headers| {
+                headers.iter().any(|header| {
+                    header
+                        .name
+                        .as_str()
+                        .eq_ignore_ascii_case(field.name.as_str())
+                        && header.value.bytes == condition.value.as_ref()
+                })
+            })
+        })
+    }
+
+    /// Resolves a primitive, whole composite, or qualified composite member.
+    pub fn resolve(&self, reference: &ContextEntryRef) -> Result<ContextProjection, Error> {
+        match reference.scope() {
+            Some(composite) => self.resolve_member(composite, reference.name()),
+            None => {
+                if let Some(entry) = self.entry_names.get(reference.name()) {
+                    return self.resolve_composite(&self.entries[entry.index()].name);
+                }
+                let mut fields = self
+                    .field_names
+                    .iter()
+                    .filter(|((_, name), _)| name == reference.name())
+                    .map(|(_, field)| *field);
+                let field = fields
+                    .next()
+                    .ok_or_else(|| invalid(format!("unknown context entry `{reference}`")))?;
+                if fields.next().is_some() {
+                    return Err(invalid(format!(
+                        "context entry `{reference}` requires an explicit source domain"
+                    )));
+                }
+                Ok(ContextProjection::Primitive(field))
+            }
+        }
     }
 
     /// Resolves an exact stored primitive name within its source domain.

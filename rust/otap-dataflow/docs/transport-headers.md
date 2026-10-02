@@ -257,11 +257,26 @@ policies:
           value: production
 ```
 
-The `transport_header_match` entry type supports exact-value matching
-over transport headers.
+The composite header binding is active only when every value-bearing member
+exists and every `transport_header_match` condition has at least one matching
+captured value. Selecting one member does not bypass the whole composite's
+presence requirement. In the example, the receiver must successfully authorize
+the request and capture the verified `sub` claim as `customer_id`; a transport
+header named `customer_id` cannot substitute for that identity.
 
-Composite entry bindings (e.g., `product_user:workspace`) are valid only
-when all conditional entries match (i.e., when `environment=production`)
+During startup and live-update preparation, the engine context compiler resolves
+each exporter's selected composite definitions into a logical layout. Unused
+definitions remain inactive for that exporter. Missing message values make the
+composite absent rather than invalidating startup.
+
+Configuration remains separate from execution: serialized propagation policies
+contain only settings, while engine bindings hold the resolved layout and
+propagation implementation. Presence is evaluated at export time using existing
+header and identity storage and cached for that propagation call.
+
+For values captured by this pipeline, every header member and condition source
+needs a matching `header_capture` rule. In the example, `x-workspace` is stored
+as `workspace` and `x-environment` is stored as `environment`.
 
 Matching has these semantics:
 
