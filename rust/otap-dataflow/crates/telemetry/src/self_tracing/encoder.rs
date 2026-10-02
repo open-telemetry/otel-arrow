@@ -220,18 +220,9 @@ impl<'buf, B: BoundedBuf> DirectFieldVisitor<'buf, B> {
         Ok(truncated)
     }
 
-    /// Encode the body as a string. Empty strings are skipped.
-    ///
-    /// Uses `encode_len_delimited_partial` so the length placeholder is
-    /// patched even when truncation occurs (the `[...]` suffix is appended
-    /// via [`encode_plain_string`], the same safe-truncating mechanism used
-    /// by [`Self::encode_body_debug`] and by attribute string encoding).
-    /// Wrapped in `try_encode` so that any partial wire bytes written before
-    /// hitting the buffer's limit are rolled back on a hard failure.
-    /// Otherwise an unpatched length placeholder + leftover content bytes
-    /// would corrupt subsequent fields (e.g. `dropped_attributes_count`)
-    /// appended to the buffer later. Truncation or a hard drop is counted
-    /// via `dropped_count`, matching attribute-field behavior.
+    /// Encode the body as a string (empty strings are skipped), truncating
+    /// safely via [`encode_plain_string`] and counting truncation/drop via
+    /// `dropped_count`, matching attribute-field behavior.
     #[inline]
     pub fn encode_body_string(&mut self, value: &str) {
         if value.is_empty() {
@@ -254,13 +245,9 @@ impl<'buf, B: BoundedBuf> DirectFieldVisitor<'buf, B> {
         }
     }
 
-    /// Encode the body from a Debug value without allocation.
-    ///
-    /// Uses `encode_len_delimited_partial` so the length placeholder is patched
-    /// even when truncation occurs. Wrapped in `try_encode` so a hard failure
-    /// (nothing fits at all) rolls back partial bytes; see
-    /// [`Self::encode_body_string`] for rationale. Truncation or a hard drop
-    /// is counted via `dropped_count`.
+    /// Encode the body from a Debug value without allocation, truncating
+    /// safely (see [`Self::encode_body_string`]) and counting truncation/drop
+    /// via `dropped_count`.
     #[inline]
     pub fn encode_body_debug(&mut self, value: &dyn std::fmt::Debug) {
         let mut truncated = false;
@@ -408,30 +395,23 @@ fn encode_debug_string<B: BoundedBuf>(
     Ok(truncated)
 }
 
-/// Encode a plain `&str` as a protobuf string field with truncation support.
-///
-/// Mirrors [`encode_debug_string`] but writes the string's bytes directly
-/// through the truncating adapter instead of going through `Debug`/`write!`
-/// formatting, since the value is already text -- no formatting is needed.
-///
-/// If the string fits, returns `Ok(false)`. If it overflows the buffer, it
-/// is truncated with a `[...]` suffix and `Ok(true)` is returned.
-/// `Err(Dropped)` is returned only when even a minimal truncated form
-/// cannot fit (nothing useful was written).
+/// Encode a plain `&str` as a protobuf string field, mirroring
+/// [`encode_debug_string`] but writing the bytes directly (no `Debug`
+/// formatting needed) and returning `Ok(true)` if truncated with a `[...]`
+/// suffix, `Ok(false)` if it fit, or `Err(Dropped)` if nothing useful fit.
 #[inline]
 fn encode_plain_string<B: BoundedBuf>(buf: &mut B, value: &str) -> Result<bool, EncodeFailure> {
     let mut truncated = false;
     buf.encode_len_delimited_partial(ANY_VALUE_STRING_VALUE, |buf| {
         use std::fmt::Write as _;
         let mut adapter = BoundedBufFmt::new(buf);
-        // write_str copies the string's bytes directly; the adapter
-        // silently discards overflow bytes after appending the suffix.
+        // Copy the string's bytes directly; silently discards overflow after the suffix.
         let _ = adapter.write_str(value);
         let was_truncated = adapter.truncated;
         let content_start = adapter.content_start;
         truncated = was_truncated;
         if was_truncated && buf.len() <= content_start {
-            // Nothing useful was written (not even the suffix fit).
+            // Not even the truncation suffix fit, so nothing was written.
             return Err(EncodeFailure::Dropped);
         }
         Ok(())
