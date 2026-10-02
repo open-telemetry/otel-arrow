@@ -694,7 +694,9 @@ mod tests {
             3,
         );
 
-        slice.get_item_range((2..1).into(), &mut |_, _| true);
+        let start = 2;
+        let end = 1;
+        slice.get_item_range((start..end).into(), &mut |_, _| true);
     }
 
     /// Scenario: The same integer sequence uses Arrow-buffered and owned array representations.

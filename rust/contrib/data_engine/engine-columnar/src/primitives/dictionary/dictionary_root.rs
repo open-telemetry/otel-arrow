@@ -91,6 +91,7 @@ impl Dictionary<'_> {
             }
             self.values
                 .get_value_at(value)
+                .unwrap_or(ValueOrRef::Null)
                 .to_value()
                 .diagnostic_fmt(f)?;
         }
@@ -184,12 +185,12 @@ impl<'a> Dictionary<'a> {
         (self.keys, self.values)
     }
 
-    pub fn get_value(&self, key_index: usize) -> ValueOrRef<'a> {
+    pub fn get_value(&self, key_index: usize) -> Result<ValueOrRef<'a>, ValueError> {
         if let Some(value_index) = self.get_value_index(key_index) {
             return self.values.get_value_at(value_index);
         }
 
-        ValueOrRef::Null
+        Ok(ValueOrRef::Null)
     }
 }
 
@@ -233,10 +234,10 @@ mod tests {
         assert!(nulls.is_null(1));
         assert!(nulls.is_null(2));
         assert!(nulls.is_valid(3));
-        assert_eq!(dictionary.get_value(0), ValueOrRef::Integer(10));
-        assert_eq!(dictionary.get_value(1), ValueOrRef::Null);
-        assert_eq!(dictionary.get_value(2), ValueOrRef::Null);
-        assert_eq!(dictionary.get_value(4), ValueOrRef::Null);
+        assert_eq!(dictionary.get_value(0), Ok(ValueOrRef::Integer(10)));
+        assert_eq!(dictionary.get_value(1), Ok(ValueOrRef::Null));
+        assert_eq!(dictionary.get_value(2), Ok(ValueOrRef::Null));
+        assert_eq!(dictionary.get_value(4), Ok(ValueOrRef::Null));
     }
 
     /// Scenario: Scalar and null dictionaries are synthesized for a requested Arrow key type.
@@ -248,15 +249,15 @@ mod tests {
         assert_eq!(scalar.len(), 3);
         assert_eq!(scalar.keys().data_type(), DataType::UInt16);
         assert!(!scalar.is_null());
-        assert_eq!(scalar.get_value(2), ValueOrRef::Integer(42));
-        assert_eq!(scalar.get_value(3), ValueOrRef::Null);
+        assert_eq!(scalar.get_value(2), Ok(ValueOrRef::Integer(42)));
+        assert_eq!(scalar.get_value(3), Ok(ValueOrRef::Null));
 
         let null = Dictionary::new_null_with_data_type(3, DataType::Int32);
         assert_eq!(null.len(), 3);
         assert_eq!(null.keys().data_type(), DataType::Int32);
         assert!(null.is_null());
         assert_eq!(null.nulls().unwrap().null_count(), 3);
-        assert_eq!(null.get_value(0), ValueOrRef::Null);
+        assert_eq!(null.get_value(0), Ok(ValueOrRef::Null));
     }
 
     /// Scenario: A primitive Arrow array is represented as a dictionary with one unique key per row.
@@ -268,8 +269,8 @@ mod tests {
 
         assert_eq!(dictionary.len(), 3);
         assert_eq!(dictionary.get_value_index(2), Some(2));
-        assert_eq!(dictionary.get_value(2), ValueOrRef::Integer(13));
+        assert_eq!(dictionary.get_value(2), Ok(ValueOrRef::Integer(13)));
         assert_eq!(dictionary.get_value_index(3), None);
-        assert_eq!(dictionary.get_value(3), ValueOrRef::Null);
+        assert_eq!(dictionary.get_value(3), Ok(ValueOrRef::Null));
     }
 }
