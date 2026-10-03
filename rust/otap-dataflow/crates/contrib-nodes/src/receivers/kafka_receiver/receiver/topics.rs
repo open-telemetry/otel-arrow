@@ -21,7 +21,7 @@ use std::sync::Arc;
 /// regex patterns; literal topic names yield `None`.
 ///
 /// Returns an error if any regex pattern is invalid.
-pub(super) fn compile_topic_regexes(topics: &[String]) -> Result<Vec<Option<Regex>>, ConfigError> {
+pub(crate) fn compile_topic_regexes(topics: &[String]) -> Result<Vec<Option<Regex>>, ConfigError> {
     topics
         .iter()
         .map(|t| {
@@ -41,7 +41,7 @@ pub(super) fn compile_topic_regexes(topics: &[String]) -> Result<Vec<Option<Rege
 /// Check whether an actual topic name matches any configured topic in the
 /// given list. Each entry is checked against its parallel regex (if the
 /// topic was a pattern), or via exact string equality.
-pub(super) fn matches_any_topic(
+pub(crate) fn matches_any_topic(
     config_topics: &[String],
     regexes: &[Option<Regex>],
     actual: &str,
@@ -58,7 +58,7 @@ pub(super) fn matches_any_topic(
 /// Compile exclude topic patterns into [`Regex`] values.
 /// All entries are treated as regex patterns (they must be valid regex per
 /// validation). Returns an error if any pattern is invalid.
-pub(super) fn compile_exclude_regexes(
+pub(crate) fn compile_exclude_regexes(
     exclude_topics: &[String],
 ) -> Result<Vec<Regex>, ConfigError> {
     exclude_topics
@@ -72,7 +72,7 @@ pub(super) fn compile_exclude_regexes(
 }
 
 /// Check whether an actual topic name matches any exclude pattern.
-pub(super) fn matches_any_exclude(exclude_regexes: &[Regex], actual: &str) -> bool {
+pub(crate) fn matches_any_exclude(exclude_regexes: &[Regex], actual: &str) -> bool {
     exclude_regexes.iter().any(|r| r.is_match(actual))
 }
 

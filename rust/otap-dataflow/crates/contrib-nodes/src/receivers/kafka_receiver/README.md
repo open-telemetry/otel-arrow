@@ -51,6 +51,7 @@ config:
 | `auto_offset_reset` | string | `latest` | Where to start consuming when no committed offset exists. |
 | `commit` | object | `{mode: manual}` | Commit configuration (see [Commit Configuration](#commit-configuration)). |
 | `transient_nack` | object | Manual: `{mode: replay, initial_backoff_ms: 1000, max_backoff_ms: 30000}`; auto: inactive | Policy for non-permanent downstream NACKs (see [Transient NACK Configuration](#transient-nack-configuration)). |
+| `dlq` | object | *none* (disabled) | Optional dead-letter-queue configuration. Presence enables it; manual commit only (see [Dead Letter Queue](#dead-letter-queue-experimental)). |
 | `lag_refresh_interval_ms` | integer | *none* | Interval between consumer-lag refreshes, in milliseconds. Enables `receiver.kafka.consumer.group.lag` (consumer-group lag against broker-committed offsets; see [Metric Sets](#metric-sets)). Manual commit mode only; runs off the receive loop so it never blocks processing. Off by default; recommended `60000` (60s), higher under large partition fan-out; must be > 0 when set. |
 | `session_timeout_ms` | integer | `10000` | Session timeout in milliseconds. Must be > 0. |
 | `heartbeat_interval_ms` | integer | `3000` | Heartbeat interval in milliseconds. Must be > 0 and strictly less than `session_timeout_ms`. |
@@ -189,8 +190,8 @@ leaves the policy inactive. Explicit `mode: replay` requires
 `commit.mode: manual`; startup validation rejects it with auto commit because
 broker-managed commits cannot honor downstream feedback. Retries are unlimited
 and use exponential backoff capped by `max_backoff_ms`. There is no
-retry-exhaustion action. Built-in DLQ support is planned for a future release;
-until then, the receiver does not publish failed records to a DLQ.
+retry-exhaustion action. To durably capture records the pipeline cannot handle,
+enable the [Dead Letter Queue](#dead-letter-queue-experimental).
 
 ```yaml
 config:
@@ -209,7 +210,7 @@ Manual-mode completion behavior is:
 | Completion | Offset behavior |
 | --- | --- |
 | ACK | Marks the record complete and advances the partition watermark when contiguous progress permits. |
-| Permanent NACK | Remains terminal and marks the record complete. Built-in DLQ support is planned but not yet available. |
+| Permanent NACK | Remains terminal and marks the record complete. When the [DLQ](#dead-letter-queue-experimental) captures `permanent_nack`, the original bytes are dead-lettered first and the offset advances only after delivery. |
 | Non-permanent NACK with `mode: commit_and_skip` | Explicitly opts out of recovery, marks the record complete, and permits the offset to advance. |
 | Non-permanent NACK with `mode: replay` | Leaves the record unresolved, pauses only its partition, waits for backoff, seeks to the earliest unresolved offset, and resumes. |
 | Feedback from an obsolete assignment or replay generation | Ignored without changing offsets. |
@@ -261,6 +262,102 @@ Kafka receiver -> internal processors -> retry processor -> exporter
 
 See [At-Least-Once with the Retry Processor](#at-least-once-with-the-retry-processor)
 for a complete pipeline example.
+
+### Dead Letter Queue (Experimental)
+
+The optional `dlq` block forwards messages the pipeline cannot handle to a
+user-configured Kafka topic instead of silently dropping them, giving operators
+a durable, inspectable, replayable record of every failure. Presence of the
+block enables the feature; omit it entirely to disable it.
+
+The DLQ requires manual commit mode (`commit.mode: manual`). DLQ delivery
+guarantees depend on the receiver controlling offset commits, so it is rejected
+under auto commit.
+
+#### Captured categories
+
+`capture` selects which failure categories are dead-lettered (default: all
+three):
+
+- `decode` -- the payload failed to decode ("poison pill"). This toggle also
+  covers empty (null-value) payloads, which are dead-lettered with the distinct
+  `empty_payload` reason. A zero-length payload that is a well-formed empty
+  request is accepted and forwarded, not dead-lettered.
+- `excluded_topic` -- the message arrived on a topic delivered by a regex
+  subscription but removed by `exclude_topics`, so it routed to no signal. It is
+  dead-lettered to the matching (excluding) signal's DLQ topic.
+- `permanent_nack` -- the message was permanently rejected downstream.
+
+For `decode`, `empty_payload`, and `excluded_topic` the original raw bytes are
+still in hand and are dead-lettered directly. For `permanent_nack` the receiver
+recovers the original bytes with a dedicated, idle re-read consumer that seeks to
+the failed offset. In all cases the DLQ record payload is byte-identical to the
+source message.
+
+#### Offset and failure behavior
+
+The source offset advances only after the DLQ delivery is confirmed. All DLQ
+work runs off the receive loop and is timeout-bounded, so a stalled broker or
+slow re-read never blocks ingestion. If a delivery fails, times out, or the
+original bytes cannot be recovered, the message is counted as a DLQ loss
+(`receiver.kafka.dlq.loss`) and the offset advances so the pipeline is never
+wedged. Outstanding deliveries are bounded at 5 in flight.
+
+Because delivery-then-commit is at-least-once, a crash between a DLQ produce and
+the source-offset commit re-delivers and re-dead-letters the message on restart;
+DLQ consumers must tolerate duplicates.
+
+To prevent a routing loop, when the DLQ reuses the source cluster (its brokers
+overlap the source consumer's), config validation rejects any resolved DLQ topic
+(global or per-signal) that matches a configured ingest topic or include regex,
+so the receiver can never consume and re-dead-letter its own output. Excludes are
+ignored in this check because librdkafka still consumes an excluded topic before
+routing drops it. When the DLQ targets a disjoint cluster the check is skipped.
+
+#### Fields
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `topic` | string | *none* | Global DLQ topic applied to all captured signals unless overridden. |
+| `per_signal` | object | *none* | Per-signal topic overrides (`traces`, `metrics`, `logs`). |
+| `capture` | list | all three | Subset of `decode`, `excluded_topic`, `permanent_nack`. Must be non-empty. (`decode` also covers empty payloads, reported as `empty_payload`.) |
+| `connection` | object | source connection | Optional `brokers`/`auth`/`tls` overrides for the DLQ producer; defaults to the source consumer's connection. The re-read consumer always uses the source connection. |
+
+Every DLQ topic must be a valid Kafka topic name and, when the DLQ reuses the
+source cluster, must not match any configured ingest topic or ingest regex
+pattern so the receiver cannot consume its own output. Note that
+`exclude_topics` does not unsubscribe a topic from Kafka -- an excluded topic is
+still consumed and then routed to no signal -- so a DLQ topic matched by an
+ingest include pattern is rejected even when an exclude pattern would also match
+it. The producer
+`client.id` is auto-derived as `{client_id}-dlq`. The DLQ producer is not
+tunable: it runs on librdkafka's defaults (compression `none`, `acks=all`) except
+that its `message.timeout.ms` is pinned to the same fixed internal timeout that
+bounds each DLQ operation, so a record that misses that deadline is dropped by
+the producer rather than delivered later, and a stalled broker never wedges
+ingestion. In-flight bounding is fixed and not user-configurable.
+
+Each dead-lettered record carries error-context headers: `dlq.error`,
+`dlq.reason`, `dlq.source.topic`, `dlq.source.partition`, `dlq.source.offset`,
+`dlq.signal`, and `dlq.timestamp`, plus a passthrough of the original source
+headers.
+
+```yaml
+receivers:
+  kafka:
+    brokers: "broker1:9092"
+    group_id: "otel-collector"
+    client_id: "otel-collector"
+    commit:
+      mode: manual
+    traces:
+      topics: ["otlp_spans"]
+    dlq:
+      topic: "otel_dlq"
+      per_signal:
+        traces: "otel_dlq_traces"
+      capture: ["decode", "excluded_topic", "permanent_nack"]
+```
 
 #### Comparison with the Go Kafka receiver
 
@@ -375,9 +472,11 @@ equivalent configuration here.
 Even with a retry processor in the pipeline, the following behaviors differ from
 the Go Kafka receiver:
 
-- **Permanent-error policy.** This receiver always commits a permanent NACK;
-  it has no equivalent to leaving a permanent error unmarked or publishing it
-  to a built-in DLQ. Built-in DLQ support is planned for a future release.
+- **Permanent-error policy.** This receiver commits a permanent NACK after
+  optionally dead-lettering it. Enable the
+  [Dead Letter Queue](#dead-letter-queue-experimental) with `permanent_nack` capture to
+  forward the original bytes to a DLQ topic before the offset advances; there is
+  no equivalent to leaving a permanent error unmarked.
 - **Transient-NACK opt-out.** Manual mode replays non-permanent NACKs by
   default. Set `transient_nack.mode: commit_and_skip` only when advancing past
   a transient processing failure is intentional.
@@ -983,7 +1082,7 @@ and `refused` for a permanent NACK.
 `signal` is `traces`, `metrics`, `logs`, or `unknown` when topic routing did not
 establish a signal. `error.type` uses the shared receiver categories
 `invalid_request` and `internal`. The Kafka-specific `reason` is one of
-`empty_payload`, `unknown_topic`, `decode`, `topic_id_exhausted`, or `internal`.
+`empty_payload`, `excluded_topic`, `decode`, `topic_id_exhausted`, or `internal`.
 These values are bounded; topic names and payload details remain in events
 instead of metrics.
 
@@ -1044,7 +1143,7 @@ an empty assignment resets it to zero.
 | `receiver.kafka.acks_received`, `nacks_received` | `receiver.kafka.acknowledgements.responses` with `outcome="success"`, `outcome="failure"` (non-permanent NACK), or `outcome="refused"` (permanent NACK). |
 | `receiver.kafka.processing_errors` | Sum `receiver.kafka.rejections.messages` across its bounded attributes. |
 | `receiver.kafka.unmarshal_failed_traces`, `unmarshal_failed_metrics`, `unmarshal_failed_logs` | `receiver.kafka.rejections.messages{reason="decode"}` filtered by `signal`. |
-| `receiver.kafka.empty_payloads`, `unknown_topic_errors`, `topic_id_exhausted` | `receiver.kafka.rejections.messages` filtered by the corresponding `reason`. |
+| `receiver.kafka.empty_payloads`, `excluded_topic_errors`, `topic_id_exhausted` | `receiver.kafka.rejections.messages` filtered by the corresponding `reason`. |
 | `receiver.kafka.transport_errors` | Sum `receiver.kafka.transport.errors` across `error.type`. |
 | `receiver.kafka.offset_commits`, `offset_commit_errors` | `receiver.kafka.offset_commits.commits` with `outcome="success"` or `outcome="failure"`. |
 | `receiver.kafka.idempotent_skips` | `receiver.kafka.consumer.records.duplicates`. |
@@ -1063,7 +1162,7 @@ an empty assignment resets it to zero.
 | `kafka.shutdown.commit_failed` | `error` | Final offset commit during shutdown failed. |
 | `kafka.commit.failed` | `error` | An offset commit failed (non-fatal; offsets stay tracked and are retried on the next terminal feedback or timer tick). |
 | `kafka.message.empty_payload` | `error` | A consumed message had an empty payload. |
-| `kafka.message.unknown_topic` | `error` | A consumed message came from a topic not mapped to any signal. |
+| `kafka.message.excluded_topic` | `error` | A consumed message came from a topic delivered by a regex subscription but removed by `exclude_topics`. |
 | `kafka.message.unmarshal_failed` | `error` | A consumed message failed to unmarshal (includes `signal` field: traces, metrics, or logs). |
 | `kafka.message.decode_failed` | `error` | A consumed message failed to decode and was skipped. |
 | `kafka.partition_eof` | `info` | Consumer reached end of a partition. |
@@ -1114,8 +1213,9 @@ an empty assignment resets it to zero.
   rewind point and blocks the affected partition until progress resumes.
 - Receiver replay retries indefinitely with a capped exponential backoff. It
   has no jitter, retry limit, operator-resume command, or built-in retry topic.
-  Built-in DLQ support is planned for a future release. Permanent NACKs
-  currently commit the record.
+  The optional [Dead Letter Queue](#dead-letter-queue-experimental) forwards undecodable,
+  excluded-topic, and permanently-nacked records to a DLQ topic; a permanent NACK
+  commits the record after any configured dead-letter delivery.
 - See
   [Comparison with the Go Kafka receiver](#comparison-with-the-go-kafka-receiver)
   for details.

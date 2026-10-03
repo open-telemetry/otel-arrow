@@ -235,6 +235,35 @@ impl KafkaReceiver {
         }
     }
 
+    /// A DLQ workflow runs asynchronously (off the receive loop), so the
+    /// partition can be revoked and reassigned before the completion arrives. In
+    /// that case the same offset may already be pending under a new generation;
+    /// advancing here would drop the new record. This reuses the same
+    /// stale-generation policy as ack/nack feedback ([`classify_offset_feedback`])
+    /// and counts a dropped stale completion under `feedback_after_revocation`.
+    pub(super) fn dlq_completion_is_current(
+        &mut self,
+        topic: &str,
+        partition: i32,
+        ownership_generation: u64,
+    ) -> bool {
+        let tracked_generation = self.offset_tracker.partition_generation(topic, partition);
+        let assigned_generation = self.rebalance_state.current_generation(topic, partition);
+        let is_assigned = self.rebalance_state.is_assigned(topic, partition);
+        match classify_offset_feedback(
+            ownership_generation,
+            tracked_generation,
+            assigned_generation,
+            is_assigned,
+        ) {
+            OffsetFeedbackAction::Commit => true,
+            OffsetFeedbackAction::DropStale | OffsetFeedbackAction::DropLateAck { .. } => {
+                self.metrics.consumer.feedback_after_revocation.inc();
+                false
+            }
+        }
+    }
+
     /// Apply terminal feedback (ACK, permanent NACK, or commit-and-skip NACK).
     pub(super) fn handle_terminal_offset_feedback<C: ConsumerContext>(
         &mut self,
