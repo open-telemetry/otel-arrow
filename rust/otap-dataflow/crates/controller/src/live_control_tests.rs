@@ -2087,7 +2087,7 @@ connections:
             },
         )
         .expect("resize to four should be planned");
-    runtime.commit_pipeline_record(&committed_plan, committed_plan.target_generation);
+    runtime.commit_pipeline_deployment(&committed_plan, committed_plan.target_generation);
 
     assert!(matches!(
         runtime.insert_rollout_plan(&stale_plan),
@@ -3488,7 +3488,7 @@ connections:
     runtime
         .insert_rollout(&plan.pipeline_key, plan.rollout.clone())
         .expect("rollout should register");
-    runtime.commit_pipeline_record(&plan, plan.target_generation);
+    runtime.commit_pipeline_deployment(&plan, plan.target_generation);
 
     let mut candidate_rx = register_runtime_instance(
         &runtime,
@@ -4776,7 +4776,10 @@ fn reconcile_engine_config_preserves_generation_for_context_declaration_changes(
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let pipeline_key = PipelineKey::new("g1".into(), "p1".into());
-        assert_eq!(state.logical_pipelines[&pipeline_key].active_generation, 0);
+        assert_eq!(
+            state.logical_pipelines[&pipeline_key].create_or_replace_generation,
+            0
+        );
         assert_eq!(state.generation_counters[&pipeline_key], 1);
     }
 }

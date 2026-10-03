@@ -85,7 +85,7 @@ impl<
             if state
                 .logical_pipelines
                 .get(pipeline_key)
-                .is_some_and(|record| record.active_generation == target_generation)
+                .is_some_and(|record| record.create_or_replace_generation == target_generation)
             {
                 return;
             }
@@ -365,7 +365,7 @@ impl<
             );
         }
 
-        self.commit_pipeline_record(plan, plan.target_generation);
+        self.commit_pipeline_deployment(plan, plan.target_generation);
         Ok(())
     }
 
@@ -375,12 +375,12 @@ impl<
         self: &Arc<Self>,
         plan: &CandidateRolloutPlan,
     ) -> Result<(), RolloutExecutionError> {
-        let Some(current_record) = plan.current_record.as_ref() else {
+        let Some(current_deployment) = plan.current_deployment.as_ref() else {
             return Err(RolloutExecutionError::Failed(
-                "internal error: resize rollout missing current record".to_owned(),
+                "internal error: resize rollout missing current deployment".to_owned(),
             ));
         };
-        let active_generation = current_record.active_generation;
+        let active_generation = current_deployment.create_or_replace_generation;
         let mut started_cores = Vec::new();
         let mut retired_cores = Vec::new();
 
@@ -465,7 +465,7 @@ impl<
             );
         }
 
-        self.commit_pipeline_record(plan, active_generation);
+        self.commit_pipeline_deployment(plan, active_generation);
         self.clear_pipeline_serving_generations(
             &plan.pipeline_key,
             plan.current_assigned_cores
@@ -481,9 +481,9 @@ impl<
         self: &Arc<Self>,
         plan: &CandidateRolloutPlan,
     ) -> Result<(), RolloutExecutionError> {
-        let Some(_previous) = plan.current_record.as_ref() else {
+        let Some(_previous) = plan.current_deployment.as_ref() else {
             return Err(RolloutExecutionError::Failed(
-                "internal error: replace rollout missing current record".to_owned(),
+                "internal error: replace rollout missing current deployment".to_owned(),
             ));
         };
 
@@ -714,7 +714,7 @@ impl<
             );
         }
 
-        self.commit_pipeline_record(plan, plan.target_generation);
+        self.commit_pipeline_deployment(plan, plan.target_generation);
         self.clear_pipeline_serving_generations(
             &plan.pipeline_key,
             plan.current_assigned_cores
@@ -737,12 +737,12 @@ impl<
             rollout.state = RolloutLifecycleState::RollingBack;
             rollout.failure_reason = Some(failure_reason.clone());
         });
-        let Some(previous) = plan.current_record.as_ref() else {
+        let Some(previous) = plan.current_deployment.as_ref() else {
             return Err(RolloutExecutionError::RollbackFailed(
-                "internal error: resize rollback missing current record".to_owned(),
+                "internal error: resize rollback missing current deployment".to_owned(),
             ));
         };
-        let previous_generation = previous.active_generation;
+        let previous_generation = previous.create_or_replace_generation;
 
         for core_id in retired_cores.iter().rev() {
             self.update_rollout_core_state(
@@ -862,14 +862,14 @@ impl<
             rollout.state = RolloutLifecycleState::RollingBack;
             rollout.failure_reason = Some(failure_reason.clone());
         });
-        let Some(previous) = plan.current_record.as_ref() else {
+        let Some(previous) = plan.current_deployment.as_ref() else {
             return Err(RolloutExecutionError::RollbackFailed(
-                "internal error: replace rollback missing current record".to_owned(),
+                "internal error: replace rollback missing current deployment".to_owned(),
             ));
         };
 
         // Rollback must restore the exact pre-rollout generation for each core.
-        // previous.active_generation only identifies the committed config and can
+        // previous.create_or_replace_generation only identifies the committed deployment and can
         // be older than a core-local generation installed by runtime recovery.
         for core_id in retired_removed_cores.iter().rev() {
             self.update_rollout_core_state(
@@ -1007,7 +1007,10 @@ impl<
                 None,
             );
         }
-        self.restore_replace_rollback_serving_generations(plan, previous.active_generation);
+        self.restore_replace_rollback_serving_generations(
+            plan,
+            previous.create_or_replace_generation,
+        );
         Err(RolloutExecutionError::Failed(failure_reason))
     }
 

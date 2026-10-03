@@ -45,7 +45,7 @@ mod state;
 use self::state::TERMINAL_OPERATION_RETENTION_TTL;
 use self::state::{
     ActiveRuntimeCoreState, CandidateRolloutPlan, CandidateShutdownPlan, ControllerRuntimeState,
-    LivePipelinePlacement, LogicalPipelineRecord, PipelineOperationKind,
+    LivePipelinePlacement, LogicalPipelineDeployment, PipelineOperationKind,
     PipelineOperationReservationState, RolloutAction, RolloutCoreProgress, RolloutExecutionError,
     RolloutLifecycleState, RolloutRecord, RuntimeInstanceLifecycle, RuntimeInstanceRecord,
     RuntimeRecoveryState, ShutdownCoreProgress, ShutdownLifecycleState, ShutdownRecord,
@@ -239,10 +239,10 @@ impl<
             .insert(pipeline_key.clone(), generation + 1);
         _ = state.logical_pipelines.insert(
             pipeline_key,
-            LogicalPipelineRecord {
+            LogicalPipelineDeployment {
                 resolved,
                 context_bindings,
-                active_generation: generation,
+                create_or_replace_generation: generation,
                 placement,
                 placement_generation: 0,
             },
