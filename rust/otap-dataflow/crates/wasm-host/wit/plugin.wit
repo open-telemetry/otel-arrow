@@ -6,14 +6,15 @@
 // built out. Do not depend on this interface for anything outside the
 // in-tree experimental slice.
 //
-// This contract (see open-telemetry/otel-arrow#2973 and #3227) freezes only
-// the tiny surface this vertical slice needs. The full package described in
-// #3227 (opl-executor, batch-builder, host-services, exporter/receiver/extension
-// worlds, the complete kernel vocabulary and escape hatches) is intentionally
-// deferred and grown kernel-by-kernel behind working code.
+// This contract freezes only the tiny surface this vertical slice needs. It
+// includes a minimal `lifecycle` export and capability-limited `host-services`
+// import (config, logging, and a bounded counter). OPL execution, batch
+// building, exporter/receiver/extension worlds, the complete kernel
+// vocabulary, and escape hatches are intentionally deferred and will be
+// added kernel-by-kernel behind working code.
 //
 // NOTE: `resource` and `record` are WIT keywords, so the `attr-scope` cases are
-// escaped with `%` while keeping the identifiers required by #3227.
+// escaped with `%`.
 
 package otel:otap-dataflow-plugin@0.1.0;
 
@@ -35,7 +36,7 @@ interface otel-kernels {
     }
 
     /// Number of rows in the pdata resource's root record batch.
-    pdata-num-rows: func(data: borrow<pdata>) -> u32;
+    pdata-num-rows: async func(data: borrow<pdata>) -> u32;
 
     /// Return a new pdata resource keeping only rows whose attribute `key` in
     /// `scope` equals `value`. Consumes the input resource and returns a new
@@ -45,7 +46,12 @@ interface otel-kernels {
     /// - only `record` scope over the root record batch is implemented
     /// - `resource` and `scope` are rejected (trap) until implemented
     /// - invalid keys and invalid data-shape operations are rejected (trap)
-    filter-by-attribute-eq: func(
+    ///
+    /// A trap is not recoverable for the plugin instance: it fails the
+    /// current `process` call, which the engine treats as a node processing
+    /// error and uses to terminate the node. See the `kernel-processor`
+    /// world doc comment below.
+    filter-by-attribute-eq: async func(
         data: pdata,
         scope: attr-scope,
         key: string,
@@ -58,13 +64,235 @@ interface processor {
     use otel-kernels.{pdata};
 
     /// Process one pdata resource. Return `none` to drop the pdata entirely.
-    process: func(data: pdata) -> option<pdata>;
+    process: async func(data: pdata) -> option<pdata>;
+}
+
+/// Host-provided services available to every plugin world that imports this
+/// interface. This is deliberately the only project-owned capability surface
+/// beyond `otel-kernels`.
+///
+/// A Rust `std` guest also imports `wasi:cli@0.3.0` and
+/// `wasi:clocks@0.3.0`. The host links only those adapter-provided WASI
+/// interfaces: CLI state has empty arguments and environment, no initial
+/// working directory, and empty stdio; clocks currently expose real wall and
+/// monotonic time. Future clock waits fail immediately in every guest entry
+/// point. Filesystem, sockets, random, network access, and every other ambient
+/// WASI capability remain unavailable.
+///
+/// Every project-owned operation below is capability-limited by design:
+///
+/// - `host-abi-version` is a constant, so a guest can detect the host it is
+///   talking to before using anything else here.
+/// - `get-config` is read-only; there is no way for a guest to write
+///   configuration back to the host.
+/// - `log` never gives the guest access to the host's raw logging/tracing
+///   subsystem; every call is routed through the host's own `otel_*`
+///   telemetry macros under the `wasm_processor` component scope, and the
+///   host stamps each record with the emitting pipeline node name. Guest logs
+///   therefore travel the same routing path as native processor logs while
+///   remaining attributable to the specific plugin instance that emitted
+///   them; a guest cannot forge or suppress that attribution.
+/// - `counter-add` is a single, minimal metric primitive (no registration,
+///   no arbitrary metric kinds) and is bounded: the host enforces a small,
+///   fixed cap on the number of distinct counter names a single plugin
+///   instance may create (see `counter-add` doc comment for the exact bound),
+///   so a misbehaving or malicious guest cannot create unbounded telemetry
+///   cardinality.
+/// - `get-config`, `log`, and `counter-add` share a token-bucket rate limiter
+///   (see `log` doc comment): since plugin instances are long-lived
+///   telemetry-agent processes rather than short batch jobs, the limiter
+///   bounds a guest's *sustained* host-service call rate while still
+///   tolerating short bursts, independent of how much Wasmtime fuel a
+///   guest's calling loop consumes.
+/// - String-copy budgets are independent of call-rate throttling. Canonical
+///   lifting rejects more than 16 KiB of encoded string data per lift before
+///   copying it. Imported strings (including kernel arguments) and config
+///   clones share a 2 MiB UTF-8 byte allowance per guest entry and a lifetime
+///   byte bucket of 1 MiB/second with a 2 MiB burst. Incoming arguments are
+///   charged after lifting, even for ignored calls; the final failing lift
+///   can therefore add up to 32 KiB of decoded strings. Config is charged
+///   before cloning. Exhaustion traps, preventing further copy work. These
+///   limits were introduced in host-services ABI version 2.
+///
+/// Stability: `log` (no structured key/value fields) and `counter-add` (no
+/// unit, no attributes) are the two shapes here most likely to need a
+/// breaking change as this contract grows. Treat them as provisional and
+/// gate on `host-abi-version` rather than assuming they are settled.
+interface host-services {
+    /// Severity level for a guest-emitted log record. Maps 1:1 to the host's
+    /// `otel_trace!`/`otel_debug!`/`otel_info!`/`otel_warn!`/`otel_error!`
+    /// telemetry macros.
+    enum log-level {
+        trace,
+        debug,
+        info,
+        warn,
+        error,
+    }
+
+    /// Return this host's `host-services` ABI version.
+    ///
+    /// Bumped whenever the observable behavior of an existing operation in
+    /// this interface changes. A guest that depends on specific semantics
+    /// should check this from `initialize` and return an `init-error` if it
+    /// does not recognize the value, so an incompatible pairing fails at
+    /// pipeline startup rather than misbehaving at runtime. (Adding a *new*
+    /// operation is a world-level change, which an older guest simply does
+    /// not import; it is a newer guest against an older host that this
+    /// guards against.)
+    ///
+    /// Not rate-limited: it takes no guest input, allocates nothing, and
+    /// returns a constant.
+    host-abi-version: async func() -> u32;
+
+    /// Return the plugin-specific configuration blob (JSON, serialized to a
+    /// string) for the calling plugin instance.
+    ///
+    /// This is exactly the `config` value from the host's node configuration
+    /// -- the freeform, plugin-owned sub-object -- and nothing else. Host
+    /// -internal fields such as the `.wasm` file's path on the host
+    /// filesystem are deliberately *not* included: a guest in this world has
+    /// no filesystem capability, so it has no use for them, and excluding
+    /// them keeps host configuration internals out of the plugin ABI. When
+    /// no plugin-specific config is set, the string is `null`.
+    ///
+    /// This is a read-only, per-instance snapshot fixed at instantiation
+    /// time: the same string is returned on every call for the lifetime of
+    /// the instance, and there is no host-services operation that lets a
+    /// guest mutate it.
+    ///
+    /// Bound: shares the token bucket described under `log`, because each
+    /// call copies the blob into a fresh host allocation. A throttled call
+    /// returns an empty string. The copy-byte budget is checked before
+    /// cloning and traps on exhaustion, so guests should call this once,
+    /// from `initialize`, and keep the result.
+    get-config: async func() -> string;
+
+    /// Emit a structured log record through the host's own telemetry
+    /// pipeline (never a raw `println!`/stdout write).
+    ///
+    /// Bound: the host forwards at most 4096 bytes of `message` to telemetry;
+    /// longer messages are truncated (not dropped) to a valid UTF-8 prefix
+    /// with a truncation marker appended.
+    ///
+    /// Transient argument copies are bounded separately by the lifting and
+    /// aggregate byte budgets described on this interface. Those checks
+    /// apply even when call-rate throttling would otherwise ignore the log.
+    ///
+    /// `get-config`, `log`, and `counter-add` share a token-bucket rate
+    /// limiter scoped to the plugin instance's whole lifetime (not reset per
+    /// call): it allows a sustained call rate plus a burst allowance, so a
+    /// guest calling any of them in a tight loop is throttled down to the
+    /// sustained rate rather than either being trapped or generating
+    /// unbounded telemetry volume. Calls made while the bucket is empty are
+    /// silent no-ops provided the copy-byte budget is not exceeded.
+    /// Throttling is visible to operators through the host's
+    /// `guest_host_service_calls_rejected` metric, so a plugin that has gone
+    /// quiet can be told apart from one that is being throttled.
+    log: async func(level: log-level, message: string);
+
+    /// Add `value` to a host-tracked, named counter scoped to this plugin
+    /// instance.
+    ///
+    /// Bound: the host accepts at most 16 distinct counter `name`s per plugin
+    /// instance (first-seen-wins), and retains no name longer than 256 bytes.
+    /// Calls that exceed either bound are silently no-ops provided the
+    /// lifting and copy-byte budgets are not exceeded. This bounds
+    /// telemetry cardinality and retained host memory. The two rejection
+    /// reasons are reported as separate host metrics
+    /// (`guest_counter_add_rejected_name_len` and
+    /// `guest_counter_add_rejected_cardinality`), so a silently-dropped call
+    /// is still diagnosable. `counter-add` also shares the `log` rate limiter
+    /// described above.
+    ///
+    /// Names within the bound accumulate across calls for the lifetime of the
+    /// instance. The host emits the per-name cumulative totals as structured
+    /// telemetry on its own metrics-collection tick -- deliberately not once
+    /// per call, so a plugin that counts once per batch does not put a log
+    /// record on the pdata hot path.
+    counter-add: async func(name: string, value: u64);
+}
+
+/// Plugin initialization, exported by every plugin so the host can drive
+/// one-time setup before the (possibly many) `process` calls made against a
+/// single instantiated guest.
+interface lifecycle {
+    /// Structured error returned when a plugin fails to initialize (for
+    /// example, because its configuration -- fetched via
+    /// `host-services.get-config` -- is invalid or incomplete). The host
+    /// surfaces this as a pipeline *startup*-time configuration error, not a
+    /// runtime trap, so misconfigured plugins fail fast before any `process`
+    /// call is ever attempted.
+    record init-error {
+        /// Human-readable description of why initialization failed.
+        message: string,
+    }
+
+    /// Called exactly once per instantiated guest, immediately after
+    /// instantiation and before any `process` call.
+    ///
+    /// Bound: like `process`, this runs under a Wasmtime fuel budget, so a
+    /// guest cannot hang pipeline startup in a loop here; exhausting the
+    /// budget traps and is reported as a startup configuration error.
+    ///
+    /// Design note: configuration is intentionally *not* passed as a
+    /// parameter here. Instead, the guest calls `host-services.get-config`
+    /// from within its own `initialize` implementation. This keeps
+    /// `host-services` the single, auditable surface through which
+    /// host-provided data reaches the guest, rather than splitting
+    /// configuration delivery across two different mechanisms.
+    ///
+    /// Although this component-model function is async, the processor factory
+    /// drives it synchronously so failures remain pipeline construction
+    /// errors. Guests must not perform future clock waits here; the host
+    /// rejects them immediately.
+    initialize: async func() -> result<_, init-error>;
 }
 
 /// Capability tier for kernel-only processor plugins.
 ///
-/// TODO: add `host-services` import and the `opl-processor` world.
+/// The project-owned capabilities available to a `kernel-processor` guest are
+/// `otel-kernels` (host-managed OTel data operations) and `host-services`
+/// (version, read-only config, logging, and a bounded counter). Rust `std`
+/// guests additionally use the narrowly linked WASI CLI and clocks interfaces
+/// described above. No `wasi:http`, `wasi:sockets`, filesystem, random, or
+/// other ambient capability is linked. Real clocks are the only intentional
+/// source of guest-observable nondeterminism in this capability-constrained
+/// compute sandbox.
+///
+/// Resource bounds the host applies to every instance of this world:
+/// - a Wasmtime fuel budget per `initialize`/`process` call, which bounds guest
+///   Wasm instructions;
+/// - a linear-memory cap on guest allocation;
+/// - a 16 KiB encoded-input budget per canonical lift, including exported
+///   results, and the aggregate string-copy byte budgets described above;
+/// - a cap on host-managed resources during each call, plus a post-`process`
+///   requirement that no host resource remains after the returned `pdata` is
+///   reclaimed, so complete host-side batches cannot accumulate across calls;
+/// - a provisional per-entry cap on native `otel-kernels` invocations,
+///   including `pdata-num-rows`, limiting the number of requested operations;
+/// - the shared `host-services` token bucket described above.
+///
+/// These bounds do not guarantee processing latency: a single synchronous
+/// native kernel can process a large host-side batch. Guest memory limits do
+/// not bound that batch, and fuel/epochs cannot preempt native host execution.
+/// Data-size/work budgets and cooperative kernels remain follow-on work.
+///
+/// Trap semantics: a trap -- from exhausting the fuel or kernel-call budget,
+/// from a guest panic, or from violating a kernel contract -- is terminal for
+/// the instance. Wasmtime marks the whole instance unusable, and the host does
+/// not re-instantiate: the failing `process` call returns an error, which the
+/// engine treats as a node processing error and uses to terminate the node.
+/// Plugins should therefore treat traps as fatal, not as a per-batch error
+/// channel; return `none` from `process` to drop data, and an `init-error`
+/// from `initialize` to reject configuration.
+///
+/// `process` is directly awaited by the engine. Each store permits only one
+/// in-flight guest invocation, and future clock waits are rejected so a guest
+/// cannot suspend that invocation indefinitely.
 world kernel-processor {
     import otel-kernels;
+    import host-services;
     export processor;
+    export lifecycle;
 }

@@ -15,7 +15,7 @@ rust-version.workspace = true
 # contract and host surface are unstable and subject to breaking changes while
 # the binary plugin system is in development.
 default = []
-wasm = ["dep:wasmtime"]
+wasm = ["dep:wasmtime", "dep:wasmtime-wasi"]
 
 [dependencies]
 otel-arrow-dfe-config.workspace = true
@@ -28,7 +28,9 @@ arrow.workspace = true
 arrow-cast.workspace = true
 arrow-select.workspace = true
 wasmtime = { workspace = true, optional = true }
+wasmtime-wasi = { version = "49.0.2", default-features = false, features = ["p3"], optional = true }
 async-trait.workspace = true
+futures.workspace = true
 linkme.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -38,6 +40,8 @@ thiserror.workspace = true
 otel-arrow-dfe-engine = { workspace = true, features = ["test-utils"] }
 otel-arrow-dfe-pdata = { workspace = true, features = ["testing"] }
 tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["registry", "std"] }
 
 # The end-to-end integration test drives the wasmtime runtime, so it only
 # builds when the experimental `wasm` feature is enabled.

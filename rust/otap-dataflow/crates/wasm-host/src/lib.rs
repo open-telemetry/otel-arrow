@@ -55,6 +55,14 @@ mod bindings {
     wasmtime::component::bindgen!({
         world: "kernel-processor",
         path: "wit",
+        // Generate host import signatures returning `wasmtime::Result<T>` so
+        // contract violations reachable from guest-controlled input (bad
+        // resource handles, unsupported kernel arguments, malformed batches)
+        // become guest traps instead of host panics. A host panic here would
+        // take down the whole collector process, and -- because `Drop for
+        // WasmProcessor` re-enters the guest -- could escalate into a
+        // double-panic abort while unwinding.
+        imports: { default: trappable },
         with: {
             "otel:otap-dataflow-plugin/otel-kernels@0.1.0.pdata": crate::host::HostPdata,
         },
