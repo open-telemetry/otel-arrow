@@ -1,0 +1,4 @@
+change_type: bug_fix
+component: pipeline
+note: Fix a panic in the exporter benchmark when generating OTAP Arrow records.
+issues: [1278]
