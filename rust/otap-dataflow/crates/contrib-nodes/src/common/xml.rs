@@ -310,11 +310,13 @@ impl<'input> Document<'input> {
                     document.entries[index].subtree_end = document.entries.len();
                 }
                 Event::Text(text) => {
-                    budget.charge(text.len())?;
-                    let value = text.xml10_content().map_err(quick_xml::Error::from)?;
-                    if value.contains("]]>") {
+                    // The "no CDEnd in content" WFC forbids only a literal "]]>",
+                    // not one produced by entity or character references.
+                    if text.as_ref().windows(3).any(|window| window == b"]]>") {
                         return Err(Error::Invalid("CDATA delimiter in text"));
                     }
+                    budget.charge(text.len())?;
+                    let value = text.xml10_content().map_err(quick_xml::Error::from)?;
                     document.push_text(&value, parent, start..end, max_nodes)?;
                 }
                 Event::CData(text) => {
@@ -797,6 +799,15 @@ mod tests {
             assert_eq!(child.tag_name().namespace(), None);
             assert!(std::ptr::eq(child.tag_name(), &document.empty_name));
         }
+    }
+
+    /// Scenario: content forms "]]>" only through character references, not a literal sequence.
+    /// Guarantees: reference-formed CDATA-close text is accepted while a literal "]]>" is rejected.
+    #[test]
+    fn accepts_reference_formed_cdata_close() {
+        let document = Document::parse("<root>&#93;&#93;&gt;</root>").unwrap();
+        assert_eq!(document.root_element().text(), Some("]]>"));
+        assert!(Document::parse("<root>]]></root>").is_err());
     }
 
     /// Scenario: untrusted XML contains invalid syntax, entities, namespaces, or excessive nodes.
