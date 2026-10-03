@@ -421,6 +421,39 @@ mod test {
         pretty_assertions::assert_eq!(result.resource_logs[0].scope_logs[0].log_records, expected)
     }
 
+    /// Scenario: Evaluate a conditional branch using a nested serialized attribute leaf.
+    /// Guarantees: The branch updates only records whose nested leaf matches.
+    #[tokio::test]
+    async fn test_conditional_with_nested_serialized_attribute() {
+        let log_records = vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new(
+                    "complex",
+                    AnyValue::new_kvlist(vec![KeyValue::new("name", AnyValue::new_string("a"))]),
+                )])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new(
+                    "complex",
+                    AnyValue::new_kvlist(vec![KeyValue::new("name", AnyValue::new_string("b"))]),
+                )])
+                .finish(),
+        ];
+
+        let result = exec_logs_pipeline::<OplParser>(
+            r#"
+            logs | if (attributes["complex"]["name"] == "a") {
+                set severity_text = "MATCHED"
+            }"#,
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        let mut expected = log_records;
+        expected[0].severity_text = "MATCHED".into();
+
+        pretty_assertions::assert_eq!(result.resource_logs[0].scope_logs[0].log_records, expected)
+    }
+
     #[tokio::test]
     async fn test_conditional_with_condition_match_statement() {
         let log_records = vec![

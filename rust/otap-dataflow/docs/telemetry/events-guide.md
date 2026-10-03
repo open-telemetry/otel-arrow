@@ -214,19 +214,22 @@ naming:
   (e.g. `otlp.exporter.start.complete` and `otlp.exporter.start.fail`). Do not rely
   solely on severity to distinguish success from failure.
 
-More precisely, in this project, event names SHOULD follow this pattern:
-`otelcol.<entity>[.<thing>].<verb>`
+In this project, event names SHOULD use an established, stable namespace and
+follow this general pattern:
+`<namespace>.<entity>[.<thing>].<event>`
 
 Where:
 
-- `otelcol.` is the project prefix/namespace used for events and other custom
-  telemetry.
+- `<namespace>` identifies the subsystem or protocol that owns the event (for
+  example, `otlp`, `tls`, `pipeline`, or `node`). A universal project prefix is
+  not required.
 - `<entity>` is the primary entity involved (e.g. `pipeline`, `node`,
   `channel`). See the [entity model](entity-model.md) for the list of entities.
 - `<thing>` is an optional sub-entity, subject, or stage (e.g. `build`, `run`,
   `receiver`, `exporter`).
-- `<verb>` is the action or occurrence (e.g. `start`, `complete`, `fail`,
-  `reload`, `shutdown`).
+- `<event>` is the action or occurrence (e.g. `start`, `complete`, `fail`,
+  `reload`, `shutdown`, or an established compound event such as
+  `export_error`).
 
 Note: OpenTelemetry Events are represented as LogRecords with an
 [event name](https://github.com/open-telemetry/opentelemetry-specification/blob/v1.50.0/specification/logs/data-model.md#field-eventname).
@@ -314,7 +317,7 @@ termination verb `cancel`, and one internal safety verb `abort`.
 ## Checklist for new events
 
 - The event name follows the semantic conventions guide and the
-  `otelcol.<entity>[.<thing>].<verb>` pattern.
+  `<namespace>.<entity>[.<thing>].<event>` pattern.
 - The event name is stable, low-cardinality, and contains no IDs or dynamic
   values.
 - The event represents a discrete occurrence; use metrics instead for
@@ -329,3 +332,136 @@ termination verb `cancel`, and one internal safety verb `abort`.
   distinguishing attribute (see [Consolidating events](#consolidating-events)).
 - The number of new callsites is minimized; each callsite adds static memory
   overhead.
+
+## Repeated operation failures
+
+This shared policy supports recurring operation failures across exporters,
+receivers, and processors. Each integration documents its concrete event
+contract alongside the component that owns it.
+
+The node-independent `diagnostics` helper reports observed operation
+behavior before events reach ITS, console providers, or the retained log tap.
+This policy is independent of metric collection and does not change retries,
+Ack/Nack routing, backpressure, or readiness.
+
+### Choosing the reporting behavior
+
+Each integration owns its event names, bounded error classifications, and
+operation completion boundaries. Choose recovery reporting only when success
+provides meaningful evidence about the operation that failed.
+
+- Receiver scraping, polling, or checkpointing: failure episodes, summaries,
+  and confirmed recovery.
+- Processor storage writes or external service calls: failure episodes,
+  summaries, and confirmed recovery.
+- Payload parsing, validation, or transformation errors: bounded failure
+  summaries, because other valid payloads do not establish recovery.
+- Ack/Nack notification failures: independent bounded failure summaries.
+
+`DiagnosticTracker` supports both patterns. Observe successes and failures for
+episodes with recovery; observe only failures when recovery has no useful
+meaning. With failure-only observations, episode totals span the tracker's
+lifetime and successful-attempt counts remain zero. For example, host metrics
+scrapes and journald checkpoint commits could use recovery reporting, while
+repeated payload conversion errors could use summaries alone. These are future
+adoption examples, not current integrations. Startup/configuration failures
+and terminal errors retain immediate diagnostics.
+
+### Reference implementation
+
+The [OTLP HTTP exporter diagnostics](../../crates/core-nodes/src/exporters/otlp_http_exporter/README.md#bounded-failure-diagnostics)
+are the first integration of this policy. Its component documentation defines
+the concrete event names, reporting intervals, recovery evidence, attributes,
+and scope.
+
+### Operation failure episodes
+
+An episode begins with the first failed operation and ends with confirmed
+recovery. The diagram illustrates the model for one bounded operation scope.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Unknown
+
+    Unknown --> Healthy: Success / no log
+    Unknown --> Degraded: First failure / open episode, WARN
+    Healthy --> Degraded: First failure / open episode, WARN
+
+    Degraded --> Degraded: Completion without confirmed recovery
+    Degraded --> Healthy: Confirmed recovery / INFO, clear episode
+
+    note right of Degraded
+        Count every completion in interval + episode totals.
+        First failure or summary due: WARN, reset interval only.
+        Otherwise: no log; count suppressed failures.
+        Episode totals remain until recovery.
+    end note
+```
+
+- **Bounded volume:** the first failure emits a WARN. Further WARN summaries
+  require a completion, unreported failures, and the reporting interval to
+  elapse. Recovery takes priority over a due summary. Suppression happens before
+  log subscribers receive events.
+- **Accurate counts:** while an episode is active, every success or failure is
+  counted before reporting in both interval counters and episode totals.
+  Failures also update error-category counts and, when no warning is emitted,
+  suppressed counts. Each report resets interval counters only; recovery
+  includes its triggering success in the final totals, then clears the episode.
+- **Recovery:** every failure restarts the failure-free window. Recovery also
+  requires a successful attempt started after the latest failure. Idle time
+  alone produces no reports or state changes.
+
+### Scope and boundaries
+
+Each tracker observes one operation in a bounded scope local to a node/core.
+Keep distinct operations separate: a successful enqueue cannot clear failing
+storage writes. Signal and configured destination are additional dimensions
+where relevant. Use `DiagnosticTracker` directly for operations without a
+telemetry signal, or `SignalDiagnostics` for a fixed set of signal scopes.
+Never create unbounded state keyed by client, payload, tenant, or error text.
+
+Integrations SHOULD identify the operation boundary with stable, bounded
+attributes such as `stage` or `signal` when relevant. Preparation, delivery,
+and notification are distinct operations and generally require independent
+trackers; success at one boundary must not mark another boundary recovered.
+
+### Report fields
+
+Selected reports keep the component's instrumentation target and pipeline/node
+context. `otel_diagnostic_report!` emits common interval and episode fields;
+each integration supplies its event names and operation-specific attributes.
+Counts describe attempts at the observed operation boundary, not unique batches
+or data loss:
+
+| Field | Meaning |
+| --- | --- |
+| `diagnostic_kind` | `first_failure`, `summary`, or `recovery` |
+| `episode_seconds` | Time since the initial observed failure |
+| `interval_seconds` | Time since the previous report |
+| `successful_attempts`, `failed_attempts` | Counts since the previous report |
+| `suppressed_diagnostics` | Failures not individually logged in that interval |
+| `total_successful_attempts`, `total_failed_attempts` | Episode counts |
+| `total_suppressed_diagnostics` | Suppressed failures for the episode |
+| `error_counts`, `total_error_counts` | Bounded `category=count` lists |
+| `error_sample_age_seconds` | Age of the representative failure |
+
+Integrations may add bounded fields such as `signal`, `stage`, `message`, or a
+retry decision. Component documentation must define whether those fields
+describe the representative failure or the whole interval. Recovery reports
+retain the representative error sample and its age.
+
+The first report includes its triggering failure. Later reports include the
+current observation and exclude observations already covered by earlier
+reports. Error text is formatted only when a failure report is selected,
+escaped for single-line display, and retained up to 1024 UTF-8 bytes.
+Success-triggered summaries reuse the previous representative error, its
+integration-specific metadata, and its age. Recovery reuses the error and its
+age.
+Callers must still redact sensitive data before supplying diagnostic text.
+
+Log frequency intentionally decreases; use component attempt and failure
+metrics for rates and impact. The shared emission helper emits common fields
+with the event name and severity chosen by the integration. Component-owned
+error categories, metric counts, and retry/permanent decisions remain
+unchanged. One process may emit several reports for an incident because
+operation scopes and cores are independent.
