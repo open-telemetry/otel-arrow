@@ -1,0 +1,5 @@
+change_type: bug_fix
+component: engine
+note: OpAMP heartbeats and full-state replies preserve failed status for remote configurations rejected before reconciliation.
+issues: [4081]
+subtext: The rejected config hash and error remain reported until a different config is accepted, preventing repeated delivery of the same invalid config.
