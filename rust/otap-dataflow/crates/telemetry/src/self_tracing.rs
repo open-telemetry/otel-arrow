@@ -28,21 +28,27 @@ pub use formatter::{
     format_log_record_to_string,
 };
 
-/// Initial heap capacity for the encoding phase.
+/// Initial heap capacity for `LogRecord::new()`'s encoding phase.
 ///
-/// `LogRecord::new()` pre-allocates a `ProtoBuffer` with this capacity, sized
-/// to the common case so the vast majority of log events need only one
+/// Sized to the common case so the vast majority of log events need only one
 /// allocation and no `Vec` growth. After encoding the result is converted to
 /// `Bytes` via `Bytes::from(Vec<u8>)`, which is zero-copy.
-pub const LOG_ARGUMENTS_ENCODE_INLINE: usize = 256;
+pub const LOG_ARGUMENTS_ENCODE_INITIAL: usize = 256;
 
 /// Maximum size an encoded log event's body/attributes may grow to.
 ///
-/// Rare events that overflow `LOG_ARGUMENTS_ENCODE_INLINE` are allowed to grow
+/// Rare events that overflow `LOG_ARGUMENTS_ENCODE_INITIAL` are allowed to grow
 /// the `Vec` (one reallocation) up to this limit rather than being truncated
 /// immediately; events that still don't fit are truncated and counted via
 /// `dropped_attributes_count`, same as always.
 pub const LOG_ARGUMENTS_ENCODE_LIMIT: usize = 2048;
+
+/// Fixed stack buffer size for `StackLogRecord`'s encoding phase.
+///
+/// Used only by the synchronous, non-escaping `raw_error!` path, which never
+/// converts to owned `Bytes`, so there's no reallocation and no benefit to
+/// growing past this size; oversized events are simply truncated.
+pub const LOG_ARGUMENTS_ENCODE_STACK: usize = 256;
 
 /// Buffer size for rendering a log record to text (console/raw formatting).
 ///
@@ -150,7 +156,7 @@ impl SavedCallsite {
 /// - [`into_record()`](Self::into_record) to produce an owned `LogRecord`
 ///   with reference-counted `Bytes` storage
 pub struct StackLogRecord {
-    buf: StackProtoBuffer<LOG_ARGUMENTS_ENCODE_INLINE>,
+    buf: StackProtoBuffer<LOG_ARGUMENTS_ENCODE_STACK>,
     callsite_id: Identifier,
     dropped_count: u32,
 }
@@ -159,7 +165,7 @@ impl StackLogRecord {
     /// Construct from an event, encoding body/attributes on the stack.
     #[must_use]
     pub fn new(event: &Event<'_>) -> Self {
-        let mut buf = StackProtoBuffer::<LOG_ARGUMENTS_ENCODE_INLINE>::default();
+        let mut buf = StackProtoBuffer::<LOG_ARGUMENTS_ENCODE_STACK>::default();
         let dropped_count;
         {
             let mut visitor = DirectFieldVisitor::new(&mut buf);
@@ -198,30 +204,32 @@ impl StackLogRecord {
 impl LogRecord {
     /// Construct a log record with entity context, partially encoding its dynamic content.
     ///
-    /// Pre-allocates a heap buffer sized to `LOG_ARGUMENTS_ENCODE_INLINE`
+    /// Pre-allocates a heap buffer sized to `LOG_ARGUMENTS_ENCODE_INITIAL`
     /// (no allocation beyond this for the common case) and allows it to grow,
     /// at most once, up to `LOG_ARGUMENTS_ENCODE_LIMIT` for rare oversized
     /// events. Attributes that still don't fit are counted via
     /// `dropped_attributes_count`.
     #[must_use]
     pub fn new(event: &Event<'_>, context: LogContext) -> Self {
-        Self::new_bounded::<LOG_ARGUMENTS_ENCODE_INLINE, LOG_ARGUMENTS_ENCODE_LIMIT>(event, context)
+        Self::new_bounded::<LOG_ARGUMENTS_ENCODE_INITIAL, LOG_ARGUMENTS_ENCODE_LIMIT>(
+            event, context,
+        )
     }
 
     /// Construct a log record encoding into a heap buffer pre-allocated to
-    /// `INLINE` bytes, allowed to grow up to `LIMIT` bytes.
+    /// `INITIAL` bytes, allowed to grow up to `LIMIT` bytes.
     ///
     /// The pre-allocation ensures the common case needs no `Vec` growth.
     /// Attributes that don't fit even after growth are counted via
     /// `dropped_attributes_count`.
     #[must_use]
-    pub fn new_bounded<const INLINE: usize, const LIMIT: usize>(
+    pub fn new_bounded<const INITIAL: usize, const LIMIT: usize>(
         event: &Event<'_>,
         context: LogContext,
     ) -> Self {
         let metadata = event.metadata();
 
-        let mut buf = ProtoBuffer::with_capacity_and_limit(INLINE, LIMIT);
+        let mut buf = ProtoBuffer::with_capacity_and_limit(INITIAL, LIMIT);
         let dropped_count;
         {
             let mut visitor = DirectFieldVisitor::new(&mut buf);
