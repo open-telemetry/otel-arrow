@@ -49,6 +49,11 @@ mod scoped_component {
         otel_event!(tracing::Level::TRACE, "test.component.trace");
     }
 
+    pub(super) fn capture_diagnostic() -> Option<otel_arrow_dfe_telemetry::self_tracing::LogRecord>
+    {
+        otel_diagnostic_warn!("test.component.diagnostic", message = "diagnostic")
+    }
+
     pub(super) mod child {
         pub(super) fn emit() {
             otel_warn!("test.component.child", value = 1);
@@ -135,6 +140,23 @@ fn component_scope_covers_every_event_helper() {
             .iter()
             .all(|target| *target == "otel.processor.scope_test")
     );
+}
+
+/// Scenario: a statefully delivered diagnostic is captured inside a component scope.
+/// Guarantees: its ordinary callsite inherits the same stable component target as immediate logs.
+#[test]
+fn component_scope_applies_to_diagnostic_capture() {
+    let setup = otel_arrow_dfe_telemetry::TracingSetup::new(
+        otel_arrow_dfe_telemetry::tracing_init::ProviderSetup::ConsoleDirect,
+        otel_arrow_dfe_config::settings::telemetry::logs::LogLevel::default(),
+        otel_arrow_dfe_telemetry::self_tracing::LogContext::new,
+    );
+
+    let record = setup
+        .with_subscriber(scoped_component::capture_diagnostic)
+        .expect("warning callsite should be enabled");
+    assert_eq!(record.callsite().target(), "otel.processor.scope_test");
+    assert_eq!(record.callsite().name(), "test.component.diagnostic");
 }
 
 /// Scenario: callers use the base macro with and without an explicit target.

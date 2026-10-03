@@ -7,12 +7,25 @@ use otel_arrow_dfe_pdata::views::otlp::bytes::logs::RawLogRecord;
 use otel_arrow_dfe_pdata_views::views::common::{AnyValueView, AttributeView};
 use otel_arrow_dfe_pdata_views::views::logs::LogRecordView;
 use otel_arrow_dfe_telemetry::diagnostics::{DiagnosticErrorKind, DiagnosticTracker};
+use otel_arrow_dfe_telemetry::event::{LogEvent, ObservedEvent, ObservedEventReporter};
 use otel_arrow_dfe_telemetry::self_tracing::{LogContext, LogRecord};
+use otel_arrow_dfe_telemetry::tracing_init::{ProviderSetup, TracingSetup};
 use std::cell::Cell;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tracing::{Event, Level, Subscriber};
 use tracing_subscriber::{Layer, layer::Context, prelude::*};
+
+fn detail(message: &str) -> Option<LogRecord> {
+    Some(
+        otel_arrow_dfe_telemetry::__log_record_impl!(
+            Level::WARN,
+            "test.diagnostic.detail",
+            message = message
+        )
+        .into_record(LogContext::new()),
+    )
+}
 
 #[derive(Clone, Default)]
 struct Capture(Arc<Mutex<Vec<(&'static str, &'static str, Level)>>>);
@@ -24,22 +37,6 @@ impl<S: Subscriber> Layer<S> for Capture {
             .lock()
             .expect("capture lock must not be poisoned")
             .push((metadata.name(), metadata.target(), *metadata.level()));
-    }
-}
-
-#[derive(Clone, Default)]
-struct EncodedCapture(Arc<Mutex<Vec<(Vec<u8>, u16)>>>);
-
-impl<S: Subscriber> Layer<S> for EncodedCapture {
-    fn on_event(&self, event: &Event<'_>, _context: Context<'_, S>) {
-        let record = LogRecord::new(event, LogContext::new());
-        self.0
-            .lock()
-            .expect("capture lock must not be poisoned")
-            .push((
-                record.body_attrs_bytes.to_vec(),
-                record.dropped_attributes_count,
-            ));
     }
 }
 
@@ -63,7 +60,7 @@ fn suppression_precedes_all_subscribers() {
                     DiagnosticErrorKind::Transport,
                     || {
                         formats.set(formats.get() + 1);
-                        "connection refused"
+                        detail("connection refused")
                     },
                 ) {
                     otel_arrow_dfe_telemetry::otel_diagnostic_report!(
@@ -106,26 +103,47 @@ fn suppression_precedes_all_subscribers() {
 /// Guarantees: Priority context and a truncated error body survive real ITS encoding.
 #[test]
 fn priority_detail_survives_bounded_its_encoding() {
-    let capture = EncodedCapture::default();
-    tracing::subscriber::with_default(tracing_subscriber::registry().with(capture.clone()), || {
+    let (sender, receiver) = flume::unbounded();
+    let setup = TracingSetup::new(
+        ProviderSetup::InternalAsync {
+            reporter: ObservedEventReporter::new(
+                otel_arrow_dfe_config::observed_state::SendPolicy::default(),
+                sender,
+            ),
+        },
+        otel_arrow_dfe_config::settings::telemetry::logs::LogLevel::default(),
+        LogContext::new,
+    );
+    setup.with_subscriber(|| {
         let mut tracker = DiagnosticTracker::default();
         let report = tracker
             .failure(Instant::now(), DiagnosticErrorKind::Transport, || {
-                format!("root cause: {}", "x".repeat(2_000))
+                let text = format!("root cause: {}", "x".repeat(4_000));
+                otel_arrow_dfe_telemetry::otel_diagnostic_warn!(
+                    target: "otel.exporter.test",
+                    "test.export_error",
+                    message = %text
+                )
             })
             .expect("first failure must produce a report");
-        otel_arrow_dfe_telemetry::otel_diagnostic_report!(
-            target: "otel.exporter.test", emit: otel_warn,
-            name: "test.export_error", report: &report,
+        otel_arrow_dfe_telemetry::otel_diagnostic_summary!(
+            report: &report,
             signal = "logs", retryable = true,
-            diagnostic_kind = "first_failure", message = %report.detail.as_str()
+            diagnostic_kind = "first_failure"
         );
     });
 
-    let events = capture.0.lock().expect("capture lock must not be poisoned");
-    assert_eq!(events.len(), 1);
-    let (body_attrs, dropped_attributes) = &events[0];
-    let record = RawLogRecord::new(body_attrs);
+    let ObservedEvent::Log(LogEvent { record, .. }) =
+        receiver.try_recv().expect("diagnostic should be delivered")
+    else {
+        panic!("expected log event");
+    };
+    assert!(
+        receiver.try_recv().is_err(),
+        "only one report should be sent"
+    );
+    let body_attrs = record.body_attrs_bytes;
+    let record = RawLogRecord::new(&body_attrs);
     let body_value = record
         .body()
         .expect("diagnostic error body must survive encoding");
@@ -148,8 +166,4 @@ fn priority_detail_survives_bounded_its_encoding() {
             "missing priority attribute {required}"
         );
     }
-    assert!(
-        *dropped_attributes > 0,
-        "oversized diagnostics must report lower-priority truncation"
-    );
 }

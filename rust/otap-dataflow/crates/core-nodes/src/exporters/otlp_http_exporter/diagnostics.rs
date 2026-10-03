@@ -14,7 +14,7 @@ use otel_arrow_dfe_telemetry::attributes::AttributeEnum;
 use otel_arrow_dfe_telemetry::diagnostics::{
     DiagnosticErrorKind, DiagnosticReport, DiagnosticTracker, ReportKind,
 };
-use std::fmt::Display;
+use otel_arrow_dfe_telemetry::self_tracing::LogRecord;
 use std::time::Instant;
 
 #[cfg(test)]
@@ -39,12 +39,12 @@ impl DeliveryDiagnostic {
     /// routing. The tracker evaluates `detail` only when selecting a first
     /// failure or summary; only then is its matching retryability replaced.
     /// Suppressed failures return `None` and leave both sample values intact.
-    pub(super) fn failure<D: Display>(
+    pub(super) fn failure(
         &mut self,
         now: Instant,
         category: OtlpHttpExporterErrorType,
         retryable: bool,
-        detail: impl FnOnce() -> D,
+        detail: impl FnOnce() -> Option<LogRecord>,
     ) -> Option<DiagnosticReport<OtlpHttpExporterErrorType>> {
         let report = self.tracker.failure(now, category, detail);
         if report.is_some() {
@@ -90,16 +90,14 @@ impl DeliveryDiagnostic {
             otel_arrow_dfe_telemetry::otel_diagnostic_report!(
                 target: "otel.exporter.otlp_http", emit: otel_info,
                 name: "otlp.exporter.http.export_recovered", report: &report,
-                error = report.detail.as_str(), signal = signal.as_str(),
+                error = %report.detail_str(), signal = signal.as_str(),
                 diagnostic_kind = "recovery"
             );
         } else {
-            otel_arrow_dfe_telemetry::otel_diagnostic_report!(
-                target: "otel.exporter.otlp_http", emit: otel_warn,
-                name: "otlp.exporter.http.export_error", report: &report,
+            otel_arrow_dfe_telemetry::otel_diagnostic_summary!(
+                report: &report,
                 signal = signal.as_str(), retryable = self.sample_retryable,
-                diagnostic_kind = diagnostic_kind(report.kind),
-                message = %report.detail.as_str()
+                diagnostic_kind = diagnostic_kind(report.kind)
             );
         }
     }
@@ -116,20 +114,19 @@ fn diagnostic_kind(kind: ReportKind) -> &'static str {
 
 /// Emits a WARN selected by the independent encoding/compression failure tracker.
 ///
-/// The report's bounded sample becomes `error`; the event name supplies the
-/// operation context without a redundant message or stage. Pass `None` for
-/// suppressed failures. Preparation reports do not participate in delivery
-/// recovery and make no claim about destination availability.
+/// The retained detail record carries the error; it is re-delivered directly
+/// (with report counters appended) rather than decoded and re-logged as a
+/// new field. Pass `None` for suppressed failures. Preparation reports do
+/// not participate in delivery recovery and make no claim about destination
+/// availability.
 pub(super) fn emit_preparation(
     report: Option<DiagnosticReport<OtlpHttpExporterErrorType>>,
     signal: SignalType,
 ) {
     if let Some(report) = report {
-        otel_arrow_dfe_telemetry::otel_diagnostic_report!(
-            target: "otel.exporter.otlp_http", emit: otel_warn,
-            name: "otlp.exporter.http.preparation_error", report: &report,
-            error = report.detail.as_str(), signal = signal.as_str(),
-            diagnostic_kind = diagnostic_kind(report.kind)
+        otel_arrow_dfe_telemetry::otel_diagnostic_summary!(
+            report: &report,
+            signal = signal.as_str(), diagnostic_kind = diagnostic_kind(report.kind)
         );
     }
 }
@@ -146,7 +143,8 @@ pub(super) enum NotificationOperation {
 /// Emits a WARN selected by the independent Ack/Nack notification failure tracker.
 ///
 /// `operation` must match the sampled failure and is emitted as a compact
-/// bounded attribute alongside `error`. `None` emits nothing. Notification
+/// bounded attribute alongside the retained detail record, re-delivered
+/// directly with report counters appended. `None` emits nothing. Notification
 /// reporting does not change the recorded delivery result or its recovery state.
 pub(super) fn emit_notification(
     report: Option<DiagnosticReport<DiagnosticErrorKind>>,
@@ -158,11 +156,10 @@ pub(super) fn emit_notification(
             NotificationOperation::Ack => "ack",
             NotificationOperation::Nack => "nack",
         };
-        otel_arrow_dfe_telemetry::otel_diagnostic_report!(
-            target: "otel.exporter.otlp_http", emit: otel_warn,
-            name: "otlp.exporter.http.notification_error", report: &report,
-            error = report.detail.as_str(), operation = operation,
-            signal = signal.as_str(), diagnostic_kind = diagnostic_kind(report.kind)
+        otel_arrow_dfe_telemetry::otel_diagnostic_summary!(
+            report: &report,
+            operation = operation, signal = signal.as_str(),
+            diagnostic_kind = diagnostic_kind(report.kind)
         );
     }
 }

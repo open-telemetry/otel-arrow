@@ -11,6 +11,8 @@ use crate::event::{LogEvent, ObservedEventReporter};
 use crate::log_filter::RuntimeLogFilter;
 use crate::self_tracing::{ConsoleWriter, LogContextFn, LogRecord};
 use otel_arrow_dfe_config::settings::telemetry::logs::LogLevel;
+use std::cell::RefCell;
+use std::sync::OnceLock;
 use std::time::SystemTime;
 use tracing::{Dispatch, Event, Subscriber};
 #[cfg(test)]
@@ -108,7 +110,126 @@ pub enum ProviderSetup {
     },
 }
 
+/// The capture and delivery path paired with one tracing dispatch.
+///
+/// Normal events and statefully delivered diagnostics both use this type, so
+/// delayed delivery changes scheduling, not record construction or routing.
+#[derive(Clone)]
+struct LogPipeline {
+    writer: Option<ConsoleWriter>,
+    reporter: Option<ObservedEventReporter>,
+    context_fn: LogContextFn,
+}
+
+impl LogPipeline {
+    fn capture(&self, event: &Event<'_>) -> LogRecord {
+        LogRecord::new(event, (self.context_fn)())
+    }
+
+    fn deliver(&self, time: SystemTime, record: LogRecord) {
+        if let Some(writer) = self.writer {
+            writer.print_log_record(time, &record.as_view(), |w| {
+                w.format_entity_suffix_without_registry(&record.context);
+            });
+        }
+        if let Some(reporter) = &self.reporter {
+            reporter.log(LogEvent { time, record });
+        }
+    }
+
+    fn capture_and_deliver(&self, event: &Event<'_>) {
+        self.deliver(SystemTime::now(), self.capture(event));
+    }
+}
+
+thread_local! {
+    /// Thread-scoped capture/delivery path installed alongside its `Dispatch`.
+    static CURRENT_LOG_PIPELINE: RefCell<Option<LogPipeline>> = const { RefCell::new(None) };
+}
+
+/// Process-wide capture/delivery path installed with the global dispatch.
+static GLOBAL_LOG_PIPELINE: OnceLock<LogPipeline> = OnceLock::new();
+
+fn current_log_pipeline() -> Option<LogPipeline> {
+    CURRENT_LOG_PIPELINE
+        .with(|cell| cell.borrow().clone())
+        .or_else(|| GLOBAL_LOG_PIPELINE.get().cloned())
+}
+
+/// Captures an ordinary event using the active dispatch's original filter
+/// decision, context function, and canonical [`LogRecord`] encoding.
+///
+/// The returned record has not yet been delivered to any subscriber sink.
+#[doc(hidden)]
+#[must_use]
+pub fn capture_current_event(event: &Event<'_>) -> Option<LogRecord> {
+    let enabled = tracing::dispatcher::get_default(|dispatch| dispatch.enabled(event.metadata()));
+    if !enabled {
+        return None;
+    }
+    let Some(pipeline) = current_log_pipeline() else {
+        crate::raw_error!(
+            "diagnostic.capture.missing_pipeline",
+            event_name = event.metadata().name()
+        );
+        return None;
+    };
+    Some(pipeline.capture(event))
+}
+
+/// Delivers an already accepted [`LogRecord`] through the same sink as an
+/// ordinary event under the active tracing setup, without re-filtering it.
+#[doc(hidden)]
+pub fn deliver_current_record(time: SystemTime, record: LogRecord) {
+    let Some(pipeline) = current_log_pipeline() else {
+        crate::raw_error!(
+            "diagnostic.delivery.missing_pipeline",
+            event_name = record.callsite().name()
+        );
+        return;
+    };
+    pipeline.deliver(time, record);
+}
+
+/// Runs `f` with `pipeline` paired with the thread-scoped tracing dispatch,
+/// restoring the previous path afterward even on panic/unwind.
+fn scoped_log_pipeline<F, R>(pipeline: LogPipeline, f: F) -> R
+where
+    F: FnOnce() -> R,
+{
+    struct RestoreGuard(Option<LogPipeline>);
+    impl Drop for RestoreGuard {
+        fn drop(&mut self) {
+            CURRENT_LOG_PIPELINE.with(|cell| *cell.borrow_mut() = self.0.take());
+        }
+    }
+
+    let previous = CURRENT_LOG_PIPELINE.with(|cell| cell.replace(Some(pipeline)));
+    let _guard = RestoreGuard(previous);
+    f()
+}
+
 impl ProviderSetup {
+    fn log_pipeline(&self, context_fn: LogContextFn) -> LogPipeline {
+        match self {
+            ProviderSetup::Noop => LogPipeline {
+                writer: None,
+                reporter: None,
+                context_fn,
+            },
+            ProviderSetup::ConsoleDirect => LogPipeline {
+                writer: Some(ConsoleWriter::color()),
+                reporter: None,
+                context_fn,
+            },
+            ProviderSetup::InternalAsync { reporter } => LogPipeline {
+                writer: None,
+                reporter: Some(reporter.clone()),
+                context_fn,
+            },
+        }
+    }
+
     fn build_dispatch_with_filter(
         &self,
         filter: &RuntimeLogFilter,
@@ -116,15 +237,8 @@ impl ProviderSetup {
     ) -> Dispatch {
         match self {
             ProviderSetup::Noop => Dispatch::new(tracing::subscriber::NoSubscriber::new()),
-
-            ProviderSetup::ConsoleDirect => {
-                let layer =
-                    StructuredLoggingLayer::new(Some(ConsoleWriter::color()), None, context_fn);
-                Dispatch::new(Registry::default().with(filter.layer()).with(layer))
-            }
-
-            ProviderSetup::InternalAsync { reporter } => {
-                let layer = StructuredLoggingLayer::new(None, Some(reporter.clone()), context_fn);
+            ProviderSetup::ConsoleDirect | ProviderSetup::InternalAsync { .. } => {
+                let layer = StructuredLoggingLayer::new(self.log_pipeline(context_fn));
                 Dispatch::new(Registry::default().with(filter.layer()).with(layer))
             }
         }
@@ -142,7 +256,9 @@ impl ProviderSetup {
         filter: &RuntimeLogFilter,
     ) -> Result<(), tracing::dispatcher::SetGlobalDefaultError> {
         let dispatch = self.build_dispatch(context_fn, filter);
-        tracing::dispatcher::set_global_default(dispatch)
+        tracing::dispatcher::set_global_default(dispatch)?;
+        let _ = GLOBAL_LOG_PIPELINE.set(self.log_pipeline(context_fn));
+        Ok(())
     }
 
     /// Run a closure with the appropriate tracing subscriber for this setup.
@@ -156,7 +272,9 @@ impl ProviderSetup {
         F: FnOnce() -> R,
     {
         let dispatch = self.build_dispatch(context_fn, filter);
-        tracing::dispatcher::with_default(&dispatch, f)
+        scoped_log_pipeline(self.log_pipeline(context_fn), || {
+            tracing::dispatcher::with_default(&dispatch, f)
+        })
     }
 
     #[cfg(test)]
@@ -172,30 +290,22 @@ impl ProviderSetup {
         let filter =
             RuntimeLogFilter::from_filter(log_level.clone(), EnvFilter::new(log_level.as_str()));
         let dispatch = self.build_dispatch_with_filter(&filter, context_fn);
-        tracing::dispatcher::with_default(&dispatch, f)
+        scoped_log_pipeline(self.log_pipeline(context_fn), || {
+            tracing::dispatcher::with_default(&dispatch, f)
+        })
     }
 }
 
 /// A tracing layer that emits a structured log record to either console or an async sink.
 pub struct StructuredLoggingLayer {
-    writer: Option<ConsoleWriter>,
-    reporter: Option<ObservedEventReporter>,
-    context_fn: LogContextFn,
+    pipeline: LogPipeline,
 }
 
 impl StructuredLoggingLayer {
     /// Create a new structured logging layer.
     #[must_use]
-    fn new(
-        writer: Option<ConsoleWriter>,
-        reporter: Option<ObservedEventReporter>,
-        context_fn: LogContextFn,
-    ) -> Self {
-        Self {
-            writer,
-            reporter,
-            context_fn,
-        }
+    fn new(pipeline: LogPipeline) -> Self {
+        Self { pipeline }
     }
 }
 
@@ -204,28 +314,29 @@ where
     S: Subscriber + for<'a> LookupSpan<'a>,
 {
     fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
-        let time = SystemTime::now();
-        let context = (self.context_fn)();
-        let record = LogRecord::new(event, context);
-        if let Some(writer) = self.writer {
-            writer.print_log_record(time, &record.as_view(), |w| {
-                w.format_entity_suffix_without_registry(&record.context);
-            });
-        }
-        if let Some(reporter) = &self.reporter {
-            reporter.log(LogEvent { time, record });
-        }
+        self.pipeline.capture_and_deliver(event);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::diagnostics::{DiagnosticErrorKind, DiagnosticTracker};
     use crate::event::ObservedEvent;
     use crate::log_filter::{RuntimeLogFilter, create_env_filter};
     use crate::self_tracing::LogContext;
+    use crate::testing::EmptyAttributes;
     use crate::{otel_debug, otel_error, otel_info, otel_warn};
     use otel_arrow_dfe_config::observed_state::SendPolicy;
+    use std::time::Instant;
+
+    thread_local! {
+        static TEST_LOG_CONTEXT: RefCell<LogContext> = const { RefCell::new(LogContext::new_const()) };
+    }
+
+    fn test_log_context() -> LogContext {
+        TEST_LOG_CONTEXT.with(|context| context.borrow().clone())
+    }
 
     fn test_reporter() -> (ObservedEventReporter, flume::Receiver<ObservedEvent>) {
         let (tx, rx) = flume::bounded(16);
@@ -298,6 +409,116 @@ mod tests {
                 emit_info();
                 assert!(receiver.try_recv().is_err());
             });
+        });
+    }
+
+    /// Scenario: an ordinary warning and a statefully delivered diagnostic
+    /// are captured under the same async tracing setup.
+    /// Guarantees: both records inherit the active pipeline/node entity
+    /// context from the setup's canonical capture path.
+    #[test]
+    fn diagnostic_capture_uses_ordinary_log_context() {
+        crate::with_cleared_rust_log(|| {
+            let registry = crate::registry::TelemetryRegistryHandle::new();
+            let entity = registry.register_entity(EmptyAttributes());
+            TEST_LOG_CONTEXT.with(|context| {
+                *context.borrow_mut() = LogContext::from_buf([entity]);
+            });
+
+            let (reporter, receiver) = test_reporter();
+            let setup = TracingSetup::new(
+                internal_async_provider(reporter),
+                level("warn"),
+                test_log_context,
+            );
+            setup.with_subscriber(|| {
+                otel_warn!("test.ordinary.warning", message = "ordinary");
+
+                let mut tracker = DiagnosticTracker::default();
+                let report = tracker
+                    .failure(Instant::now(), DiagnosticErrorKind::Transport, || {
+                        crate::otel_diagnostic_warn!(
+                            "test.diagnostic.warning",
+                            message = "diagnostic"
+                        )
+                    })
+                    .expect("enabled first failure should produce a report");
+                crate::otel_diagnostic_summary!(
+                    report: &report,
+                    diagnostic_kind = "first_failure"
+                );
+            });
+
+            for expected_name in ["test.ordinary.warning", "test.diagnostic.warning"] {
+                let ObservedEvent::Log(log) = receiver.try_recv().expect("log should be delivered")
+                else {
+                    panic!("expected log event");
+                };
+                assert_eq!(log.record.callsite().name(), expected_name);
+                assert_eq!(log.record.context.as_slice(), &[entity]);
+            }
+        });
+    }
+
+    /// Scenario: a diagnostic callsite is initially disabled, then captured
+    /// after a live filter update, and the filter is disabled again before
+    /// delayed delivery.
+    /// Guarantees: disabled occurrences are counted but not retained, while
+    /// an accepted record is delivered later without re-evaluating its filter.
+    #[test]
+    fn diagnostic_delivery_preserves_capture_filter_decision() {
+        crate::with_cleared_rust_log(|| {
+            let (reporter, receiver) = test_reporter();
+            let (filter, handle) = RuntimeLogFilter::new(Some(&level("error")));
+            let setup = test_setup(internal_async_provider(reporter), level("error"))
+                .with_log_filter(filter);
+
+            setup.with_subscriber(|| {
+                let start = Instant::now();
+                let mut tracker = DiagnosticTracker::default();
+                assert!(
+                    tracker
+                        .failure(start, DiagnosticErrorKind::Transport, || {
+                            crate::otel_diagnostic_warn!(
+                                "test.diagnostic.filtered",
+                                message = "disabled"
+                            )
+                        })
+                        .is_none()
+                );
+                assert!(receiver.try_recv().is_err());
+
+                handle.apply(Some(&level("warn")));
+                let report = tracker
+                    .failure(
+                        start + std::time::Duration::from_secs(1),
+                        DiagnosticErrorKind::Transport,
+                        || {
+                            crate::otel_diagnostic_warn!(
+                                "test.diagnostic.filtered",
+                                message = "accepted"
+                            )
+                        },
+                    )
+                    .expect("enabled occurrence should produce the first report");
+                assert_eq!(report.total.failures, 2);
+                assert_eq!(report.total.suppressed, 1);
+
+                handle.apply(Some(&level("error")));
+                crate::otel_diagnostic_summary!(
+                    report: &report,
+                    diagnostic_kind = "first_failure"
+                );
+            });
+
+            let ObservedEvent::Log(log) = receiver
+                .try_recv()
+                .expect("accepted record should be delivered")
+            else {
+                panic!("expected log event");
+            };
+            assert_eq!(log.record.callsite().name(), "test.diagnostic.filtered");
+            assert!(receiver.try_recv().is_err());
         });
     }
 
