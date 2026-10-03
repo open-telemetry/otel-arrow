@@ -12,7 +12,7 @@ use tokio::net::TcpStream;
 ///
 /// This helper performs the necessary conversions (tokio -> std -> socket2 -> std -> tokio)
 /// to configure socket options that tokio does not expose directly (keepalive interval/retries).
-pub(crate) fn apply_socket_options(
+pub fn apply_socket_options(
     stream: TcpStream,
     tcp_nodelay: bool,
     tcp_keepalive: Option<Duration>,

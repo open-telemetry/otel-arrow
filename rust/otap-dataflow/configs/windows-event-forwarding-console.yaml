@@ -1,0 +1,50 @@
+version: otel_dataflow/v1
+engine:
+  http_admin:
+    bind_address: "127.0.0.1:8080"
+policies:
+  resources:
+    core_allocation:
+      type: core_count
+      count: 1
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          windows_event_forwarding:
+            type: receiver:windows_event_forwarding
+            policies:
+              telemetry:
+                messages: true
+                item_counts: true
+            config:
+              endpoint: "127.0.0.1:5986"
+              public_endpoint: "https://collector.example.com:5986"
+              tls:
+                cert_file: "/etc/wef/collector.pem"
+                key_file: "/etc/wef/collector.key"
+                client_ca_files: ["/etc/wef/source-ca.pem"]
+              auth:
+                allowed_sources: ["source.example.com"]
+              subscriptions:
+                - name: "application"
+                  query: |
+                    <QueryList>
+                      <Query Id="0">
+                        <Select Path="Application">*</Select>
+                      </Query>
+                    </QueryList>
+                  initial_read: new_events
+                  heartbeat: "60s"
+              limits:
+                max_sources: 32
+                max_request_bytes: 1048576
+                request_timeout: "30s"
+                handshake_timeout: "10s"
+          console:
+            type: exporter:console
+            config: {}
+        connections:
+          - from: windows_event_forwarding
+            to: console
