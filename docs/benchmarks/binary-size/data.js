@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790983528069,
+  "lastUpdate": 1790987279675,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -51382,6 +51382,148 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
             "value": 3.53,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.16,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.35,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 117.88,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 105.04,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Brian Sapozhnikov",
+            "username": "bsapozhnikov",
+            "email": "brian.sapozhnikov@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "bf52a7cbc953eb09bc8c731595fcdcb0bf9236a0",
+          "message": "Add SASL credential provider capability (#4225)\n\n# Change summary\n\nAdd an engine-level `SaslCredentialProvider` capability for supplying\nusername/password credentials to SASL consumers.\n\nThe change introduces:\n\n- A redacted `SaslCredential` model with optional expiry.\n- Non-empty username and password validation.\n- `get_credential()` and `credential_stream()` provider contracts.\n- Local and shared capability exports.\n- Tests covering validation, redaction, and expiry.\n\nSASL mechanism selection and mechanism-specific validation remain the\nconsumer's responsibility. Provider implementations and Kafka\nintegration are out of scope.\n\n## Related issue\n\n* Closes #4157\n\n## Validation\n\n- `cargo check -p otel-arrow-dfe-engine`\n- `cargo clippy -p otel-arrow-dfe-engine --all-targets -- -D warnings`\n- `cargo test -p otel-arrow-dfe-engine` - 700 unit tests and all\nintegration/doc-test groups passed\n- `cargo fmt --all --check`\n- Changelog validation\n- ASCII source and `git diff --check`\n\n## User-facing changes\n\nAdds a reusable capability contract through which nodes can obtain and\nsubscribe to refreshed SASL username/password credentials. No credential\nprovider implementation or consumer integration is included.\n\nCo-authored-by: Brian Sapozhnikov <5421484+bsapozhnikov@users.noreply.github.com>\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>",
+          "timestamp": "2026-10-02T22:30:05Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/bf52a7cbc953eb09bc8c731595fcdcb0bf9236a0"
+        },
+        "date": 1790987262444,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 85.39,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.85,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.25,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.01,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.98,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.77,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 72.5,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.95,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.57,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.56,
             "unit": "MB"
           },
           {
