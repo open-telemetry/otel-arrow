@@ -565,6 +565,19 @@ impl PipelineContext {
         }
     }
 
+    /// Returns a registrar for metric sets scoped by an additional `topic` attribute.
+    #[must_use]
+    pub fn metric_set_registrar_with_topic(
+        &self,
+        topic: Cow<'static, str>,
+    ) -> EntityMetricSetRegistrar<'_> {
+        let entity_key = self.register_topic_entity(topic);
+        if let Some(telemetry) = current_node_telemetry_handle() {
+            telemetry.track_entity(entity_key);
+        }
+        self.metric_set_registrar_for_entity(entity_key)
+    }
+
     /// Registers an entity and tracks it for cleanup with the current node, if present.
     #[must_use]
     pub fn register_entity(
