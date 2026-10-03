@@ -7259,6 +7259,7 @@ dependencies = [
  "otel-arrow-dfe-dev-nodes",
  "otel-arrow-dfe-engine",
  "otel-arrow-dfe-otap",
+ "otel-arrow-dfe-telemetry",
  "otel-arrow-dfe-wasm-host",
  "tikv-jemallocator",
 ]
@@ -8036,6 +8037,7 @@ name = "otel-arrow-dfe-telemetry"
 version = "0.59.0"
 dependencies = [
  "arc-swap",
+ "async-channel",
  "bytes",
  "chrono",
  "criterion",

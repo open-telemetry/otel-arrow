@@ -6273,6 +6273,139 @@ fn request_shutdown_all_stops_observability_after_regular_instances_exit() {
     assert!(observability_notifications.try_recv().is_err());
 }
 
+/// Scenario: regular pipelines have exited but the controller is still reporting final metrics.
+/// Guarantees: the main wait wakes without stopping observability, which shuts down only after
+/// the controller releases its telemetry guard.
+#[test]
+fn request_shutdown_all_waits_for_controller_telemetry() {
+    let runtime = test_runtime(&engine_config_with_pipeline(simple_pipeline_yaml()));
+    let regular_key = deployed_key("g1", "p1", 0, 0);
+    let observability_key = deployed_key(
+        SYSTEM_PIPELINE_GROUP_ID,
+        SYSTEM_OBSERVABILITY_PIPELINE_ID,
+        1,
+        0,
+    );
+    let (regular_sender, _regular_notifications) = notifying_admin_sender();
+    let (observability_sender, notifications) = notifying_admin_sender();
+    register_runtime_instance_with_sender(
+        &runtime,
+        regular_key.clone(),
+        regular_sender,
+        RuntimeInstanceLifecycle::Active,
+    );
+    register_runtime_instance_with_sender(
+        &runtime,
+        observability_key.clone(),
+        observability_sender,
+        RuntimeInstanceLifecycle::Active,
+    );
+    let guard = runtime.hold_controller_telemetry();
+    runtime.request_shutdown_all(5).expect("shutdown accepted");
+    runtime.note_instance_exit(regular_key, RuntimeInstanceExit::Success);
+
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    let waiter_runtime = Arc::clone(&runtime);
+    let waiter = thread::spawn(move || {
+        waiter_runtime.wait_until_global_shutdown_drains_or_released();
+        ready_tx
+            .send(())
+            .expect("controller wait receiver remains open");
+    });
+    ready_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("controller can report before observability exits");
+    waiter.join().expect("controller wait completes");
+    assert!(
+        notifications
+            .recv_timeout(Duration::from_millis(25))
+            .is_err()
+    );
+    assert!(!runtime.all_instances_exited());
+
+    drop(guard);
+    assert_eq!(
+        notifications
+            .recv_timeout(Duration::from_secs(1))
+            .expect("observability shuts down after final reporting"),
+        "global shutdown"
+    );
+    runtime.note_instance_exit(observability_key, RuntimeInstanceExit::Success);
+    assert!(runtime.wait_for_global_shutdown_completion());
+}
+
+/// Scenario: a controller telemetry guard is still held when its deadline expires.
+/// Guarantees: the coordinator does not wait indefinitely and guard drop releases subsequent waits.
+#[test]
+fn controller_telemetry_wait_is_bounded_and_released_on_drop() {
+    let runtime = test_runtime(&empty_engine_config());
+    let guard = runtime.hold_controller_telemetry();
+    assert!(!runtime.wait_for_controller_telemetry(Instant::now()));
+    drop(guard);
+    assert!(runtime.wait_for_controller_telemetry(Instant::now()));
+}
+
+/// Scenario: the coordinator's wait for the controller telemetry guard times out, and the
+/// controller releases the guard only after that coordinator has returned.
+/// Guarantees: the timeout records no run error and sends observability no shutdown, and
+/// a later shutdown request after the guard is released stops observability.
+#[test]
+fn controller_telemetry_timeout_leaves_observability_for_a_later_request() {
+    let runtime = test_runtime(&engine_config_with_pipeline(simple_pipeline_yaml()));
+    let regular_key = deployed_key("g1", "p1", 0, 0);
+    let observability_key = deployed_key(
+        SYSTEM_PIPELINE_GROUP_ID,
+        SYSTEM_OBSERVABILITY_PIPELINE_ID,
+        1,
+        0,
+    );
+    let (regular_sender, _regular_notifications) = notifying_admin_sender();
+    let (observability_sender, notifications) = notifying_admin_sender();
+    register_runtime_instance_with_sender(
+        &runtime,
+        regular_key.clone(),
+        regular_sender,
+        RuntimeInstanceLifecycle::Active,
+    );
+    register_runtime_instance_with_sender(
+        &runtime,
+        observability_key.clone(),
+        observability_sender,
+        RuntimeInstanceLifecycle::Active,
+    );
+    assert!(!runtime.only_observability_active());
+    let guard = runtime.hold_controller_telemetry();
+    runtime.request_shutdown_all(1).expect("shutdown accepted");
+    runtime.note_instance_exit(regular_key, RuntimeInstanceExit::Success);
+
+    // Returns once the coordinator gives up on the guard (1 s timeout plus the test grace).
+    assert!(runtime.wait_for_global_shutdown_completion());
+    assert!(
+        notifications
+            .recv_timeout(Duration::from_millis(25))
+            .is_err()
+    );
+    assert!(runtime.only_observability_active());
+    assert!(
+        runtime.take_runtime_error().is_none(),
+        "a late telemetry handoff is retried, not a run error"
+    );
+
+    drop(guard);
+    runtime
+        .request_shutdown_all(1)
+        .expect("a retry after the guard release is accepted");
+    assert_eq!(
+        notifications
+            .recv_timeout(Duration::from_secs(1))
+            .expect("observability shuts down once the guard is released"),
+        "global shutdown"
+    );
+    runtime.note_instance_exit(observability_key, RuntimeInstanceExit::Success);
+    assert!(runtime.wait_for_global_shutdown_completion());
+    assert!(runtime.all_instances_exited());
+}
+
 /// Scenario: a producer misses its shutdown deadline while observability is still running.
 /// Guarantees: observability remains available for bounded terminal reporting before it stops.
 #[test]
