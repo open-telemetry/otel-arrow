@@ -1400,11 +1400,12 @@ mod tests {
     };
     use otel_arrow_dfe_config::transport_headers_policy::PropagationSelectorType;
     use otel_arrow_dfe_config::transport_headers_policy::{
-        HeaderPropagationPolicy, PropagationAction, PropagationDefault, PropagationMatch,
+        HeaderPropagationPolicy as HeaderPropagationConfig, PropagationAction, PropagationDefault, PropagationMatch,
         PropagationOverride, PropagationSelector,
     };
     use otel_arrow_dfe_engine::Interests;
     use otel_arrow_dfe_engine::context::ControllerContext;
+    use otel_arrow_dfe_engine::context_declaration::CompiledHeaderPropagationPolicy as HeaderPropagationPolicy;
     use otel_arrow_dfe_engine::control::PipelineCompletionMsg;
     use otel_arrow_dfe_engine::control::{
         Controllable, PipelineCompletionMsgSender, RuntimeCtrlMsgSender,
@@ -3195,7 +3196,7 @@ mod tests {
 
     /// Helper: Propagation policy that propagates all captured headers.
     fn propagate_all_policy() -> HeaderPropagationPolicy {
-        HeaderPropagationPolicy::new(
+        let policy = HeaderPropagationConfig::new(
             PropagationDefault {
                 selector: PropagationSelector {
                     selector_type: PropagationSelectorType::AllCaptured,
@@ -3204,7 +3205,8 @@ mod tests {
                 ..PropagationDefault::default()
             },
             vec![],
-        )
+        );
+        HeaderPropagationPolicy::compile(policy, &[]).expect("propagation policy compiles")
     }
 
     fn conditional_workspace_policy() -> HeaderPropagationPolicy {
@@ -3226,7 +3228,7 @@ mod tests {
         }))
         .expect("valid conditional context policy");
         let (name, definition) = context.entries.into_iter().next().expect("declaration");
-        let policy: HeaderPropagationPolicy = serde_json::from_value(serde_json::json!({
+        let policy: HeaderPropagationConfig = serde_json::from_value(serde_json::json!({
             "default": {
                 "selector": {
                     "type": "named",
@@ -3236,13 +3238,15 @@ mod tests {
             }
         }))
         .expect("valid conditional propagation policy");
-        policy
-            .compile_context(&[ContextEntryDeclaration {
+        HeaderPropagationPolicy::compile(
+            policy,
+            &[ContextEntryDeclaration {
                 scope: ContextScope::Engine,
                 name,
                 definition,
-            }])
-            .expect("conditional propagation policy compiles")
+            }],
+        )
+        .expect("conditional propagation policy compiles")
     }
 
     #[test]
@@ -3322,9 +3326,11 @@ mod tests {
         assert!(matching.get("workspace_id").is_none());
     }
 
+    /// Scenario: propagation selects all captured headers with an authorization drop override.
+    /// Guarantees: outgoing metadata contains the tenant header but no authorization header.
     #[test]
     fn test_build_grpc_metadata_drops_filtered_headers() {
-        let policy = HeaderPropagationPolicy::new(
+        let policy = HeaderPropagationConfig::new(
             PropagationDefault {
                 selector: PropagationSelector {
                     selector_type: PropagationSelectorType::AllCaptured,
@@ -3341,6 +3347,8 @@ mod tests {
                 on_error: None,
             }],
         );
+        let policy =
+            HeaderPropagationPolicy::compile(policy, &[]).expect("propagation policy compiles");
         let handler = make_effect_handler_with_policy(Some(policy));
 
         let mut headers = TransportHeaders::new();
@@ -3451,10 +3459,12 @@ mod tests {
         );
     }
 
+    /// Scenario: captured headers are present but the propagation selector is `none`.
+    /// Guarantees: no outgoing metadata is produced.
     #[test]
     fn test_build_grpc_metadata_returns_none_when_all_dropped() {
         // Policy that drops everything (selector = None means no headers are selected).
-        let policy = HeaderPropagationPolicy::new(
+        let policy = HeaderPropagationConfig::new(
             PropagationDefault {
                 selector: PropagationSelector {
                     selector_type: PropagationSelectorType::None,
@@ -3464,6 +3474,8 @@ mod tests {
             },
             vec![],
         );
+        let policy =
+            HeaderPropagationPolicy::compile(policy, &[]).expect("propagation policy compiles");
         let handler = make_effect_handler_with_policy(Some(policy));
 
         let mut headers = TransportHeaders::new();

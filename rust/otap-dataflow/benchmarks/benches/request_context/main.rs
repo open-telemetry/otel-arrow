@@ -16,9 +16,10 @@ use otel_arrow_dfe_config::ContextEntryName;
 use otel_arrow_dfe_config::transport_headers::{TransportHeader, TransportHeaders, ValueKind};
 use otel_arrow_dfe_config::transport_headers_policy::{
     CaptureDefaults, CaptureRule, CompiledHeaderCapturePolicy, HeaderCapturePolicy,
-    HeaderPropagationPolicy, NameStrategy, PropagationDefault, PropagationSelector,
-    PropagationSelectorType,
+    HeaderPropagationPolicy as HeaderPropagationConfig, NameStrategy, PropagationDefault,
+    PropagationSelector, PropagationSelectorType,
 };
+use otel_arrow_dfe_engine::context_declaration::CompiledHeaderPropagationPolicy as HeaderPropagationPolicy;
 use rdkafka::message::{Header, Headers, OwnedHeaders};
 use tonic::metadata::{KeyAndValueRef, MetadataKey, MetadataMap, MetadataValue};
 
@@ -69,7 +70,7 @@ impl ConsumerCase {
             Self::Stored => NameStrategy::StoredName,
             Self::Original => NameStrategy::Preserve,
         };
-        Some(HeaderPropagationPolicy::new(
+        let policy = HeaderPropagationConfig::new(
             PropagationDefault {
                 selector: PropagationSelector {
                     selector_type: PropagationSelectorType::AllCaptured,
@@ -79,7 +80,8 @@ impl ConsumerCase {
                 ..PropagationDefault::default()
             },
             vec![],
-        ))
+        );
+        Some(HeaderPropagationPolicy::compile(policy, &[]).expect("propagation policy compiles"))
     }
 
     const fn preserves_original_names(self) -> bool {
