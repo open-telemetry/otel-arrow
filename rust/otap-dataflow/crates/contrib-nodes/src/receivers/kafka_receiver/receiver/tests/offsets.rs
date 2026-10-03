@@ -307,6 +307,68 @@ fn reconcile_folds_commit_callback_metrics() {
     );
 }
 
+/// Scenario (offset guarantees): the real `ConsumerContext::commit_callback` is
+/// invoked (as librdkafka would when delivering an offset-commit result) with a
+/// broker rejection and, separately, a success, against the receiver's own
+/// shared rebalance state; the receive loop then reconciles.
+/// Guarantees: a broker-rejected commit surfaces on the receiver's
+/// `receiver.kafka.offset_commits` metric with `outcome="failure"` (and a
+/// success with `outcome="success"`), driven through the actual
+/// `commit_callback` dispatch method rather than the `record_commit_result_for_test`
+/// seam. This pins the operator-visible contract that a future commit-issuing
+/// change (which must make `commit_callback` actually fire; see
+/// `async_commit_outcome_not_delivered_by_callback_documents_gap`) has to
+/// preserve: when the commit callback reports a broker rejection, operators see
+/// `offset_commits{outcome="failure"}`.
+#[test]
+fn commit_callback_failure_surfaces_offset_commit_failure_metric() {
+    use crate::receivers::kafka_receiver::rebalance::RebalancingConsumerContext;
+    use rdkafka::consumer::ConsumerContext;
+    use rdkafka::error::KafkaError;
+
+    let cfg = make_config(&["traces"], &["metrics"], &[], MessageFormat::OtlpProto);
+    assert!(!cfg.is_auto_commit());
+    let ctx_pipeline = make_pipeline_ctx(0, 1, 0);
+    let mut receiver = KafkaReceiver::new(ctx_pipeline, cfg).expect("should create");
+
+    // Build the real consumer context over the receiver's shared rebalance
+    // state, then invoke the actual `commit_callback` the librdkafka event loop
+    // would call: one broker rejection and one success.
+    let ctx = RebalancingConsumerContext::Default(receiver.rebalance_state_for_test());
+    let offsets = TopicPartitionList::new();
+    ctx.commit_callback(
+        Err(KafkaError::ClientCreation(
+            "broker rejected commit".to_string(),
+        )),
+        &offsets,
+    );
+    ctx.commit_callback(Ok(()), &offsets);
+
+    // Fold the recorded outcomes into the receiver's metric set.
+    receiver.reconcile_rebalance_state();
+
+    assert_eq!(
+        receiver
+            .metrics
+            .offset_commits_for(Outcome::Failure)
+            .commits
+            .get(),
+        1,
+        "a broker-rejected commit reported on commit_callback must surface as \
+         offset_commits with outcome=failure",
+    );
+    assert_eq!(
+        receiver
+            .metrics
+            .offset_commits_for(Outcome::Success)
+            .commits
+            .get(),
+        1,
+        "a successful commit reported on commit_callback must surface as \
+         offset_commits with outcome=success",
+    );
+}
+
 /// Scenario (offset guarantees): a commit request times out at the broker,
 /// so its asynchronous outcome arrives on the commit callback as a failure
 /// (modeled here via `record_commit_result_for_test(false)`, the same seam
