@@ -3,16 +3,19 @@
 
 //! Compiled transport-header propagation and composite presence gates.
 
+use super::layout::HeaderLookup;
 use super::{ContextEntryId, ContextLayout, ContextNameId, ContextValues};
 use otel_arrow_dfe_config::context_policy::{ContextDomain, ContextEntryDeclaration};
-use otel_arrow_dfe_config::transport_headers::TransportHeaders;
+use otel_arrow_dfe_config::transport_headers::{
+    TransportHeaderRef, TransportHeaders, TransportHeadersIter,
+};
 use otel_arrow_dfe_config::transport_headers_policy::{
     HeaderPropagationPolicy, NameStrategy, PropagatedHeader, PropagationAction, PropagationDefault,
     PropagationOverride, PropagationSelectorType,
 };
 use otel_arrow_dfe_config::{ContextEntryName, ContextEntryRef};
 use smallvec::SmallVec;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 /// A propagation policy with every composite selector resolved before runtime.
@@ -33,6 +36,15 @@ pub struct CompiledHeaderPropagationPolicy {
     compiled_named: Vec<CompiledNamedPropagation>,
     // Immutable compiled state is shared when bindings are cloned for runtime instances.
     layout: Arc<ContextLayout>,
+    actions: HeaderLookup<CompiledAction>,
+    single_entry: Option<ContextEntryId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+struct CompiledAction {
+    action: PropagationAction,
+    name: NameStrategy,
+    binding: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -40,6 +52,7 @@ struct CompiledNamedPropagation {
     source_name: ContextEntryName,
     output_name: ContextEntryName,
     entry: ContextEntryId,
+    requires_presence: bool,
 }
 
 type ConditionMatchCache = SmallVec<[(ContextEntryId, bool); 4]>;
@@ -78,17 +91,66 @@ impl CompiledHeaderPropagationPolicy {
                 ));
             }
             register_named_source(&mut selected_sources, &source_name, reference)?;
+            let entry_layout = &layout.entries()[entry.index()];
+            // The selected header proves a sole, unconditional member is present.
             compiled_named.push(CompiledNamedPropagation {
                 source_name,
                 output_name: reference.name().clone(),
                 entry,
+                requires_presence: entry_layout.members.len() != 1
+                    || !entry_layout.conditions.is_empty(),
             });
         }
+        let mut actions = BTreeMap::new();
+        for override_policy in &policy.overrides {
+            for name in &override_policy.match_rule.stored_names {
+                _ = actions
+                    .entry(name.as_str().to_ascii_lowercase())
+                    .or_insert(CompiledAction {
+                        action: override_policy.action,
+                        name: override_policy.name.unwrap_or(policy.default.name),
+                        binding: None,
+                    });
+            }
+        }
+        for reference in references
+            .into_iter()
+            .flatten()
+            .filter(|reference| reference.scope().is_none())
+        {
+            _ = actions
+                .entry(reference.name().as_str().to_ascii_lowercase())
+                .or_insert(CompiledAction {
+                    action: policy.default.action,
+                    name: policy.default.name,
+                    binding: None,
+                });
+        }
+        for (index, binding) in compiled_named.iter().enumerate() {
+            _ = actions
+                .entry(binding.source_name.as_str().to_ascii_lowercase())
+                .or_insert(CompiledAction {
+                    action: policy.default.action,
+                    name: policy.default.name,
+                    binding: Some(index),
+                });
+        }
+        // A failed gate can end iteration only when every action depends on it.
+        let single_entry = if layout.entries().len() == 1
+            && policy.default.action == PropagationAction::Propagate
+            && actions.values().all(|action| action.binding.is_some())
+        {
+            compiled_named.first().map(|binding| binding.entry)
+        } else {
+            None
+        };
         Ok(Self {
             default: policy.default,
             overrides: policy.overrides,
             compiled_named,
             layout,
+            actions: HeaderLookup::new(actions),
+            single_entry,
         })
     }
 
@@ -131,34 +193,66 @@ impl CompiledHeaderPropagationPolicy {
     /// Headers with [`PropagationAction::Drop`] are omitted.
     ///
     /// All selectors and their composite presence gates are resolved before use.
+    #[inline]
     pub fn propagate<'a>(
         &'a self,
         context: &'a impl ContextValues,
     ) -> impl Iterator<Item = PropagatedHeader<'a>> {
-        let mut condition_matches = ConditionMatchCache::new();
-        context
+        let headers = context
             .transport_headers()
-            .into_iter()
-            .flat_map(TransportHeaders::iter)
-            .filter_map(move |header| {
-                let (action, name_strategy, selected_name) = self.resolve_action_for_header(
-                    context,
-                    header.name.as_str(),
-                    &mut condition_matches,
-                );
-                if action == PropagationAction::Drop {
+            .map(TransportHeaders::iter)
+            .unwrap_or_default();
+        if self.compiled_named.is_empty() {
+            PropagationIter::Direct {
+                headers,
+                policy: self,
+            }
+        } else if let Some(entry) = self.single_entry {
+            PropagationIter::Single {
+                headers,
+                policy: self,
+                context,
+                entry,
+                present: !self.compiled_named[0].requires_presence,
+            }
+        } else {
+            PropagationIter::Composite {
+                headers,
+                policy: self,
+                context,
+                condition_matches: ConditionMatchCache::new(),
+            }
+        }
+    }
+
+    #[inline]
+    fn single_next<'a>(
+        &'a self,
+        context: &'a impl ContextValues,
+        headers: &mut TransportHeadersIter<'a>,
+        entry: ContextEntryId,
+        present: &mut bool,
+    ) -> Option<PropagatedHeader<'a>> {
+        for header in headers.by_ref() {
+            let Some(action) = self.actions.get(header.name.as_str()) else {
+                continue;
+            };
+            if !*present {
+                if !self.layout.is_present_with_header(entry, context, header) {
+                    *headers = TransportHeadersIter::default();
                     return None;
                 }
-                let header_name = match name_strategy {
-                    NameStrategy::StoredName => selected_name.unwrap_or(header.name.as_str()),
-                    NameStrategy::Preserve => header.wire_name(),
-                };
-                Some(PropagatedHeader {
-                    header_name,
-                    value_kind: header.value.value_kind,
-                    value: header.value.bytes,
-                })
-            })
+                *present = true;
+            }
+            let binding = &self.compiled_named[action.binding.expect("single composite binding")];
+            return Self::output_header(
+                header,
+                action.action,
+                action.name,
+                Some(binding.output_name.as_str()),
+            );
+        }
+        None
     }
 
     fn resolve_static_action_for_name(
@@ -192,51 +286,173 @@ impl CompiledHeaderPropagationPolicy {
         }
     }
 
+    #[inline]
     fn resolve_action_for_header<'a>(
         &'a self,
         context: &'a impl ContextValues,
-        name: &str,
+        header: TransportHeaderRef<'a>,
         condition_matches: &mut ConditionMatchCache,
     ) -> (PropagationAction, NameStrategy, Option<&'a str>) {
-        for ov in &self.overrides {
-            if ov
-                .match_rule
-                .stored_names
-                .iter()
-                .any(|stored| name.eq_ignore_ascii_case(stored.as_str()))
-            {
-                let name_strategy = ov.name.unwrap_or(self.default.name);
-                return (ov.action, name_strategy, None);
+        let Some(action) = self.actions.get(header.name.as_str()) else {
+            return (
+                if self.default.selector.selector_type == PropagationSelectorType::AllCaptured {
+                    self.default.action
+                } else {
+                    PropagationAction::Drop
+                },
+                self.default.name,
+                None,
+            );
+        };
+        if let Some(index) = action.binding {
+            let binding = &self.compiled_named[index];
+            let present = !binding.requires_presence
+                || match condition_matches
+                    .iter()
+                    .find(|(entry, _)| *entry == binding.entry)
+                {
+                    Some((_, present)) => *present,
+                    None => {
+                        let present =
+                            self.layout
+                                .is_present_with_header(binding.entry, context, header);
+                        condition_matches.push((binding.entry, present));
+                        present
+                    }
+                };
+            if !present {
+                return (PropagationAction::Drop, action.name, None);
             }
+            return (
+                action.action,
+                action.name,
+                Some(binding.output_name.as_str()),
+            );
         }
+        (action.action, action.name, None)
+    }
 
-        if self.default.selector.selects_unqualified_str(name) {
-            return (self.default.action, self.default.name, None);
-        }
-        for binding in &self.compiled_named {
-            if !name.eq_ignore_ascii_case(binding.source_name.as_str()) {
-                continue;
+    #[inline]
+    fn direct_header<'a>(&'a self, header: TransportHeaderRef<'a>) -> Option<PropagatedHeader<'a>> {
+        let (action, name) = match self.actions.get(header.name.as_str()) {
+            Some(action) => (action.action, action.name),
+            None => (
+                if self.default.selector.selector_type == PropagationSelectorType::AllCaptured {
+                    self.default.action
+                } else {
+                    PropagationAction::Drop
+                },
+                self.default.name,
+            ),
+        };
+        Self::output_header(header, action, name, None)
+    }
+
+    #[inline]
+    fn composite_header<'a>(
+        &'a self,
+        context: &'a impl ContextValues,
+        header: TransportHeaderRef<'a>,
+        matches: &mut ConditionMatchCache,
+    ) -> Option<PropagatedHeader<'a>> {
+        let (action, name, selected) = self.resolve_action_for_header(context, header, matches);
+        Self::output_header(header, action, name, selected)
+    }
+
+    #[inline]
+    fn output_header<'a>(
+        header: TransportHeaderRef<'a>,
+        action: PropagationAction,
+        name: NameStrategy,
+        selected: Option<&'a str>,
+    ) -> Option<PropagatedHeader<'a>> {
+        (action == PropagationAction::Propagate).then(|| PropagatedHeader {
+            header_name: match name {
+                NameStrategy::Preserve => header.wire_name(),
+                NameStrategy::StoredName => selected.unwrap_or(header.name.as_str()),
+            },
+            value_kind: header.value.value_kind,
+            value: header.value.bytes,
+        })
+    }
+}
+
+enum PropagationIter<'a, C> {
+    Direct {
+        headers: TransportHeadersIter<'a>,
+        policy: &'a CompiledHeaderPropagationPolicy,
+    },
+    Single {
+        headers: TransportHeadersIter<'a>,
+        policy: &'a CompiledHeaderPropagationPolicy,
+        context: &'a C,
+        entry: ContextEntryId,
+        present: bool,
+    },
+    Composite {
+        headers: TransportHeadersIter<'a>,
+        policy: &'a CompiledHeaderPropagationPolicy,
+        context: &'a C,
+        condition_matches: ConditionMatchCache,
+    },
+}
+
+impl<'a, C: ContextValues> Iterator for PropagationIter<'a, C> {
+    type Item = PropagatedHeader<'a>;
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Direct { headers, policy } => {
+                headers.find_map(|header| policy.direct_header(header))
             }
-            let present = match condition_matches
-                .iter()
-                .find(|(entry, _)| *entry == binding.entry)
-            {
-                Some((_, present)) => *present,
-                None => {
-                    let present = self.layout.is_present(binding.entry, context);
-                    condition_matches.push((binding.entry, present));
-                    present
-                }
-            };
-            if present {
-                return (
-                    self.default.action,
-                    self.default.name,
-                    Some(binding.output_name.as_str()),
-                );
-            }
+            Self::Single {
+                headers,
+                policy,
+                context,
+                entry,
+                present,
+            } => policy.single_next(*context, headers, *entry, present),
+            Self::Composite {
+                headers,
+                policy,
+                context,
+                condition_matches,
+            } => headers
+                .find_map(|header| policy.composite_header(*context, header, condition_matches)),
         }
-        (PropagationAction::Drop, self.default.name, None)
+    }
+
+    #[inline]
+    fn fold<B, F>(self, initial: B, fold: F) -> B
+    where
+        F: FnMut(B, Self::Item) -> B,
+    {
+        match self {
+            Self::Direct { headers, policy } => headers
+                .filter_map(|header| policy.direct_header(header))
+                .fold(initial, fold),
+            Self::Single {
+                mut headers,
+                policy,
+                context,
+                entry,
+                mut present,
+            } => std::iter::from_fn(|| {
+                policy.single_next(context, &mut headers, entry, &mut present)
+            })
+            .fold(initial, fold),
+            Self::Composite {
+                headers,
+                policy,
+                context,
+                mut condition_matches,
+            } => headers
+                .filter_map(|header| {
+                    policy.composite_header(context, header, &mut condition_matches)
+                })
+                .fold(initial, fold),
+        }
     }
 }
 
@@ -491,7 +707,7 @@ default:
 
     /// Scenario: two selected members and duplicate values share one composite presence gate.
     /// Guarantees: successful and failed gates are evaluated once per call, then reevaluated
-    /// on the next call while preserving output names and order.
+    /// on the next call, preserving names and order across mixed `next` and `fold` consumption.
     #[test]
     fn composite_transport_header_propagation_shares_conditions_across_bindings() {
         use std::cell::Cell;
@@ -568,12 +784,23 @@ entries:
             identity_present: Cell::new(true),
             identity_checks: Cell::new(0),
         };
-        for (call, present) in [true, false, true].into_iter().enumerate() {
+        for (call, (present, consumed)) in [true, false, true]
+            .into_iter()
+            .flat_map(|present| (0..=3).map(move |consumed| (present, consumed)))
+            .enumerate()
+        {
             context.identity_present.set(present);
-            let output = policy
-                .propagate(&context)
-                .map(|header| (header.header_name, header.value))
-                .collect::<Vec<_>>();
+            let mut iter = policy.propagate(&context);
+            let mut output = Vec::new();
+            for _ in 0..consumed {
+                if let Some(header) = iter.next() {
+                    output.push((header.header_name, header.value));
+                }
+            }
+            let output = iter.fold(output, |mut output, header| {
+                output.push((header.header_name, header.value));
+                output
+            });
             let expected = if present {
                 vec![
                     ("workspace_id", b"present".as_slice()),
@@ -997,5 +1224,77 @@ entries:
         let propagated: Vec<_> = policy.propagate(&headers).collect();
         assert_eq!(propagated.len(), 1);
         assert_eq!(propagated[0].header_name, "X-Tenant-Id");
+    }
+
+    /// Scenario: indexed selectors and overlapping overrides use names of different lengths/case.
+    /// Guarantees: propagation agrees with static first-override-wins resolution for every
+    /// selector type, including small sets and first/last-byte lookup-key collisions.
+    #[test]
+    fn indexed_actions_preserve_selector_and_override_precedence() {
+        for count in [1, 2, 3, 4, 5, 32] {
+            let names = (0..count)
+                .map(|index| context_name(&format!("field_{index}")))
+                .collect::<Vec<_>>();
+            for selector_type in [
+                PropagationSelectorType::None,
+                PropagationSelectorType::AllCaptured,
+                PropagationSelectorType::Named,
+            ] {
+                let named = (selector_type == PropagationSelectorType::Named)
+                    .then(|| names.iter().cloned().map(Into::into).collect());
+                let policy = HeaderPropagationPolicy::new(
+                    PropagationDefault {
+                        selector: PropagationSelector {
+                            selector_type,
+                            named,
+                        },
+                        ..PropagationDefault::default()
+                    },
+                    vec![
+                        PropagationOverride {
+                            match_rule: PropagationMatch {
+                                stored_names: names.clone(),
+                            },
+                            action: PropagationAction::Propagate,
+                            name: Some(NameStrategy::StoredName),
+                            on_error: None,
+                        },
+                        PropagationOverride {
+                            match_rule: PropagationMatch {
+                                stored_names: vec![context_name("FIELD_0")],
+                            },
+                            action: PropagationAction::Drop,
+                            name: None,
+                            on_error: None,
+                        },
+                    ],
+                );
+                let policy =
+                    CompiledHeaderPropagationPolicy::compile(policy, &[]).expect("compiled");
+                for name in names.iter().map(|name| name.as_str()).chain(["unknown"]) {
+                    let upper = name.to_ascii_uppercase();
+                    let mut headers = TransportHeaders::new();
+                    headers.push(header(&upper, "original", b"value"));
+                    let (action, strategy) =
+                        policy.resolve_static_action_for_name(&context_name(&upper));
+                    let output = policy.propagate(&headers).collect::<Vec<_>>();
+                    assert_eq!(policy.propagate(&headers).count(), output.len());
+                    assert_eq!(
+                        output.len(),
+                        usize::from(action == PropagationAction::Propagate)
+                    );
+                    if let Some(output) = output.first() {
+                        assert_eq!(
+                            output.header_name,
+                            if strategy == NameStrategy::Preserve {
+                                "original"
+                            } else {
+                                &upper
+                            }
+                        );
+                    }
+                }
+            }
+        }
     }
 }

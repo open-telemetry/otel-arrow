@@ -11,6 +11,8 @@
 //! subsequent consumers. They are not offsets into message storage. Presence
 //! is evaluated against existing header and identity storage at read time;
 //! ingestion-time materialization and precomputed hashes are separate work.
+//! Presence plans deduplicate header requirements at compilation and check
+//! conditions before unconditional members, without read-time allocation.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -20,7 +22,7 @@ use otel_arrow_dfe_config::context_policy::{
     ContextEntryDeclaration, ContextEntryPart, ContextScope,
 };
 use otel_arrow_dfe_config::error::Error;
-use otel_arrow_dfe_config::transport_headers::TransportHeaders;
+use otel_arrow_dfe_config::transport_headers::{TransportHeaderRef, TransportHeaders};
 
 /// A deterministic logical layout of primitive fields and composite entries.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Ord, PartialOrd, Hash)]
@@ -31,6 +33,171 @@ pub struct ContextLayout {
     entries: Box<[ContextEntryLayout]>,
     /// Namespace containing both primitives and composites.
     names: BTreeMap<ContextEntryName, ContextNameId>,
+    presence: Box<[EntryPresence]>,
+}
+
+/// A compact lookup for the small sets of configured propagation names.
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub(super) struct HeaderLookup<T>(Box<[(u64, String, T)]>);
+
+fn header_key(name: &str) -> u64 {
+    // This is only a rejection key; callers still compare the full names.
+    let bytes = name.as_bytes();
+    ((name.len() as u64) << 16)
+        | (u64::from(bytes.first().copied().unwrap_or(0).to_ascii_lowercase()) << 8)
+        | u64::from(bytes.last().copied().unwrap_or(0).to_ascii_lowercase())
+}
+
+impl<T> Default for HeaderLookup<T> {
+    fn default() -> Self {
+        Self(Box::new([]))
+    }
+}
+
+impl<T> HeaderLookup<T> {
+    pub(super) fn new(entries: BTreeMap<String, T>) -> Self {
+        Self(
+            entries
+                .into_iter()
+                .map(|(name, value)| (header_key(&name), name, value))
+                .collect(),
+        )
+    }
+
+    #[inline]
+    pub(super) fn get(&self, name: &str) -> Option<&T> {
+        if let [(_, stored, value)] = self.0.as_ref() {
+            return stored.eq_ignore_ascii_case(name).then_some(value);
+        }
+        if self.0.is_empty() {
+            return None;
+        }
+        let key = header_key(name);
+        self.0
+            .iter()
+            .find(|(stored_key, stored, _)| *stored_key == key && stored.eq_ignore_ascii_case(name))
+            .map(|(_, _, value)| value)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+struct HeaderRequirement {
+    name: String,
+    key: u64,
+    value: Option<Box<[u8]>>,
+}
+
+impl HeaderRequirement {
+    #[inline]
+    fn matches(&self, header: TransportHeaderRef<'_>) -> bool {
+        self.name.eq_ignore_ascii_case(header.name.as_str())
+            && self
+                .value
+                .as_deref()
+                .is_none_or(|value| value == header.value.bytes)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+struct EntryPresence {
+    headers: Box<[HeaderRequirement]>,
+    identities: Box<[ContextEntryName]>,
+}
+
+impl EntryPresence {
+    fn compile(entry: &ContextEntryLayout, fields: &[ContextFieldLayout]) -> Self {
+        let mut headers = BTreeMap::<String, BTreeSet<Option<Box<[u8]>>>>::new();
+        let mut identities = Vec::new();
+        for member in &entry.members {
+            let field = &fields[member.field.index()];
+            match field.domain {
+                ContextDomain::TransportHeader => {
+                    _ = headers
+                        .entry(field.name.as_str().to_ascii_lowercase())
+                        .or_default()
+                        .insert(None);
+                }
+                ContextDomain::AuthorizedIdentity => identities.push(field.name.clone()),
+            }
+        }
+        for condition in &entry.conditions {
+            let values = headers
+                .entry(
+                    fields[condition.field.index()]
+                        .name
+                        .as_str()
+                        .to_ascii_lowercase(),
+                )
+                .or_default();
+            // A matching value also proves that its member exists.
+            _ = values.remove(&None);
+            _ = values.insert(Some(condition.value.clone()));
+        }
+        let mut headers = headers
+            .into_iter()
+            .flat_map(|(name, values)| {
+                values.into_iter().map(move |value| HeaderRequirement {
+                    key: header_key(&name),
+                    name: name.clone(),
+                    value,
+                })
+            })
+            .collect::<Vec<_>>();
+        // Stable partitioning retains canonical condition order and rejects failed
+        // conditions before spending work on unconditional members.
+        headers.sort_by_key(|requirement| requirement.value.is_none());
+        Self {
+            headers: headers.into_boxed_slice(),
+            identities: identities.into_boxed_slice(),
+        }
+    }
+
+    fn is_present(
+        &self,
+        context: &impl ContextValues,
+        observed: Option<TransportHeaderRef<'_>>,
+    ) -> bool {
+        if !self
+            .identities
+            .iter()
+            .all(|name| context.has_authorized_identity(name))
+        {
+            return false;
+        }
+        if self.headers.is_empty() {
+            return true;
+        }
+        let Some(headers) = context.transport_headers() else {
+            return false;
+        };
+        if headers.len() == 1 {
+            let header = observed.or_else(|| headers.get(0)).expect("one header");
+            return self
+                .headers
+                .iter()
+                .all(|requirement| requirement.matches(header));
+        }
+        if headers.len() <= 5 && self.headers.len() > 1 {
+            let mut iter = headers.iter();
+            let Some(first) = iter.next() else {
+                return false;
+            };
+            // Decode small packed inputs once rather than once per requirement.
+            let mut captured = [(header_key(first.name.as_str()), first); 5];
+            for (slot, header) in captured[1..].iter_mut().zip(iter) {
+                *slot = (header_key(header.name.as_str()), header);
+            }
+            return self.headers.iter().all(|requirement| {
+                captured[..headers.len()]
+                    .iter()
+                    .any(|(key, header)| requirement.key == *key && requirement.matches(*header))
+            });
+        }
+        self.headers.iter().all(|requirement| {
+            observed.is_some_and(|header| requirement.matches(header))
+                || headers.iter().any(|header| requirement.matches(header))
+        })
+    }
 }
 
 /// A primitive field is a named element in one authority domain.
@@ -330,10 +497,15 @@ impl ContextLayout {
                 conditions: conditions.into_boxed_slice(),
             });
         }
+        let presence = entries
+            .iter()
+            .map(|entry| EntryPresence::compile(entry, &fields))
+            .collect();
         Ok(Self {
             fields,
             entries: entries.into_boxed_slice(),
             names,
+            presence,
         })
     }
 
@@ -352,33 +524,16 @@ impl ContextLayout {
     /// Evaluates a composite atomically, including members not selected for output.
     #[must_use]
     pub fn is_present(&self, entry: ContextEntryId, context: &impl ContextValues) -> bool {
-        let entry = &self.entries[entry.index()];
-        let headers = context.transport_headers();
-        entry.members.iter().all(|member| {
-            let field = &self.fields[member.field.index()];
-            match field.domain {
-                ContextDomain::TransportHeader => headers.is_some_and(|headers| {
-                    headers.iter().any(|header| {
-                        header
-                            .name
-                            .as_str()
-                            .eq_ignore_ascii_case(field.name.as_str())
-                    })
-                }),
-                ContextDomain::AuthorizedIdentity => context.has_authorized_identity(&field.name),
-            }
-        }) && entry.conditions.iter().all(|condition| {
-            let field = &self.fields[condition.field.index()];
-            headers.is_some_and(|headers| {
-                headers.iter().any(|header| {
-                    header
-                        .name
-                        .as_str()
-                        .eq_ignore_ascii_case(field.name.as_str())
-                        && header.value.bytes == condition.value.as_ref()
-                })
-            })
-        })
+        self.presence[entry.index()].is_present(context, None)
+    }
+
+    pub(super) fn is_present_with_header(
+        &self,
+        entry: ContextEntryId,
+        context: &impl ContextValues,
+        header: TransportHeaderRef<'_>,
+    ) -> bool {
+        self.presence[entry.index()].is_present(context, Some(header))
     }
 
     /// Resolve a primitive, whole composite, or qualified composite member.
@@ -450,16 +605,17 @@ mod tests {
         value.try_into().expect("valid reference")
     }
 
+    fn field(value: &str, domain: ContextDomain) -> ContextFieldLayout {
+        ContextFieldLayout {
+            name: name(value),
+            domain,
+        }
+    }
+
     fn fields() -> Vec<ContextFieldLayout> {
         vec![
-            ContextFieldLayout {
-                domain: ContextDomain::TransportHeader,
-                name: name("workspace"),
-            },
-            ContextFieldLayout {
-                domain: ContextDomain::AuthorizedIdentity,
-                name: name("customer"),
-            },
+            field("workspace", ContextDomain::TransportHeader),
+            field("customer", ContextDomain::AuthorizedIdentity),
         ]
     }
 
@@ -483,14 +639,8 @@ mod tests {
     fn conditional_fields() -> Vec<ContextFieldLayout> {
         let mut result = fields();
         result.extend([
-            ContextFieldLayout {
-                name: name("environment"),
-                domain: ContextDomain::TransportHeader,
-            },
-            ContextFieldLayout {
-                name: name("region"),
-                domain: ContextDomain::TransportHeader,
-            },
+            field("environment", ContextDomain::TransportHeader),
+            field("region", ContextDomain::TransportHeader),
         ]);
         result
     }
@@ -541,97 +691,81 @@ mod tests {
             .collect()
     }
 
-    /// Scenario: an unqualified primitive name is resolved directly.
-    /// Guarantees: primitive projections select one field and create no synthetic composite.
+    /// Scenario: primitive, whole-composite, and qualified names select conditional or plain entries.
+    /// Guarantees: primitives stay independent; members retain their entire composite gate,
+    /// aliases resolve to source fields, and conditions never become projected members.
     #[test]
-    fn primitive_projection_uses_field_presence() {
-        let layout = compile(fields(), &[entry()]);
-        let projection = layout
-            .resolve(&reference("workspace"))
-            .expect("primitive entry");
-
-        let ContextProjection::Primitive(field) = &projection else {
-            panic!("workspace must resolve to a primitive projection");
-        };
-        assert_eq!(projection.fields().len(), 1);
-        assert_eq!(projection.presence(), ContextNameId::Primitive(*field));
-        assert_eq!(projection_names(&layout, &projection), ["workspace"]);
-        assert_eq!(layout.entries().len(), 1);
+    fn projections_preserve_fields_and_presence_gates() {
+        for declaration in [entry(), conditional_entry()] {
+            let layout = compile(conditional_fields(), &[declaration]);
+            let primitive = layout.resolve(&reference("workspace")).expect("primitive");
+            let ContextProjection::Primitive(field) = primitive else {
+                panic!("workspace must be primitive");
+            };
+            assert_eq!(primitive.presence(), ContextNameId::Primitive(field));
+            assert_eq!(projection_names(&layout, &primitive), ["workspace"]);
+            assert_eq!(layout.entries().len(), 1);
+            for (raw, expected) in [
+                ("product_user", vec!["customer", "workspace"]),
+                ("product_user:customer_id", vec!["customer"]),
+                ("product_user:workspace", vec!["workspace"]),
+            ] {
+                let projection = layout.resolve(&reference(raw)).expect("projection");
+                assert_eq!(
+                    projection.presence(),
+                    ContextNameId::Composite(ContextEntryId(0)),
+                    "{raw}"
+                );
+                assert_eq!(projection_names(&layout, &projection), expected, "{raw}");
+            }
+        }
     }
 
-    /// Scenario: an unqualified composite name is resolved as a whole.
-    /// Guarantees: the projection selects every member in canonical member-name order.
+    /// Scenario: field, member, and declaration input order vary independently.
+    /// Guarantees: IDs and member order stay canonical, with names taking precedence over scopes.
     #[test]
-    fn whole_composite_projection_selects_all_members() {
-        let layout = compile(fields(), &[entry()]);
-        let projection = layout
-            .resolve(&reference("product_user"))
-            .expect("whole composite");
-
-        let ContextProjection::Composite {
-            entry: entry_id,
-            fields: projected,
-        } = &projection
-        else {
-            panic!("product_user must resolve to a composite projection");
-        };
-        assert_eq!(*entry_id, ContextEntryId(0));
-        assert_eq!(projected.len(), 2);
+    fn input_order_does_not_change_layout() {
+        let mut alpha = entry();
+        alpha.scope = ContextScope::Group("group".into());
+        alpha.name = name("alpha");
+        let mut zeta = entry();
+        zeta.name = name("zeta");
+        let declarations = [zeta, alpha];
+        let expected = compile(fields(), &declarations);
+        for permutation in 0..8 {
+            let mut sources = fields();
+            let mut entries = declarations.clone();
+            if permutation & 1 != 0 {
+                sources.reverse();
+            }
+            if permutation & 2 != 0 {
+                entries.reverse();
+            }
+            if permutation & 4 != 0 {
+                for entry in &mut entries {
+                    entry.definition.0.reverse();
+                }
+            }
+            assert_eq!(compile(sources, &entries), expected, "{permutation}");
+        }
         assert_eq!(
-            projection_names(&layout, &projection),
-            ["customer", "workspace"]
-        );
-    }
-
-    /// Scenario: one qualified member of a composite is resolved.
-    /// Guarantees: it selects one field while retaining the whole composite's presence gate.
-    #[test]
-    fn qualified_projection_retains_composite_presence() {
-        let layout = compile(fields(), &[entry()]);
-        let whole = layout
-            .resolve(&reference("product_user"))
-            .expect("whole composite");
-        let member = layout
-            .resolve(&reference("product_user:customer_id"))
-            .expect("qualified member");
-
-        assert_eq!(member.presence(), whole.presence());
-        assert_eq!(projection_names(&layout, &member), ["customer"]);
-    }
-
-    /// Scenario: field declarations are supplied in different iteration orders.
-    /// Guarantees: compiled IDs and selected field order stay deterministic.
-    #[test]
-    fn field_input_order_does_not_change_layout() {
-        let mut reverse = fields();
-        reverse.reverse();
-        let first = compile(fields(), &[entry()]);
-        let second = compile(reverse, &[entry()]);
-
-        assert_eq!(first, second);
-        assert_eq!(
-            first
+            expected
                 .fields()
                 .iter()
                 .map(|field| field.name.as_str())
                 .collect::<Vec<_>>(),
             ["customer", "workspace"]
         );
-    }
-
-    /// Scenario: equivalent composites declare their value-bearing members in different orders.
-    /// Guarantees: member order does not change the layout or canonical compiled member order.
-    #[test]
-    fn member_input_order_does_not_change_layout() {
-        let original = entry();
-        let mut reversed = original.clone();
-        reversed.definition.0.reverse();
-
-        let first = compile(fields(), &[original]);
-        let second = compile(fields(), &[reversed]);
-        assert_eq!(first, second);
         assert_eq!(
-            first.entries()[0]
+            expected
+                .entries()
+                .iter()
+                .map(|entry| entry.name.as_str())
+                .collect::<Vec<_>>(),
+            ["alpha", "zeta"]
+        );
+        assert_eq!(
+            expected.entries()[0]
                 .members
                 .iter()
                 .map(|member| member.name.as_str())
@@ -640,133 +774,69 @@ mod tests {
         );
     }
 
-    /// Scenario: declarations with opposing scope and name order are supplied in either order.
-    /// Guarantees: entry IDs use name-first canonical order rather than scope or caller order.
-    #[test]
-    fn declaration_input_order_does_not_change_layout() {
-        let mut alpha = entry();
-        alpha.scope = ContextScope::Group("group".into());
-        alpha.name = name("alpha");
-        let mut zeta = entry();
-        zeta.scope = ContextScope::Engine;
-        zeta.name = name("zeta");
-        let declarations = [zeta, alpha];
-        let reversed = [declarations[1].clone(), declarations[0].clone()];
-        let first = compile(fields(), &declarations);
-        let second = compile(fields(), &reversed);
-
-        assert_eq!(first, second);
-        assert_eq!(
-            first
-                .entries()
-                .iter()
-                .map(|entry| entry.name.as_str())
-                .collect::<Vec<_>>(),
-            ["alpha", "zeta"]
-        );
-    }
-
     /// Scenario: a grouping references a name in the wrong source domain.
     /// Guarantees: compilation fails rather than interpreting a trusted claim as a header.
     #[test]
     fn provenance_mismatch_is_rejected() {
-        let only_header = [ContextFieldLayout {
-            name: name("customer"),
-            domain: ContextDomain::TransportHeader,
-        }];
         assert_compile_error(
-            only_header,
+            [field("customer", ContextDomain::TransportHeader)],
             &[entry()],
             "requires unavailable AuthorizedIdentity domain `customer`",
         );
     }
 
-    /// Scenario: a visible derived entry conflicts with an existing source name.
-    /// Guarantees: source and derived entry IDs cannot shadow each other.
+    /// Scenario: declarations shadow sources/entries, nest derived references, or have no members.
+    /// Guarantees: the compiler rejects ambiguous namespaces and invokes definition validation.
     #[test]
-    fn visible_name_collision_is_rejected() {
+    fn invalid_declarations_are_rejected() {
         let mut conflict = entry();
         conflict.name = name("workspace");
-        assert_compile_error(
-            fields(),
-            &[conflict],
-            "context entry `workspace` conflicts with a primitive or composite entry",
-        );
-    }
-
-    /// Scenario: two visible composite declarations use one name at different scopes.
-    /// Guarantees: the flat top-level namespace rejects duplicate composite names.
-    #[test]
-    fn duplicate_composite_name_is_rejected() {
-        let first = entry();
-        let mut second = first.clone();
+        let mut second = entry();
         second.scope = ContextScope::Group("group".into());
-        assert_compile_error(
-            fields(),
-            &[first, second],
-            "context entry `product_user` conflicts with a primitive or composite entry",
-        );
-    }
-
-    /// Scenario: a derived entry is used as a member source.
-    /// Guarantees: nested derived entries are explicitly unsupported.
-    #[test]
-    fn nested_reference_is_rejected() {
         let mut nested = entry();
         nested.definition.0[0] = ContextEntryPart::AuthorizedIdentity {
             name: reference("other:customer"),
             store_as: None,
         };
-        assert_compile_error(
-            fields(),
-            &[nested],
-            "cannot use nested reference `other:customer`",
-        );
+        let mut empty = entry();
+        empty.definition.0.clear();
+        for (declarations, expected) in [
+            (
+                vec![conflict],
+                "context entry `workspace` conflicts with a primitive or composite entry",
+            ),
+            (
+                vec![entry(), second],
+                "context entry `product_user` conflicts with a primitive or composite entry",
+            ),
+            (vec![nested], "cannot use nested reference `other:customer`"),
+            (vec![empty], "must contain at least one member"),
+        ] {
+            assert_compile_error(fields(), &declarations, expected);
+        }
     }
 
-    /// Scenario: an unqualified reference names no primitive or composite.
-    /// Guarantees: resolution reports the unknown top-level name.
+    /// Scenario: references name missing entries/members or qualify a primitive.
+    /// Guarantees: resolution reports the specific failure instead of falling back to another field.
     #[test]
-    fn unknown_name_is_rejected() {
+    fn invalid_projections_are_rejected() {
         let layout = compile(fields(), &[entry()]);
-        let error = layout
-            .resolve(&reference("missing"))
-            .expect_err("unknown name must fail");
-        assert!(
-            error
-                .to_string()
-                .contains("unknown context entry `missing`")
-        );
-    }
-
-    /// Scenario: a qualified reference selects a member not defined by its composite.
-    /// Guarantees: missing members never fall back to a primitive field.
-    #[test]
-    fn unknown_composite_member_is_rejected() {
-        let layout = compile(fields(), &[entry()]);
-        let error = layout
-            .resolve(&reference("product_user:missing"))
-            .expect_err("unknown member must fail");
-        assert!(
-            error
-                .to_string()
-                .contains("unknown context member `product_user:missing`")
-        );
-    }
-
-    /// Scenario: a qualified reference uses a primitive as its namespace.
-    /// Guarantees: primitives cannot expose qualified members.
-    #[test]
-    fn primitive_cannot_be_qualified() {
-        let layout = compile(fields(), &[entry()]);
-        let error = layout
-            .resolve(&reference("workspace:customer"))
-            .expect_err("qualified primitive must fail");
-        assert!(
-            error
-                .to_string()
-                .contains("primitive context entry `workspace` has no qualified members")
-        );
+        for (raw, expected) in [
+            ("missing", "unknown context entry `missing`"),
+            (
+                "product_user:missing",
+                "unknown context member `product_user:missing`",
+            ),
+            (
+                "workspace:customer",
+                "primitive context entry `workspace` has no qualified members",
+            ),
+        ] {
+            let error = layout
+                .resolve(&reference(raw))
+                .expect_err("invalid reference");
+            assert!(error.to_string().contains(expected), "{raw}: {error}");
+        }
     }
 
     /// Scenario: transport-header and authorized-identity capture produce the same stored name.
@@ -774,29 +844,14 @@ mod tests {
     #[test]
     fn source_domain_collision_is_rejected() {
         let fields = [
-            ContextFieldLayout {
-                name: name("customer"),
-                domain: ContextDomain::AuthorizedIdentity,
-            },
-            ContextFieldLayout {
-                name: name("customer"),
-                domain: ContextDomain::TransportHeader,
-            },
+            field("customer", ContextDomain::AuthorizedIdentity),
+            field("customer", ContextDomain::TransportHeader),
         ];
         assert_compile_error(
             fields,
             &[],
             "context source `customer` is produced as both TransportHeader and AuthorizedIdentity",
         );
-    }
-
-    /// Scenario: programmatic declarations bypass policy-level semantic validation.
-    /// Guarantees: compilation invokes the shared definition validator before resolving fields.
-    #[test]
-    fn compilation_validates_definition_shape() {
-        let mut empty = entry();
-        empty.definition.0.clear();
-        assert_compile_error(fields(), &[empty], "must contain at least one member");
     }
 
     /// Scenario: one conditional composite requires two distinct values from the same field.
@@ -859,26 +914,6 @@ mod tests {
         );
     }
 
-    /// Scenario: a qualified member is selected from a conditional composite.
-    /// Guarantees: the member retains the same condition-bearing presence gate as the whole entry.
-    #[test]
-    fn qualified_projection_retains_conditional_presence() {
-        let layout = compile(conditional_fields(), &[conditional_entry()]);
-        let whole = layout
-            .resolve(&reference("product_user"))
-            .expect("whole composite");
-        let member = layout
-            .resolve(&reference("product_user:workspace"))
-            .expect("qualified member");
-
-        assert_eq!(member.presence(), whole.presence());
-        let ContextNameId::Composite(entry_id) = member.presence() else {
-            panic!("qualified member must have composite presence");
-        };
-        assert_eq!(layout.entries()[entry_id.index()].conditions.len(), 2);
-        assert_eq!(projection_names(&layout, &member), ["workspace"]);
-    }
-
     /// Scenario: a header reference varies in case while an identity reference does not.
     /// Guarantees: transport matching preserves stored spelling without folding identity names.
     #[test]
@@ -905,10 +940,7 @@ mod tests {
     #[test]
     fn ambiguous_transport_reference_is_rejected() {
         let mut sources = fields();
-        sources.push(ContextFieldLayout {
-            name: name("WORKSPACE"),
-            domain: ContextDomain::TransportHeader,
-        });
+        sources.push(field("WORKSPACE", ContextDomain::TransportHeader));
         assert_compile_error(sources, &[entry()], "ambiguous TransportHeader reference");
     }
 
@@ -952,5 +984,72 @@ mod tests {
         declaration.definition.0.reverse();
         let second = ContextLayout::for_references(&[declaration], [&selected]).expect("reordered");
         assert_eq!(first, second);
+    }
+
+    /// Scenario: small and larger composites require multiple values from the same header.
+    /// Guarantees: every member and distinct value is required; duplicate and mixed-case headers
+    /// cannot satisfy missing requirements, even when an observed header proves one requirement.
+    #[test]
+    fn compiled_presence_handles_duplicate_values_and_member_counts() {
+        use otel_arrow_dfe_config::transport_headers::TransportHeader;
+
+        for count in [1, 2, 3, 4, 5, 32] {
+            let sources = (0..count)
+                .map(|index| ContextFieldLayout {
+                    name: name(&format!("field_{index}")),
+                    domain: ContextDomain::TransportHeader,
+                })
+                .collect::<Vec<_>>();
+            let mut parts = sources
+                .iter()
+                .map(|field| ContextEntryPart::TransportHeader {
+                    name: field.name.clone().into(),
+                    store_as: None,
+                })
+                .collect::<Vec<_>>();
+            parts.extend(
+                ["one", "two"].map(|value| ContextEntryPart::TransportHeaderMatch {
+                    name: reference("field_0"),
+                    value: value.into(),
+                }),
+            );
+            let layout = compile(
+                sources,
+                &[ContextEntryDeclaration {
+                    scope: ContextScope::Engine,
+                    name: name("composite"),
+                    definition: ContextEntryDefinition(parts),
+                }],
+            );
+            let assert_present = |headers: &TransportHeaders, expected| {
+                assert_eq!(
+                    layout.is_present(ContextEntryId(0), headers),
+                    expected,
+                    "{count}"
+                );
+                for header in headers.iter() {
+                    assert_eq!(
+                        layout.is_present_with_header(ContextEntryId(0), headers, header),
+                        expected,
+                        "{count}: {}",
+                        header.name.as_str()
+                    );
+                }
+            };
+            let mut headers = TransportHeaders::new();
+            for index in 0..count {
+                assert_present(&headers, false);
+                headers.push(TransportHeader::text(
+                    name(&format!("FIELD_{index}")),
+                    b"one",
+                ));
+            }
+            headers.push(TransportHeader::text(name("field_0"), b"one"));
+            assert_present(&headers, false);
+            headers.push(TransportHeader::text(name("field_0"), b"TWO"));
+            assert_present(&headers, false);
+            headers.push(TransportHeader::text(name("field_0"), b"two"));
+            assert_present(&headers, true);
+        }
     }
 }
