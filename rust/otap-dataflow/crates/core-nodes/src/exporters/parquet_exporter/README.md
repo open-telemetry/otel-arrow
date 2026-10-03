@@ -107,22 +107,21 @@ Input PData message volume is reported by the engine through
 `channel.receiver.messages` with its `signal` attribute on the PData input
 channel and is not duplicated by the exporter.
 
-#### `exporter.exports`
+#### `exporter.attempted`
 
 | Metric | Unit | Attributes | Description |
 | --- | --- | --- | --- |
-| `exporter.exports.messages` | `{message}` | `signal`, `outcome` | Number of PData messages whose export reached a terminal outcome. |
-| `exporter.exports.duration` | `s` | `signal`, `outcome` | Time from dequeuing PData through the terminal Parquet write result, including conversion and partitioning. |
+| `exporter.attempted.messages` | `{message}` | `signal`, `outcome` | Number of component-local delivery attempts, including preparation failures. |
+| `exporter.attempted.duration` | `s` | `signal`, `outcome` | Attempt time through the terminal local or backend result, excluding Ack/Nack notification. Emitted when component duration is enabled. |
+| `exporter.attempted.payload.size` | `By` | `signal`, `outcome` | Uncompressed OTAP payload bytes submitted by the attempt. Emitted when size measurement is enabled. |
+| `exporter.attempted.items` | `{item}` | `signal`, `outcome` | Signal items handled by the attempt. Emitted when item counting is enabled. |
 
-#### `otap.exporter.parquet`
+#### `exporter.parquet`
 
-| Metric | Unit | Description |
-| --- | --- | --- |
-| `otap.exporter.parquet.files_created` | `{file}` | Number of Parquet files created (across all payload types and partitions). |
-| `otap.exporter.parquet.files_closed` | `{file}` | Number of Parquet files successfully closed (flushed and visible to readers). |
-| `otap.exporter.parquet.rows_written` | `{row}` | Total number of rows written into Parquet writers (appended, not necessarily flushed yet). |
-| `otap.exporter.parquet.flush_scheduled_max_rows` | `{file}` | Files scheduled for flush due to reaching target rows per file. |
-| `otap.exporter.parquet.flush_scheduled_max_age` | `{file}` | Files scheduled for flush due to exceeding max age threshold. |
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `exporter.parquet.files.count` | `{file}` | `operation` | Number of Parquet file lifecycle and flush operations performed. `operation` indicates the lifecycle event (e.g. `Created`, `Closed`, `FlushAttempts`, `FlushScheduledMaxRows`). |
+| `exporter.parquet.rows.written` | `{row}` | | Total number of rows written into Parquet writers (appended, not necessarily flushed yet). |
 
 ### Events
 
