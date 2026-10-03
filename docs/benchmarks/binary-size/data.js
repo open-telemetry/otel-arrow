@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791036944331,
+  "lastUpdate": 1791045219135,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -51713,6 +51713,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 104.98,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "33842784+JakeDern@users.noreply.github.com",
+            "name": "Jake Dern",
+            "username": "JakeDern"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "c8e7954ab1959e4c9f2a4a7a4ec5da17c5558d97",
+          "message": "perf: Batch processor passthrough optimization (#4223)\n\n# Change summary\n\nThis PR implements the behavior described\n[here](https://github.com/open-telemetry/otel-arrow/issues/2115#issuecomment-5921224486)\nwhich gives the batch processor the ability to skip processing inputs\nwhich already meet the size constraints specified by the config.\n\nNote that this change was made in a way that is mostly backwards\ncompatible in terms of behavior by only enabling the optimization when\nthere is a `min_size` set to `Some(..)` for some format. If `min_size`\nis `None` then we default `min_size` to `max_size` which would otherwise\nbe the most \"surprising\" case.\n\nA summary of what a user will observe based on the config they had for\nsome format is as follows.\n\n- Users who had no config for a signal will see a minor difference in\nbehavior. They will have `min_size: Some(..)` and `max_size: None` by\ndefault, so if a batch A < `min_size` comes in follow by a batch B >\n`min_size`, we will pass through batch B instead of triggering a flush\nand trying to merge part of it with A.\n- Users who had no `min_size` or `max_size` set but did have a `sizer`\nset are unaffected because this gives `min_size: None`, `max_size: None`\nwhich fails validation\n- Users who had `max_size` set but no `min_size` will see effectively no\ndifference in behavior as we now default `min_size` to `max_size` if\nunset.\n- Users who had `min_size` and `max_size` set will now observe that we\nsometimes pass items through that are in the range `[min_size,\nmax_size]` instead of buffering them and potentially combining them with\nother buffered batches\n\n## Related issue\n\n* Closes #2115\n\n## Validation\n\n- Unit tests cover the new changes\n\n## User-facing changes\n\n- Buffering behavior differences for the batch processor, most\nnoticeable when both `min_size` and `max_size` are set for some signal\n- New batch processor documentation\n\n---------\n\nCo-authored-by: Copilot Autofix powered by AI <175728472+Copilot@users.noreply.github.com>\nCo-authored-by: albertlockett <a.lockett@f5.com>",
+          "timestamp": "2026-10-03T15:45:59Z",
+          "tree_id": "58aa28fce796896147d7dad209608c20c00240a3",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/c8e7954ab1959e4c9f2a4a7a4ec5da17c5558d97"
+        },
+        "date": 1791045202094,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 85.38,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.85,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.24,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.98,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.77,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 72.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.95,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.56,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.56,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.16,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.35,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 117.88,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 105.04,
             "unit": "MB"
           }
         ]
