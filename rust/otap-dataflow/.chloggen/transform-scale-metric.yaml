@@ -1,5 +1,0 @@
-change_type: enhancement
-component: query-engine
-note: "Add scale_metric to multiply metric values by a positive factor and optionally update units."
-issues: [4203]
-subtext: Exponential histograms return an unsupported error because arbitrary scaling cannot be represented exactly.
