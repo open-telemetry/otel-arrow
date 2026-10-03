@@ -45,12 +45,11 @@ mod state;
 use self::state::TERMINAL_OPERATION_RETENTION_TTL;
 use self::state::{
     ActiveRuntimeCoreState, CandidateRolloutPlan, CandidateShutdownPlan, ControllerRuntimeState,
-    LivePipelinePlacement, LogicalPipelineDeployment, PipelineOperationKind,
-    PipelineOperationReservationState, RolloutAction, RolloutCoreProgress, RolloutExecutionError,
-    RolloutLifecycleState, RolloutRecord, RuntimeInstanceLifecycle, RuntimeInstanceRecord,
-    RuntimeRecoveryState, ShutdownCoreProgress, ShutdownLifecycleState, ShutdownRecord,
-    TERMINAL_ROLLOUT_RETENTION_LIMIT, TERMINAL_SHUTDOWN_RETENTION_LIMIT, TopicRuntimeProfile,
-    is_expired, timestamp_now,
+    LogicalPipelineDeployment, PipelineOperationKind, PipelineOperationReservationState,
+    RolloutAction, RolloutCoreProgress, RolloutExecutionError, RolloutLifecycleState,
+    RolloutRecord, RuntimeInstanceLifecycle, RuntimeInstanceRecord, RuntimeRecoveryState,
+    ShutdownCoreProgress, ShutdownLifecycleState, ShutdownRecord, TERMINAL_ROLLOUT_RETENTION_LIMIT,
+    TERMINAL_SHUTDOWN_RETENTION_LIMIT, TopicRuntimeProfile, is_expired, timestamp_now,
 };
 pub(crate) use self::state::{PanicReport, RuntimeInstanceError, RuntimeInstanceExit};
 
@@ -234,18 +233,21 @@ impl<
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let context_bindings = Arc::clone(&state.latest_context_bindings);
+        let listener_group_snapshot = Arc::new(listener_group::snapshot_for_pipeline(
+            &resolved, &placement, 0,
+        ));
         _ = state
             .generation_counters
             .insert(pipeline_key.clone(), generation + 1);
         _ = state.logical_pipelines.insert(
             pipeline_key,
-            LogicalPipelineDeployment {
+            LogicalPipelineDeployment::new(
                 resolved,
                 context_bindings,
-                create_or_replace_generation: generation,
+                generation,
                 placement,
-                placement_generation: 0,
-            },
+                listener_group_snapshot,
+            ),
         );
     }
 

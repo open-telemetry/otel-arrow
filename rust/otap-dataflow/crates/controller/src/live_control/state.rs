@@ -480,25 +480,36 @@ pub(super) struct RuntimeRecoveryState {
 }
 
 #[derive(Debug, Clone)]
-/// Committed logical pipeline deployment plus its create-or-replace generation.
+/// Runtime-ready deployment description for a logical pipeline.
 pub(super) struct LogicalPipelineDeployment {
     pub(super) resolved: ResolvedPipelineConfig,
     /// Compiled context bindings for this deployment generation.
     pub(super) context_bindings: Arc<CompiledContextBindings>,
-    /// Pipeline-wide config generation; recovered cores may serve newer generations.
+    /// Generation established by the create or replace rollout for this deployment.
     pub(super) create_or_replace_generation: u64,
     pub(super) placement: PipelinePlacement,
     pub(super) placement_generation: u64,
-}
-
-#[derive(Debug, Clone)]
-/// Controller-resolved placement metadata used when launching live-control instances.
-pub(super) struct LivePipelinePlacement {
-    pub(super) placement: PipelinePlacement,
     pub(super) listener_group_snapshot: Arc<ListenerGroupSnapshot>,
 }
 
-impl LivePipelinePlacement {
+impl LogicalPipelineDeployment {
+    pub(super) fn new(
+        resolved: ResolvedPipelineConfig,
+        context_bindings: Arc<CompiledContextBindings>,
+        create_or_replace_generation: u64,
+        placement: PipelinePlacement,
+        listener_group_snapshot: Arc<ListenerGroupSnapshot>,
+    ) -> Self {
+        Self {
+            resolved,
+            context_bindings,
+            create_or_replace_generation,
+            placement,
+            placement_generation: listener_group_snapshot.generation,
+            listener_group_snapshot,
+        }
+    }
+
     /// Returns placement metadata for one worker core.
     pub(super) fn core(&self, core_id: usize) -> Option<CorePlacement> {
         self.placement
@@ -644,19 +655,13 @@ pub(super) struct CandidateRolloutPlan {
     pub(super) pipeline_id: PipelineId,
     /// Execution strategy selected by request classification.
     pub(super) action: RolloutAction,
-    /// Resolved target pipeline config after applying the request.
-    pub(super) resolved_pipeline: ResolvedPipelineConfig,
-    /// Compiled context bindings for the target runtime instances.
-    pub(super) context_bindings: Arc<CompiledContextBindings>,
     /// Runtime config revision used to build this plan.
     pub(super) base_config_revision: u64,
     /// Current committed deployment, absent for create rollouts.
     pub(super) current_deployment: Option<LogicalPipelineDeployment>,
-    /// Placement metadata for the committed deployment, used by rollback launches.
-    pub(super) current_placement: Option<LivePipelinePlacement>,
-    /// Placement metadata for target launches.
-    pub(super) target_placement: LivePipelinePlacement,
-    /// Core allocation from the committed deployment.
+    /// Prospective deployment installed only after the rollout succeeds.
+    pub(super) target_deployment: LogicalPipelineDeployment,
+    /// Core allocation from the committed record.
     pub(super) current_assigned_cores: Vec<usize>,
     /// Core allocation requested by the candidate config.
     pub(super) target_assigned_cores: Vec<usize>,
@@ -672,8 +677,6 @@ pub(super) struct CandidateRolloutPlan {
     pub(super) resize_start_cores: Vec<usize>,
     /// Cores to drain for resize-only rollouts.
     pub(super) resize_stop_cores: Vec<usize>,
-    /// Deployment generation assigned to the target runtime instances.
-    pub(super) target_generation: u64,
     /// Initial rollout status record to insert before spawning a worker.
     pub(super) rollout: RolloutRecord,
     /// Per-step readiness timeout in seconds.
