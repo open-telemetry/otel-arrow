@@ -20,11 +20,14 @@
 //! - `ContextRuntimeRequirements`: immutable engine-lifetime requirements for binding preparation.
 //! - `OriginalNameRetention`: the default and per-name original-header retention disposition.
 //! - `PreparedContext`: requirements and bindings prepared from one resolved configuration.
+//! - `ContextLayout`: logical context fields, composites, and resolved projections.
 //! - `CompiledHeaderPropagationPolicy`: exporter propagation resolved from configured selectors.
 //! - `TestDeclarationConfig`: test-only typed configuration used to verify declaration matching.
 
+mod layout;
 mod propagation;
 
+pub use layout::*;
 pub use propagation::CompiledHeaderPropagationPolicy;
 use propagation::CompiledHeaderPropagationPolicy as HeaderPropagationPolicy;
 
