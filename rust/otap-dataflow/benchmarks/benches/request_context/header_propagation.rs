@@ -189,7 +189,7 @@ fn small_composite_benchmarks(c: &mut Criterion) {
     group.finish();
 }
 
-fn small_composite_headers(member_count: usize) -> TransportHeaders {
+pub(super) fn small_composite_headers(member_count: usize) -> TransportHeaders {
     if member_count == 0 {
         return TransportHeaders::new();
     }
@@ -200,7 +200,7 @@ fn small_composite_headers(member_count: usize) -> TransportHeaders {
     )
 }
 
-fn small_composite_config(
+pub(super) fn small_composite_config(
     member_count: usize,
     condition: Option<bool>,
 ) -> (HeaderPropagationConfig, Vec<ContextEntryDeclaration>) {

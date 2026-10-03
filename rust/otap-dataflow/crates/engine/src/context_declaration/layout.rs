@@ -7,8 +7,12 @@
 //! presence a consumer must establish. This module compiles and resolves that
 //! model and evaluates atomic presence against existing message context.
 //!
-//! Layout-local IDs are not offsets into message storage. Runtime presence
-//! evaluation, consumer integration, and precomputed hashes are separate work.
+//! Layout-local IDs and whole-composite projections provide a foundation for
+//! subsequent consumers. They are not offsets into message storage. Presence
+//! is evaluated against existing header and identity storage at read time;
+//! ingestion-time materialization and precomputed hashes are separate work.
+//! Presence plans deduplicate header requirements at compilation and check
+//! conditions before unconditional members, without read-time allocation.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -18,7 +22,7 @@ use otel_arrow_dfe_config::context_policy::{
     ContextEntryDeclaration, ContextEntryPart, ContextScope,
 };
 use otel_arrow_dfe_config::error::Error;
-use otel_arrow_dfe_config::transport_headers::TransportHeaders;
+use otel_arrow_dfe_config::transport_headers::{TransportHeaderRef, TransportHeaders};
 
 /// A deterministic logical layout of primitive fields and composite entries.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Ord, PartialOrd, Hash)]
@@ -31,6 +35,171 @@ pub struct ContextLayout {
     field_names: BTreeMap<(ContextDomain, ContextEntryName), ContextFieldId>,
     /// Composite names are independent of primitive source names.
     entry_names: BTreeMap<ContextEntryName, ContextEntryId>,
+    presence: Box<[EntryPresence]>,
+}
+
+/// A compact lookup for the small sets of configured propagation names.
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub(super) struct HeaderLookup<T>(Box<[(u64, String, T)]>);
+
+fn header_key(name: &str) -> u64 {
+    // This is only a rejection key; callers still compare the full names.
+    let bytes = name.as_bytes();
+    ((name.len() as u64) << 16)
+        | (u64::from(bytes.first().copied().unwrap_or(0).to_ascii_lowercase()) << 8)
+        | u64::from(bytes.last().copied().unwrap_or(0).to_ascii_lowercase())
+}
+
+impl<T> Default for HeaderLookup<T> {
+    fn default() -> Self {
+        Self(Box::new([]))
+    }
+}
+
+impl<T> HeaderLookup<T> {
+    pub(super) fn new(entries: BTreeMap<String, T>) -> Self {
+        Self(
+            entries
+                .into_iter()
+                .map(|(name, value)| (header_key(&name), name, value))
+                .collect(),
+        )
+    }
+
+    #[inline]
+    pub(super) fn get(&self, name: &str) -> Option<&T> {
+        if let [(_, stored, value)] = self.0.as_ref() {
+            return stored.eq_ignore_ascii_case(name).then_some(value);
+        }
+        if self.0.is_empty() {
+            return None;
+        }
+        let key = header_key(name);
+        self.0
+            .iter()
+            .find(|(stored_key, stored, _)| *stored_key == key && stored.eq_ignore_ascii_case(name))
+            .map(|(_, _, value)| value)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+struct HeaderRequirement {
+    name: String,
+    key: u64,
+    value: Option<Box<[u8]>>,
+}
+
+impl HeaderRequirement {
+    #[inline]
+    fn matches(&self, header: TransportHeaderRef<'_>) -> bool {
+        self.name.eq_ignore_ascii_case(header.name.as_str())
+            && self
+                .value
+                .as_deref()
+                .is_none_or(|value| value == header.value.bytes)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+struct EntryPresence {
+    headers: Box<[HeaderRequirement]>,
+    identities: Box<[ContextEntryName]>,
+}
+
+impl EntryPresence {
+    fn compile(entry: &ContextEntryLayout, fields: &[ContextFieldLayout]) -> Self {
+        let mut headers = BTreeMap::<String, BTreeSet<Option<Box<[u8]>>>>::new();
+        let mut identities = Vec::new();
+        for member in &entry.members {
+            let field = &fields[member.field.index()];
+            match field.domain {
+                ContextDomain::TransportHeader => {
+                    _ = headers
+                        .entry(field.name.as_str().to_ascii_lowercase())
+                        .or_default()
+                        .insert(None);
+                }
+                ContextDomain::AuthorizedIdentity => identities.push(field.name.clone()),
+            }
+        }
+        for condition in &entry.conditions {
+            let values = headers
+                .entry(
+                    fields[condition.field.index()]
+                        .name
+                        .as_str()
+                        .to_ascii_lowercase(),
+                )
+                .or_default();
+            // A matching value also proves that its member exists.
+            _ = values.remove(&None);
+            _ = values.insert(Some(condition.value.clone()));
+        }
+        let mut headers = headers
+            .into_iter()
+            .flat_map(|(name, values)| {
+                values.into_iter().map(move |value| HeaderRequirement {
+                    key: header_key(&name),
+                    name: name.clone(),
+                    value,
+                })
+            })
+            .collect::<Vec<_>>();
+        // Stable partitioning retains canonical condition order and rejects failed
+        // conditions before spending work on unconditional members.
+        headers.sort_by_key(|requirement| requirement.value.is_none());
+        Self {
+            headers: headers.into_boxed_slice(),
+            identities: identities.into_boxed_slice(),
+        }
+    }
+
+    fn is_present(
+        &self,
+        context: &impl ContextValues,
+        observed: Option<TransportHeaderRef<'_>>,
+    ) -> bool {
+        if !self
+            .identities
+            .iter()
+            .all(|name| context.has_authorized_identity(name))
+        {
+            return false;
+        }
+        if self.headers.is_empty() {
+            return true;
+        }
+        let Some(headers) = context.transport_headers() else {
+            return false;
+        };
+        if headers.len() == 1 {
+            let header = observed.or_else(|| headers.get(0)).expect("one header");
+            return self
+                .headers
+                .iter()
+                .all(|requirement| requirement.matches(header));
+        }
+        if headers.len() <= 5 && self.headers.len() > 1 {
+            let mut iter = headers.iter();
+            let Some(first) = iter.next() else {
+                return false;
+            };
+            // Decode small packed inputs once rather than once per requirement.
+            let mut captured = [(header_key(first.name.as_str()), first); 5];
+            for (slot, header) in captured[1..].iter_mut().zip(iter) {
+                *slot = (header_key(header.name.as_str()), header);
+            }
+            return self.headers.iter().all(|requirement| {
+                captured[..headers.len()]
+                    .iter()
+                    .any(|(key, header)| requirement.key == *key && requirement.matches(*header))
+            });
+        }
+        self.headers.iter().all(|requirement| {
+            observed.is_some_and(|header| requirement.matches(header))
+                || headers.iter().any(|header| requirement.matches(header))
+        })
+    }
 }
 
 /// A primitive field is a named element in one authority domain.
@@ -315,11 +484,16 @@ impl ContextLayout {
                 conditions: conditions.into_boxed_slice(),
             });
         }
+        let presence = entries
+            .iter()
+            .map(|entry| EntryPresence::compile(entry, &fields))
+            .collect();
         Ok(Self {
             fields,
             entries: entries.into_boxed_slice(),
             field_names,
             entry_names,
+            presence,
         })
     }
 
@@ -338,33 +512,16 @@ impl ContextLayout {
     /// Evaluates a composite atomically, including members not selected for output.
     #[must_use]
     pub fn is_present(&self, entry: ContextEntryId, context: &impl ContextValues) -> bool {
-        let entry = &self.entries[entry.index()];
-        let headers = context.transport_headers();
-        entry.members.iter().all(|member| {
-            let field = &self.fields[member.field.index()];
-            match field.domain {
-                ContextDomain::TransportHeader => headers.is_some_and(|headers| {
-                    headers.iter().any(|header| {
-                        header
-                            .name
-                            .as_str()
-                            .eq_ignore_ascii_case(field.name.as_str())
-                    })
-                }),
-                ContextDomain::AuthorizedIdentity => context.has_authorized_identity(&field.name),
-            }
-        }) && entry.conditions.iter().all(|condition| {
-            let field = &self.fields[condition.field.index()];
-            headers.is_some_and(|headers| {
-                headers.iter().any(|header| {
-                    header
-                        .name
-                        .as_str()
-                        .eq_ignore_ascii_case(field.name.as_str())
-                        && header.value.bytes == condition.value.as_ref()
-                })
-            })
-        })
+        self.presence[entry.index()].is_present(context, None)
+    }
+
+    pub(super) fn is_present_with_header(
+        &self,
+        entry: ContextEntryId,
+        context: &impl ContextValues,
+        header: TransportHeaderRef<'_>,
+    ) -> bool {
+        self.presence[entry.index()].is_present(context, Some(header))
     }
 
     /// Resolves a primitive, whole composite, or qualified composite member.
@@ -861,5 +1018,114 @@ mod tests {
         let mut sources = fields();
         sources.push(field("WORKSPACE", ContextDomain::TransportHeader));
         assert_compile_error(sources, &[entry()], "ambiguous TransportHeader reference");
+    }
+
+    /// Scenario: a pipeline consumes one composite while another has unsupported nested references.
+    /// Guarantees: only live references activate definitions, and external source slots may be absent.
+    #[test]
+    fn consumer_selection_leaves_unused_definitions_inert() {
+        let mut unused = entry();
+        unused.name = name("unused");
+        unused.definition.0[0] = ContextEntryPart::AuthorizedIdentity {
+            name: reference("other:identity"),
+            store_as: None,
+        };
+        let selected = reference("product_user:workspace");
+        let layout = ContextLayout::for_references(&[entry(), unused], [&selected])
+            .expect("only selected entry compiles");
+        assert_eq!(layout.entries().len(), 1);
+        assert_eq!(layout.fields().len(), 2);
+        let ContextNameId::Composite(entry) = layout.resolve(&selected).expect("member").presence()
+        else {
+            panic!("expected composite");
+        };
+        assert!(!layout.is_present(entry, &TransportHeaders::new()));
+    }
+
+    /// Scenario: member and condition spellings differ in case and their declaration order changes.
+    /// Guarantees: reserved field names, condition gates, and resulting layouts are deterministic.
+    #[test]
+    fn inferred_transport_fields_are_canonical() {
+        let mut declaration = entry();
+        declaration
+            .definition
+            .0
+            .push(ContextEntryPart::TransportHeaderMatch {
+                name: reference("WORKSPACE"),
+                value: "production".to_owned(),
+            });
+        let selected = reference("product_user:workspace");
+        let first =
+            ContextLayout::for_references(&[declaration.clone()], [&selected]).expect("original");
+        declaration.definition.0.reverse();
+        let second = ContextLayout::for_references(&[declaration], [&selected]).expect("reordered");
+        assert_eq!(first, second);
+    }
+
+    /// Scenario: small and larger composites require multiple values from the same header.
+    /// Guarantees: every member and distinct value is required; duplicate and mixed-case headers
+    /// cannot satisfy missing requirements, even when an observed header proves one requirement.
+    #[test]
+    fn compiled_presence_handles_duplicate_values_and_member_counts() {
+        use otel_arrow_dfe_config::transport_headers::TransportHeader;
+
+        for count in [1, 2, 3, 4, 5, 32] {
+            let sources = (0..count)
+                .map(|index| ContextFieldLayout {
+                    name: name(&format!("field_{index}")),
+                    domain: ContextDomain::TransportHeader,
+                })
+                .collect::<Vec<_>>();
+            let mut parts = sources
+                .iter()
+                .map(|field| ContextEntryPart::TransportHeader {
+                    name: field.name.clone().into(),
+                    store_as: None,
+                })
+                .collect::<Vec<_>>();
+            parts.extend(
+                ["one", "two"].map(|value| ContextEntryPart::TransportHeaderMatch {
+                    name: reference("field_0"),
+                    value: value.into(),
+                }),
+            );
+            let layout = compile(
+                sources,
+                &[ContextEntryDeclaration {
+                    scope: ContextScope::Engine,
+                    name: name("composite"),
+                    definition: ContextEntryDefinition(parts),
+                }],
+            );
+            let assert_present = |headers: &TransportHeaders, expected| {
+                assert_eq!(
+                    layout.is_present(ContextEntryId(0), headers),
+                    expected,
+                    "{count}"
+                );
+                for header in headers.iter() {
+                    assert_eq!(
+                        layout.is_present_with_header(ContextEntryId(0), headers, header),
+                        expected,
+                        "{count}: {}",
+                        header.name.as_str()
+                    );
+                }
+            };
+            let mut headers = TransportHeaders::new();
+            for index in 0..count {
+                assert_present(&headers, false);
+                headers.push(TransportHeader::text(
+                    name(&format!("FIELD_{index}")),
+                    b"one",
+                ));
+            }
+            headers.push(TransportHeader::text(name("field_0"), b"one"));
+            assert_present(&headers, false);
+            headers.push(TransportHeader::text(name("field_0"), b"TWO"));
+            assert_present(&headers, false);
+            headers.push(TransportHeader::text(name("field_0"), b"two"));
+            assert_present(&headers, true);
+        }
     }
 }

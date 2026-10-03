@@ -626,6 +626,7 @@ impl PackedTransportHeaders {
 }
 
 /// Iterator over packed transport headers.
+#[derive(Default)]
 pub struct TransportHeadersIter<'a> {
     storage: Option<&'a TransportHeadersStorage>,
     index: usize,
