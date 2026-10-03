@@ -443,7 +443,7 @@ mod tests {
                         )
                     })
                     .expect("enabled first failure should produce a report");
-                crate::otel_diagnostic_summary!(
+                crate::otel_diagnostic_report!(
                     report: &report,
                     diagnostic_kind = "first_failure"
                 );
@@ -505,7 +505,7 @@ mod tests {
                 assert_eq!(report.total.suppressed, 1);
 
                 handle.apply(Some(&level("error")));
-                crate::otel_diagnostic_summary!(
+                crate::otel_diagnostic_report!(
                     report: &report,
                     diagnostic_kind = "first_failure"
                 );

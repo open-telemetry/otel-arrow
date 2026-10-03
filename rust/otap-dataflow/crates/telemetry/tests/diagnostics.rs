@@ -126,7 +126,7 @@ fn priority_detail_survives_bounded_its_encoding() {
                 )
             })
             .expect("first failure must produce a report");
-        otel_arrow_dfe_telemetry::otel_diagnostic_summary!(
+        otel_arrow_dfe_telemetry::otel_diagnostic_report!(
             report: &report,
             signal = "logs", retryable = true,
             diagnostic_kind = "first_failure"

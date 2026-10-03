@@ -94,7 +94,7 @@ impl DeliveryDiagnostic {
                 diagnostic_kind = "recovery"
             );
         } else {
-            otel_arrow_dfe_telemetry::otel_diagnostic_summary!(
+            otel_arrow_dfe_telemetry::otel_diagnostic_report!(
                 report: &report,
                 signal = signal.as_str(), retryable = self.sample_retryable,
                 diagnostic_kind = diagnostic_kind(report.kind)
@@ -124,7 +124,7 @@ pub(super) fn emit_preparation(
     signal: SignalType,
 ) {
     if let Some(report) = report {
-        otel_arrow_dfe_telemetry::otel_diagnostic_summary!(
+        otel_arrow_dfe_telemetry::otel_diagnostic_report!(
             report: &report,
             signal = signal.as_str(), diagnostic_kind = diagnostic_kind(report.kind)
         );
@@ -156,7 +156,7 @@ pub(super) fn emit_notification(
             NotificationOperation::Ack => "ack",
             NotificationOperation::Nack => "nack",
         };
-        otel_arrow_dfe_telemetry::otel_diagnostic_summary!(
+        otel_arrow_dfe_telemetry::otel_diagnostic_report!(
             report: &report,
             operation = operation, signal = signal.as_str(),
             diagnostic_kind = diagnostic_kind(report.kind)

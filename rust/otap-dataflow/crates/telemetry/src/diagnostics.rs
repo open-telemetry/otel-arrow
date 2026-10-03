@@ -421,13 +421,15 @@ pub fn emit_diagnostic_summary(detail: &LogRecord, attrs: &tracing::Event<'_>) {
 /// Build the report-counter fields for [`emit_diagnostic_summary`] and pass
 /// them, together with the report's retained detail, to it.
 ///
-/// Unlike [`otel_diagnostic_report!`], this never names or levels a new
-/// event: it re-delivers `report.detail` using its own captured callsite, so
-/// only caller fields specific to the report's kind (e.g. `retryable`,
-/// `diagnostic_kind`) need to be passed; `error`/`message` duplicating the
-/// detail's body are neither needed nor accepted.
+/// The `report:` form re-delivers `report.detail` using its own captured
+/// callsite, so only caller fields specific to the report's kind (e.g.
+/// `retryable`, `diagnostic_kind`) need to be passed; `error`/`message`
+/// duplicating the detail's body are neither needed nor accepted.
+///
+/// The `target:`/`emit:`/`name:` form emits a distinct ordinary event, used
+/// for recovery reports.
 #[macro_export]
-macro_rules! otel_diagnostic_summary {
+macro_rules! otel_diagnostic_report {
     (report: $report:expr, $($fields:tt)+) => {{
         use $crate::_private::Callsite;
 
@@ -479,16 +481,6 @@ macro_rules! otel_diagnostic_summary {
             error_sample_age_seconds = diagnostic_report.detail_age.as_secs_f64()
         ));
     }};
-}
-
-/// Emit priority operation fields followed by common fields for a selected report.
-///
-/// The caller selects the literal event name and emitter macro (`otel_warn` or
-/// `otel_info`). Operation-specific fields are encoded first so bounded ITS
-/// encoding preserves the actionable error detail before lower-priority counts.
-/// Pass a report reference so its representative detail can also be used in fields.
-#[macro_export]
-macro_rules! otel_diagnostic_report {
     (target: $target:expr, emit: $emit:ident, name: $name:literal, report: $report:expr, $($fields:tt)+) => {{
         let diagnostic_report = $report;
         $crate::$emit!(target: $target, $name,
@@ -726,7 +718,7 @@ mod tests {
     }
 
     /// Scenario: A first failure and a later summary are delivered via
-    /// `otel_diagnostic_summary!`, which re-dispatches the retained detail
+    /// `otel_diagnostic_report!`, which re-dispatches the retained detail
     /// directly (splicing on report counters) instead of re-logging decoded
     /// text as a field of a new event.
     /// Guarantees: Both deliveries render through the same console path as
@@ -760,7 +752,7 @@ mod tests {
                     )
                 })
                 .unwrap();
-            otel_diagnostic_summary!(
+            otel_diagnostic_report!(
                 report: &first,
                 signal = "logs", retryable = true, diagnostic_kind = "first_failure"
             );
@@ -771,7 +763,7 @@ mod tests {
                     otel_diagnostic_warn!("test.diagnostic.detail", message = "unreachable")
                 })
                 .unwrap();
-            otel_diagnostic_summary!(
+            otel_diagnostic_report!(
                 report: &summary,
                 signal = "logs", retryable = true, diagnostic_kind = "summary"
             );
