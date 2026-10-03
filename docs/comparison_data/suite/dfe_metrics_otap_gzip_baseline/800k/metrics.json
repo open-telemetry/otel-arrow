@@ -3,60 +3,60 @@
     "extra": "DFE OTAP Baseline w/ Gzip (Metrics)/800k - Dropped Metrics %",
     "name": "dropped_metrics_percentage",
     "unit": "%",
-    "value": -1.694987177848816
+    "value": -2.564321756362915
   },
   {
     "extra": "DFE OTAP Baseline w/ Gzip (Metrics)/800k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 71.99431888234557
+    "value": 71.20453945216008
   },
   {
     "extra": "DFE OTAP Baseline w/ Gzip (Metrics)/800k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 73.03368551895588
+    "value": 71.64989408099689
   },
   {
     "extra": "DFE OTAP Baseline w/ Gzip (Metrics)/800k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 51.473307291666664
+    "value": 69.66432291666666
   },
   {
     "extra": "DFE OTAP Baseline w/ Gzip (Metrics)/800k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 51.92578125
+    "value": 70.03125
   },
   {
     "extra": "DFE OTAP Baseline w/ Gzip (Metrics)/800k - Metric Throughput",
     "name": "metrics_produced_rate",
     "unit": "metrics/sec",
-    "value": 798365.9868145623
+    "value": 800040.0738082958
   },
   {
     "extra": "DFE OTAP Baseline w/ Gzip (Metrics)/800k - Metric Throughput",
     "name": "metrics_received_rate",
     "unit": "metrics/sec",
-    "value": 803675.6296977216
+    "value": 806576.756560528
   },
   {
     "extra": "DFE OTAP Baseline w/ Gzip (Metrics)/800k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000541
+    "value": 60.000521
   },
   {
     "extra": "DFE OTAP Baseline w/ Gzip (Metrics)/800k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 10520084.794036936
+    "value": 10806272.651214862
   },
   {
     "extra": "DFE OTAP Baseline w/ Gzip (Metrics)/800k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 10463116.946864879
+    "value": 10738398.503095208
   }
 ]

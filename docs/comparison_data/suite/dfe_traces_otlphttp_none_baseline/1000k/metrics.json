@@ -3,60 +3,60 @@
     "extra": "DFE OTLP/HTTP Baseline (Traces)/1000k - Dropped Spans %",
     "name": "dropped_spans_percentage",
     "unit": "%",
-    "value": -0.7226047515869141
+    "value": 2.6846089363098145
   },
   {
     "extra": "DFE OTLP/HTTP Baseline (Traces)/1000k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 23.140495877832997
+    "value": 30.257076119207465
   },
   {
     "extra": "DFE OTLP/HTTP Baseline (Traces)/1000k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 30.652951432129516
+    "value": 30.9389898989899
   },
   {
     "extra": "DFE OTLP/HTTP Baseline (Traces)/1000k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 2917.9212239583335
+    "value": 78.612109375
   },
   {
     "extra": "DFE OTLP/HTTP Baseline (Traces)/1000k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 2978.84765625
+    "value": 85.89453125
   },
   {
     "extra": "DFE OTLP/HTTP Baseline (Traces)/1000k - Span Throughput",
     "name": "spans_produced_rate",
     "unit": "spans/sec",
-    "value": 600246.2627275289
+    "value": 1002700.0001144039
   },
   {
     "extra": "DFE OTLP/HTTP Baseline (Traces)/1000k - Span Throughput",
     "name": "spans_received_rate",
     "unit": "spans/sec",
-    "value": 603650.6804079282
+    "value": 989459.6167613528
   },
   {
     "extra": "DFE OTLP/HTTP Baseline (Traces)/1000k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000661
+    "value": 60.000544
   },
   {
     "extra": "DFE OTLP/HTTP Baseline (Traces)/1000k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 485946219.0202913
+    "value": 807078605.8791381
   },
   {
     "extra": "DFE OTLP/HTTP Baseline (Traces)/1000k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 496363405.1056412
+    "value": 806782863.2669618
   }
 ]

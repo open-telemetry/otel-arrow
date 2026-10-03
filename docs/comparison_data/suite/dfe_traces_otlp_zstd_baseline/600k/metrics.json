@@ -3,60 +3,60 @@
     "extra": "DFE OTLP Baseline w/ Zstd (Traces)/600k - Dropped Spans %",
     "name": "dropped_spans_percentage",
     "unit": "%",
-    "value": 10.535211563110352
+    "value": 1.669490933418274
   },
   {
     "extra": "DFE OTLP Baseline w/ Zstd (Traces)/600k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 68.6163104219833
+    "value": 80.60421323619332
   },
   {
     "extra": "DFE OTLP Baseline w/ Zstd (Traces)/600k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 69.1132789968652
+    "value": 81.71933563146348
   },
   {
     "extra": "DFE OTLP Baseline w/ Zstd (Traces)/600k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 171.38125
+    "value": 75.56393229166666
   },
   {
     "extra": "DFE OTLP Baseline w/ Zstd (Traces)/600k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 177.98828125
+    "value": 79.26171875
   },
   {
     "extra": "DFE OTLP Baseline w/ Zstd (Traces)/600k - Span Throughput",
     "name": "spans_produced_rate",
     "unit": "spans/sec",
-    "value": 598284.2891893905
+    "value": 605935.6717119002
   },
   {
     "extra": "DFE OTLP Baseline w/ Zstd (Traces)/600k - Span Throughput",
     "name": "spans_received_rate",
     "unit": "spans/sec",
-    "value": 535253.7753423955
+    "value": 598800.4706093308
   },
   {
     "extra": "DFE OTLP Baseline w/ Zstd (Traces)/600k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000905
+    "value": 60.005597
   },
   {
     "extra": "DFE OTLP Baseline w/ Zstd (Traces)/600k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 34962103.923054576
+    "value": 40540442.173039794
   },
   {
     "extra": "DFE OTLP Baseline w/ Zstd (Traces)/600k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 39554381.48687425
+    "value": 40562915.14262601
   }
 ]

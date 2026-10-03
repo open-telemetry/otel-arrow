@@ -3,60 +3,60 @@
     "extra": "DFE OTLP/HTTP Baseline (Metrics)/200k - Dropped Metrics %",
     "name": "dropped_metrics_percentage",
     "unit": "%",
-    "value": -1.6949152946472168
+    "value": 0.8403362035751343
   },
   {
     "extra": "DFE OTLP/HTTP Baseline (Metrics)/200k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 2.014634865176272
+    "value": 2.060179577783354
   },
   {
     "extra": "DFE OTLP/HTTP Baseline (Metrics)/200k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 2.1630127606598193
+    "value": 2.166991260923845
   },
   {
     "extra": "DFE OTLP/HTTP Baseline (Metrics)/200k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 45.10390625
+    "value": 63.659375
   },
   {
     "extra": "DFE OTLP/HTTP Baseline (Metrics)/200k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 45.4375
+    "value": 64.25390625
   },
   {
     "extra": "DFE OTLP/HTTP Baseline (Metrics)/200k - Metric Throughput",
     "name": "metrics_produced_rate",
     "unit": "metrics/sec",
-    "value": 199838.93997568163
+    "value": 201500.25234943366
   },
   {
     "extra": "DFE OTLP/HTTP Baseline (Metrics)/200k - Metric Throughput",
     "name": "metrics_received_rate",
     "unit": "metrics/sec",
-    "value": 201494.2105424088
+    "value": 199462.0441056219
   },
   {
     "extra": "DFE OTLP/HTTP Baseline (Metrics)/200k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000726
+    "value": 60.000526
   },
   {
     "extra": "DFE OTLP/HTTP Baseline (Metrics)/200k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 39423817.40209339
+    "value": 39354090.62575442
   },
   {
     "extra": "DFE OTLP/HTTP Baseline (Metrics)/200k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 39383645.31997327
+    "value": 39293055.19650225
   }
 ]

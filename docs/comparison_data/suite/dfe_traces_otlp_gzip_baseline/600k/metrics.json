@@ -3,60 +3,60 @@
     "extra": "DFE OTLP Baseline w/ Gzip (Traces)/600k - Dropped Spans %",
     "name": "dropped_spans_percentage",
     "unit": "%",
-    "value": 74.4301986694336
+    "value": 72.92457580566406
   },
   {
     "extra": "DFE OTLP Baseline w/ Gzip (Traces)/600k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 100.27153961949115
+    "value": 99.56016296447817
   },
   {
     "extra": "DFE OTLP Baseline w/ Gzip (Traces)/600k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 100.77125508607199
+    "value": 99.8955961598018
   },
   {
     "extra": "DFE OTLP Baseline w/ Gzip (Traces)/600k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 172.093359375
+    "value": 205.09283854166668
   },
   {
     "extra": "DFE OTLP Baseline w/ Gzip (Traces)/600k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 176.2265625
+    "value": 212.10546875
   },
   {
     "extra": "DFE OTLP Baseline w/ Gzip (Traces)/600k - Span Throughput",
     "name": "spans_produced_rate",
     "unit": "spans/sec",
-    "value": 596490.6264217104
+    "value": 602995.4760348628
   },
   {
     "extra": "DFE OTLP Baseline w/ Gzip (Traces)/600k - Span Throughput",
     "name": "spans_received_rate",
     "unit": "spans/sec",
-    "value": 151463.0605981176
+    "value": 163549.06016236456
   },
   {
     "extra": "DFE OTLP Baseline w/ Gzip (Traces)/600k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000744
+    "value": 60.000672
   },
   {
     "extra": "DFE OTLP Baseline w/ Gzip (Traces)/600k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 21626214.22228081
+    "value": 23434927.91550904
   },
   {
     "extra": "DFE OTLP Baseline w/ Gzip (Traces)/600k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 84893563.26038629
+    "value": 86703359.42388777
   }
 ]

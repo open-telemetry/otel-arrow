@@ -3,60 +3,60 @@
     "extra": "DFE OTAP Baseline w/ Gzip (Traces)/400k - Dropped Spans %",
     "name": "dropped_spans_percentage",
     "unit": "%",
-    "value": -1.6949152946472168
+    "value": -3.431034564971924
   },
   {
     "extra": "DFE OTAP Baseline w/ Gzip (Traces)/400k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 77.16503833877923
+    "value": 76.40250411127757
   },
   {
     "extra": "DFE OTAP Baseline w/ Gzip (Traces)/400k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 78.3266082603254
+    "value": 77.27215245235864
   },
   {
     "extra": "DFE OTAP Baseline w/ Gzip (Traces)/400k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 57.34583333333333
+    "value": 72.748828125
   },
   {
     "extra": "DFE OTAP Baseline w/ Gzip (Traces)/400k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 58.32421875
+    "value": 74.91796875
   },
   {
     "extra": "DFE OTAP Baseline w/ Gzip (Traces)/400k - Span Throughput",
     "name": "spans_produced_rate",
     "unit": "spans/sec",
-    "value": 399352.0884642039
+    "value": 393605.0645842289
   },
   {
     "extra": "DFE OTAP Baseline w/ Gzip (Traces)/400k - Span Throughput",
     "name": "spans_received_rate",
     "unit": "spans/sec",
-    "value": 404708.541049992
+    "value": 403633.8824033643
   },
   {
     "extra": "DFE OTAP Baseline w/ Gzip (Traces)/400k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000798
+    "value": 60.000513
   },
   {
     "extra": "DFE OTAP Baseline w/ Gzip (Traces)/400k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 16898576.342712324
+    "value": 17209425.654053856
   },
   {
     "extra": "DFE OTAP Baseline w/ Gzip (Traces)/400k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 16861158.816902485
+    "value": 17151500.315300174
   }
 ]
