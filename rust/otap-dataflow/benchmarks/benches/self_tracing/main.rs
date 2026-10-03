@@ -35,7 +35,7 @@
 use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use otel_arrow_dfe_config::observed_state::SendPolicy;
 use otel_arrow_dfe_config::settings::telemetry::logs::LogLevel;
-use otel_arrow_dfe_pdata::otlp::ProtoBuffer;
+use otel_arrow_dfe_pdata::otlp::{BoundedBuf, ProtoBuffer, StackProtoBuffer};
 use otel_arrow_dfe_telemetry::attributes::{AttributeSetHandler, AttributeValue};
 use otel_arrow_dfe_telemetry::descriptor::{
     AttributeField, AttributeValueType, AttributesDescriptor,
@@ -452,6 +452,100 @@ fn bench_encode_otlp_log_batches(c: &mut Criterion) {
     group.finish();
 }
 
+/// Compares the final `Bytes` conversion cost of a heap-backed `ProtoBuffer`
+/// against a stack-backed `StackProtoBuffer<N>`, in isolation from any
+/// tracing/dispatch overhead.
+///
+/// `ProtoBuffer::into_bytes()` is `Bytes::from(Vec<u8>)`, which is zero-copy:
+/// it adopts the Vec's existing heap allocation. `StackProtoBuffer::to_bytes()`
+/// is `Bytes::copy_from_slice(..)`, which must allocate a new heap buffer and
+/// memcpy the stack content into it, because the stack storage cannot be
+/// adopted. This benchmark quantifies that gap across payload sizes, and
+/// separately shows the fixed "tax" of zero-initializing a large stack array
+/// `[u8; N]` even when only a small prefix of it is actually used (the common
+/// case in a single shared inline budget).
+///
+/// Criterion runs each case for many warmed-up iterations, so the reported
+/// cost is the amortized/steady-state cost under sustained load (the
+/// allocator's thread-local free-list is warm), not a one-off cold
+/// allocation. That steady-state number is what matters for a long-running
+/// server's logging hot path.
+fn bench_bytes_conversion(c: &mut Criterion) {
+    let mut group = c.benchmark_group("bytes_conversion");
+
+    // Payload sizes to encode (bytes actually written to the buffer).
+    let sizes = [32usize, 64, 128, 256, 512, 1024, 2048];
+
+    // Heap-direct, sized exactly to the payload: 1 malloc, 0 copy.
+    for &size in &sizes {
+        let content = vec![0xABu8; size];
+        _ = group.throughput(Throughput::Bytes(size as u64));
+        _ = group.bench_with_input(
+            BenchmarkId::new("heap_direct_exact_fit", size),
+            &content,
+            |b, content| {
+                b.iter(|| {
+                    let mut buf = ProtoBuffer::with_capacity(content.len());
+                    buf.try_extend(std::hint::black_box(content))
+                        .expect("fits exactly");
+                    std::hint::black_box(buf.into_bytes())
+                });
+            },
+        );
+    }
+
+    // Stack-then-copy at several fixed inline budgets N, for every payload
+    // size that fits within N: 1 malloc + 1 memcpy, plus zero-initializing
+    // all N stack bytes regardless of how many are actually used.
+    macro_rules! stack_bench {
+        ($group:expr, $n:literal, $sizes:expr) => {
+            for &size in $sizes.iter().filter(|&&s| s <= $n) {
+                let content = vec![0xABu8; size];
+                _ = $group.throughput(Throughput::Bytes(size as u64));
+                _ = $group.bench_with_input(
+                    BenchmarkId::new(concat!("stack_then_copy_N", stringify!($n)), size),
+                    &content,
+                    |b, content| {
+                        b.iter(|| {
+                            let mut buf = StackProtoBuffer::<$n>::default();
+                            buf.try_extend(std::hint::black_box(content))
+                                .expect("fits within N");
+                            std::hint::black_box(buf.to_bytes())
+                        });
+                    },
+                );
+            }
+        };
+    }
+    stack_bench!(group, 256, sizes);
+    stack_bench!(group, 512, sizes);
+    stack_bench!(group, 1024, sizes);
+    stack_bench!(group, 2048, sizes);
+
+    // Naive heap growth: initial capacity of 256 is insufficient for larger
+    // payloads, so Vec::extend_from_slice must reallocate (and copy the
+    // existing prefix) to fit. This is the "two allocations" case a
+    // grow-once-to-LARGER design is meant to avoid.
+    for &size in sizes.iter().filter(|&&s| s > 256) {
+        let content = vec![0xABu8; size];
+        _ = group.throughput(Throughput::Bytes(size as u64));
+        _ = group.bench_with_input(
+            BenchmarkId::new("heap_grow_from_256", size),
+            &content,
+            |b, content| {
+                b.iter(|| {
+                    let mut buf = ProtoBuffer::with_capacity(256);
+                    buf.try_extend(std::hint::black_box(content))
+                        .expect("unbounded limit, only capacity grows");
+                    std::hint::black_box(buf.into_bytes())
+                });
+            },
+        );
+    }
+
+    group.finish();
+}
+
 fn bench_format_with_entity(c: &mut Criterion) {
     bench_op(c, "format_with_entity", BenchOp::FormatWithEntity);
 }
@@ -611,6 +705,7 @@ mod bench_entry {
         config = Criterion::default();
         targets = bench_new_record, bench_format, bench_format_new_record, bench_encode_proto,
                   bench_encode_proto_with_scope, bench_encode_otlp_log_batches,
+                  bench_bytes_conversion,
                   bench_format_with_entity, bench_realistic, bench_runtime_log_filter_emission
     );
 }
