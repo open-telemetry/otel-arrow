@@ -1,0 +1,4 @@
+change_type: enhancement
+component: query-engine
+note: Support assigning to nested attribute paths on metric data points
+issues: [4215]
