@@ -481,7 +481,7 @@ pub(super) struct RuntimeRecoveryState {
 
 #[derive(Debug, Clone)]
 /// Runtime-ready deployment description for a logical pipeline.
-pub(super) struct LogicalPipelineDeployment {
+pub(crate) struct LogicalPipelineDeployment {
     pub(super) resolved: ResolvedPipelineConfig,
     /// Compiled context bindings for this deployment generation.
     pub(super) context_bindings: Arc<CompiledContextBindings>,
@@ -493,7 +493,7 @@ pub(super) struct LogicalPipelineDeployment {
 }
 
 impl LogicalPipelineDeployment {
-    pub(super) fn new(
+    pub(crate) fn new(
         resolved: ResolvedPipelineConfig,
         context_bindings: Arc<CompiledContextBindings>,
         create_or_replace_generation: u64,

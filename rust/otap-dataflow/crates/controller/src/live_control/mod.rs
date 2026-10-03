@@ -45,13 +45,15 @@ mod state;
 use self::state::TERMINAL_OPERATION_RETENTION_TTL;
 use self::state::{
     ActiveRuntimeCoreState, CandidateRolloutPlan, CandidateShutdownPlan, ControllerRuntimeState,
-    LogicalPipelineDeployment, PipelineOperationKind, PipelineOperationReservationState,
-    RolloutAction, RolloutCoreProgress, RolloutExecutionError, RolloutLifecycleState,
-    RolloutRecord, RuntimeInstanceLifecycle, RuntimeInstanceRecord, RuntimeRecoveryState,
-    ShutdownCoreProgress, ShutdownLifecycleState, ShutdownRecord, TERMINAL_ROLLOUT_RETENTION_LIMIT,
-    TERMINAL_SHUTDOWN_RETENTION_LIMIT, TopicRuntimeProfile, is_expired, timestamp_now,
+    PipelineOperationKind, PipelineOperationReservationState, RolloutAction, RolloutCoreProgress,
+    RolloutExecutionError, RolloutLifecycleState, RolloutRecord, RuntimeInstanceLifecycle,
+    RuntimeInstanceRecord, RuntimeRecoveryState, ShutdownCoreProgress, ShutdownLifecycleState,
+    ShutdownRecord, TERMINAL_ROLLOUT_RETENTION_LIMIT, TERMINAL_SHUTDOWN_RETENTION_LIMIT,
+    TopicRuntimeProfile, is_expired, timestamp_now,
 };
-pub(crate) use self::state::{PanicReport, RuntimeInstanceError, RuntimeInstanceExit};
+pub(crate) use self::state::{
+    LogicalPipelineDeployment, PanicReport, RuntimeInstanceError, RuntimeInstanceExit,
+};
 
 /// Bounded time for a runtime thread to finish after its graceful drain deadline.
 ///
