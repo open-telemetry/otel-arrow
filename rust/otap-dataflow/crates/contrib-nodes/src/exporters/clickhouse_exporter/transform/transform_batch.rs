@@ -1016,7 +1016,8 @@ mod realistic_otap_tests {
     };
     use otel_arrow_dfe_pdata::schema::consts;
     use otel_arrow_dfe_pdata::testing::fixtures;
-    use otel_arrow_dfe_pdata::{OtapArrowRecords, OtapPayload, OtlpProtoBytes};
+    use otel_arrow_dfe_pdata::{OtapArrowRecords, OtlpProtoBytes};
+    use otel_arrow_dfe_pdata_codec::OtapPayload;
     use prost::Message;
 
     use super::BatchTransformer;

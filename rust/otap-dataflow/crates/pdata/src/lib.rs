@@ -24,7 +24,7 @@ pub(crate) mod payload;
 
 pub use otap::OtapArrowRecords;
 pub use otlp::OtlpProtoBytes;
-pub use payload::{OtapPayload, OtapPayloadHelpers, PayloadData};
+pub use payload::{OtapPayloadHelpers, count_otlp_items};
 
 // Re-export dependencies that are part of OTAP pdata public API
 pub use arrow;

@@ -6,7 +6,7 @@
 //! multiple outbound batches
 
 use otel_arrow_dfe_engine::control::NackCause;
-use otel_arrow_dfe_pdata::OtapPayload;
+use otel_arrow_dfe_pdata_codec::OtapPayload;
 use slotmap::Key as _;
 use std::num::NonZeroUsize;
 

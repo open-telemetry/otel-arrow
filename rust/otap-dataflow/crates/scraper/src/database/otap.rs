@@ -7,7 +7,6 @@ use super::page::{CompositeCursor, CursorRow, QueryPage};
 use super::{CellValue, ColumnMetadata, DatabaseSystem, OutputConfig, Row};
 use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use otel_arrow_dfe_otap::pdata::OtapPdata;
-use otel_arrow_dfe_pdata::OtapPayload;
 use otel_arrow_dfe_pdata::otlp::OtlpProtoBytes;
 use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{
     AnyValue, InstrumentationScope, KeyValue, KeyValueList, any_value,
@@ -16,6 +15,7 @@ use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::{
     LogRecord, LogsData, ResourceLogs, ScopeLogs, SeverityNumber,
 };
 use otel_arrow_dfe_pdata::proto::opentelemetry::resource::v1::Resource;
+use otel_arrow_dfe_pdata_codec::OtapPayload;
 use prost::Message;
 use std::collections::HashMap;
 use std::fmt;
@@ -563,7 +563,7 @@ pub enum OtlpMappingError {
 #[cfg(test)]
 mod cache_tests {
     use super::*;
-    use otel_arrow_dfe_pdata::PayloadData;
+    use otel_arrow_dfe_pdata_codec::PayloadData;
 
     fn columns() -> Vec<ColumnMetadata> {
         vec![ColumnMetadata {

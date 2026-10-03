@@ -86,6 +86,12 @@ Prepared output may borrow an encoder's scratch buffer only during a synchronous
 callback. `EncodeOutput::into_bytes` detaches the output before an asynchronous
 transport send; it does not offload or make the encoder itself asynchronous.
 
+The node-facing `PdataEffectHandlerExtension` operations are asynchronous so a
+future execution layer can offload work without changing every node API. Their
+current implementations perform the synchronous codec call before the future
+completes. The async signature is therefore an extension seam, not a guarantee
+that codec work runs outside the pipeline runtime.
+
 A slow codec would therefore block the calling pipeline runtime today. The
 engine service boundary is the intended integration point for a future bounded
 executor: fast codecs can remain inline, while codecs explicitly classified as

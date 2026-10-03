@@ -17,17 +17,21 @@ use otel_arrow_dfe_engine::{
     ConsumerEffectHandlerExtension, MessageSourceLocalEffectHandlerExtension, ProcessorFactory,
     config::ProcessorConfig,
     context::PipelineContext,
-    control::{AckMsg, NodeControlMsg},
+    control::{AckMsg, NackMsg, NodeControlMsg},
     error::Error as EngineError,
     local::processor::{EffectHandler, Processor},
     message::Message,
     node::NodeId,
     processor::{FlowMetricHook, ProcessorWrapper},
 };
-use otel_arrow_dfe_otap::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata};
+use otel_arrow_dfe_otap::{
+    OTAP_PROCESSOR_FACTORIES,
+    pdata::{OtapArrowPdata, OtapPdata, PdataEffectHandlerExtension},
+};
+#[cfg(any(test, feature = "bench"))]
+use otel_arrow_dfe_pdata::OtapArrowRecords;
 use otel_arrow_dfe_pdata::{
-    OtapArrowRecords, OtapPayloadHelpers, TryIntoWithOptions,
-    otap::transform::sanitize::sanitize_otap_batch_cooperative,
+    OtapPayloadHelpers, otap::transform::sanitize::sanitize_otap_batch_cooperative,
 };
 use serde_json::Value;
 
@@ -88,13 +92,10 @@ impl LogParserProcessor {
 
     async fn process_logs(
         &mut self,
-        pdata: OtapPdata,
+        pdata: OtapArrowPdata,
         effect_handler: &mut EffectHandler<OtapPdata>,
     ) -> Result<(), (ParserErrorType, EngineError)> {
-        let (context, payload) = pdata.into_parts();
-        let converted: Result<OtapArrowRecords, _> = payload.try_into_with_default();
-        let mut batch =
-            converted.map_err(|error| (ParserErrorType::PayloadConversion, error.into()))?;
+        let (context, mut batch) = pdata.into_parts();
         batch
             .decode_transport_optimized_ids()
             .map_err(|error| (ParserErrorType::IdDecode, error.into()))?;
@@ -180,6 +181,18 @@ impl Processor<OtapPdata> for LogParserProcessor {
                     effect_handler.send_message_with_source_node(pdata).await?;
                     return Ok(());
                 }
+                let pdata = match effect_handler.try_into_otap(pdata).await {
+                    Ok(pdata) => pdata,
+                    Err(error) => {
+                        self.metrics
+                            .record_failure(ParserErrorType::PayloadConversion);
+                        let (error, pdata) = error.into_parts();
+                        effect_handler
+                            .notify_nack(NackMsg::new_permanent(error.to_string(), pdata))
+                            .await?;
+                        return Ok(());
+                    }
+                };
                 match self.process_logs(pdata, effect_handler).await {
                     Ok(()) => self.metrics.record_success(),
                     Err((kind, error)) => {

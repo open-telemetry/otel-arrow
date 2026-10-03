@@ -9,7 +9,6 @@
 use crate::encode::{encode_logs_otap_batch, encode_metrics_otap_batch, encode_spans_otap_batch};
 use crate::otap::OtapArrowRecords;
 use crate::otlp::OtlpProtoBytes;
-use crate::payload::OtapPayload;
 use crate::proto::OtlpProtoMessage;
 use crate::proto::opentelemetry::logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs};
 use crate::proto::opentelemetry::metrics::v1::{
@@ -65,8 +64,8 @@ pub fn otlp_bytes_to_message(msg: OtlpProtoBytes) -> OtlpProtoMessage {
 /// Transcode OTAP records into a protocol message object.
 #[must_use]
 pub fn otap_to_otlp(otap: &OtapArrowRecords) -> OtlpProtoMessage {
-    let pdata: OtapPayload = otap.clone().into();
-    let otlp_bytes: OtlpProtoBytes = pdata
+    let otlp_bytes: OtlpProtoBytes = otap
+        .clone()
         .try_into_with_options(ConversionOptions::default())
         .expect("convert to OTLP bytes");
     match otlp_bytes {
@@ -96,8 +95,7 @@ pub fn encode_logs(logs: &LogsData) -> OtapArrowRecords {
 /// Decode OTAP Arrow Records to OTLP LogsData
 #[must_use]
 pub fn decode_logs(otap: OtapArrowRecords) -> LogsData {
-    let pdata: OtapPayload = otap.into();
-    let otlp_bytes: OtlpProtoBytes = pdata
+    let otlp_bytes: OtlpProtoBytes = otap
         .try_into_with_options(ConversionOptions::default())
         .expect("convert to OTLP bytes");
     match otlp_bytes {
@@ -149,8 +147,7 @@ pub fn encode_traces(traces: &TracesData) -> OtapArrowRecords {
 /// Decode OTAP Arrow Records to OTLP TracesData
 #[must_use]
 pub fn decode_traces(otap: OtapArrowRecords) -> TracesData {
-    let pdata: OtapPayload = otap.into();
-    let otlp_bytes: OtlpProtoBytes = pdata
+    let otlp_bytes: OtlpProtoBytes = otap
         .try_into_with_options(ConversionOptions::default())
         .expect("convert to OTLP bytes");
     match otlp_bytes {
@@ -205,8 +202,7 @@ pub fn encode_metrics(metrics: &MetricsData) -> OtapArrowRecords {
 /// Decode OTAP Arrow Records to OTLP MetricsData
 #[must_use]
 pub fn decode_metrics(otap: OtapArrowRecords) -> MetricsData {
-    let pdata: OtapPayload = otap.into();
-    let otlp_bytes: OtlpProtoBytes = pdata
+    let otlp_bytes: OtlpProtoBytes = otap
         .try_into_with_options(ConversionOptions::default())
         .expect("convert to OTLP bytes");
     match otlp_bytes {

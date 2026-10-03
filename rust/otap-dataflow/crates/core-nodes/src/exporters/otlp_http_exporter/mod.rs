@@ -43,10 +43,6 @@ use otel_arrow_dfe_engine::wiring_contract::WiringContract;
 use otel_arrow_dfe_engine::{ConsumerEffectHandlerExtension, ExporterFactory};
 #[cfg(test)]
 use otel_arrow_dfe_pdata::TryIntoWithOptions;
-use otel_arrow_dfe_pdata::otlp::logs::LogsProtoBytesEncoder;
-use otel_arrow_dfe_pdata::otlp::metrics::MetricsProtoBytesEncoder;
-use otel_arrow_dfe_pdata::otlp::traces::TracesProtoBytesEncoder;
-use otel_arrow_dfe_pdata::otlp::{ProtoBuffer, ProtoBytesEncoder};
 use otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::{
     ExportLogsPartialSuccess, ExportLogsServiceResponse,
 };
@@ -56,7 +52,9 @@ use otel_arrow_dfe_pdata::proto::opentelemetry::collector::metrics::v1::{
 use otel_arrow_dfe_pdata::proto::opentelemetry::collector::trace::v1::{
     ExportTracePartialSuccess, ExportTraceServiceResponse,
 };
-use otel_arrow_dfe_pdata::{OtapPayload, OtapPayloadHelpers, PayloadData};
+#[cfg(test)]
+use otel_arrow_dfe_pdata_codec::PayloadData;
+use otel_arrow_dfe_pdata_codec::{EncodePolicy, OtapPayload, PdataEncoding};
 use otel_arrow_dfe_telemetry::diagnostics::DiagnosticErrorKind;
 use prost::Message as _;
 use reqwest::{Client, Response};
@@ -72,7 +70,7 @@ use otel_arrow_dfe_otap::otlp_http::client_settings::{HttpClientError, HttpClien
 use otel_arrow_dfe_otap::otlp_http::{
     LOGS_PATH, METRICS_PATH, PROTOBUF_CONTENT_TYPE, RpcStatus, TRACES_PATH,
 };
-use otel_arrow_dfe_otap::pdata::{Context, OtapPdata};
+use otel_arrow_dfe_otap::pdata::{Context, OtapPdata, PdataEffectHandlerExtension};
 
 mod config;
 mod diagnostics;
@@ -309,10 +307,8 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
 
         let mut inflight_exports = InFlightExports::new();
 
-        let mut logs_proto_encoder = LogsProtoBytesEncoder::new();
-        let mut metrics_proto_encoder = MetricsProtoBytesEncoder::new();
-        let mut traces_proto_encoder = TracesProtoBytesEncoder::new();
-        let mut proto_buffer = ProtoBuffer::default();
+        let encoding_plan =
+            effect_handler.resolve_encoding_plan(&PdataEncoding::OTLP, EncodePolicy::default())?;
 
         let compression = self.config.http.compression();
         // Buffer to hold compressed bytes. We re-use this scratch space to place
@@ -452,7 +448,7 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                     let signal_type = pdata.signal_type();
                     let mut attempt = self.metrics.boundary.attempt(signal_type);
                     attempt.set_item_count_with(|| pdata.num_items() as u64);
-                    let (context, payload) = pdata.into_parts();
+                    let (context, mut payload) = pdata.into_parts();
 
                     // We normally only reach here with a usable auth, since intake
                     // is gated on `accepting_pdata`. The exception is shutdown, which
@@ -501,102 +497,23 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                         None => (None, None),
                     };
 
-                    // For the OtapArrowRecords path we keep the uncompressed bytes in
-                    // `proto_buffer` rather than materializing them into a `Bytes` up front: when
-                    // compression is enabled we feed the slice directly into the encoder, avoiding
-                    // an alloc+memcpy of the full uncompressed payload.
-                    enum Uncompressed {
-                        // Already a refcounted Bytes (OtlpBytes path).
-                        Bytes(Bytes),
-                        // Lives in `proto_buffer` (OtapArrowRecords path).
-                        InProtoBuffer,
-                    }
-
-                    // Proto encode the payload into the request body, while keeping a copy of the
-                    // original payload if the context allows it to be returned.
-                    let (uncompressed, saved_payload) = match payload.into_data() {
-                        PayloadData::OtlpBytes(mut otlp_bytes) => {
-                            if context.may_return_payload() {
-                                // Use a cheap clone of bytes as the request body.
-                                let body = otlp_bytes.clone_bytes();
-                                (Uncompressed::Bytes(body), otlp_bytes.into())
-                            } else {
-                                // Take the bytes and replace them with empty bytes in the payload.
-                                let body = otlp_bytes.replace_bytes(Bytes::new());
-                                (Uncompressed::Bytes(body), otlp_bytes.into())
-                            }
-                        }
-                        PayloadData::OtapArrowRecords(mut otap_batch) => {
-                            // Encode the OTAP batch as a protobuf request body.
-                            proto_buffer.clear();
-                            let encode_result =
-                                match signal_type {
-                                    SignalType::Logs => logs_proto_encoder
-                                        .encode(&mut otap_batch, &mut proto_buffer),
-                                    SignalType::Metrics => metrics_proto_encoder
-                                        .encode(&mut otap_batch, &mut proto_buffer),
-                                    SignalType::Traces => traces_proto_encoder
-                                        .encode(&mut otap_batch, &mut proto_buffer),
-                                };
-
-                            if !context.may_return_payload() {
-                                // Drop the original OTAP batch if it need not be returned.
-                                _ = otap_batch.take_payload();
-                            }
-
-                            if let Err(error) = encode_result {
-                                let completed = attempt
-                                    .run(async |attempt| {
-                                        Err::<(), _>(
-                                            attempt.failed(OtlpHttpExporterErrorType::Encoding),
-                                        )
-                                    })
-                                    .await;
-                                let error_type = self
-                                    .metrics
-                                    .boundary
-                                    .record(completed)
-                                    .expect_err("encoding attempt must fail");
-                                self.metrics.record_failure(signal_type, error_type);
-                                emit_preparation(
-                                    self.metrics.preparation.signal(signal_type).failure(
-                                        Instant::now(),
-                                        error_type,
-                                        || &error,
-                                    ),
-                                    signal_type,
-                                );
-                                // Encoding failed because the structured batch is invalid.
-                                let mut nack = NackMsg::new(
-                                    error.to_string(),
-                                    OtapPdata::new(context, otap_batch.into()),
-                                );
-                                nack.permanent = true;
-                                notify_nack_with_diagnostics(
-                                    &effect_handler,
-                                    &mut self.metrics,
-                                    signal_type,
-                                    nack,
+                    // Compress directly from the codec's borrowed scratch buffer. Only
+                    // detach owned bytes when the request crosses the async send boundary.
+                    let (body, payload_size) = if let Some(method) = compression {
+                        match effect_handler
+                            .with_encoded(&mut payload, &encoding_plan, |encoded| {
+                                let payload_size = encoded.len();
+                                (
+                                    method
+                                        .encode(encoded, &mut compressed_buffer)
+                                        .map(|()| Bytes::copy_from_slice(&compressed_buffer)),
+                                    payload_size,
                                 )
-                                .await;
-                                continue;
-                            }
-
-                            (Uncompressed::InProtoBuffer, otap_batch.into())
-                        }
-                    };
-
-                    let uncompressed_slice: &[u8] = match &uncompressed {
-                        Uncompressed::Bytes(bytes) => bytes.as_ref(),
-                        Uncompressed::InProtoBuffer => proto_buffer.as_ref(),
-                    };
-                    let payload_size = uncompressed_slice.len();
-
-                    let body = match compression {
-                        Some(method) => {
-                            if let Err(error) =
-                                method.encode(uncompressed_slice, &mut compressed_buffer)
-                            {
+                            })
+                            .await
+                        {
+                            Ok((Ok(body), payload_size)) => (body, payload_size),
+                            Ok((Err(error), payload_size)) => {
                                 let completed = attempt
                                     .run(async |attempt| {
                                         attempt.set_payload_size_with(|| payload_size);
@@ -609,7 +526,7 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                                     .metrics
                                     .boundary
                                     .record(completed)
-                                    .expect_err("compression attempt must fail");
+                                    .expect_err("preparation attempt must fail");
                                 self.metrics.record_failure(signal_type, error_type);
                                 emit_preparation(
                                     self.metrics.preparation.signal(signal_type).failure(
@@ -619,28 +536,103 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                                     ),
                                     signal_type,
                                 );
-                                let mut nack = NackMsg::new(
-                                    error.to_string(),
-                                    OtapPdata::new(context, saved_payload),
-                                );
-                                nack.permanent = true;
                                 notify_nack_with_diagnostics(
                                     &effect_handler,
                                     &mut self.metrics,
                                     signal_type,
-                                    nack,
+                                    NackMsg::new_permanent(
+                                        error.to_string(),
+                                        OtapPdata::new(context, payload),
+                                    ),
                                 )
                                 .await;
                                 continue;
                             }
-                            Bytes::copy_from_slice(&compressed_buffer)
-                        }
-                        None => match uncompressed {
-                            Uncompressed::Bytes(bytes) => bytes,
-                            Uncompressed::InProtoBuffer => {
-                                Bytes::copy_from_slice(proto_buffer.as_ref())
+                            Err(error) => {
+                                let completed = attempt
+                                    .run(async |attempt| {
+                                        Err::<(), _>(
+                                            attempt.failed(OtlpHttpExporterErrorType::Encoding),
+                                        )
+                                    })
+                                    .await;
+                                let error_type = self
+                                    .metrics
+                                    .boundary
+                                    .record(completed)
+                                    .expect_err("preparation attempt must fail");
+                                self.metrics.record_failure(signal_type, error_type);
+                                emit_preparation(
+                                    self.metrics.preparation.signal(signal_type).failure(
+                                        Instant::now(),
+                                        error_type,
+                                        || &error,
+                                    ),
+                                    signal_type,
+                                );
+                                notify_nack_with_diagnostics(
+                                    &effect_handler,
+                                    &mut self.metrics,
+                                    signal_type,
+                                    NackMsg::new_permanent(
+                                        error.to_string(),
+                                        OtapPdata::new(context, payload),
+                                    ),
+                                )
+                                .await;
+                                continue;
                             }
-                        },
+                        }
+                    } else {
+                        match effect_handler
+                            .encode_owned(&mut payload, &encoding_plan)
+                            .await
+                        {
+                            Ok(body) => {
+                                let payload_size = body.len();
+                                (body, payload_size)
+                            }
+                            Err(error) => {
+                                let completed = attempt
+                                    .run(async |attempt| {
+                                        Err::<(), _>(
+                                            attempt.failed(OtlpHttpExporterErrorType::Encoding),
+                                        )
+                                    })
+                                    .await;
+                                let error_type = self
+                                    .metrics
+                                    .boundary
+                                    .record(completed)
+                                    .expect_err("preparation attempt must fail");
+                                self.metrics.record_failure(signal_type, error_type);
+                                emit_preparation(
+                                    self.metrics.preparation.signal(signal_type).failure(
+                                        Instant::now(),
+                                        error_type,
+                                        || &error,
+                                    ),
+                                    signal_type,
+                                );
+                                notify_nack_with_diagnostics(
+                                    &effect_handler,
+                                    &mut self.metrics,
+                                    signal_type,
+                                    NackMsg::new_permanent(
+                                        error.to_string(),
+                                        OtapPdata::new(context, payload),
+                                    ),
+                                )
+                                .await;
+                                continue;
+                            }
+                        }
+                    };
+                    let saved_payload = if context.may_return_payload() {
+                        payload
+                    } else {
+                        drop(payload);
+                        OtapPayload::empty(signal_type)
                     };
 
                     let endpoint: Rc<String> = Rc::clone(match signal_type {
