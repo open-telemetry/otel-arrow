@@ -92,7 +92,8 @@ queries:
             SELECT
               * REPLACE (
               CASE
-                WHEN metric_name = 'items' THEN 'logs'
+                WHEN metric_name = 'items' AND "metric_attributes.otel_scope_name" = 'node.input' THEN 'logs'
+                WHEN metric_name = 'items' AND "metric_attributes.otel_scope_name" = 'node.output' THEN 'logs_produced'
                 ELSE metric_name
               END AS metric_name
             ),
@@ -100,7 +101,6 @@ queries:
             COALESCE("metric_attributes.otel_scope_core_id", 'N/A') AS core_id,
             FROM metrics
             WHERE metric_name IN (
-              'logs_produced',
               'logs_bytes_produced',
               'failed',
               'bytes_sent',
@@ -114,6 +114,10 @@ queries:
                 AND "metric_attributes.otel_scope_node_id" = 'perf'
                 AND "metric_attributes.signal" = 'logs'
                 AND "metric_attributes.outcome" = 'success'
+              )
+              OR (
+                "metric_attributes.otel_scope_name" = 'node.output'
+                AND "metric_attributes.signal" = 'logs'
               )
             ) AND timestamp > (
                 SELECT CAST("test.start" AS TIMESTAMP WITH TIME ZONE)
