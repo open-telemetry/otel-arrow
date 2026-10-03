@@ -5,12 +5,12 @@ This module implements a configurable load generator for OpenTelemetry
 Protocol (OTLP) logs and syslog messages. It supports generating batches of
 randomized log records or CEF-formatted syslog messages with customizable
 sizes and attributes, and sending them concurrently to an OTLP collector
-endpoint over gRPC or to a syslog server over TCP/UDP.
+endpoint over gRPC or to a syslog server over TCP/UDP or raw records over Kafka.
 
 Features:
 - Generates OTLP log records with random content for testing or benchmarking.
 - Generates syslog messages (RFC 3164/5424) with random or CEF payloads.
-- Configurable syslog server, port, transport (TCP/UDP), and message format.
+- Configurable syslog server, port, transport (TCP/UDP/Kafka), and message format.
 - Supports target message size with automatic padding/truncation.
 - Runs multiple worker threads to simulate concurrent load.
 - Supports shared or dedicated TCP connection per-worker thread.
@@ -49,6 +49,7 @@ Examples:
 Endpoints:
 - POST /start: Start load generation with specified parameters in JSON.
 - POST /stop: Stop the load generation.
+- GET /status: Retrieve lifecycle state; HTTP 500 if the run has failed.
 - GET /metrics: Retrieve current load generation metrics (logs sent, failed,
     bytes sent).
 
@@ -81,7 +82,9 @@ from opentelemetry.proto.collector.logs.v1 import (
 )
 from opentelemetry.proto.logs.v1 import logs_pb2
 from opentelemetry.proto.common.v1 import common_pb2
-from pydantic import BaseModel, Field, field_validator, ValidationError
+from pydantic import BaseModel, Field, field_validator, model_validator, ValidationError
+
+from kafka_syslog import KafkaSyslogWorker
 
 
 FLASK_PORT = 5001
@@ -159,6 +162,46 @@ _PRI_POOL = [
 ]
 
 
+def _syslog_header(hostname: str, header_type: str, pri: str = "<134>") -> str:
+    if header_type.lower() == "none":
+        return ""
+    if not 1 <= len(hostname) <= 255 or any(
+        ord(char) < 33 or ord(char) > 126 for char in hostname
+    ):
+        raise ValueError("Syslog hostname must be 1-255 printable ASCII characters")
+    utc_time = dt.now(timezone.utc)
+    if header_type == "rfc3164":
+        timestamp = utc_time.strftime(f"%b {utc_time.day:2d} %H:%M:%S")
+        return f"{pri}{timestamp} {hostname} loadgen: "
+    if header_type == "rfc5424":
+        timestamp = utc_time.strftime("%Y-%m-%dT%H:%M:%SZ")
+        return f"{pri}1 {timestamp} {hostname} loadgen - - - "
+    raise ValueError("Invalid header_type: expected rfc3164, rfc5424, or none")
+
+
+def _encode_syslog_message(
+    header: str, body: str, message_size: Optional[int], line_delimited: bool = True
+) -> bytes:
+    """Size the UTF-8 body without truncating the header or a code point."""
+    prefix = header.encode("ascii")
+    suffix = b"\n" if line_delimited else b""
+    payload = body.encode("utf-8")
+    if message_size is not None:
+        available = message_size - len(prefix) - len(suffix)
+        minimum = 1
+        # Legacy stream/datagram pools allow arbitrary body truncation.
+        # Raw Kafka CEF fixtures must retain the complete CEF header.
+        if not line_delimited and body.startswith("CEF:"):
+            minimum = len("|".join(body.split("|")[:7]).encode("utf-8")) + 1
+        if available < minimum:
+            raise ValueError(
+                "message_size cannot fit the Syslog header and message body"
+            )
+        payload = payload[:available].decode("utf-8", errors="ignore").encode("utf-8")
+        payload += b" " * (available - len(payload))
+    return prefix + payload + suffix
+
+
 def _generate_message_pool(
     pool_size: int,
     header_type: str,
@@ -223,6 +266,14 @@ def _generate_message_pool(
 app = Flask(__name__)
 
 
+def _valid_kafka_topic(topic: str) -> bool:
+    return (
+        1 <= len(topic) <= 249
+        and topic not in (".", "..")
+        and all(c in string.ascii_letters + string.digits + "._-" for c in topic)
+    )
+
+
 class LoadGenConfig(BaseModel):
     body_size: int = Field(
         25, gt=0, description="Size of log message body in characters"
@@ -255,7 +306,7 @@ class LoadGenConfig(BaseModel):
     )
     syslog_transport: str = Field(
         default_factory=lambda: os.getenv("SYSLOG_TRANSPORT", "udp"),
-        description="Syslog transport protocol: 'tcp' or 'udp'",
+        description="Syslog transport protocol: 'tcp', 'udp', or 'kafka'",
     )
     syslog_format: str = Field(
         "rfc3164",
@@ -267,6 +318,51 @@ class LoadGenConfig(BaseModel):
     message_size: Optional[int] = Field(
         None, gt=0, description="Target total message size in bytes (pads to fit)"
     )
+    kafka_brokers: str = "localhost:9092"
+    kafka_topic: str = "otel-syslog"
+    kafka_queue_max_messages: int = Field(10000, gt=0, le=10000000)
+    kafka_queue_max_kbytes: int = Field(16384, gt=0, le=2147483647)
+    kafka_send_timeout: float = Field(5, gt=0, le=300, allow_inf_nan=False)
+    kafka_flush_timeout: float = Field(10, gt=0, le=300, allow_inf_nan=False)
+    kafka_message_timeout_ms: int = Field(10000, gt=0, le=300000)
+    kafka_request_timeout_ms: int = Field(5000, ge=1000, le=300000)
+    kafka_linger_ms: float = Field(5, ge=0, le=900000, allow_inf_nan=False)
+    kafka_acks: str = "1"
+    kafka_compression: str = "none"
+
+    @model_validator(mode="after")
+    def validate_kafka(self):
+        if self.syslog_transport != "kafka":
+            return self
+        if self.load_type != "syslog":
+            raise ValueError("Kafka transport requires load_type='syslog'")
+        if "syslog_format" not in self.model_fields_set:
+            self.syslog_format = "rfc5424"
+        if self.syslog_format == "none":
+            raise ValueError("Kafka Syslog requires an RFC3164 or RFC5424 header")
+        if not self.kafka_brokers.strip():
+            raise ValueError("kafka_brokers cannot be empty")
+        if not _valid_kafka_topic(self.kafka_topic):
+            raise ValueError("Invalid kafka_topic")
+        if self.kafka_acks not in ("1", "all", "-1"):
+            raise ValueError("kafka_acks must be '1', 'all', or '-1'")
+        if self.kafka_compression not in ("none", "gzip", "snappy", "lz4", "zstd"):
+            raise ValueError("Invalid kafka_compression")
+        if self.kafka_linger_ms >= self.kafka_message_timeout_ms:
+            raise ValueError(
+                "kafka_linger_ms must be less than kafka_message_timeout_ms"
+            )
+        header = _syslog_header(socket.gethostname(), self.syslog_format)
+        body = CEF_TEMPLATE if self.syslog_content_type == "cef" else (
+            self.message_body if self.message_body is not None else "x"
+        )
+        # An absent Kafka size defaults to the benchmark's 1 KiB record.
+        if self.message_size is None:
+            self.message_size = 1024
+        if self.message_size > self.kafka_queue_max_kbytes * 1024:
+            raise ValueError("message_size exceeds the Kafka queue byte limit")
+        _encode_syslog_message(header, body, self.message_size, line_delimited=False)
+        return self
 
     @field_validator(
         "body_size", "num_attributes", "attribute_value_size", "batch_size", "threads"
@@ -286,9 +382,9 @@ class LoadGenConfig(BaseModel):
 
     @field_validator("syslog_transport")
     def validate_syslog_transport(cls, v):
-        """Ensure syslog_transport is either 'tcp' or 'udp'."""
-        if v.lower() not in ["tcp", "udp"]:
-            raise ValueError("syslog_transport must be 'tcp' or 'udp'")
+        """Ensure syslog_transport is supported."""
+        if v.lower() not in ["tcp", "udp", "kafka"]:
+            raise ValueError("syslog_transport must be 'tcp', 'udp', or 'kafka'")
         return v.lower()
 
     @field_validator("syslog_format")
@@ -344,12 +440,21 @@ class _BatchMetricsAccumulator:
 
 
 class LoadGenerator:
-    def __init__(self):
+    def __init__(self, kafka_producer_factory=None):
         self.controller_thread = None
         self.stop_event = threading.Event()
         self.current_config = {}
         self.lock = threading.Lock()
-        self.metrics = {"logs_produced": 0, "failed": 0, "bytes_sent": 0, "late_batches": 0}
+        self.lifecycle_lock = threading.Lock()
+        self.kafka_producer_factory = kafka_producer_factory
+        self.status = "idle"
+        self.errors = []
+        self.metrics = dict.fromkeys((
+            "logs_produced", "failed", "bytes_sent", "late_batches",
+            "logs_bytes_produced", "kafka_enqueued", "kafka_delivery_failed",
+            "kafka_enqueue_failed", "kafka_pending", "kafka_pending_bytes",
+            "kafka_queue_full", "kafka_flush_timeouts",
+        ), 0)
 
     def generate_random_string(self, length: int) -> str:
         """
@@ -400,6 +505,21 @@ class LoadGenerator:
             for key, amount in updates.items():
                 if key in self.metrics:
                     self.metrics[key] += amount
+
+    def record_kafka_delivery(self, size, error):
+        """Publish broker-confirmed delivery counters atomically."""
+        with self.lock:
+            self.metrics["kafka_pending"] -= 1
+            self.metrics["kafka_pending_bytes"] -= size
+            if error is None:
+                self.metrics["logs_produced"] += 1
+                self.metrics["bytes_sent"] += size
+                self.metrics["logs_bytes_produced"] += size
+            else:
+                self.metrics["failed"] += 1
+                self.metrics["kafka_delivery_failed"] += 1
+        if error is not None:
+            self.record_error(f"Kafka delivery failed: {error}")
 
     def worker_thread(self, thread_id: int, args: dict) -> None:
         """
@@ -472,7 +592,7 @@ class LoadGenerator:
                 now = time.perf_counter()
                 sleep_time = next_send_time - now
                 if sleep_time > 0:
-                    time.sleep(sleep_time)
+                    self.stop_event.wait(sleep_time)
                 elif now - next_send_time > batch_interval:
                     # More than 1 interval behind
                     acc.late_batches += 1
@@ -589,7 +709,7 @@ class LoadGenerator:
                 now = time.perf_counter()
                 sleep_time = next_send_time - now
                 if sleep_time > 0:
-                    time.sleep(sleep_time)
+                    self.stop_event.wait(sleep_time)
                 elif now - next_send_time > batch_interval:
                     # More than 1 interval behind
                     acc.late_batches += 1
@@ -699,7 +819,7 @@ class LoadGenerator:
                 now = time.perf_counter()
                 sleep_time = next_send_time - now
                 if sleep_time > 0:
-                    time.sleep(sleep_time)
+                    self.stop_event.wait(sleep_time)
                 elif now - next_send_time > batch_interval:
                     # More than 1 interval behind
                     acc.late_batches += 1
@@ -723,6 +843,7 @@ class LoadGenerator:
         header_type: str = "rfc3164",  # can be "rfc3164", "rfc5424", or "none"
         syslog_content_type: str = "random",  # can be "random" or "cef"
         message_size: Optional[int] = None,  # target total message size in bytes
+        line_delimited: bool = True,
     ) -> bytes:
         """
         Create a single syslog message.
@@ -745,6 +866,12 @@ class LoadGenerator:
             log_message = message_body
         else:
             log_message = self.generate_random_string(body_size)
+
+        if not line_delimited:
+            return _encode_syslog_message(
+                _syslog_header(hostname, header_type), log_message,
+                message_size, line_delimited=False,
+            )
 
         # Header generation
         if header_type == "rfc3164":
@@ -784,14 +911,22 @@ class LoadGenerator:
 
         return syslog_message.encode("utf-8")
 
+    def syslog_kafka_worker_thread(self, thread_id: int, args: dict) -> None:
+        KafkaSyslogWorker(self, args, self.kafka_producer_factory).run(thread_id)
+
+    def record_error(self, error):
+        """Retain bounded error details and interrupt all workers in this run."""
+        self.stop_event.set()
+        with self.lock:
+            self.status = "failed"
+            if len(self.errors) < 8:
+                self.errors.append(str(error)[:500])
+
     def run_loadgen(self, args_dict):
         """
         Start the load generation process by launching multiple worker threads.
         Chooses between OTLP and syslog workers based on configuration.
         """
-        with self.lock:
-            self.metrics.update({"logs_produced": 0, "failed": 0, "bytes_sent": 0})
-
         # Determine which worker thread to use based on configuration
         load_type = args_dict.get("load_type", "otlp").lower()
 
@@ -800,28 +935,39 @@ class LoadGenerator:
                 "syslog_transport", os.getenv("SYSLOG_TRANSPORT", "udp")
             ).lower()
 
-            if syslog_transport not in ["tcp", "udp"]:
-                print(f"Invalid syslog_transport '{syslog_transport}', using 'udp'")
-                syslog_transport = "udp"
-
-            if syslog_transport == "udp":
+            if syslog_transport == "kafka":
+                worker_func = self.syslog_kafka_worker_thread
+            elif syslog_transport == "udp":
                 worker_func = self.syslog_udp_worker_thread
             else:
                 worker_func = self.syslog_tcp_worker_thread
         else:
             worker_func = self.worker_thread
 
-        with concurrent.futures.ThreadPoolExecutor(
-            max_workers=args_dict.get("threads", 4)
-        ) as executor:
-            futures = [
-                executor.submit(worker_func, i, args_dict)
-                for i in range(args_dict.get("threads", 4))
-            ]
-            concurrent.futures.wait(futures)
-
-        with self.lock:
-            self.current_config["metrics"] = self.metrics.copy()
+        try:
+            with concurrent.futures.ThreadPoolExecutor(
+                max_workers=args_dict.get("threads", 4)
+            ) as executor:
+                try:
+                    futures = [
+                        executor.submit(worker_func, i, args_dict)
+                        for i in range(args_dict.get("threads", 4))
+                    ]
+                except Exception:
+                    # Stop already-submitted workers before executor shutdown
+                    # waits for them (e.g. if another thread cannot be created).
+                    self.stop_event.set()
+                    raise
+                for future in concurrent.futures.as_completed(futures):
+                    try:
+                        future.result()
+                    except Exception as exc:
+                        self.record_error(f"Worker failed: {exc}")
+        except Exception as exc:
+            self.record_error(f"Controller failed: {exc}")
+        finally:
+            with self.lock:
+                self.status = "failed" if self.errors else "stopped"
 
     def start(self, config: LoadGenConfig):
         """
@@ -829,19 +975,19 @@ class LoadGenerator:
         Returns a tuple of (response_dict, status_code).
         """
 
-        if self.controller_thread and self.controller_thread.is_alive():
-            return {"error": "Load generation already running"}, 400
-
-        self.stop_event.clear()
-        with self.lock:
-            self.current_config.update(config)
-            self.current_config["running"] = True
-            self.current_config["metrics"] = {}
-
-        self.controller_thread = threading.Thread(
-            target=self.run_loadgen, args=(config.model_dump(),)
-        )
-        self.controller_thread.start()
+        with self.lifecycle_lock:
+            if self.controller_thread and self.controller_thread.is_alive():
+                return {"error": "Load generation already running"}, 400
+            self.stop_event.clear()
+            with self.lock:
+                self.current_config = config.model_dump()
+                self.status = "running"
+                self.errors = []
+                self.metrics = dict.fromkeys(self.metrics, 0)
+            self.controller_thread = threading.Thread(
+                target=self.run_loadgen, args=(config.model_dump(),)
+            )
+            self.controller_thread.start()
 
         return {"status": "started"}, 200
 
@@ -850,13 +996,40 @@ class LoadGenerator:
         Stop the currently running load generator.
         Returns a tuple of (response_dict, status_code).
         """
-        self.stop_event.set()
-        if self.controller_thread:
-            self.controller_thread.join(timeout=10)
-            self.controller_thread = None
+        with self.lifecycle_lock:
+            self.stop_event.set()
+            with self.lock:
+                if not self.errors:
+                    self.status = "stopping"
+            if self.controller_thread:
+                timeout = 10
+                if self.current_config.get("syslog_transport") == "kafka":
+                    timeout = self.current_config["kafka_flush_timeout"] + 1
+                self.controller_thread.join(timeout=timeout)
+                if self.controller_thread.is_alive():
+                    # Retain the thread and event until it really exits; a new
+                    # run must never reset counters underneath old callbacks.
+                    self.record_error("Stop deadline expired; workers still running")
+                else:
+                    self.controller_thread = None
+            with self.lock:
+                self.status = "failed" if self.errors else "stopped"
+            snapshot = self.get_status()
+            if snapshot["status"] == "failed":
+                return {**snapshot, "error": "Load generation failed"}, 500
+            return snapshot, 200
+
+    def get_status(self):
+        controller = self.controller_thread
         with self.lock:
-            self.current_config["running"] = False
-        return {"status": "stopped"}, 200
+            return {
+                "status": self.status,
+                "running": bool(
+                    controller and controller.is_alive()
+                ),
+                "errors": self.errors.copy(),
+                "metrics": self.metrics.copy(),
+            }
 
     def get_metrics(self):
         """
@@ -876,7 +1049,7 @@ def start():
         config_data = request.get_json()
         config = LoadGenConfig(**config_data)
     except ValidationError as e:
-        return jsonify({"error": e.errors()}), 400
+        return jsonify({"error": e.errors(include_context=False)}), 400
     except Exception:
         return jsonify({"error": "Invalid JSON or missing data"}), 400
 
@@ -897,10 +1070,16 @@ def metrics_endpoint():
     return "\n".join(lines), 200
 
 
+@app.route("/status", methods=["GET"])
+def status_endpoint():
+    snapshot = loadgen.get_status()
+    return jsonify(snapshot), 500 if snapshot["status"] == "failed" else 200
+
+
 def handle_signal(sig, frame):
     print(f"\nReceived signal {sig}, shutting down gracefully...")
-    loadgen.stop()
-    sys.exit(0)
+    _, code = loadgen.stop()
+    sys.exit(0 if code == 200 else 1)
 
 
 def is_port_in_use(port, host="0.0.0.0"):
@@ -1037,7 +1216,7 @@ def main():
         "--syslog-transport",
         type=str,
         default=os.getenv("SYSLOG_TRANSPORT", get_default_value("syslog_transport")),
-        choices=["tcp", "udp"],
+        choices=["tcp", "udp", "kafka"],
         help=(
             "Syslog transport protocol "
             f"(default {get_default_value('syslog_transport')}, env: SYSLOG_TRANSPORT)"
@@ -1046,11 +1225,11 @@ def main():
     parser.add_argument(
         "--syslog-format",
         type=str,
-        default=os.getenv("SYSLOG_FORMAT", get_default_value("syslog_format")),
+        default=os.getenv("SYSLOG_FORMAT"),
         choices=["rfc3164", "rfc5424", "none"],
         help=(
             "Syslog header format "
-            f"(default {get_default_value('syslog_format')}, env: SYSLOG_FORMAT)"
+            "(default rfc5424 for Kafka, rfc3164 otherwise; env: SYSLOG_FORMAT)"
         ),
     )
     parser.add_argument(
@@ -1072,7 +1251,23 @@ def main():
             f"(default {get_default_value('message_size')})"
         ),
     )
+    kafka_fields = (
+        "kafka_brokers", "kafka_topic", "kafka_queue_max_messages",
+        "kafka_queue_max_kbytes", "kafka_send_timeout", "kafka_flush_timeout",
+        "kafka_message_timeout_ms", "kafka_request_timeout_ms", "kafka_linger_ms",
+        "kafka_acks", "kafka_compression",
+    )
+    for name in kafka_fields:
+        parser.add_argument(
+            "--" + name.replace("_", "-"),
+            type=LoadGenConfig.model_fields[name].annotation,
+            default=get_default_value(name),
+        )
     args = parser.parse_args()
+    if args.syslog_format is None:
+        args.syslog_format = (
+            "rfc5424" if args.syslog_transport == "kafka" else "rfc3164"
+        )
 
     if args.serve:
         if is_port_in_use(args.serve_port):
@@ -1113,17 +1308,18 @@ def main():
         syslog_format=args.syslog_format,
         syslog_content_type=args.syslog_content_type,
         message_size=args.message_size,
+        **{name: getattr(args, name) for name in kafka_fields},
     )
 
     start_time = time.time()
     loadgen.start(config=config)
 
     try:
-        time.sleep(args.duration)
+        loadgen.stop_event.wait(args.duration)
     except KeyboardInterrupt:
         print("Interrupted by user, stopping early...")
 
-    loadgen.stop()
+    result, code = loadgen.stop()
     elapsed = time.time() - start_time
 
     logs_sent = loadgen.metrics.get("logs_produced", 0)
@@ -1132,6 +1328,9 @@ def main():
     print(f'LOADGEN_LOGS_FAILED: {loadgen.metrics.get("failed", 0)}')
     print(f'LOADGEN_BYTES_SENT: {loadgen.metrics.get("bytes_sent", 0)} bytes')
     print(f'LOADGEN_LOGS_SENT/SEC: {logs_per_sec:.2f}')
+    if code != 200:
+        print(f"LOADGEN_ERROR: {result['errors']}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

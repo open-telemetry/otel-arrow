@@ -1,0 +1,81 @@
+name: {{suite_name}}
+hooks:
+  run:
+    pre:
+      - run_command:
+          # Guard the shared namespace, including the unused historical backend.
+          command: >-
+            for name in load-generator kafka-broker kafka-consumer backend-service; do
+            if test -n "$(docker ps -aq --filter "name=^/${name}$")"; then
+            echo "Container ${name} already exists; refusing to replace it." >&2;
+            exit 1; fi; done
+components:
+  load-generator:
+    deployment:
+      docker:
+        image: {{syslog_loadgen_image}}
+        network: kafka-syslog-benchmark
+        command: ["--serve"]
+        ports:
+          - {published: 18085, target: 5001, host_ip: "127.0.0.1"}
+    monitoring:
+      docker_component:
+        allocated_cores: 1
+      prometheus:
+        endpoint: http://localhost:18085/metrics
+  kafka-broker:
+    deployment:
+      docker:
+        image: {{kafka_image}}
+        network: kafka-syslog-benchmark
+        ports:
+          - {published: 19094, target: 19094, host_ip: "127.0.0.1"}
+        environment:
+          - KAFKA_NODE_ID=1
+          - KAFKA_PROCESS_ROLES=broker,controller
+          - KAFKA_CONTROLLER_QUORUM_VOTERS=1@kafka-broker:9093
+          - KAFKA_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:19094
+          - KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://kafka-broker:9092,EXTERNAL://localhost:19094
+          - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT,EXTERNAL:PLAINTEXT
+          - KAFKA_CONTROLLER_LISTENER_NAMES=CONTROLLER
+          - KAFKA_INTER_BROKER_LISTENER_NAME=PLAINTEXT
+          - KAFKA_AUTO_CREATE_TOPICS_ENABLE=false
+          - KAFKA_NUM_PARTITIONS=1
+          - KAFKA_LOG_RETENTION_MS=300000
+          - KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1
+          - CLUSTER_ID=benchmark-kafka-cluster-id
+    monitoring:
+      docker_component:
+        allocated_cores: 1
+  kafka-consumer:
+    deployment:
+      docker:
+        image: {{df_engine_image}}
+        network: kafka-syslog-benchmark
+        ports:
+          - {published: 18088, target: 8080, host_ip: "127.0.0.1"}
+        volumes:
+          - '{{data_dir}}/kafka-consumer-config.rendered.yaml:/home/nonroot/config.yaml:ro'
+        command: ["--config", "./config.yaml", "--http-admin-bind", "0.0.0.0:8080"]
+    monitoring:
+      docker_component:
+        allocated_cores: 1
+      prometheus:
+        endpoint: http://localhost:18088/api/v1/telemetry/metrics?format=prometheus&reset=false
+
+tests:
+{%- for rate in variables.rates %}
+  - name: {{rate // 1000}}k
+    from_template:
+      path: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/steps/df-engine-kafka-syslog-receiver-only.yaml
+      variables:
+{%- for k, v in variables.items() %}
+        {{k}}: {{v | tojson}}
+{%- endfor %}
+        variables: {{variables | tojson}}
+        data_dir: {{data_dir | tojson}}
+        test_dir: {{(data_dir ~ '/tests/' ~ (rate // 1000) ~ 'k') | tojson}}
+        report_name: "DFE Kafka Syslog receiver -> local Perf {{rate // 1000}}k"
+        observation_interval: {{observation_interval}}
+        target_rate: {{rate}}
+{%- endfor %}

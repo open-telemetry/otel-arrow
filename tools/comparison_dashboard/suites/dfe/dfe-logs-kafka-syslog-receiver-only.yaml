@@ -1,0 +1,27 @@
+name: Syslog Kafka receiver -> local Perf (Logs)
+slug: dfe_logs_kafka_syslog_receiver_only
+description: >-
+  Raw 1024-byte RFC 5424 records, one per Kafka message. One consumer pipeline
+  core decodes Syslog into Arrow and hands off to local Perf with item counting.
+  No batch processor or network exporter. This includes Arrow materialization
+  and sink handoff/counting, not parsing alone. Final counters are captured
+  after a bounded producer-off drain, before consumer shutdown.
+orchestrator_template: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/orchestrator/dfe-kafka-syslog-receiver-only.yaml
+
+meta:
+  binary: dfe
+  protocols: [syslog]
+  signals: [logs]
+  compression: none
+
+variables:
+  report: ../pipeline_perf_test/test_suites/comparison_dashboard/reports/report_logs_receiver_only.yaml
+  kafka_consumer_config: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/engine/kafka-consumer-syslog-receiver-only.yaml.j2
+  rates: [100000, 200000, 300000, 400000, 600000, 800000, 1000000]
+  loadgen_threads: 1
+  loadgen_batch_size: 100
+  message_size: 1024
+  wait_for_data_interval: 10
+  drain_wait_secs: 10
+  drain_timeout_secs: 15
+  kafka_consumer_group_id: kafka-syslog-benchmark
