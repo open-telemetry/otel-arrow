@@ -1,0 +1,9 @@
+change_type: bug_fix
+component: observability
+note: Allow internal log event encoding to grow beyond its initial 256-byte capacity, up to 2KiB, before truncating.
+issues: [1746]
+subtext: |
+  Previously the encoding buffer had a hard 256-byte cap with no growth, so
+  oversized log events were truncated far more often than necessary. The
+  buffer now starts at 256 bytes but can grow up to 2KiB, matching the common
+  case's zero-allocation cost while still truncating safely past 2KiB.

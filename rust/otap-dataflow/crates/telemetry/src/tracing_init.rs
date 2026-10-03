@@ -531,18 +531,25 @@ mod tests {
             let (reporter, receiver) = test_reporter();
             let setup = test_setup(internal_async_provider(reporter), level("info"));
 
-            // Use enough long-string attributes to overflow any reasonable
-            // LOG_ARGUMENTS_ENCODE_INLINE (well above 256 bytes worth of payload).
+            // Use enough long-string attributes to overflow
+            // LOG_ARGUMENTS_ENCODE_LIMIT (well above 2048 bytes of payload).
+            let long_a = "a".repeat(300);
+            let long_b = "b".repeat(300);
+            let long_c = "c".repeat(300);
+            let long_d = "d".repeat(300);
+            let long_e = "e".repeat(300);
+            let long_f = "f".repeat(300);
+            let long_g = "g".repeat(300);
             setup.with_subscriber_ignoring_env(|| {
                 otel_info!(
                     "overflow.test",
-                    a = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                    b = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-                    c = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-                    d = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
-                    e = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
-                    f = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
-                    g = "gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg",
+                    a = long_a.as_str(),
+                    b = long_b.as_str(),
+                    c = long_c.as_str(),
+                    d = long_d.as_str(),
+                    e = long_e.as_str(),
+                    f = long_f.as_str(),
+                    g = long_g.as_str(),
                     message = "Body that itself is fairly long and may not fit alongside the attributes above"
                 );
             });
