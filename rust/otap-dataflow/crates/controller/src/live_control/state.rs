@@ -480,13 +480,13 @@ pub(super) struct RuntimeRecoveryState {
 }
 
 #[derive(Debug, Clone)]
-/// Committed logical pipeline config plus the active deployment generation.
-pub(super) struct LogicalPipelineRecord {
+/// Committed logical pipeline deployment plus its create-or-replace generation.
+pub(super) struct LogicalPipelineDeployment {
     pub(super) resolved: ResolvedPipelineConfig,
     /// Compiled context bindings for this deployment generation.
     pub(super) context_bindings: Arc<CompiledContextBindings>,
     /// Pipeline-wide config generation; recovered cores may serve newer generations.
-    pub(super) active_generation: u64,
+    pub(super) create_or_replace_generation: u64,
     pub(super) placement: PipelinePlacement,
     pub(super) placement_generation: u64,
 }
@@ -531,7 +531,7 @@ pub(super) struct ControllerRuntimeState {
     /// Latest node-binding snapshot compiled for the committed live configuration.
     pub(super) latest_context_bindings: Arc<CompiledContextBindings>,
     /// Committed logical pipelines keyed by group/pipeline id.
-    pub(super) logical_pipelines: HashMap<PipelineKey, LogicalPipelineRecord>,
+    pub(super) logical_pipelines: HashMap<PipelineKey, LogicalPipelineDeployment>,
     /// Deployed runtime instances keyed by group/pipeline/core/generation.
     pub(super) runtime_instances: HashMap<DeployedPipelineKey, RuntimeInstanceRecord>,
     /// Per-core restart streak and active recovery-worker state.
@@ -650,13 +650,13 @@ pub(super) struct CandidateRolloutPlan {
     pub(super) context_bindings: Arc<CompiledContextBindings>,
     /// Runtime config revision used to build this plan.
     pub(super) base_config_revision: u64,
-    /// Current committed record, absent for create rollouts.
-    pub(super) current_record: Option<LogicalPipelineRecord>,
-    /// Placement metadata for the committed record, used by rollback launches.
+    /// Current committed deployment, absent for create rollouts.
+    pub(super) current_deployment: Option<LogicalPipelineDeployment>,
+    /// Placement metadata for the committed deployment, used by rollback launches.
     pub(super) current_placement: Option<LivePipelinePlacement>,
     /// Placement metadata for target launches.
     pub(super) target_placement: LivePipelinePlacement,
-    /// Core allocation from the committed record.
+    /// Core allocation from the committed deployment.
     pub(super) current_assigned_cores: Vec<usize>,
     /// Core allocation requested by the candidate config.
     pub(super) target_assigned_cores: Vec<usize>,

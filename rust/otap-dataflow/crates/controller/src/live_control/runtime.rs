@@ -377,7 +377,7 @@ impl<
             failed_key.pipeline_group_id.clone(),
             failed_key.pipeline_id.clone(),
         );
-        let current_record = {
+        let current_deployment = {
             let mut state = self
                 .state
                 .lock()
@@ -404,7 +404,7 @@ impl<
             state.logical_pipelines.get(&pipeline_key).cloned()
         };
 
-        let Some(current_record) = current_record else {
+        let Some(current_deployment) = current_deployment else {
             let mut state = self
                 .state
                 .lock()
@@ -414,8 +414,12 @@ impl<
             }
             return;
         };
-        let policy = current_record.resolved.policies.runtime_recovery.clone();
-        let assigned_cores: Vec<_> = current_record
+        let policy = current_deployment
+            .resolved
+            .policies
+            .runtime_recovery
+            .clone();
+        let assigned_cores: Vec<_> = current_deployment
             .placement
             .cores
             .iter()
@@ -451,7 +455,7 @@ impl<
                 .runtime_recoveries
                 .entry(recovery_key)
                 .or_insert_with(|| RuntimeRecoveryState {
-                    serving_generation: current_record.active_generation,
+                    serving_generation: current_deployment.create_or_replace_generation,
                     context_bindings: Arc::clone(&context_bindings),
                     restart_count: 0,
                     ready_since: None,
