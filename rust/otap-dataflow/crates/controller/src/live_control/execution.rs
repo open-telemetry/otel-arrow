@@ -325,11 +325,9 @@ impl<
                 None,
             );
             let deployed_key = match self.launch_regular_pipeline_instance(
-                &plan.resolved_pipeline,
-                Arc::clone(&plan.context_bindings),
-                &plan.target_placement,
+                &plan.target_deployment,
                 *core_id,
-                plan.target_generation,
+                plan.target_deployment.create_or_replace_generation,
             ) {
                 Ok(deployed_key) => deployed_key,
                 Err(err) => {
@@ -365,7 +363,7 @@ impl<
             );
         }
 
-        self.commit_pipeline_deployment(plan, plan.target_generation);
+        self.commit_pipeline_deployment(plan);
         Ok(())
     }
 
@@ -394,9 +392,7 @@ impl<
             );
 
             let new_key = match self.launch_regular_pipeline_instance(
-                &plan.resolved_pipeline,
-                Arc::clone(&plan.context_bindings),
-                &plan.target_placement,
+                &plan.target_deployment,
                 *core_id,
                 active_generation,
             ) {
@@ -465,7 +461,7 @@ impl<
             );
         }
 
-        self.commit_pipeline_deployment(plan, active_generation);
+        self.commit_pipeline_deployment(plan);
         self.clear_pipeline_serving_generations(
             &plan.pipeline_key,
             plan.current_assigned_cores
@@ -513,11 +509,9 @@ impl<
             );
 
             let new_key = match self.launch_regular_pipeline_instance(
-                &plan.resolved_pipeline,
-                Arc::clone(&plan.context_bindings),
-                &plan.target_placement,
+                &plan.target_deployment,
                 *core_id,
-                plan.target_generation,
+                plan.target_deployment.create_or_replace_generation,
             ) {
                 Ok(new_key) => new_key,
                 Err(err) => {
@@ -553,7 +547,7 @@ impl<
             self.observed_state_store.set_pipeline_serving_generation(
                 plan.pipeline_key.clone(),
                 *core_id,
-                plan.target_generation,
+                plan.target_deployment.create_or_replace_generation,
             );
             activated_added_cores.push(*core_id);
             self.update_rollout_core_state(
@@ -575,11 +569,9 @@ impl<
             );
 
             let new_key = match self.launch_regular_pipeline_instance(
-                &plan.resolved_pipeline,
-                Arc::clone(&plan.context_bindings),
-                &plan.target_placement,
+                &plan.target_deployment,
                 *core_id,
-                plan.target_generation,
+                plan.target_deployment.create_or_replace_generation,
             ) {
                 Ok(new_key) => new_key,
                 Err(err) => {
@@ -656,7 +648,7 @@ impl<
             self.observed_state_store.set_pipeline_serving_generation(
                 plan.pipeline_key.clone(),
                 *core_id,
-                plan.target_generation,
+                plan.target_deployment.create_or_replace_generation,
             );
             self.update_rollout_core_state(
                 &plan.pipeline_key,
@@ -714,7 +706,7 @@ impl<
             );
         }
 
-        self.commit_pipeline_deployment(plan, plan.target_generation);
+        self.commit_pipeline_deployment(plan);
         self.clear_pipeline_serving_generations(
             &plan.pipeline_key,
             plan.current_assigned_cores
@@ -753,19 +745,8 @@ impl<
                 None,
             );
 
-            let current_placement = plan.current_placement.as_ref().ok_or_else(|| {
-                RolloutExecutionError::RollbackFailed(
-                    "internal error: resize rollback missing current placement".to_owned(),
-                )
-            })?;
             let old_key = self
-                .launch_regular_pipeline_instance(
-                    &previous.resolved,
-                    Arc::clone(&previous.context_bindings),
-                    current_placement,
-                    *core_id,
-                    previous_generation,
-                )
+                .launch_regular_pipeline_instance(previous, *core_id, previous_generation)
                 .map_err(|err| RolloutExecutionError::RollbackFailed(err.to_string()))?;
             let ready_deadline = Instant::now() + Duration::from_secs(plan.step_timeout_secs);
             self.wait_for_pipeline_ready(&old_key, ready_deadline)
@@ -880,11 +861,6 @@ impl<
                 None,
             );
 
-            let current_placement = plan.current_placement.as_ref().ok_or_else(|| {
-                RolloutExecutionError::RollbackFailed(
-                    "internal error: replace rollback missing current placement".to_owned(),
-                )
-            })?;
             let previous_generation = plan
                 .current_serving_generations
                 .get(core_id)
@@ -895,13 +871,7 @@ impl<
                     ))
                 })?;
             let old_key = self
-                .launch_regular_pipeline_instance(
-                    &previous.resolved,
-                    Arc::clone(&previous.context_bindings),
-                    current_placement,
-                    *core_id,
-                    previous_generation,
-                )
+                .launch_regular_pipeline_instance(previous, *core_id, previous_generation)
                 .map_err(|err| RolloutExecutionError::RollbackFailed(err.to_string()))?;
             let ready_deadline = Instant::now() + Duration::from_secs(plan.step_timeout_secs);
             self.wait_for_pipeline_ready(&old_key, ready_deadline)
@@ -929,11 +899,6 @@ impl<
                 None,
             );
 
-            let current_placement = plan.current_placement.as_ref().ok_or_else(|| {
-                RolloutExecutionError::RollbackFailed(
-                    "internal error: replace rollback missing current placement".to_owned(),
-                )
-            })?;
             let previous_generation = plan
                 .current_serving_generations
                 .get(core_id)
@@ -944,13 +909,7 @@ impl<
                     ))
                 })?;
             let old_key = self
-                .launch_regular_pipeline_instance(
-                    &previous.resolved,
-                    Arc::clone(&previous.context_bindings),
-                    current_placement,
-                    *core_id,
-                    previous_generation,
-                )
+                .launch_regular_pipeline_instance(previous, *core_id, previous_generation)
                 .map_err(|err| RolloutExecutionError::RollbackFailed(err.to_string()))?;
             let ready_deadline = Instant::now() + Duration::from_secs(plan.step_timeout_secs);
             self.wait_for_pipeline_ready(&old_key, ready_deadline)
@@ -960,7 +919,7 @@ impl<
                 pipeline_group_id: plan.pipeline_group_id.clone(),
                 pipeline_id: plan.pipeline_id.clone(),
                 core_id: *core_id,
-                deployment_generation: plan.target_generation,
+                deployment_generation: plan.target_deployment.create_or_replace_generation,
             };
             self.shutdown_instance(&new_key, plan.drain_timeout_secs, "rollback drain")
                 .map_err(RolloutExecutionError::RollbackFailed)?;
@@ -993,7 +952,7 @@ impl<
                 pipeline_group_id: plan.pipeline_group_id.clone(),
                 pipeline_id: plan.pipeline_id.clone(),
                 core_id: *core_id,
-                deployment_generation: plan.target_generation,
+                deployment_generation: plan.target_deployment.create_or_replace_generation,
             };
             self.shutdown_instance(&new_key, plan.drain_timeout_secs, "rollback cleanup")
                 .map_err(RolloutExecutionError::RollbackFailed)?;
