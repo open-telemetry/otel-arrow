@@ -9,7 +9,7 @@
 
 use crate::event::{LogEvent, ObservedEventReporter};
 use crate::log_filter::RuntimeLogFilter;
-use crate::self_tracing::{ConsoleWriter, LogContextFn, LogRecord};
+use crate::self_tracing::{ConsoleWriter, LogContextFn, LogRecord, StackLogRecord};
 use otel_arrow_dfe_config::settings::telemetry::logs::LogLevel;
 use std::cell::RefCell;
 use std::sync::OnceLock;
@@ -156,25 +156,23 @@ fn current_log_pipeline() -> Option<LogPipeline> {
         .or_else(|| GLOBAL_LOG_PIPELINE.get().cloned())
 }
 
-/// Captures an ordinary event using the active dispatch's original filter
-/// decision, context function, and canonical [`LogRecord`] encoding.
-///
-/// The returned record has not yet been delivered to any subscriber sink.
+/// Applies the active tracing filter and entity context to a record constructed
+/// directly at its ordinary callsite.
 #[doc(hidden)]
 #[must_use]
-pub fn capture_current_event(event: &Event<'_>) -> Option<LogRecord> {
-    let enabled = tracing::dispatcher::get_default(|dispatch| dispatch.enabled(event.metadata()));
+pub fn capture_current_record(record: StackLogRecord) -> Option<LogRecord> {
+    let enabled = tracing::dispatcher::get_default(|dispatch| dispatch.enabled(record.metadata()));
     if !enabled {
         return None;
     }
     let Some(pipeline) = current_log_pipeline() else {
         crate::raw_error!(
             "diagnostic.capture.missing_pipeline",
-            event_name = event.metadata().name()
+            event_name = record.metadata().name()
         );
         return None;
     };
-    Some(pipeline.capture(event))
+    Some(record.into_record((pipeline.context_fn)()))
 }
 
 /// Delivers an already accepted [`LogRecord`] through the same sink as an
@@ -437,10 +435,11 @@ mod tests {
                 let mut tracker = DiagnosticTracker::default();
                 let report = tracker
                     .failure(Instant::now(), DiagnosticErrorKind::Transport, || {
-                        crate::otel_diagnostic_warn!(
+                        capture_current_record(crate::__log_record_impl!(
+                            crate::Level::WARN,
                             "test.diagnostic.warning",
                             message = "diagnostic"
-                        )
+                        ))
                     })
                     .expect("enabled first failure should produce a report");
                 crate::otel_diagnostic_report!(
@@ -479,10 +478,11 @@ mod tests {
                 assert!(
                     tracker
                         .failure(start, DiagnosticErrorKind::Transport, || {
-                            crate::otel_diagnostic_warn!(
+                            capture_current_record(crate::__log_record_impl!(
+                                crate::Level::WARN,
                                 "test.diagnostic.filtered",
                                 message = "disabled"
-                            )
+                            ))
                         })
                         .is_none()
                 );
@@ -494,10 +494,11 @@ mod tests {
                         start + std::time::Duration::from_secs(1),
                         DiagnosticErrorKind::Transport,
                         || {
-                            crate::otel_diagnostic_warn!(
+                            capture_current_record(crate::__log_record_impl!(
+                                crate::Level::WARN,
                                 "test.diagnostic.filtered",
                                 message = "accepted"
-                            )
+                            ))
                         },
                     )
                     .expect("enabled occurrence should produce the first report");

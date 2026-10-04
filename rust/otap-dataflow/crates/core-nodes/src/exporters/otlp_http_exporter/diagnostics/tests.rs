@@ -26,6 +26,7 @@ use otel_arrow_dfe_telemetry::event::{LogEvent, ObservedEvent, ObservedEventRepo
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use otel_arrow_dfe_telemetry::self_tracing::LogContext;
 use otel_arrow_dfe_telemetry::tracing_init::{ProviderSetup, TracingSetup};
+use otel_arrow_dfe_telemetry::{__log_record_impl, tracing_init::capture_current_record};
 use serde_json::{Map, Value, json};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -34,7 +35,12 @@ use tracing::field::{Field, Visit};
 
 /// Build a test detail `LogRecord` whose body is `message`.
 fn detail(message: &str) -> Option<LogRecord> {
-    otel_diagnostic_warn!("test.diagnostic.detail", message = message)
+    capture_current_record(__log_record_impl!(
+        target: "otel.exporter.otlp_http",
+        Level::WARN,
+        "test.diagnostic.detail",
+        message = message
+    ))
 }
 
 #[derive(Debug)]
@@ -134,7 +140,7 @@ impl CapturedEvent {
     }
 
     /// Like [`Self::assert_fast_path_contract`], but for production call
-    /// sites whose retained detail was captured by `otel_diagnostic_warn!`
+    /// sites whose retained detail was constructed directly at the callsite,
     /// under its ordinary component event name,
     /// rather than the shared test `detail()` helper's fixed identity.
     fn assert_fast_path_contract_named(&self, name: &str, kind: &str) {

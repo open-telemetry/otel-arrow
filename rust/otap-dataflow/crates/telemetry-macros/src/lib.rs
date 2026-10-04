@@ -127,16 +127,6 @@ pub fn otel_component_scope(input: TokenStream) -> TokenStream {
             };
         }
 
-        #[allow(unused_macros)]
-        macro_rules! otel_diagnostic_warn {
-            ($($tokens:tt)*) => {
-                #telemetry::otel_diagnostic_warn!(
-                    target: #target,
-                    $($tokens)*
-                )
-            };
-        }
-
     }
     .into()
 }

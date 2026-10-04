@@ -58,6 +58,8 @@ use otel_arrow_dfe_pdata::proto::opentelemetry::collector::trace::v1::{
 };
 use otel_arrow_dfe_pdata::{OtapPayload, OtapPayloadHelpers, PayloadData};
 use otel_arrow_dfe_telemetry::diagnostics::DiagnosticErrorKind;
+use otel_arrow_dfe_telemetry::tracing_init::capture_current_record;
+use otel_arrow_dfe_telemetry::{__log_record_impl, Level};
 use prost::Message as _;
 use reqwest::{Client, Response};
 use secrecy::ExposeSecret;
@@ -563,10 +565,12 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                                         Instant::now(),
                                         error_type,
                                         || {
-                                            otel_diagnostic_warn!(
+                                            capture_current_record(__log_record_impl!(
+                                                target: "otel.exporter.otlp_http",
+                                                Level::WARN,
                                                 "otlp.exporter.http.preparation_error",
                                                 message = %error
-                                            )
+                                            ))
                                         },
                                     ),
                                     signal_type,
@@ -621,10 +625,12 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                                         Instant::now(),
                                         error_type,
                                         || {
-                                            otel_diagnostic_warn!(
+                                            capture_current_record(__log_record_impl!(
+                                                target: "otel.exporter.otlp_http",
+                                                Level::WARN,
                                                 "otlp.exporter.http.preparation_error",
                                                 message = %error
-                                            )
+                                            ))
                                         },
                                     ),
                                     signal_type,
@@ -1097,10 +1103,12 @@ async fn finalize_completed_export(
     let report = match &result {
         Ok(()) => delivery_diagnostic.success(diagnostic_started_at, now),
         Err(error) => delivery_diagnostic.failure(now, error.error_type(), retryable, || {
-            otel_diagnostic_warn!(
+            capture_current_record(__log_record_impl!(
+                target: "otel.exporter.otlp_http",
+                Level::WARN,
                 "otlp.exporter.http.export_error",
                 message = %error
-            )
+            ))
         }),
     };
     // Emit immediately while the selected report and retained retryability sample
@@ -1131,10 +1139,12 @@ async fn finalize_completed_export(
                         Instant::now(),
                         DiagnosticErrorKind::Notification,
                         || {
-                            otel_diagnostic_warn!(
+                            capture_current_record(__log_record_impl!(
+                                target: "otel.exporter.otlp_http",
+                                Level::WARN,
                                 "otlp.exporter.http.notification_error",
                                 message = %error
-                            )
+                            ))
                         },
                     ),
                     signal_type,
@@ -1172,10 +1182,12 @@ async fn notify_nack_with_diagnostics(
                 Instant::now(),
                 DiagnosticErrorKind::Notification,
                 || {
-                    otel_diagnostic_warn!(
+                    capture_current_record(__log_record_impl!(
+                        target: "otel.exporter.otlp_http",
+                        Level::WARN,
                         "otlp.exporter.http.notification_error",
                         message = %error
-                    )
+                    ))
                 },
             ),
             signal_type,
@@ -3268,10 +3280,12 @@ mod test {
                         OtlpHttpExporterErrorType::PartialRejection,
                         false,
                         || {
-                            otel_diagnostic_warn!(
+                            capture_current_record(__log_record_impl!(
+                                target: "otel.exporter.otlp_http",
+                                Level::WARN,
                                 "test.diagnostic.detail",
                                 message = "test summary"
-                            )
+                            ))
                         },
                     )
                 })
@@ -3374,7 +3388,14 @@ mod test {
                 metrics.notifications.signal(SignalType::Logs).failure(
                     later,
                     DiagnosticErrorKind::Notification,
-                    || otel_diagnostic_warn!("test.diagnostic.detail", message = "still closed"),
+                    || {
+                        capture_current_record(__log_record_impl!(
+                            target: "otel.exporter.otlp_http",
+                            Level::WARN,
+                            "test.diagnostic.detail",
+                            message = "still closed"
+                        ))
+                    },
                 )
             })
             .unwrap();

@@ -119,10 +119,13 @@ fn priority_detail_survives_bounded_its_encoding() {
         let report = tracker
             .failure(Instant::now(), DiagnosticErrorKind::Transport, || {
                 let text = format!("root cause: {}", "x".repeat(4_000));
-                otel_arrow_dfe_telemetry::otel_diagnostic_warn!(
-                    target: "otel.exporter.test",
-                    "test.export_error",
-                    message = %text
+                otel_arrow_dfe_telemetry::tracing_init::capture_current_record(
+                    otel_arrow_dfe_telemetry::__log_record_impl!(
+                        target: "otel.exporter.test",
+                        Level::WARN,
+                        "test.export_error",
+                        message = %text
+                    ),
                 )
             })
             .expect("first failure must produce a report");

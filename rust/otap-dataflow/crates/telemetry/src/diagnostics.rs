@@ -330,44 +330,6 @@ impl<T> SignalSet<T> {
 /// directly. This alias adds a fixed set of scopes without dynamic keys.
 pub type SignalDiagnostics<E> = SignalSet<DiagnosticTracker<E>>;
 
-/// Capture an ordinary WARN record at the true failure callsite, for use as a
-/// [`DiagnosticTracker::failure`] `detail` closure's return value.
-///
-/// This uses the active tracing dispatch's normal filtering decision, entity
-/// context, callsite metadata, and `LogRecord` encoding. It differs from
-/// [`crate::otel_warn!`] only in withholding delivery so the diagnostic
-/// tracker can apply suppression and summary policy first.
-#[macro_export]
-macro_rules! otel_diagnostic_warn {
-    (target: $target:expr, $name:literal $(, $($fields:tt)*)?) => {{
-        use $crate::_private::Callsite;
-
-        const _: () = $crate::_private::validate_event_name($name);
-
-        static __CALLSITE: $crate::_private::DefaultCallsite = $crate::_private::callsite2! {
-            name: $name,
-            kind: $crate::_private::Kind::EVENT,
-            target: $target,
-            level: $crate::_private::Level::WARN,
-            fields: $($($fields)*)?
-        };
-
-        let meta = __CALLSITE.metadata();
-
-        (|valueset: $crate::_private::ValueSet<'_>| {
-            let event = $crate::_private::Event::new(meta, &valueset);
-            $crate::tracing_init::capture_current_event(&event)
-        })($crate::_private::valueset!(meta.fields(), $($($fields)*)?))
-    }};
-    ($name:literal $(, $($fields:tt)*)?) => {{
-        $crate::otel_diagnostic_warn!(
-            target: env!("CARGO_PKG_NAME"),
-            $name
-            $(, $($fields)*)?
-        )
-    }};
-}
-
 /// Splice additional pre-encoded attributes onto a copy of `detail`'s body and
 /// attribute bytes, keeping `detail`'s own callsite (so the re-delivered
 /// record still identifies the true failure site's name/level/file/line).
@@ -457,7 +419,7 @@ macro_rules! otel_diagnostic_report {
 
         // The IIFE keeps `valueset!`'s field temporaries (e.g. `f64`/`Counts`
         // by-reference values) alive across `Event::new` and the emit call,
-        // matching the pattern `otel_diagnostic_warn!` uses for the same
+        // matching the pattern the tracing event macros use for the same
         // reason: a separate `let valueset = ...;` statement would drop them
         // too early.
         (|valueset: $crate::_private::ValueSet<'_>| {
@@ -746,10 +708,11 @@ mod tests {
             let start = Instant::now();
             let first = tracker
                 .failure(start, DiagnosticErrorKind::Transport, || {
-                    otel_diagnostic_warn!(
+                    crate::tracing_init::capture_current_record(crate::__log_record_impl!(
+                        crate::Level::WARN,
                         "test.diagnostic.detail",
                         message = "connection reset by peer"
-                    )
+                    ))
                 })
                 .unwrap();
             otel_diagnostic_report!(
@@ -760,7 +723,11 @@ mod tests {
             let later = start + SUMMARY_INTERVAL;
             let summary = tracker
                 .failure(later, DiagnosticErrorKind::Transport, || {
-                    otel_diagnostic_warn!("test.diagnostic.detail", message = "unreachable")
+                    crate::tracing_init::capture_current_record(crate::__log_record_impl!(
+                        crate::Level::WARN,
+                        "test.diagnostic.detail",
+                        message = "unreachable"
+                    ))
                 })
                 .unwrap();
             otel_diagnostic_report!(
