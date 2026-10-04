@@ -676,6 +676,8 @@ impl TryFrom<OtlpProtoMessage> for OtapPayload {
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::otlp::common::EncodeFailure;
+    use crate::proto::consts::field_num::metrics::METRIC_SUMMARY;
     use crate::testing::fixtures::logs_with_full_resource_and_scope;
     use crate::{
         otap::OtapArrowRecords,
@@ -705,6 +707,14 @@ mod test {
     use pretty_assertions::assert_eq;
     use prost::Message;
     use std::mem::size_of;
+
+    use crate::{
+        otlp::{BoundedBuf, ProtoBuffer},
+        proto::consts::field_num::metrics::{
+            METRIC_GAUGE, METRIC_NAME, METRIC_SUM, METRIC_UNIT, METRICS_DATA_RESOURCE_METRICS,
+            RESOURCE_METRICS_SCOPE_METRICS, SCOPE_METRICS_METRICS,
+        },
+    };
 
     /// Scenario: The legacy payload representation is built for a 64-bit target.
     /// Guarantees: The baseline payload layout remains fixed for codec comparisons.
@@ -1752,5 +1762,147 @@ mod test {
         let otlp_bytes = OtlpProtoBytes::ExportMetricsRequest(Bytes::from(buf));
 
         assert_eq!(otlp_bytes.num_items(), 11);
+    }
+
+    fn proto_encode_sum(proto: &mut ProtoBuffer) -> Result<(), EncodeFailure> {
+        proto.encode_len_delimited(METRIC_SUM, |proto| {
+            let data = Sum {
+                data_points: vec![NumberDataPoint {
+                    value: Some(Value::AsInt(255)),
+                    attributes: vec![],
+                    exemplars: vec![],
+                    start_time_unix_nano: 0,
+                    time_unix_nano: 0,
+                    flags: 0,
+                }],
+                aggregation_temporality: 0,
+                is_monotonic: false,
+            };
+            let mut bytes_data = Vec::new();
+            data.encode(&mut bytes_data).unwrap();
+            proto.extend_from_slice(&bytes_data)
+        })
+    }
+
+    fn proto_encode_gauge(proto: &mut ProtoBuffer) -> Result<(), EncodeFailure> {
+        proto.encode_len_delimited(METRIC_GAUGE, |proto| {
+            let data = Gauge {
+                data_points: vec![
+                    NumberDataPoint {
+                        value: Some(Value::AsInt(12)),
+                        attributes: vec![],
+                        exemplars: vec![],
+                        start_time_unix_nano: 0,
+                        time_unix_nano: 0,
+                        flags: 0,
+                    },
+                    NumberDataPoint {
+                        value: Some(Value::AsInt(10)),
+                        attributes: vec![],
+                        exemplars: vec![],
+                        start_time_unix_nano: 0,
+                        time_unix_nano: 0,
+                        flags: 0,
+                    },
+                    NumberDataPoint {
+                        value: Some(Value::AsInt(15)),
+                        attributes: vec![],
+                        exemplars: vec![],
+                        start_time_unix_nano: 0,
+                        time_unix_nano: 0,
+                        flags: 0,
+                    },
+                    NumberDataPoint {
+                        value: Some(Value::AsInt(14)),
+                        attributes: vec![],
+                        exemplars: vec![],
+                        start_time_unix_nano: 0,
+                        time_unix_nano: 0,
+                        flags: 0,
+                    },
+                ],
+            };
+            let mut bytes_data = Vec::new();
+            data.encode(&mut bytes_data).unwrap();
+            proto.extend_from_slice(&bytes_data)
+        })
+    }
+
+    fn proto_encode_summary(proto: &mut ProtoBuffer) -> Result<(), EncodeFailure> {
+        proto.encode_len_delimited(METRIC_SUMMARY, |proto| {
+            let data = Summary {
+                data_points: vec![
+                    SummaryDataPoint {
+                        count: 9,
+                        sum: 33.0,
+                        quantile_values: vec![],
+                        attributes: vec![],
+                        start_time_unix_nano: 0,
+                        time_unix_nano: 0,
+                        flags: 0,
+                    },
+                    SummaryDataPoint {
+                        count: 9,
+                        sum: 33.0,
+                        quantile_values: vec![],
+                        attributes: vec![],
+                        start_time_unix_nano: 0,
+                        time_unix_nano: 0,
+                        flags: 0,
+                    },
+                ],
+            };
+            let mut bytes_data = Vec::new();
+            data.encode(&mut bytes_data).unwrap();
+            proto.extend_from_slice(&bytes_data)
+        })
+    }
+
+    /// Scenario: Ill-formed metrics encode several ordered combinations of oneof fields.
+    /// Guarantees: Standard decoding and byte-backed item counting use each case's final field.
+    #[test]
+    #[ignore = "Enabled in #4114 once num_items() has the correct behavior"]
+    fn ill_formed_metric_uses_last_oneof_field() {
+        let specs: [(fn(&mut ProtoBuffer) -> Result<(), EncodeFailure>, usize); 3] = [
+            (
+                |proto| {
+                    proto_encode_sum(proto)?;
+                    proto_encode_gauge(proto)
+                },
+                4,
+            ),
+            (
+                |proto| {
+                    proto_encode_gauge(proto)?;
+                    proto_encode_sum(proto)
+                },
+                1,
+            ),
+            (
+                |proto| {
+                    proto_encode_sum(proto)?;
+                    proto_encode_gauge(proto)?;
+                    proto_encode_summary(proto)
+                },
+                2,
+            ),
+        ];
+
+        for (payload_fn, expected_num_items) in specs {
+            let mut proto = ProtoBuffer::default();
+            proto
+                .encode_len_delimited(METRICS_DATA_RESOURCE_METRICS, |proto| {
+                    proto.encode_len_delimited(RESOURCE_METRICS_SCOPE_METRICS, |proto| {
+                        proto.encode_len_delimited(SCOPE_METRICS_METRICS, |proto| {
+                            proto.encode_string(METRIC_NAME, "metric1")?;
+                            proto.encode_string(METRIC_UNIT, "centimeters")?;
+                            payload_fn(proto)
+                        })
+                    })
+                })
+                .unwrap();
+            let parsed_bytes = OtlpProtoBytes::ExportMetricsRequest(proto.into_bytes());
+            assert_eq!(parsed_bytes.num_items(), expected_num_items);
+        }
     }
 }
