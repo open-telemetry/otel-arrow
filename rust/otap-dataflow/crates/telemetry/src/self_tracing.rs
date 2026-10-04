@@ -171,6 +171,12 @@ impl StackLogRecord {
         }
     }
 
+    /// Return the static metadata for this record's callsite.
+    #[must_use]
+    pub fn metadata(&self) -> &'static Metadata<'static> {
+        self.callsite_id.0.metadata()
+    }
+
     /// Convert into an owned [`LogRecord`], allocating `Bytes`.
     #[must_use]
     pub fn into_record(self, context: LogContext) -> LogRecord {
