@@ -1992,14 +1992,31 @@ mod test {
     /// Guarantees: Standard decoding and byte-backed item counting use each case's final field.
     #[test]
     fn ill_formed_metric_uses_last_oneof_field() {
-        let specs: [(fn(&mut ProtoBuffer) -> Result<(), EncodeFailure>, usize); 1] = [(
-            |proto| {
-                proto_encode_sum(proto)?;
-                proto_encode_summary(proto)?;
-                proto_encode_gauge(proto)
-            },
-            4,
-        )];
+        let specs: [(fn(&mut ProtoBuffer) -> Result<(), EncodeFailure>, usize); 3] = [
+            (
+                |proto| {
+                    proto_encode_sum(proto)?;
+                    proto_encode_summary(proto)?;
+                    proto_encode_gauge(proto)
+                },
+                4,
+            ),
+            (
+                |proto| {
+                    proto_encode_gauge(proto)?;
+                    proto_encode_sum(proto)
+                },
+                1,
+            ),
+            (
+                |proto| {
+                    proto_encode_sum(proto)?;
+                    proto_encode_gauge(proto)?;
+                    proto_encode_summary(proto)
+                },
+                2,
+            ),
+        ];
 
         for (payload_fn, expected_num_items) in specs {
             let mut proto = ProtoBuffer::default();
