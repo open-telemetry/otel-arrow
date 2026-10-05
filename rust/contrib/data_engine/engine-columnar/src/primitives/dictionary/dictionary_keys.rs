@@ -1,16 +1,14 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use std::sync::Arc;
-
 use arrow::{array::*, buffer::NullBuffer, datatypes::*};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum DictionaryKeyArray {
-    KeyArray(Arc<dyn Array>),
+    KeyArray(DictionaryArrowKeyArray),
     BooleanArray {
         data_type: DataType,
-        values: Arc<dyn Array>,
+        values: BooleanArray,
     },
     UniqueValues {
         data_type: DataType,
@@ -83,7 +81,7 @@ impl DictionaryKeyArray {
 
     pub fn nulls(&self) -> Option<NullBuffer> {
         match self {
-            DictionaryKeyArray::KeyArray(array) => array.nulls().cloned(),
+            DictionaryKeyArray::KeyArray(array) => array.nulls(),
             DictionaryKeyArray::BooleanArray {
                 data_type: _,
                 values,
@@ -108,7 +106,7 @@ impl DictionaryKeyArray {
 
     pub fn data_type(&self) -> DataType {
         match self {
-            DictionaryKeyArray::KeyArray(a) => a.data_type().clone(),
+            DictionaryKeyArray::KeyArray(a) => a.data_type(),
             DictionaryKeyArray::BooleanArray {
                 data_type,
                 values: _,
@@ -127,11 +125,11 @@ impl DictionaryKeyArray {
 
     pub fn get_value_index_for_key_index(&self, index: usize) -> Option<usize> {
         match self {
-            DictionaryKeyArray::KeyArray(a) => get_key_array_value_index_for_key_index(a, index),
+            DictionaryKeyArray::KeyArray(a) => a.get_value_index_for_key_index(index),
             DictionaryKeyArray::BooleanArray {
                 data_type: _,
                 values,
-            } => get_bool_array_value_index_for_key_index(values.as_boolean(), index),
+            } => get_bool_array_value_index_for_key_index(values, index),
             DictionaryKeyArray::UniqueValues {
                 data_type: _,
                 length,
@@ -174,89 +172,158 @@ impl DictionaryKeyArray {
     }
 }
 
-impl<T: ArrowDictionaryKeyType> From<PrimitiveArray<T>> for DictionaryKeyArray {
-    fn from(value: PrimitiveArray<T>) -> DictionaryKeyArray {
-        DictionaryKeyArray::KeyArray(Arc::new(value))
-    }
+#[derive(Debug, Clone, PartialEq)]
+pub enum DictionaryArrowKeyArray {
+    Int8(PrimitiveArray<Int8Type>),
+    Int16(PrimitiveArray<Int16Type>),
+    Int32(PrimitiveArray<Int32Type>),
+    Int64(PrimitiveArray<Int64Type>),
+
+    UInt8(PrimitiveArray<UInt8Type>),
+    UInt16(PrimitiveArray<UInt16Type>),
+    UInt32(PrimitiveArray<UInt32Type>),
+    UInt64(PrimitiveArray<UInt64Type>),
 }
 
-impl From<&dyn Array> for DictionaryKeyArray {
-    fn from(value: &dyn Array) -> DictionaryKeyArray {
-        DictionaryKeyArray::KeyArray(value.slice(0, value.len()))
-    }
-}
-
-impl<'a, T: ArrowDictionaryKeyType> From<&'a PrimitiveArray<T>> for DictionaryKeyArray {
-    fn from(value: &'a PrimitiveArray<T>) -> DictionaryKeyArray {
-        DictionaryKeyArray::KeyArray((value as &dyn Array).slice(0, value.len()))
-    }
-}
-
-fn get_key_array_value_index_for_key_index(array: &dyn Array, key_index: usize) -> Option<usize> {
-    if key_index >= array.len() || array.is_null(key_index) {
-        return None;
+impl DictionaryArrowKeyArray {
+    pub fn len(&self) -> usize {
+        match self {
+            DictionaryArrowKeyArray::Int8(a) => a.len(),
+            DictionaryArrowKeyArray::Int16(a) => a.len(),
+            DictionaryArrowKeyArray::Int32(a) => a.len(),
+            DictionaryArrowKeyArray::Int64(a) => a.len(),
+            DictionaryArrowKeyArray::UInt8(a) => a.len(),
+            DictionaryArrowKeyArray::UInt16(a) => a.len(),
+            DictionaryArrowKeyArray::UInt32(a) => a.len(),
+            DictionaryArrowKeyArray::UInt64(a) => a.len(),
+        }
     }
 
-    unsafe {
-        Some(match array.data_type() {
-            DataType::Int8 => array
-                .as_any()
-                .downcast_ref::<PrimitiveArray<Int8Type>>()
-                .unwrap()
-                .value_unchecked(key_index) as usize,
-            DataType::Int16 => array
-                .as_any()
-                .downcast_ref::<PrimitiveArray<Int16Type>>()
-                .unwrap()
-                .value_unchecked(key_index) as usize,
-            DataType::Int32 => array
-                .as_any()
-                .downcast_ref::<PrimitiveArray<Int32Type>>()
-                .unwrap()
-                .value_unchecked(key_index) as usize,
-            DataType::Int64 => array
-                .as_any()
-                .downcast_ref::<PrimitiveArray<Int64Type>>()
-                .unwrap()
-                .value_unchecked(key_index) as usize,
+    pub fn is_empty(&self) -> bool {
+        match self {
+            DictionaryArrowKeyArray::Int8(a) => a.is_empty(),
+            DictionaryArrowKeyArray::Int16(a) => a.is_empty(),
+            DictionaryArrowKeyArray::Int32(a) => a.is_empty(),
+            DictionaryArrowKeyArray::Int64(a) => a.is_empty(),
+            DictionaryArrowKeyArray::UInt8(a) => a.is_empty(),
+            DictionaryArrowKeyArray::UInt16(a) => a.is_empty(),
+            DictionaryArrowKeyArray::UInt32(a) => a.is_empty(),
+            DictionaryArrowKeyArray::UInt64(a) => a.is_empty(),
+        }
+    }
 
-            DataType::UInt8 => array
-                .as_any()
-                .downcast_ref::<PrimitiveArray<UInt8Type>>()
-                .unwrap()
-                .value_unchecked(key_index) as usize,
-            DataType::UInt16 => array
-                .as_any()
-                .downcast_ref::<PrimitiveArray<UInt16Type>>()
-                .unwrap()
-                .value_unchecked(key_index) as usize,
-            DataType::UInt32 => array
-                .as_any()
-                .downcast_ref::<PrimitiveArray<UInt32Type>>()
-                .unwrap()
-                .value_unchecked(key_index) as usize,
-            DataType::UInt64 => array
-                .as_any()
-                .downcast_ref::<PrimitiveArray<UInt64Type>>()
-                .unwrap()
-                .value_unchecked(key_index) as usize,
+    pub fn is_null(&self, key_index: usize) -> bool {
+        match self {
+            DictionaryArrowKeyArray::Int8(a) => a.is_null(key_index),
+            DictionaryArrowKeyArray::Int16(a) => a.is_null(key_index),
+            DictionaryArrowKeyArray::Int32(a) => a.is_null(key_index),
+            DictionaryArrowKeyArray::Int64(a) => a.is_null(key_index),
+            DictionaryArrowKeyArray::UInt8(a) => a.is_null(key_index),
+            DictionaryArrowKeyArray::UInt16(a) => a.is_null(key_index),
+            DictionaryArrowKeyArray::UInt32(a) => a.is_null(key_index),
+            DictionaryArrowKeyArray::UInt64(a) => a.is_null(key_index),
+        }
+    }
 
-            d => panic!("Key type '{d}' is not supported"),
+    pub fn null_count(&self) -> usize {
+        match self {
+            DictionaryArrowKeyArray::Int8(a) => a.null_count(),
+            DictionaryArrowKeyArray::Int16(a) => a.null_count(),
+            DictionaryArrowKeyArray::Int32(a) => a.null_count(),
+            DictionaryArrowKeyArray::Int64(a) => a.null_count(),
+            DictionaryArrowKeyArray::UInt8(a) => a.null_count(),
+            DictionaryArrowKeyArray::UInt16(a) => a.null_count(),
+            DictionaryArrowKeyArray::UInt32(a) => a.null_count(),
+            DictionaryArrowKeyArray::UInt64(a) => a.null_count(),
+        }
+    }
+
+    pub fn nulls(&self) -> Option<NullBuffer> {
+        (match self {
+            DictionaryArrowKeyArray::Int8(a) => a.nulls(),
+            DictionaryArrowKeyArray::Int16(a) => a.nulls(),
+            DictionaryArrowKeyArray::Int32(a) => a.nulls(),
+            DictionaryArrowKeyArray::Int64(a) => a.nulls(),
+            DictionaryArrowKeyArray::UInt8(a) => a.nulls(),
+            DictionaryArrowKeyArray::UInt16(a) => a.nulls(),
+            DictionaryArrowKeyArray::UInt32(a) => a.nulls(),
+            DictionaryArrowKeyArray::UInt64(a) => a.nulls(),
         })
+        .cloned()
+    }
+
+    pub fn data_type(&self) -> DataType {
+        match self {
+            DictionaryArrowKeyArray::Int8(_) => DataType::Int8,
+            DictionaryArrowKeyArray::Int16(_) => DataType::Int16,
+            DictionaryArrowKeyArray::Int32(_) => DataType::Int32,
+            DictionaryArrowKeyArray::Int64(_) => DataType::Int64,
+            DictionaryArrowKeyArray::UInt8(_) => DataType::UInt8,
+            DictionaryArrowKeyArray::UInt16(_) => DataType::UInt16,
+            DictionaryArrowKeyArray::UInt32(_) => DataType::UInt32,
+            DictionaryArrowKeyArray::UInt64(_) => DataType::UInt64,
+        }
+    }
+
+    fn get_value_index_for_key_index(&self, key_index: usize) -> Option<usize> {
+        if key_index >= self.len() || self.is_null(key_index) {
+            return None;
+        }
+
+        unsafe {
+            Some(match self {
+                DictionaryArrowKeyArray::Int8(array) => array.value_unchecked(key_index) as usize,
+                DictionaryArrowKeyArray::Int16(array) => array.value_unchecked(key_index) as usize,
+                DictionaryArrowKeyArray::Int32(array) => array.value_unchecked(key_index) as usize,
+                DictionaryArrowKeyArray::Int64(array) => array.value_unchecked(key_index) as usize,
+
+                DictionaryArrowKeyArray::UInt8(array) => array.value_unchecked(key_index) as usize,
+                DictionaryArrowKeyArray::UInt16(array) => array.value_unchecked(key_index) as usize,
+                DictionaryArrowKeyArray::UInt32(array) => array.value_unchecked(key_index) as usize,
+                DictionaryArrowKeyArray::UInt64(array) => array.value_unchecked(key_index) as usize,
+            })
+        }
     }
 }
+
+macro_rules! impl_from_key_array {
+    ($arrow_ty:ty, $variant:ident) => {
+        impl From<PrimitiveArray<$arrow_ty>> for DictionaryArrowKeyArray {
+            fn from(value: PrimitiveArray<$arrow_ty>) -> Self {
+                DictionaryArrowKeyArray::$variant(value)
+            }
+        }
+
+        impl From<PrimitiveArray<$arrow_ty>> for DictionaryKeyArray {
+            fn from(value: PrimitiveArray<$arrow_ty>) -> DictionaryKeyArray {
+                DictionaryKeyArray::KeyArray(DictionaryArrowKeyArray::$variant(value))
+            }
+        }
+
+        impl<'a> From<&'a PrimitiveArray<$arrow_ty>> for DictionaryKeyArray {
+            fn from(value: &'a PrimitiveArray<$arrow_ty>) -> DictionaryKeyArray {
+                DictionaryKeyArray::KeyArray(DictionaryArrowKeyArray::$variant(value.clone()))
+            }
+        }
+    };
+}
+
+impl_from_key_array!(Int8Type, Int8);
+impl_from_key_array!(Int16Type, Int16);
+impl_from_key_array!(Int32Type, Int32);
+impl_from_key_array!(Int64Type, Int64);
+impl_from_key_array!(UInt8Type, UInt8);
+impl_from_key_array!(UInt16Type, UInt16);
+impl_from_key_array!(UInt32Type, UInt32);
+impl_from_key_array!(UInt64Type, UInt64);
 
 fn get_bool_array_value_index_for_key_index(
     array: &BooleanArray,
     key_index: usize,
 ) -> Option<usize> {
-    if key_index >= array.len() || array.is_null(key_index) {
-        return None;
-    }
-    Some(match unsafe { array.value_unchecked(key_index) } {
-        true => 1,
-        false => 0,
-    })
+    (key_index < array.len() && !array.is_null(key_index))
+        .then(|| unsafe { array.value_unchecked(key_index) })
+        .map(|b| b as usize)
 }
 
 #[cfg(test)]
@@ -274,7 +341,7 @@ mod tests {
 
         let boolean = DictionaryKeyArray::BooleanArray {
             data_type: DataType::Int8,
-            values: Arc::new(BooleanArray::from(vec![Some(false), Some(true), None])),
+            values: BooleanArray::from(vec![Some(false), Some(true), None]),
         };
         assert_eq!(boolean.get_value_index_for_key_index(0), Some(0));
         assert_eq!(boolean.get_value_index_for_key_index(1), Some(1));

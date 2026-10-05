@@ -214,26 +214,39 @@ impl<'a> Dictionary<'a> {
     }
 }
 
-impl<'a, T: ArrowDictionaryKeyType> From<&DictionaryArray<T>> for Dictionary<'a> {
-    fn from(value: &DictionaryArray<T>) -> Self {
-        Dictionary {
-            keys: value.keys().into(),
-            values: (value.values() as &dyn Array).into(),
+macro_rules! impl_from_dictionary_array {
+    ($arrow_ty:ty, $variant:ident) => {
+        impl<'a> From<&DictionaryArray<$arrow_ty>> for Dictionary<'a> {
+            fn from(value: &DictionaryArray<$arrow_ty>) -> Self {
+                Dictionary {
+                    keys: value.keys().into(),
+                    values: (value.values() as &dyn Array).into(),
+                }
+            }
         }
-    }
+
+        impl<'a, 'b, V> From<TypedDictionaryArray<'b, $arrow_ty, V>> for Dictionary<'a>
+        where
+            DictionaryValueArray<'a>: From<&'b V>,
+        {
+            fn from(value: TypedDictionaryArray<'b, $arrow_ty, V>) -> Self {
+                Dictionary {
+                    keys: value.keys().into(),
+                    values: value.values().into(),
+                }
+            }
+        }
+    };
 }
 
-impl<'a, 'b, K: ArrowDictionaryKeyType, V> From<TypedDictionaryArray<'b, K, V>> for Dictionary<'a>
-where
-    DictionaryValueArray<'a>: From<&'b V>,
-{
-    fn from(value: TypedDictionaryArray<'b, K, V>) -> Self {
-        Dictionary {
-            keys: value.keys().into(),
-            values: value.values().into(),
-        }
-    }
-}
+impl_from_dictionary_array!(Int8Type, Int8);
+impl_from_dictionary_array!(Int16Type, Int16);
+impl_from_dictionary_array!(Int32Type, Int32);
+impl_from_dictionary_array!(Int64Type, Int64);
+impl_from_dictionary_array!(UInt8Type, UInt8);
+impl_from_dictionary_array!(UInt16Type, UInt16);
+impl_from_dictionary_array!(UInt32Type, UInt32);
+impl_from_dictionary_array!(UInt64Type, UInt64);
 
 #[cfg(test)]
 mod tests {
