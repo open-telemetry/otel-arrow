@@ -44,9 +44,7 @@ use std::sync::Arc;
 /// URN for the topic exporter.
 pub const TOPIC_EXPORTER_URN: &str = "urn:otel:exporter:topic";
 
-use otel_arrow_dfe_telemetry::metrics::{
-    MeasurementMetricSet, MetricSetSnapshot,
-};
+use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSetSnapshot};
 use otel_arrow_dfe_telemetry_macros::{AttributeEnum, attribute_set};
 
 // -- Drop reason attributes ---------------------------------------------------
@@ -722,7 +720,10 @@ impl Exporter<OtapPdata> for TopicExporter {
 
 #[cfg(test)]
 mod tests {
-    use super::{TOPIC_EXPORTER, TOPIC_EXPORTER_URN, TopicExporter};
+    use super::{
+        DropAttributes, DropReason, ResponseAttributes, ResponseType, TOPIC_EXPORTER,
+        TOPIC_EXPORTER_URN, TopicExporter, TopicExporterMetrics,
+    };
     use otel_arrow_dfe_config::node::NodeUserConfig;
     use otel_arrow_dfe_config::topic::{TopicAckPropagationMode, TopicQueueOnFullPolicy};
     use otel_arrow_dfe_engine::Interests;
@@ -1424,5 +1425,214 @@ mod tests {
                 .expect("exporter task should join");
             assert!(exporter_result.is_ok(), "exporter should stop cleanly");
         }));
+    }
+
+    fn new_test_metrics() -> TopicExporterMetrics {
+        let pipeline_ctx = create_test_pipeline_context();
+        TopicExporterMetrics::register(&pipeline_ctx, "test-topic")
+    }
+
+    /// Scenario: Drop reason enum variants and attributes are constructed.
+    /// Guarantees: Enum equality and attributes capture the right reason.
+    #[test]
+    fn test_drop_attributes() {
+        assert_eq!(DropReason::QueueFull, DropReason::QueueFull);
+        assert_eq!(DropReason::OutcomeCapacity, DropReason::OutcomeCapacity);
+        assert_ne!(DropReason::QueueFull, DropReason::OutcomeCapacity);
+
+        let attr = DropAttributes {
+            reason: DropReason::QueueFull,
+        };
+        assert_eq!(attr.reason, DropReason::QueueFull);
+    }
+
+    /// Scenario: Response type enum variants and attributes are constructed.
+    /// Guarantees: Enum equality and attributes capture the right response type.
+    #[test]
+    fn test_response_attributes() {
+        assert_eq!(ResponseType::Ack, ResponseType::Ack);
+        assert_eq!(ResponseType::Nack, ResponseType::Nack);
+        assert_eq!(ResponseType::ShutdownNack, ResponseType::ShutdownNack);
+        assert_ne!(ResponseType::Ack, ResponseType::Nack);
+
+        let attr = ResponseAttributes {
+            response_type: ResponseType::Ack,
+        };
+        assert_eq!(attr.response_type, ResponseType::Ack);
+    }
+
+    /// Scenario: Topic exporter metrics are recorded across dropped, response, and other metric sets.
+    /// Guarantees: Metrics are properly partitioned by their enum attributes.
+    #[test]
+    fn topic_exporter_metrics_are_partitioned_by_attributes() {
+        let mut metrics = new_test_metrics();
+
+        metrics
+            .dropped
+            .with(DropAttributes {
+                reason: DropReason::QueueFull,
+            })
+            .messages
+            .add(5);
+        metrics
+            .dropped
+            .with(DropAttributes {
+                reason: DropReason::OutcomeCapacity,
+            })
+            .messages
+            .add(3);
+
+        metrics
+            .responses
+            .with(ResponseAttributes {
+                response_type: ResponseType::Ack,
+            })
+            .responses
+            .add(10);
+        metrics
+            .responses
+            .with(ResponseAttributes {
+                response_type: ResponseType::Nack,
+            })
+            .responses
+            .add(2);
+        metrics
+            .responses
+            .with(ResponseAttributes {
+                response_type: ResponseType::ShutdownNack,
+            })
+            .responses
+            .add(1);
+
+        metrics.other.published_messages.add(15);
+        metrics.other.tracked_in_flight.set(4);
+        metrics.other.outcome_timeouts.add(1);
+
+        assert_eq!(
+            metrics
+                .dropped
+                .get(DropAttributes {
+                    reason: DropReason::QueueFull,
+                })
+                .messages
+                .get(),
+            5
+        );
+        assert_eq!(
+            metrics
+                .dropped
+                .get(DropAttributes {
+                    reason: DropReason::OutcomeCapacity,
+                })
+                .messages
+                .get(),
+            3
+        );
+
+        assert_eq!(
+            metrics
+                .responses
+                .get(ResponseAttributes {
+                    response_type: ResponseType::Ack,
+                })
+                .responses
+                .get(),
+            10
+        );
+        assert_eq!(
+            metrics
+                .responses
+                .get(ResponseAttributes {
+                    response_type: ResponseType::Nack,
+                })
+                .responses
+                .get(),
+            2
+        );
+        assert_eq!(
+            metrics
+                .responses
+                .get(ResponseAttributes {
+                    response_type: ResponseType::ShutdownNack,
+                })
+                .responses
+                .get(),
+            1
+        );
+
+        assert_eq!(metrics.other.published_messages.get(), 15);
+        assert_eq!(metrics.other.tracked_in_flight.get(), 4);
+        assert_eq!(metrics.other.outcome_timeouts.get(), 1);
+    }
+
+    /// Scenario: Terminal snapshots are collected from topic exporter metrics.
+    /// Guarantees: Snapshots capture the measurement attributes and clear measurement buckets on handoff.
+    #[test]
+    fn topic_exporter_terminal_snapshots_capture_and_clear() {
+        let mut metrics = new_test_metrics();
+        metrics
+            .dropped
+            .with(DropAttributes {
+                reason: DropReason::QueueFull,
+            })
+            .messages
+            .add(1);
+        metrics
+            .responses
+            .with(ResponseAttributes {
+                response_type: ResponseType::Ack,
+            })
+            .responses
+            .add(1);
+        metrics.other.published_messages.add(1);
+
+        let snapshots = metrics.terminal_snapshots();
+        assert_eq!(snapshots.len(), 3);
+
+        assert!(snapshots.iter().any(|s| {
+            s.descriptor().name == "exporter.topic.dropped"
+                && s.measurement_attribute_value("reason") == Some("queue_full")
+        }));
+        assert!(snapshots.iter().any(|s| {
+            s.descriptor().name == "exporter.topic.end_to_end_responses"
+                && s.measurement_attribute_value("response.type") == Some("ack")
+        }));
+        assert!(
+            snapshots
+                .iter()
+                .any(|s| s.descriptor().name == "exporter.topic.other")
+        );
+
+        // Measurement buckets are cleared after first snapshot collection
+        let second = metrics.terminal_snapshots();
+        assert_eq!(second.len(), 1);
+        assert_eq!(second[0].descriptor().name, "exporter.topic.other");
+    }
+
+    /// Scenario: Topic exporter metrics are reported to a reporter.
+    /// Guarantees: All metric sets are successfully handed over to the reporter.
+    #[test]
+    fn topic_exporter_report_emits_metric_sets() {
+        let mut metrics = new_test_metrics();
+        let (receiver, mut reporter) = MetricsReporter::create_new_and_receiver(16);
+
+        metrics
+            .dropped
+            .with(DropAttributes {
+                reason: DropReason::QueueFull,
+            })
+            .messages
+            .add(1);
+        metrics
+            .responses
+            .with(ResponseAttributes {
+                response_type: ResponseType::Ack,
+            })
+            .responses
+            .add(1);
+        metrics.other.published_messages.add(1);
+
+        metrics.report(&mut reporter).unwrap();
+        assert_eq!(receiver.try_iter().count(), 3);
     }
 }
