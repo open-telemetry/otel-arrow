@@ -38,9 +38,6 @@ use otel_arrow_dfe_telemetry::{otel_info, otel_warn};
 
 use crate::tls_utils::{ClientIdentityMaterial, LoadedClientTlsMaterial, load_client_tls_material};
 
-/// Reload interval used when the configuration does not specify one (5 minutes).
-const DEFAULT_RELOAD_INTERVAL: Duration = Duration::from_secs(300);
-
 /// An immutable, validated generation of client TLS material.
 ///
 /// Published atomically; readers always observe one consistent generation.
@@ -70,8 +67,8 @@ pub(crate) struct ClientTlsProvider {
     config: Option<TlsClientConfig>,
     /// Endpoint URI, used to reproduce the scheme-driven load decisions.
     endpoint_uri: String,
-    /// Interval between reload checks.
-    reload_interval: Duration,
+    /// Interval between reload checks, or `None` when reload is disabled.
+    reload_interval: Option<Duration>,
     /// Current generation. `ArcSwap` gives exporters a lock-free read on their
     /// hot path while the single reload task publishes new generations; the two
     /// run on different tasks, so shared interior mutability is required here.
@@ -95,13 +92,17 @@ impl ClientTlsProvider {
         config: Option<&TlsClientConfig>,
         endpoint_uri: &str,
     ) -> Result<Option<Self>, io::Error> {
+        let reload_interval = config.and_then(|c| c.config.reload_interval);
+        if reload_interval.is_some_and(|interval| interval.is_zero()) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "TLS configuration error: reload_interval must be greater than zero or null to disable reload",
+            ));
+        }
+
         let Some(material) = load_client_tls_material(config, endpoint_uri).await? else {
             return Ok(None);
         };
-
-        let reload_interval = config
-            .and_then(|c| c.config.reload_interval)
-            .unwrap_or(DEFAULT_RELOAD_INTERVAL);
 
         let generation = Arc::new(ClientTlsGeneration {
             number: 0,
@@ -131,7 +132,7 @@ impl ClientTlsProvider {
     }
 
     /// The effective reload interval.
-    pub(crate) fn reload_interval(&self) -> Duration {
+    pub(crate) fn reload_interval(&self) -> Option<Duration> {
         self.reload_interval
     }
 
@@ -160,9 +161,7 @@ impl ClientTlsProvider {
                         number,
                         material: candidate,
                     }));
-                    // Best-effort: a missing receiver just means no consumer is
-                    // currently waiting; the generation is still published.
-                    let _ = self.notify.send(number);
+                    let _previous_number = self.notify.send_replace(number);
                     otel_info!("tls.client_reload.updated", generation = number);
                     ReloadOutcome::Updated(number)
                 }
@@ -195,14 +194,27 @@ impl ClientTlsProvider {
     where
         C: Future<Output = ()>,
     {
+        self.run_with_poll(cancel, || self.poll_once()).await;
+    }
+
+    async fn run_with_poll<C, P, F>(&self, cancel: C, mut poll: P)
+    where
+        C: Future<Output = ()>,
+        P: FnMut() -> F,
+        F: Future<Output = ReloadOutcome>,
+    {
+        let Some(reload_interval) = self.reload_interval else {
+            return;
+        };
         tokio::pin!(cancel);
         loop {
             tokio::select! {
                 biased;
                 () = &mut cancel => break,
-                () = tokio::time::sleep(self.reload_interval) => {
-                    let _ = self.poll_once().await;
-                }
+                _ = async {
+                    tokio::time::sleep(reload_interval).await;
+                    poll().await
+                } => {}
             }
         }
     }
@@ -281,6 +293,47 @@ mod tests {
         assert!(provider.is_none());
     }
 
+    /// Scenario: configure an explicit null reload interval for valid file-backed
+    /// TLS material.
+    /// Guarantees: reload remains disabled and running the provider returns
+    /// without polling or waiting for cancellation.
+    #[tokio::test]
+    async fn null_reload_interval_disables_reload() {
+        crate::crypto::ensure_crypto_provider();
+        let dir = TempDir::new().expect("temp dir");
+        let mut config = write_material(dir.path(), "ca-1", "client-1");
+        config.config.reload_interval = None;
+
+        let provider = ClientTlsProvider::new(Some(&config), ENDPOINT)
+            .await
+            .expect("load")
+            .expect("provider present");
+        assert_eq!(provider.reload_interval(), None);
+        tokio::time::timeout(
+            Duration::from_millis(100),
+            provider.run(std::future::pending()),
+        )
+        .await
+        .expect("disabled reload must return immediately");
+    }
+
+    /// Scenario: configure a zero reload interval for valid TLS material.
+    /// Guarantees: the provider rejects the configuration instead of creating a
+    /// busy polling and validation loop.
+    #[tokio::test]
+    async fn zero_reload_interval_is_rejected() {
+        crate::crypto::ensure_crypto_provider();
+        let dir = TempDir::new().expect("temp dir");
+        let mut config = write_material(dir.path(), "ca-1", "client-1");
+        config.config.reload_interval = Some(Duration::ZERO);
+
+        let error = ClientTlsProvider::new(Some(&config), ENDPOINT)
+            .await
+            .err()
+            .expect("zero reload interval must fail");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+    }
+
     /// Scenario: rotate the client certificate and key to a new valid pair, then
     /// poll.
     /// Guarantees: the change is detected and a new generation is published with
@@ -317,6 +370,29 @@ mod tests {
         );
         assert!(updates.has_changed().unwrap());
         assert_eq!(*updates.borrow_and_update(), 1);
+    }
+
+    /// Scenario: publish a TLS rotation before any notification receiver has
+    /// subscribed.
+    /// Guarantees: a later subscriber observes the latest generation number
+    /// rather than the constructor's initial value.
+    #[tokio::test]
+    async fn late_subscriber_observes_latest_generation() {
+        crate::crypto::ensure_crypto_provider();
+        let dir = TempDir::new().expect("temp dir");
+        let config = write_material(dir.path(), "ca-1", "client-1");
+        let provider = ClientTlsProvider::new(Some(&config), ENDPOINT)
+            .await
+            .expect("load")
+            .expect("provider present");
+
+        let rotated = tls_certs::generate_self_signed_cert("client-2", Some("client-2"), false);
+        fs::write(dir.path().join("tls.crt"), &rotated.cert_pem).expect("rewrite cert");
+        fs::write(dir.path().join("tls.key"), &rotated.key_pem).expect("rewrite key");
+        assert_eq!(provider.poll_once().await, ReloadOutcome::Updated(1));
+
+        let updates = provider.subscribe();
+        assert_eq!(*updates.borrow(), 1);
     }
 
     /// Scenario: poll when nothing on disk has changed.
@@ -366,6 +442,26 @@ mod tests {
             &still.material.client_identity,
             &good.material.client_identity
         ));
+    }
+
+    /// Scenario: replace a valid configured CA file with an empty bundle, then
+    /// poll.
+    /// Guarantees: invalid trust material fails validation and cannot replace
+    /// the last-known-good generation.
+    #[tokio::test]
+    async fn poll_once_keeps_last_good_on_invalid_ca() {
+        crate::crypto::ensure_crypto_provider();
+        let dir = TempDir::new().expect("temp dir");
+        let config = write_material(dir.path(), "ca-1", "client-1");
+        let provider = ClientTlsProvider::new(Some(&config), ENDPOINT)
+            .await
+            .expect("load")
+            .expect("provider present");
+
+        fs::write(dir.path().join("ca.crt"), []).expect("empty CA file");
+
+        assert_eq!(provider.poll_once().await, ReloadOutcome::Failed);
+        assert_eq!(provider.current().number, 0);
     }
 
     /// Scenario: rotate only the certificate, leaving the previous key in place.
@@ -469,5 +565,42 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(5), provider.run(std::future::ready(())))
             .await
             .expect("run must return once cancelled");
+    }
+
+    /// Scenario: cancellation resolves after the reload interval has elapsed and
+    /// a poll attempt is still pending.
+    /// Guarantees: the reload loop races cancellation against active polling and
+    /// returns without waiting for the filesystem operation to finish.
+    #[tokio::test]
+    async fn run_returns_when_cancelled_during_poll() {
+        crate::crypto::ensure_crypto_provider();
+        let dir = TempDir::new().expect("temp dir");
+        let config = write_material(dir.path(), "ca-1", "client-1");
+        let provider = ClientTlsProvider::new(Some(&config), ENDPOINT)
+            .await
+            .expect("load")
+            .expect("provider present");
+        let poll_started = Arc::new(tokio::sync::Notify::new());
+        let cancel = Arc::new(tokio::sync::Notify::new());
+
+        let poll_started_by_loop = Arc::clone(&poll_started);
+        let cancel_for_loop = Arc::clone(&cancel);
+        let run = provider.run_with_poll(cancel_for_loop.notified(), move || {
+            let poll_started = Arc::clone(&poll_started_by_loop);
+            async move {
+                poll_started.notify_one();
+                std::future::pending::<ReloadOutcome>().await
+            }
+        });
+        let trigger_cancel = async {
+            poll_started.notified().await;
+            cancel.notify_one();
+        };
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            tokio::join!(run, trigger_cancel);
+        })
+        .await
+        .expect("run must return when cancellation wins an active poll");
     }
 }
