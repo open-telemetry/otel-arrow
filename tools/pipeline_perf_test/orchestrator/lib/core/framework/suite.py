@@ -84,24 +84,49 @@ class Suite(FrameworkElement):
         self.context.suite = self
         logger = self.context.get_logger(__name__)
         with self.context:
+            # PRE_RUN runs outside the try/finally below: if a pre hook (e.g.
+            # starting a receiver) fails, there is nothing for POST_RUN to tear
+            # down, and the post hooks themselves assume their paired pre hook
+            # ran successfully.
             self._run_hooks(HookableTestPhase.PRE_RUN, self.context)
-            for test_definition in self.tests:
-                test_execution_context = ScenarioContext(
-                    name=test_definition.name,
-                    scenario_definition=test_definition,
-                    parent_ctx=self.context,
-                )
-                self.context.add_child_ctx(test_execution_context)
-                with test_execution_context:
-                    logger.info("Starting Test: %s", test_definition.name)
-                    try:
-                        test_definition.run(test_execution_context)
-                        if test_execution_context.status == ExecutionStatus.RUNNING:
-                            test_execution_context.status = ExecutionStatus.SUCCESS
-                    except Exception as e:
-                        test_execution_context.status = ExecutionStatus.ERROR
-                        test_execution_context.error = e
-                        logger.error("Test %s failed %s", test_definition.name, e)
+            # Once the pre hooks have run, POST_RUN must always run so suite
+            # teardown (e.g. stopping a receiver started in PRE_RUN) is not
+            # skipped when a test raises. The try/finally guarantees this; the
+            # finally re-raises any test error in preference to a cleanup error.
+            test_error: Optional[BaseException] = None
+            try:
+                for test_definition in self.tests:
+                    test_execution_context = ScenarioContext(
+                        name=test_definition.name,
+                        scenario_definition=test_definition,
+                        parent_ctx=self.context,
+                    )
+                    self.context.add_child_ctx(test_execution_context)
+                    with test_execution_context:
+                        logger.info("Starting Test: %s", test_definition.name)
+                        try:
+                            test_definition.run(test_execution_context)
+                            if test_execution_context.status == ExecutionStatus.RUNNING:
+                                test_execution_context.status = ExecutionStatus.SUCCESS
+                        except Exception as e:
+                            test_execution_context.status = ExecutionStatus.ERROR
+                            test_execution_context.error = e
+                            logger.error("Test %s failed %s", test_definition.name, e)
+                            raise
+                self.context.status = ExecutionStatus.SUCCESS
+            except BaseException as e:  # noqa: BLE001 (re-raised below)
+                test_error = e
+                raise
+            finally:
+                try:
+                    self._run_hooks(HookableTestPhase.POST_RUN, self.context)
+                except Exception as post_error:
+                    # A cleanup failure must not mask the original test error.
+                    if test_error is not None:
+                        logger.error(
+                            "POST_RUN hooks failed while handling a prior "
+                            "error; preserving the original error: %s",
+                            post_error,
+                        )
+                    else:
                         raise
-            self._run_hooks(HookableTestPhase.POST_RUN, self.context)
-            self.context.status = ExecutionStatus.SUCCESS

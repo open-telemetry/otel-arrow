@@ -199,7 +199,14 @@ def flatten_export_request(
 
 def _number_point(dp: metrics_pb2.NumberDataPoint) -> Dict[str, Any]:
     kind = dp.WhichOneof("value")
-    value = float(getattr(dp, kind)) if kind else None
+    if kind == "as_int":
+        # Keep integer counters exact. Casting sint64 counts to float would lose
+        # precision above 2^53.
+        value: Any = int(dp.as_int)
+    elif kind == "as_double":
+        value = float(dp.as_double)
+    else:
+        value = None
     return {
         "start_timestamp": _ts(dp.start_time_unix_nano),
         "timestamp": _ts(dp.time_unix_nano),
@@ -209,10 +216,17 @@ def _number_point(dp: metrics_pb2.NumberDataPoint) -> Dict[str, Any]:
 
 
 def _distribution_point(dp) -> Dict[str, Any]:
+    # 'sum' is optional on Histogram/ExponentialHistogram data points, so an
+    # absent sum must map to NULL rather than a phantom 0.0. Summary data points
+    # have a non-optional 'sum' (no field presence), so read it directly.
+    if isinstance(dp, metrics_pb2.SummaryDataPoint):
+        value: Optional[float] = float(dp.sum)
+    else:
+        value = float(dp.sum) if dp.HasField("sum") else None
     return {
         "start_timestamp": _ts(dp.start_time_unix_nano),
         "timestamp": _ts(dp.time_unix_nano),
-        "value": float(dp.sum),
+        "value": value,
         "metric_attributes": attributes_to_dict(dp.attributes),
     }
 

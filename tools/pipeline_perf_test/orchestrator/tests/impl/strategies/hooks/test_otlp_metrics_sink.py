@@ -22,6 +22,8 @@ from lib.impl.strategies.hooks.otlp_metrics_sink import (
     StartOtlpMetricsSinkHook,
     StopOtlpMetricsSinkConfig,
     StopOtlpMetricsSinkHook,
+    _distribution_point,
+    _number_point,
     flatten_export_request,
 )
 from lib.impl.strategies.hooks.reporting.sql_report import (
@@ -114,6 +116,76 @@ def test_flatten_export_request_delta_sum():
     assert row["scope_attributes"]["node.id"] == "perf"
     assert row["scope_attributes"]["scope_name"] == "node.input"
     assert row["metric_attributes"] == {"signal": "logs", "outcome": "success"}
+
+
+# Scenario: A NumberDataPoint carries an integer counter value larger than
+#   2^53 (the exact-integer limit of IEEE-754 double).
+# Guarantees: The flattened value is a Python int equal to the exported count,
+#   so whole-run counter totals are not silently rounded by a float cast.
+def test_number_point_preserves_large_integer_value():
+    big = 2**53 + 1
+    dp = metrics_pb2.NumberDataPoint(
+        start_time_unix_nano=1,
+        time_unix_nano=2,
+        as_int=big,
+    )
+
+    row = _number_point(dp)
+
+    assert row["value"] == big
+    assert isinstance(row["value"], int)
+
+
+# Scenario: A NumberDataPoint carries a floating point (as_double) value.
+# Guarantees: The flattened value is a float equal to the exported value, so
+#   gauge/double metrics are not coerced to int.
+def test_number_point_preserves_double_value():
+    dp = metrics_pb2.NumberDataPoint(
+        start_time_unix_nano=1,
+        time_unix_nano=2,
+        as_double=1.5,
+    )
+
+    row = _number_point(dp)
+
+    assert row["value"] == 1.5
+    assert isinstance(row["value"], float)
+
+
+# Scenario: A HistogramDataPoint is exported without its optional 'sum' field
+#   set, versus one that explicitly sets sum to 0.0.
+# Guarantees: An absent sum flattens to None (NULL) rather than a phantom 0.0,
+#   while an explicit 0.0 is preserved, so aggregations do not count a missing
+#   sum as a real zero.
+def test_distribution_point_missing_sum_is_null():
+    without_sum = metrics_pb2.HistogramDataPoint(
+        start_time_unix_nano=1,
+        time_unix_nano=2,
+        count=3,
+    )
+    with_zero_sum = metrics_pb2.HistogramDataPoint(
+        start_time_unix_nano=1,
+        time_unix_nano=2,
+        count=3,
+        sum=0.0,
+    )
+
+    assert _distribution_point(without_sum)["value"] is None
+    assert _distribution_point(with_zero_sum)["value"] == 0.0
+
+
+# Scenario: A SummaryDataPoint (whose 'sum' has no field presence) is flattened.
+# Guarantees: The summary sum is read directly without a presence check, so it
+#   does not raise and yields the exported value.
+def test_distribution_point_summary_sum_read_directly():
+    dp = metrics_pb2.SummaryDataPoint(
+        start_time_unix_nano=1,
+        time_unix_nano=2,
+        count=4,
+        sum=12.5,
+    )
+
+    assert _distribution_point(dp)["value"] == 12.5
 
 
 # Scenario: A real OTLP/gRPC client exports several delta batches to a running
@@ -257,10 +329,12 @@ def test_sql_report_appends_pushed_rows_to_metrics_table():
 
     hook.conn = duckdb.connect()
     hook._register_in_memory_tables(
-        _empty_metric_frame(), _empty_span_frame(), _empty_span_frame(), _ctx_with_sink(sink)
+        _empty_metric_frame(),
+        _empty_span_frame(),
+        _empty_span_frame(),
+        _ctx_with_sink(sink),
     )
-    total = hook.conn.execute(
-        """
+    total = hook.conn.execute("""
         SELECT SUM(value) FROM metrics
         WHERE metric_name = 'items'
           AND "resource_attributes.service.name" = 'backend-service'
@@ -268,8 +342,7 @@ def test_sql_report_appends_pushed_rows_to_metrics_table():
           AND "scope_attributes.node.id" = 'perf'
           AND "scope_attributes.scope_name" = 'node.input'
           AND "metric_attributes.signal" = 'logs'
-        """
-    ).fetchone()[0]
+        """).fetchone()[0]
     assert total == 15
 
 
@@ -288,6 +361,9 @@ def test_sql_report_without_sink_registers_only_framework_metrics():
     )
     hook.conn = duckdb.connect()
     hook._register_in_memory_tables(
-        _empty_metric_frame(), _empty_span_frame(), _empty_span_frame(), _ctx_with_sink(None)
+        _empty_metric_frame(),
+        _empty_span_frame(),
+        _empty_span_frame(),
+        _ctx_with_sink(None),
     )
     assert hook.conn.execute("SELECT COUNT(*) FROM metrics").fetchone()[0] == 0
