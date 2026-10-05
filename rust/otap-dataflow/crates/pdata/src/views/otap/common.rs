@@ -90,17 +90,18 @@ pub enum OtapAnyValueView<'a> {
     Bool(bool),
     /// Raw bytes value
     Bytes(&'a [u8]),
-    // TODO: Add Array and Map variants when needed
+    /// A composite value (array or key-value list) still CBOR-encoded in the `ser` column.
+    Serialized(&'a [u8]),
 }
 
 impl<'a> AnyValueView<'a> for OtapAnyValueView<'a> {
     type KeyValue = OtapAttributeView<'a>;
     type ArrayIter<'arr>
-        = std::iter::Empty<Self>
+        = CborArrayIter<'a>
     where
         Self: 'arr;
     type KeyValueIter<'kv>
-        = std::iter::Empty<Self::KeyValue>
+        = CborMapIter<'a>
     where
         Self: 'kv;
 
@@ -112,6 +113,7 @@ impl<'a> AnyValueView<'a> for OtapAnyValueView<'a> {
             Self::Double(_) => ValueType::Double,
             Self::Bool(_) => ValueType::Bool,
             Self::Bytes(_) => ValueType::Bytes,
+            Self::Serialized(bytes) => cbor_value_type(bytes),
         }
     }
 
@@ -151,11 +153,21 @@ impl<'a> AnyValueView<'a> for OtapAnyValueView<'a> {
     }
 
     fn as_array(&self) -> Option<Self::ArrayIter<'_>> {
-        None
+        match *self {
+            Self::Serialized(bytes) if cbor_value_type(bytes) == ValueType::Array => {
+                Some(CborArrayIter::new(bytes))
+            }
+            _ => None,
+        }
     }
 
     fn as_kvlist(&self) -> Option<Self::KeyValueIter<'_>> {
-        None
+        match *self {
+            Self::Serialized(bytes) if cbor_value_type(bytes) == ValueType::KeyValueList => {
+                Some(CborMapIter::new(bytes))
+            }
+            _ => None,
+        }
     }
 }
 
@@ -311,7 +323,299 @@ pub(crate) fn get_attribute_value<'a>(
             .and_then(|accessor| accessor.slice_at(row_idx))
             .map(OtapAnyValueView::Bytes)
             .unwrap_or(OtapAnyValueView::Bytes(b"")),
+        AttributeValueType::Map | AttributeValueType::Slice => anyval
+            .attr_ser
+            .as_ref()
+            .and_then(|accessor| accessor.slice_at(row_idx))
+            .map(OtapAnyValueView::Serialized)
+            .unwrap_or(OtapAnyValueView::Empty),
         _ => OtapAnyValueView::Empty,
+    }
+}
+
+// ===== Serialized (CBOR) composite value reader =====
+//
+// Map and Slice attributes store their value as CBOR in the `ser` column. These helpers read that
+// CBOR without copying, so text and bytes point back into the buffer, like the OTLP RawAnyValue
+// view does for protobuf. serde_cbor writes indefinite-length maps and arrays, so both are handled.
+
+const CBOR_MAJOR_UINT: u8 = 0;
+const CBOR_MAJOR_NINT: u8 = 1;
+const CBOR_MAJOR_BYTES: u8 = 2;
+const CBOR_MAJOR_TEXT: u8 = 3;
+const CBOR_MAJOR_ARRAY: u8 = 4;
+const CBOR_MAJOR_MAP: u8 = 5;
+const CBOR_MAJOR_SIMPLE: u8 = 7;
+const CBOR_INDEFINITE: u8 = 31;
+const CBOR_BREAK: u8 = 0xff;
+const CBOR_NULL: u8 = 0xf6;
+// Maximum CBOR nesting depth scanned while measuring item boundaries. Matches serde_cbor's own
+// recursion limit.
+const CBOR_MAX_DEPTH: usize = 128;
+
+/// Read the argument (length or immediate value) that follows a CBOR head byte, returning the
+/// argument and the number of bytes the head occupies. Indefinite heads are handled by callers.
+fn cbor_arg(buf: &[u8]) -> Option<(u64, usize)> {
+    match *buf.first()? & 0x1f {
+        info @ 0..=23 => Some((info as u64, 1)),
+        24 => Some((*buf.get(1)? as u64, 2)),
+        25 => Some((
+            u16::from_be_bytes(buf.get(1..3)?.try_into().ok()?) as u64,
+            3,
+        )),
+        26 => Some((
+            u32::from_be_bytes(buf.get(1..5)?.try_into().ok()?) as u64,
+            5,
+        )),
+        27 => Some((u64::from_be_bytes(buf.get(1..9)?.try_into().ok()?), 9)),
+        _ => None,
+    }
+}
+
+/// Whether the CBOR item at `buf[0]` uses indefinite-length encoding (as serde_cbor writes).
+fn cbor_is_indefinite(buf: &[u8]) -> bool {
+    matches!(buf.first().copied(), Some(b) if (b & 0x1f) == CBOR_INDEFINITE)
+}
+
+/// Total byte length of the single CBOR item that starts at `buf[0]`.
+fn cbor_item_len(buf: &[u8]) -> Option<usize> {
+    cbor_item_len_at_depth(buf, 0)
+}
+
+fn cbor_item_len_at_depth(buf: &[u8], depth: usize) -> Option<usize> {
+    if depth > CBOR_MAX_DEPTH {
+        return None;
+    }
+    let first = *buf.first()?;
+    let major = first >> 5;
+    let info = first & 0x1f;
+
+    if info == CBOR_INDEFINITE {
+        return match major {
+            CBOR_MAJOR_ARRAY | CBOR_MAJOR_MAP => {
+                let mut pos = 1;
+                loop {
+                    if *buf.get(pos)? == CBOR_BREAK {
+                        return pos.checked_add(1);
+                    }
+                    pos = pos.checked_add(cbor_item_len_at_depth(buf.get(pos..)?, depth + 1)?)?;
+                    if major == CBOR_MAJOR_MAP {
+                        pos =
+                            pos.checked_add(cbor_item_len_at_depth(buf.get(pos..)?, depth + 1)?)?;
+                    }
+                }
+            }
+            _ => None,
+        };
+    }
+
+    let (arg, head) = cbor_arg(buf)?;
+    match major {
+        CBOR_MAJOR_UINT | CBOR_MAJOR_NINT | CBOR_MAJOR_SIMPLE => Some(head),
+        CBOR_MAJOR_BYTES | CBOR_MAJOR_TEXT => head.checked_add(usize::try_from(arg).ok()?),
+        CBOR_MAJOR_ARRAY => {
+            let mut pos = head;
+            for _ in 0..arg {
+                pos = pos.checked_add(cbor_item_len_at_depth(buf.get(pos..)?, depth + 1)?)?;
+            }
+            Some(pos)
+        }
+        CBOR_MAJOR_MAP => {
+            let mut pos = head;
+            for _ in 0..arg {
+                pos = pos.checked_add(cbor_item_len_at_depth(buf.get(pos..)?, depth + 1)?)?;
+                pos = pos.checked_add(cbor_item_len_at_depth(buf.get(pos..)?, depth + 1)?)?;
+            }
+            Some(pos)
+        }
+        _ => None,
+    }
+}
+
+/// The `ValueType` of the CBOR item that starts at `buf[0]`. Kept consistent with
+/// `cbor_to_any_value` so values it cannot represent are reported as `Empty`.
+fn cbor_value_type(buf: &[u8]) -> ValueType {
+    let Some(first) = buf.first().copied() else {
+        return ValueType::Empty;
+    };
+    match first >> 5 {
+        // Only advertise Int64 when the value fits an i64, matching cbor_to_any_value.
+        CBOR_MAJOR_UINT | CBOR_MAJOR_NINT => cbor_arg(buf)
+            .and_then(|(v, _)| i64::try_from(v).ok())
+            .map_or(ValueType::Empty, |_| ValueType::Int64),
+        CBOR_MAJOR_BYTES => ValueType::Bytes,
+        CBOR_MAJOR_TEXT => ValueType::String,
+        CBOR_MAJOR_ARRAY => ValueType::Array,
+        CBOR_MAJOR_MAP => ValueType::KeyValueList,
+        CBOR_MAJOR_SIMPLE => match first & 0x1f {
+            20 | 21 => ValueType::Bool,
+            26 | 27 => ValueType::Double,
+            _ => ValueType::Empty,
+        },
+        _ => ValueType::Empty,
+    }
+}
+
+/// Borrow the length-prefixed byte/text payload of the CBOR item at `buf[0]`.
+fn cbor_slice(buf: &[u8]) -> Option<&[u8]> {
+    let (len, head) = cbor_arg(buf)?;
+    let len = usize::try_from(len).ok()?;
+    buf.get(head..head.checked_add(len)?)
+}
+
+/// Decode the single CBOR item at `buf[0]` into an `OtapAnyValueView`. Nested maps and arrays are
+/// returned as `Serialized` so they decode lazily on the next `as_kvlist`/`as_array` call.
+fn cbor_to_any_value(buf: &[u8]) -> OtapAnyValueView<'_> {
+    let Some(first) = buf.first().copied() else {
+        return OtapAnyValueView::Empty;
+    };
+    match first >> 5 {
+        CBOR_MAJOR_UINT => cbor_arg(buf)
+            .and_then(|(v, _)| i64::try_from(v).ok())
+            .map(OtapAnyValueView::Int)
+            .unwrap_or(OtapAnyValueView::Empty),
+        CBOR_MAJOR_NINT => cbor_arg(buf)
+            .and_then(|(v, _)| i64::try_from(v).ok())
+            .and_then(|n| (-1i64).checked_sub(n))
+            .map(OtapAnyValueView::Int)
+            .unwrap_or(OtapAnyValueView::Empty),
+        CBOR_MAJOR_BYTES => cbor_slice(buf)
+            .map(OtapAnyValueView::Bytes)
+            .unwrap_or(OtapAnyValueView::Empty),
+        CBOR_MAJOR_TEXT => cbor_slice(buf)
+            .map(OtapAnyValueView::Str)
+            .unwrap_or(OtapAnyValueView::Empty),
+        CBOR_MAJOR_ARRAY | CBOR_MAJOR_MAP => cbor_item_len(buf)
+            .and_then(|len| buf.get(..len))
+            .map(OtapAnyValueView::Serialized)
+            .unwrap_or(OtapAnyValueView::Empty),
+        CBOR_MAJOR_SIMPLE => match first & 0x1f {
+            20 => OtapAnyValueView::Bool(false),
+            21 => OtapAnyValueView::Bool(true),
+            26 => buf
+                .get(1..5)
+                .and_then(|b| b.try_into().ok())
+                .map(|b| OtapAnyValueView::Double(f32::from_be_bytes(b) as f64))
+                .unwrap_or(OtapAnyValueView::Empty),
+            27 => buf
+                .get(1..9)
+                .and_then(|b| b.try_into().ok())
+                .map(|b| OtapAnyValueView::Double(f64::from_be_bytes(b)))
+                .unwrap_or(OtapAnyValueView::Empty),
+            _ => OtapAnyValueView::Empty,
+        },
+        _ => OtapAnyValueView::Empty,
+    }
+}
+
+/// Iterator over the elements of a CBOR-encoded array in the `ser` column.
+pub struct CborArrayIter<'a> {
+    buf: &'a [u8],
+    pos: usize,
+    remaining: Option<u64>,
+}
+
+impl<'a> CborArrayIter<'a> {
+    fn new(buf: &'a [u8]) -> Self {
+        if cbor_is_indefinite(buf) {
+            Self {
+                buf,
+                pos: 1,
+                remaining: None,
+            }
+        } else {
+            let (count, head) = cbor_arg(buf).unwrap_or((0, 1));
+            Self {
+                buf,
+                pos: head,
+                remaining: Some(count),
+            }
+        }
+    }
+}
+
+impl<'a> Iterator for CborArrayIter<'a> {
+    type Item = OtapAnyValueView<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.remaining {
+            Some(0) => return None,
+            None => {
+                if *self.buf.get(self.pos)? == CBOR_BREAK {
+                    return None;
+                }
+            }
+            Some(_) => {}
+        }
+        let item = self.buf.get(self.pos..)?;
+        let len = cbor_item_len(item)?;
+        let value = cbor_to_any_value(item.get(..len)?);
+        self.pos += len;
+        if let Some(remaining) = self.remaining.as_mut() {
+            *remaining -= 1;
+        }
+        Some(value)
+    }
+}
+
+/// Iterator over the entries of a CBOR-encoded key-value list in the `ser` column.
+pub struct CborMapIter<'a> {
+    buf: &'a [u8],
+    pos: usize,
+    remaining: Option<u64>,
+}
+
+impl<'a> CborMapIter<'a> {
+    fn new(buf: &'a [u8]) -> Self {
+        if cbor_is_indefinite(buf) {
+            Self {
+                buf,
+                pos: 1,
+                remaining: None,
+            }
+        } else {
+            let (count, head) = cbor_arg(buf).unwrap_or((0, 1));
+            Self {
+                buf,
+                pos: head,
+                remaining: Some(count),
+            }
+        }
+    }
+}
+
+impl<'a> Iterator for CborMapIter<'a> {
+    type Item = OtapAttributeView<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.remaining {
+            Some(0) => return None,
+            None => {
+                if *self.buf.get(self.pos)? == CBOR_BREAK {
+                    return None;
+                }
+            }
+            Some(_) => {}
+        }
+        let key_buf = self.buf.get(self.pos..)?;
+        let key_len = cbor_item_len(key_buf)?;
+        // Only text keys are supported. Any other key type would corrupt the name, so fail closed.
+        let key = match key_buf.first().copied() {
+            Some(first) if first >> 5 == CBOR_MAJOR_TEXT => cbor_slice(key_buf.get(..key_len)?)?,
+            Some(CBOR_NULL) => &[],
+            _ => return None,
+        };
+        self.pos += key_len;
+
+        let value_buf = self.buf.get(self.pos..)?;
+        let value_len = cbor_item_len(value_buf)?;
+        let value = cbor_to_any_value(value_buf.get(..value_len)?);
+        self.pos += value_len;
+
+        if let Some(remaining) = self.remaining.as_mut() {
+            *remaining -= 1;
+        }
+        Some(OtapAttributeView { key, value })
     }
 }
 
@@ -648,5 +952,104 @@ mod tests {
         let v = get_attribute_value(&bytes_arr, 0);
         assert_eq!(v.value_type(), ValueType::Bytes);
         assert_eq!(v.as_bytes(), Some(b"".as_slice()));
+    }
+
+    /// Scenario: A key-value list attribute stored as CBOR in the `ser` column.
+    /// Guarantees: `as_kvlist` returns the real entries instead of an empty view.
+    #[test]
+    fn test_serialized_kvlist_decodes() {
+        // Indefinite CBOR map {"k": "v"} as written into the `ser` column.
+        let cbor = [0xbf, 0x61, b'k', 0x61, b'v', 0xff];
+        let value = OtapAnyValueView::Serialized(&cbor);
+        assert_eq!(value.value_type(), ValueType::KeyValueList);
+
+        let entries: Vec<_> = value.as_kvlist().expect("kvlist").collect();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].key(), b"k".as_slice());
+        let entry_value = entries[0].value().expect("entry has a value");
+        assert_eq!(entry_value.as_string(), Some(b"v".as_slice()));
+    }
+
+    /// Scenario: An array attribute stored as CBOR in the `ser` column.
+    /// Guarantees: `as_array` returns each element instead of an empty view.
+    #[test]
+    fn test_serialized_array_decodes() {
+        // Indefinite CBOR array [1, "a"] as written into the `ser` column.
+        let cbor = [0x9f, 0x01, 0x61, b'a', 0xff];
+        let value = OtapAnyValueView::Serialized(&cbor);
+        assert_eq!(value.value_type(), ValueType::Array);
+
+        let items: Vec<_> = value.as_array().expect("array").collect();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].as_int64(), Some(1));
+        assert_eq!(items[1].as_string(), Some(b"a".as_slice()));
+    }
+
+    /// Scenario: CBOR integers at and beyond the i64 range are decoded.
+    /// Guarantees: i64::MIN/MAX decode exactly and the first value past each end is rejected as Empty rather than wrapping.
+    #[test]
+    fn test_cbor_integer_bounds_reject_out_of_range() {
+        // Unsigned i64::MAX.
+        let max = [0x1b, 0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff];
+        assert_eq!(cbor_to_any_value(&max).as_int64(), Some(i64::MAX));
+
+        // Unsigned i64::MAX + 1 does not fit an i64.
+        let over = [0x1b, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+        assert_eq!(cbor_to_any_value(&over).value_type(), ValueType::Empty);
+
+        // Negative i64::MIN.
+        let min = [0x3b, 0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff];
+        assert_eq!(cbor_to_any_value(&min).as_int64(), Some(i64::MIN));
+
+        // One below i64::MIN does not fit an i64.
+        let under = [0x3b, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+        assert_eq!(cbor_to_any_value(&under).value_type(), ValueType::Empty);
+    }
+
+    /// Scenario: values that cbor_to_any_value cannot represent are queried for their type.
+    /// Guarantees: cbor_value_type reports Empty so it agrees with the decoded value.
+    #[test]
+    fn test_cbor_value_type_matches_decoding() {
+        // Unsigned i64::MAX + 1 cannot be an i64.
+        let over = [0x1b, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+        assert_eq!(cbor_value_type(&over), ValueType::Empty);
+        assert_eq!(cbor_to_any_value(&over).value_type(), ValueType::Empty);
+
+        // An in-range integer is still Int64.
+        assert_eq!(cbor_value_type(&[0x0a]), ValueType::Int64);
+
+        // Half precision floats are classified but never decoded, so they are Empty.
+        let half = [0xf9, 0x3c, 0x00];
+        assert_eq!(cbor_value_type(&half), ValueType::Empty);
+        assert_eq!(cbor_to_any_value(&half).value_type(), ValueType::Empty);
+
+        // A 64-bit float is still Double.
+        let double = [0xfb, 0x3f, 0xf0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+        assert_eq!(cbor_value_type(&double), ValueType::Double);
+        assert_eq!(cbor_to_any_value(&double).as_double(), Some(1.0));
+    }
+
+    /// Scenario: a serialized CBOR map uses a non-text (integer) key.
+    /// Guarantees: the entry is dropped instead of yielding a corrupted attribute name.
+    #[test]
+    fn test_cbor_non_text_map_key_is_rejected() {
+        // Definite map {1: 2}.
+        let cbor = [0xa1, 0x01, 0x02];
+        let value = OtapAnyValueView::Serialized(&cbor);
+        assert_eq!(value.value_type(), ValueType::KeyValueList);
+        assert!(value.as_kvlist().expect("kvlist").next().is_none());
+    }
+
+    /// Scenario: a valid but pathologically deep CBOR value is scanned.
+    /// Guarantees: boundary scanning stops at the depth cap and fails closed rather than
+    /// recursing until the worker stack overflows.
+    #[test]
+    fn test_cbor_deep_nesting_fails_closed() {
+        // More nested single-element arrays than CBOR_MAX_DEPTH, wrapping a final integer.
+        let mut deep = vec![0x81u8; CBOR_MAX_DEPTH + 50];
+        deep.push(0x00);
+        let value = OtapAnyValueView::Serialized(&deep);
+        assert_eq!(value.value_type(), ValueType::Array);
+        assert!(value.as_array().expect("array").next().is_none());
     }
 }

@@ -11,7 +11,7 @@
 //!
 //! TODO: Implement the sensitive capability for headers
 
-use crate::context::ContextEntryName;
+use crate::context::{ContextEntryName, ContextEntryRef};
 use crate::transport_headers::{CapturedTransportHeader, TransportHeaders, ValueKind};
 use hashbrown::{Equivalent, HashMap};
 use http::{HeaderMap, HeaderName};
@@ -441,6 +441,9 @@ pub enum ValueKindConfig {
 
 /// Policy controlling which captured transport headers are propagated by
 /// exporters onto outbound requests.
+///
+/// The engine compiles these settings against visible context declarations
+/// before installing exporter bindings.
 #[derive(
     Debug, Clone, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Hash, PartialOrd, Ord,
 )]
@@ -448,14 +451,14 @@ pub enum ValueKindConfig {
 pub struct HeaderPropagationPolicy {
     /// Default propagation behavior applied to all captured headers.
     #[serde(default)]
-    pub(crate) default: PropagationDefault,
+    pub default: PropagationDefault,
     /// Per-header overrides applied after the default.
     #[serde(default)]
-    pub(crate) overrides: Vec<PropagationOverride>,
+    pub overrides: Vec<PropagationOverride>,
 }
 
 impl HeaderPropagationPolicy {
-    /// Create a new propagation policy from the given default behavior and overrides.
+    /// Creates propagation settings from the default and overrides.
     #[must_use]
     pub fn new(default: PropagationDefault, overrides: Vec<PropagationOverride>) -> Self {
         Self { default, overrides }
@@ -469,83 +472,6 @@ impl HeaderPropagationPolicy {
     /// being rejected in another.
     pub fn validate(&self) -> Result<(), String> {
         self.default.selector.validate()
-    }
-
-    /// Returns whether this entry is propagated with its original name.
-    #[must_use]
-    pub fn propagates_original_name(&self, name: &ContextEntryName) -> bool {
-        let (action, name_strategy) = self.resolve_action_for_name(name);
-        action == PropagationAction::Propagate && name_strategy == NameStrategy::Preserve
-    }
-
-    /// Returns whether an otherwise-unmentioned captured header uses its original name.
-    #[must_use]
-    pub fn propagates_original_name_by_default(&self) -> bool {
-        self.default.selector.selector_type == PropagationSelectorType::AllCaptured
-            && self.default.action == PropagationAction::Propagate
-            && self.default.name == NameStrategy::Preserve
-    }
-
-    /// Visits names whose original-name disposition may differ from the default.
-    pub fn visit_original_name_requirement_names(&self, mut visit: impl FnMut(&ContextEntryName)) {
-        if let Some(names) = &self.default.selector.named {
-            for name in names {
-                visit(name);
-            }
-        }
-        for override_policy in &self.overrides {
-            for name in &override_policy.match_rule.stored_names {
-                visit(name);
-            }
-        }
-    }
-
-    /// Returns borrowed headers selected for propagation.
-    /// [`NameStrategy`] selects each header's original or stored name.
-    /// Headers with [`PropagationAction::Drop`] are omitted.
-    pub fn propagate<'a>(
-        &'a self,
-        headers: &'a TransportHeaders,
-    ) -> impl Iterator<Item = PropagatedHeader<'a>> {
-        headers.iter().filter_map(move |header| {
-            let (action, name_strategy) = self.resolve_action_for_name(header.name.as_str());
-            if action == PropagationAction::Drop {
-                return None;
-            }
-            let header_name = match name_strategy {
-                NameStrategy::StoredName => header.name.as_str(),
-                NameStrategy::Preserve => header.wire_name(),
-            };
-            Some(PropagatedHeader {
-                header_name,
-                value_kind: header.value.value_kind,
-                value: header.value.bytes,
-            })
-        })
-    }
-
-    fn resolve_action_for_name(&self, name: &str) -> (PropagationAction, NameStrategy) {
-        // Check overrides first.
-        for ov in &self.overrides {
-            if ov
-                .match_rule
-                .stored_names
-                .iter()
-                .any(|stored| name.eq_ignore_ascii_case(stored.as_str()))
-            {
-                let name_strategy = ov.name.unwrap_or(self.default.name);
-                return (ov.action, name_strategy);
-            }
-        }
-
-        // Check whether the header passes the default selector.
-        let selected = self.default.selector.selects_str(name);
-
-        if selected {
-            (self.default.action, self.default.name)
-        } else {
-            (PropagationAction::Drop, self.default.name)
-        }
     }
 }
 
@@ -601,7 +527,7 @@ pub struct PropagationSelector {
     /// Required names for `named` selectors.
     /// Must be absent for other selector types.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub named: Option<Vec<ContextEntryName>>,
+    pub named: Option<Vec<ContextEntryRef>>,
 }
 
 impl PropagationSelector {
@@ -623,10 +549,12 @@ impl PropagationSelector {
     /// Returns true if the given header name is selected for propagation.
     #[must_use]
     pub fn selects(&self, header_name: &ContextEntryName) -> bool {
-        self.selects_str(header_name.as_str())
+        self.selects_unqualified_str(header_name.as_str())
     }
 
-    fn selects_str(&self, header_name: &str) -> bool {
+    /// Returns whether an unqualified stored header name is selected.
+    #[must_use]
+    pub fn selects_unqualified_str(&self, header_name: &str) -> bool {
         match &self.selector_type {
             PropagationSelectorType::AllCaptured => true,
             PropagationSelectorType::None => false,
@@ -634,9 +562,10 @@ impl PropagationSelector {
                 .named
                 .as_ref()
                 .map(|names| {
-                    names
-                        .iter()
-                        .any(|name| header_name.eq_ignore_ascii_case(name.as_str()))
+                    names.iter().any(|name| {
+                        name.scope().is_none()
+                            && header_name.eq_ignore_ascii_case(name.name().as_str())
+                    })
                 })
                 .unwrap_or(false),
         }
@@ -811,44 +740,6 @@ mod tests {
         assert_eq!(policy.default.name, NameStrategy::Preserve);
         assert_eq!(policy.default.on_error, ErrorAction::Drop);
         assert!(policy.overrides.is_empty());
-    }
-
-    /// Scenario: overrides change naming or drop selected headers.
-    /// Guarantees: only propagated headers using `Preserve` require original names.
-    #[test]
-    fn propagation_policy_resolves_original_name_per_entry() {
-        let policy = HeaderPropagationPolicy::new(
-            PropagationDefault {
-                selector: PropagationSelector {
-                    selector_type: PropagationSelectorType::AllCaptured,
-                    named: None,
-                },
-                name: NameStrategy::Preserve,
-                ..PropagationDefault::default()
-            },
-            vec![
-                PropagationOverride {
-                    match_rule: PropagationMatch {
-                        stored_names: vec![context_name("stored")],
-                    },
-                    action: PropagationAction::Propagate,
-                    name: Some(NameStrategy::StoredName),
-                    on_error: None,
-                },
-                PropagationOverride {
-                    match_rule: PropagationMatch {
-                        stored_names: vec![context_name("dropped")],
-                    },
-                    action: PropagationAction::Drop,
-                    name: None,
-                    on_error: None,
-                },
-            ],
-        );
-
-        assert!(policy.propagates_original_name(&context_name("preserved")));
-        assert!(!policy.propagates_original_name(&context_name("stored")));
-        assert!(!policy.propagates_original_name(&context_name("dropped")));
     }
 
     /// Scenario: no consumer needs original names and `store_as` uses mixed case.
@@ -1141,7 +1032,7 @@ named:
             Some(
                 ["tenant_id", "request_id"]
                     .iter()
-                    .map(|x| context_name(x))
+                    .map(|x| ContextEntryRef::from(context_name(x)))
                     .collect()
             )
         );
@@ -1175,7 +1066,7 @@ named:
     fn selector_validate_named_valid() {
         let selector = PropagationSelector {
             selector_type: PropagationSelectorType::Named,
-            named: Some(vec![context_name("tenant_id")]),
+            named: Some(vec![context_name("tenant_id").into()]),
         };
         assert!(selector.validate().is_ok());
     }
@@ -1210,7 +1101,7 @@ named:
     fn selector_validate_all_captured_with_named_field() {
         let selector = PropagationSelector {
             selector_type: PropagationSelectorType::AllCaptured,
-            named: Some(vec![context_name("tenant_id")]),
+            named: Some(vec![context_name("tenant_id").into()]),
         };
         let err = selector.validate().unwrap_err();
         assert!(err.contains("'named' must not be set"));
@@ -1222,7 +1113,7 @@ named:
     fn selector_validate_none_with_named_field() {
         let selector = PropagationSelector {
             selector_type: PropagationSelectorType::None,
-            named: Some(vec![context_name("tenant_id")]),
+            named: Some(vec![context_name("tenant_id").into()]),
         };
         let err = selector.validate().unwrap_err();
         assert!(err.contains("'named' must not be set"));

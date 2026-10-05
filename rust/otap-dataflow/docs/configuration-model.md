@@ -343,6 +343,7 @@ Important behavior:
 
 `engine` is the home for engine-wide settings:
 
+- `state_dir`
 - `topics`
 - `http_admin`
 - `telemetry`
@@ -350,6 +351,14 @@ Important behavior:
 - `observability`
 - `controller/extensions`
 - `custom`
+
+### Engine State Directory
+
+`engine.state_dir` is an optional explicit absolute path, provisioned before
+pipelines start on Linux. It has no default and cannot be added, removed, or
+changed during live reconfiguration. Existing journald and scraper checkpoints
+are not automatically migrated. See [Engine state directory](state-directory.md)
+for permission, durability, platform, and consumer-adoption requirements.
 
 ### Engine Topic Settings
 
@@ -734,6 +743,10 @@ Telemetry policy notes:
 - `normal` adds message and phase counters
 - `detailed` adds latency/duration summaries and completion unwind-depth
   distribution
+- node-local `telemetry.duration_distribution` accepts `basic`, `normal`, or
+  `detailed` and defaults to `normal`
+- shared receiver and exporter local duration instruments use the selected
+  node-local distribution tier when `duration: true`
 - See [Node and Flow Metrics](node-and-flow-metrics.md) to configure and
   interpret node item metrics and processor flow metrics.
 

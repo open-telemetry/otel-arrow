@@ -36,10 +36,19 @@ mod functions;
 pub(crate) mod id_mask;
 mod planner;
 mod project;
+mod scale_metric;
 
 pub mod partition;
 pub mod routing;
 pub mod state;
+
+#[cfg(feature = "bench")]
+#[doc(hidden)]
+pub mod bench_support {
+    pub mod join {
+        pub use crate::pipeline::expr::join::bench_support::*;
+    }
+}
 
 /// A stage in the pipeline.
 ///
@@ -616,5 +625,22 @@ mod test {
                 sum_metric.clone(),
             ]
         );
+    }
+
+    /// Scenario: Execute scale_metric against a logs batch.
+    /// Guarantees: The metric-only operation returns an explicit pipeline error for other signals.
+    #[tokio::test]
+    async fn test_scale_metric_rejects_non_metric_signals() {
+        let parser_result = OplParser::parse("logs | scale_metric 2").unwrap();
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
+        let result = pipeline
+            .execute(to_otap_logs(vec![LogRecord::build().finish()]))
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(Error::InvalidPipelineError { cause, .. })
+                if cause == "scale_metric can only be applied to metrics"
+        ));
     }
 }
