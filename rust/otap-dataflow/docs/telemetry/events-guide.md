@@ -387,8 +387,7 @@ stateDiagram-v2
     Unknown --> Degraded: First failure / open episode, WARN
     Healthy --> Degraded: First failure / open episode, WARN
 
-    Degraded --> Degraded: Failure / count or emit due summary
-    Degraded --> Degraded: Success before confirmed recovery / count
+    Degraded --> Degraded: Completion / count or emit due summary
     Degraded --> Healthy: Confirmed recovery / INFO, clear episode
 
     note right of Degraded
@@ -399,9 +398,9 @@ stateDiagram-v2
     end note
 ```
 
-- **Bounded volume:** the first failure emits a WARN. A later failure emits a
-  WARN summary only after the reporting interval elapses. Other failures are
-  counted and suppressed before constructing a log event.
+- **Bounded volume:** the first failure emits a WARN. A later completion emits
+  a WARN summary only after the reporting interval elapses and new failures
+  were suppressed. Other failures are counted before constructing a log event.
 - **Accurate counts:** while an episode is active, every success or failure is
   counted before reporting in both interval counters and episode totals.
   Failures also update error-category counts and, when no warning is emitted,
@@ -445,17 +444,19 @@ or data loss:
 | `total_successful_attempts`, `total_failed_attempts` | Episode counts |
 | `total_suppressed_diagnostics` | Suppressed failures for the episode |
 | `error_counts`, `total_error_counts` | Bounded `category=count` lists |
+| `error_sample_age_seconds` | Age of the saved failure event |
 
 Integrations may add bounded fields such as `signal`, `stage`, `message`, or a
-retry decision. These fields describe the selected current event; the common
+retry decision. These fields describe the selected failure event; the common
 counter fields describe its interval and complete episode.
 
-The first report includes its triggering failure. Later summaries include the
-current failure and exclude observations already covered by earlier reports.
-Because sampling happens first, suppressed failures do not construct tracing
-events or format their fields. Recovery is a distinct current INFO event, not a
-copy of an earlier error. Callers must still redact sensitive data before
-supplying diagnostic text.
+The first report includes its triggering failure. A selected warning follows
+the ordinary log path; the tracing layer saves its unannotated record before
+adding summary attributes to the delivered copy. A success-triggered summary
+replays that saved event with fresh counters and age. Suppressed failures do not
+construct tracing events or format their fields. Recovery is a distinct current
+INFO event, not a copy of an earlier error. Callers must still redact sensitive
+data before supplying diagnostic text.
 
 Log frequency intentionally decreases; use component attempt and failure
 metrics for rates and impact. The summary macros emit common fields with the

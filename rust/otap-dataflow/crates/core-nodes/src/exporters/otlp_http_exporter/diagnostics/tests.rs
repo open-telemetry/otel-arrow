@@ -184,25 +184,33 @@ fn delivery_event_contract_and_sampled_failures() {
                 .failure(at(10), PartialRejection)
                 .is_none()
         );
+        otel_summary_recover!(
+            at: at(60),
+            &mut diagnostics,
+            SignalType::Logs,
+            at(0),
+            "otlp.exporter.http.export_recovered",
+            message = "OTLP HTTP export recovered"
+        );
         assert!(
             diagnostics
                 .signal(SignalType::Logs)
-                .success(at(0), at(60))
+                .failure(at(61), Transport)
                 .is_none()
         );
         otel_summary_warn!(
-            at: at(61),
+            at: at(120),
             &mut diagnostics,
             SignalType::Logs,
-            Transport,
+            PartialRejection,
             "otlp.exporter.http.export_error",
-            retryable = true,
-            message = "connection interrupted"
+            retryable = false,
+            message = "partial acceptance"
         );
         assert!(
             diagnostics
                 .signal(SignalType::Logs)
-                .failure(at(62), PartialRejection)
+                .failure(at(121), Transport)
                 .is_none()
         );
 
@@ -216,44 +224,52 @@ fn delivery_event_contract_and_sampled_failures() {
             message = "trace connection refused"
         );
 
-        assert!(
-            diagnostics
-                .signal(SignalType::Logs)
-                .success(at(0), at(91))
-                .is_none()
-        );
         otel_summary_recover!(
-            at: at(92),
+            at: at(180),
             &mut diagnostics,
             SignalType::Logs,
-            at(63),
+            at(0),
+            "otlp.exporter.http.export_recovered",
+            message = "OTLP HTTP export recovered"
+        );
+        otel_summary_recover!(
+            at: at(181),
+            &mut diagnostics,
+            SignalType::Logs,
+            at(122),
             "otlp.exporter.http.export_recovered",
             message = "OTLP HTTP export recovered"
         );
     });
     let events = capture.0.lock().unwrap();
-    assert_eq!(events.len(), 4);
+    assert_eq!(events.len(), 6);
     events[0].assert_summary_contract("otlp.exporter.http.export_error", "first_failure");
     assert_eq!(events[0].body.as_deref(), Some("connection refused"));
     assert_eq!(events[0].fields["retryable"], true);
     events[1].assert_summary_contract("otlp.exporter.http.export_error", "summary");
-    assert_eq!(events[1].body.as_deref(), Some("connection interrupted"));
+    assert_eq!(events[1].body.as_deref(), Some("connection refused"));
     assert_eq!(events[1].fields["retryable"], true);
-    events[2].assert_summary_contract("otlp.exporter.http.export_error", "first_failure");
-    assert_eq!(events[2].body.as_deref(), Some("trace connection refused"));
-    assert_eq!(events[2].fields["retryable"], true);
-    assert_eq!(events[2].fields["signal"], "traces");
-    events[3].assert_recovery_contract(
+    events[2].assert_summary_contract("otlp.exporter.http.export_error", "summary");
+    assert_eq!(events[2].body.as_deref(), Some("partial acceptance"));
+    assert_eq!(events[2].fields["retryable"], false);
+    events[3].assert_summary_contract("otlp.exporter.http.export_error", "first_failure");
+    assert_eq!(events[3].body.as_deref(), Some("trace connection refused"));
+    assert_eq!(events[3].fields["retryable"], true);
+    assert_eq!(events[3].fields["signal"], "traces");
+    events[4].assert_summary_contract("otlp.exporter.http.export_error", "summary");
+    assert_eq!(events[4].body.as_deref(), Some("partial acceptance"));
+    assert_eq!(events[4].fields["retryable"], false);
+    events[5].assert_recovery_contract(
         "otlp.exporter.http.export_recovered",
         Level::INFO,
         "recovery",
     );
     assert_eq!(
-        events[3].body.as_deref(),
+        events[5].body.as_deref(),
         Some("OTLP HTTP export recovered")
     );
-    assert_eq!(events[3].fields["signal"], "logs");
-    assert!(!events[3].fields.contains_key("retryable"));
+    assert_eq!(events[5].fields["signal"], "logs");
+    assert!(!events[5].fields.contains_key("retryable"));
 }
 
 /// Scenario: Preparation, Ack routing, and Nack routing fail during one reporting interval.

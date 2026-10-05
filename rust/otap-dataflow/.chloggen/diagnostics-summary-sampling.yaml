@@ -5,4 +5,5 @@ issues: [1746]
 subtext: |
   Selected failures and confirmed recoveries use normal component WARN/INFO
   events with summary counters. Suppressed failures create no log event, and
-  error details are neither embedded in another record nor reformatted.
+  success-triggered summaries replay a saved ordinary failure event without
+  embedding or reformatting its details.

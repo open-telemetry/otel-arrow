@@ -20,6 +20,7 @@
 //! reports allocate or format diagnostic text after an episode has started.
 
 use crate::attributes::AttributeEnum;
+use crate::self_tracing::LogRecord;
 use otel_arrow_dfe_config::SignalType;
 use std::fmt;
 use std::marker::PhantomData;
@@ -151,6 +152,10 @@ pub struct DiagnosticReport<E> {
     pub interval: Counts<E>,
     /// Counts since the episode began, including this observation.
     pub total: Counts<E>,
+    /// Most recently emitted failure event without summary attributes.
+    pub detail: Option<LogRecord>,
+    /// Age of the saved failure event.
+    pub detail_age: Duration,
 }
 
 #[derive(Debug)]
@@ -161,6 +166,8 @@ struct Episode<E> {
     interval: Counts<E>,
     total: Counts<E>,
     reported: bool,
+    detail: Option<LogRecord>,
+    detail_at: Instant,
 }
 
 impl<E: AttributeEnum> Episode<E> {
@@ -171,6 +178,8 @@ impl<E: AttributeEnum> Episode<E> {
             interval_duration: now.saturating_duration_since(self.last_report),
             interval: self.interval.clone(),
             total: self.total.clone(),
+            detail: self.detail.clone(),
+            detail_age: now.saturating_duration_since(self.detail_at),
         };
         self.interval.reset();
         self.last_report = now;
@@ -207,6 +216,8 @@ impl<E: AttributeEnum> DiagnosticTracker<E> {
             interval: Counts::default(),
             total: Counts::default(),
             reported: false,
+            detail: None,
+            detail_at: now,
         });
         let first_report = !episode.reported;
         let emit =
@@ -227,6 +238,14 @@ impl<E: AttributeEnum> DiagnosticTracker<E> {
         ))
     }
 
+    /// Saves the unannotated ordinary failure event selected by [`Self::failure`].
+    pub fn remember(&mut self, now: Instant, detail: LogRecord) {
+        if let Some(episode) = &mut self.episode {
+            episode.detail = Some(detail);
+            episode.detail_at = now;
+        }
+    }
+
     /// Observe actual success of the same operation and scope as past failures.
     /// An in-flight attempt begun before the latest observed failure cannot
     /// confirm recovery, regardless of its age.
@@ -240,6 +259,12 @@ impl<E: AttributeEnum> DiagnosticTracker<E> {
             let report = Some(episode.report(ReportKind::Recovered, now));
             self.episode = None;
             return report;
+        }
+        if episode.interval.failures != 0
+            && now.saturating_duration_since(episode.last_report) >= SUMMARY_INTERVAL
+            && episode.detail.is_some()
+        {
+            return Some(episode.report(ReportKind::Summary, now));
         }
         None
     }
@@ -280,6 +305,33 @@ impl<T> SignalSet<T> {
 /// directly. This alias adds a fixed set of scopes without dynamic keys.
 pub type SignalDiagnostics<E> = SignalSet<DiagnosticTracker<E>>;
 
+/// Encodes common summary attributes for appending to an ordinary log record.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __otel_summary_attributes {
+    ($report:expr, $signal:expr) => {{
+        let diagnostic_report = $report;
+        $crate::__log_record_impl!(
+            $crate::Level::TRACE,
+            "diagnostic.summary.attributes",
+            signal = $crate::attributes::AttributeEnum::as_str($signal),
+            diagnostic_kind = diagnostic_report.kind.as_str(),
+            episode_seconds = diagnostic_report.episode_duration.as_secs_f64(),
+            interval_seconds = diagnostic_report.interval_duration.as_secs_f64(),
+            successful_attempts = diagnostic_report.interval.successes,
+            failed_attempts = diagnostic_report.interval.failures,
+            suppressed_diagnostics = diagnostic_report.interval.suppressed,
+            total_successful_attempts = diagnostic_report.total.successes,
+            total_failed_attempts = diagnostic_report.total.failures,
+            total_suppressed_diagnostics = diagnostic_report.total.suppressed,
+            error_counts = %diagnostic_report.interval,
+            total_error_counts = %diagnostic_report.total,
+            error_sample_age_seconds = diagnostic_report.detail_age.as_secs_f64()
+        )
+        .into_record($crate::self_tracing::LogContext::new())
+    }};
+}
+
 /// Sample repeated failures and emit one ordinary warning when selected.
 ///
 /// The tracker decides before the tracing event is constructed. The selected
@@ -300,24 +352,20 @@ macro_rules! otel_summary_warn {
     }};
     (target: $target:expr, at: $now:expr, $diagnostics:expr, $signal:expr, $category:expr, $name:literal, $($fields:tt)+) => {{
         let diagnostic_signal = $signal;
-        if let Some(diagnostic_report) =
-            ($diagnostics).signal(diagnostic_signal).failure($now, $category)
-        {
-            $crate::otel_warn!(target: $target, $name,
-                signal = $crate::attributes::AttributeEnum::as_str(diagnostic_signal),
-                diagnostic_kind = diagnostic_report.kind.as_str(),
-                $($fields)+,
-                episode_seconds = diagnostic_report.episode_duration.as_secs_f64(),
-                interval_seconds = diagnostic_report.interval_duration.as_secs_f64(),
-                successful_attempts = diagnostic_report.interval.successes,
-                failed_attempts = diagnostic_report.interval.failures,
-                suppressed_diagnostics = diagnostic_report.interval.suppressed,
-                total_successful_attempts = diagnostic_report.total.successes,
-                total_failed_attempts = diagnostic_report.total.failures,
-                total_suppressed_diagnostics = diagnostic_report.total.suppressed,
-                error_counts = %diagnostic_report.interval,
-                total_error_counts = %diagnostic_report.total
+        let diagnostic_state = &mut *($diagnostics);
+        let diagnostic_tracker = diagnostic_state.signal(diagnostic_signal);
+        if let Some(diagnostic_report) = diagnostic_tracker.failure($now, $category) {
+            let diagnostic_attrs =
+                $crate::__otel_summary_attributes!(&diagnostic_report, diagnostic_signal);
+            let captured = $crate::tracing_init::with_summary_capture(
+                || {
+                    $crate::otel_warn!(target: $target, $name, $($fields)+);
+                },
+                diagnostic_attrs,
             );
+            if let Some(captured) = captured {
+                diagnostic_tracker.remember($now, captured);
+            }
         }
     }};
 }
@@ -344,24 +392,38 @@ macro_rules! otel_summary_recover {
     }};
     (target: $target:expr, at: $now:expr, $diagnostics:expr, $signal:expr, $started_at:expr, $name:literal, $($fields:tt)+) => {{
         let diagnostic_signal = $signal;
+        let diagnostic_state = &mut *($diagnostics);
         if let Some(diagnostic_report) =
-            ($diagnostics).signal(diagnostic_signal).success($started_at, $now)
+            diagnostic_state.signal(diagnostic_signal).success($started_at, $now)
         {
-            $crate::otel_info!(target: $target, $name,
-                signal = $crate::attributes::AttributeEnum::as_str(diagnostic_signal),
-                diagnostic_kind = diagnostic_report.kind.as_str(),
-                $($fields)+,
-                episode_seconds = diagnostic_report.episode_duration.as_secs_f64(),
-                interval_seconds = diagnostic_report.interval_duration.as_secs_f64(),
-                successful_attempts = diagnostic_report.interval.successes,
-                failed_attempts = diagnostic_report.interval.failures,
-                suppressed_diagnostics = diagnostic_report.interval.suppressed,
-                total_successful_attempts = diagnostic_report.total.successes,
-                total_failed_attempts = diagnostic_report.total.failures,
-                total_suppressed_diagnostics = diagnostic_report.total.suppressed,
-                error_counts = %diagnostic_report.interval,
-                total_error_counts = %diagnostic_report.total
-            );
+            if diagnostic_report.kind == $crate::diagnostics::ReportKind::Summary {
+                if let Some(detail) = diagnostic_report.detail.clone() {
+                    let diagnostic_attrs =
+                        $crate::__otel_summary_attributes!(&diagnostic_report, diagnostic_signal);
+                    $crate::tracing_init::deliver_summary_record(
+                        std::time::SystemTime::now(),
+                        detail,
+                        diagnostic_attrs,
+                    );
+                }
+            } else {
+                $crate::otel_info!(target: $target, $name,
+                    signal = $crate::attributes::AttributeEnum::as_str(diagnostic_signal),
+                    diagnostic_kind = diagnostic_report.kind.as_str(),
+                    $($fields)+,
+                    episode_seconds = diagnostic_report.episode_duration.as_secs_f64(),
+                    interval_seconds = diagnostic_report.interval_duration.as_secs_f64(),
+                    successful_attempts = diagnostic_report.interval.successes,
+                    failed_attempts = diagnostic_report.interval.failures,
+                    suppressed_diagnostics = diagnostic_report.interval.suppressed,
+                    total_successful_attempts = diagnostic_report.total.successes,
+                    total_failed_attempts = diagnostic_report.total.failures,
+                    total_suppressed_diagnostics = diagnostic_report.total.suppressed,
+                    error_counts = %diagnostic_report.interval,
+                    total_error_counts = %diagnostic_report.total,
+                    error_sample_age_seconds = diagnostic_report.detail_age.as_secs_f64()
+                );
+            }
         }
     }};
 }
