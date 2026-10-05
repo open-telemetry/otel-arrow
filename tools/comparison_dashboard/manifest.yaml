@@ -18,6 +18,7 @@ variables:
   fluent_bit_image: fluent/fluent-bit:5.0
   rotel_image: streamfold/rotel:latest
   kafka_image: apache/kafka:latest
+  syslog_loadgen_image: load_generator:kafka-syslog
 
 # Allowed values for every meta key a suite may declare. Validation rejects
 # any meta key not listed here, and any value (or list element) outside the
@@ -31,6 +32,7 @@ meta:
     - { value: fbit, description: "Fluent Bit - A lightweight telemetry agent engine under the fluentd project umbrella." }
     - { value: rotel, description: "rotel-dev/rotel - Rust-based telemetry collector." }
   protocols:
+    - { value: syslog, description: "Raw RFC 5424 Syslog records over Kafka; not OTLP or OTAP encoding." }
     - { value: otap, description: "OpenTelemetry Arrow Protocol - columnar gRPC transport using Apache Arrow record batches." }
     - { value: otlp, description: "OpenTelemetry Protocol over gRPC (row-oriented protobuf)." }
     - { value: otlphttp, description: "OpenTelemetry Protocol over HTTP/protobuf." }
@@ -95,7 +97,7 @@ metrics:
   - name: loadgen_logs_sent_rate
     label: Loadgen Sent Rate
   - name: logs_received_rate
-    label: Collector Received Rate
+    label: Received Log Rate
   - name: collector_logs_sent_rate
     label: Collector Sent Rate
   - name: backend_logs_received_rate
@@ -139,6 +141,7 @@ suites:
   - suites/dfe/dfe-traces-otlphttp-gzip-baseline.yaml
   - suites/dfe/dfe-traces-otlphttp-zstd-baseline.yaml
   # Isolated Kafka benchmarks (receiver vs exporter, logs signal).
+  - suites/dfe/dfe-logs-kafka-syslog-receiver-only.yaml
   - suites/dfe/dfe-logs-kafka-otlp-recv-baseline.yaml
   - suites/dfe/dfe-logs-kafka-otlp-export-baseline.yaml
   - suites/dfe/dfe-logs-kafka-otap-recv-baseline.yaml
@@ -232,6 +235,7 @@ suites:
 # Comparison definitions, listed by path. Each entry must point at an
 # existing YAML file with `slug` and `suites` (a list of suite refs).
 comparisons:
+  - comparisons/kafka_receiver_syslog_receiver_only.yaml
   - comparisons/log_baselines_multi_rate.yaml
   - comparisons/metric_baselines_multi_rate.yaml
   - comparisons/trace_baselines_multi_rate.yaml

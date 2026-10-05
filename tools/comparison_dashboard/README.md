@@ -103,6 +103,83 @@ emitted HTML references suite data at `../comparison_data/<slug>/data.js`
 stubs). The default subdirectory names (`compare/`, `comparison_data/`)
 match the deployed layout under `docs/` on the `benchmarks` branch.
 
+## Syslog Kafka receiver-only benchmark
+
+This suite measures **Kafka receiver -> local Perf**: Syslog decoding, Arrow
+materialization, internal handoff and counting on pipeline core 1. It deploys
+exactly three components (Python generator, Kafka broker, DFE consumer), not a
+batch processor, network exporter, or remote backend. It does not measure
+isolated parser speed or backend ingestion. The recorded results, image IDs and
+limitations are in the
+[benchmark summary](../../KAFKA_SYSLOG_RECEIVER_ONLY_BENCHMARK_SUMMARY.md).
+
+Run from Linux or a native WSL2 checkout with Docker's Linux engine/integration,
+not Windows-native Docker orchestration or a `/mnt/c` checkout. Install Python
+3.11+, `curl`, coreutils, Docker with BuildKit named-context support, and the
+Python dependencies in [Setup](#setup), including the orchestrator requirements.
+Use a host with at least two logical CPUs (core index 1 must exist) and spare
+CPU/RAM for Kafka and the generator. From a checkout containing this suite:
+
+```bash
+# Repository root; initialize submodules before building the engine.
+git submodule update --init --recursive
+docker pull apache/kafka:latest
+(
+  cd rust/otap-dataflow
+  docker build --build-arg FEATURES=kafka \
+    --build-context otel-arrow=../../ -f Dockerfile -t df_engine:latest .
+)
+docker build -t load_generator:kafka-syslog \
+  tools/pipeline_perf_test/load_generator
+docker run --rm df_engine:latest -h | grep 'urn:otel:receiver:kafka'
+
+cd tools/comparison_dashboard
+python dashboard.py validate
+python dashboard.py run suites/dfe/dfe-logs-kafka-syslog-receiver-only.yaml \
+  --generate-only
+python -u dashboard.py run suites/dfe/dfe-logs-kafka-syslog-receiver-only.yaml \
+  --tests 100k,200k,300k,400k,600k,800k,1000k --observation-interval 20
+python dashboard.py build
+python dashboard.py serve --port 3000
+```
+
+Run targets sequentially, without concurrent benchmarks or image builds. The
+suite refuses to overwrite existing `load-generator`, `kafka-broker`,
+`kafka-consumer`, or `backend-service` containers. It binds host loopback ports
+18085 (generator HTTP), 19094 (Kafka), and 18088 (consumer admin); it does **not**
+deploy a backend or bind 18087. The isolated Docker network is
+`kafka-syslog-benchmark`. Pin image references in `manifest.yaml` for repeat runs.
+Fresh builds reproduce the workflow, not necessarily the historical numbers:
+the retained measured engine's exact build commit is unknown.
+
+Each Kafka value is one uncompressed 1024-byte RFC 5424 log, one topic/partition,
+one producer thread, scheduling batches of 100. A 10s warmup precedes the 20s
+observation. Producer stop/flush and a bounded 10s drain precede final snapshots
+**while the consumer admin is alive**, then its 15s shutdown. Both root
+`policies.telemetry.runtime_metrics: normal` and Perf's `item_counts: true` are
+required for the retained benchmark image. Missing successful log **item**
+counters fail verification/reporting; message counts and zero are not fallbacks.
+
+Visit `http://localhost:3000/compare/kafka_receiver_syslog_receiver_only/`.
+A fresh checkout has no published results; `build` does not run benchmarks or
+create measured zeros. The chart shows guidance until results are published.
+Successful runs retain evidence in
+`.data/dfe_logs_kafka_syslog_receiver_only/<timestamp>/tests/<rate>/` and publish
+reports/time series under
+`.site/data/suite/dfe_logs_kafka_syslog_receiver_only/`.
+`build` generates the page under `.site/compare/`. Keep these local artifacts;
+do not use `--clean` when preserving earlier runs. The failed initial historical
+run was not published.
+
+**Received Log Rate** selects successful local Perf logs/s; **Offered Load Rate**
+is broker-confirmed input/s, not the configured target. CPU/RAM describe only the
+consumer container; 100% CPU is approximately one allocated core, not a cgroup
+limit. Final `verified-delivery.json` deficits mean not observed by the bounded
+cutoff, not proven loss; `group_lag=0` is not drain evidence. Missing decode-error
+series are unavailable, not zero. No network-output bytes or dropped-loss
+estimates are emitted. The default seven high-rate cases allow backlog; only an
+explicit `rates: [1000]` suite override activates full count-equality checking.
+
 ## Directory Structure
 
 ```text

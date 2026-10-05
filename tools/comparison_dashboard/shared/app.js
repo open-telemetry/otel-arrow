@@ -567,7 +567,7 @@ const TIMESERIES_METRICS = [
   { key: "network_tx_bytes_rate", label: "Network TX Rate", unit: "bytes/sec", avg: "network_tx_bytes_rate_avg" },
   { key: "network_rx_bytes_rate", label: "Network RX Rate", unit: "bytes/sec", avg: "network_rx_bytes_rate_avg" },
   { key: "logs_produced_rate", label: "Offered Load Rate", unit: "logs/sec", avg: "logs_produced_rate" },
-  { key: "logs_received_rate", label: "Backend Received Rate", unit: "logs/sec", avg: "logs_received_rate" },
+  { key: "logs_received_rate", label: "Received Log Rate", unit: "logs/sec", avg: "logs_received_rate" },
   { key: "metrics_produced_rate", label: "Offered Load Rate", unit: "metrics/sec", avg: "metrics_produced_rate" },
   { key: "metrics_received_rate", label: "Backend Received Rate", unit: "metrics/sec", avg: "metrics_received_rate" },
   { key: "spans_produced_rate", label: "Offered Load Rate", unit: "spans/sec", avg: "spans_produced_rate" },
@@ -845,6 +845,15 @@ function renderComparisonChart(suiteData, comparison, tests, onBarClick) {
   const prev = perComparisonMetrics.get(compSlug);
   let sel = prev && metrics.includes(prev) ? prev : defaultMetric(comparison, metrics);
   perComparisonMetrics.set(compSlug, sel);
+
+  if (!comparison.suites.length || !metrics.length) {
+    const message = !comparison.suites.length
+      ? "No suites match the current filters."
+      : "No published metrics are available for this selection. Run and publish the suite, or serve the site containing its results.";
+    target.innerHTML = `<div class="scenario-section"><div class="muted" role="status" style="padding:16px">${escapeHtml(message)}</div></div>`;
+    return;
+  }
+
   const optsHtml = metrics.map((n) => `<option value="${escapeHtml(n)}" ${n === sel ? "selected" : ""}>${escapeHtml(metricTitle(n, suiteData, comparison))}</option>`).join("");
 
   const onClick = onBarClick ? (event, elements) => {
@@ -857,11 +866,6 @@ function renderComparisonChart(suiteData, comparison, tests, onBarClick) {
 
   const anyBP = anyComparisonBackpressure(suiteData, comparison);
   const bpHtml = anyBP ? '<div class="chart-backpressure-legend">\u26A0 Backpressure detected</div>' : "";
-
-  if (comparison.suites.length === 0) {
-    target.innerHTML = '<div class="scenario-section"><div class="muted" style="padding:16px">No suites match the current filters.</div></div>';
-    return;
-  }
 
   target.innerHTML = `
     <div class="scenario-section">

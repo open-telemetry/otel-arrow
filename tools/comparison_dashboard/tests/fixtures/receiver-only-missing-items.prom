@@ -1,0 +1,6 @@
+# Selected series from the failed 20260930_233911/100k consumer-final.prom.
+# Original labels/counts are retained; optional datapoint timestamps are omitted.
+# The raw snapshot has no items_total series; Perf export messages are not items.
+messages_total{otel_scope_node_urn="urn:otel:exporter:perf",otel_scope_name="exporter.exports",otel_scope_node_id="perf",otel_scope_pipeline_id="main",otel_scope_node_type="exporter",otel_scope_pipeline_group_id="default",signal="logs",outcome="success",otel_scope_numa_node_id="0",otel_scope_core_id="1",otel_scope_deployment_generation="0"} 1463355
+started_total{otel_scope_numa_node_id="0",otel_scope_deployment_generation="0",otel_scope_node_urn="urn:otel:receiver:kafka",otel_scope_node_id="receiver",signal="logs",otel_scope_name="receiver.kafka.messages",otel_scope_node_type="receiver",otel_scope_core_id="1",otel_scope_pipeline_id="main",otel_scope_pipeline_group_id="default"} 1463356
+records_received_total{otel_scope_deployment_generation="0",otel_scope_pipeline_group_id="default",otel_scope_pipeline_id="main",otel_scope_name="receiver.kafka.consumer",otel_scope_core_id="1",otel_scope_node_id="receiver",otel_scope_node_urn="urn:otel:receiver:kafka",otel_scope_numa_node_id="0",otel_scope_node_type="receiver"} 1463356

@@ -1,0 +1,35 @@
+slug: kafka_receiver_syslog_receiver_only
+name: Syslog Kafka receiver -> local Perf
+description: >-
+  Receiver-only is receiver -> local Perf on one pipeline core: Syslog decoding,
+  Arrow materialization, handoff and counting; no batch or remote exporter.
+  Received Log Rate means successful local Perf input, not backend delivery.
+  Offered Load Rate is broker-confirmed raw 1024-byte records. Observation is
+  20s after 10s warmup; final receiver-only counts are captured after a 10s
+  producer-off drain BEFORE shutdown. High-rate deficits are bounded-backlog proxies, not
+  proven loss; Kafka group_lag=0 does not prove draining. CPU/RAM describe the
+  consumer container, normalized to one allocated core. Receiver-only omits
+  network/egress metrics: its traffic is Kafka ingress/control, not remote export.
+  Unrun rates have no data.
+
+chart:
+  metrics:
+    default: logs_received_rate
+  axes:
+    x:
+      title: Configured Load (logs/sec)
+      description: Aggregate target; compare with broker-confirmed Offered Load Rate.
+
+tests:
+  - {name: 100k, loadgen_rate: 100000}
+  - {name: 200k, loadgen_rate: 200000}
+  - {name: 300k, loadgen_rate: 300000}
+  - {name: 400k, loadgen_rate: 400000}
+  - {name: 600k, loadgen_rate: 600000}
+  - {name: 800k, loadgen_rate: 800000}
+  - {name: 1000k, loadgen_rate: 1000000, label: 1M}
+
+suites:
+  - name: Syslog Kafka receiver -> local Perf (Logs)
+    slug: dfe_logs_kafka_syslog_receiver_only
+    short: receiver -> local Perf
