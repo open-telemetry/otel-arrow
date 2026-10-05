@@ -312,7 +312,8 @@ impl<'input> Document<'input> {
                 Event::Text(text) => {
                     // The "no CDEnd in content" WFC forbids only a literal "]]>",
                     // not one produced by entity or character references.
-                    if text.as_ref().windows(3).any(|window| window == b"]]>") {
+                    let raw: &[u8] = text.as_ref();
+                    if raw.windows(3).any(|window| window == b"]]>") {
                         return Err(Error::Invalid("CDATA delimiter in text"));
                     }
                     budget.charge(text.len())?;
