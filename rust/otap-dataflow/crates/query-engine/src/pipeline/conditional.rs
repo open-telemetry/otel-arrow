@@ -16,6 +16,7 @@ use datafusion::prelude::SessionContext;
 use otel_arrow_dfe_pdata::OtapArrowRecords;
 
 use otel_arrow_dfe_pdata::otap::filter::{IdBitmapPool, filter_otap_batch};
+use otel_arrow_dfe_pdata::otap::transform::concatenate::ConcatOptions;
 
 use crate::error::Result;
 use crate::pipeline::concat::{
@@ -147,9 +148,8 @@ impl PipelineStage for ConditionalPipelineStage {
             // batch specifically containing the rows that have not already been selected and
             // feeding that into next iterations. This is extra overhead, but the resulting batch
             // would have less rows which could make filter faster.
-            let predicate_result = branch
-                .condition
-                .execute_as_value(&otap_batch, &EvalContext::new(session_ctx))?;
+            let eval_ctx = EvalContext::new(session_ctx);
+            let predicate_result = branch.condition.execute_as_value(&otap_batch, &eval_ctx)?;
 
             let predicate_selection_vec = match predicate_result {
                 None => BooleanArray::new(BooleanBuffer::new_unset(root_batch.num_rows()), None),
@@ -159,7 +159,7 @@ impl PipelineStage for ConditionalPipelineStage {
                         DataScope::Record(_) | DataScope::RootParent(_)
                     )) && scoped_value.scope != DataScope::StaticScalar
                     {
-                        align_selection_to_root(Some(scoped_value), &otap_batch)?
+                        align_selection_to_root(Some(scoped_value), &otap_batch, &eval_ctx)?
                     } else {
                         // extract the BooleanArray from the ScopedValue
                         scoped_value_to_boolean_array(scoped_value.values, root_batch.num_rows())?
@@ -243,9 +243,15 @@ impl PipelineStage for ConditionalPipelineStage {
 
         // reconstruct the result with the results of each branch
         match otap_batch {
-            OtapArrowRecords::Logs(_) => concatenate_logs(&mut branch_results),
-            OtapArrowRecords::Metrics(_) => concatenate_metrics(&mut branch_results),
-            OtapArrowRecords::Traces(_) => concatenate_traces(&mut branch_results),
+            OtapArrowRecords::Logs(_) => {
+                concatenate_logs(&mut branch_results, ConcatOptions::preserve_ids())
+            }
+            OtapArrowRecords::Metrics(_) => {
+                concatenate_metrics(&mut branch_results, ConcatOptions::preserve_ids())
+            }
+            OtapArrowRecords::Traces(_) => {
+                concatenate_traces(&mut branch_results, ConcatOptions::preserve_ids())
+            }
         }
     }
 
@@ -411,6 +417,39 @@ mod test {
                 .attributes(vec![KeyValue::new("x", AnyValue::new_string("test"))])
                 .finish(),
         ];
+
+        pretty_assertions::assert_eq!(result.resource_logs[0].scope_logs[0].log_records, expected)
+    }
+
+    /// Scenario: Evaluate a conditional branch using a nested serialized attribute leaf.
+    /// Guarantees: The branch updates only records whose nested leaf matches.
+    #[tokio::test]
+    async fn test_conditional_with_nested_serialized_attribute() {
+        let log_records = vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new(
+                    "complex",
+                    AnyValue::new_kvlist(vec![KeyValue::new("name", AnyValue::new_string("a"))]),
+                )])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new(
+                    "complex",
+                    AnyValue::new_kvlist(vec![KeyValue::new("name", AnyValue::new_string("b"))]),
+                )])
+                .finish(),
+        ];
+
+        let result = exec_logs_pipeline::<OplParser>(
+            r#"
+            logs | if (attributes["complex"]["name"] == "a") {
+                set severity_text = "MATCHED"
+            }"#,
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        let mut expected = log_records;
+        expected[0].severity_text = "MATCHED".into();
 
         pretty_assertions::assert_eq!(result.resource_logs[0].scope_logs[0].log_records, expected)
     }

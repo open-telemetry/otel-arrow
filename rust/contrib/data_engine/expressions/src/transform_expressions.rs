@@ -25,6 +25,9 @@ pub enum TransformExpression {
 
     /// Set data transformation.
     Set(SetTransformExpression),
+
+    /// Scale value-bearing fields.
+    Scale(ScaleTransformExpression),
 }
 
 impl TransformExpression {
@@ -39,6 +42,7 @@ impl TransformExpression {
             TransformExpression::RemoveMapKeys(r) => r.try_fold(scope),
             TransformExpression::RenameMapKeys(r) => r.try_fold(scope),
             TransformExpression::Set(s) => s.try_fold(scope),
+            TransformExpression::Scale(_) => Ok(()),
         }
     }
 }
@@ -52,6 +56,7 @@ impl Expression for TransformExpression {
             TransformExpression::RemoveMapKeys(r) => r.get_query_location(),
             TransformExpression::RenameMapKeys(r) => r.get_query_location(),
             TransformExpression::Set(s) => s.get_query_location(),
+            TransformExpression::Scale(s) => s.get_query_location(),
         }
     }
 
@@ -63,6 +68,7 @@ impl Expression for TransformExpression {
             TransformExpression::RemoveMapKeys(r) => r.get_name(),
             TransformExpression::RenameMapKeys(_) => "Transform(RenameMapKeys)",
             TransformExpression::Set(_) => "Transform(Set)",
+            TransformExpression::Scale(_) => "Transform(Scale)",
         }
     }
 
@@ -74,7 +80,51 @@ impl Expression for TransformExpression {
             TransformExpression::RemoveMapKeys(r) => r.fmt_with_indent(f, indent),
             TransformExpression::RenameMapKeys(r) => r.fmt_with_indent(f, indent),
             TransformExpression::Set(s) => s.fmt_with_indent(f, indent),
+            TransformExpression::Scale(s) => s.fmt_with_indent(f, indent),
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScaleTransformExpression {
+    query_location: QueryLocation,
+    multiplier: f64,
+    unit: Option<String>,
+}
+
+impl ScaleTransformExpression {
+    pub fn new(query_location: QueryLocation, multiplier: f64, unit: Option<String>) -> Self {
+        Self {
+            query_location,
+            multiplier,
+            unit,
+        }
+    }
+
+    pub fn get_multiplier(&self) -> f64 {
+        self.multiplier
+    }
+
+    pub fn get_unit(&self) -> Option<&str> {
+        self.unit.as_deref()
+    }
+}
+
+impl Expression for ScaleTransformExpression {
+    fn get_query_location(&self) -> &QueryLocation {
+        &self.query_location
+    }
+
+    fn get_name(&self) -> &'static str {
+        "ScaleTransformExpression"
+    }
+
+    fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, _indent: &str) -> std::fmt::Result {
+        write!(
+            f,
+            "Scale(multiplier={}, unit={:?})",
+            self.multiplier, self.unit
+        )
     }
 }
 

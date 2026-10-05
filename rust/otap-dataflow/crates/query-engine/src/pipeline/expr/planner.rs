@@ -171,7 +171,7 @@ impl ExprPlanner {
                     }
                     ColumnAccessor::Attributes(attrs_id, key) => Ok(PlannedOp {
                         expr: ScopedExpr::Eval {
-                            scope: DataScope::Attribute(attrs_id, key),
+                            scope: DataScope::Attribute(attrs_id, key, Vec::new()),
                             eval: LeafEval::new_df_expr_with_key_case(
                                 col(VALUE_COLUMN_NAME),
                                 false,
@@ -181,9 +181,17 @@ impl ExprPlanner {
                         expr_type: ExprLogicalType::AnyValue,
                         requires_dict_downcast: false,
                     }),
-                    ColumnAccessor::NestedAttribute(_, _, _) => Err(Error::NotYetSupportedError {
-                        message: "reading nested serialized attribute paths is not yet supported"
-                            .into(),
+                    ColumnAccessor::NestedAttribute(attrs_id, key, path) => Ok(PlannedOp {
+                        expr: ScopedExpr::Eval {
+                            scope: DataScope::Attribute(attrs_id, key, path),
+                            eval: LeafEval::new_df_expr_with_key_case(
+                                col(VALUE_COLUMN_NAME),
+                                false,
+                                self.attr_key_case_sensitive,
+                            )?,
+                        },
+                        expr_type: ExprLogicalType::AnyValue,
+                        requires_dict_downcast: false,
                     }),
                 }
             }
@@ -1127,6 +1135,9 @@ impl ExprPlanner {
 
         let requires_dict_downcast = left.requires_dict_downcast || right.requires_dict_downcast;
 
+        if self.record_type.is_attribute() {
+            resolve_attr_value_column_in_planned_ops(&mut left, &mut right);
+        }
         let mut expr = self.build_binary_expr(left, operator, right, requires_dict_downcast)?;
         if !either_side_literal {
             // if we're here, it means both sides of the comparison are not literals. For
@@ -1240,7 +1251,7 @@ impl ExprPlanner {
                         // We use a trivial "true" predicate in the attribute scope to
                         // check for key existence (key filtering is done at the scope level).
                         Ok(Some(ScopedExpr::BitmapNot(Box::new(ScopedExpr::Eval {
-                            scope: DataScope::Attribute(attrs_id, key),
+                            scope: DataScope::Attribute(attrs_id, key, Vec::new()),
                             eval: LeafEval::new_df_expr_with_key_case(
                                 lit(true),
                                 false,
@@ -1248,7 +1259,17 @@ impl ExprPlanner {
                             )?,
                         }))))
                     }
-                    ColumnAccessor::NestedAttribute(_, _, _) => Ok(None),
+                    // Unresolved paths and null leaves are omitted during projection.
+                    ColumnAccessor::NestedAttribute(attrs_id, key, path) => {
+                        Ok(Some(ScopedExpr::BitmapNot(Box::new(ScopedExpr::Eval {
+                            scope: DataScope::Attribute(attrs_id, key, path),
+                            eval: LeafEval::new_df_expr_with_key_case(
+                                lit(true),
+                                false,
+                                self.attr_key_case_sensitive,
+                            )?,
+                        }))))
+                    }
                 };
             }
         }
@@ -1276,10 +1297,14 @@ impl ExprPlanner {
         // Identify which side is the attribute access and which is the literal.
         let (attrs_op, literal_op, attrs_on_left) =
             match (left.expr.eval_scope(), right.expr.eval_scope()) {
-                (Some(DataScope::Attribute(_, _)), Some(DataScope::StaticScalar)) => {
+                (Some(DataScope::Attribute(_, _, path)), Some(DataScope::StaticScalar))
+                    if path.is_empty() =>
+                {
                     (left, right, true)
                 }
-                (Some(DataScope::StaticScalar), Some(DataScope::Attribute(_, _))) => {
+                (Some(DataScope::StaticScalar), Some(DataScope::Attribute(_, _, path)))
+                    if path.is_empty() =>
+                {
                     (right, left, false)
                 }
                 _ => return Ok(None),
@@ -1298,7 +1323,7 @@ impl ExprPlanner {
 
         // Extract the attribute key and attrs_id
         let (attrs_id, key) = match attrs_op.expr.eval_scope() {
-            Some(DataScope::Attribute(id, key)) => (*id, key.clone()),
+            Some(DataScope::Attribute(id, key, path)) if path.is_empty() => (*id, key.clone()),
             _ => return Ok(None),
         };
 
@@ -1447,7 +1472,7 @@ impl ExprPlanner {
     ) -> Result<Option<ScopedExpr>> {
         // Haystack must be an attribute access, needle must be a static string literal
         let (attrs_id, key) = match haystack.expr.eval_scope() {
-            Some(DataScope::Attribute(id, key)) => (*id, key.clone()),
+            Some(DataScope::Attribute(id, key, path)) if path.is_empty() => (*id, key.clone()),
             _ => return Ok(None),
         };
 
@@ -1561,7 +1586,7 @@ impl ExprPlanner {
         pattern: &Expr,
     ) -> Result<Option<ScopedExpr>> {
         let (attrs_id, key) = match haystack.expr.eval_scope() {
-            Some(DataScope::Attribute(id, key)) => (*id, key.clone()),
+            Some(DataScope::Attribute(id, key, path)) if path.is_empty() => (*id, key.clone()),
             _ => return Ok(None),
         };
 
@@ -1878,14 +1903,11 @@ impl ExprPlanner {
     /// (cross-scope).
     fn build_binary_expr(
         &self,
-        mut left: PlannedOp,
+        left: PlannedOp,
         operator: Operator,
-        mut right: PlannedOp,
+        right: PlannedOp,
         dict_downcast: bool,
     ) -> Result<ScopedExpr> {
-        if self.record_type.is_attribute() {
-            resolve_attr_value_column_in_planned_ops(&mut left, &mut right);
-        }
         let possible_scope = try_combine_scopes(&left, &right);
 
         if let Some(scope) = possible_scope {
@@ -2059,7 +2081,7 @@ impl ScopedExpr {
 
                 if *align_children_to_record {
                     let record_scope = match record_type {
-                        RecordType::Child(child_kind) => RecordScope::Child(child_kind.clone()),
+                        RecordType::Child(child) => RecordScope::Child(*child),
                         _ => RecordScope::Signal,
                     };
                     return Ok(Cow::Owned(DataScope::Record(record_scope)));
@@ -2074,8 +2096,8 @@ impl ScopedExpr {
                         (_, DataScope::StaticScalar | DataScope::AttributesAll(_)) => curr_scope,
                         (DataScope::StaticScalar | DataScope::AttributesAll(_), _) => next_scope,
                         (
-                            DataScope::Attribute(left_attrs_id, _),
-                            DataScope::Attribute(right_attrs_id, _),
+                            DataScope::Attribute(left_attrs_id, _, _),
+                            DataScope::Attribute(right_attrs_id, _, _),
                         ) => {
                             if left_attrs_id == right_attrs_id {
                                 curr_scope
@@ -2087,14 +2109,14 @@ impl ScopedExpr {
                         }
                         (
                             DataScope::Record(_) | DataScope::RootParent(_),
-                            DataScope::Attribute(_, _),
+                            DataScope::Attribute(_, _, _),
                         ) => curr_scope,
                         (
-                            DataScope::Attribute(attr_id, _),
+                            DataScope::Attribute(attr_id, _, _),
                             DataScope::Record(_) | DataScope::RootParent(_),
                         ) => match attr_id {
-                            AttributesIdentifier::Root => curr_scope,
-                            AttributesIdentifier::NonRoot(_) => next_scope,
+                            AttributesIdentifier::Record(_) => curr_scope,
+                            AttributesIdentifier::NonRecord(_) => next_scope,
                         },
 
                         // rest always have record alignment
@@ -2109,7 +2131,7 @@ impl ScopedExpr {
             }
             Self::BitmapAnd(_, _) | Self::BitmapOr(_, _) | Self::BitmapNot(_) => {
                 let record_scope = match record_type {
-                    RecordType::Child(child_kind) => RecordScope::Child(child_kind.clone()),
+                    RecordType::Child(child_kind) => RecordScope::Child(*child_kind),
                     _ => RecordScope::Signal,
                 };
                 Ok(Cow::Owned(DataScope::Record(record_scope)))
@@ -2268,7 +2290,7 @@ fn is_simple_attr_value_column(planned: &PlannedOp) -> bool {
     matches!(
         &planned.expr,
         ScopedExpr::Eval {
-            scope: DataScope::Attribute(_, _),
+            scope: DataScope::Attribute(_, _, _),
             eval: LeafEval::DatafusionExpr { logical_expr: Expr::Column(c), .. },
         } if c.name() == VALUE_COLUMN_NAME
     )
@@ -2566,7 +2588,11 @@ mod test {
         assert!(matches!(
             planned.expr,
             ScopedExpr::Eval {
-                scope: DataScope::Attribute(AttributesIdentifier::Root, _),
+                scope: DataScope::Attribute(
+                    AttributesIdentifier::Record(RecordScope::Signal),
+                    _,
+                    _
+                ),
                 ..
             }
         ));
@@ -2582,7 +2608,7 @@ mod test {
             .unwrap();
         assert!(matches!(
             result.scope,
-            DataScope::Attribute(AttributesIdentifier::Root, _)
+            DataScope::Attribute(AttributesIdentifier::Record(RecordScope::Signal), _, _)
         ));
         // 3 attribute rows (one per log record, each has key "x")
         match &result.values {
@@ -2888,7 +2914,7 @@ mod test {
         assert!(matches!(
             op,
             ScopedExpr::Eval {
-                scope: DataScope::AttributesAll(AttributesIdentifier::Root),
+                scope: DataScope::AttributesAll(AttributesIdentifier::Record(RecordScope::Signal)),
                 ..
             }
         ));
@@ -2928,7 +2954,7 @@ mod test {
         assert!(matches!(
             op,
             ScopedExpr::Eval {
-                scope: DataScope::AttributesAll(AttributesIdentifier::Root),
+                scope: DataScope::AttributesAll(AttributesIdentifier::Record(RecordScope::Signal)),
                 ..
             }
         ));
@@ -2987,7 +3013,7 @@ mod test {
         assert!(matches!(
             op,
             ScopedExpr::Eval {
-                scope: DataScope::AttributesAll(AttributesIdentifier::Root),
+                scope: DataScope::AttributesAll(AttributesIdentifier::Record(RecordScope::Signal)),
                 ..
             }
         ));

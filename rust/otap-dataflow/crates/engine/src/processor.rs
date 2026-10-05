@@ -24,6 +24,7 @@ use crate::flow_metrics::{
     FlowDroppedItemsMetrics, FlowDurationMetricSet, FlowInputItemsMetrics, FlowInputMessageMetrics,
     FlowInputSizeMetrics, FlowOutputItemsMetrics, FlowOutputMessageMetrics, FlowOutputSizeMetrics,
 };
+use crate::forced_shutdown::ForcedShutdownSignal;
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::local::processor as local;
 use crate::message::{Message, ProcessorInbox, Receiver, Sender};
@@ -588,42 +589,6 @@ impl<PData> ProcessorWrapper<PData> {
         }
     }
 
-    /// Start the processor using the services owned by its pipeline runtime.
-    pub async fn start(
-        self,
-        runtime_ctrl_msg_tx: RuntimeCtrlMsgSender<PData>,
-        pipeline_completion_msg_tx: PipelineCompletionMsgSender<PData>,
-        metrics_reporter: MetricsReporter,
-        node_interests: Interests,
-        runtime_services: PipelineRuntimeServices,
-    ) -> Result<(), Error>
-    where
-        PData: ReceivedAtNode + FlowMetricHook,
-    {
-        self.start_with_completion_metrics(
-            runtime_ctrl_msg_tx,
-            pipeline_completion_msg_tx,
-            metrics_reporter,
-            node_interests,
-            None,
-            false,
-            false,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            false,
-            false,
-            TerminalMetricsDeadline::default(),
-            runtime_services,
-        )
-        .await
-    }
-
     pub(crate) async fn start_with_completion_metrics(
         self,
         runtime_ctrl_msg_tx: RuntimeCtrlMsgSender<PData>,
@@ -644,6 +609,7 @@ impl<PData> ProcessorWrapper<PData> {
         flow_metrics_active: bool,
         flow_needs_timing: bool,
         terminal_metrics_deadline: TerminalMetricsDeadline,
+        forced_shutdown_signal: ForcedShutdownSignal,
         runtime_services: PipelineRuntimeServices,
     ) -> Result<(), Error>
     where
@@ -841,7 +807,11 @@ impl<PData> ProcessorWrapper<PData> {
             }
             Ok(())
         };
-        let result = run.await;
+        let result = tokio::select! {
+            biased;
+            _ = forced_shutdown_signal.triggered() => Ok(()),
+            result = run => result,
+        };
         // Return the original processing error if present; otherwise surface
         // any error from final metrics collection.
         processing_error.map_or(result, Err)
@@ -1523,6 +1493,8 @@ mod tests {
         local_tasks
             .run_until(async move {
                 let processor_task = tokio::task::spawn_local(async move {
+                    let (_, forced_shutdown_signal) =
+                        crate::forced_shutdown::ForcedShutdownTrigger::pair();
                     processor
                         .start_with_completion_metrics(
                             runtime_ctrl_tx,
@@ -1543,6 +1515,7 @@ mod tests {
                             true,
                             true,
                             crate::terminal_state::TerminalMetricsDeadline::default(),
+                            forced_shutdown_signal,
                             crate::testing::test_pipeline_runtime_services(),
                         )
                         .await
@@ -1603,6 +1576,210 @@ mod tests {
                 assert_eq!(*output_items, 1);
             })
             .await;
+    }
+
+    struct DelayedProcessor {
+        started: Option<tokio::sync::oneshot::Sender<()>>,
+        fail_before_final_metrics: bool,
+    }
+
+    #[async_trait(?Send)]
+    impl local::Processor<FlowMetricTestPData> for DelayedProcessor {
+        async fn process(
+            &mut self,
+            msg: Message<FlowMetricTestPData>,
+            effect_handler: &mut local::EffectHandler<FlowMetricTestPData>,
+        ) -> Result<(), Error> {
+            if let Message::PData(pdata) = msg {
+                self.started.take().expect("first batch").send(()).unwrap();
+                if self.fail_before_final_metrics {
+                    return Err(Error::ProcessorError {
+                        processor: test_node("test_processor"),
+                        kind: ProcessorErrorKind::Other,
+                        error: "error before shutdown deadline".to_owned(),
+                        source_detail: String::new(),
+                    });
+                }
+                tokio::time::sleep(Duration::from_secs(10)).await;
+                effect_handler.send_message(pdata).await?;
+            } else if self.fail_before_final_metrics
+                && matches!(
+                    msg,
+                    Message::Control(NodeControlMsg::CollectTelemetry { .. })
+                )
+            {
+                std::future::pending::<()>().await;
+            }
+            Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl shared::Processor<FlowMetricTestPData> for DelayedProcessor {
+        async fn process(
+            &mut self,
+            msg: Message<FlowMetricTestPData>,
+            effect_handler: &mut shared::EffectHandler<FlowMetricTestPData>,
+        ) -> Result<(), Error> {
+            if let Message::PData(pdata) = msg {
+                self.started.take().expect("first batch").send(()).unwrap();
+                if self.fail_before_final_metrics {
+                    return Err(Error::ProcessorError {
+                        processor: test_node("test_processor"),
+                        kind: ProcessorErrorKind::Other,
+                        error: "error before shutdown deadline".to_owned(),
+                        source_detail: String::new(),
+                    });
+                }
+                tokio::time::sleep(Duration::from_secs(10)).await;
+                effect_handler.send_message(pdata).await?;
+            } else if self.fail_before_final_metrics
+                && matches!(
+                    msg,
+                    Message::Control(NodeControlMsg::CollectTelemetry { .. })
+                )
+            {
+                std::future::pending::<()>().await;
+            }
+            Ok(())
+        }
+    }
+
+    async fn run_delayed_shutdown_scenario(
+        shared: bool,
+        deadline_secs: u64,
+        fail_before_final_metrics: bool,
+    ) {
+        let config = ProcessorConfig::new("test_processor");
+        let node_id = test_node(config.name.clone());
+        let user_config = Arc::new(NodeUserConfig::new_processor_config("test_processor"));
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let processor = DelayedProcessor {
+            started: Some(started_tx),
+            fail_before_final_metrics,
+        };
+        let mut wrapper = if shared {
+            ProcessorWrapper::shared(processor, node_id.clone(), user_config, &config)
+        } else {
+            ProcessorWrapper::local(processor, node_id.clone(), user_config, &config)
+        };
+        let (input_tx, input_rx) = tokio::sync::mpsc::channel(4);
+        let (output_tx, mut output_rx) = tokio::sync::mpsc::channel(4);
+        wrapper
+            .set_pdata_receiver(
+                node_id.clone(),
+                Receiver::Shared(SharedReceiver::mpsc(input_rx)),
+            )
+            .unwrap();
+        wrapper
+            .set_pdata_sender(
+                node_id,
+                "default".into(),
+                Sender::Shared(SharedSender::mpsc(output_tx)),
+            )
+            .unwrap();
+        input_tx.send(FlowMetricTestPData::default()).await.unwrap();
+        drop(input_tx);
+        let (_metrics_rx, reporter) =
+            otel_arrow_dfe_telemetry::reporter::MetricsReporter::create_new_and_receiver(16);
+        let (runtime_tx, _runtime_rx) = runtime_ctrl_msg_channel(4);
+        let (completion_tx, _completion_rx) = pipeline_completion_msg_channel(4);
+        let _control_keepalive = wrapper.control_sender();
+        let deadline = crate::terminal_state::TerminalMetricsDeadline::default();
+        let (forced_shutdown_trigger, forced_shutdown_signal) =
+            crate::forced_shutdown::ForcedShutdownTrigger::pair();
+        let start = tokio::time::Instant::now();
+        let run = wrapper.start_with_completion_metrics(
+            runtime_tx,
+            completion_tx,
+            reporter,
+            crate::Interests::empty(),
+            None,
+            false,
+            false,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+            false,
+            deadline.clone(),
+            forced_shutdown_signal,
+            crate::testing::test_pipeline_runtime_services(),
+        );
+        let shutdown = tokio::spawn(async move {
+            started_rx.await.expect("handler started before shutdown");
+            tokio::time::sleep_until(start + Duration::from_secs(deadline_secs)).await;
+            forced_shutdown_trigger.trigger();
+        });
+        let result = run.await;
+        shutdown.abort();
+        if fail_before_final_metrics {
+            let Error::ProcessorError { error, .. } = result.expect_err("original error survives")
+            else {
+                panic!("expected the original processor error");
+            };
+            assert_eq!(error, "error before shutdown deadline");
+        } else {
+            result.expect("shutdown must not become a processing error");
+        }
+        assert_eq!(start.elapsed(), Duration::from_secs(deadline_secs.min(10)));
+        if deadline_secs < 10 {
+            assert!(
+                output_rx.try_recv().is_err(),
+                "expired batch must not be forwarded"
+            );
+        } else {
+            let _ = output_rx
+                .try_recv()
+                .expect("graceful drain forwards the batch");
+        }
+    }
+
+    /// Scenario: A local processor is awaiting a ten-second handler when a two-second deadline is set.
+    /// Guarantees: Forced shutdown completes at the deadline without forwarding the pending batch.
+    #[tokio::test(start_paused = true)]
+    async fn local_processor_deadline_cancels_inflight_handler() {
+        run_delayed_shutdown_scenario(false, 2, false).await;
+    }
+
+    /// Scenario: A shared processor is awaiting a ten-second handler when a two-second deadline is set.
+    /// Guarantees: Forced shutdown completes at the deadline without forwarding the pending batch.
+    #[tokio::test(start_paused = true)]
+    async fn shared_processor_deadline_cancels_inflight_handler() {
+        run_delayed_shutdown_scenario(true, 2, false).await;
+    }
+
+    /// Scenario: A local processor finishes its delayed batch before the shutdown deadline.
+    /// Guarantees: Graceful drain still forwards the batch and completes without waiting for expiry.
+    #[tokio::test(start_paused = true)]
+    async fn local_processor_deadline_allows_graceful_completion() {
+        run_delayed_shutdown_scenario(false, 20, false).await;
+    }
+
+    /// Scenario: A shared processor finishes its delayed batch before the shutdown deadline.
+    /// Guarantees: Graceful drain still forwards the batch and completes without waiting for expiry.
+    #[tokio::test(start_paused = true)]
+    async fn shared_processor_deadline_allows_graceful_completion() {
+        run_delayed_shutdown_scenario(true, 20, false).await;
+    }
+
+    /// Scenario: A local processor fails before final metrics collection blocks past shutdown expiry.
+    /// Guarantees: Cancellation returns the original processing error at the deadline, not success.
+    #[tokio::test(start_paused = true)]
+    async fn local_processor_deadline_preserves_processing_error() {
+        run_delayed_shutdown_scenario(false, 2, true).await;
+    }
+
+    /// Scenario: A shared processor fails before final metrics collection blocks past shutdown expiry.
+    /// Guarantees: Cancellation returns the original processing error at the deadline, not success.
+    #[tokio::test(start_paused = true)]
+    async fn shared_processor_deadline_preserves_processing_error() {
+        run_delayed_shutdown_scenario(true, 2, true).await;
     }
 
     /// A processor that returns a deliberate error on every PData message and
@@ -1741,6 +1918,7 @@ mod tests {
 
         let _ctrl_keepalive = p.control_sender();
 
+        let (_, forced_shutdown_signal) = crate::forced_shutdown::ForcedShutdownTrigger::pair();
         let result = p
             .start_with_completion_metrics(
                 runtime_ctrl_tx,
@@ -1761,6 +1939,7 @@ mod tests {
                 true, // flow_metrics_active
                 false,
                 crate::terminal_state::TerminalMetricsDeadline::default(),
+                forced_shutdown_signal,
                 crate::testing::test_pipeline_runtime_services(),
             )
             .await;
@@ -1983,6 +2162,7 @@ mod tests {
         drop(input_tx);
         let _ctrl_keepalive = p.control_sender();
 
+        let (_, forced_shutdown_signal) = crate::forced_shutdown::ForcedShutdownTrigger::pair();
         let result = p
             .start_with_completion_metrics(
                 runtime_ctrl_tx,
@@ -2003,6 +2183,7 @@ mod tests {
                 true,
                 false,
                 crate::terminal_state::TerminalMetricsDeadline::default(),
+                forced_shutdown_signal,
                 crate::testing::test_pipeline_runtime_services(),
             )
             .await;
