@@ -137,7 +137,7 @@ An unprotected validation job first requires:
 - exactly one merged release PR for the plan's bot-owned release branch;
 - the `release` label;
 - a matching merge commit;
-- valid component versions and changelog headings.
+- valid component versions and release impacts.
 
 Ordinary merges do not change the release plan and do not start publication.
 
@@ -148,12 +148,13 @@ boundary even though the workflow starts automatically.
 After approval, Push Release:
 
 1. checks out the exact release PR merge commit;
-2. validates existing component tags;
-3. preflights selected Rust crates before authentication;
-4. obtains a short-lived crates.io token when Rust is selected;
-5. publishes Rust crates in dependency order;
-6. creates and pushes the selected component tags;
-7. publishes one GitHub release per selected component.
+2. verifies the release plan, changelog headings, and Rust workspace version;
+3. validates existing component tags;
+4. preflights selected Rust crates before authentication;
+5. obtains a short-lived crates.io token when Rust is selected;
+6. publishes Rust crates in dependency order;
+7. creates and pushes the selected component tags;
+8. publishes one GitHub release per selected component.
 
 ## Rust `pdata-views`
 
