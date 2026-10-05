@@ -36,6 +36,7 @@ otel-arrow-dfe-config = { workspace = true }
 otel-arrow-dfe-pdata = { workspace = true, features = ["testing"] }
 
 [features]
+bench = []
 sha1-hash = ["dep:sha1"]
 
 [dev-dependencies]
@@ -58,6 +59,15 @@ harness = false
 
 [[bench]]
 name = "assign_attributes"
+harness = false
+
+[[bench]]
+name = "join"
+harness = false
+required-features = ["bench"]
+
+[[bench]]
+name = "scale_metric"
 harness = false
 
 [lints]

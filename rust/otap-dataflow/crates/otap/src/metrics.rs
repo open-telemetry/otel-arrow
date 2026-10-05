@@ -14,13 +14,14 @@
 //! [boundary-metrics]: https://github.com/open-telemetry/otel-arrow/blob/main/rust/otap-dataflow/docs/telemetry/metrics-guide.md#shared-receiver-and-exporter-boundary-metrics
 
 use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_config::policy::DistributionTier;
 use otel_arrow_dfe_engine::Interests;
 use otel_arrow_dfe_engine::context::PipelineContext;
 use otel_arrow_dfe_telemetry::common_attributes::{
     Outcome, SignalAttributes, SignalOutcomeAttributes,
 };
 use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
-use otel_arrow_dfe_telemetry::instrument::{Counter, HistogramNormal};
+use otel_arrow_dfe_telemetry::instrument::{Counter, HistogramDetailed, HistogramNormal, Mmsc};
 use otel_arrow_dfe_telemetry::metrics::MetricSetRegistrar;
 use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSetSnapshot};
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
@@ -74,7 +75,19 @@ impl ReceiverReceivedPayloadMetrics {
     measurement_attributes = SignalAttributes
 )]
 #[derive(Debug, Default, Clone)]
-struct ReceiverProcessingMetrics {
+struct ReceiverProcessingBasicMetrics {
+    /// Node-defined receiver-local processing time.
+    #[metric(unit = "s")]
+    duration: Mmsc,
+}
+
+/// Normal-resolution receiver-local processing duration.
+#[metric_set(
+    name = "receiver.processing",
+    measurement_attributes = SignalAttributes
+)]
+#[derive(Debug, Default, Clone)]
+struct ReceiverProcessingNormalMetrics {
     /// Node-defined receiver-local processing time.
     ///
     /// Each receiver documents its stable start and end boundary. Downstream
@@ -84,11 +97,63 @@ struct ReceiverProcessingMetrics {
     duration: HistogramNormal,
 }
 
-impl ReceiverProcessingMetrics {
-    /// Records one receiver-local processing operation.
-    #[inline]
-    pub fn record(&mut self, duration: Duration) {
-        self.duration.record(duration.as_secs_f64());
+/// Detailed-resolution receiver-local processing duration.
+#[metric_set(
+    name = "receiver.processing",
+    measurement_attributes = SignalAttributes
+)]
+#[derive(Debug, Default, Clone)]
+struct ReceiverProcessingDetailedMetrics {
+    /// Node-defined receiver-local processing time.
+    #[metric(unit = "s")]
+    duration: HistogramDetailed,
+}
+
+#[derive(Debug)]
+enum ReceiverProcessingMetricSet {
+    Basic(MeasurementMetricSet<ReceiverProcessingBasicMetrics>),
+    Normal(MeasurementMetricSet<ReceiverProcessingNormalMetrics>),
+    Detailed(MeasurementMetricSet<ReceiverProcessingDetailedMetrics>),
+}
+
+impl ReceiverProcessingMetricSet {
+    fn register(registrar: &impl MetricSetRegistrar, tier: DistributionTier) -> Self {
+        match tier {
+            DistributionTier::Basic => {
+                Self::Basic(ReceiverProcessingBasicMetrics::register(registrar))
+            }
+            DistributionTier::Normal => {
+                Self::Normal(ReceiverProcessingNormalMetrics::register(registrar))
+            }
+            DistributionTier::Detailed => {
+                Self::Detailed(ReceiverProcessingDetailedMetrics::register(registrar))
+            }
+        }
+    }
+
+    fn record(&mut self, attributes: SignalAttributes, duration: Duration) {
+        let value = duration.as_secs_f64();
+        match self {
+            Self::Basic(metrics) => metrics.with(attributes).duration.record(value),
+            Self::Normal(metrics) => metrics.with(attributes).duration.record(value),
+            Self::Detailed(metrics) => metrics.with(attributes).duration.record(value),
+        }
+    }
+
+    fn report(&mut self, reporter: &mut MetricsReporter) -> Result<(), TelemetryError> {
+        match self {
+            Self::Basic(metrics) => reporter.report_measurement(metrics),
+            Self::Normal(metrics) => reporter.report_measurement(metrics),
+            Self::Detailed(metrics) => reporter.report_measurement(metrics),
+        }
+    }
+
+    fn terminal_snapshots(&mut self) -> Vec<MetricSetSnapshot> {
+        match self {
+            Self::Basic(metrics) => metrics.terminal_snapshots(),
+            Self::Normal(metrics) => metrics.terminal_snapshots(),
+            Self::Detailed(metrics) => metrics.terminal_snapshots(),
+        }
     }
 }
 
@@ -138,7 +203,7 @@ pub struct CompletedReceiverProcessing<T, E> {
 pub struct ReceiverMetrics {
     received: MeasurementMetricSet<ReceiverReceivedMetrics>,
     payload: MeasurementMetricSet<ReceiverReceivedPayloadMetrics>,
-    processing: MeasurementMetricSet<ReceiverProcessingMetrics>,
+    processing: Option<ReceiverProcessingMetricSet>,
     interests: Interests,
 }
 
@@ -146,21 +211,39 @@ impl ReceiverMetrics {
     /// Registers the shared receiver metric sets.
     #[must_use]
     pub fn register(pipeline_ctx: &PipelineContext) -> Self {
+        let interests = pipeline_ctx.node_interests();
         Self {
             received: ReceiverReceivedMetrics::register(pipeline_ctx),
             payload: ReceiverReceivedPayloadMetrics::register(pipeline_ctx),
-            processing: ReceiverProcessingMetrics::register(pipeline_ctx),
-            interests: pipeline_ctx.node_interests(),
+            processing: interests.contains(Interests::NODE_LOCAL_DURATION).then(|| {
+                ReceiverProcessingMetricSet::register(
+                    pipeline_ctx,
+                    pipeline_ctx.node_duration_distribution(),
+                )
+            }),
+            interests,
         }
     }
 
     /// Registers the shared receiver metric sets with an entity-bound registrar.
     #[must_use]
     pub fn register_with(registrar: &impl MetricSetRegistrar, interests: Interests) -> Self {
+        Self::register_with_distribution(registrar, interests, DistributionTier::Normal)
+    }
+
+    /// Registers the shared receiver metric sets with an entity-bound registrar and duration tier.
+    #[must_use]
+    pub fn register_with_distribution(
+        registrar: &impl MetricSetRegistrar,
+        interests: Interests,
+        duration_distribution: DistributionTier,
+    ) -> Self {
         Self {
             received: ReceiverReceivedMetrics::register(registrar),
             payload: ReceiverReceivedPayloadMetrics::register(registrar),
-            processing: ReceiverProcessingMetrics::register(registrar),
+            processing: interests
+                .contains(Interests::NODE_LOCAL_DURATION)
+                .then(|| ReceiverProcessingMetricSet::register(registrar, duration_distribution)),
             interests,
         }
     }
@@ -186,8 +269,9 @@ impl ReceiverMetrics {
         };
         if let Some(duration) = completed.duration {
             self.processing
-                .with(SignalAttributes { signal })
-                .record(duration);
+                .as_mut()
+                .expect("duration collection requires a registered receiver duration metric")
+                .record(SignalAttributes { signal }, duration);
         }
         let attributes = SignalOutcomeAttributes {
             signal,
@@ -206,7 +290,10 @@ impl ReceiverMetrics {
     pub fn report(&mut self, reporter: &mut MetricsReporter) -> Result<(), TelemetryError> {
         reporter.report_measurement(&mut self.received)?;
         reporter.report_measurement(&mut self.payload)?;
-        reporter.report_measurement(&mut self.processing)
+        if let Some(processing) = &mut self.processing {
+            processing.report(reporter)?;
+        }
+        Ok(())
     }
 
     /// Takes every touched shared receiver metric bucket for terminal handoff.
@@ -214,7 +301,9 @@ impl ReceiverMetrics {
     pub fn terminal_snapshots(&mut self) -> Vec<MetricSetSnapshot> {
         let mut snapshots = self.received.terminal_snapshots();
         snapshots.extend(self.payload.terminal_snapshots());
-        snapshots.extend(self.processing.terminal_snapshots());
+        if let Some(processing) = &mut self.processing {
+            snapshots.extend(processing.terminal_snapshots());
+        }
         snapshots
     }
 }
@@ -306,17 +395,81 @@ impl ExporterAttemptedMetrics {
     measurement_attributes = SignalOutcomeAttributes
 )]
 #[derive(Debug, Default, Clone)]
-struct ExporterAttemptedDurationMetrics {
+struct ExporterAttemptedDurationBasicMetrics {
+    /// Time spent performing export attempts, including backend latency.
+    #[metric(unit = "s")]
+    duration: Mmsc,
+}
+
+/// Normal-resolution duration accounting for individual exporter attempts.
+#[metric_set(
+    name = "exporter.attempted",
+    measurement_attributes = SignalOutcomeAttributes
+)]
+#[derive(Debug, Default, Clone)]
+struct ExporterAttemptedDurationNormalMetrics {
     /// Time spent performing export attempts, including backend latency.
     #[metric(unit = "s")]
     duration: HistogramNormal,
 }
 
-impl ExporterAttemptedDurationMetrics {
-    /// Records the duration of one export attempt.
-    #[inline]
-    pub fn record(&mut self, duration: Duration) {
-        self.duration.record(duration.as_secs_f64());
+/// Detailed-resolution duration accounting for individual exporter attempts.
+#[metric_set(
+    name = "exporter.attempted",
+    measurement_attributes = SignalOutcomeAttributes
+)]
+#[derive(Debug, Default, Clone)]
+struct ExporterAttemptedDurationDetailedMetrics {
+    /// Time spent performing export attempts, including backend latency.
+    #[metric(unit = "s")]
+    duration: HistogramDetailed,
+}
+
+#[derive(Debug)]
+enum ExporterAttemptedDurationMetricSet {
+    Basic(MeasurementMetricSet<ExporterAttemptedDurationBasicMetrics>),
+    Normal(MeasurementMetricSet<ExporterAttemptedDurationNormalMetrics>),
+    Detailed(MeasurementMetricSet<ExporterAttemptedDurationDetailedMetrics>),
+}
+
+impl ExporterAttemptedDurationMetricSet {
+    fn register(registrar: &impl MetricSetRegistrar, tier: DistributionTier) -> Self {
+        match tier {
+            DistributionTier::Basic => {
+                Self::Basic(ExporterAttemptedDurationBasicMetrics::register(registrar))
+            }
+            DistributionTier::Normal => {
+                Self::Normal(ExporterAttemptedDurationNormalMetrics::register(registrar))
+            }
+            DistributionTier::Detailed => Self::Detailed(
+                ExporterAttemptedDurationDetailedMetrics::register(registrar),
+            ),
+        }
+    }
+
+    fn record(&mut self, attributes: SignalOutcomeAttributes, duration: Duration) {
+        let value = duration.as_secs_f64();
+        match self {
+            Self::Basic(metrics) => metrics.with(attributes).duration.record(value),
+            Self::Normal(metrics) => metrics.with(attributes).duration.record(value),
+            Self::Detailed(metrics) => metrics.with(attributes).duration.record(value),
+        }
+    }
+
+    fn report(&mut self, reporter: &mut MetricsReporter) -> Result<(), TelemetryError> {
+        match self {
+            Self::Basic(metrics) => reporter.report_measurement(metrics),
+            Self::Normal(metrics) => reporter.report_measurement(metrics),
+            Self::Detailed(metrics) => reporter.report_measurement(metrics),
+        }
+    }
+
+    fn terminal_snapshots(&mut self) -> Vec<MetricSetSnapshot> {
+        match self {
+            Self::Basic(metrics) => metrics.terminal_snapshots(),
+            Self::Normal(metrics) => metrics.terminal_snapshots(),
+            Self::Detailed(metrics) => metrics.terminal_snapshots(),
+        }
     }
 }
 
@@ -392,7 +545,7 @@ pub struct CompletedExporterAttempt<T, E> {
 #[derive(Debug)]
 pub struct ExporterMetrics {
     attempted: MeasurementMetricSet<ExporterAttemptedMetrics>,
-    duration: MeasurementMetricSet<ExporterAttemptedDurationMetrics>,
+    duration: Option<ExporterAttemptedDurationMetricSet>,
     payload: MeasurementMetricSet<ExporterAttemptedPayloadMetrics>,
     items: MeasurementMetricSet<ExporterAttemptedItemsMetrics>,
     interests: Interests,
@@ -402,12 +555,18 @@ impl ExporterMetrics {
     /// Registers the shared exporter metric sets.
     #[must_use]
     pub fn register(pipeline_ctx: &PipelineContext) -> Self {
+        let interests = pipeline_ctx.node_interests();
         Self {
             attempted: ExporterAttemptedMetrics::register(pipeline_ctx),
-            duration: ExporterAttemptedDurationMetrics::register(pipeline_ctx),
+            duration: interests.contains(Interests::NODE_LOCAL_DURATION).then(|| {
+                ExporterAttemptedDurationMetricSet::register(
+                    pipeline_ctx,
+                    pipeline_ctx.node_duration_distribution(),
+                )
+            }),
             payload: ExporterAttemptedPayloadMetrics::register(pipeline_ctx),
             items: ExporterAttemptedItemsMetrics::register(pipeline_ctx),
-            interests: pipeline_ctx.node_interests(),
+            interests,
         }
     }
 
@@ -442,7 +601,10 @@ impl ExporterMetrics {
             self.attempted.with(attributes).record();
         }
         if let Some(duration) = completed.duration {
-            self.duration.with(attributes).record(duration);
+            self.duration
+                .as_mut()
+                .expect("duration collection requires a registered exporter duration metric")
+                .record(attributes, duration);
         }
         if let Some(payload_size) = completed.payload_size {
             self.payload.with(attributes).record(payload_size);
@@ -456,7 +618,9 @@ impl ExporterMetrics {
     /// Reports every touched shared exporter metric bucket.
     pub fn report(&mut self, reporter: &mut MetricsReporter) -> Result<(), TelemetryError> {
         reporter.report_measurement(&mut self.attempted)?;
-        reporter.report_measurement(&mut self.duration)?;
+        if let Some(duration) = &mut self.duration {
+            duration.report(reporter)?;
+        }
         reporter.report_measurement(&mut self.payload)?;
         reporter.report_measurement(&mut self.items)
     }
@@ -465,7 +629,9 @@ impl ExporterMetrics {
     #[must_use]
     pub fn terminal_snapshots(&mut self) -> Vec<MetricSetSnapshot> {
         let mut snapshots = self.attempted.terminal_snapshots();
-        snapshots.extend(self.duration.terminal_snapshots());
+        if let Some(duration) = &mut self.duration {
+            snapshots.extend(duration.terminal_snapshots());
+        }
         snapshots.extend(self.payload.terminal_snapshots());
         snapshots.extend(self.items.terminal_snapshots());
         snapshots
@@ -584,7 +750,12 @@ pub struct ReceiverMessageMetrics {
 mod tests {
     use super::*;
     use otel_arrow_dfe_engine::context::ControllerContext;
-    use otel_arrow_dfe_engine::testing::test_pipeline_ctx_with_interests;
+    use otel_arrow_dfe_engine::testing::{
+        test_pipeline_ctx_with_interests,
+        test_pipeline_ctx_with_interests_and_duration_distribution,
+    };
+    use otel_arrow_dfe_telemetry::descriptor::Instrument;
+    use otel_arrow_dfe_telemetry::metrics::MetricValue;
     use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
     use std::cell::Cell;
 
@@ -604,12 +775,14 @@ mod tests {
         ExporterAttemptedItemsMetrics::register(&pipeline_ctx)
     }
 
-    fn new_attempted_duration_metrics() -> MeasurementMetricSet<ExporterAttemptedDurationMetrics> {
+    fn new_attempted_duration_metrics(
+        tier: DistributionTier,
+    ) -> ExporterAttemptedDurationMetricSet {
         let registry = TelemetryRegistryHandle::new();
         let controller = ControllerContext::new(registry);
         let pipeline_ctx =
             controller.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
-        ExporterAttemptedDurationMetrics::register(&pipeline_ctx)
+        ExporterAttemptedDurationMetricSet::register(&pipeline_ctx, tier)
     }
 
     fn new_attempted_payload_metrics() -> MeasurementMetricSet<ExporterAttemptedPayloadMetrics> {
@@ -636,12 +809,28 @@ mod tests {
         ReceiverReceivedPayloadMetrics::register(&pipeline_ctx)
     }
 
-    fn new_processing_metrics() -> MeasurementMetricSet<ReceiverProcessingMetrics> {
+    fn new_processing_metrics(tier: DistributionTier) -> ReceiverProcessingMetricSet {
         let registry = TelemetryRegistryHandle::new();
         let controller = ControllerContext::new(registry);
         let pipeline_ctx =
             controller.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
-        ReceiverProcessingMetrics::register(&pipeline_ctx)
+        ReceiverProcessingMetricSet::register(&pipeline_ctx, tier)
+    }
+
+    fn new_receiver_duration_metrics(tier: DistributionTier) -> ReceiverMetrics {
+        let (pipeline_ctx, _registry) = test_pipeline_ctx_with_interests_and_duration_distribution(
+            Interests::NODE_LOCAL_DURATION,
+            tier,
+        );
+        ReceiverMetrics::register(&pipeline_ctx)
+    }
+
+    fn new_exporter_duration_metrics(tier: DistributionTier) -> ExporterMetrics {
+        let (pipeline_ctx, _registry) = test_pipeline_ctx_with_interests_and_duration_distribution(
+            Interests::NODE_LOCAL_DURATION,
+            tier,
+        );
+        ExporterMetrics::register(&pipeline_ctx)
     }
 
     fn new_export_metrics() -> MeasurementMetricSet<ExporterExportMetrics> {
@@ -731,12 +920,13 @@ mod tests {
                 .any(|metric| metric.name == "payload.size" && metric.unit == "By")
         );
 
-        let mut processing = new_processing_metrics();
-        processing
-            .with(SignalAttributes {
+        let mut processing = new_processing_metrics(DistributionTier::Normal);
+        processing.record(
+            SignalAttributes {
                 signal: SignalType::Metrics,
-            })
-            .record(Duration::from_millis(10));
+            },
+            Duration::from_millis(10),
+        );
         let processing_snapshot = processing
             .terminal_snapshots()
             .into_iter()
@@ -802,13 +992,14 @@ mod tests {
                 .all(|metric| metric.name != "duration")
         );
 
-        let mut attempted_duration = new_attempted_duration_metrics();
-        attempted_duration
-            .with(SignalOutcomeAttributes {
+        let mut attempted_duration = new_attempted_duration_metrics(DistributionTier::Normal);
+        attempted_duration.record(
+            SignalOutcomeAttributes {
                 signal: SignalType::Logs,
                 outcome: Outcome::Success,
-            })
-            .record(Duration::from_millis(20));
+            },
+            Duration::from_millis(20),
+        );
         let attempted_duration_snapshot = attempted_duration
             .terminal_snapshots()
             .into_iter()
@@ -873,6 +1064,105 @@ mod tests {
                 .iter()
                 .any(|metric| metric.name == "items" && metric.unit == "{item}")
         );
+    }
+
+    /// Scenario: Shared receiver and exporter duration metrics use every configured distribution tier.
+    /// Guarantees: Basic emits MMSC while normal and detailed emit matching exponential-histogram values with identical summaries.
+    #[test]
+    fn boundary_duration_distribution_selects_matching_instruments() {
+        for (tier, expected_instrument, expected_tier) in [
+            (DistributionTier::Basic, Instrument::Mmsc, "basic"),
+            (
+                DistributionTier::Normal,
+                Instrument::ExponentialHistogram,
+                "normal",
+            ),
+            (
+                DistributionTier::Detailed,
+                Instrument::ExponentialHistogram,
+                "detailed",
+            ),
+        ] {
+            let mut receiver = new_receiver_duration_metrics(tier);
+            receiver
+                .processing
+                .as_mut()
+                .expect("receiver duration metric")
+                .record(
+                    SignalAttributes {
+                        signal: SignalType::Logs,
+                    },
+                    Duration::from_millis(1250),
+                );
+            let processing_snapshot = receiver
+                .terminal_snapshots()
+                .into_iter()
+                .next()
+                .expect("processing duration snapshot");
+            assert_eq!(
+                processing_snapshot.descriptor().metrics[0].instrument,
+                expected_instrument,
+                "receiver tier: {tier:?}"
+            );
+            let [MetricValue::Distribution(processing_value)] = processing_snapshot.get_metrics()
+            else {
+                panic!("expected receiver distribution value");
+            };
+            assert_eq!(processing_value.tier_name(), expected_tier);
+            assert_eq!(processing_value.summary(), (1, 1.25, 1.25, 1.25));
+
+            let mut exporter = new_exporter_duration_metrics(tier);
+            exporter
+                .duration
+                .as_mut()
+                .expect("exporter duration metric")
+                .record(
+                    SignalOutcomeAttributes {
+                        signal: SignalType::Logs,
+                        outcome: Outcome::Success,
+                    },
+                    Duration::from_millis(2750),
+                );
+            let attempted_snapshot = exporter
+                .terminal_snapshots()
+                .into_iter()
+                .next()
+                .expect("attempted duration snapshot");
+            assert_eq!(
+                attempted_snapshot.descriptor().metrics[0].instrument,
+                expected_instrument,
+                "exporter tier: {tier:?}"
+            );
+            let [MetricValue::Distribution(attempted_value)] = attempted_snapshot.get_metrics()
+            else {
+                panic!("expected exporter distribution value");
+            };
+            assert_eq!(attempted_value.tier_name(), expected_tier);
+            assert_eq!(attempted_value.summary(), (1, 2.75, 2.75, 2.75));
+        }
+    }
+
+    /// Scenario: Detailed duration aggregation is selected while local duration telemetry is disabled.
+    /// Guarantees: Receiver and exporter duration metric sets are not registered or allocated.
+    #[test]
+    fn disabled_duration_does_not_allocate_selected_distribution() {
+        let (pipeline_ctx, _registry) = test_pipeline_ctx_with_interests_and_duration_distribution(
+            Interests::empty(),
+            DistributionTier::Detailed,
+        );
+
+        let receiver = ReceiverMetrics::register(&pipeline_ctx);
+        assert!(receiver.processing.is_none());
+
+        let entity_bound_receiver = ReceiverMetrics::register_with_distribution(
+            &pipeline_ctx,
+            Interests::empty(),
+            DistributionTier::Detailed,
+        );
+        assert!(entity_bound_receiver.processing.is_none());
+
+        let exporter = ExporterMetrics::register(&pipeline_ctx);
+        assert!(exporter.duration.is_none());
     }
 
     /// Scenario: all exporter measurements are disabled for one node.

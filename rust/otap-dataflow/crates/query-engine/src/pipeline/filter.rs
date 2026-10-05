@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use crate::error::{Error, Result};
 use crate::pipeline::PipelineStage;
-use crate::pipeline::expr::eval::EvalContext;
+use crate::pipeline::expr::eval::{EvalContext, align_value_to_record};
 use crate::pipeline::expr::types::MetricDataPointType;
 use crate::pipeline::expr::{ChildRecordKind, RecordScope};
 use crate::pipeline::expr::{DataScope, ScopedExpr, ScopedValue, eval::resolve_attrs_payload_type};
@@ -68,9 +68,10 @@ impl PipelineStage for FilterPipelineStage {
         let num_rows = root_rb.num_rows();
 
         // Evaluate the ScopedExpr tree to produce a boolean result, then align to root.
+        let eval_context = EvalContext::new(session_context);
         let result = self
             .predicate
-            .execute_as_value(&otap_batch, &EvalContext::new(session_context))?;
+            .execute_as_value(&otap_batch, &eval_context)?;
 
         // Convert the result to a root-aligned BooleanArray selection vector.
         let selection_vec = match result {
@@ -84,7 +85,7 @@ impl PipelineStage for FilterPipelineStage {
                     && !(matches!(scoped_value.scope, DataScope::RootParent(_)))
                     && scoped_value.scope != DataScope::StaticScalar
                 {
-                    align_selection_to_root(Some(scoped_value), &otap_batch)?
+                    align_selection_to_root(Some(scoped_value), &otap_batch, &eval_context)?
                 } else {
                     // extract the BooleanArray from the ScopedValue
                     scoped_value_to_boolean_array(scoped_value.values, num_rows)?
@@ -175,16 +176,34 @@ impl PipelineStage for FilterPipelineStage {
 impl FilterPipelineStage {
     fn filter_metric_data_points(
         &mut self,
-        predicate_eval_value: ScopedValue,
+        mut predicate_eval_value: ScopedValue,
         metric_data_point_type: &MetricDataPointType,
         otap_batch: &mut OtapArrowRecords,
     ) -> Result<()> {
-        let is_aligned = matches!(
-            predicate_eval_value.scope,
-            DataScope::Record(RecordScope::Child(ChildRecordKind::DataPoint)),
-        );
+        // if necessary, align the result of the predicate eval to the row order of the data point
+        // record batch
+        if matches!(predicate_eval_value.values, ColumnarValue::Array(_)) {
+            let is_aligned = matches!(
+                predicate_eval_value.scope,
+                DataScope::Record(RecordScope::Child(ChildRecordKind::DataPoint)),
+            );
+            if !is_aligned {
+                let Some(metrics_dp_record_batch) =
+                    otap_batch.get(metric_data_point_type.payload_type())
+                else {
+                    // nothing to filter
+                    return Ok(());
+                };
+                predicate_eval_value = align_value_to_record(
+                    predicate_eval_value,
+                    RecordScope::Child(ChildRecordKind::DataPoint),
+                    metrics_dp_record_batch,
+                    otap_batch,
+                )?;
+            }
+        }
 
-        match predicate_eval_value.values {
+        match &predicate_eval_value.values {
             ColumnarValue::Scalar(scalar) => {
                 match scalar {
                     ScalarValue::Boolean(Some(true)) => {
@@ -208,26 +227,11 @@ impl FilterPipelineStage {
                 }
             }
             ColumnarValue::Array(arr) => {
-                // get a selection vector (boolean array of rows passing predicate) that is aligned
-                // with the row order of the data point record batch
-                let arr_aligned = if is_aligned {
-                    arr
-                } else {
-                    // the normal course of action here would be to align this to the row order of
-                    // the data point batch via a join, but currently we don't support this. the
-                    // planner actually should have returned an Error::NotYetSupported for exprs
-                    // that would end up here, so this error is just here for being defensive.
-                    return Err(Error::ExecutionError {
-                        cause: "misaligned expression predicate result when filtering data points"
-                            .into(),
-                    });
-                };
-
                 let selection_vec =
-                    as_boolean_array(&arr_aligned).map_err(|_| Error::ExecutionError {
+                    as_boolean_array(arr.as_ref()).map_err(|_| Error::ExecutionError {
                         cause: format!(
                             "expected boolean array for filter selection, found {}",
-                            arr_aligned.data_type()
+                            arr.data_type()
                         ),
                     })?;
 
@@ -297,6 +301,7 @@ pub(crate) fn scoped_value_to_boolean_array(
 pub(crate) fn align_selection_to_root(
     result: Option<ScopedValue>,
     otap_batch: &OtapArrowRecords,
+    eval_context: &EvalContext<'_>,
 ) -> Result<BooleanArray> {
     let num_rows = otap_batch
         .root_record_batch()
@@ -311,16 +316,19 @@ pub(crate) fn align_selection_to_root(
             {
                 // copy out the attrs_id before moving value, since AttributesIdentifier is Copy
                 let maybe_attrs_id = match &scoped_value.scope {
-                    DataScope::Attribute(attrs_id, _) | DataScope::AttributesAll(attrs_id) => {
+                    DataScope::Attribute(attrs_id, _, _) | DataScope::AttributesAll(attrs_id) => {
                         Some(*attrs_id)
                     }
                     _ => None,
                 };
 
                 match maybe_attrs_id {
-                    Some(attrs_id) => {
-                        align_selection_vec_from_attrs(scoped_value, &attrs_id, otap_batch)
-                    }
+                    Some(attrs_id) => align_selection_vec_from_attrs(
+                        scoped_value,
+                        &attrs_id,
+                        otap_batch,
+                        eval_context,
+                    ),
                     _ => Err(Error::NotYetSupportedError {
                         message: format!(
                             "alignment from {:?} to root is not yet supported",
@@ -345,6 +353,7 @@ fn align_selection_vec_from_attrs(
     value: ScopedValue,
     attrs_id: &AttributesIdentifier,
     otap_batch: &OtapArrowRecords,
+    eval_context: &EvalContext<'_>,
 ) -> Result<ScopedValue> {
     let root_rb = otap_batch
         .root_record_batch()
@@ -372,7 +381,7 @@ fn align_selection_vec_from_attrs(
         })?;
 
     // get the id column from the root batch for this attribute type
-    let attrs_payload_type = resolve_attrs_payload_type(attrs_id, otap_batch);
+    let attrs_payload_type = resolve_attrs_payload_type(attrs_id, otap_batch, eval_context)?;
     let id_col = match UInt16Type::get_id_col_from_parent(root_rb, attrs_payload_type)? {
         Some(MaybeDictArrayAccessor::Native(id_col)) => id_col,
         Some(_) => {
@@ -6273,6 +6282,104 @@ mod test {
                 "value_type={value_type}"
             );
         }
+    }
+
+    /// Scenario: Filter logs by resolved and null nested serialized attributes.
+    /// Guarantees: Nested comparisons and null predicates select the expected logs.
+    #[tokio::test]
+    async fn test_filter_by_nested_serialized_attribute() {
+        let log_records = vec![
+            LogRecord::build()
+                .attributes([KeyValue::new(
+                    "complex",
+                    AnyValue::new_kvlist(vec![
+                        KeyValue::new("name", AnyValue::new_string("a")),
+                        KeyValue::new("count", AnyValue::new_int(2)),
+                    ]),
+                )])
+                .finish(),
+            LogRecord::build()
+                .attributes([KeyValue::new(
+                    "complex",
+                    AnyValue::new_kvlist(vec![KeyValue::new("name", AnyValue::new_string("b"))]),
+                )])
+                .finish(),
+            LogRecord::build()
+                .attributes([KeyValue::new("complex", AnyValue::new_string("a"))])
+                .finish(),
+            LogRecord::build().finish(),
+            LogRecord::build()
+                .attributes([KeyValue::new(
+                    "complex",
+                    AnyValue::new_kvlist(vec![KeyValue::new("name", AnyValue::default())]),
+                )])
+                .finish(),
+        ];
+
+        let cases = [
+            (
+                r#"logs | where attributes["complex"]["name"] == "a""#,
+                vec![0],
+            ),
+            (
+                r#"logs | where attributes["complex"]["count"] > 1"#,
+                vec![0],
+            ),
+            (
+                r#"logs | where attributes["complex"]["name"] == null"#,
+                vec![2, 3, 4],
+            ),
+            (
+                r#"logs | where not(attributes["complex"]["name"] == null)"#,
+                vec![0, 1],
+            ),
+        ];
+
+        for (query, expected_indices) in cases {
+            let result =
+                exec_logs_pipeline::<OplParser>(query, to_logs_data(log_records.clone())).await;
+            let expected = expected_indices
+                .into_iter()
+                .map(|index| log_records[index].clone())
+                .collect::<Vec<_>>();
+            let actual = &result.resource_logs[0].scope_logs[0].log_records;
+            assert_eq!(actual.len(), expected.len(), "{query}");
+            for expected_record in &expected {
+                assert!(actual.contains(expected_record), "{query}");
+            }
+        }
+    }
+
+    /// Scenario: Filter spans by a nested serialized attribute leaf.
+    /// Guarantees: Only spans whose nested leaf matches are kept.
+    #[tokio::test]
+    async fn test_filter_spans_by_nested_serialized_attribute() {
+        let span = |name: &str| {
+            Span::build()
+                .trace_id(vec![1; 16])
+                .span_id(vec![1; 8])
+                .status(Status::default())
+                .attributes(vec![KeyValue::new(
+                    "complex",
+                    AnyValue::new_kvlist(vec![KeyValue::new("name", AnyValue::new_string(name))]),
+                )])
+                .finish()
+        };
+        let spans = vec![span("a"), span("b")];
+
+        let parser_result =
+            OplParser::parse(r#"traces | where attributes["complex"]["name"] == "b""#).unwrap();
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
+        let result = pipeline
+            .execute(to_otap_traces(spans.clone()))
+            .await
+            .unwrap();
+
+        let traces_data = otap_to_traces_data(result);
+        pretty_assertions::assert_eq!(
+            &traces_data.resource_spans[0].scope_spans[0].spans,
+            &[spans[1].clone()]
+        );
     }
 
     #[tokio::test]

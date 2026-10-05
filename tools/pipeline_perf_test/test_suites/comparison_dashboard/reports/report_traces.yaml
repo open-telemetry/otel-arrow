@@ -454,6 +454,19 @@ result_tables:
     description: Span throughput rates (spans/sec) calculated from total counts and observation window duration
   - name: gh_actions_benchmark
     description: The final metrics used with gh_actions_benchmark.
+    finite_columns: [value]
+    required_values:
+      name:
+        - dropped_spans_percentage
+        - cpu_percentage_normalized_avg
+        - cpu_percentage_normalized_max
+        - ram_mib_avg
+        - ram_mib_max
+        - spans_produced_rate
+        - spans_received_rate
+        - test_duration
+        - network_tx_bytes_rate_avg
+        - network_rx_bytes_rate_avg
     #display: False
   - name: dashboard_timeseries
     description: Per-metric time-series data points within the observation window for dashboard charts.

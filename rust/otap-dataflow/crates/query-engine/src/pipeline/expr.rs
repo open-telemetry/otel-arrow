@@ -48,6 +48,7 @@ use datafusion::logical_expr::{ColumnarValue, Expr};
 use datafusion::physical_expr::PhysicalExprRef;
 use datafusion::scalar::ScalarValue;
 use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_pdata::otlp::attributes::cbor::SerializedValuePathElement;
 use otel_arrow_dfe_pdata::schema::consts;
 use otel_arrow_dfe_pdata::{OtapArrowRecords, OtapPayloadHelpers};
 
@@ -74,7 +75,7 @@ pub(crate) fn arg_column_name(index: usize) -> String {
 
 /// Identifies the scope of data when an expression is evaluating on an element of the stream of
 /// the records.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum RecordScope {
     /// The Root OTAP [`RecordBatch`] (Log, Metric, Span)
     Signal,
@@ -85,7 +86,7 @@ pub(crate) enum RecordScope {
 
 /// Used to identify the non-signal (non-root) [`RecordBatch`] which was the source of data for
 /// some expression evaluation when it has record scope.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ChildRecordKind {
     /// The scope of the record data is a record batch containing metric data points.
     DataPoint,
@@ -110,9 +111,13 @@ pub(crate) enum DataScope {
     Record(RecordScope),
 
     /// Attribute batch identified by [`AttributesIdentifier`] and filtered by some key.
-    /// For example, (AttributesIdentifier::Root, "http.method") may refer to log attributes
-    /// with key="http.method"
-    Attribute(AttributesIdentifier, String),
+    /// For example, (AttributesIdentifier::Root, "http.method", []) may refer to log attributes
+    /// with key="http.method". A non-empty path selects a scalar leaf inside a serialized value.
+    Attribute(
+        AttributesIdentifier,
+        String,
+        Vec<SerializedValuePathElement>,
+    ),
 
     /// Raw (unfiltered) attribute batch identified by [`AttributesIdentifier`].
     ///
@@ -168,7 +173,7 @@ impl DataScope {
     #[allow(dead_code)]
     pub(crate) fn attrs_id(&self) -> Option<&AttributesIdentifier> {
         match self {
-            Self::Attribute(id, _) | Self::AttributesAll(id) => Some(id),
+            Self::Attribute(id, _, _) | Self::AttributesAll(id) => Some(id),
             _ => None,
         }
     }
@@ -181,7 +186,7 @@ impl DataScope {
     pub fn from_record_column(column: &ColumnAccessor, record_type: &RecordType) -> Self {
         match column {
             ColumnAccessor::ColumnName(_) => match record_type {
-                RecordType::Child(child) => Self::Record(RecordScope::Child(child.clone())),
+                RecordType::Child(child) => Self::Record(RecordScope::Child(*child)),
                 _ => Self::Record(RecordScope::Signal),
             },
             ColumnAccessor::StructCol(struct_name, _) => match *struct_name {
@@ -190,10 +195,10 @@ impl DataScope {
                 _ => Self::Record(RecordScope::Signal),
             },
             ColumnAccessor::Attributes(attrs_id, attrs_key) => {
-                Self::Attribute(*attrs_id, attrs_key.clone())
+                Self::Attribute(*attrs_id, attrs_key.clone(), Vec::new())
             }
             ColumnAccessor::NestedAttribute(attrs_id, attrs_key, _) => {
-                Self::Attribute(*attrs_id, attrs_key.clone())
+                Self::Attribute(*attrs_id, attrs_key.clone(), Vec::new())
             }
         }
     }
@@ -601,7 +606,7 @@ mod test {
     /// Helper: create an `Eval(DatafusionExpr)` node for an attribute-scoped expression.
     fn attrs_eval(attrs_id: AttributesIdentifier, key: &str, expr: Expr) -> ScopedExpr {
         ScopedExpr::Eval {
-            scope: DataScope::Attribute(attrs_id, key.to_string()),
+            scope: DataScope::Attribute(attrs_id, key.to_string(), Vec::new()),
             eval: LeafEval::new_df_expr(expr, false).unwrap(),
         }
     }
@@ -614,7 +619,7 @@ mod test {
         expr: Expr,
     ) -> ScopedExpr {
         ScopedExpr::Eval {
-            scope: DataScope::Attribute(attrs_id, key.to_string()),
+            scope: DataScope::Attribute(attrs_id, key.to_string(), Vec::new()),
             eval: LeafEval::new_df_expr(expr, true).unwrap(),
         }
     }
@@ -736,7 +741,11 @@ mod test {
         let session_ctx = Pipeline::create_session_context();
 
         // attributes["code.namespace"] (returns the AnyValue struct as value column)
-        let mut op = attrs_eval(AttributesIdentifier::Root, "code.namespace", col("value"));
+        let mut op = attrs_eval(
+            AttributesIdentifier::Record(RecordScope::Signal),
+            "code.namespace",
+            col("value"),
+        );
 
         let result = op
             .execute_as_value(&otap, &EvalContext::new(&session_ctx))
@@ -744,7 +753,11 @@ mod test {
             .unwrap();
         assert_eq!(
             result.scope,
-            DataScope::Attribute(AttributesIdentifier::Root, "code.namespace".to_string())
+            DataScope::Attribute(
+                AttributesIdentifier::Record(RecordScope::Signal),
+                "code.namespace".to_string(),
+                Vec::new()
+            )
         );
 
         // should have 3 rows (one per log record)
@@ -839,7 +852,7 @@ mod test {
 
         // Right child: the int sub-column of the attributes value (already Int64)
         let right_child = attrs_eval_dict_downcast(
-            AttributesIdentifier::Root,
+            AttributesIdentifier::Record(RecordScope::Signal),
             "code.line.number",
             col(VALUE_COLUMN_NAME),
         );
@@ -889,7 +902,7 @@ mod test {
 
         let left = root_eval(col(consts::SEVERITY_TEXT).eq(lit("WARN")));
         let right = attrs_eval_dict_downcast(
-            AttributesIdentifier::Root,
+            AttributesIdentifier::Record(RecordScope::Signal),
             "code.namespace",
             col(VALUE_COLUMN_NAME).eq(lit("main")),
         );
@@ -914,7 +927,7 @@ mod test {
         let mut op2 = ScopedExpr::BitmapAnd(
             Box::new(root_eval(col(consts::SEVERITY_TEXT).eq(lit("WARN")))),
             Box::new(attrs_eval_dict_downcast(
-                AttributesIdentifier::Root,
+                AttributesIdentifier::Record(RecordScope::Signal),
                 "code.namespace",
                 col(VALUE_COLUMN_NAME).eq(lit("main")),
             )),
@@ -945,7 +958,7 @@ mod test {
         // OR result: should be rows 0 and 2
 
         let left = attrs_eval(
-            AttributesIdentifier::Root,
+            AttributesIdentifier::Record(RecordScope::Signal),
             "nonexistent",
             col(VALUE_COLUMN_NAME).eq(lit("x")),
         );
@@ -1029,12 +1042,12 @@ mod test {
         // Note: attribute str values are dictionary-encoded, so we need dict downcast.
         // Attribute int values are stored in the "int" column (Int64).
         let attr_namespace = attrs_eval_dict_downcast(
-            AttributesIdentifier::Root,
+            AttributesIdentifier::Record(RecordScope::Signal),
             "code.namespace",
             col(VALUE_COLUMN_NAME).eq(lit("main")),
         );
         let attr_line = attrs_eval_dict_downcast(
-            AttributesIdentifier::Root,
+            AttributesIdentifier::Record(RecordScope::Signal),
             "code.line.number",
             col(VALUE_COLUMN_NAME).eq(lit(42i64)),
         );
@@ -1072,7 +1085,7 @@ mod test {
 
         // Right child: attributes["code.namespace"] == "main"
         let right_child = attrs_eval_dict_downcast(
-            AttributesIdentifier::Root,
+            AttributesIdentifier::Record(RecordScope::Signal),
             "code.namespace",
             // will panic if actually evaluated
             always_panic().call(vec![col(VALUE_COLUMN_NAME)]),
@@ -1116,7 +1129,7 @@ mod test {
 
         // Right child: attributes["code.namespace"] == "main"
         let right_child = attrs_eval_dict_downcast(
-            AttributesIdentifier::Root,
+            AttributesIdentifier::Record(RecordScope::Signal),
             "code.namespace",
             // will panic if actually evaluated
             always_panic().call(vec![col(VALUE_COLUMN_NAME)]),
@@ -1157,7 +1170,7 @@ mod test {
 
         // Right child: attributes["code.namespace"] == "main" -> rows 0,2 true, row 1 false
         let right_child = attrs_eval_dict_downcast(
-            AttributesIdentifier::Root,
+            AttributesIdentifier::Record(RecordScope::Signal),
             "code.namespace",
             col(VALUE_COLUMN_NAME).eq(lit("main")),
         );
@@ -1199,7 +1212,7 @@ mod test {
 
         // something scoped to attributes that will pass for all rows having the attribute
         let left_child = attrs_eval(
-            AttributesIdentifier::Root,
+            AttributesIdentifier::Record(RecordScope::Signal),
             "exception.type",
             col(VALUE_COLUMN_NAME).eq(lit("java.net.IOException")),
         );

@@ -4,8 +4,8 @@
 //! Shared TLS test certificate generation utilities (rcgen-only).
 
 use rcgen::{
-    BasicConstraints, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa, Issuer, KeyPair,
-    KeyUsagePurpose,
+    BasicConstraints, CertificateParams, CustomExtension, DnType, ExtendedKeyUsagePurpose, IsCa,
+    Issuer, KeyPair, KeyUsagePurpose,
 };
 use std::fs;
 use std::path::Path;
@@ -108,6 +108,27 @@ pub fn generate_self_signed_cert(cn: &str, san: Option<&str>, is_ca: bool) -> Ge
     } else {
         IsCa::ExplicitNoCa
     };
+
+    let key_pair = KeyPair::generate().expect("self-signed key");
+    let cert = params.self_signed(&key_pair).expect("self-signed cert");
+
+    GeneratedCert {
+        cert_pem: cert.pem(),
+        key_pem: key_pair.serialize_pem(),
+    }
+}
+
+/// Generate a self-signed certificate with an unknown critical extension.
+#[must_use]
+pub fn generate_self_signed_cert_with_unknown_critical_extension(cn: &str) -> GeneratedCert {
+    let mut params = CertificateParams::new(vec![cn.to_string()]).expect("SAN");
+    params.distinguished_name.push(DnType::CommonName, cn);
+    params.is_ca = IsCa::ExplicitNoCa;
+
+    let mut extension =
+        CustomExtension::from_oid_content(&[1, 3, 6, 1, 4, 1, 55_555, 1], vec![0x05, 0x00]);
+    extension.set_criticality(true);
+    params.custom_extensions.push(extension);
 
     let key_pair = KeyPair::generate().expect("self-signed key");
     let cert = params.self_signed(&key_pair).expect("self-signed cert");
