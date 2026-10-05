@@ -14,8 +14,21 @@ groups:
     name: otlp.exporter.http.notification_error
     stability: development
     brief: First failed OTLP HTTP Ack or Nack notification or periodic summary of further notification failures.
+    annotations:
+      live_check:
+        exempt: >-
+          Ack/Nack routing fails only when the pipeline completion channel is
+          closed, which the live-check run cannot provoke. Unit tests in
+          otlp_http_exporter/diagnostics/tests.rs cover the event contract.
   - id: event.otlp.exporter.http.preparation_error
     type: event
     name: otlp.exporter.http.preparation_error
     stability: development
     brief: First OTLP HTTP encoding or compression failure or periodic summary of further preparation failures.
+    annotations:
+      live_check:
+        exempt: >-
+          Needs an OTAP batch the OTLP encoder rejects or a failing
+          compressor, which valid generated traffic does not produce. Unit
+          tests in otlp_http_exporter/diagnostics/tests.rs cover the event
+          contract.

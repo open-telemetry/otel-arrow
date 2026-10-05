@@ -269,6 +269,8 @@ impl PartitionValue {
             | ScalarValue::FixedSizeList(_)
             | ScalarValue::List(_)
             | ScalarValue::LargeList(_)
+            | ScalarValue::ListView(_)
+            | ScalarValue::LargeListView(_)
             | ScalarValue::Map(_)
             | ScalarValue::Union(_, _, _) => {
                 return Err(Error::ExecutionError {

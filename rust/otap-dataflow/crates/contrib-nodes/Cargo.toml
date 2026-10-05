@@ -25,6 +25,7 @@ otel-arrow-dfe-otap = { workspace = true }
 otel-arrow-dfe-pdata = { workspace = true }
 otel-arrow-dfe-pdata-codec = { workspace = true }
 otel-arrow-dfe-pdata-views = { workspace = true }
+otel-arrow-dfe-scraper = { workspace = true, optional = true }
 otel-arrow-dfe-telemetry = { workspace = true }
 otel-arrow-dfe-telemetry-macros = { workspace = true }
 
@@ -40,6 +41,8 @@ linkme.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 base64 = { workspace = true, optional = true }
+blake3 = { workspace = true, optional = true }
+oracle = { workspace = true, optional = true }
 chrono = { workspace = true, optional = true }
 humantime-serde = { workspace = true, optional = true }
 itoa = { workspace = true, optional = true }
@@ -132,6 +135,15 @@ kafka = [
 ]
 
 # Receivers.
+# Oracle requires separately provisioned native client libraries and is explicitly opt-in.
+oracle = [
+    "dep:otel-arrow-dfe-scraper",
+    "dep:oracle",
+    "dep:blake3",
+    "dep:chrono",
+    "dep:humantime-serde",
+    "dep:secrecy",
+]
 etw = ["dep:one_collect", "dep:humantime-serde"]
 user-events = [
     "dep:base64",
@@ -201,6 +213,7 @@ aws = [
 ]
 
 [dev-dependencies]
+tempfile.workspace = true
 axum.workspace = true
 chrono.workspace = true
 clap.workspace = true
@@ -282,3 +295,8 @@ required-features = ["user-events"]
 name = "user_events_eventheader_producer"
 path = "src/receivers/user_events_receiver/examples/eventheader_producer.rs"
 required-features = ["user-events"]
+
+[[example]]
+name = "oracle_load_generator"
+path = "examples/oracle_load_generator.rs"
+required-features = ["oracle"]

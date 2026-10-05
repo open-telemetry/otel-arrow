@@ -113,9 +113,14 @@ impl PipelineStage for FilterPipelineStage {
         _task_context: Arc<TaskContext>,
         _exec_options: &mut ExecutionState,
     ) -> Result<RecordBatch> {
+        if attrs_record_batch.num_rows() == 0 {
+            // nothing to do
+            return Ok(attrs_record_batch);
+        }
+
         let result = self
             .predicate
-            .evaluate_on_batch(&attrs_record_batch, &EvalContext::new(session_context))?;
+            .evaluate_on_attrs_batch(&attrs_record_batch, &EvalContext::new(session_context))?;
 
         let selection_vec = scoped_value_to_boolean_array(result, attrs_record_batch.num_rows())?;
         let new_batch = filter_record_batch(&attrs_record_batch, &selection_vec)?;
