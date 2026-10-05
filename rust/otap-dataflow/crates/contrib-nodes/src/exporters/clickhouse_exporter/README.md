@@ -320,10 +320,19 @@ Input PData message volume is reported by the engine through
 
 <!-- markdownlint-disable MD013 -->
 
+#### `exporter.exports`
+
 | Metric | Unit | Attributes | Description |
 | --- | --- | --- | --- |
 | `exporter.exports.messages` | `{message}` | `signal`, `outcome` | Number of PData messages whose ClickHouse export reached a terminal outcome. |
 | `exporter.exports.duration` | `s` | `signal`, `outcome` | Time from dequeuing PData through the terminal ClickHouse write result, including conversion, queueing, and transformation. |
+
+#### `exporter.clickhouse`
+
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `exporter.clickhouse.rows.written` | `{row}` | `signal` | Total number of rows written successfully into ClickHouse. |
+| `exporter.clickhouse.batches.transformed` | `{batch}` | `path` | Total number of log batches transformed by the given path (`fast_path`, `generic_fallback`, `otlp_direct`, `otlp_legacy_fallback`). |
 
 <!-- markdownlint-enable MD013 -->
 

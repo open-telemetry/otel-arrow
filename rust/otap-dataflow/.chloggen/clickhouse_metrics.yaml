@@ -3,4 +3,4 @@ component: observability
 note: "Migrate clickhouse exporter metrics to enum attributes"
 issues: [3530]
 subtext: |
-  Migration: Replace scalar log and trace counters with a unified `otap.exporter.clickhouse.rows` keyed by `signal`. Replace specialized path batch counters with `otap.exporter.clickhouse.batches` keyed by `path`.
+  Migration: Replace scalar log and trace counters with a unified `exporter.clickhouse.rows` keyed by `signal`. Replace specialized path batch counters with `exporter.clickhouse.batches` keyed by `path`.
