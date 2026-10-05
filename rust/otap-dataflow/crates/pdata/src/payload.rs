@@ -611,6 +611,8 @@ fn count_metrics_data_points(bytes: &[u8]) -> Result<usize, Error> {
 
                 let mut data_position = 0;
 
+                let mut data_count = 0;
+
                 while let Some((field, wire_type, data_bytes)) =
                     next_field(metrics_bytes, &mut data_position)?
                 {
@@ -618,6 +620,8 @@ fn count_metrics_data_points(bytes: &[u8]) -> Result<usize, Error> {
                         continue;
                     }
 
+                    // Reset count for each found `oneof` message (under the `data` field) to keep the last one only
+                    data_count = 0;
                     let mut data_point_position = 0;
 
                     while let Some((field, wire_type, _data_point_bytes)) =
@@ -625,10 +629,12 @@ fn count_metrics_data_points(bytes: &[u8]) -> Result<usize, Error> {
                     {
                         // All metric data-point fields are field number 1 in the OTLP protobuf schema. This is validated by static assertions at the beginning of this file.
                         if field == 1 && wire_type == wire_types::LEN {
-                            count += 1;
+                            data_count += 1;
                         }
                     }
                 }
+
+                count += data_count;
             }
         }
     }
