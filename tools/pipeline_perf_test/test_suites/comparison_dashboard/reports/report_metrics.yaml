@@ -89,7 +89,8 @@ queries:
             SELECT
               * REPLACE (
               CASE
-                WHEN metric_name = 'items' THEN 'metrics'
+                WHEN metric_name = 'items' AND "metric_attributes.otel_scope_name" = 'node.input' THEN 'metrics'
+                WHEN metric_name = 'items' AND "metric_attributes.otel_scope_name" = 'node.output' THEN 'metrics_produced'
                 ELSE metric_name
               END AS metric_name
             ),
@@ -110,6 +111,11 @@ queries:
                 AND "metric_attributes.otel_scope_node_id" = 'perf'
                 AND "metric_attributes.signal" = 'metrics'
                 AND "metric_attributes.outcome" = 'success'
+              )
+              OR (
+                "metric_attributes.otel_scope_name" = 'node.output'
+                AND "metric_attributes.signal" = 'metrics'
+                AND "metric_attributes.component_name" = 'load-generator'
               )
             ) AND timestamp > (
                 SELECT CAST("test.start" AS TIMESTAMP WITH TIME ZONE)
