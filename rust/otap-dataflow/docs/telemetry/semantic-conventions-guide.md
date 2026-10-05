@@ -67,8 +67,9 @@ Source:
   namespaces. Metric and event names SHOULD use an established namespace that
   identifies the domain, subsystem, protocol, or component kind that owns the
   signal; a universal project prefix is not required.
-- Project-defined attribute names use the `otelcol.*` namespace as described in
-  the [Attributes Guide](attributes-guide.md).
+- Project-defined attributes use the stable namespace of the entity or signal
+  that owns them, as described in the
+  [Attributes Guide](attributes-guide.md).
 
 ## 2. Metric naming and semantics
 
@@ -203,7 +204,7 @@ Examples:
 
 ```plain
 http.request.start
-otelcol.pipeline.config.apply
+pipeline.config.apply
 connection.close
 ```
 

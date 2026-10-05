@@ -38,8 +38,10 @@ project.
 - Signal-specific attributes (when used) MUST be bounded and documented
   alongside the signal.
 
-Project-specific entity attributes use the `otelcol.*` prefix to avoid
-collisions with existing and future semantic conventions.
+Project-specific entity attributes use the stable namespace of the entity they
+describe, such as `pipeline.*`, `node.*`, or `channel.*`. They reuse upstream
+OpenTelemetry attributes when the semantics match and do not require a
+universal project prefix.
 
 ## Project entities
 
@@ -84,8 +86,8 @@ The OTAP pipeline execution engine running in the process.
 
 Attributes:
 
-- `otelcol.numa_node.logical_number`: NUMA node identifier.
-- `cpu.logical_number` (was named core.id): Core CPU identifier.
+- `numa.node.id`: NUMA node identifier.
+- `core.id`: Core CPU identifier.
 - `thread.id`: Thread identifier.
 
 ### Pipeline
@@ -94,8 +96,8 @@ A data processing pipeline running within the OTAP Execution Engine.
 
 Attributes:
 
-- `otelcol.pipeline_group.id`: Pipeline group unique identifier.
-- `otelcol.pipeline.id`: Pipeline unique identifier.
+- `pipeline.group.id`: Pipeline group unique identifier.
+- `pipeline.id`: Pipeline unique identifier.
 
 ### Node
 
@@ -107,9 +109,9 @@ A processing unit within a pipeline. There are three types of nodes:
 
 Attributes:
 
-- `otelcol.node.id`: Node unique identifier (in scope of the pipeline).
-- `otelcol.node.urn`: Node plugin URN.
-- `otelcol.node.type`: Node type (e.g. "receiver", "processor", "exporter").
+- `node.id`: Node unique identifier (in scope of the pipeline).
+- `node.urn`: Node plugin URN.
+- `node.type`: Node type (e.g. "receiver", "processor", "exporter").
 
 The tracing target and exported `InstrumentationScope.name` identify the static
 component type that produced an event. They do not identify a configured node
@@ -117,8 +119,8 @@ instance. A component scope is derived from its canonical URN by removing the
 `urn:` prefix and replacing colons with dots. Component events use the target
 convention defined in the
 [telemetry crate README](../../crates/telemetry/README.md#logging-macros), while
-`otelcol.node.id` identifies the runtime instance and `otelcol.node.urn` carries
-the complete canonical component identity.
+`node.id` identifies the runtime instance and `node.urn` carries the complete
+canonical component identity.
 
 ### Channels
 
@@ -131,23 +133,23 @@ Channels connect nodes within a pipeline. There are two types of channels:
 
 Channels are observed via two endpoint perspectives: sender and receiver.
 
-- Sender-side signals attach the sender node identity plus `otelcol.channel.*`
+- Sender-side signals attach the sender node identity plus `channel.*`
   attributes.
-- Receiver-side signals attach the receiver node identity plus
-  `otelcol.channel.*` attributes.
-- `otelcol.channel.id` connects sender and receiver signals that belong to the
-  same channel.
+- Receiver-side signals attach the receiver node identity plus `channel.*`
+  attributes.
+- `channel.id` connects sender and receiver signals that belong to the same
+  channel.
 
 Attributes:
 
-- `otelcol.channel.id`: Unique channel identifier (in scope of the pipeline).
-- `otelcol.channel.kind`: Channel payload kind ("control" or "pdata").
-- `otelcol.channel.mode`: Concurrency mode of the channel ("local" or "shared").
-- `otelcol.channel.type`: Channel type ("mpsc" or "mpmc").
-- `otelcol.channel.impl`: Channel implementation ("tokio", "flume", "internal").
-- `otelcol.channel.sender.out.port`: Output port of the sender node.
+- `channel.id`: Unique channel identifier (in scope of the pipeline).
+- `channel.kind`: Channel payload kind ("control" or "pdata").
+- `channel.mode`: Concurrency mode of the channel ("local" or "shared").
+- `channel.type`: Channel type ("mpsc" or "mpmc").
+- `channel.impl`: Channel implementation ("tokio", "flume", "internal").
+- `node.port`: Port associated with this channel endpoint.
 
-The `otelcol.channel.id` format depends on the channel kind:
+The `channel.id` format depends on the channel kind:
 
 - Control Channel: `control:{node.id}`
 - PData Channel: `pdata:{source_node.id}:{output_port}`
@@ -163,17 +165,15 @@ and may change on restart or reconfiguration.
   change if the host is renamed.
 - `container.id`: Stable for the container lifetime.
 - `process.pid`, `process.creation.time`: Stable for the process lifetime.
-- `otelcol.numa_node.logical_number`, `cpu.logical_number`: Stable for a host
-  boot; may change with CPU or NUMA reconfiguration.
+- `numa.node.id`, `core.id`: Stable for a host boot; may change with CPU or NUMA
+  reconfiguration.
 - `thread.id`: Stable for the thread lifetime; may be reused after thread exit.
-- `otelcol.pipeline_group.id`, `otelcol.pipeline.id`, `otelcol.node.id`: Stable
-  across configuration reloads; intended to remain consistent for the same
-  logical pipeline graph.
-- `otelcol.channel.id`: Identifies the source + output port only and is stable
+- `pipeline.group.id`, `pipeline.id`, `node.id`: Stable across configuration
+  reloads; intended to remain consistent for the same logical pipeline graph.
+- `channel.id`: Identifies the source + output port only and is stable
   across configuration reloads as long as the source node id and port are
   unchanged.
-- `otelcol.channel.sender.out.port`: Stable across configuration reloads for a
-  given pipeline graph.
+- `node.port`: Stable across configuration reloads for a given pipeline graph.
 
 ## Entity relationships
 
@@ -186,8 +186,8 @@ Service -> Process -> Execution Engine -> Pipeline Group -> Pipeline -> Node
 
 Channels connect nodes:
 
-- `otelcol.channel.id` identifies the source node + output port only; fan-out
-  receivers share the same `otelcol.channel.id`.
-- Node identity is carried by the `otelcol.node.*` attributes on each signal.
+- `channel.id` identifies the source node + output port only; fan-out receivers
+  share the same `channel.id`.
+- Node identity is carried by the `node.*` attributes on each signal.
 - Endpoint role is implied by the metric set (e.g. `channel.sender` vs
   `channel.receiver`), not by a channel attribute.
