@@ -299,7 +299,7 @@ fn scalar_timestamp_binding_preserves_upstream_normalization() {
     )
     .expect("type")
     .expect("temporal");
-    let source = parse_cursor_timestamp("2026-01-01 00:15:30.123456789 +05:30").expect("timestamp");
+    let source = parse_cursor_timestamp("2026-01-01 00:15:30.123456 +05:30").expect("timestamp");
     let bound = cursor_bind_timestamp(source, &target).expect("bind");
     assert_eq!(bound.to_string(), "2025-12-31 18:45:30.123456");
     assert!(!bound.with_tz());

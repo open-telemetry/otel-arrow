@@ -116,8 +116,8 @@ fn scalar_initial_values_fail_closed_and_redacted() {
     }
 }
 
-/// Scenario: Scalar type, bind, column, or initial value changes while credentials rotate independently.
-/// Guarantees: Semantic changes invalidate scalar progress and secret-path rotation preserves it.
+/// Scenario: Scalar semantics change while the local Oracle client installation moves independently.
+/// Guarantees: Semantic changes invalidate scalar progress and client relocation preserves it.
 #[test]
 fn scalar_fingerprints_track_mode_type_and_query() {
     let raw = scalar_config(ScalarValue::Int64(0));
@@ -146,11 +146,11 @@ fn scalar_fingerprints_track_mode_type_and_query() {
             parsed(changed).expect("changed key").config_fingerprint()
         );
     }
-    let mut rotated = raw;
-    rotated["authentication"]["password_file"] = "/different/file".into();
+    let mut relocated = raw;
+    relocated["connection"]["instant_client_dir"] = "/opt/oracle/ic-23".into();
     assert_eq!(
         base.config_fingerprint(),
-        parsed(rotated).expect("rotation").config_fingerprint()
+        parsed(relocated).expect("relocation").config_fingerprint()
     );
     assert_ne!(
         base.config_fingerprint(),
