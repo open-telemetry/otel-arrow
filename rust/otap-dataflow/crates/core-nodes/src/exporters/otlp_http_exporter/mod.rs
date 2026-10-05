@@ -58,14 +58,12 @@ use otel_arrow_dfe_pdata::proto::opentelemetry::collector::trace::v1::{
 };
 use otel_arrow_dfe_pdata::{OtapPayload, OtapPayloadHelpers, PayloadData};
 use otel_arrow_dfe_telemetry::diagnostics::DiagnosticErrorKind;
-use otel_arrow_dfe_telemetry::tracing_init::capture_current_record;
-use otel_arrow_dfe_telemetry::{__log_record_impl, Level};
 use prost::Message as _;
 use reqwest::{Client, Response};
 use secrecy::ExposeSecret;
 
 use self::config::Config;
-use self::diagnostics::{NotificationOperation, emit_notification, emit_preparation};
+use self::diagnostics::DeliveryDiagnostic;
 use otel_arrow_dfe_otap::OTAP_EXPORTER_FACTORIES;
 use otel_arrow_dfe_otap::http_client_auth::*;
 use otel_arrow_dfe_otap::metrics::CompletedExporterAttempt;
@@ -560,20 +558,12 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                                     .record(completed)
                                     .expect_err("encoding attempt must fail");
                                 self.metrics.record_failure(signal_type, error_type);
-                                emit_preparation(
-                                    self.metrics.preparation.signal(signal_type).failure(
-                                        Instant::now(),
-                                        error_type,
-                                        || {
-                                            capture_current_record(__log_record_impl!(
-                                                target: "otel.exporter.otlp_http",
-                                                Level::WARN,
-                                                "otlp.exporter.http.preparation_error",
-                                                message = %error
-                                            ))
-                                        },
-                                    ),
+                                otel_summary_warn!(
+                                    self.metrics.preparation.signal(signal_type),
                                     signal_type,
+                                    error_type,
+                                    "otlp.exporter.http.preparation_error",
+                                    message = %error
                                 );
                                 // Encoding failed because the structured batch is invalid.
                                 let mut nack = NackMsg::new(
@@ -620,20 +610,12 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                                     .record(completed)
                                     .expect_err("compression attempt must fail");
                                 self.metrics.record_failure(signal_type, error_type);
-                                emit_preparation(
-                                    self.metrics.preparation.signal(signal_type).failure(
-                                        Instant::now(),
-                                        error_type,
-                                        || {
-                                            capture_current_record(__log_record_impl!(
-                                                target: "otel.exporter.otlp_http",
-                                                Level::WARN,
-                                                "otlp.exporter.http.preparation_error",
-                                                message = %error
-                                            ))
-                                        },
-                                    ),
+                                otel_summary_warn!(
+                                    self.metrics.preparation.signal(signal_type),
                                     signal_type,
+                                    error_type,
+                                    "otlp.exporter.http.preparation_error",
+                                    message = %error
                                 );
                                 let mut nack = NackMsg::new(
                                     error.to_string(),
@@ -1097,23 +1079,23 @@ async fn finalize_completed_export(
         .as_ref()
         .is_err_and(|error| error.is_retryable() || auth_failure);
 
-    // Success is normally silent and only selects a summary or confirmed recovery.
-    // Failure detail is formatted only when the first warning or a summary is due.
+    // Success is normally silent and only selects confirmed recovery. Failure
+    // details are formatted only when the sampler selects an ordinary warning.
     let delivery_diagnostic = metrics.diagnostics.signal(signal_type);
-    let report = match &result {
-        Ok(()) => delivery_diagnostic.success(diagnostic_started_at, now),
-        Err(error) => delivery_diagnostic.failure(now, error.error_type(), retryable, || {
-            capture_current_record(__log_record_impl!(
-                target: "otel.exporter.otlp_http",
-                Level::WARN,
-                "otlp.exporter.http.export_error",
-                message = %error
-            ))
-        }),
-    };
-    // Emit immediately while the selected report and retained retryability sample
-    // still describe the same completed export.
-    delivery_diagnostic.emit(report, signal_type);
+    match &result {
+        Ok(()) => DeliveryDiagnostic::emit_recovery(
+            delivery_diagnostic.success(diagnostic_started_at, now),
+            signal_type,
+        ),
+        Err(error) => otel_summary_warn!(
+            delivery_diagnostic,
+            signal_type,
+            error.error_type(),
+            "otlp.exporter.http.export_error",
+            retryable = retryable,
+            message = %error
+        ),
+    }
 
     // Set to the rejected auth's generation when the server rejected the auth
     // this request used (401), so the caller can invalidate exactly that
@@ -1134,21 +1116,13 @@ async fn finalize_completed_export(
     match err {
         None => {
             if let Err(error) = effect_handler.notify_ack(AckMsg::new(pdata)).await {
-                emit_notification(
-                    metrics.notifications.signal(signal_type).failure(
-                        Instant::now(),
-                        DiagnosticErrorKind::Notification,
-                        || {
-                            capture_current_record(__log_record_impl!(
-                                target: "otel.exporter.otlp_http",
-                                Level::WARN,
-                                "otlp.exporter.http.notification_error",
-                                message = %error
-                            ))
-                        },
-                    ),
+                otel_summary_warn!(
+                    metrics.notifications.signal(signal_type),
                     signal_type,
-                    NotificationOperation::Ack,
+                    DiagnosticErrorKind::Notification,
+                    "otlp.exporter.http.notification_error",
+                    operation = "ack",
+                    message = %error
                 );
             }
         }
@@ -1177,21 +1151,13 @@ async fn notify_nack_with_diagnostics(
     nack: NackMsg<OtapPdata>,
 ) {
     if let Err(error) = effect_handler.notify_nack(nack).await {
-        emit_notification(
-            metrics.notifications.signal(signal_type).failure(
-                Instant::now(),
-                DiagnosticErrorKind::Notification,
-                || {
-                    capture_current_record(__log_record_impl!(
-                        target: "otel.exporter.otlp_http",
-                        Level::WARN,
-                        "otlp.exporter.http.notification_error",
-                        message = %error
-                    ))
-                },
-            ),
+        otel_summary_warn!(
+            metrics.notifications.signal(signal_type),
             signal_type,
-            NotificationOperation::Nack,
+            DiagnosticErrorKind::Notification,
+            "otlp.exporter.http.notification_error",
+            operation = "nack",
+            message = %error
         );
     }
 }

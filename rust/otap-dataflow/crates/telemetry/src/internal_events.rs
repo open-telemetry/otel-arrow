@@ -332,14 +332,14 @@ macro_rules! raw_error {
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __log_record_impl {
-    (target: $target:expr, $level:expr, $name:expr $(, $($fields:tt)*)?) => {{
+    ($level:expr, $name:expr $(, $($fields:tt)*)?) => {{
         use $crate::_private::Callsite;
         use $crate::self_tracing::StackLogRecord;
 
         static __CALLSITE: $crate::_private::DefaultCallsite = $crate::_private::callsite2! {
             name: $name,
             kind: $crate::_private::Kind::EVENT,
-            target: $target,
+            target: env!("CARGO_PKG_NAME"),
             level: $level,
             fields: $($($fields)*)?
         };
@@ -351,14 +351,6 @@ macro_rules! __log_record_impl {
             let event = $crate::_private::Event::new(meta, &valueset);
             StackLogRecord::new(&event)
         })($crate::_private::valueset!(meta.fields(), $($($fields)*)?))
-    }};
-    ($level:expr, $name:expr $(, $($fields:tt)*)?) => {{
-        $crate::__log_record_impl!(
-            target: env!("CARGO_PKG_NAME"),
-            $level,
-            $name
-            $(, $($fields)*)?
-        )
     }};
 }
 

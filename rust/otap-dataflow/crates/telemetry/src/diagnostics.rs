@@ -20,27 +20,15 @@
 //! reports allocate or format diagnostic text after an episode has started.
 
 use crate::attributes::AttributeEnum;
-use crate::self_tracing::encoder::DirectFieldVisitor;
-use crate::self_tracing::{LOG_ARGUMENTS_ENCODE_INLINE, LogRecord};
 use otel_arrow_dfe_config::SignalType;
-use otel_arrow_dfe_pdata::otlp::common::{BoundedBuf, ProtoBuffer};
-use otel_arrow_dfe_pdata::views::otlp::bytes::logs::RawLogRecord;
-use otel_arrow_dfe_pdata_views::views::common::AnyValueView;
-use otel_arrow_dfe_pdata_views::views::logs::LogRecordView;
 use std::fmt;
 use std::marker::PhantomData;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 
 /// Minimum spacing between summaries of an ongoing episode.
 pub const SUMMARY_INTERVAL: Duration = Duration::from_secs(60);
 /// Failure-free interval required before fresh success clears an episode.
 pub const RECOVERY_INTERVAL: Duration = Duration::from_secs(30);
-/// Additional bounded space reserved for report counters appended to a
-/// retained failure record.
-///
-/// These reports occur at most once per summary interval, so growing this
-/// temporary heap buffer is preferable to dropping the diagnostic counters.
-const REPORT_ATTRIBUTES_LIMIT: usize = 2 * 1024;
 /// Common operation failure classifications for callers without a more specific enum.
 #[derive(Clone, Copy, Debug, otel_arrow_dfe_telemetry_macros::AttributeEnum)]
 pub enum DiagnosticErrorKind {
@@ -81,6 +69,18 @@ pub enum ReportKind {
     Summary,
     /// Fresh operation success after the failure-free confirmation interval.
     Recovered,
+}
+
+impl ReportKind {
+    /// Stable log attribute value for this sampling decision.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Degraded => "first_failure",
+            Self::Summary => "summary",
+            Self::Recovered => "recovery",
+        }
+    }
 }
 
 /// Counts for an interval or a complete episode. Counts represent attempts at
@@ -138,7 +138,7 @@ impl<E: AttributeEnum> fmt::Display for Counts<E> {
     }
 }
 
-/// Snapshot to emit through `otel_diagnostic_report!` at the component callsite.
+/// Snapshot selected by the diagnostic sampler for an ordinary log event.
 #[derive(Debug)]
 pub struct DiagnosticReport<E> {
     /// Transition or summary.
@@ -151,29 +151,6 @@ pub struct DiagnosticReport<E> {
     pub interval: Counts<E>,
     /// Counts since the episode began, including this observation.
     pub total: Counts<E>,
-    /// Representative failure detail, captured only when reporting.
-    pub detail: LogRecord,
-    /// Age of the representative detail; success-triggered reports reuse it.
-    pub detail_age: Duration,
-}
-
-impl<E> DiagnosticReport<E> {
-    /// Decode `detail`'s body as text, via the same OTLP bytes view/decoder
-    /// path used to render any other `LogRecord`.
-    ///
-    /// Returns an owned `String` because [`LogRecordView::body`]'s borrow is
-    /// tied to a view constructed from `self.detail`, not to `self` itself.
-    #[must_use]
-    pub fn detail_str(&self) -> String {
-        let raw = RawLogRecord::new(&self.detail.body_attrs_bytes);
-        if let Some(body) = raw.body()
-            && let Some(bytes) = body.as_string()
-            && let Ok(text) = std::str::from_utf8(bytes)
-        {
-            return text.to_owned();
-        }
-        String::new()
-    }
 }
 
 #[derive(Debug)]
@@ -183,8 +160,7 @@ struct Episode<E> {
     last_report: Instant,
     interval: Counts<E>,
     total: Counts<E>,
-    detail: Option<LogRecord>,
-    detail_at: Instant,
+    reported: bool,
 }
 
 impl<E: AttributeEnum> Episode<E> {
@@ -195,14 +171,10 @@ impl<E: AttributeEnum> Episode<E> {
             interval_duration: now.saturating_duration_since(self.last_report),
             interval: self.interval.clone(),
             total: self.total.clone(),
-            detail: self
-                .detail
-                .clone()
-                .expect("an episode always has a detail by its first report"),
-            detail_age: now.saturating_duration_since(self.detail_at),
         };
         self.interval.reset();
         self.last_report = now;
+        self.reported = true;
         report
     }
 }
@@ -225,38 +197,26 @@ impl<E> Default for DiagnosticTracker<E> {
 }
 
 impl<E: AttributeEnum> DiagnosticTracker<E> {
-    /// Observe a failure. `detail` is evaluated only when a report is due and
-    /// returns the ordinary log record captured under the active tracing
-    /// filter/context, or `None` when that callsite is disabled.
-    /// Callers retain responsibility for redacting secrets from diagnostics.
-    pub fn failure(
-        &mut self,
-        now: Instant,
-        category: E,
-        detail: impl FnOnce() -> Option<LogRecord>,
-    ) -> Option<DiagnosticReport<E>> {
+    /// Observe a failure and return a report only when an ordinary warning
+    /// should be emitted.
+    pub fn failure(&mut self, now: Instant, category: E) -> Option<DiagnosticReport<E>> {
         let episode = self.episode.get_or_insert_with(|| Episode {
             started_at: now,
             last_failure: now,
             last_report: now,
             interval: Counts::default(),
             total: Counts::default(),
-            detail: None,
-            detail_at: now,
+            reported: false,
         });
-        let first_report = episode.detail.is_none();
-        let report_due =
+        let first_report = !episode.reported;
+        let emit =
             first_report || now.saturating_duration_since(episode.last_report) >= SUMMARY_INTERVAL;
-        let selected_detail = report_due.then(detail).flatten();
-        let emit = selected_detail.is_some();
         episode.last_failure = now;
         episode.interval.failure(category, !emit);
         episode.total.failure(category, !emit);
         if !emit {
             return None;
         }
-        episode.detail = selected_detail;
-        episode.detail_at = now;
         Some(episode.report(
             if first_report {
                 ReportKind::Degraded
@@ -277,19 +237,9 @@ impl<E: AttributeEnum> DiagnosticTracker<E> {
         if started_at > episode.last_failure
             && now.saturating_duration_since(episode.last_failure) >= RECOVERY_INTERVAL
         {
-            let report = episode
-                .detail
-                .is_some()
-                .then(|| episode.report(ReportKind::Recovered, now));
+            let report = Some(episode.report(ReportKind::Recovered, now));
             self.episode = None;
             return report;
-        }
-        // Do not claim continuing failures after an idle period or repeatedly
-        // report successes from old work: a summary needs new failure evidence.
-        if episode.interval.failures != 0
-            && now.saturating_duration_since(episode.last_report) >= SUMMARY_INTERVAL
-        {
-            return Some(episode.report(ReportKind::Summary, now));
         }
         None
     }
@@ -330,123 +280,54 @@ impl<T> SignalSet<T> {
 /// directly. This alias adds a fixed set of scopes without dynamic keys.
 pub type SignalDiagnostics<E> = SignalSet<DiagnosticTracker<E>>;
 
-/// Splice additional pre-encoded attributes onto a copy of `detail`'s body and
-/// attribute bytes, keeping `detail`'s own callsite (so the re-delivered
-/// record still identifies the true failure site's name/level/file/line).
+/// Sample repeated failures and emit one ordinary warning when selected.
 ///
-/// Protobuf's repeated fields are just concatenated entries, so appending
-/// more `KeyValue` attributes after an existing, already-encoded body is
-/// valid without decoding anything. The existing bytes are copied first, so
-/// the representative detail is never at risk from this call's own
-/// truncation; only the newly appended attributes can be truncated or
-/// dropped if they overflow their own budget.
-fn append_attrs(detail: &LogRecord, attrs: &tracing::Event<'_>) -> LogRecord {
-    let existing = detail.body_attrs_bytes.len();
-    let mut buf = ProtoBuffer::with_capacity_and_limit(
-        existing + LOG_ARGUMENTS_ENCODE_INLINE,
-        existing + REPORT_ATTRIBUTES_LIMIT,
-    );
-    let _ = buf.extend_from_slice(&detail.body_attrs_bytes);
-    let mut dropped = u32::from(detail.dropped_attributes_count);
-    {
-        let mut visitor = DirectFieldVisitor::new(&mut buf);
-        attrs.record(&mut visitor);
-        dropped += visitor.dropped_count();
-    }
-    LogRecord {
-        callsite_id: detail.callsite_id.clone(),
-        body_attrs_bytes: buf.into_bytes(),
-        dropped_attributes_count: dropped.min(u32::from(u16::MAX)) as u16,
-        context: detail.context.clone(),
-    }
+/// The tracker decides before the tracing event is constructed. The selected
+/// event follows the normal logging path, with diagnostic counters inserted
+/// before the caller's ordinary tracing fields and message.
+#[macro_export]
+macro_rules! otel_summary_warn {
+    (target: $target:expr, $tracker:expr, $signal:expr, $category:expr, $name:literal, $($fields:tt)+) => {{
+        $crate::otel_summary_warn!(
+            target: $target,
+            at: std::time::Instant::now(),
+            $tracker,
+            $signal,
+            $category,
+            $name,
+            $($fields)+
+        );
+    }};
+    (target: $target:expr, at: $now:expr, $tracker:expr, $signal:expr, $category:expr, $name:literal, $($fields:tt)+) => {{
+        let diagnostic_signal = $signal;
+        if let Some(diagnostic_report) = ($tracker).failure($now, $category) {
+            $crate::otel_warn!(target: $target, $name,
+                signal = diagnostic_signal.as_str(),
+                diagnostic_kind = diagnostic_report.kind.as_str(),
+                episode_seconds = diagnostic_report.episode_duration.as_secs_f64(),
+                interval_seconds = diagnostic_report.interval_duration.as_secs_f64(),
+                successful_attempts = diagnostic_report.interval.successes,
+                failed_attempts = diagnostic_report.interval.failures,
+                suppressed_diagnostics = diagnostic_report.interval.suppressed,
+                total_successful_attempts = diagnostic_report.total.successes,
+                total_failed_attempts = diagnostic_report.total.failures,
+                total_suppressed_diagnostics = diagnostic_report.total.suppressed,
+                error_counts = %diagnostic_report.interval,
+                total_error_counts = %diagnostic_report.total,
+                $($fields)+
+            );
+        }
+    }};
 }
 
-/// Re-deliver a diagnostic's representative detail directly, with report
-/// counters appended, instead of decoding it to text and re-logging it as a
-/// field of a brand-new event.
-///
-/// Filtering and entity context were captured with `detail` at the original
-/// failure site. They are not re-evaluated here: this re-delivers an already
-/// accepted occurrence, not a new one. `time` is always "now" (the delivery
-/// moment); the original capture age is represented by the
-/// `error_sample_age_seconds` attribute already included by the caller.
-///
-/// Only meaningful for [`ReportKind::Degraded`] and [`ReportKind::Summary`]:
-/// recovery is a distinct, new occurrence (and is usually logged at a lower
-/// severity), so it still uses [`otel_diagnostic_report!`] to build its own
-/// event referencing the retained sample as supporting text.
-///
-pub fn emit_diagnostic_summary(detail: &LogRecord, attrs: &tracing::Event<'_>) {
-    crate::tracing_init::deliver_current_record(SystemTime::now(), append_attrs(detail, attrs));
-}
-
-/// Build the report-counter fields for [`emit_diagnostic_summary`] and pass
-/// them, together with the report's retained detail, to it.
-///
-/// The `report:` form re-delivers `report.detail` using its own captured
-/// callsite, so only caller fields specific to the report's kind (e.g.
-/// `retryable`, `diagnostic_kind`) need to be passed; `error`/`message`
-/// duplicating the detail's body are neither needed nor accepted.
-///
-/// The `target:`/`emit:`/`name:` form emits a distinct ordinary event, used
-/// for recovery reports.
+/// Add diagnostic episode counters to a distinct ordinary event, such as a
+/// confirmed recovery notification.
 #[macro_export]
 macro_rules! otel_diagnostic_report {
-    (report: $report:expr, $($fields:tt)+) => {{
-        use $crate::_private::Callsite;
-
-        let diagnostic_report = $report;
-
-        static __CALLSITE: $crate::_private::DefaultCallsite = $crate::_private::callsite2! {
-            name: "diagnostic.report.attrs",
-            kind: $crate::_private::Kind::EVENT,
-            target: "",
-            level: $crate::_private::Level::TRACE,
-            fields: $($fields)+,
-                episode_seconds,
-                interval_seconds,
-                successful_attempts,
-                failed_attempts,
-                suppressed_diagnostics,
-                total_successful_attempts,
-                total_failed_attempts,
-                total_suppressed_diagnostics,
-                error_counts,
-                total_error_counts,
-                error_sample_age_seconds
-        };
-        let meta = __CALLSITE.metadata();
-
-        // The IIFE keeps `valueset!`'s field temporaries (e.g. `f64`/`Counts`
-        // by-reference values) alive across `Event::new` and the emit call,
-        // matching the pattern the tracing event macros use for the same
-        // reason: a separate `let valueset = ...;` statement would drop them
-        // too early.
-        (|valueset: $crate::_private::ValueSet<'_>| {
-            let attrs_event = $crate::_private::Event::new(meta, &valueset);
-            $crate::diagnostics::emit_diagnostic_summary(
-                &diagnostic_report.detail,
-                &attrs_event,
-            );
-        })($crate::_private::valueset!(meta.fields(),
-            $($fields)+,
-            episode_seconds = diagnostic_report.episode_duration.as_secs_f64(),
-            interval_seconds = diagnostic_report.interval_duration.as_secs_f64(),
-            successful_attempts = diagnostic_report.interval.successes,
-            failed_attempts = diagnostic_report.interval.failures,
-            suppressed_diagnostics = diagnostic_report.interval.suppressed,
-            total_successful_attempts = diagnostic_report.total.successes,
-            total_failed_attempts = diagnostic_report.total.failures,
-            total_suppressed_diagnostics = diagnostic_report.total.suppressed,
-            error_counts = %diagnostic_report.interval,
-            total_error_counts = %diagnostic_report.total,
-            error_sample_age_seconds = diagnostic_report.detail_age.as_secs_f64()
-        ));
-    }};
     (target: $target:expr, emit: $emit:ident, name: $name:literal, report: $report:expr, $($fields:tt)+) => {{
         let diagnostic_report = $report;
         $crate::$emit!(target: $target, $name,
-            $($fields)+,
+            diagnostic_kind = diagnostic_report.kind.as_str(),
             episode_seconds = diagnostic_report.episode_duration.as_secs_f64(),
             interval_seconds = diagnostic_report.interval_duration.as_secs_f64(),
             successful_attempts = diagnostic_report.interval.successes,
@@ -457,7 +338,7 @@ macro_rules! otel_diagnostic_report {
             total_suppressed_diagnostics = diagnostic_report.total.suppressed,
             error_counts = %diagnostic_report.interval,
             total_error_counts = %diagnostic_report.total,
-            error_sample_age_seconds = diagnostic_report.detail_age.as_secs_f64()
+            $($fields)+
         );
     }};
 }
