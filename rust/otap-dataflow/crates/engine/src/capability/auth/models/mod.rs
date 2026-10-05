@@ -15,6 +15,7 @@ mod authz_decision;
 mod basic_auth_credential;
 mod bearer_token;
 mod deny_reason;
+mod sasl_credential;
 
 pub use api_key::{ApiKey, ApiKeyAttributeError, ApiKeyAttributes};
 pub use authorized_identity::{AuthorizedIdentity, ClaimValue};
@@ -22,3 +23,4 @@ pub use authz_decision::AuthzDecision;
 pub use basic_auth_credential::{BasicAuthCredential, BasicAuthCredentialError};
 pub use bearer_token::BearerToken;
 pub use deny_reason::DenyReason;
+pub use sasl_credential::{SaslCredential, SaslCredentialError};

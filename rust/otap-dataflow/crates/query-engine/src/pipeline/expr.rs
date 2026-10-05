@@ -48,6 +48,7 @@ use datafusion::logical_expr::{ColumnarValue, Expr};
 use datafusion::physical_expr::PhysicalExprRef;
 use datafusion::scalar::ScalarValue;
 use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_pdata::otlp::attributes::cbor::SerializedValuePathElement;
 use otel_arrow_dfe_pdata::schema::consts;
 use otel_arrow_dfe_pdata::{OtapArrowRecords, OtapPayloadHelpers};
 
@@ -110,9 +111,13 @@ pub(crate) enum DataScope {
     Record(RecordScope),
 
     /// Attribute batch identified by [`AttributesIdentifier`] and filtered by some key.
-    /// For example, (AttributesIdentifier::Root, "http.method") may refer to log attributes
-    /// with key="http.method"
-    Attribute(AttributesIdentifier, String),
+    /// For example, (AttributesIdentifier::Root, "http.method", []) may refer to log attributes
+    /// with key="http.method". A non-empty path selects a scalar leaf inside a serialized value.
+    Attribute(
+        AttributesIdentifier,
+        String,
+        Vec<SerializedValuePathElement>,
+    ),
 
     /// Raw (unfiltered) attribute batch identified by [`AttributesIdentifier`].
     ///
@@ -168,7 +173,7 @@ impl DataScope {
     #[allow(dead_code)]
     pub(crate) fn attrs_id(&self) -> Option<&AttributesIdentifier> {
         match self {
-            Self::Attribute(id, _) | Self::AttributesAll(id) => Some(id),
+            Self::Attribute(id, _, _) | Self::AttributesAll(id) => Some(id),
             _ => None,
         }
     }
@@ -190,10 +195,10 @@ impl DataScope {
                 _ => Self::Record(RecordScope::Signal),
             },
             ColumnAccessor::Attributes(attrs_id, attrs_key) => {
-                Self::Attribute(*attrs_id, attrs_key.clone())
+                Self::Attribute(*attrs_id, attrs_key.clone(), Vec::new())
             }
             ColumnAccessor::NestedAttribute(attrs_id, attrs_key, _) => {
-                Self::Attribute(*attrs_id, attrs_key.clone())
+                Self::Attribute(*attrs_id, attrs_key.clone(), Vec::new())
             }
         }
     }
@@ -601,7 +606,7 @@ mod test {
     /// Helper: create an `Eval(DatafusionExpr)` node for an attribute-scoped expression.
     fn attrs_eval(attrs_id: AttributesIdentifier, key: &str, expr: Expr) -> ScopedExpr {
         ScopedExpr::Eval {
-            scope: DataScope::Attribute(attrs_id, key.to_string()),
+            scope: DataScope::Attribute(attrs_id, key.to_string(), Vec::new()),
             eval: LeafEval::new_df_expr(expr, false).unwrap(),
         }
     }
@@ -614,7 +619,7 @@ mod test {
         expr: Expr,
     ) -> ScopedExpr {
         ScopedExpr::Eval {
-            scope: DataScope::Attribute(attrs_id, key.to_string()),
+            scope: DataScope::Attribute(attrs_id, key.to_string(), Vec::new()),
             eval: LeafEval::new_df_expr(expr, true).unwrap(),
         }
     }
@@ -750,7 +755,8 @@ mod test {
             result.scope,
             DataScope::Attribute(
                 AttributesIdentifier::Record(RecordScope::Signal),
-                "code.namespace".to_string()
+                "code.namespace".to_string(),
+                Vec::new()
             )
         );
 

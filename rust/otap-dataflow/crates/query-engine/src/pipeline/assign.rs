@@ -19,12 +19,11 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use arrow::array::{
-    Array, ArrayRef, ArrowPrimitiveType, AsArray, BooleanArray, DictionaryArray, Float64Array,
-    Int64Array, NullArray, PrimitiveArray, RecordBatch, StringArray, StructArray, UInt8Array,
-    UInt16Array,
+    Array, ArrayRef, ArrowPrimitiveType, AsArray, BooleanArray, DictionaryArray, PrimitiveArray,
+    RecordBatch, StringArray, StructArray, UInt8Array, UInt16Array,
 };
 use arrow::buffer::{BooleanBuffer, ScalarBuffer};
-use arrow::compute::kernels::cmp::{eq, neq};
+use arrow::compute::kernels::cmp::eq;
 use arrow::compute::kernels::merge::merge;
 use arrow::compute::{and_not, cast, filter, max, take};
 use arrow::datatypes::{
@@ -77,15 +76,13 @@ use crate::pipeline::expr::types::{
     root_field_supports_dict_encoding, root_field_type,
 };
 use crate::pipeline::expr::{
-    ChildRecordKind, DataScope, LeafEval, RecordScope, RootParentStruct, ScopedExpr, ScopedValue,
-    VALUE_COLUMN_NAME,
+    ChildRecordKind, DataScope, RecordScope, RootParentStruct, ScopedExpr, ScopedValue,
 };
 use crate::pipeline::planner::{AttributesIdentifier, ColumnAccessor, RecordType};
 use crate::pipeline::project::anyval::{
     attempt_coerce_value_column_from_any_value_struct_column, fill_null_type_as_empty,
     is_any_value_data_type, wrap_as_any_value_struct,
 };
-use crate::pipeline::project::{ProjectedSchemaColumn, Projection};
 use crate::pipeline::state::ExecutionState;
 
 /// Representation of assignment source and destination
@@ -118,11 +115,6 @@ pub(crate) struct AssignPipelineStage {
 
     /// Unified execution trees that produce the data to be assigned to the destination.
     sources: Vec<ScopedExpr>,
-
-    /// When this pipeline stage is used in a nested pipeline that processes attributes, it may be
-    /// applying an expression that references the virtual "value" column. This flag will be set if
-    /// the expression references this column.
-    projection_contains_value_column: bool,
 
     /// This is used when assigning attributes to keep track of ID/parent ID membership as we
     /// determine which attributes must be updated or inserted
@@ -183,13 +175,6 @@ impl AssignPipelineStage {
             source_exprs.push(assignment.source.expr);
         }
 
-        // determine, in the case that we're doing assignment on a nested pipeline for attributes,
-        // whether we need to project the virtual "value" column. We only look at the first expr
-        // because for these nested pipelines, the planner shouldn't be combining multiple
-        // set expressions together due to them all having the same destination.
-        let projection_contains_value_column =
-            projection_references_column(&source_exprs[0], VALUE_COLUMN_NAME);
-
         Ok(Self {
             dest_scopes: dest_columns
                 .iter()
@@ -198,7 +183,6 @@ impl AssignPipelineStage {
                 .collect(),
             dest_columns,
             sources: source_exprs,
-            projection_contains_value_column,
             id_bitmap_pool: IdBitmapPool::new(),
         })
     }
@@ -309,7 +293,7 @@ impl AssignPipelineStage {
             // computed from attributes. We'll need to join the result's values column to the root
             // column to get the values in the correct order ...
 
-            let DataScope::Attribute(attrs_id, _) = &scoped_value.scope else {
+            let DataScope::Attribute(attrs_id, _, _) = &scoped_value.scope else {
                 // safety: if the data_scope were anything other than attributes, we'd have taken
                 // the if branch (not the else branch) above when we checked if the data was
                 // already aligned
@@ -362,7 +346,7 @@ impl AssignPipelineStage {
         let already_aligned = scoped_value.scope.is_scalar() || scoped_value.scope == *dest_scope;
 
         if !already_aligned {
-            let DataScope::Attribute(attrs_id, _) = &scoped_value.scope else {
+            let DataScope::Attribute(attrs_id, _, _) = &scoped_value.scope else {
                 unreachable!("unexpected data_scope for non-aligned result")
             };
 
@@ -565,7 +549,7 @@ impl AssignPipelineStage {
             );
 
         if !already_aligned {
-            let DataScope::Attribute(attrs_id, _) = scoped_value.scope else {
+            let DataScope::Attribute(attrs_id, _, _) = scoped_value.scope else {
                 unreachable!("unexpected data_scope")
             };
 
@@ -699,7 +683,7 @@ impl AssignPipelineStage {
                 );
 
                 let vals_take_indices = match eval_result.data_scope.as_ref() {
-                    DataScope::Attribute(result_attrs_id, _)
+                    DataScope::Attribute(result_attrs_id, _, _)
                     | DataScope::AttributesAll(result_attrs_id) => {
                         if dest_attrs_id == *result_attrs_id {
                             AttributeToSameAttributeJoin::new().rows_to_take(
@@ -864,7 +848,7 @@ impl AssignPipelineStage {
                 );
 
                 let vals_take_indices = match eval_result.data_scope.as_ref() {
-                    DataScope::Attribute(result_attrs_id, _)
+                    DataScope::Attribute(result_attrs_id, _, _)
                     | DataScope::AttributesAll(result_attrs_id) => {
                         if dest_attrs_id == *result_attrs_id {
                             AttributeToSameAttributeJoin::new().rows_to_take(
@@ -1276,112 +1260,9 @@ impl PipelineStage for AssignPipelineStage {
             });
         }
 
-        // safety: we've already checked the batch is not empty, and that there aren't any nulls
-        // in this column, which means we should be safe to expect at least one non-null type
-        let input_attr_type = type_column
-            .iter()
-            .flatten()
-            .next()
-            .expect("non-empty batch");
-
-        let input_attr_type =
-            AttributeValueType::try_from(input_attr_type).map_err(|e| Error::ExecutionError {
-                cause: format!("invalid attribute type {input_attr_type}: {e}"),
-            })?;
-
-        // check if every value is the same type - if not, we may have problems evaluating the
-        // expression (if the value is used in the expression).
-        let all_rows_same_attr_type =
-            neq(type_column, &UInt8Array::new_scalar(input_attr_type as u8))?.true_count() == 0;
-
-        // create the record batch that will be the input to the datafusion physical expression..
-        // if the expression involves the attribute value (e.g. `value + 2`), we produce a record
-        // batch with a single column which is the "value", otherwise, the input is an empty record
-        // batch. We do this because we are currently assuming the only types of expressions we
-        // support are those involving the attribute values (referenced as the virtual "value")
-        // column, or expressions involving static constants which don't need input columns.
-        let projected_rb = if self.projection_contains_value_column {
-            if !all_rows_same_attr_type {
-                // if not all the attribute types are the same, we can't determine a single value
-                // column to use in the projection, so return an error. In practice, the batch
-                // should be split apart before this pipeline stage using other operators to ensure
-                // we only have one value type.
-                return Err(Error::ExecutionError {
-                    cause: "All input rows for attribute assignment must have the same type \
-                        if value used in expression"
-                        .into(),
-                });
-            }
-
-            // try to access the values column
-            let values_column_name = match input_attr_type {
-                AttributeValueType::Bool => Some(consts::ATTRIBUTE_BOOL),
-                AttributeValueType::Double => Some(consts::ATTRIBUTE_DOUBLE),
-                AttributeValueType::Int => Some(consts::ATTRIBUTE_INT),
-                AttributeValueType::Str => Some(consts::ATTRIBUTE_STR),
-                AttributeValueType::Empty => None,
-                other => {
-                    return Err(Error::NotYetSupportedError {
-                        message: format!(
-                            "Setting attributes of type {:?} in nested pipeline not yet supported",
-                            other
-                        ),
-                    });
-                }
-            };
-
-            let values_column =
-                values_column_name.and_then(|col| attrs_record_batch.column_by_name(col));
-
-            let values_column: ArrayRef = match values_column {
-                Some(col) => Arc::clone(col),
-                None => {
-                    // here the values column is missing, which basically means the attributes
-                    // were all null. We'll create an all null array as a placeholder column.
-                    let len = attrs_record_batch.num_rows();
-                    match input_attr_type {
-                        AttributeValueType::Bool => Arc::new(BooleanArray::new_null(len)),
-                        AttributeValueType::Double => Arc::new(Float64Array::new_null(len)),
-                        AttributeValueType::Int => Arc::new(Int64Array::new_null(len)),
-                        AttributeValueType::Str => Arc::new(StringArray::new_null(len)),
-                        AttributeValueType::Empty => Arc::new(NullArray::new(len)),
-                        other => {
-                            return Err(Error::NotYetSupportedError {
-                                message: format!(
-                                    "Setting attributes of type {:?} in nested pipeline not yet supported",
-                                    other
-                                ),
-                            });
-                        }
-                    }
-                }
-            };
-
-            // create the input record batch
-            let mut fields = vec![Arc::new(Field::new(
-                VALUE_COLUMN_NAME,
-                values_column.data_type().clone(),
-                true,
-            ))];
-            let mut columns = vec![values_column];
-
-            // remove dict encoding if necessary. This would be needed for certain expressions such
-            // as arithmetic
-            if leaf_requires_dict_downcast(&self.sources[0]) {
-                Projection::try_downcast_dicts(&mut fields, &mut columns)?
-            }
-
-            Cow::Owned(RecordBatch::try_new(
-                Arc::new(Schema::new(fields)),
-                columns,
-            )?)
-        } else {
-            Cow::Borrowed(&attrs_record_batch)
-        };
-
         // evaluate the expression
         let mut result = self.sources[0]
-            .evaluate_on_batch(&projected_rb, &EvalContext::new(session_context))?
+            .evaluate_on_attrs_batch(&attrs_record_batch, &EvalContext::new(session_context))?
             .to_array(attrs_record_batch.num_rows())?;
 
         // determine the "logical" type of the result (e.g. the array type, or the values if the
@@ -1485,7 +1366,12 @@ impl PipelineStage for AssignPipelineStage {
         }
 
         // replace the type column if the result may have changed the type for some row
-        if result_attr_type != input_attr_type || !all_rows_same_attr_type {
+        let type_mismatch = type_column
+            .values()
+            .iter()
+            .any(|val| *val != result_attr_type as u8);
+
+        if type_mismatch {
             let new_type_column = UInt8Array::from_iter_values(std::iter::repeat_n(
                 result_attr_type as u8,
                 attrs_record_batch.num_rows(),
@@ -2094,36 +1980,6 @@ fn decompose_any_value_upsert<'a, T: ArrowPrimitiveType>(
     Ok(upserts)
 }
 
-/// Check if the top-level `Eval(DatafusionExpr)` node's projection references a given column.
-///
-/// Returns `true` if this is an `Eval(DatafusionExpr)` node whose projection includes the
-/// specified column name. For non-`Eval` nodes or `BatchPredicate` leaves, returns `false`.
-fn projection_references_column(expr: &ScopedExpr, col_name: &str) -> bool {
-    match expr {
-        ScopedExpr::Eval {
-            eval: LeafEval::DatafusionExpr { projection, ..  },
-            ..
-        } => projection.schema.iter().any(|projected_col| {
-            matches!(projected_col, ProjectedSchemaColumn::Root(name) if name == col_name)
-        }),
-        _ => false,
-    }
-}
-
-/// Returns the `downcast_dicts` option from the inner `LeafEval::DatafusionExpr` projection
-/// options, if this is an `Eval(DatafusionExpr)` node. Returns `false` otherwise.
-pub(crate) fn leaf_requires_dict_downcast(expr: &ScopedExpr) -> bool {
-    match expr {
-        ScopedExpr::Eval {
-            eval: LeafEval::DatafusionExpr {
-                projection_opts, ..
-            },
-            ..
-        } => projection_opts.downcast_dicts,
-        _ => false,
-    }
-}
-
 /// Validate that the results of the passed expression can be assigned to the destination.
 /// There are multiple validations performed:
 ///
@@ -2271,7 +2127,7 @@ fn validate_expr_cardinality(
                     });
                 }
 
-                DataScope::Attribute(source_attrs_id, _)
+                DataScope::Attribute(source_attrs_id, _, _)
                 | DataScope::AttributesAll(source_attrs_id) => {
                     dest_attrs_id == *source_attrs_id
                         || matches!(
@@ -2372,7 +2228,7 @@ fn validate_struct_col_assign_cardinality(
                     ),
                     _ => false,
                 },
-                DataScope::Attribute(source_attrs_id, _)
+                DataScope::Attribute(source_attrs_id, _, _)
                 | DataScope::AttributesAll(source_attrs_id) => match dest_struct_name {
                     consts::RESOURCE => matches!(
                         source_attrs_id,
@@ -4220,7 +4076,7 @@ mod test {
         let err = pipeline.execute(input).await.unwrap_err();
         assert!(
             err.to_string().contains(
-                "cannot assign data scope Attribute(NonRecord(ScopeAttrs), \"key\") to struct column resource"
+                "cannot assign data scope Attribute(NonRecord(ScopeAttrs), \"key\", []) to struct column resource"
             ),
             "unexpected error: {}",
             err
@@ -6598,6 +6454,258 @@ mod test {
         );
     }
 
+    fn sorted_attributes(mut attributes: Vec<KeyValue>) -> Vec<KeyValue> {
+        attributes.sort_by(|left, right| left.key.cmp(&right.key));
+        attributes
+    }
+
+    /// Scenario: Assign every supported scalar type from nested map and array paths.
+    /// Guarantees: Nested scalar leaves retain their types and values during assignment.
+    #[tokio::test]
+    async fn test_read_nested_scalar_attribute_paths() {
+        let complex = AnyValue::new_kvlist(vec![
+            KeyValue::new("text", AnyValue::new_string("value")),
+            KeyValue::new("int", AnyValue::new_int(7)),
+            KeyValue::new("double", AnyValue::new_double(1.5)),
+            KeyValue::new("bool", AnyValue::new_bool(true)),
+            KeyValue::new("bytes", AnyValue::new_bytes(b"raw")),
+            KeyValue::new(
+                "items",
+                AnyValue::new_array(vec![AnyValue::new_string("first"), AnyValue::new_int(2)]),
+            ),
+        ]);
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("complex", complex.clone())])
+                .finish(),
+        ]);
+
+        let query = r#"logs | extend
+            attributes["text"] = attributes["complex"]["text"],
+            attributes["int"] = attributes["complex"]["int"],
+            attributes["double"] = attributes["complex"]["double"],
+            attributes["bool"] = attributes["complex"]["bool"],
+            attributes["bytes"] = attributes["complex"]["bytes"],
+            attributes["first"] = attributes["complex"]["items"][0],
+            attributes["second"] = attributes["complex"]["items"][1]"#;
+        let result = exec_logs_pipeline::<OplParser>(query, logs_data).await;
+
+        assert_eq!(
+            sorted_attributes(
+                result.resource_logs[0].scope_logs[0].log_records[0]
+                    .attributes
+                    .clone()
+            ),
+            vec![
+                KeyValue::new("bool", AnyValue::new_bool(true)),
+                KeyValue::new("bytes", AnyValue::new_bytes(b"raw")),
+                KeyValue::new("complex", complex),
+                KeyValue::new("double", AnyValue::new_double(1.5)),
+                KeyValue::new("first", AnyValue::new_string("first")),
+                KeyValue::new("int", AnyValue::new_int(7)),
+                KeyValue::new("second", AnyValue::new_int(2)),
+                KeyValue::new("text", AnyValue::new_string("value")),
+            ]
+        );
+    }
+
+    /// Scenario: Assign missing, container, null, mismatched and out-of-bounds nested paths.
+    /// Guarantees: Nested paths that do not resolve to a scalar leaf read as null.
+    #[tokio::test]
+    async fn test_read_unresolved_nested_attribute_paths_as_null() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new(
+                    "complex",
+                    AnyValue::new_kvlist(vec![
+                        KeyValue::new("child", AnyValue::new_kvlist(vec![])),
+                        KeyValue::new("items", AnyValue::new_array(vec![])),
+                        KeyValue::new("empty", AnyValue::default()),
+                    ]),
+                )])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("complex", AnyValue::new_string("text"))])
+                .finish(),
+        ]);
+
+        let query = r#"logs | extend
+            attributes["missing"] = attributes["complex"]["missing"],
+            attributes["container"] = attributes["complex"]["child"],
+            attributes["null"] = attributes["complex"]["empty"],
+            attributes["wrong_container"] = attributes["complex"][0],
+            attributes["out_of_bounds"] = attributes["complex"]["items"][0]"#;
+        let result = exec_logs_pipeline::<OplParser>(query, logs_data).await;
+
+        for log_record in &result.resource_logs[0].scope_logs[0].log_records {
+            for key in [
+                "missing",
+                "container",
+                "null",
+                "wrong_container",
+                "out_of_bounds",
+            ] {
+                let attribute = log_record
+                    .attributes
+                    .iter()
+                    .find(|attribute| attribute.key == key)
+                    .unwrap();
+                assert_eq!(attribute.value, Some(AnyValue::default()), "{key}");
+            }
+        }
+    }
+
+    /// Scenario: Combine two nested paths read from the same serialized attribute.
+    /// Guarantees: Each path resolves independently, and a missing leaf yields null.
+    #[tokio::test]
+    async fn test_read_multiple_nested_paths_from_same_attribute() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new(
+                    "complex",
+                    AnyValue::new_kvlist(vec![
+                        KeyValue::new("x", AnyValue::new_int(2)),
+                        KeyValue::new("y", AnyValue::new_int(3)),
+                    ]),
+                )])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new(
+                    "complex",
+                    AnyValue::new_kvlist(vec![KeyValue::new("x", AnyValue::new_int(5))]),
+                )])
+                .finish(),
+        ]);
+
+        let query = r#"logs | extend attributes["sum"] = attributes["complex"]["x"] + attributes["complex"]["y"]"#;
+        let result = exec_logs_pipeline::<OplParser>(query, logs_data).await;
+        let log_records = &result.resource_logs[0].scope_logs[0].log_records;
+
+        assert_eq!(
+            log_records[0].attributes[1],
+            KeyValue::new("sum", AnyValue::new_int(5))
+        );
+        assert_eq!(
+            log_records[1].attributes[1],
+            KeyValue::new("sum", AnyValue::default())
+        );
+    }
+
+    /// Scenario: Assign a nested path read from instrumentation scope attributes.
+    /// Guarantees: Each log receives the leaf from its own scope.
+    #[tokio::test]
+    async fn test_read_nested_scope_attribute_path() {
+        let scope = |name| {
+            InstrumentationScope::build()
+                .attributes(vec![KeyValue::new(
+                    "custom",
+                    AnyValue::new_kvlist(vec![KeyValue::new(
+                        "componentName",
+                        AnyValue::new_string(name),
+                    )]),
+                )])
+                .finish()
+        };
+        let logs_data = LogsData::new(vec![ResourceLogs::new(
+            Resource::default(),
+            vec![
+                ScopeLogs::new(scope("receiver"), vec![LogRecord::build().finish()]),
+                ScopeLogs::new(scope("exporter"), vec![LogRecord::build().finish()]),
+            ],
+        )]);
+
+        let query = r#"logs | extend attributes["componentName"] = instrumentation_scope.attributes["custom"]["componentName"]"#;
+        let result = exec_logs_pipeline::<OplParser>(query, logs_data).await;
+
+        for (scope_logs, expected) in result.resource_logs[0]
+            .scope_logs
+            .iter()
+            .zip(["receiver", "exporter"])
+        {
+            assert_eq!(
+                scope_logs.log_records[0].attributes,
+                vec![KeyValue::new(
+                    "componentName",
+                    AnyValue::new_string(expected)
+                )]
+            );
+        }
+    }
+
+    /// Scenario: Assign a span attribute from a nested serialized span attribute leaf.
+    /// Guarantees: Each span receives the leaf from its own nested attribute.
+    #[tokio::test]
+    async fn test_read_nested_span_attribute_path() {
+        let complex = |name| {
+            KeyValue::new(
+                "complex",
+                AnyValue::new_kvlist(vec![KeyValue::new("name", AnyValue::new_string(name))]),
+            )
+        };
+        let traces_data = to_traces_data(vec![
+            Span::build().attributes(vec![complex("a")]).finish(),
+            Span::build().attributes(vec![complex("b")]).finish(),
+        ]);
+
+        let query = r#"traces | extend attributes["name"] = attributes["complex"]["name"]"#;
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+        let input = otlp_to_otap(&OtlpProtoMessage::Traces(traces_data));
+        let result = pipeline.execute(input).await.unwrap();
+
+        let OtlpProtoMessage::Traces(result_traces_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        for (span, expected) in result_traces_data.resource_spans[0].scope_spans[0]
+            .spans
+            .iter()
+            .zip(["a", "b"])
+        {
+            assert_eq!(
+                span.attributes,
+                vec![
+                    complex(expected),
+                    KeyValue::new("name", AnyValue::new_string(expected)),
+                ]
+            );
+        }
+    }
+
+    /// Scenario: Read a nested path from a serialized attribute holding invalid CBOR.
+    /// Guarantees: The pipeline returns an error naming the attribute key and path.
+    #[tokio::test]
+    async fn test_read_nested_path_from_invalid_cbor_returns_error() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new(
+                    "complex",
+                    AnyValue::new_kvlist(vec![KeyValue::new("name", AnyValue::new_string("a"))]),
+                )])
+                .finish(),
+        ]);
+        let mut input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        let log_attrs = input.get(ArrowPayloadType::LogAttrs).unwrap();
+        let log_attrs = super::try_upsert_column(
+            consts::ATTRIBUTE_SER,
+            std::sync::Arc::new(arrow::array::BinaryArray::from(vec![Some(
+                b"not cbor".as_slice(),
+            )])),
+            log_attrs,
+        )
+        .unwrap();
+        input.set(ArrowPayloadType::LogAttrs, log_attrs).unwrap();
+
+        let query = r#"logs | extend attributes["name"] = attributes["complex"]["name"]"#;
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+        let err = pipeline.execute(input).await.unwrap_err().to_string();
+
+        assert!(
+            err.contains("failed to read serialized attribute \"complex\" at path [Key(\"name\")]"),
+            "unexpected error message: {err:?}"
+        );
+    }
+
     async fn test_upsert_multi_attribute_scalar<P: Parser>() {
         let logs_data = to_logs_data(vec![
             LogRecord::build()
@@ -6742,7 +6850,7 @@ mod test {
         let err = pipeline.execute(input.clone()).await.unwrap_err();
         let err_msg = err.to_string();
         assert!(
-            err_msg.contains("cannot assign data scope Attribute(Record(Signal), \"x\") to attributes NonRecord(ResourceAttrs)"),
+            err_msg.contains("cannot assign data scope Attribute(Record(Signal), \"x\", []) to attributes NonRecord(ResourceAttrs)"),
             "unexpected error message {}",
             err_msg
         );
@@ -6755,7 +6863,7 @@ mod test {
         let err = pipeline.execute(input.clone()).await.unwrap_err();
         let err_msg = err.to_string();
         assert!(
-            err_msg.contains("cannot assign data scope Attribute(NonRecord(ScopeAttrs), \"x\") to attributes NonRecord(ResourceAttrs)"),
+            err_msg.contains("cannot assign data scope Attribute(NonRecord(ScopeAttrs), \"x\", []) to attributes NonRecord(ResourceAttrs)"),
             "unexpected error message {}",
             err_msg
         );
@@ -6768,7 +6876,7 @@ mod test {
         let err = pipeline.execute(input.clone()).await.unwrap_err();
         let err_msg = err.to_string();
         assert!(
-            err_msg.contains("cannot assign data scope Attribute(Record(Signal), \"y\") to attributes NonRecord(ResourceAttrs)"),
+            err_msg.contains("cannot assign data scope Attribute(Record(Signal), \"y\", []) to attributes NonRecord(ResourceAttrs)"),
             "unexpected error message {}",
             err_msg
         );
@@ -6803,7 +6911,7 @@ mod test {
         let err_msg = err.to_string();
         assert!(
             err_msg.contains(
-                "cannot assign data scope Attribute(Record(Signal), \"x\") to attributes NonRecord(ScopeAttrs)"
+                "cannot assign data scope Attribute(Record(Signal), \"x\", []) to attributes NonRecord(ScopeAttrs)"
             ),
             "unexpected error message {}",
             err_msg

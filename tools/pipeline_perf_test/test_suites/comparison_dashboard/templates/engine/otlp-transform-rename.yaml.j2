@@ -30,7 +30,7 @@ groups:
           processor:
             type: urn:otel:processor:transform
             config:
-              opl_query: 'logs{% for p in rename_pairs %} | rename attributes["{{ p.destination }}"] = attributes["{{ p.source }}"]{% endfor %}'
+              opl_query: 'logs | rename attributes {% for p in rename_pairs %}{% if not loop.first %}, {% endif %}"{{ p.source }}" as "{{ p.destination }}"{% endfor %}'
           exporter:
             type: urn:otel:exporter:otlp_grpc
             config:

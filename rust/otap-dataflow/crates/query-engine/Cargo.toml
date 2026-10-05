@@ -66,5 +66,9 @@ name = "join"
 harness = false
 required-features = ["bench"]
 
+[[bench]]
+name = "scale_metric"
+harness = false
+
 [lints]
 workspace = true
