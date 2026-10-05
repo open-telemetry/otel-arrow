@@ -44,40 +44,138 @@ use std::sync::Arc;
 /// URN for the topic exporter.
 pub const TOPIC_EXPORTER_URN: &str = "urn:otel:exporter:topic";
 
-/// Telemetry metrics for the topic exporter.
-#[metric_set(name = "exporter.topic")]
+use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSetSnapshot};
+use otel_arrow_dfe_telemetry_macros::{AttributeEnum, attribute_set};
+
+// -- Drop reason attributes ---------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, AttributeEnum)]
+/// Reason a message was dropped.
+pub enum DropReason {
+    /// The queue was full.
+    QueueFull,
+    /// Outcome tracking capacity was exhausted.
+    OutcomeCapacity,
+}
+
+#[attribute_set(item, measurement)]
+#[derive(Debug, Clone, Copy)]
+/// Attributes for dropped messages.
+pub struct DropAttributes {
+    /// The reason the message was dropped.
+    pub reason: DropReason,
+}
+
+#[metric_set(
+    name = "exporter.topic.dropped",
+    measurement_attributes = DropAttributes
+)]
 #[derive(Debug, Default, Clone)]
-pub struct TopicExporterMetrics {
-    /// Number of messages published to the topic.
+/// Metrics for dropped messages.
+pub struct TopicExporterDroppedMetrics {
     #[metric(unit = "{item}")]
+    /// Number of dropped messages.
+    pub messages: Counter<u64>,
+}
+
+// -- End-to-end response attributes -------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, AttributeEnum)]
+/// Type of end-to-end response bridged back to upstream.
+pub enum ResponseType {
+    /// Positive acknowledgement.
+    Ack,
+    /// Negative acknowledgement.
+    Nack,
+    /// Negative acknowledgement during shutdown.
+    ShutdownNack,
+}
+
+#[attribute_set(item, measurement)]
+#[derive(Debug, Clone, Copy)]
+/// Attributes for end-to-end responses.
+pub struct ResponseAttributes {
+    /// The response type.
+    pub response_type: ResponseType,
+}
+
+#[metric_set(
+    name = "exporter.topic.end_to_end_responses",
+    measurement_attributes = ResponseAttributes
+)]
+#[derive(Debug, Default, Clone)]
+/// Metrics for end-to-end responses.
+pub struct TopicExporterResponseMetrics {
+    #[metric(unit = "{item}")]
+    /// Number of responses.
+    pub responses: Counter<u64>,
+}
+
+// -- Other (non-dimensionable) metrics ----------------------------------------
+
+#[metric_set(name = "exporter.topic.other")]
+#[derive(Debug, Default, Clone)]
+/// Other metrics for topic exporter.
+pub struct TopicExporterOtherMetrics {
+    #[metric(unit = "{item}")]
+    /// Number of messages published.
     pub published_messages: Counter<u64>,
-    /// Number of messages dropped due to queue full policy.
     #[metric(unit = "{item}")]
-    pub dropped_messages_on_full: Counter<u64>,
-    /// Number of end-to-end acks bridged back to upstream.
-    #[metric(unit = "{item}")]
-    pub end_to_end_acks: Counter<u64>,
-    /// Number of end-to-end nacks bridged back to upstream.
-    #[metric(unit = "{item}")]
-    pub end_to_end_nacks: Counter<u64>,
-    /// Number of messages rejected because tracked outcome capacity was exhausted.
-    #[metric(unit = "{item}")]
-    pub dropped_messages_on_outcome_capacity: Counter<u64>,
-    /// Current number of tracked publishes waiting for a terminal outcome.
-    ///
-    /// Future: add a pending-bytes gauge once retained payload size accounting
-    /// is available for tracked publishes.
-    #[metric(unit = "{item}")]
+    /// Current number of tracked publishes in flight.
     pub tracked_in_flight: Gauge<u64>,
-    /// Number of tracked publishes that resolved by timeout.
-    ///
-    /// Future: add an outcome-latency histogram once histogram instruments are
-    /// available in the telemetry layer.
     #[metric(unit = "{item}")]
+    /// Number of publishes that timed out.
     pub outcome_timeouts: Counter<u64>,
-    /// Number of pending end-to-end messages nacked during shutdown.
-    #[metric(unit = "{item}")]
-    pub shutdown_nacks: Counter<u64>,
+}
+
+// -- Top-level wrapper ---------------------------------------------------------
+
+/// Container for topic exporter metrics.
+pub struct TopicExporterMetrics {
+    /// Dropped metrics.
+    pub dropped: MeasurementMetricSet<TopicExporterDroppedMetrics>,
+    /// Response metrics.
+    pub responses: MeasurementMetricSet<TopicExporterResponseMetrics>,
+    /// Other scalar metrics.
+    pub other: MetricSet<TopicExporterOtherMetrics>,
+}
+
+impl TopicExporterMetrics {
+    /// Registers all metrics with the pipeline context.
+    pub fn register(pipeline_ctx: &PipelineContext, topic_name: &str) -> Self {
+        Self {
+            dropped: pipeline_ctx
+                .register_measurement_metrics_with_topic::<TopicExporterDroppedMetrics>(
+                    topic_name.to_owned().into(),
+                ),
+            responses: pipeline_ctx
+                .register_measurement_metrics_with_topic::<TopicExporterResponseMetrics>(
+                    topic_name.to_owned().into(),
+                ),
+            other: pipeline_ctx.register_metrics_with_topic::<TopicExporterOtherMetrics>(
+                topic_name.to_owned().into(),
+            ),
+        }
+    }
+
+    /// Generates final snapshots of the metrics.
+    pub fn terminal_snapshots(&mut self) -> Vec<MetricSetSnapshot> {
+        let mut snapshots = self.dropped.terminal_snapshots();
+        snapshots.extend(self.responses.terminal_snapshots());
+        snapshots.extend(self.other.terminal_snapshots());
+        snapshots
+    }
+
+    /// Reports modified metrics to the provided reporter.
+    pub fn report(
+        &mut self,
+        reporter: &mut otel_arrow_dfe_telemetry::reporter::MetricsReporter,
+    ) -> Result<(), otel_arrow_dfe_telemetry::error::Error> {
+        reporter.report_measurement(&mut self.dropped)?;
+        reporter.report_measurement(&mut self.responses)?;
+        reporter.report(&mut self.other)?;
+        Ok(())
+    }
 }
 
 /// Topic exporter configuration.
@@ -97,7 +195,7 @@ pub struct TopicExporter {
     topic: TopicHandle<OtapPdata>,
     queue_on_full: TopicQueueOnFullPolicy,
     ack_propagation_mode: TopicAckPropagationMode,
-    metrics: MetricSet<TopicExporterMetrics>,
+    metrics: TopicExporterMetrics,
 }
 
 /// One upstream pdata message currently blocked in the topic runtime under
@@ -146,8 +244,7 @@ pub static TOPIC_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
                 .clone()
                 .unwrap_or_else(|| topic_binding.default_queue_on_full());
             let ack_propagation_mode = topic_binding.default_ack_propagation_mode();
-            let metrics = pipeline
-                .register_metrics_with_topic::<TopicExporterMetrics>(topic_binding.name().into());
+            let metrics = TopicExporterMetrics::register(&pipeline, topic_binding.name().as_str());
             let topic = topic_binding.into_handle();
             Ok(ExporterWrapper::local(
                 TopicExporter {
@@ -179,14 +276,14 @@ impl TopicExporter {
     fn record_tracked_publish(
         receipt: TrackedPublishReceipt,
         data: OtapPdata,
-        metrics: &mut MetricSet<TopicExporterMetrics>,
+        metrics: &mut TopicExporterMetrics,
         pending_messages: &mut HashMap<u64, OtapPdata>,
         pending_outcomes: &mut FuturesUnordered<
             Pin<Box<dyn Future<Output = (u64, TrackedPublishOutcome)> + Send>>,
         >,
     ) {
         let message_id = receipt.message_id();
-        metrics.published_messages.add(1);
+        metrics.other.published_messages.add(1);
         _ = pending_messages.insert(message_id, data);
         pending_outcomes.push(Box::pin(async move {
             (message_id, receipt.wait_for_outcome().await)
@@ -196,12 +293,18 @@ impl TopicExporter {
     /// Fail all publish work still owned by the exporter during shutdown.
     async fn flush_shutdown_pending(
         effect_handler: &EffectHandler<OtapPdata>,
-        metrics: &mut MetricSet<TopicExporterMetrics>,
+        metrics: &mut TopicExporterMetrics,
         blocked_publish: Option<BlockedPublish>,
         pending_messages: &mut HashMap<u64, OtapPdata>,
     ) -> Result<(), Error> {
         if let Some(blocked_publish) = blocked_publish {
-            metrics.shutdown_nacks.add(1);
+            metrics
+                .responses
+                .with(ResponseAttributes {
+                    response_type: ResponseType::ShutdownNack,
+                })
+                .responses
+                .add(1);
             effect_handler
                 .notify_nack(NackMsg::new(
                     "topic exporter shutdown before topic admission",
@@ -210,7 +313,13 @@ impl TopicExporter {
                 .await?;
         }
         for (_, data) in pending_messages.drain() {
-            metrics.shutdown_nacks.add(1);
+            metrics
+                .responses
+                .with(ResponseAttributes {
+                    response_type: ResponseType::ShutdownNack,
+                })
+                .responses
+                .add(1);
             effect_handler
                 .notify_nack(NackMsg::new(
                     "topic exporter shutdown before downstream ack",
@@ -257,7 +366,7 @@ impl TopicExporter {
         topic: &TopicHandle<OtapPdata>,
         tracked_publisher: Option<&otel_arrow_dfe_engine::topic::TrackedTopicPublisher<OtapPdata>>,
         effect_handler: &EffectHandler<OtapPdata>,
-        metrics: &mut MetricSet<TopicExporterMetrics>,
+        metrics: &mut TopicExporterMetrics,
         pending_messages: &mut HashMap<u64, OtapPdata>,
         pending_outcomes: &mut FuturesUnordered<
             Pin<Box<dyn Future<Output = (u64, TrackedPublishOutcome)> + Send>>,
@@ -293,7 +402,7 @@ impl TopicExporter {
                 } else {
                     match topic.try_publish(published)? {
                         PublishOutcome::Published => {
-                            metrics.published_messages.add(1);
+                            metrics.other.published_messages.add(1);
                             effect_handler.notify_ack(AckMsg::new(data)).await?;
                             Ok(None)
                         }
@@ -319,7 +428,13 @@ impl TopicExporter {
                             );
                         }
                         TrackedTryPublishOutcome::DroppedOnFull => {
-                            metrics.dropped_messages_on_full.add(1);
+                            metrics
+                                .dropped
+                                .with(DropAttributes {
+                                    reason: DropReason::QueueFull,
+                                })
+                                .messages
+                                .add(1);
                             let exporter_id = effect_handler.exporter_id();
                             otel_warn!(
                                 "topic_exporter.drop_newest",
@@ -332,7 +447,13 @@ impl TopicExporter {
                                 .await?;
                         }
                         TrackedTryPublishOutcome::MaxInFlightReached => {
-                            metrics.dropped_messages_on_outcome_capacity.add(1);
+                            metrics
+                                .dropped
+                                .with(DropAttributes {
+                                    reason: DropReason::OutcomeCapacity,
+                                })
+                                .messages
+                                .add(1);
                             let exporter_id = effect_handler.exporter_id();
                             otel_warn!(
                                 "topic_exporter.outcome_capacity_full",
@@ -351,11 +472,17 @@ impl TopicExporter {
                 } else {
                     match topic.try_publish(published)? {
                         PublishOutcome::Published => {
-                            metrics.published_messages.add(1);
+                            metrics.other.published_messages.add(1);
                             effect_handler.notify_ack(AckMsg::new(data)).await?;
                         }
                         PublishOutcome::DroppedOnFull => {
-                            metrics.dropped_messages_on_full.add(1);
+                            metrics
+                                .dropped
+                                .with(DropAttributes {
+                                    reason: DropReason::QueueFull,
+                                })
+                                .messages
+                                .add(1);
                             let exporter_id = effect_handler.exporter_id();
                             otel_warn!(
                                 "topic_exporter.drop_newest",
@@ -423,18 +550,18 @@ impl Exporter<OtapPdata> for TopicExporter {
                             {
                                     match outcome {
                                         TrackedPublishOutcome::Ack => {
-                                            metrics.end_to_end_acks.add(1);
+                                            metrics.responses.with(ResponseAttributes{response_type: ResponseType::Ack}).responses.add(1);
                                             effect_handler.notify_ack(AckMsg::new(data)).await?;
                                         }
                                         TrackedPublishOutcome::Nack { reason } => {
-                                            metrics.end_to_end_nacks.add(1);
+                                            metrics.responses.with(ResponseAttributes{response_type: ResponseType::Nack}).responses.add(1);
                                             effect_handler
                                                 .notify_nack(NackMsg::new(reason.as_ref(), data))
                                                 .await?;
                                         }
                                         TrackedPublishOutcome::TimedOut => {
-                                            metrics.outcome_timeouts.add(1);
-                                            metrics.end_to_end_nacks.add(1);
+                                            metrics.other.outcome_timeouts.add(1);
+                                            metrics.responses.with(ResponseAttributes{response_type: ResponseType::Nack}).responses.add(1);
                                             effect_handler
                                                 .notify_nack(NackMsg::new(
                                                     "topic publish outcome timed out",
@@ -443,7 +570,7 @@ impl Exporter<OtapPdata> for TopicExporter {
                                                 .await?;
                                         }
                                         TrackedPublishOutcome::TopicClosed => {
-                                            metrics.end_to_end_nacks.add(1);
+                                            metrics.responses.with(ResponseAttributes{response_type: ResponseType::Nack}).responses.add(1);
                                             effect_handler
                                                 .notify_nack(NackMsg::new("topic closed", data))
                                                 .await?;
@@ -456,8 +583,8 @@ impl Exporter<OtapPdata> for TopicExporter {
                             Message::Control(NodeControlMsg::CollectTelemetry {
                                 mut metrics_reporter,
                             }) => {
-                                metrics.tracked_in_flight.set(pending_messages.len() as u64);
-                                _ = metrics_reporter.report(&mut metrics);
+                                metrics.other.tracked_in_flight.set(pending_messages.len() as u64);
+                                _ = metrics.report(&mut metrics_reporter);
                             }
                             Message::Control(NodeControlMsg::Shutdown { .. }) => {
                                 Self::flush_shutdown_pending(
@@ -476,7 +603,7 @@ impl Exporter<OtapPdata> for TopicExporter {
                                 // publish is already blocked inside the topic runtime, any
                                 // additional pdata surfaced this way must be rejected promptly
                                 // rather than treated as unreachable.
-                                metrics.shutdown_nacks.add(1);
+                                metrics.responses.with(ResponseAttributes{response_type: ResponseType::ShutdownNack}).responses.add(1);
                                 effect_handler
                                     .notify_nack(NackMsg::new(
                                         "topic exporter shutdown before topic admission",
@@ -490,7 +617,7 @@ impl Exporter<OtapPdata> for TopicExporter {
                             let blocked = blocked_publish.take().expect("blocked publish should exist");
                             match result? {
                                 BlockedPublishCompletion::Untracked => {
-                                    metrics.published_messages.add(1);
+                                    metrics.other.published_messages.add(1);
                                     effect_handler.notify_ack(AckMsg::new(blocked.data)).await?;
                                 }
                                 BlockedPublishCompletion::Tracked(receipt) => {
@@ -516,18 +643,18 @@ impl Exporter<OtapPdata> for TopicExporter {
                             {
                                     match outcome {
                                         TrackedPublishOutcome::Ack => {
-                                            metrics.end_to_end_acks.add(1);
+                                            metrics.responses.with(ResponseAttributes{response_type: ResponseType::Ack}).responses.add(1);
                                             effect_handler.notify_ack(AckMsg::new(data)).await?;
                                         }
                                         TrackedPublishOutcome::Nack { reason } => {
-                                            metrics.end_to_end_nacks.add(1);
+                                            metrics.responses.with(ResponseAttributes{response_type: ResponseType::Nack}).responses.add(1);
                                             effect_handler
                                                 .notify_nack(NackMsg::new(reason.as_ref(), data))
                                                 .await?;
                                         }
                                         TrackedPublishOutcome::TimedOut => {
-                                            metrics.outcome_timeouts.add(1);
-                                            metrics.end_to_end_nacks.add(1);
+                                            metrics.other.outcome_timeouts.add(1);
+                                            metrics.responses.with(ResponseAttributes{response_type: ResponseType::Nack}).responses.add(1);
                                             effect_handler
                                                 .notify_nack(NackMsg::new(
                                                     "topic publish outcome timed out",
@@ -536,7 +663,7 @@ impl Exporter<OtapPdata> for TopicExporter {
                                                 .await?;
                                         }
                                         TrackedPublishOutcome::TopicClosed => {
-                                            metrics.end_to_end_nacks.add(1);
+                                            metrics.responses.with(ResponseAttributes{response_type: ResponseType::Nack}).responses.add(1);
                                             effect_handler
                                                 .notify_nack(NackMsg::new("topic closed", data))
                                                 .await?;
@@ -549,8 +676,8 @@ impl Exporter<OtapPdata> for TopicExporter {
                             Message::Control(NodeControlMsg::CollectTelemetry {
                                 mut metrics_reporter,
                             }) => {
-                                metrics.tracked_in_flight.set(pending_messages.len() as u64);
-                                _ = metrics_reporter.report(&mut metrics);
+                                metrics.other.tracked_in_flight.set(pending_messages.len() as u64);
+                                _ = metrics.report(&mut metrics_reporter);
                             }
                             Message::Control(NodeControlMsg::Shutdown { .. }) => {
                                 Self::flush_shutdown_pending(
@@ -593,7 +720,10 @@ impl Exporter<OtapPdata> for TopicExporter {
 
 #[cfg(test)]
 mod tests {
-    use super::{TOPIC_EXPORTER, TOPIC_EXPORTER_URN, TopicExporter};
+    use super::{
+        DropAttributes, DropReason, ResponseAttributes, ResponseType, TOPIC_EXPORTER,
+        TOPIC_EXPORTER_URN, TopicExporter, TopicExporterMetrics,
+    };
     use otel_arrow_dfe_config::node::NodeUserConfig;
     use otel_arrow_dfe_config::topic::{TopicAckPropagationMode, TopicQueueOnFullPolicy};
     use otel_arrow_dfe_engine::Interests;
@@ -1295,5 +1425,214 @@ mod tests {
                 .expect("exporter task should join");
             assert!(exporter_result.is_ok(), "exporter should stop cleanly");
         }));
+    }
+
+    fn new_test_metrics() -> TopicExporterMetrics {
+        let pipeline_ctx = create_test_pipeline_context();
+        TopicExporterMetrics::register(&pipeline_ctx, "test-topic")
+    }
+
+    /// Scenario: Drop reason enum variants and attributes are constructed.
+    /// Guarantees: Enum equality and attributes capture the right reason.
+    #[test]
+    fn test_drop_attributes() {
+        assert_eq!(DropReason::QueueFull, DropReason::QueueFull);
+        assert_eq!(DropReason::OutcomeCapacity, DropReason::OutcomeCapacity);
+        assert_ne!(DropReason::QueueFull, DropReason::OutcomeCapacity);
+
+        let attr = DropAttributes {
+            reason: DropReason::QueueFull,
+        };
+        assert_eq!(attr.reason, DropReason::QueueFull);
+    }
+
+    /// Scenario: Response type enum variants and attributes are constructed.
+    /// Guarantees: Enum equality and attributes capture the right response type.
+    #[test]
+    fn test_response_attributes() {
+        assert_eq!(ResponseType::Ack, ResponseType::Ack);
+        assert_eq!(ResponseType::Nack, ResponseType::Nack);
+        assert_eq!(ResponseType::ShutdownNack, ResponseType::ShutdownNack);
+        assert_ne!(ResponseType::Ack, ResponseType::Nack);
+
+        let attr = ResponseAttributes {
+            response_type: ResponseType::Ack,
+        };
+        assert_eq!(attr.response_type, ResponseType::Ack);
+    }
+
+    /// Scenario: Topic exporter metrics are recorded across dropped, response, and other metric sets.
+    /// Guarantees: Metrics are properly partitioned by their enum attributes.
+    #[test]
+    fn topic_exporter_metrics_are_partitioned_by_attributes() {
+        let mut metrics = new_test_metrics();
+
+        metrics
+            .dropped
+            .with(DropAttributes {
+                reason: DropReason::QueueFull,
+            })
+            .messages
+            .add(5);
+        metrics
+            .dropped
+            .with(DropAttributes {
+                reason: DropReason::OutcomeCapacity,
+            })
+            .messages
+            .add(3);
+
+        metrics
+            .responses
+            .with(ResponseAttributes {
+                response_type: ResponseType::Ack,
+            })
+            .responses
+            .add(10);
+        metrics
+            .responses
+            .with(ResponseAttributes {
+                response_type: ResponseType::Nack,
+            })
+            .responses
+            .add(2);
+        metrics
+            .responses
+            .with(ResponseAttributes {
+                response_type: ResponseType::ShutdownNack,
+            })
+            .responses
+            .add(1);
+
+        metrics.other.published_messages.add(15);
+        metrics.other.tracked_in_flight.set(4);
+        metrics.other.outcome_timeouts.add(1);
+
+        assert_eq!(
+            metrics
+                .dropped
+                .get(DropAttributes {
+                    reason: DropReason::QueueFull,
+                })
+                .messages
+                .get(),
+            5
+        );
+        assert_eq!(
+            metrics
+                .dropped
+                .get(DropAttributes {
+                    reason: DropReason::OutcomeCapacity,
+                })
+                .messages
+                .get(),
+            3
+        );
+
+        assert_eq!(
+            metrics
+                .responses
+                .get(ResponseAttributes {
+                    response_type: ResponseType::Ack,
+                })
+                .responses
+                .get(),
+            10
+        );
+        assert_eq!(
+            metrics
+                .responses
+                .get(ResponseAttributes {
+                    response_type: ResponseType::Nack,
+                })
+                .responses
+                .get(),
+            2
+        );
+        assert_eq!(
+            metrics
+                .responses
+                .get(ResponseAttributes {
+                    response_type: ResponseType::ShutdownNack,
+                })
+                .responses
+                .get(),
+            1
+        );
+
+        assert_eq!(metrics.other.published_messages.get(), 15);
+        assert_eq!(metrics.other.tracked_in_flight.get(), 4);
+        assert_eq!(metrics.other.outcome_timeouts.get(), 1);
+    }
+
+    /// Scenario: Terminal snapshots are collected from topic exporter metrics.
+    /// Guarantees: Snapshots capture the measurement attributes and clear measurement buckets on handoff.
+    #[test]
+    fn topic_exporter_terminal_snapshots_capture_and_clear() {
+        let mut metrics = new_test_metrics();
+        metrics
+            .dropped
+            .with(DropAttributes {
+                reason: DropReason::QueueFull,
+            })
+            .messages
+            .add(1);
+        metrics
+            .responses
+            .with(ResponseAttributes {
+                response_type: ResponseType::Ack,
+            })
+            .responses
+            .add(1);
+        metrics.other.published_messages.add(1);
+
+        let snapshots = metrics.terminal_snapshots();
+        assert_eq!(snapshots.len(), 3);
+
+        assert!(snapshots.iter().any(|s| {
+            s.descriptor().name == "exporter.topic.dropped"
+                && s.measurement_attribute_value("reason") == Some("queue_full")
+        }));
+        assert!(snapshots.iter().any(|s| {
+            s.descriptor().name == "exporter.topic.end_to_end_responses"
+                && s.measurement_attribute_value("response.type") == Some("ack")
+        }));
+        assert!(
+            snapshots
+                .iter()
+                .any(|s| s.descriptor().name == "exporter.topic.other")
+        );
+
+        // Measurement buckets are cleared after first snapshot collection
+        let second = metrics.terminal_snapshots();
+        assert_eq!(second.len(), 1);
+        assert_eq!(second[0].descriptor().name, "exporter.topic.other");
+    }
+
+    /// Scenario: Topic exporter metrics are reported to a reporter.
+    /// Guarantees: All metric sets are successfully handed over to the reporter.
+    #[test]
+    fn topic_exporter_report_emits_metric_sets() {
+        let mut metrics = new_test_metrics();
+        let (receiver, mut reporter) = MetricsReporter::create_new_and_receiver(16);
+
+        metrics
+            .dropped
+            .with(DropAttributes {
+                reason: DropReason::QueueFull,
+            })
+            .messages
+            .add(1);
+        metrics
+            .responses
+            .with(ResponseAttributes {
+                response_type: ResponseType::Ack,
+            })
+            .responses
+            .add(1);
+        metrics.other.published_messages.add(1);
+
+        metrics.report(&mut reporter).unwrap();
+        assert_eq!(receiver.try_iter().count(), 3);
     }
 }
