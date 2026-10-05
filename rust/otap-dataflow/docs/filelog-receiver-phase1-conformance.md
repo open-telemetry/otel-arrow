@@ -213,26 +213,39 @@ transaction that stops earlier at the 16 MiB body bound. It is necessarily at
 least `MAX_PROGRESS_TX_FRAME_BYTES`, so every valid maximum-size Ack/drop
 transaction is encodable and recoverable.
 
-Each artifact is bounded by a fixed 1 GiB ceiling. The conservative recovery working
+The complete `checkpoint.db` is bounded by a fixed 1 GiB ceiling:
+
+```text
+maximum checkpoint bytes =
+  CHECKPOINT_HEADER_BYTES + maximum snapshot bytes + maximum WAL bytes
+```
+
+Snapshot bytes include the snapshot header and footer but exclude the 24-byte
+container header. WAL bytes count only transaction frames, with zero for an
+empty WAL. All sums are checked. Compaction disk admission additionally covers
+the active file plus one replacement header/snapshot prefix. No separate WAL
+header or retired generation pair is charged. The conservative recovery working
 set is the larger of:
 
 ```text
 snapshot phase =
-  4 * maximum snapshot bytes
+  CHECKPOINT_HEADER_BYTES + 4 * maximum snapshot bytes
 
 WAL phase =
-  3 * maximum snapshot bytes
+  CHECKPOINT_HEADER_BYTES + 3 * maximum snapshot bytes
   + maximum WAL bytes
   + 4 * maximum transaction bytes
 ```
 
 The combined recovery model also must not exceed 1 GiB. Recovery validates declared
-counts and lengths before allocation, drops the snapshot input buffer before loading
-the WAL, and decodes/applies one transaction at a time.
+counts and lengths before allocation, reads only the immutable prefix first,
+drops its input buffer before loading the WAL, and decodes/applies one
+transaction at a time.
 
 The 16 MiB transaction cap contributes up to four transaction buffers, roughly
 64 MiB, to the conservative WAL phase. A rejection identifies whether the
-snapshot artifact, WAL artifact, snapshot phase, WAL phase, or checked
+complete checkpoint file, snapshot section, WAL section, snapshot phase,
+WAL phase, or checked
 arithmetic failed and reports the contributing configured values. Actionable
 knobs are `checkpoint.compact_after_bytes`, `limits.max_tracked_files`, and
 `identity.fingerprint_bytes`; the format transaction cap itself is fixed and is
@@ -507,8 +520,8 @@ while their semantic and format definitions remain normative from version 1.
 | Configuration | Either interval causing clock overflow | Rejected before startup |
 | Configuration | Nonzero checkpoint sync interval with unrepresentable duration or deadline | Rejected before startup |
 | Configuration | Checkpoint retention outside zero or representable positive `u64` nanoseconds | Rejected before startup |
-| Configuration | `checkpoint.compact_after_bytes == WAL_HEADER_BYTES + WAL_MAX_TX_FRAME_BYTES` | Accepted |
-| Configuration | `checkpoint.compact_after_bytes < WAL_HEADER_BYTES + WAL_MAX_TX_FRAME_BYTES` | Rejected before startup |
+| Configuration | `checkpoint.compact_after_bytes == WAL_MAX_TX_FRAME_BYTES` | Accepted |
+| Configuration | `checkpoint.compact_after_bytes < WAL_MAX_TX_FRAME_BYTES` | Rejected before startup |
 | Configuration | Nonzero `force_flush_period >= rotation.rotate_wait` | Rejected before startup |
 | Configuration | Idle flush omitted | Resolves to 0s; a live unterminated record does not complete solely because time passes |
 | Framing | Explicit 500ms idle flush with slowly appended application message | Existing EOF-gated timing rules apply; partial output and restart reframing remain documented possibilities |
@@ -778,9 +791,9 @@ while their semantic and format definitions remain normative from version 1.
 | Checkpoint | Unknown version/operation | Fail closed |
 | Checkpoint | Snapshot unreachable lifecycle/epoch/resume/path state | `InvalidSnapshotState` before WAL replay |
 | Checkpoint | Continuation start is not below committed, or nonzero end is not above committed | Fail closed before replay or progress application |
-| Checkpoint | Snapshot or WAL namespace digest differs from selected ID or its peer | Distinct namespace-mismatch error before applying records |
-| Checkpoint | Valid `CURRENT` names missing generation file | Distinct missing-authoritative-generation error; no fallback |
-| Checkpoint | Valid `CURRENT` names unreadable or incomplete authoritative generation | Distinct fail-closed recovery error; no fallback |
+| Checkpoint | Snapshot namespace digest differs from selected ID | Distinct namespace-mismatch error before applying records |
+| Checkpoint | Missing `checkpoint.db` with compaction or unrecognized artifacts | Distinct missing-authoritative-generation error; no temporary promotion or empty-state fallback |
+| Checkpoint | `checkpoint.db` is unreadable or has an incomplete immutable prefix | Distinct fail-closed recovery error; no fallback |
 | Checkpoint | Genuinely absent namespace | Exact first-generation publish order and sync before read |
 | Checkpoint | Crash before or during parent sync for a newly created namespace path component | Namespace is absent or recognized as interrupted publication; no source was registered or read |
 | Checkpoint | Parent sync for newly created namespace entry fails | Publication remains incomplete and source reading is prohibited |
@@ -802,29 +815,37 @@ while their semantic and format definitions remain normative from version 1.
 | Recovery output | Idle-flushed clean record; crash before Ack; append malformed input before its LF under decode `fail` | Quarantine at recovered progress before the combined record; earlier emission is not guaranteed to reappear |
 | Recovery output | Acked idle-flushed record released with nonzero sync interval; fault leaves a permitted missing/torn WAL suffix | Reprocess from recovered progress with the same reframing limits; complete corruption still fails closed |
 | Recovery output | Identical source body is reconstructed after restart | Observed time is reassigned; identical metadata is not promised |
-| Checkpoint | Artifacts exist without valid `CURRENT` | Repair only recognized interrupted first publication; otherwise fail closed |
+| Checkpoint | Artifacts exist without valid `checkpoint.db` | Repair only recognized interrupted first publication; otherwise fail closed |
 | Checkpoint | WAL append writes no bytes | Retry from known boundary |
 | Checkpoint | WAL append is partial | Validate, truncate/sync exact torn suffix, then retry |
 | Checkpoint | WAL append result is ambiguous | Accept complete valid expected sequence, repair exact torn suffix, otherwise fail |
 | Checkpoint | WAL append succeeds and sync fails | Validate transaction and retry sync without duplicate append |
 | Checkpoint | Compaction fault before publication | Previous generation authoritative |
+| Checkpoint | Container header offset below 108, excessive for configured snapshot budget, or arithmetically unrepresentable | Rejected before reading/allocating the declared snapshot |
+| Checkpoint | CRC-valid WAL offset cuts a snapshot footer or includes WAL bytes in the snapshot | Exact snapshot section validation rejects it |
+| Checkpoint | Empty container with generation-zero snapshot | Exactly 108 bytes and zero WAL bytes; next transaction sequence is one |
+| Checkpoint | Repair of a permitted torn WAL suffix | Truncates only to `wal_offset + valid_wal_bytes`; immutable prefix remains byte-identical |
+| Checkpoint | Successful compaction followed by append and restart | Append reaches the replacement inode; new progress is recovered, and first new WAL sequence is one |
+| Checkpoint | Compaction and checkpoint append overlap attempted | Single worker serializes them; replacement snapshot includes all prior applied progress |
+| Checkpoint | Byte budget fits snapshot and WAL separately but not the combined container | Checked complete-file 1 GiB admission rejects before startup |
+| Checkpoint | Legacy separate-generation artifacts | Fail closed for inspection; no implicit import or reset |
 | Checkpoint | Next transaction would exceed byte or transaction compaction threshold | Current state compacts before append; resulting WAL plus transaction remains within both configured maxima |
 | Checkpoint | Transaction lands exactly on compaction threshold | Append is accepted without overshoot; compaction occurs before the next append or at an earlier retention deadline |
 | Checkpoint | Byte threshold binds before transaction threshold, or transaction threshold binds first | Recovery admission uses the checked interacting conservative bounds rather than claiming both configured thresholds are simultaneously reachable |
-| Checkpoint | Compaction crash during `CURRENT` replacement | Valid marker names complete old or complete new generation; never partial authority |
-| Checkpoint | Process exits after first-publication or compaction marker rename but before directory sync; restart sees the new valid marker | Validate selected generation, then sync namespace directory before source reads, appends/progress acceptance, deletion, or another publication |
+| Checkpoint | Compaction crash during `checkpoint.db` replacement | Complete old or complete new container under qualified filesystem guarantees; never mixed sections |
+| Checkpoint | Process exits after first-publication or compaction file rename but before directory sync; restart sees the new valid container | Validate selected generation, then sync namespace directory before source reads, appends/progress acceptance, deletion, or another publication |
 | Checkpoint | Recovery publication barrier fails, including with nonzero checkpoint sync interval | Protected operations remain blocked through bounded retries; exhaustion fails receiver; no fallback or deletion |
-| Checkpoint | Power loss after successful recovery barrier and later synced progress/retired cleanup | Recovered marker still selects the validated generation; its synced progress remains recoverable and its files were not deleted |
+| Checkpoint | Power loss after successful recovery barrier and later synced progress/temporary cleanup | Active container and its synced progress remain recoverable; cleanup never deletes it |
 | Checkpoint | Process exits again before recovery barrier succeeds | No new source work, append, publication, or cleanup was admitted; next recovery validates visible authority and repeats the barrier |
-| Checkpoint | Abandoned unpublished `G+1` generation after crash | Never authoritative; exact artifacts removed and directory-synced before the number is proposed again |
-| Checkpoint | New compaction collides with an uncleared proposed-generation artifact | Exclusive/no-replace creation fails; cleanup must complete before retry |
+| Checkpoint | Abandoned creation or compaction temporary with valid active container | Never authoritative; exact temporary removed and directory-synced before another publication |
+| Checkpoint | New compaction collides with an uncleared compaction temporary | Exclusive/no-replace creation fails; cleanup must complete before retry |
 | Checkpoint | Previously published generation number proposed again | Rejected; published generations are never reused |
 | Checkpoint | Generation increment overflow | Fails before writing or wrapping |
-| Checkpoint | Cleanup interruption | Resumable, bounded artifacts |
-| Checkpoint | Cleanup sees current generation among retired candidates | Files named by `CURRENT` are retained |
-| Checkpoint | Retired generation restart has both files, snapshot only, WAL only, or neither | Every subset is recognized as non-authoritative; remaining files are removed idempotently and the directory is synced |
-| Checkpoint | Retired cleanup fails while current WAL remains below compaction thresholds | Current-generation appends may continue within bounds; another compaction remains blocked |
-| Checkpoint | Current WAL requires compaction while retired cleanup still cannot finish | Store failure/backpressure path; WAL bound is never exceeded |
+| Checkpoint | Temporary cleanup interruption | Resumable, bounded temporary names; active file is protected |
+| Checkpoint | Cleanup encounters active file or lock | Neither `checkpoint.db` nor `ownership.lock` is removed |
+| Checkpoint | Missing active file with only a compaction temporary | Fails closed; never mistaken for interrupted first creation |
+| Checkpoint | Recognized temporary deletion or its directory sync fails during recovery | Recovery remains blocked under bounded store retries; no next publication |
+| Checkpoint | Replacement or directory sync fails ambiguously | Store unavailable until reopen/recovery; no append through old inode, rollback assumption, or duplicate publication |
 | Checkpoint | Retention age without runtime absence | Not removed |
 | Checkpoint | Quarantined retention candidate | Not removed |
 | Checkpoint | Administrative removal wrong namespace | Fail closed |
@@ -914,8 +935,8 @@ while their semantic and format definitions remain normative from version 1.
 | Retention | Removed state later returns with `start_at: end` | Existing contents may be intentionally excluded; prior removal and loss of association are diagnosable without claiming same-source proof |
 | Retention | Quiet namespace is full and records reach retention eligibility below both WAL compaction thresholds | Maintenance deadline wakes the worker, revalidates absence, and performs bounded compaction so eligible capacity is reclaimed |
 | Retention | Nonempty vetted removal set exceeds 256 records | One filtered compaction publishes the complete set atomically; no `remove_file` chunks or partial removal become durable |
-| Retention | Failure before filtered `CURRENT` publication | Previous generation and unfiltered live table remain authoritative |
-| Retention | Crash after filtered `CURRENT` publication | Recovery observes the complete vetted removal set omitted from the authoritative snapshot |
+| Retention | Failure before filtered `checkpoint.db` replacement | Previous generation and unfiltered live table remain authoritative |
+| Retention | Crash after filtered `checkpoint.db` publication | Recovery observes the complete vetted removal set omitted from the authoritative snapshot |
 | Retention | Recovery sees a record absent whose persisted last-seen time is older than retention | Absence age begins at the first complete post-recovery inventory; persisted time alone cannot authorize removal |
 | Retention | Permanently absent record restarts repeatedly before one continuous retention interval elapses | Each recovery resets runtime absence proof; removal may be deferred indefinitely and no cross-restart wall-clock bound is claimed |
 | Retention | Previously absent record is observed, or its relevant inventory becomes incomplete | Runtime absence proof is cleared; uncertain time does not accrue toward removal |
@@ -1313,31 +1334,30 @@ namespace on the same storage. Neither launch may substitute `.otap-state`.
 Inject interruption after each missing root-component creation and before each
 required sync. Retry validates the same components and repeats durability work
 before namespace access. Root repair never deletes existing namespace artifacts
-or bypasses missing/corrupt `CURRENT` handling. Invalid roots or unavailable
+or bypasses missing/corrupt `checkpoint.db` handling. Invalid roots or unavailable
 required durability fail startup without source admission. Selecting a different
 absolute root is an explicit different-state decision, not relocation.
 
 ### Example 43: Visible publication needs a recovery barrier
 
-Generation G-1 is durable. Compaction writes and syncs generation G, publishes
-its final filenames durably, and renames the synced replacement `CURRENT` to
-select G. The process exits before syncing the namespace directory. On process
-restart, G may be visible even though its marker replacement is not yet durable.
+Generation G-1 is durable in `checkpoint.db`. Compaction writes and syncs a
+complete generation G container in `checkpoint.db.compact.tmp`, then atomically
+replaces `checkpoint.db`. The process exits before syncing the namespace
+directory. On restart, G may be visible without its replacement being durable.
 
-Under exclusive ownership, recovery validates `CURRENT`, G's snapshot and WAL,
-and the recoverable WAL suffix. It then syncs the namespace directory before
-source reads, new appends/progress acceptance, artifact deletion, or another
-publication. Inject a barrier-sync failure and verify every protected operation
-remains blocked; neither G nor G-1 is deleted and no older marker is selected.
-An interrupted retry repeats validation and the barrier.
+Under exclusive ownership, recovery validates the container, its snapshot and
+recoverable WAL suffix. It syncs the namespace directory before source reads,
+new appends/progress acceptance, tail repair, temporary deletion, or another
+publication. Inject barrier-sync failure and verify all protected operations
+remain blocked. The active file is never deleted, and no temporary or backup
+is selected. An interrupted retry repeats validation and the barrier.
 
-After the barrier and recovery succeed, append and sync progress in G and
-perform retired cleanup. Inject a later power loss: the marker must still
-select G and its synced progress must remain recoverable. Also exercise first
-publication with the same process-exit window; recovery cannot rely on a visible
-but unsynced generation-zero marker. These cases require fault modeling that
-distinguishes process exit from later loss of unsynced filesystem metadata;
-a simple process restart alone does not prove directory durability.
+After successful recovery, append and sync progress through the active file
+handle. Inject a later power loss: that progress must remain recoverable.
+Also exercise first publication with the same process-exit window; recovery
+cannot rely on a visible but unsynced generation-zero container. These cases
+require fault modeling that distinguishes process exit from later loss of
+unsynced filesystem metadata; process restart alone does not prove durability.
 
 ## Follow-up qualification: framing-profile migration
 
