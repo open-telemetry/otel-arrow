@@ -1,6 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+use futures::future::LocalBoxFuture;
 use reqwest::header::{HeaderName, HeaderValue};
 use reqwest::{Client, StatusCode};
 use std::time::Duration;
@@ -70,13 +71,13 @@ impl MetricsPublisher {
         })
     }
 
-    pub(crate) async fn publish(
+    pub(crate) fn publish(
         &self,
         monitoring_account: &str,
         packet: Vec<u8>,
         auth_header_name: HeaderName,
         auth_header_value: HeaderValue,
-    ) -> Result<(), PublishError> {
+    ) -> LocalBoxFuture<'static, Result<(), PublishError>> {
         let original_size = packet.len();
         let endpoint = self.endpoint.replace(
             "{monitoring_account}",
@@ -89,18 +90,20 @@ impl MetricsPublisher {
             .header(ORIGINAL_CONTENT_SIZE_HEADER, original_size)
             .header(auth_header_name, auth_header_value)
             .body(packet);
-        let response = request
-            .send()
-            .await
-            .map_err(|error| PublishError::Request(Box::new(error)))?;
+        Box::pin(async move {
+            let response = request
+                .send()
+                .await
+                .map_err(|error| PublishError::Request(Box::new(error)))?;
 
-        if response.status() == StatusCode::OK {
-            Ok(())
-        } else {
-            Err(PublishError::Response {
-                status: response.status(),
-            })
-        }
+            if response.status() == StatusCode::OK {
+                Ok(())
+            } else {
+                Err(PublishError::Response {
+                    status: response.status(),
+                })
+            }
+        })
     }
 }
 
