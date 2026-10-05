@@ -9,11 +9,10 @@
 
 use crate::event::{LogEvent, ObservedEventReporter};
 use crate::log_filter::RuntimeLogFilter;
-use crate::self_tracing::{ConsoleWriter, LogContextFn, LogRecord};
+use crate::self_tracing::{ConsoleWriter, LogContext, LogContextFn, LogRecord, StackLogRecord};
 use otel_arrow_dfe_config::settings::telemetry::logs::LogLevel;
 use otel_arrow_dfe_pdata::otlp::common::{BoundedBuf, ProtoBuffer};
-use std::cell::RefCell;
-use std::sync::OnceLock;
+use std::fmt;
 use std::time::SystemTime;
 use tracing::{Dispatch, Event, Subscriber};
 #[cfg(test)]
@@ -67,6 +66,12 @@ impl TracingSetup {
         self
     }
 
+    /// Returns the structured log emitter paired with this tracing setup.
+    #[must_use]
+    pub fn log_emitter(&self) -> StructuredLogEmitter {
+        self.provider.log_emitter(self.context_fn)
+    }
+
     /// Initialize this setup as the global tracing subscriber.
     pub fn try_init_global(&self) -> Result<(), tracing::dispatcher::SetGlobalDefaultError> {
         self.provider
@@ -111,19 +116,40 @@ pub enum ProviderSetup {
     },
 }
 
+/// Explicit handle for constructing and delivering structured log records.
 #[derive(Clone)]
-struct LogPipeline {
+pub struct StructuredLogEmitter {
     writer: Option<ConsoleWriter>,
     reporter: Option<ObservedEventReporter>,
     context_fn: LogContextFn,
 }
 
-impl LogPipeline {
+impl fmt::Debug for StructuredLogEmitter {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("StructuredLogEmitter")
+            .field("console", &self.writer.is_some())
+            .field("async", &self.reporter.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+impl Default for StructuredLogEmitter {
+    fn default() -> Self {
+        Self {
+            writer: None,
+            reporter: None,
+            context_fn: LogContext::new,
+        }
+    }
+}
+
+impl StructuredLogEmitter {
     fn capture(&self, event: &Event<'_>) -> LogRecord {
         LogRecord::new(event, (self.context_fn)())
     }
 
-    fn deliver(&self, time: SystemTime, record: LogRecord) {
+    /// Delivers an ordinary event through this configured provider.
+    pub fn deliver(&self, time: SystemTime, record: LogRecord) {
         if let Some(writer) = self.writer {
             writer.print_log_record(time, &record.as_view(), |w| {
                 w.format_entity_suffix_without_registry(&record.context);
@@ -133,117 +159,58 @@ impl LogPipeline {
             reporter.log(LogEvent { time, record });
         }
     }
-}
 
-struct SummaryCapture {
-    attrs: LogRecord,
-    captured: Option<LogRecord>,
-}
+    /// Emits a selected event with annotations and returns its saved base form.
+    #[must_use]
+    pub fn emit_annotated(
+        &self,
+        time: SystemTime,
+        event: StackLogRecord,
+        annotations: StackLogRecord,
+    ) -> Option<LogRecord> {
+        let enabled =
+            tracing::dispatcher::get_default(|dispatch| dispatch.enabled(event.metadata()));
+        if !enabled {
+            return None;
+        }
+        let (full, base) = event.into_annotated_records(annotations, (self.context_fn)());
+        self.deliver(time, full);
+        Some(base)
+    }
 
-thread_local! {
-    static CURRENT_LOG_PIPELINE: RefCell<Option<LogPipeline>> = const { RefCell::new(None) };
-    static SUMMARY_CAPTURE: RefCell<Option<SummaryCapture>> = const { RefCell::new(None) };
-}
-
-static GLOBAL_LOG_PIPELINE: OnceLock<LogPipeline> = OnceLock::new();
-
-fn current_log_pipeline() -> Option<LogPipeline> {
-    CURRENT_LOG_PIPELINE
-        .with(|pipeline| pipeline.borrow().clone())
-        .or_else(|| GLOBAL_LOG_PIPELINE.get().cloned())
-}
-
-fn append_summary_attrs(record: &mut LogRecord, attrs: &LogRecord) {
-    let capacity = record.body_attrs_bytes.len() + attrs.body_attrs_bytes.len();
-    let mut buf = ProtoBuffer::with_capacity_and_limit(capacity, capacity);
-    let _ = buf.extend_from_slice(&record.body_attrs_bytes);
-    let _ = buf.extend_from_slice(&attrs.body_attrs_bytes);
-    record.body_attrs_bytes = buf.into_bytes();
-    record.dropped_attributes_count = record
-        .dropped_attributes_count
-        .saturating_add(attrs.dropped_attributes_count);
-}
-
-fn capture_and_annotate_summary(record: &mut LogRecord) {
-    SUMMARY_CAPTURE.with(|capture| {
-        let mut capture = capture.borrow_mut();
-        let Some(capture) = capture.as_mut() else {
-            return;
+    /// Replays a saved event with freshly encoded annotations.
+    pub fn emit_saved(&self, time: SystemTime, saved: LogRecord, annotations: StackLogRecord) {
+        let annotation_record = annotations.into_record(LogContext::new());
+        let capacity = saved.body_attrs_bytes.len() + annotation_record.body_attrs_bytes.len();
+        let mut buf = ProtoBuffer::with_capacity_and_limit(capacity, capacity);
+        let _ = buf.extend_from_slice(&saved.body_attrs_bytes);
+        let _ = buf.extend_from_slice(&annotation_record.body_attrs_bytes);
+        let record = LogRecord {
+            callsite_id: saved.callsite_id,
+            body_attrs_bytes: buf.into_bytes(),
+            dropped_attributes_count: saved
+                .dropped_attributes_count
+                .saturating_add(annotation_record.dropped_attributes_count),
+            context: saved.context,
         };
-        capture.captured = Some(record.clone());
-        append_summary_attrs(record, &capture.attrs);
-    });
-}
-
-/// Runs one ordinary event through the current tracing layer while saving its
-/// unannotated record and appending summary attributes to the delivered copy.
-#[doc(hidden)]
-pub fn with_summary_capture(f: impl FnOnce(), attrs: LogRecord) -> Option<LogRecord> {
-    struct RestoreGuard(Option<SummaryCapture>);
-    impl Drop for RestoreGuard {
-        fn drop(&mut self) {
-            SUMMARY_CAPTURE.with(|capture| {
-                let _ = capture.replace(self.0.take());
-            });
-        }
+        self.deliver(time, record);
     }
-
-    let previous = SUMMARY_CAPTURE.with(|capture| {
-        capture.replace(Some(SummaryCapture {
-            attrs,
-            captured: None,
-        }))
-    });
-    let mut guard = RestoreGuard(previous);
-    f();
-    let completed = SUMMARY_CAPTURE.with(|capture| capture.replace(guard.0.take()));
-    completed.and_then(|capture| capture.captured)
-}
-
-/// Re-delivers a saved ordinary record with fresh summary attributes.
-#[doc(hidden)]
-pub fn deliver_summary_record(time: SystemTime, mut record: LogRecord, attrs: LogRecord) {
-    append_summary_attrs(&mut record, &attrs);
-    let Some(pipeline) = current_log_pipeline() else {
-        crate::raw_error!(
-            "diagnostic.delivery.missing_pipeline",
-            event_name = record.callsite().name()
-        );
-        return;
-    };
-    pipeline.deliver(time, record);
-}
-
-fn scoped_log_pipeline<F, R>(pipeline: LogPipeline, f: F) -> R
-where
-    F: FnOnce() -> R,
-{
-    struct RestoreGuard(Option<LogPipeline>);
-    impl Drop for RestoreGuard {
-        fn drop(&mut self) {
-            CURRENT_LOG_PIPELINE.with(|cell| *cell.borrow_mut() = self.0.take());
-        }
-    }
-
-    let previous = CURRENT_LOG_PIPELINE.with(|cell| cell.replace(Some(pipeline)));
-    let _guard = RestoreGuard(previous);
-    f()
 }
 
 impl ProviderSetup {
-    fn log_pipeline(&self, context_fn: LogContextFn) -> LogPipeline {
+    fn log_emitter(&self, context_fn: LogContextFn) -> StructuredLogEmitter {
         match self {
-            ProviderSetup::Noop => LogPipeline {
+            ProviderSetup::Noop => StructuredLogEmitter {
                 writer: None,
                 reporter: None,
                 context_fn,
             },
-            ProviderSetup::ConsoleDirect => LogPipeline {
+            ProviderSetup::ConsoleDirect => StructuredLogEmitter {
                 writer: Some(ConsoleWriter::color()),
                 reporter: None,
                 context_fn,
             },
-            ProviderSetup::InternalAsync { reporter } => LogPipeline {
+            ProviderSetup::InternalAsync { reporter } => StructuredLogEmitter {
                 writer: None,
                 reporter: Some(reporter.clone()),
                 context_fn,
@@ -260,7 +227,7 @@ impl ProviderSetup {
             ProviderSetup::Noop => Dispatch::new(tracing::subscriber::NoSubscriber::new()),
 
             ProviderSetup::ConsoleDirect | ProviderSetup::InternalAsync { .. } => {
-                let layer = StructuredLoggingLayer::new(self.log_pipeline(context_fn));
+                let layer = StructuredLoggingLayer::new(self.log_emitter(context_fn));
                 Dispatch::new(Registry::default().with(filter.layer()).with(layer))
             }
         }
@@ -278,9 +245,7 @@ impl ProviderSetup {
         filter: &RuntimeLogFilter,
     ) -> Result<(), tracing::dispatcher::SetGlobalDefaultError> {
         let dispatch = self.build_dispatch(context_fn, filter);
-        tracing::dispatcher::set_global_default(dispatch)?;
-        let _ = GLOBAL_LOG_PIPELINE.set(self.log_pipeline(context_fn));
-        Ok(())
+        tracing::dispatcher::set_global_default(dispatch)
     }
 
     /// Run a closure with the appropriate tracing subscriber for this setup.
@@ -294,9 +259,7 @@ impl ProviderSetup {
         F: FnOnce() -> R,
     {
         let dispatch = self.build_dispatch(context_fn, filter);
-        scoped_log_pipeline(self.log_pipeline(context_fn), || {
-            tracing::dispatcher::with_default(&dispatch, f)
-        })
+        tracing::dispatcher::with_default(&dispatch, f)
     }
 
     #[cfg(test)]
@@ -312,22 +275,20 @@ impl ProviderSetup {
         let filter =
             RuntimeLogFilter::from_filter(log_level.clone(), EnvFilter::new(log_level.as_str()));
         let dispatch = self.build_dispatch_with_filter(&filter, context_fn);
-        scoped_log_pipeline(self.log_pipeline(context_fn), || {
-            tracing::dispatcher::with_default(&dispatch, f)
-        })
+        tracing::dispatcher::with_default(&dispatch, f)
     }
 }
 
 /// A tracing layer that emits a structured log record to either console or an async sink.
 pub struct StructuredLoggingLayer {
-    pipeline: LogPipeline,
+    emitter: StructuredLogEmitter,
 }
 
 impl StructuredLoggingLayer {
     /// Create a new structured logging layer.
     #[must_use]
-    fn new(pipeline: LogPipeline) -> Self {
-        Self { pipeline }
+    fn new(emitter: StructuredLogEmitter) -> Self {
+        Self { emitter }
     }
 }
 
@@ -337,9 +298,8 @@ where
 {
     fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
         let time = SystemTime::now();
-        let mut record = self.pipeline.capture(event);
-        capture_and_annotate_summary(&mut record);
-        self.pipeline.deliver(time, record);
+        let record = self.emitter.capture(event);
+        self.emitter.deliver(time, record);
     }
 }
 

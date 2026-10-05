@@ -21,6 +21,7 @@
 
 use crate::attributes::AttributeEnum;
 use crate::self_tracing::LogRecord;
+use crate::tracing_init::StructuredLogEmitter;
 use otel_arrow_dfe_config::SignalType;
 use std::fmt;
 use std::marker::PhantomData;
@@ -299,11 +300,40 @@ impl<T> SignalSet<T> {
     }
 }
 
-/// Independent diagnostic trackers for the three telemetry signals.
-///
-/// Callers whose operation has no telemetry signal can use [`DiagnosticTracker`]
-/// directly. This alias adds a fixed set of scopes without dynamic keys.
-pub type SignalDiagnostics<E> = SignalSet<DiagnosticTracker<E>>;
+/// Independent diagnostic trackers and their explicit structured log emitter.
+#[derive(Debug)]
+pub struct SignalDiagnostics<E> {
+    signals: SignalSet<DiagnosticTracker<E>>,
+    emitter: StructuredLogEmitter,
+}
+
+impl<E> Default for SignalDiagnostics<E> {
+    fn default() -> Self {
+        Self::new(StructuredLogEmitter::default())
+    }
+}
+
+impl<E> SignalDiagnostics<E> {
+    /// Creates per-signal diagnostic state using the supplied emitter.
+    #[must_use]
+    pub fn new(emitter: StructuredLogEmitter) -> Self {
+        Self {
+            signals: SignalSet::default(),
+            emitter,
+        }
+    }
+
+    /// Selects one signal's tracker.
+    pub fn signal(&mut self, signal: SignalType) -> &mut DiagnosticTracker<E> {
+        self.signals.signal(signal)
+    }
+
+    /// Returns the structured emitter paired with this state.
+    #[must_use]
+    pub const fn emitter(&self) -> &StructuredLogEmitter {
+        &self.emitter
+    }
+}
 
 /// Encodes common summary attributes for appending to an ordinary log record.
 #[doc(hidden)]
@@ -328,7 +358,6 @@ macro_rules! __otel_summary_attributes {
             total_error_counts = %diagnostic_report.total,
             error_sample_age_seconds = diagnostic_report.detail_age.as_secs_f64()
         )
-        .into_record($crate::self_tracing::LogContext::new())
     }};
 }
 
@@ -353,14 +382,20 @@ macro_rules! otel_summary_warn {
     (target: $target:expr, at: $now:expr, $diagnostics:expr, $signal:expr, $category:expr, $name:literal, $($fields:tt)+) => {{
         let diagnostic_signal = $signal;
         let diagnostic_state = &mut *($diagnostics);
+        let diagnostic_emitter = diagnostic_state.emitter().clone();
         let diagnostic_tracker = diagnostic_state.signal(diagnostic_signal);
         if let Some(diagnostic_report) = diagnostic_tracker.failure($now, $category) {
             let diagnostic_attrs =
                 $crate::__otel_summary_attributes!(&diagnostic_report, diagnostic_signal);
-            let captured = $crate::tracing_init::with_summary_capture(
-                || {
-                    $crate::otel_warn!(target: $target, $name, $($fields)+);
-                },
+            let diagnostic_event = $crate::__log_record_impl!(
+                target: $target,
+                $crate::Level::WARN,
+                $name,
+                $($fields)+
+            );
+            let captured = diagnostic_emitter.emit_annotated(
+                std::time::SystemTime::now(),
+                diagnostic_event,
                 diagnostic_attrs,
             );
             if let Some(captured) = captured {
@@ -393,6 +428,7 @@ macro_rules! otel_summary_recover {
     (target: $target:expr, at: $now:expr, $diagnostics:expr, $signal:expr, $started_at:expr, $name:literal, $($fields:tt)+) => {{
         let diagnostic_signal = $signal;
         let diagnostic_state = &mut *($diagnostics);
+        let diagnostic_emitter = diagnostic_state.emitter().clone();
         if let Some(diagnostic_report) =
             diagnostic_state.signal(diagnostic_signal).success($started_at, $now)
         {
@@ -400,7 +436,7 @@ macro_rules! otel_summary_recover {
                 if let Some(detail) = diagnostic_report.detail.clone() {
                     let diagnostic_attrs =
                         $crate::__otel_summary_attributes!(&diagnostic_report, diagnostic_signal);
-                    $crate::tracing_init::deliver_summary_record(
+                    diagnostic_emitter.emit_saved(
                         std::time::SystemTime::now(),
                         detail,
                         diagnostic_attrs,
@@ -624,7 +660,7 @@ mod tests {
         );
 
         let rendered: Vec<String> = setup.with_subscriber(|| {
-            let mut diagnostics = SignalDiagnostics::default();
+            let mut diagnostics = SignalDiagnostics::new(setup.log_emitter());
             let start = Instant::now();
             crate::otel_summary_warn!(
                 target: "otel.exporter.test",

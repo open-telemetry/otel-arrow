@@ -3180,7 +3180,8 @@ mod test {
     fn suppressed_failures_preserve_metrics_and_nacks() {
         let (setup, _logs) = diagnostic_test_setup();
         for interests in [Interests::empty(), Interests::NODE_INPUT_METRICS] {
-            let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(interests);
+            let (mut pipeline_ctx, _) = test_pipeline_ctx_with_interests(interests);
+            pipeline_ctx.set_structured_log_emitter(setup.log_emitter());
             let mut metrics = OtlpHttpExporterMetrics::register(&pipeline_ctx, None);
             let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
             let mut effect_handler = EffectHandler::new(
@@ -3266,7 +3267,8 @@ mod test {
     #[test]
     fn successful_export_is_recorded_when_ack_notification_fails() {
         let (setup, _logs) = diagnostic_test_setup();
-        let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(Interests::NODE_INPUT_METRICS);
+        let (mut pipeline_ctx, _) = test_pipeline_ctx_with_interests(Interests::NODE_INPUT_METRICS);
+        pipeline_ctx.set_structured_log_emitter(setup.log_emitter());
         let mut metrics = OtlpHttpExporterMetrics::register(&pipeline_ctx, None);
 
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);

@@ -385,11 +385,10 @@ Export, preparation, and notification diagnostics include `diagnostic_kind`
 (`first_failure`, `summary`, or `recovery`) and interval/episode counts.
 Existing export and notification error event names are preserved. Every
 selected failure is an ordinary warning with its string `message`, boolean
-`retryable` where relevant, and summary counters. The tracing layer saves an
-unannotated copy for a possible success-triggered summary, which replays that
-same event with fresh counters. Recovery is a separate ordinary INFO event
-stating that delivery recovered. Notification errors include lowercase
-`operation` (`ack` or `nack`).
+`retryable` where relevant, and summary counters. A success-triggered summary
+replays the saved failure event with fresh counters. Recovery is a separate
+ordinary INFO event stating that delivery recovered. Notification errors
+include lowercase `operation` (`ack` or `nack`).
 
 Operation-specific fields are encoded before interval and episode counters so
 the bounded ITS record preserves actionable error details. Oversized details

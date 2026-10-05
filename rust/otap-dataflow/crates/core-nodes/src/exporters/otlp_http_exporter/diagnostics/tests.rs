@@ -26,7 +26,7 @@ use otel_arrow_dfe_telemetry::diagnostics::{DiagnosticErrorKind, SignalDiagnosti
 use otel_arrow_dfe_telemetry::event::{LogEvent, ObservedEvent, ObservedEventReporter};
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use otel_arrow_dfe_telemetry::self_tracing::{LogContext, LogRecord};
-use otel_arrow_dfe_telemetry::tracing_init::{ProviderSetup, TracingSetup};
+use otel_arrow_dfe_telemetry::tracing_init::{ProviderSetup, StructuredLogEmitter, TracingSetup};
 use serde_json::{Map, Value, json};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -143,7 +143,7 @@ impl Capture {
 
 /// Runs `f` through the same tracing setup used in production and decodes the
 /// resulting ordinary and statefully delivered records in call order.
-fn with_capture<R>(f: impl FnOnce() -> R) -> (R, Capture) {
+fn with_capture<R>(f: impl FnOnce(StructuredLogEmitter) -> R) -> (R, Capture) {
     let capture = Capture::default();
     let (sender, receiver) = flume::unbounded();
     let reporter = ObservedEventReporter::new(
@@ -155,7 +155,7 @@ fn with_capture<R>(f: impl FnOnce() -> R) -> (R, Capture) {
         otel_arrow_dfe_config::settings::telemetry::logs::LogLevel::default(),
         LogContext::new,
     );
-    let result = setup.with_subscriber(f);
+    let result = setup.with_subscriber(|| f(setup.log_emitter()));
     capture.drain(&receiver);
     (result, capture)
 }
@@ -165,10 +165,10 @@ fn with_capture<R>(f: impl FnOnce() -> R) -> (R, Capture) {
 #[test]
 fn delivery_event_contract_and_sampled_failures() {
     use OtlpHttpExporterErrorType::{PartialRejection, Transport};
-    let (_, capture) = with_capture(|| {
+    let (_, capture) = with_capture(|emitter| {
         let start = Instant::now();
         let at = |seconds| start + Duration::from_secs(seconds);
-        let mut diagnostics = SignalDiagnostics::<OtlpHttpExporterErrorType>::default();
+        let mut diagnostics = SignalDiagnostics::<OtlpHttpExporterErrorType>::new(emitter);
         otel_summary_warn!(
             at: at(0),
             &mut diagnostics,
@@ -276,10 +276,10 @@ fn delivery_event_contract_and_sampled_failures() {
 /// Guarantees: Separate bounded events retain compact Ack/Nack context and preparation errors.
 #[test]
 fn preparation_and_notification_event_contracts() {
-    let (_, capture) = with_capture(|| {
+    let (_, capture) = with_capture(|emitter| {
         let start = Instant::now();
-        let mut preparation = SignalDiagnostics::default();
-        let mut notifications = SignalDiagnostics::default();
+        let mut preparation = SignalDiagnostics::new(emitter.clone());
+        let mut notifications = SignalDiagnostics::new(emitter);
         otel_summary_warn!(
             at: start,
             &mut preparation,
@@ -370,9 +370,10 @@ fn delivery_retryability_matches_auth_aware_nacks() {
             (503, None, true),
             (400, None, false),
         ] {
-            let (message, capture) = with_capture(|| {
+            let (message, capture) = with_capture(|emitter| {
                 runtime.block_on(async {
-                    let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(interests);
+                    let (mut pipeline_ctx, _) = test_pipeline_ctx_with_interests(interests);
+                    pipeline_ctx.set_structured_log_emitter(emitter);
                     let mut metrics = OtlpHttpExporterMetrics::register(&pipeline_ctx, None);
                     let (_metrics_rx, reporter) = MetricsReporter::create_new_and_receiver(1);
                     let mut effects = EffectHandler::new(
@@ -466,9 +467,10 @@ fn notification_failure_does_not_redefine_delivery() {
         .build()
         .unwrap();
     for rejected in [false, true] {
-        let (_, capture) = with_capture(|| {
+        let (_, capture) = with_capture(|emitter| {
             runtime.block_on(async {
-                let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(Interests::empty());
+                let (mut pipeline_ctx, _) = test_pipeline_ctx_with_interests(Interests::empty());
+                pipeline_ctx.set_structured_log_emitter(emitter);
                 let mut metrics = OtlpHttpExporterMetrics::register(&pipeline_ctx, None);
                 let (_metrics_rx, reporter) = MetricsReporter::create_new_and_receiver(1);
                 let mut effects = EffectHandler::new(
@@ -549,9 +551,10 @@ fn early_nack_notification_failure_is_observable() {
         .enable_all()
         .build()
         .unwrap();
-    let (_, capture) = with_capture(|| {
+    let (_, capture) = with_capture(|emitter| {
         runtime.block_on(async {
-            let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(Interests::empty());
+            let (mut pipeline_ctx, _) = test_pipeline_ctx_with_interests(Interests::empty());
+            pipeline_ctx.set_structured_log_emitter(emitter);
             let mut metrics = OtlpHttpExporterMetrics::register(&pipeline_ctx, None);
             let (_metrics_rx, reporter) = MetricsReporter::create_new_and_receiver(1);
             let mut effects = EffectHandler::new(

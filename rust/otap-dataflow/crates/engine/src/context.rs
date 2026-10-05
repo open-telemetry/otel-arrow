@@ -32,6 +32,7 @@ use otel_arrow_dfe_telemetry::metrics::{
     RegistrationMetricSetHandler,
 };
 use otel_arrow_dfe_telemetry::registry::{EntityKey, MetricSetKey, TelemetryRegistryHandle};
+use otel_arrow_dfe_telemetry::tracing_init::StructuredLogEmitter;
 use std::any::Any;
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -131,6 +132,7 @@ pub struct PipelineContext {
     node_duration_distribution: DistributionTier,
     node_telemetry_attrs: HashMap<String, TelemetryAttribute>,
     admission: crate::admission::AdmissionBinder,
+    structured_log_emitter: StructuredLogEmitter,
 
     /// Internal telemetry settings for the Internal Telemetry Receiver (ITR).
     /// Only the ITR factory reads this; other receivers ignore it.
@@ -364,6 +366,7 @@ impl PipelineContext {
             node_duration_distribution: DistributionTier::Normal,
             node_telemetry_attrs: HashMap::new(),
             admission: crate::admission::AdmissionBinder::none(),
+            structured_log_emitter: StructuredLogEmitter::default(),
             pipeline_telemetry_attrs: HashMap::new(),
             internal_telemetry: None,
             node_names: Arc::new(HashMap::new()),
@@ -389,6 +392,17 @@ impl PipelineContext {
     #[must_use]
     pub fn pipeline_key(&self) -> PipelineKey {
         PipelineKey::from(&self.pipeline_context_params)
+    }
+
+    /// Installs the structured log emitter for this pipeline runtime.
+    pub fn set_structured_log_emitter(&mut self, emitter: StructuredLogEmitter) {
+        self.structured_log_emitter = emitter;
+    }
+
+    /// Returns the structured log emitter for this pipeline runtime.
+    #[must_use]
+    pub const fn structured_log_emitter(&self) -> &StructuredLogEmitter {
+        &self.structured_log_emitter
     }
 
     /// Returns the node ID.
@@ -874,6 +888,7 @@ impl PipelineContext {
             node_duration_distribution: DistributionTier::Normal,
             node_telemetry_attrs,
             admission: crate::admission::AdmissionBinder::none(),
+            structured_log_emitter: self.structured_log_emitter.clone(),
             internal_telemetry: None,
             node_names: self.node_names.clone(),
             topic_set: self.topic_set.clone(),

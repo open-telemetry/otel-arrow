@@ -450,13 +450,12 @@ Integrations may add bounded fields such as `signal`, `stage`, `message`, or a
 retry decision. These fields describe the selected failure event; the common
 counter fields describe its interval and complete episode.
 
-The first report includes its triggering failure. A selected warning follows
-the ordinary log path; the tracing layer saves its unannotated record before
-adding summary attributes to the delivered copy. A success-triggered summary
-replays that saved event with fresh counters and age. Suppressed failures do not
-construct tracing events or format their fields. Recovery is a distinct current
-INFO event, not a copy of an earlier error. Callers must still redact sensitive
-data before supplying diagnostic text.
+The first report includes its triggering failure. A selected warning saves its
+unannotated event before adding summary attributes to the delivered record. A
+success-triggered summary replays that saved event with fresh counters and age.
+Suppressed failures do not construct log records or format their fields.
+Recovery is a distinct current INFO event, not a copy of an earlier error.
+Callers must still redact sensitive data before supplying diagnostic text.
 
 Log frequency intentionally decreases; use component attempt and failure
 metrics for rates and impact. The summary macros emit common fields with the

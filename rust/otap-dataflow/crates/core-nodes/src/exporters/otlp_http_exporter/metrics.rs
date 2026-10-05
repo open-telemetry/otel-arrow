@@ -140,10 +140,11 @@ impl OtlpHttpExporterMetrics {
         pipeline_ctx: &PipelineContext,
         auth: Option<&dyn HttpClientAuthProvider>,
     ) -> Self {
+        let log_emitter = pipeline_ctx.structured_log_emitter().clone();
         Self {
-            delivery: SignalDiagnostics::default(),
-            preparation: SignalDiagnostics::default(),
-            notifications: SignalDiagnostics::default(),
+            delivery: SignalDiagnostics::new(log_emitter.clone()),
+            preparation: SignalDiagnostics::new(log_emitter.clone()),
+            notifications: SignalDiagnostics::new(log_emitter),
             boundary: ExporterMetrics::register(pipeline_ctx),
             failures: OtlpHttpExporterFailureMetrics::register(pipeline_ctx),
             auth: auth.map(|a| {

@@ -2605,6 +2605,7 @@ impl<
             pipeline_key.deployment_generation,
             numa_node_id,
         );
+        pipeline_ctx.set_structured_log_emitter(tracing_setup.log_emitter());
         let topic_set = Self::build_pipeline_topic_set(
             config,
             declared_topics,

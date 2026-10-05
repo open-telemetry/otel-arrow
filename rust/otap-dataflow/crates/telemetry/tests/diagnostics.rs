@@ -11,42 +11,33 @@ use otel_arrow_dfe_telemetry::event::{LogEvent, ObservedEvent, ObservedEventRepo
 use otel_arrow_dfe_telemetry::self_tracing::LogContext;
 use otel_arrow_dfe_telemetry::tracing_init::{ProviderSetup, TracingSetup};
 use std::cell::Cell;
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tracing::{Event, Level, Subscriber};
-use tracing_subscriber::{Layer, layer::Context, prelude::*};
+use tracing::Level;
 
 fn counted_message(formats: &Cell<u64>) -> &'static str {
     formats.set(formats.get() + 1);
     "connection refused"
 }
 
-#[derive(Clone, Default)]
-struct Capture(Arc<Mutex<Vec<(&'static str, &'static str, Level)>>>);
-
-impl<S: Subscriber> Layer<S> for Capture {
-    fn on_event(&self, event: &Event<'_>, _context: Context<'_, S>) {
-        let metadata = event.metadata();
-        self.0
-            .lock()
-            .expect("capture lock must not be poisoned")
-            .push((metadata.name(), metadata.target(), *metadata.level()));
-    }
-}
-
-/// Scenario: Two subscribers observe a busy outage, a summary, and confirmed recovery.
-/// Guarantees: Both receive only bounded reports with the component target and correct severity.
+/// Scenario: A busy outage produces a first warning, summary, and recovery.
+/// Guarantees: Sampling constructs only the selected events and formats only selected details.
 #[test]
 fn suppression_precedes_all_subscribers() {
-    let first = Capture::default();
-    let second = Capture::default();
-    let subscriber = tracing_subscriber::registry()
-        .with(first.clone())
-        .with(second.clone());
+    let (sender, receiver) = flume::unbounded();
+    let setup = TracingSetup::new(
+        ProviderSetup::InternalAsync {
+            reporter: ObservedEventReporter::new(
+                otel_arrow_dfe_config::observed_state::SendPolicy::default(),
+                sender,
+            ),
+        },
+        otel_arrow_dfe_config::settings::telemetry::logs::LogLevel::default(),
+        LogContext::new,
+    );
     let formats = Cell::new(0);
-    tracing::subscriber::with_default(subscriber, || {
+    setup.with_subscriber(|| {
         let start = Instant::now();
-        let mut diagnostics = SignalDiagnostics::default();
+        let mut diagnostics = SignalDiagnostics::new(setup.log_emitter());
         for second in 0..=60 {
             for _ in 0..100 {
                 otel_arrow_dfe_telemetry::otel_summary_warn!(
@@ -76,14 +67,18 @@ fn suppression_precedes_all_subscribers() {
         ("test.export_error", "otel.exporter.test", Level::WARN),
         ("test.export_recovered", "otel.exporter.test", Level::INFO),
     ];
-    assert_eq!(
-        *first.0.lock().expect("capture lock must not be poisoned"),
-        expected
-    );
-    assert_eq!(
-        *second.0.lock().expect("capture lock must not be poisoned"),
-        expected
-    );
+    let actual = receiver
+        .try_iter()
+        .map(|event| match event {
+            ObservedEvent::Log(LogEvent { record, .. }) => (
+                record.callsite().name(),
+                record.callsite().target(),
+                *record.callsite().level(),
+            ),
+            ObservedEvent::Engine(_) => panic!("expected log event"),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(actual, expected);
     assert_eq!(formats.get(), 2);
 }
 
@@ -103,7 +98,7 @@ fn priority_detail_survives_bounded_its_encoding() {
         LogContext::new,
     );
     setup.with_subscriber(|| {
-        let mut diagnostics = SignalDiagnostics::default();
+        let mut diagnostics = SignalDiagnostics::new(setup.log_emitter());
         let text = format!("root cause: {}", "x".repeat(4_000));
         otel_arrow_dfe_telemetry::otel_summary_warn!(
             target: "otel.exporter.test",

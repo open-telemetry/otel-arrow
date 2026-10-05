@@ -12,7 +12,7 @@ pub mod formatter;
 
 use crate::registry::EntityKey;
 use encoder::DirectFieldVisitor;
-use otel_arrow_dfe_pdata::otlp::common::{ProtoBuffer, StackProtoBuffer};
+use otel_arrow_dfe_pdata::otlp::common::{BoundedBuf, ProtoBuffer, StackProtoBuffer};
 use serde::Serialize;
 use serde::ser::Serializer;
 use smallvec::SmallVec;
@@ -171,6 +171,12 @@ impl StackLogRecord {
         }
     }
 
+    /// Returns the static metadata for this record's callsite.
+    #[must_use]
+    pub fn metadata(&self) -> &'static Metadata<'static> {
+        self.callsite_id.0.metadata()
+    }
+
     /// Convert into an owned [`LogRecord`], allocating `Bytes`.
     #[must_use]
     pub fn into_record(self, context: LogContext) -> LogRecord {
@@ -180,6 +186,40 @@ impl StackLogRecord {
             callsite_id: self.callsite_id,
             context,
         }
+    }
+
+    /// Combines this ordinary record with separately encoded annotations.
+    ///
+    /// The returned full record owns one shared `Bytes` allocation. The saved
+    /// base record is a zero-copy prefix slice that excludes the annotations.
+    #[must_use]
+    pub fn into_annotated_records(
+        self,
+        annotations: Self,
+        context: LogContext,
+    ) -> (LogRecord, LogRecord) {
+        let base_len = self.buf.len();
+        let capacity = base_len + annotations.buf.len();
+        let mut combined = ProtoBuffer::with_capacity(capacity);
+        let _ = combined.extend_from_slice(self.buf.as_ref());
+        let _ = combined.extend_from_slice(annotations.buf.as_ref());
+        let bytes = combined.into_bytes();
+        let base_bytes = bytes.slice(..base_len);
+        let callsite_id = self.callsite_id;
+        let base = LogRecord {
+            callsite_id: callsite_id.clone(),
+            body_attrs_bytes: base_bytes,
+            dropped_attributes_count: self.dropped_count as u16,
+            context: context.clone(),
+        };
+        let full = LogRecord {
+            callsite_id,
+            body_attrs_bytes: bytes,
+            dropped_attributes_count: self.dropped_count.saturating_add(annotations.dropped_count)
+                as u16,
+            context,
+        };
+        (full, base)
     }
 }
 
