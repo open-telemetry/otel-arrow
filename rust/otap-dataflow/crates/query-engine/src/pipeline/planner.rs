@@ -37,6 +37,7 @@ use crate::pipeline::expr::{ChildRecordKind, DataScope, RecordScope, ScopedExpr}
 use crate::pipeline::filter::FilterPipelineStage;
 use crate::pipeline::fork::{ForkPipelineStage, ForkPipelineStageBranch};
 use crate::pipeline::routing::RouteToPipelineStage;
+use crate::pipeline::scale_metric::ScaleMetricPipelineStage;
 use crate::pipeline::{BoxedPipelineStage, PipelineStage};
 
 /// Identifier for what will be treated as a record in the pipeline that is being planned.
@@ -258,6 +259,12 @@ impl PipelinePlanner {
                 }
                 TransformExpression::Set(set_expr) => {
                     self.plan_sets(&[set_expr], functions, session_ctx, otap_batch)
+                }
+                TransformExpression::Scale(scale_expr) => {
+                    Ok(vec![Box::new(ScaleMetricPipelineStage::new(
+                        scale_expr.get_multiplier(),
+                        scale_expr.get_unit().map(ToOwned::to_owned),
+                    ))])
                 }
                 other => Err(Error::NotYetSupportedError {
                     message: format!(
