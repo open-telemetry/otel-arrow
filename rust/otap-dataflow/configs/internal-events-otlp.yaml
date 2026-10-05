@@ -103,6 +103,29 @@ groups:
             type: "urn:otel:exporter:otlp_grpc"
             config:
               grpc_endpoint: "http://127.0.0.1:14999"
+          # Drives `otlp.exporter.http.export_error` (first failed export)
+          # by feeding synthetic traffic into an OTLP/HTTP exporter pointed
+          # at a port nothing listens on at startup. The
+          # `otlp.exporter.http.export_recovered.sh` trigger later serves
+          # that port so the exporter confirms recovery.
+          gen_http:
+            type: "urn:otel:receiver:traffic_generator"
+            config:
+              data_source: synthetic
+              generation_strategy: fresh
+              traffic_config:
+                signals_per_second: 5
+                max_batch_size: 1
+                metric_weight: 0
+                trace_weight: 0
+                log_weight: 1
+                log_body_size_bytes: 64
+          http_exporter:
+            type: "urn:otel:exporter:otlp_http"
+            config:
+              http: {}
+              endpoint: "http://127.0.0.1:14998"
+              client_pool_size: 1
           sink:
             type: "urn:otel:exporter:noop"
             config: {}
@@ -113,3 +136,5 @@ groups:
             to: sink
           - from: gen
             to: dead_exporter
+          - from: gen_http
+            to: http_exporter
