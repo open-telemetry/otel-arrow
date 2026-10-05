@@ -558,7 +558,7 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                                     .expect_err("encoding attempt must fail");
                                 self.metrics.record_failure(signal_type, error_type);
                                 otel_summary_warn!(
-                                    self.metrics.preparation.signal(signal_type),
+                                    &mut self.metrics.preparation,
                                     signal_type,
                                     error_type,
                                     "otlp.exporter.http.preparation_error",
@@ -610,7 +610,7 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                                     .expect_err("compression attempt must fail");
                                 self.metrics.record_failure(signal_type, error_type);
                                 otel_summary_warn!(
-                                    self.metrics.preparation.signal(signal_type),
+                                    &mut self.metrics.preparation,
                                     signal_type,
                                     error_type,
                                     "otlp.exporter.http.preparation_error",
@@ -1075,17 +1075,16 @@ async fn finalize_completed_export(
 
     // Success is normally silent and only selects confirmed recovery. Failure
     // details are formatted only when the sampler selects an ordinary warning.
-    let delivery_diagnostic = metrics.delivery.signal(signal_type);
     match &result {
         Ok(()) => otel_summary_recover!(
-            delivery_diagnostic,
+            &mut metrics.delivery,
             signal_type,
             diagnostic_started_at,
             "otlp.exporter.http.export_recovered",
             message = "OTLP HTTP export recovered"
         ),
         Err(error) => otel_summary_warn!(
-            delivery_diagnostic,
+            &mut metrics.delivery,
             signal_type,
             error.error_type(),
             "otlp.exporter.http.export_error",
@@ -1114,7 +1113,7 @@ async fn finalize_completed_export(
         None => {
             if let Err(error) = effect_handler.notify_ack(AckMsg::new(pdata)).await {
                 otel_summary_warn!(
-                    metrics.notifications.signal(signal_type),
+                    &mut metrics.notifications,
                     signal_type,
                     DiagnosticErrorKind::Notification,
                     "otlp.exporter.http.notification_error",
@@ -1149,7 +1148,7 @@ async fn notify_nack_with_diagnostics(
 ) {
     if let Err(error) = effect_handler.notify_nack(nack).await {
         otel_summary_warn!(
-            metrics.notifications.signal(signal_type),
+            &mut metrics.notifications,
             signal_type,
             DiagnosticErrorKind::Notification,
             "otlp.exporter.http.notification_error",

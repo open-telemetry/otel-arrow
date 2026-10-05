@@ -6,7 +6,7 @@
 use otel_arrow_dfe_pdata::views::otlp::bytes::logs::RawLogRecord;
 use otel_arrow_dfe_pdata_views::views::common::{AnyValueView, AttributeView};
 use otel_arrow_dfe_pdata_views::views::logs::LogRecordView;
-use otel_arrow_dfe_telemetry::diagnostics::{DiagnosticErrorKind, DiagnosticTracker};
+use otel_arrow_dfe_telemetry::diagnostics::{DiagnosticErrorKind, SignalDiagnostics};
 use otel_arrow_dfe_telemetry::event::{LogEvent, ObservedEvent, ObservedEventReporter};
 use otel_arrow_dfe_telemetry::self_tracing::LogContext;
 use otel_arrow_dfe_telemetry::tracing_init::{ProviderSetup, TracingSetup};
@@ -46,13 +46,13 @@ fn suppression_precedes_all_subscribers() {
     let formats = Cell::new(0);
     tracing::subscriber::with_default(subscriber, || {
         let start = Instant::now();
-        let mut tracker = DiagnosticTracker::default();
+        let mut diagnostics = SignalDiagnostics::default();
         for second in 0..=60 {
             for _ in 0..100 {
                 otel_arrow_dfe_telemetry::otel_summary_warn!(
                     target: "otel.exporter.test",
                     at: start + Duration::from_secs(second),
-                    &mut tracker,
+                    &mut diagnostics,
                     otel_arrow_dfe_config::SignalType::Logs,
                     DiagnosticErrorKind::Transport,
                     "test.export_error",
@@ -64,7 +64,7 @@ fn suppression_precedes_all_subscribers() {
         otel_arrow_dfe_telemetry::otel_summary_recover!(
             target: "otel.exporter.test",
             at: start + Duration::from_secs(90),
-            &mut tracker,
+            &mut diagnostics,
             otel_arrow_dfe_config::SignalType::Logs,
             start + Duration::from_secs(61),
             "test.export_recovered",
@@ -103,11 +103,11 @@ fn priority_detail_survives_bounded_its_encoding() {
         LogContext::new,
     );
     setup.with_subscriber(|| {
-        let mut tracker = DiagnosticTracker::default();
+        let mut diagnostics = SignalDiagnostics::default();
         let text = format!("root cause: {}", "x".repeat(4_000));
         otel_arrow_dfe_telemetry::otel_summary_warn!(
             target: "otel.exporter.test",
-            &mut tracker,
+            &mut diagnostics,
             otel_arrow_dfe_config::SignalType::Logs,
             DiagnosticErrorKind::Transport,
             "test.export_error",

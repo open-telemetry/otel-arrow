@@ -287,20 +287,22 @@ pub type SignalDiagnostics<E> = SignalSet<DiagnosticTracker<E>>;
 /// before the caller's ordinary tracing fields and message.
 #[macro_export]
 macro_rules! otel_summary_warn {
-    (target: $target:expr, $tracker:expr, $signal:expr, $category:expr, $name:literal, $($fields:tt)+) => {{
+    (target: $target:expr, $diagnostics:expr, $signal:expr, $category:expr, $name:literal, $($fields:tt)+) => {{
         $crate::otel_summary_warn!(
             target: $target,
             at: std::time::Instant::now(),
-            $tracker,
+            $diagnostics,
             $signal,
             $category,
             $name,
             $($fields)+
         );
     }};
-    (target: $target:expr, at: $now:expr, $tracker:expr, $signal:expr, $category:expr, $name:literal, $($fields:tt)+) => {{
+    (target: $target:expr, at: $now:expr, $diagnostics:expr, $signal:expr, $category:expr, $name:literal, $($fields:tt)+) => {{
         let diagnostic_signal = $signal;
-        if let Some(diagnostic_report) = ($tracker).failure($now, $category) {
+        if let Some(diagnostic_report) =
+            ($diagnostics).signal(diagnostic_signal).failure($now, $category)
+        {
             $crate::otel_warn!(target: $target, $name,
                 signal = $crate::attributes::AttributeEnum::as_str(diagnostic_signal),
                 diagnostic_kind = diagnostic_report.kind.as_str(),
@@ -329,20 +331,22 @@ macro_rules! otel_summary_warn {
 /// and message.
 #[macro_export]
 macro_rules! otel_summary_recover {
-    (target: $target:expr, $tracker:expr, $signal:expr, $started_at:expr, $name:literal, $($fields:tt)+) => {{
+    (target: $target:expr, $diagnostics:expr, $signal:expr, $started_at:expr, $name:literal, $($fields:tt)+) => {{
         $crate::otel_summary_recover!(
             target: $target,
             at: std::time::Instant::now(),
-            $tracker,
+            $diagnostics,
             $signal,
             $started_at,
             $name,
             $($fields)+
         );
     }};
-    (target: $target:expr, at: $now:expr, $tracker:expr, $signal:expr, $started_at:expr, $name:literal, $($fields:tt)+) => {{
+    (target: $target:expr, at: $now:expr, $diagnostics:expr, $signal:expr, $started_at:expr, $name:literal, $($fields:tt)+) => {{
         let diagnostic_signal = $signal;
-        if let Some(diagnostic_report) = ($tracker).success($started_at, $now) {
+        if let Some(diagnostic_report) =
+            ($diagnostics).signal(diagnostic_signal).success($started_at, $now)
+        {
             $crate::otel_info!(target: $target, $name,
                 signal = $crate::attributes::AttributeEnum::as_str(diagnostic_signal),
                 diagnostic_kind = diagnostic_report.kind.as_str(),
@@ -558,12 +562,12 @@ mod tests {
         );
 
         let rendered: Vec<String> = setup.with_subscriber(|| {
-            let mut tracker = DiagnosticTracker::default();
+            let mut diagnostics = SignalDiagnostics::default();
             let start = Instant::now();
             crate::otel_summary_warn!(
                 target: "otel.exporter.test",
                 at: start,
-                &mut tracker,
+                &mut diagnostics,
                 SignalType::Logs,
                 DiagnosticErrorKind::Transport,
                 "test.diagnostic.detail",
@@ -575,7 +579,7 @@ mod tests {
             crate::otel_summary_warn!(
                 target: "otel.exporter.test",
                 at: later,
-                &mut tracker,
+                &mut diagnostics,
                 SignalType::Logs,
                 DiagnosticErrorKind::Transport,
                 "test.diagnostic.detail",

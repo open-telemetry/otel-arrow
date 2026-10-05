@@ -22,9 +22,7 @@ use otel_arrow_dfe_pdata::OtlpProtoBytes;
 use otel_arrow_dfe_pdata::views::otlp::bytes::logs::RawLogRecord;
 use otel_arrow_dfe_pdata_views::views::common::{AnyValueView, AttributeView, ValueType};
 use otel_arrow_dfe_pdata_views::views::logs::LogRecordView;
-use otel_arrow_dfe_telemetry::diagnostics::{
-    DiagnosticErrorKind, DiagnosticTracker, SignalDiagnostics,
-};
+use otel_arrow_dfe_telemetry::diagnostics::{DiagnosticErrorKind, SignalDiagnostics};
 use otel_arrow_dfe_telemetry::event::{LogEvent, ObservedEvent, ObservedEventReporter};
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use otel_arrow_dfe_telemetry::self_tracing::{LogContext, LogRecord};
@@ -171,33 +169,46 @@ fn delivery_event_contract_and_sampled_failures() {
         let start = Instant::now();
         let at = |seconds| start + Duration::from_secs(seconds);
         let mut diagnostics = SignalDiagnostics::<OtlpHttpExporterErrorType>::default();
-        let logs = diagnostics.signal(SignalType::Logs);
         otel_summary_warn!(
             at: at(0),
-            logs,
+            &mut diagnostics,
             SignalType::Logs,
             Transport,
             "otlp.exporter.http.export_error",
             retryable = true,
             message = "connection refused"
         );
-        assert!(logs.failure(at(10), PartialRejection).is_none());
-        assert!(logs.success(at(0), at(60)).is_none());
+        assert!(
+            diagnostics
+                .signal(SignalType::Logs)
+                .failure(at(10), PartialRejection)
+                .is_none()
+        );
+        assert!(
+            diagnostics
+                .signal(SignalType::Logs)
+                .success(at(0), at(60))
+                .is_none()
+        );
         otel_summary_warn!(
             at: at(61),
-            logs,
+            &mut diagnostics,
             SignalType::Logs,
             Transport,
             "otlp.exporter.http.export_error",
             retryable = true,
             message = "connection interrupted"
         );
-        assert!(logs.failure(at(62), PartialRejection).is_none());
+        assert!(
+            diagnostics
+                .signal(SignalType::Logs)
+                .failure(at(62), PartialRejection)
+                .is_none()
+        );
 
-        let traces = diagnostics.signal(SignalType::Traces);
         otel_summary_warn!(
             at: at(130),
-            traces,
+            &mut diagnostics,
             SignalType::Traces,
             Transport,
             "otlp.exporter.http.export_error",
@@ -205,11 +216,15 @@ fn delivery_event_contract_and_sampled_failures() {
             message = "trace connection refused"
         );
 
-        let logs = diagnostics.signal(SignalType::Logs);
-        assert!(logs.success(at(0), at(91)).is_none());
+        assert!(
+            diagnostics
+                .signal(SignalType::Logs)
+                .success(at(0), at(91))
+                .is_none()
+        );
         otel_summary_recover!(
             at: at(92),
-            logs,
+            &mut diagnostics,
             SignalType::Logs,
             at(63),
             "otlp.exporter.http.export_recovered",
@@ -247,8 +262,8 @@ fn delivery_event_contract_and_sampled_failures() {
 fn preparation_and_notification_event_contracts() {
     let (_, capture) = with_capture(|| {
         let start = Instant::now();
-        let mut preparation = DiagnosticTracker::default();
-        let mut notifications = DiagnosticTracker::default();
+        let mut preparation = SignalDiagnostics::default();
+        let mut notifications = SignalDiagnostics::default();
         otel_summary_warn!(
             at: start,
             &mut preparation,
@@ -268,11 +283,13 @@ fn preparation_and_notification_event_contracts() {
         );
         assert!(
             preparation
+                .signal(SignalType::Logs)
                 .failure(start, OtlpHttpExporterErrorType::Compression)
                 .is_none()
         );
         assert!(
             notifications
+                .signal(SignalType::Logs)
                 .failure(start, DiagnosticErrorKind::Notification)
                 .is_none()
         );
