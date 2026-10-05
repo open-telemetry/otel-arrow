@@ -13,10 +13,13 @@ metrics over OTLP instead of being scraped. This module provides:
   Intended for suite-level 'run.post' hooks.
 
 Why push instead of scrape:
-    Scraped counters are sampled at times chosen by the observer, so sent and
-    received counters from different processes are never sampled over the same
-    span, and the final values are lost once the engine shuts down. Pushed
-    metrics carry engine-assigned timestamps and the engine performs a final
+    Scraped counters are sampled at times chosen by the observer and it is
+    difficult to guarantee that metrics which require precise accounting such
+    as the total count of signals sent/received will line up perfectly across
+    the loadgen/backend of a benchmark. Additionally the engine un-registers
+    metrics as soon as a pipeline shutdown signal is received and so a scraper
+    loses access to any final datapoints for signals that are processed during
+    the shutdown sequence. For push-based metricst the engine performs a final
     flush during graceful shutdown, so summing pushed deltas yields exact
     whole-run totals.
 
