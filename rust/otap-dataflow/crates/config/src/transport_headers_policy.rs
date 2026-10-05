@@ -552,7 +552,8 @@ impl PropagationSelector {
         self.selects_unqualified_str(header_name.as_str())
     }
 
-    /// Returns whether an unqualified stored header name is selected.
+    /// Returns whether a directly named (non-composite) stored header is selected.
+    /// This policy already supplies the transport-header domain.
     #[must_use]
     pub fn selects_unqualified_str(&self, header_name: &str) -> bool {
         match &self.selector_type {

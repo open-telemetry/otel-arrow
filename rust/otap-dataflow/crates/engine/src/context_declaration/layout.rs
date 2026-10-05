@@ -12,7 +12,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use otel_arrow_dfe_config::context::{ContextEntryName, ContextEntryRef};
+use otel_arrow_dfe_config::context::ContextEntryName;
 pub use otel_arrow_dfe_config::context_policy::ContextDomain;
 use otel_arrow_dfe_config::context_policy::{
     ContextEntryDeclaration, ContextEntryPart, ContextScope,
@@ -26,8 +26,10 @@ pub struct ContextLayout {
     fields: Box<[ContextFieldLayout]>,
     /// Composite entries from `policies::context::entries`.
     entries: Box<[ContextEntryLayout]>,
-    /// Namespace containing both primitives and composites.
-    names: BTreeMap<ContextEntryName, ContextNameId>,
+    /// Primitive names are local to their authority domain.
+    field_names: BTreeMap<(ContextDomain, ContextEntryName), ContextFieldId>,
+    /// Composite names are independent of primitive source names.
+    entry_names: BTreeMap<ContextEntryName, ContextEntryId>,
 }
 
 /// A primitive field is a named element in one authority domain.
@@ -63,7 +65,7 @@ impl ContextEntryId {
     }
 }
 
-/// Identity of one top-level name in the layout.
+/// Identity of one presence gate in the layout.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub enum ContextNameId {
     /// A primitive field.
@@ -144,6 +146,25 @@ fn invalid(message: impl Into<String>) -> Error {
     }
 }
 
+pub(super) fn validate_definition(declaration: &ContextEntryDeclaration) -> Result<(), Error> {
+    let errors = declaration
+        .definition
+        .validation_errors(&format!("context entry `{}`", declaration.name));
+    if !errors.is_empty() {
+        return Err(invalid(errors.join("; ")));
+    }
+    for part in &declaration.definition.0 {
+        if part.reference().scope().is_some() {
+            return Err(invalid(format!(
+                "context entry `{}` cannot use nested reference `{}`",
+                declaration.name,
+                part.reference(),
+            )));
+        }
+    }
+    Ok(())
+}
+
 impl ContextLayout {
     /// Compiles a binding's fields and entry declarations into a logical layout.
     pub fn compile(
@@ -156,26 +177,12 @@ impl ContextLayout {
             .into_iter()
             .collect();
         let mut entries = Vec::with_capacity(declarations.len());
-        let mut names = BTreeMap::new();
-        for (index, field) in fields.iter().enumerate() {
-            let name = field.name.clone();
-            let field_id = ContextFieldId(index);
-            match names.insert(name.clone(), ContextNameId::Primitive(field_id)) {
-                None => {}
-                Some(ContextNameId::Primitive(existing)) => {
-                    return Err(invalid(format!(
-                        "context source `{name}` is produced as both {:?} and {:?}",
-                        fields[existing.index()].domain,
-                        field.domain,
-                    )));
-                }
-                Some(ContextNameId::Composite(_)) => {
-                    return Err(invalid(format!(
-                        "context source `{name}` conflicts with a composite entry"
-                    )));
-                }
-            }
-        }
+        let field_names = fields
+            .iter()
+            .enumerate()
+            .map(|(index, field)| ((field.domain, field.name.clone()), ContextFieldId(index)))
+            .collect();
+        let mut entry_names = BTreeMap::new();
 
         let mut ordered = declarations.iter().collect::<Vec<_>>();
         ordered.sort_by(|left, right| {
@@ -184,32 +191,21 @@ impl ContextLayout {
                 .then_with(|| left.scope.cmp(&right.scope))
         });
         for declaration in ordered {
-            let vacant_name = match names.entry(declaration.name.clone()) {
+            let vacant_name = match entry_names.entry(declaration.name.clone()) {
                 std::collections::btree_map::Entry::Vacant(entry) => entry,
                 std::collections::btree_map::Entry::Occupied(_) => {
                     return Err(invalid(format!(
-                        "context entry `{}` conflicts with a primitive or composite entry",
+                        "duplicate composite context entry `{}`",
                         declaration.name
                     )));
                 }
             };
-            let errors = declaration
-                .definition
-                .validation_errors(&format!("context entry `{}`", declaration.name));
-            if !errors.is_empty() {
-                return Err(invalid(errors.join("; ")));
-            }
+            validate_definition(declaration)?;
             let mut members = Vec::with_capacity(declaration.definition.0.len());
             let mut conditions = Vec::new();
             for part in &declaration.definition.0 {
                 let domain = part.domain();
                 let reference = part.reference();
-                if reference.scope().is_some() {
-                    return Err(invalid(format!(
-                        "context entry `{}` cannot use nested reference `{reference}`",
-                        declaration.name
-                    )));
-                }
                 let mut matching = fields.iter().enumerate().filter(|(_, field)| {
                     field.domain == domain && field.matches_name(reference.name())
                 });
@@ -255,7 +251,7 @@ impl ContextLayout {
             conditions.sort_unstable();
             conditions.dedup();
             let id = ContextEntryId(entries.len());
-            _ = vacant_name.insert(ContextNameId::Composite(id));
+            _ = vacant_name.insert(id);
             entries.push(ContextEntryLayout {
                 name: declaration.name.clone(),
                 scope: declaration.scope.clone(),
@@ -266,7 +262,8 @@ impl ContextLayout {
         Ok(Self {
             fields,
             entries: entries.into_boxed_slice(),
-            names,
+            field_names,
+            entry_names,
         })
     }
 
@@ -282,48 +279,61 @@ impl ContextLayout {
         &self.entries
     }
 
-    /// Resolve a primitive, whole composite, or qualified composite member.
-    pub fn resolve(&self, reference: &ContextEntryRef) -> Result<ContextProjection, Error> {
-        match reference.scope() {
-            None => {
-                let name = *self
-                    .names
-                    .get(reference.name())
-                    .ok_or_else(|| invalid(format!("unknown context entry `{reference}`")))?;
-                match name {
-                    ContextNameId::Primitive(field) => Ok(ContextProjection::Primitive(field)),
-                    ContextNameId::Composite(entry) => Ok(ContextProjection::Composite {
-                        entry,
-                        fields: self.entries[entry.index()]
-                            .members
-                            .iter()
-                            .map(|member| member.field)
-                            .collect(),
-                    }),
-                }
-            }
-            Some(entry_name) => {
-                let name = *self
-                    .names
-                    .get(entry_name)
-                    .ok_or_else(|| invalid(format!("unknown context entry `{entry_name}`")))?;
-                let ContextNameId::Composite(entry) = name else {
-                    return Err(invalid(format!(
-                        "primitive context entry `{entry_name}` has no qualified members"
-                    )));
-                };
-                let field = self.entries[entry.index()]
-                    .members
-                    .iter()
-                    .find(|candidate| &candidate.name == reference.name())
-                    .ok_or_else(|| invalid(format!("unknown context member `{reference}`")))?
-                    .field;
-                Ok(ContextProjection::Composite {
-                    entry,
-                    fields: Box::new([field]),
-                })
-            }
-        }
+    /// Resolves an exact stored primitive name within its source domain.
+    pub fn resolve_primitive(
+        &self,
+        domain: ContextDomain,
+        name: &ContextEntryName,
+    ) -> Result<ContextProjection, Error> {
+        self.field_names
+            .get(&(domain, name.clone()))
+            .copied()
+            .map(ContextProjection::Primitive)
+            .ok_or_else(|| invalid(format!("unknown {domain:?} context entry `{name}`")))
+    }
+
+    /// Resolves a member using the domain recorded by its composite definition.
+    ///
+    /// The selected member retains the entire composite's presence gate.
+    pub fn resolve_member(
+        &self,
+        composite: &ContextEntryName,
+        member: &ContextEntryName,
+    ) -> Result<ContextProjection, Error> {
+        let entry = self.entry_id(composite)?;
+        let field = self.entries[entry.index()]
+            .members
+            .iter()
+            .find(|candidate| &candidate.name == member)
+            .ok_or_else(|| invalid(format!("unknown context member `{composite}:{member}`")))?
+            .field;
+        Ok(ContextProjection::Composite {
+            entry,
+            fields: Box::new([field]),
+        })
+    }
+
+    /// Resolves a whole composite, preserving member order and source domains.
+    pub fn resolve_composite(
+        &self,
+        composite: &ContextEntryName,
+    ) -> Result<ContextProjection, Error> {
+        let entry = self.entry_id(composite)?;
+        Ok(ContextProjection::Composite {
+            entry,
+            fields: self.entries[entry.index()]
+                .members
+                .iter()
+                .map(|member| member.field)
+                .collect(),
+        })
+    }
+
+    fn entry_id(&self, name: &ContextEntryName) -> Result<ContextEntryId, Error> {
+        self.entry_names
+            .get(name)
+            .copied()
+            .ok_or_else(|| invalid(format!("unknown composite context entry `{name}`")))
     }
 }
 
@@ -341,6 +351,7 @@ impl ContextFieldLayout {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use otel_arrow_dfe_config::context::ContextEntryRef;
     use otel_arrow_dfe_config::context_policy::ContextEntryDefinition;
 
     fn name(value: &str) -> ContextEntryName {
@@ -444,25 +455,35 @@ mod tests {
     fn projections_preserve_fields_and_presence_gates() {
         for declaration in [entry(), conditional_entry()] {
             let layout = compile(conditional_fields(), &[declaration]);
-            let primitive = layout.resolve(&reference("workspace")).expect("primitive");
+            let primitive = layout
+                .resolve_primitive(ContextDomain::TransportHeader, &name("workspace"))
+                .expect("primitive");
             let ContextProjection::Primitive(field) = primitive else {
                 panic!("workspace must be primitive");
             };
             assert_eq!(primitive.presence(), ContextNameId::Primitive(field));
             assert_eq!(projection_names(&layout, &primitive), ["workspace"]);
             assert_eq!(layout.entries().len(), 1);
-            for (raw, expected) in [
-                ("product_user", vec!["customer", "workspace"]),
-                ("product_user:customer_id", vec!["customer"]),
-                ("product_user:workspace", vec!["workspace"]),
+            for (projection, expected) in [
+                (
+                    layout.resolve_composite(&name("product_user")),
+                    vec!["customer", "workspace"],
+                ),
+                (
+                    layout.resolve_member(&name("product_user"), &name("customer_id")),
+                    vec!["customer"],
+                ),
+                (
+                    layout.resolve_member(&name("product_user"), &name("workspace")),
+                    vec!["workspace"],
+                ),
             ] {
-                let projection = layout.resolve(&reference(raw)).expect("projection");
+                let projection = projection.expect("projection");
                 assert_eq!(
                     projection.presence(),
                     ContextNameId::Composite(ContextEntryId(0)),
-                    "{raw}"
                 );
-                assert_eq!(projection_names(&layout, &projection), expected, "{raw}");
+                assert_eq!(projection_names(&layout, &projection), expected);
             }
         }
     }
@@ -531,12 +552,10 @@ mod tests {
         );
     }
 
-    /// Scenario: declarations shadow sources/entries, nest derived references, or have no members.
+    /// Scenario: declarations repeat composite names, nest derived references, or have no members.
     /// Guarantees: the compiler rejects ambiguous namespaces and invokes definition validation.
     #[test]
     fn invalid_declarations_are_rejected() {
-        let mut conflict = entry();
-        conflict.name = name("workspace");
         let mut second = entry();
         second.scope = ContextScope::Group("group".into());
         let mut nested = entry();
@@ -548,12 +567,8 @@ mod tests {
         empty.definition.0.clear();
         for (declarations, expected) in [
             (
-                vec![conflict],
-                "context entry `workspace` conflicts with a primitive or composite entry",
-            ),
-            (
                 vec![entry(), second],
-                "context entry `product_user` conflicts with a primitive or composite entry",
+                "duplicate composite context entry `product_user`",
             ),
             (vec![nested], "cannot use nested reference `other:customer`"),
             (vec![empty], "must contain at least one member"),
@@ -562,41 +577,85 @@ mod tests {
         }
     }
 
-    /// Scenario: references name missing entries/members or qualify a primitive.
-    /// Guarantees: resolution reports the specific failure instead of falling back to another field.
+    /// Scenario: selections use missing names, the wrong domain, or a primitive as a composite.
+    /// Guarantees: explicit resolution never falls back to another domain or namespace.
     #[test]
     fn invalid_projections_are_rejected() {
         let layout = compile(fields(), &[entry()]);
-        for (raw, expected) in [
-            ("missing", "unknown context entry `missing`"),
+        for (result, expected) in [
             (
-                "product_user:missing",
+                layout.resolve_primitive(ContextDomain::TransportHeader, &name("missing")),
+                "unknown TransportHeader context entry `missing`",
+            ),
+            (
+                layout.resolve_primitive(ContextDomain::AuthorizedIdentity, &name("workspace")),
+                "unknown AuthorizedIdentity context entry `workspace`",
+            ),
+            (
+                layout.resolve_primitive(ContextDomain::TransportHeader, &name("product_user")),
+                "unknown TransportHeader context entry `product_user`",
+            ),
+            (
+                layout.resolve_composite(&name("missing")),
+                "unknown composite context entry `missing`",
+            ),
+            (
+                layout.resolve_member(&name("product_user"), &name("missing")),
                 "unknown context member `product_user:missing`",
             ),
             (
-                "workspace:customer",
-                "primitive context entry `workspace` has no qualified members",
+                layout.resolve_member(&name("workspace"), &name("customer")),
+                "unknown composite context entry `workspace`",
             ),
         ] {
-            let error = layout
-                .resolve(&reference(raw))
-                .expect_err("invalid reference");
-            assert!(error.to_string().contains(expected), "{raw}: {error}");
+            let error = result.expect_err("invalid reference");
+            assert!(error.to_string().contains(expected), "{error}");
         }
     }
 
-    /// Scenario: transport-header and authorized-identity capture produce the same stored name.
-    /// Guarantees: layout compilation rejects the collision instead of requiring consumer aliases.
+    /// Scenario: both source domains and a composite share a name, with aliased composite members.
+    /// Guarantees: explicit lookups distinguish all three and qualified members retain provenance.
     #[test]
-    fn source_domain_collision_is_rejected() {
+    fn source_domains_and_composites_have_independent_namespaces() {
         let fields = [
             field("customer", ContextDomain::AuthorizedIdentity),
             field("customer", ContextDomain::TransportHeader),
         ];
-        assert_compile_error(
-            fields,
-            &[],
-            "context source `customer` is produced as both TransportHeader and AuthorizedIdentity",
+        let mut declaration = entry();
+        declaration.name = name("customer");
+        declaration.definition.0[1] = ContextEntryPart::TransportHeader {
+            name: reference("customer"),
+            store_as: Some(name("header")),
+        };
+        let layout = compile(fields, &[declaration]);
+        let identity = layout
+            .resolve_primitive(ContextDomain::AuthorizedIdentity, &name("customer"))
+            .expect("identity");
+        let header = layout
+            .resolve_primitive(ContextDomain::TransportHeader, &name("customer"))
+            .expect("header");
+        assert_ne!(identity.fields(), header.fields());
+        let whole = layout
+            .resolve_composite(&name("customer"))
+            .expect("composite");
+        for (member, primitive) in [("customer_id", identity), ("header", header)] {
+            let projection = layout
+                .resolve_member(&name("customer"), &name(member))
+                .expect("member");
+            assert_eq!(projection.fields(), primitive.fields());
+            assert_eq!(projection.presence(), whole.presence());
+            assert_ne!(projection.presence(), primitive.presence());
+        }
+        assert_eq!(
+            whole
+                .fields()
+                .iter()
+                .map(|field| layout.fields()[field.index()].domain)
+                .collect::<Vec<_>>(),
+            [
+                ContextDomain::AuthorizedIdentity,
+                ContextDomain::TransportHeader
+            ],
         );
     }
 
@@ -640,7 +699,7 @@ mod tests {
         let second = compile(conditional_fields(), &[reordered]);
         assert_eq!(first, second);
         let projection = first
-            .resolve(&reference("product_user"))
+            .resolve_composite(&name("product_user"))
             .expect("composite entry");
         let ContextNameId::Composite(entry_id) = projection.presence() else {
             panic!("product_user must have composite presence");
@@ -671,7 +730,7 @@ mod tests {
         };
         let layout = compile(fields(), &[declaration.clone()]);
         let projection = layout
-            .resolve(&reference("product_user:WORKSPACE"))
+            .resolve_member(&name("product_user"), &name("WORKSPACE"))
             .expect("member");
         assert_eq!(projection_names(&layout, &projection), ["workspace"]);
         declaration.definition.0[0] = ContextEntryPart::AuthorizedIdentity {

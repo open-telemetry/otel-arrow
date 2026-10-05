@@ -253,15 +253,10 @@ policies:
         name: stored_name
 ```
 
-The composite header binding is active when the selected transport-header
-member exists and every `transport_header_match` condition has at least one
-matching captured value. Other value-bearing members, such as `customer_id`
-above, are not evaluated by transport-header propagation. Whole-composite
-presence and other composite consumers are separate features.
+The `transport_header_match` entry type supports checking for exact
+transport header matches.
 
-The selected member's primitive source and every condition header must have a
-matching `header_capture` rule. In the example, `x-workspace` is stored as
-`workspace` and `x-environment` is stored as `environment`.
+The composite entry binding is on valid when all its conditions match.
 
 Matching has these semantics:
 

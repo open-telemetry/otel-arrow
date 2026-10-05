@@ -9,7 +9,7 @@ use otel_arrow_dfe_config::observed_state::ObservedStateSettings;
 use otel_arrow_dfe_config::settings::telemetry::logs::LogLevel;
 use otel_arrow_dfe_engine::config::{ExporterConfig, ProcessorConfig, ReceiverConfig};
 use otel_arrow_dfe_engine::context_declaration::{
-    ConfigNodeContextDeclaration, ContextDeclaration, ContextDeclarationProvider,
+    ConfigNodeContextDeclaration, ContextDeclaration, ContextDeclarationProvider, ContextDomain,
     NodeContextDeclarations,
 };
 use otel_arrow_dfe_engine::control::{
@@ -108,6 +108,7 @@ struct ContextBindingsTestConfig {
 impl ConfigNodeContextDeclaration for ContextBindingsTestConfig {
     fn context_declarations(&self) -> NodeContextDeclarations {
         vec![ContextDeclaration::Produces {
+            domain: ContextDomain::TransportHeader,
             entry: self.produces.clone(),
         }]
         .into_iter()

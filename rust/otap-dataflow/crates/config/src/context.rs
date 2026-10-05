@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 /// The configured spelling is preserved. Equality, ordering, and hashing are
 /// case-sensitive; callers that need transport-header matching semantics must
 /// compare names case-insensitively at that boundary.
+/// Primitive names are local to their source domain, not globally unique.
 #[derive(
     Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, PartialOrd, Ord, Hash,
 )]
@@ -86,10 +87,10 @@ impl From<ContextEntryName> for String {
 
 /// The name of a context entry, one of two forms:
 ///
-///  1. Single unqualified name like `X-Tenant-Id` which must resolve
-///     to a regular non-composite context entry.
+///  1. Single name like `X-Tenant-Id` which resolves to a primitive within
+///     the source domain supplied by its containing policy or typed selector.
 ///  2. Qualified pair of names like `Customer:Workspace` which must
-///     resolve to a composite entry named field.
+///     resolve to a composite entry named field. Its definition supplies the domain.
 #[derive(
     Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, PartialOrd, Ord, Hash,
 )]
