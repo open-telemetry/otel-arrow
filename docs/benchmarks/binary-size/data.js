@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791226416097,
+  "lastUpdate": 1791227667400,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -53005,6 +53005,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 104.98,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "a.lockett@f5.com",
+            "name": "albertlockett",
+            "username": "albertlockett"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e5f88dd7bc6afb9ca95426372fbc75bbd8bfa7b4",
+          "message": "fix(OTAP query-engine): improve handling of optional columns in `apply attributes` expression evaluation (#4199)\n\n# Change summary\n\nThis PR corrects a class of bugs related to mis-handling of optional\ncolumns by the OTAP query-engine in OPL pipelines that process\nattributes.\n\n**Issue I**\nIf some expression did filtering and we could statically determine that\nthe column to compare was based some type, and that column was optional\nand not present, we'd fail with an execution error on the missing\ncolumn. E.g.::\n```\nlogs | apply attributes { \n  // determines that \"hello\" should be compared to \"str\" column. Fails if no \"str\" column present in attrs batch\n  where value != \"hello\"\n}\n```\n\n**Issue II**\nWhen filtering, if we _don't_ determine statically the column that\ncontains the value, we'd try to evaluate on a column called \"value\" and\nthis would result in an error (assignment handled this correctly).\n```\nlogs | apply attributes {\n  // unknown a-priori which column to use as \"value\".\n  where (value as Integer) > 6\n}\n```\n\n**Issue III**\nWhen the schema changed the position of a column due to the changing\npresence of an optional batch, the expression could fail.\n\nFor example, in expressions like:\n```\nset value = value * 2\nwhere value > 2\n```\nIn both these cases, we determine the column we're interested in is\n\"int\". We lazily plan the physical expression. The bug was that, we'd\nplan it on the schema of the first batch we saw. Say we had the\nfollowing batches:\n```\n// batch 0\ntype | str | int | bool\n-----|-----|-----|-----\nint  | -   |  0  | -\n\n// plan - \"int\" is at position 2\n\n// batch 1 - str column missing, now bool at position 2\ntype | int | bool\n-----|-----|----\nint  | 0   | -\n\n// exec error - cannot compare Int64 w/ Bool\n```\n\n**Issue IV**\n\nWe'd treat a missing values column as null. Unlike the other issues,\nthis doesn't result in an execution error - but its not the best\nbehaviour considering \"null\" attributes an be identified by the type of\nempty, meaning that a missing column is better to be assumed to have\ncontained default values.\n\n**Fix**\n\nThe fix for all of these is to do the same type of \"projection\" we when\nevaluating expressions in a non-attribute context. This means that we\ndetermine if all the columns referenced by the expression are present,\nand if so we put them in a consistent order for every batch.\n\nHowever for attributes this projection requires two extra steps: \n\nFirst, if the expression references the virtual \"value\" column, then we\nneed to look into the \"type\" column at runtime, figure out which column\ncontains all the values, and project this column with the name \"value\".\nThe assignment pipeline stage was doing this before this change, but now\nwe apply this systematically. Obviously this only works if the types are\nhomogenous, and if we encounter a batch with mixed-types we reject it\nwith an error (this is not new behaviour, and will likely be handled in\nfuture, although users have some capability to work-around it in OPL\ntoday).\n\nSecondly, if the value column referenced by the \"type\" column is\nmissing, we have a choice to make - treat as null or treat as the\ndefault value. With attributes, we usually encode null values as the\nempty type, meaning the better choice is to treat as the default value.\nSo in this case, we will create an array of default values for the\nexpression evaluation if one does not exist.\n\nSo because we need to do some massaging of the columns before we run the\nregular projection algorithm, we have projection now accept a new type\ncalled `ProjectionColumns` which is a mutable list of fields/columns\nwith helper methods. Before, this took as argument a RecordBatch but I\ndidn't want to have to create a new RecordBatch (including allocating\nthe arc for the schema) just to have something to pass to projection.\n\n**TL;DR:**\n- Moved the attribute value column projection out of the assignment\nmodule into something reusable that will be applied systematically\n(including for filtering predicates)\n- Slightly reworked the projection code to work on a new mutable type.\n\n## Related issue\n\n<!--We highly recommend correlation of every PR to an issue-->\n\n* Closes #4152\n\n## Validation\n\nUnit tests\n\n<!--How did you confirm your change has the intended effect?-->\n\n## User-facing changes\n\n<!--\nDescribe the impact, or write `None`.\nUser-facing changes require a `.chloggen/*.yaml` entry. If no entry is\nneeded,\ninclude `chore` in the PR title. Documentation-only changes are exempt.\n-->\n\nNo - bug fix\n\n---------\n\nCo-authored-by: Copilot Autofix powered by AI <175728472+Copilot@users.noreply.github.com>\nCo-authored-by: Joshua MacDonald <jmacd@users.noreply.github.com>",
+          "timestamp": "2026-10-05T18:05:29Z",
+          "tree_id": "36ddc4299dce485681f95ef45fabe9fb8dc535dd",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/e5f88dd7bc6afb9ca95426372fbc75bbd8bfa7b4"
+        },
+        "date": 1791227649385,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 85.39,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.85,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.11,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.01,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.98,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.8,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 72.57,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.96,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.56,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.16,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.5,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.36,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 117.85,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 105.04,
             "unit": "MB"
           }
         ]
