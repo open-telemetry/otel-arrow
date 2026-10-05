@@ -47,7 +47,6 @@ use crate::consts::{
     XXH128_FUNC_NAME,
 };
 use crate::error::{Error, Result};
-use crate::pipeline::assign::leaf_requires_dict_downcast;
 use crate::pipeline::expr::join::is_one_to_many;
 use crate::pipeline::expr::types::{
     ExprLogicalType, cast_expr, coerce_arithmetic, nested_struct_field_type, root_field_type,
@@ -2454,6 +2453,20 @@ fn rewrite_body_expr(planned: &mut PlannedOp, field_name: &str) {
             consts::ATTRIBUTE_BOOL => ExprLogicalType::Boolean,
             _ => ExprLogicalType::AnyValue,
         };
+    }
+}
+
+/// Returns the `downcast_dicts` option from the inner `LeafEval::DatafusionExpr` projection
+/// options, if this is an `Eval(DatafusionExpr)` node. Returns `false` otherwise.
+pub(crate) fn leaf_requires_dict_downcast(expr: &ScopedExpr) -> bool {
+    match expr {
+        ScopedExpr::Eval {
+            eval: LeafEval::DatafusionExpr {
+                projection_opts, ..
+            },
+            ..
+        } => projection_opts.downcast_dicts,
+        _ => false,
     }
 }
 
