@@ -58,7 +58,7 @@ async fn test_simple_data_point_filter() {
     let pipeline_expr = OplParser::parse_with_options(query, default_parser_options())
         .unwrap()
         .pipeline;
-    let mut pipeline = Pipeline::new(pipeline_expr);
+    let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
     let metrics = vec![
         Metric::build()
@@ -374,7 +374,7 @@ async fn test_filter_data_points_by_scalar_true() {
     let pipeline_expr = OplParser::parse_with_options(query, default_parser_options())
         .unwrap()
         .pipeline;
-    let mut pipeline = Pipeline::new(pipeline_expr);
+    let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
     let metrics = vec![
         Metric::build()
@@ -493,7 +493,7 @@ async fn run_all_data_points_dropped_test(query: &'static str) {
     let pipeline_expr = OplParser::parse_with_options(query, default_parser_options())
         .unwrap()
         .pipeline;
-    let mut pipeline = Pipeline::new(pipeline_expr);
+    let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
     let metrics = vec![
         Metric::build()
             .name("gauge_metric")
@@ -665,7 +665,7 @@ async fn test_filter_data_points_null_predicate_result() {
     let pipeline_expr = OplParser::parse_with_options(query, default_parser_options())
         .unwrap()
         .pipeline;
-    let mut pipeline = Pipeline::new(pipeline_expr);
+    let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
     let metrics = vec![
         Metric::build()
             .name("gauge_metric")
@@ -842,7 +842,7 @@ async fn run_filter_all_data_point_types_test(
     let pipeline_expr = OplParser::parse_with_options(query, default_parser_options())
         .unwrap()
         .pipeline;
-    let mut pipeline = Pipeline::new(pipeline_expr);
+    let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
     let mut number_dps = Vec::new();
     let mut hist_dps = Vec::new();
@@ -1221,7 +1221,7 @@ async fn run_scale_metric_test(query: &str, metrics: Vec<Metric>, expected: Vec<
     let pipeline_expr = OplParser::parse_with_options(query, default_parser_options())
         .unwrap()
         .pipeline;
-    let mut pipeline = Pipeline::new(pipeline_expr);
+    let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
     let result = pipeline
         .execute(otlp_to_otap(&OtlpProtoMessage::Metrics(to_metrics_data(
             metrics,
@@ -1478,7 +1478,7 @@ async fn test_scale_metric_rejects_exponential_histogram() {
     )
     .unwrap()
     .pipeline;
-    let mut pipeline = Pipeline::new(pipeline_expr);
+    let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
     let result = pipeline
         .execute(otlp_to_otap(&OtlpProtoMessage::Metrics(to_metrics_data(
             vec![metric],
@@ -1502,7 +1502,7 @@ async fn test_scale_metric_rejects_empty_metric() {
     )
     .unwrap()
     .pipeline;
-    let mut pipeline = Pipeline::new(pipeline_expr);
+    let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
     let result = pipeline
         .execute(otlp_to_otap(&OtlpProtoMessage::Metrics(to_metrics_data(
             vec![Metric::build().name("empty").unit("original").finish()],
@@ -1558,7 +1558,7 @@ async fn test_scale_metric_positive_fraction_without_unit() {
         OplParser::parse_with_options("metrics | scale_metric 0.5", default_parser_options())
             .unwrap()
             .pipeline;
-    let mut pipeline = Pipeline::new(pipeline_expr);
+    let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
     let metrics = vec![
         Metric::build()
@@ -1671,7 +1671,7 @@ async fn run_assign_to_all_data_point_type_test(
     let pipeline_expr = OplParser::parse_with_options(query, default_parser_options())
         .unwrap()
         .pipeline;
-    let mut pipeline = Pipeline::new(pipeline_expr);
+    let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
     let metrics = vec![
         Metric::build()
@@ -2055,7 +2055,7 @@ async fn test_filter_data_point_by_attribute_with_dict_u16_parent_ids() {
     let pipeline_expr = OplParser::parse_with_options(query, default_parser_options())
         .unwrap()
         .pipeline;
-    let mut pipeline = Pipeline::new(pipeline_expr);
+    let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
     // Create 300 data points, each with unique attribute values. This exceeds the 256
     // distinct value threshold for Dict<UInt8> keys, forcing the encoder to upgrade the
@@ -2609,7 +2609,7 @@ async fn test_not_supported_queries_return_error() {
             OplParser::parse_with_options(test_case.query, default_parser_options())
                 .unwrap()
                 .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let input_batch = otlp_to_otap(&OtlpProtoMessage::Metrics(to_metrics_data(metrics)));
         if pipeline.execute(input_batch).await.is_ok() {
             panic!(

@@ -1,0 +1,4 @@
+change_type: breaking
+component: query-engine
+note: Return planning error for invalid field for signal type, data point type, or attribute context.
+issues: [4070]

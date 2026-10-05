@@ -171,9 +171,9 @@ impl PipelineStage for FilterPipelineStage {
 
     fn supports_exec_on(&self, record_type: &RecordType) -> bool {
         match record_type {
-            RecordType::Signal => true,
+            RecordType::Signal(_) => true,
             RecordType::Attributes => true,
-            RecordType::Child(ChildRecordKind::DataPoint) => true,
+            RecordType::Child(ChildRecordKind::DataPoint, _) => true,
         }
     }
 }
@@ -739,7 +739,7 @@ mod test {
 
         async fn dropped_count(query: &str, records: &[LogRecord]) -> usize {
             let parser_result = KqlParser::parse(query).unwrap();
-            let mut pipeline = Pipeline::new(parser_result.pipeline);
+            let mut pipeline = Pipeline::try_new(parser_result.pipeline).unwrap();
             let mut exec_state = ExecutionState::new();
             let _ = pipeline
                 .execute_with_state(to_otap_logs(records.to_vec()), &mut exec_state)
@@ -765,7 +765,7 @@ mod test {
 
         // Counters accumulate across stages and reset on demand.
         let parser_result = KqlParser::parse("logs | where severity_text == \"ERROR\"").unwrap();
-        let mut pipeline = Pipeline::new(parser_result.pipeline);
+        let mut pipeline = Pipeline::try_new(parser_result.pipeline).unwrap();
         let mut exec_state = ExecutionState::new();
         let _ = pipeline
             .execute_with_state(to_otap_logs(log_records.clone()), &mut exec_state)
@@ -800,7 +800,7 @@ mod test {
         ];
 
         let parser_result = P::parse("logs | where attributes[\"x\"] == \"b\"").unwrap();
-        let mut pipeline = Pipeline::new(parser_result.pipeline);
+        let mut pipeline = Pipeline::try_new(parser_result.pipeline).unwrap();
         let result = pipeline.execute(otap_batch.clone()).await.unwrap();
         let result_otlp = otap_to_logs_data(result);
         pretty_assertions::assert_eq!(
@@ -810,7 +810,7 @@ mod test {
 
         // test same filter where the literal is on the left and the attribute is on the right
         let parser_result = P::parse("logs | where \"b\" == attributes[\"x\"]").unwrap();
-        let mut pipeline = Pipeline::new(parser_result.pipeline);
+        let mut pipeline = Pipeline::try_new(parser_result.pipeline).unwrap();
         let result = pipeline.execute(otap_batch.clone()).await.unwrap();
         let result_otlp = otap_to_logs_data(result);
         pretty_assertions::assert_eq!(
@@ -1751,7 +1751,7 @@ mod test {
 
         let input = to_otap_traces(spans.clone());
         let parser_result = P::parse("traces | where name == \"span2\"").unwrap();
-        let mut pipeline = Pipeline::new(parser_result.pipeline);
+        let mut pipeline = Pipeline::try_new(parser_result.pipeline).unwrap();
         let result = pipeline.execute(input).await.unwrap();
 
         // assert everything got filtered to the right size
@@ -1812,7 +1812,7 @@ mod test {
 
         let input = to_otap_traces(spans.clone());
         let parser_result = P::parse("traces | where attributes[\"key\"] == \"val2\"").unwrap();
-        let mut pipeline = Pipeline::new(parser_result.pipeline);
+        let mut pipeline = Pipeline::try_new(parser_result.pipeline).unwrap();
         let result = pipeline.execute(input).await.unwrap();
 
         let traces_data = otap_to_traces_data(result);
@@ -2002,7 +2002,7 @@ mod test {
 
         let input = to_otap_metrics(metrics.clone());
         let parser_result = P::parse("metrics | where name == \"metric1\"").unwrap();
-        let mut pipeline = Pipeline::new(parser_result.pipeline);
+        let mut pipeline = Pipeline::try_new(parser_result.pipeline).unwrap();
         let result = pipeline.execute(input).await.unwrap();
 
         // assert everything got filtered to the right size
@@ -2106,7 +2106,7 @@ mod test {
 
         let input = to_otap_metrics(metrics.clone());
         let parser_result = P::parse("metrics | where attributes[\"key\"] == \"val1\"").unwrap();
-        let mut pipeline = Pipeline::new(parser_result.pipeline);
+        let mut pipeline = Pipeline::try_new(parser_result.pipeline).unwrap();
         let result = pipeline.execute(input).await.unwrap();
 
         let metrics_data = otap_to_metrics_data(result);
@@ -2158,7 +2158,7 @@ mod test {
 
         let input = to_otap_traces(spans.clone());
         let parser_result = P::parse("traces | where name == \"span1\"").unwrap();
-        let mut pipeline = Pipeline::new(parser_result.pipeline);
+        let mut pipeline = Pipeline::try_new(parser_result.pipeline).unwrap();
         let result = pipeline.execute(input).await.unwrap();
 
         // since we've filtered for span1, which has no events, the event and event attrs batches
@@ -2303,7 +2303,7 @@ mod test {
         // check simple filter "and" properties
         let parser_result =
             P::parse("logs | where severity_text == \"ERROR\" and event_name == \"2\"").unwrap();
-        let mut pipeline = Pipeline::new(parser_result.pipeline);
+        let mut pipeline = Pipeline::try_new(parser_result.pipeline).unwrap();
         let result = pipeline.execute(otap_batch.clone()).await.unwrap();
         let result_otlp = otap_to_logs_data(result);
         pretty_assertions::assert_eq!(
@@ -2315,7 +2315,7 @@ mod test {
         let parser_result =
             P::parse("logs | where severity_text == \"ERROR\" and attributes[\"x\"] == \"c\"")
                 .unwrap();
-        let mut pipeline = Pipeline::new(parser_result.pipeline);
+        let mut pipeline = Pipeline::try_new(parser_result.pipeline).unwrap();
         let result = pipeline.execute(otap_batch.clone()).await.unwrap();
         let result_otlp = otap_to_logs_data(result);
         pretty_assertions::assert_eq!(
@@ -2327,7 +2327,7 @@ mod test {
         let parser_result =
             P::parse("logs | where attributes[\"y\"] == \"d\" and attributes[\"x\"] == \"a\"")
                 .unwrap();
-        let mut pipeline = Pipeline::new(parser_result.pipeline);
+        let mut pipeline = Pipeline::try_new(parser_result.pipeline).unwrap();
         let result = pipeline.execute(otap_batch.clone()).await.unwrap();
         let result_otlp = otap_to_logs_data(result);
         pretty_assertions::assert_eq!(
@@ -2379,7 +2379,7 @@ mod test {
         let parser_result =
             P::parse("logs | where severity_text == \"INFO\" or severity_text == \"ERROR\"")
                 .unwrap();
-        let mut pipeline = Pipeline::new(parser_result.pipeline);
+        let mut pipeline = Pipeline::try_new(parser_result.pipeline).unwrap();
         let result = pipeline.execute(otap_batch.clone()).await.unwrap();
         let result_otlp = otap_to_logs_data(result);
         pretty_assertions::assert_eq!(
@@ -2391,7 +2391,7 @@ mod test {
         let parser_result =
             P::parse("logs | where severity_text == \"ERROR\" or attributes[\"x\"] == \"c\"")
                 .unwrap();
-        let mut pipeline = Pipeline::new(parser_result.pipeline);
+        let mut pipeline = Pipeline::try_new(parser_result.pipeline).unwrap();
         let result = pipeline.execute(otap_batch.clone()).await.unwrap();
         let result_otlp = otap_to_logs_data(result);
         pretty_assertions::assert_eq!(
@@ -2403,7 +2403,7 @@ mod test {
         let parser_result =
             P::parse("logs | where attributes[\"x\"] == \"a\" or attributes[\"y\"] == \"e\"")
                 .unwrap();
-        let mut pipeline = Pipeline::new(parser_result.pipeline);
+        let mut pipeline = Pipeline::try_new(parser_result.pipeline).unwrap();
         let result = pipeline.execute(otap_batch.clone()).await.unwrap();
         let result_otlp = otap_to_logs_data(result);
         pretty_assertions::assert_eq!(
@@ -2890,7 +2890,7 @@ mod test {
         ];
 
         let parser_result = P::parse("logs | where event_name == \"5\"").unwrap();
-        let mut pipeline = Pipeline::new(parser_result.pipeline);
+        let mut pipeline = Pipeline::try_new(parser_result.pipeline).unwrap();
         let result = pipeline
             .execute(to_otap_logs(log_records.clone()))
             .await
@@ -2900,7 +2900,7 @@ mod test {
 
         // assert we have the correct behaviour when filtering by attributes as well
         let parser_result = KqlParser::parse("logs | where attributes[\"a\"] == \"1234\"").unwrap();
-        let mut pipeline = Pipeline::new(parser_result.pipeline);
+        let mut pipeline = Pipeline::try_new(parser_result.pipeline).unwrap();
         let result = pipeline
             .execute(to_otap_logs(log_records.clone()))
             .await
@@ -2921,7 +2921,7 @@ mod test {
     async fn test_empty_batch<P: Parser>() {
         let input = OtapArrowRecords::Logs(Logs::default());
         let parser_result = P::parse("logs | where event_name == \"5\"").unwrap();
-        let mut pipeline = Pipeline::new(parser_result.pipeline);
+        let mut pipeline = Pipeline::try_new(parser_result.pipeline).unwrap();
         let result = pipeline.execute(input.clone()).await.unwrap();
         assert_eq!(result, input);
     }
@@ -2954,7 +2954,7 @@ mod test {
 
         // check that if there are no attributes to filter by then, we get the empty batch
         let parser_result = P::parse("logs | where attributes[\"a\"] == \"1234\"").unwrap();
-        let mut pipeline = Pipeline::new(parser_result.pipeline);
+        let mut pipeline = Pipeline::try_new(parser_result.pipeline).unwrap();
         let result = pipeline
             .execute(to_otap_logs(log_records.clone()))
             .await
@@ -2964,7 +2964,7 @@ mod test {
         // check that the same result happens when filtering by resource and scope attrs
         let parser_result =
             P::parse("logs | where resource.attributes[\"a\"] == \"1234\"").unwrap();
-        let mut pipeline = Pipeline::new(parser_result.pipeline);
+        let mut pipeline = Pipeline::try_new(parser_result.pipeline).unwrap();
         let result = pipeline
             .execute(to_otap_logs(log_records.clone()))
             .await
@@ -2974,7 +2974,7 @@ mod test {
         // check that the same result happens when filtering by resource and scope attrs
         let parser_result =
             P::parse("logs | where instrumentation_scope.attributes[\"a\"] == \"1234\"").unwrap();
-        let mut pipeline = Pipeline::new(parser_result.pipeline);
+        let mut pipeline = Pipeline::try_new(parser_result.pipeline).unwrap();
         let result = pipeline
             .execute(to_otap_logs(log_records.clone()))
             .await
@@ -2988,7 +2988,7 @@ mod test {
             "logs | where not(instrumentation_scope.attributes[\"a\"] == \"1234\")",
         ] {
             let parser_result = P::parse(inverted_attrs_filter).unwrap();
-            let mut pipeline = Pipeline::new(parser_result.pipeline);
+            let mut pipeline = Pipeline::try_new(parser_result.pipeline).unwrap();
             let input = to_otap_logs(log_records.clone());
             let result = pipeline.execute(input.clone()).await.unwrap();
             assert_eq!(result, input);
@@ -3357,7 +3357,7 @@ mod test {
         assert!(logs_rb.column_by_name(consts::SEVERITY_TEXT).is_none());
 
         let parser_result = P::parse(&format!("logs | where severity_text != {null_lit}")).unwrap();
-        let mut pipeline = Pipeline::new(parser_result.pipeline);
+        let mut pipeline = Pipeline::try_new(parser_result.pipeline).unwrap();
         let result = pipeline
             .execute(to_otap_logs(log_records.clone()))
             .await
@@ -3367,7 +3367,7 @@ mod test {
 
         // assert we do the right thing where the null is on the left and value on the right
         let parser_result = P::parse(&format!("logs | where {null_lit} != severity_text")).unwrap();
-        let mut pipeline = Pipeline::new(parser_result.pipeline);
+        let mut pipeline = Pipeline::try_new(parser_result.pipeline).unwrap();
         let result = pipeline
             .execute(to_otap_logs(log_records.clone()))
             .await
@@ -3629,7 +3629,7 @@ mod test {
             "logs | where instrumentation_scope.name != {null_lit}"
         ))
         .unwrap();
-        let mut pipeline = Pipeline::new(parser_result.pipeline);
+        let mut pipeline = Pipeline::try_new(parser_result.pipeline).unwrap();
         let result = pipeline
             .execute(otlp_to_otap(&OtlpProtoMessage::Logs(input)))
             .await
@@ -3800,7 +3800,7 @@ mod test {
 
         let parser_result =
             P::parse(&format!("logs | where attributes[\"x\"] != {null_lit}")).unwrap();
-        let mut pipeline = Pipeline::new(parser_result.pipeline);
+        let mut pipeline = Pipeline::try_new(parser_result.pipeline).unwrap();
         let result = pipeline
             .execute(to_otap_logs(log_records.clone()))
             .await
@@ -3811,7 +3811,7 @@ mod test {
         // assert we do the right thing where the null is on the left and value on the right
         let parser_result =
             P::parse(&format!("logs | where {null_lit} != attributes[\"x\"]")).unwrap();
-        let mut pipeline = Pipeline::new(parser_result.pipeline);
+        let mut pipeline = Pipeline::try_new(parser_result.pipeline).unwrap();
         let result = pipeline
             .execute(to_otap_logs(log_records.clone()))
             .await
@@ -4838,7 +4838,7 @@ mod test {
 
         let query = "logs | where attributes[\"a\"] == \"1234\"";
         let parser_result = P::parse(query).unwrap();
-        let mut pipeline = Pipeline::new(parser_result.pipeline);
+        let mut pipeline = Pipeline::try_new(parser_result.pipeline).unwrap();
 
         // no attrs to start
         let batch1 = to_otap_logs(vec![LogRecord::build().event_name("a").finish()]);
@@ -4895,7 +4895,7 @@ mod test {
         // assert the behaviour is correct when nothing is filtered out
         let otap_input = to_otap_logs(log_records);
         let parser_result = KqlParser::parse("logs | where severity_text == \"INFO\"").unwrap();
-        let mut pipeline = Pipeline::new(parser_result.pipeline);
+        let mut pipeline = Pipeline::try_new(parser_result.pipeline).unwrap();
         let result = pipeline.execute(otap_input.clone()).await.unwrap();
 
         assert_eq!(result, otap_input)
@@ -5131,6 +5131,7 @@ mod test {
             pipeline_expr,
             PipelineOptions {
                 filter_attribute_keys_case_sensitive: false,
+                ..Default::default()
             },
         );
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(log_records.clone())));
@@ -5169,6 +5170,7 @@ mod test {
             pipeline_expr,
             PipelineOptions {
                 filter_attribute_keys_case_sensitive: false,
+                ..Default::default()
             },
         );
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(log_records.clone())));
@@ -5202,6 +5204,7 @@ mod test {
             pipeline_expr,
             PipelineOptions {
                 filter_attribute_keys_case_sensitive: false,
+                ..Default::default()
             },
         );
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(log_records.clone())));
@@ -5225,6 +5228,7 @@ mod test {
             pipeline_expr,
             PipelineOptions {
                 filter_attribute_keys_case_sensitive: false,
+                ..Default::default()
             },
         );
         let result = pipeline.execute(input).await.unwrap();
@@ -5250,7 +5254,7 @@ mod test {
 
         let query = "logs | where attributes[\"key1\"] =~ \"val1\"";
         let pipeline_expr = P::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(log_records.clone())));
         let result = pipeline.execute(input.clone()).await.unwrap();
 
@@ -5266,7 +5270,7 @@ mod test {
         // check it also works w/ the literal on the left
         let query = "logs | where \"val1\" =~ attributes[\"key1\"]";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let result = pipeline.execute(input.clone()).await.unwrap();
 
         let OtlpProtoMessage::Logs(result) = otap_to_otlp(&result) else {
@@ -5305,7 +5309,7 @@ mod test {
 
         let query = "logs | where attributes[\"key1\"] =~ \"val%1_1\"";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(log_records.clone())));
         let result = pipeline.execute(input.clone()).await.unwrap();
 
@@ -5321,7 +5325,7 @@ mod test {
         // check it also escapes correctly when the literal is on the left
         let query = "logs | where  \"val%1_1\" =~ attributes[\"key1\"]";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let result = pipeline.execute(input.clone()).await.unwrap();
 
         let OtlpProtoMessage::Logs(result) = otap_to_otlp(&result) else {
@@ -5354,6 +5358,7 @@ mod test {
             pipeline_expr,
             PipelineOptions {
                 filter_attribute_keys_case_sensitive: false,
+                ..Default::default()
             },
         );
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(log_records.clone())));
@@ -5389,6 +5394,7 @@ mod test {
             pipeline_expr,
             PipelineOptions {
                 filter_attribute_keys_case_sensitive: false,
+                ..Default::default()
             },
         );
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(log_records.clone())));
@@ -6017,7 +6023,7 @@ mod test {
 
         let query = "signals | where is Log";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let logs_input = otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(log_records)));
         let logs_ouptut = pipeline.execute(logs_input.clone()).await.unwrap();
@@ -6044,7 +6050,7 @@ mod test {
 
         let query = "signals | where not(is Log)";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let logs_input = otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(log_records)));
         let logs_ouptut = pipeline.execute(logs_input).await.unwrap();
@@ -6153,7 +6159,7 @@ mod test {
 
         let query = "signals | where is Gauge";
         let parser_result = OplParser::parse(query).unwrap();
-        let mut pipeline = Pipeline::new(parser_result.pipeline);
+        let mut pipeline = Pipeline::try_new(parser_result.pipeline).unwrap();
 
         let logs_result = pipeline.execute(to_otap_logs(logs_batch)).await.unwrap();
         assert!(logs_result.is_empty());
@@ -6374,7 +6380,7 @@ mod test {
 
         let parser_result =
             OplParser::parse(r#"traces | where attributes["complex"]["name"] == "b""#).unwrap();
-        let mut pipeline = Pipeline::new(parser_result.pipeline);
+        let mut pipeline = Pipeline::try_new(parser_result.pipeline).unwrap();
         let result = pipeline
             .execute(to_otap_traces(spans.clone()))
             .await

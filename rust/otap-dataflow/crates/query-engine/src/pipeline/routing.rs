@@ -115,7 +115,7 @@ mod test {
     use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::LogRecord;
     use otel_arrow_dfe_pdata::testing::round_trip::to_otap_logs;
 
-    use crate::pipeline::Pipeline;
+    use crate::pipeline::{Pipeline, PipelineOptions, SignalContext, SignalKind};
 
     use super::*;
 
@@ -158,7 +158,13 @@ mod test {
             .with_expressions(vec![DataExpression::Output(output_expr)])
             .build()
             .unwrap();
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::new_with_options(
+            pipeline_expr,
+            PipelineOptions {
+                signal_context: SignalContext::Single(SignalKind::Logs),
+                ..Default::default()
+            },
+        );
 
         let mut exec_state = ExecutionState::new();
         let test_router = TestRouter { routed: vec![] };
@@ -203,7 +209,13 @@ mod test {
             .with_expressions(vec![DataExpression::Output(output_expr)])
             .build()
             .unwrap();
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::new_with_options(
+            pipeline_expr,
+            PipelineOptions {
+                signal_context: SignalContext::Single(SignalKind::Logs),
+                ..Default::default()
+            },
+        );
         let mut exec_state = ExecutionState::new();
         let otap_batch = OtapArrowRecords::Logs(Logs::default());
         let result = pipeline

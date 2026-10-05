@@ -33,24 +33,122 @@ use crate::pipeline::assign::{AssignPipelineStage, Assignment};
 use crate::pipeline::attributes::AttributeTransformPipelineStage;
 use crate::pipeline::conditional::{ConditionalPipelineStage, ConditionalPipelineStageBranch};
 use crate::pipeline::expr::planner::ExprPlanner;
+use crate::pipeline::expr::types::MetricDataPointType;
 use crate::pipeline::expr::{ChildRecordKind, DataScope, RecordScope, ScopedExpr};
 use crate::pipeline::filter::FilterPipelineStage;
 use crate::pipeline::fork::{ForkPipelineStage, ForkPipelineStageBranch};
 use crate::pipeline::routing::RouteToPipelineStage;
 use crate::pipeline::scale_metric::ScaleMetricPipelineStage;
 use crate::pipeline::{BoxedPipelineStage, PipelineStage};
+use otel_arrow_dfe_pdata::otlp::metrics::MetricType;
+
+/// Which signal types may flow through the current pipeline context.
+///
+/// This is used during planning to validate that field references are valid for the
+/// signal type(s) that the pipeline may encounter.
+#[derive(Clone, Debug)]
+pub enum SignalContext {
+    /// All three signal types -- source was `signals`.
+    /// Field validation uses intersection semantics: only fields common to all
+    /// signal types are valid.
+    All,
+
+    /// Exactly one signal type -- source was `logs`, `metrics`, `traces`,
+    /// or narrowed via `if (is Log) { ... }`, etc.
+    Single(SignalKind),
+}
+
+/// Identifies which signal type a pipeline is scoped to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SignalKind {
+    /// Log records
+    Logs,
+    /// Metric records, optionally narrowed to a specific metric type
+    Metrics(MetricTypeContext),
+    /// Trace span records
+    Traces,
+}
+
+impl std::fmt::Display for SignalKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Logs => write!(f, "logs"),
+            Self::Metrics(MetricTypeContext::All) => write!(f, "metrics"),
+            Self::Metrics(MetricTypeContext::Single(mt)) => write!(f, "metrics ({mt:?})"),
+            Self::Traces => write!(f, "traces"),
+        }
+    }
+}
+
+/// Which concrete metric types may flow through a metrics pipeline.
+///
+/// For example, `gauges` narrows to `Single(Gauge)`, while `metrics` gives `All`.
+/// This context is used to derive `DataPointContext` when entering a nested
+/// `apply data_points { ... }` pipeline.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MetricTypeContext {
+    /// All metric types (gauges, sums, histograms, exponential histograms, summaries)
+    All,
+    /// A single concrete metric type
+    Single(MetricType),
+}
+
+/// Which metric data point types may flow through a data_points pipeline.
+#[derive(Clone, Debug)]
+pub enum DataPointContext {
+    /// All four data point types.
+    /// Field validation uses intersection semantics: only fields common to all
+    /// data point types are valid.
+    All,
+
+    /// A single data point type (narrowed by metric type source or smart cast).
+    Single(MetricDataPointType),
+}
+
+impl DataPointContext {
+    /// Derive the data point context from a metric type context.
+    ///
+    /// Each metric type maps to a specific data point type:
+    /// - Gauge/Sum -> NumberDataPoint
+    /// - Histogram -> HistogramDataPoint
+    /// - ExponentialHistogram -> ExponentialHistogramDataPoint
+    /// - Summary -> SummaryDataPoint
+    pub fn from_metric_type_context(ctx: &MetricTypeContext) -> Self {
+        match ctx {
+            MetricTypeContext::All => Self::All,
+            MetricTypeContext::Single(mt) => Self::Single(match mt {
+                MetricType::Gauge | MetricType::Sum => MetricDataPointType::NumberDataPoint,
+                MetricType::Histogram => MetricDataPointType::HistogramDataPoint,
+                MetricType::ExponentialHistogram => {
+                    MetricDataPointType::ExponentialHistogramDataPoint
+                }
+                MetricType::Summary => MetricDataPointType::SummaryDataPoint,
+                // Empty is not a concrete type -- treat as all
+                MetricType::Empty => return Self::All,
+            }),
+        }
+    }
+}
 
 /// Identifier for what will be treated as a record in the pipeline that is being planned.
 ///
 /// Typically this is used in cases where we plan a nested pipeline on some child element
 /// via an expression like `apply attributes { ... }` or `apply data_points { ... }`
+///
+/// Carries context about which signal types or data point types are valid, enabling
+/// field validation during planning.
 #[derive(Clone, Debug)]
 pub enum RecordType {
-    /// Logs, Metrics, Traces
-    Signal,
+    /// Logs, Metrics, Traces -- with context about which signal types are valid
+    Signal(SignalContext),
 
-    /// A repeated, child field such as metric data points
-    Child(ChildRecordKind),
+    /// A repeated, child field such as metric data points.
+    ///
+    /// The `DataPointContext` carries which data point types are valid (only meaningful
+    /// when the child kind is `DataPoint`). It lives here rather than on
+    /// `ChildRecordKind` because `ChildRecordKind` is shared with `RecordScope`
+    /// (a runtime type that does not need validation context).
+    Child(ChildRecordKind, DataPointContext),
 
     /// Attributes treated as elements of the stream
     Attributes,
@@ -62,7 +160,15 @@ impl RecordType {
     }
 
     pub fn is_data_point(&self) -> bool {
-        matches!(self, Self::Child(ChildRecordKind::DataPoint))
+        matches!(self, Self::Child(ChildRecordKind::DataPoint, _))
+    }
+
+    /// Returns a reference to the signal context, if this is a Signal record type.
+    pub fn signal_context(&self) -> Option<&SignalContext> {
+        match self {
+            Self::Signal(ctx) => Some(ctx),
+            _ => None,
+        }
     }
 }
 
@@ -82,9 +188,14 @@ pub struct PipelinePlanner {
 }
 
 impl PipelinePlanner {
-    /// creates a new instance of `PipelinePlanner`
+    /// Creates a new instance of `PipelinePlanner` with `SignalContext::All`.
+    ///
+    /// This means the planner will use intersection semantics for field validation,
+    /// only accepting fields common to all signal types. Use `new_with_record_type`
+    /// to specify a narrower signal context.
+    #[allow(dead_code)]
     pub const fn new() -> Self {
-        Self::new_with_record_type(RecordType::Signal)
+        Self::new_with_record_type(RecordType::Signal(SignalContext::All))
     }
 
     pub const fn new_with_record_type(record_type: RecordType) -> Self {
@@ -97,6 +208,49 @@ impl PipelinePlanner {
     pub const fn with_filter_attribute_keys_case_sensitive(mut self, val: bool) -> Self {
         self.filter_attribute_keys_case_sensitive = val;
         self
+    }
+
+    /// Attempt to narrow the record type based on a branch condition (smart-cast).
+    ///
+    /// If the condition is a type check like `is Log`, `is Metric`, `is Span`, or a
+    /// metric subtype check like `is Gauge`, the returned `RecordType` will carry a
+    /// narrowed `SignalContext`. Otherwise returns the current record type unchanged.
+    fn try_narrow_record_type(&self, condition: &LogicalExpression) -> RecordType {
+        if let LogicalExpression::EqualTo(eq) = condition
+            && let (
+                ScalarExpression::GetRecordType(_),
+                ScalarExpression::Static(StaticScalarExpression::String(typename)),
+            ) = (eq.get_left(), eq.get_right())
+        {
+            let narrowed = match typename.get_value() {
+                "Log" => Some(SignalContext::Single(SignalKind::Logs)),
+                "Metric" => Some(SignalContext::Single(SignalKind::Metrics(
+                    MetricTypeContext::All,
+                ))),
+                "Span" => Some(SignalContext::Single(SignalKind::Traces)),
+                // Metric subtypes narrow to both the signal and metric type
+                "Gauge" => Some(SignalContext::Single(SignalKind::Metrics(
+                    MetricTypeContext::Single(MetricType::Gauge),
+                ))),
+                "Sum" => Some(SignalContext::Single(SignalKind::Metrics(
+                    MetricTypeContext::Single(MetricType::Sum),
+                ))),
+                "Histogram" => Some(SignalContext::Single(SignalKind::Metrics(
+                    MetricTypeContext::Single(MetricType::Histogram),
+                ))),
+                "ExponentialHistogram" => Some(SignalContext::Single(SignalKind::Metrics(
+                    MetricTypeContext::Single(MetricType::ExponentialHistogram),
+                ))),
+                "Summary" => Some(SignalContext::Single(SignalKind::Metrics(
+                    MetricTypeContext::Single(MetricType::Summary),
+                ))),
+                _ => None,
+            };
+            if let Some(signal_ctx) = narrowed {
+                return RecordType::Signal(signal_ctx);
+            }
+        }
+        self.record_type.clone()
     }
 
     /// Create pipeline stages from the pipeline definition.
@@ -311,7 +465,18 @@ impl PipelinePlanner {
                     let mut default_branch = None;
                     let mut pipeline_branches = vec![];
                     for (i, branch) in branch_expr.get_branches().iter().enumerate() {
-                        let pipeline_stages = self.plan_data_exprs(
+                        // Try to narrow the signal context based on the branch
+                        // condition (smart-cast). For example, if the condition is
+                        // `is Log`, the inner pipeline uses SignalContext::Single(Logs).
+                        let narrowed_record_type = match branch.get_condition() {
+                            Some(condition) => self.try_narrow_record_type(condition),
+                            None => self.record_type.clone(),
+                        };
+                        let branch_planner = Self::new_with_record_type(narrowed_record_type)
+                            .with_filter_attribute_keys_case_sensitive(
+                                self.filter_attribute_keys_case_sensitive,
+                            );
+                        let pipeline_stages = branch_planner.plan_data_exprs(
                             branch.get_expressions(),
                             functions,
                             session_ctx,
@@ -501,8 +666,8 @@ impl PipelinePlanner {
 
         let record_scope =
             match self.record_type {
-                RecordType::Signal => RecordScope::Signal,
-                RecordType::Child(child) => RecordScope::Child(child),
+                RecordType::Signal(_) => RecordScope::Signal,
+                RecordType::Child(child, _) => RecordScope::Child(child),
                 RecordType::Attributes => return Err(Error::InvalidPipelineError {
                     cause:
                         "rename operation not supported on nested pipeline applied to attributes"
@@ -616,8 +781,8 @@ impl PipelinePlanner {
         let mut pipeline_stages: Vec<Box<dyn PipelineStage>> = vec![];
 
         let record_scope = match self.record_type {
-            RecordType::Signal => RecordScope::Signal,
-            RecordType::Child(child) => RecordScope::Child(child),
+            RecordType::Signal(_) => RecordScope::Signal,
+            RecordType::Child(child, _) => RecordScope::Child(child),
             RecordType::Attributes => return Err(Error::InvalidPipelineError {
                 cause:
                     "remove attributes operation not supported on nested pipeline applied to attributes"
@@ -923,8 +1088,8 @@ impl PipelinePlanner {
                     }
 
                     let record_scope = match &self.record_type {
-                        RecordType::Child(child) => RecordScope::Child(*child),
-                        RecordType::Signal => RecordScope::Signal,
+                        RecordType::Child(child, _) => RecordScope::Child(*child),
+                        RecordType::Signal(_) => RecordScope::Signal,
                         RecordType::Attributes => {
                             return Err(Error::InvalidPipelineError {
                                 cause: "Cannot apply nested pipelines to field of attributes"
@@ -944,7 +1109,19 @@ impl PipelinePlanner {
 
                     let nested_pipeline_record_type = match apply_source {
                         ApplySource::Attributes(_) => RecordType::Attributes,
-                        ApplySource::DataPoints => RecordType::Child(ChildRecordKind::DataPoint),
+                        ApplySource::DataPoints => {
+                            // Derive the data point context from the current
+                            // signal context. If the pipeline was narrowed to a
+                            // specific metric type (e.g. `gauges`), the data
+                            // point context will be narrowed accordingly.
+                            let dp_ctx = match &self.record_type {
+                                RecordType::Signal(SignalContext::Single(SignalKind::Metrics(
+                                    mt_ctx,
+                                ))) => DataPointContext::from_metric_type_context(mt_ctx),
+                                _ => DataPointContext::All,
+                            };
+                            RecordType::Child(ChildRecordKind::DataPoint, dp_ctx)
+                        }
                     };
 
                     let planner = Self::new_with_record_type(nested_pipeline_record_type);
@@ -1150,7 +1327,7 @@ impl ColumnAccessor {
             });
         };
 
-        if let RecordType::Child(child_kind) = record_type {
+        if let RecordType::Child(child_kind, _) = record_type {
             return Err(Error::NotYetSupportedError {
                 message: format!(
                     "parent struct {struct_column_name} access not yet supported for {child_kind:?}"
@@ -1204,8 +1381,8 @@ impl ColumnAccessor {
                 match column_name {
                     ATTRIBUTES_FIELD_NAME => {
                         let record_scope = match record_type {
-                            RecordType::Signal => RecordScope::Signal,
-                            RecordType::Child(child) => RecordScope::Child(*child),
+                            RecordType::Signal(_) => RecordScope::Signal,
+                            RecordType::Child(child, _) => RecordScope::Child(*child),
                             RecordType::Attributes => {
                                 return Err(Error::InvalidPipelineError {
                                     cause: format!("{column_name} is not a field on attributes"),
@@ -1274,13 +1451,22 @@ mod test {
 
     use crate::pipeline::{Pipeline, planner::PipelinePlanner};
 
+    use super::{RecordType, SignalContext, SignalKind};
+
+    /// Create a planner for log signal pipelines (used in tests).
+    fn logs_planner() -> PipelinePlanner {
+        PipelinePlanner::new_with_record_type(RecordType::Signal(SignalContext::Single(
+            SignalKind::Logs,
+        )))
+    }
+
     #[test]
     fn test_combines_set_expressions_for_root() {
         let pipeline_expr =
             OplParser::parse("logs | set severity_number = 5 | set severity_text = \"INFO\"")
                 .unwrap()
                 .pipeline;
-        let planner = PipelinePlanner::new();
+        let planner = logs_planner();
         let stages = planner
             .plan_stages(
                 &pipeline_expr,
@@ -1297,7 +1483,7 @@ mod test {
             OplParser::parse("logs | set attributes[\"x\"] = 5 | set attributes[\"y\"] = 6")
                 .unwrap()
                 .pipeline;
-        let planner = PipelinePlanner::new();
+        let planner = logs_planner();
         let stages = planner
             .plan_stages(
                 &pipeline_expr,
@@ -1314,7 +1500,7 @@ mod test {
             OplParser::parse("logs | set attributes[\"x\"] = 5 | set attributes[\"x\"] = 6")
                 .unwrap()
                 .pipeline;
-        let planner = PipelinePlanner::new();
+        let planner = logs_planner();
         let stages = planner
             .plan_stages(
                 &pipeline_expr,
@@ -1331,7 +1517,7 @@ mod test {
             OplParser::parse("logs | set severity_text=\"INFO\" | set severity_text=\"ERROR\"")
                 .unwrap()
                 .pipeline;
-        let planner = PipelinePlanner::new();
+        let planner = logs_planner();
         let stages = planner
             .plan_stages(
                 &pipeline_expr,
@@ -1348,7 +1534,7 @@ mod test {
             OplParser::parse("logs | set severity_text=\"INFO\" | set event_name=severity_text")
                 .unwrap()
                 .pipeline;
-        let planner = PipelinePlanner::new();
+        let planner = logs_planner();
         let stages = planner
             .plan_stages(
                 &pipeline_expr,
@@ -1365,7 +1551,7 @@ mod test {
             OplParser::parse("logs | set severity_text=\"INFO\" | set event_name=event_name")
                 .unwrap()
                 .pipeline;
-        let planner = PipelinePlanner::new();
+        let planner = logs_planner();
         let stages = planner
             .plan_stages(
                 &pipeline_expr,
@@ -1383,7 +1569,7 @@ mod test {
         )
         .unwrap()
         .pipeline;
-        let planner = PipelinePlanner::new();
+        let planner = logs_planner();
         let stages = planner
             .plan_stages(
                 &pipeline_expr,
@@ -1402,7 +1588,7 @@ mod test {
         )
         .unwrap()
         .pipeline;
-        let planner = PipelinePlanner::new();
+        let planner = logs_planner();
         let stages = planner
             .plan_stages(
                 &pipeline_expr,
@@ -1420,7 +1606,7 @@ mod test {
         )
         .unwrap()
         .pipeline;
-        let planner = PipelinePlanner::new();
+        let planner = logs_planner();
         let stages = planner
             .plan_stages(
                 &pipeline_expr,
@@ -1429,5 +1615,22 @@ mod test {
             )
             .unwrap();
         assert_eq!(stages.len(), 2)
+    }
+
+    /// Scenario: automatic signal context inference from the OPL query source.
+    /// Guarantees: `Pipeline::try_new()` auto-infers logs signal context from query
+    /// source and accepts logs-only fields without explicit signal context.
+    #[tokio::test]
+    async fn test_auto_inference_from_query_source() {
+        let pipeline_expr = OplParser::parse("logs | where severity_number > 0")
+            .unwrap()
+            .pipeline;
+        // Pipeline::try_new() should auto-infer SignalContext::Single(Logs) from the
+        // "logs" source keyword, so planning should succeed for logs-only fields.
+        let otap_batch = OtapArrowRecords::Logs(Logs::default());
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
+        // This would fail if auto-inference didn't work, since severity_number
+        // is logs-only and the default context would be All.
+        let _ = pipeline.execute(otap_batch).await.unwrap();
     }
 }
