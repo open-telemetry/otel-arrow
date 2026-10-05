@@ -315,6 +315,11 @@ attribute tables do not exist.
 
 ## Telemetry
 
+These tables list telemetry emitted directly by this node. Common engine
+runtime metric sets may also be attached by the pipeline telemetry policy.
+
+### Metric Sets
+
 Input PData message volume is reported by the engine through
 `channel.receiver.messages` and is not duplicated by the exporter.
 
