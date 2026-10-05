@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use super::*;
+use super::super::metrics::OtlpHttpExporterErrorType;
 use crate::exporters::otlp_http_exporter::{
     CompletedExport, ServiceRequestError, finalize_completed_export,
     metrics::OtlpHttpExporterMetrics, notify_nack_with_diagnostics,
@@ -22,14 +22,16 @@ use otel_arrow_dfe_pdata::OtlpProtoBytes;
 use otel_arrow_dfe_pdata::views::otlp::bytes::logs::RawLogRecord;
 use otel_arrow_dfe_pdata_views::views::common::{AnyValueView, AttributeView, ValueType};
 use otel_arrow_dfe_pdata_views::views::logs::LogRecordView;
-use otel_arrow_dfe_telemetry::diagnostics::{DiagnosticErrorKind, SignalSet};
+use otel_arrow_dfe_telemetry::diagnostics::{
+    DiagnosticErrorKind, DiagnosticTracker, SignalDiagnostics,
+};
 use otel_arrow_dfe_telemetry::event::{LogEvent, ObservedEvent, ObservedEventReporter};
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use otel_arrow_dfe_telemetry::self_tracing::{LogContext, LogRecord};
 use otel_arrow_dfe_telemetry::tracing_init::{ProviderSetup, TracingSetup};
 use serde_json::{Map, Value, json};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tracing::Level;
 use tracing::field::{Field, Visit};
 
@@ -168,7 +170,7 @@ fn delivery_event_contract_and_sampled_failures() {
     let (_, capture) = with_capture(|| {
         let start = Instant::now();
         let at = |seconds| start + Duration::from_secs(seconds);
-        let mut diagnostics = SignalSet::<DeliveryDiagnostic>::default();
+        let mut diagnostics = SignalDiagnostics::<OtlpHttpExporterErrorType>::default();
         let logs = diagnostics.signal(SignalType::Logs);
         otel_summary_warn!(
             at: at(0),

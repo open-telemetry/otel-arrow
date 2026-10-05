@@ -1075,7 +1075,7 @@ async fn finalize_completed_export(
 
     // Success is normally silent and only selects confirmed recovery. Failure
     // details are formatted only when the sampler selects an ordinary warning.
-    let delivery_diagnostic = metrics.diagnostics.signal(signal_type);
+    let delivery_diagnostic = metrics.delivery.signal(signal_type);
     match &result {
         Ok(()) => otel_summary_recover!(
             delivery_diagnostic,
@@ -3238,7 +3238,7 @@ mod test {
             });
             let report = setup
                 .with_subscriber(|| {
-                    metrics.diagnostics.signal(SignalType::Logs).failure(
+                    metrics.delivery.signal(SignalType::Logs).failure(
                         Instant::now() + Duration::from_secs(60),
                         OtlpHttpExporterErrorType::PartialRejection,
                     )
@@ -3332,7 +3332,7 @@ mod test {
         let later = Instant::now() + Duration::from_secs(60);
         assert!(
             metrics
-                .diagnostics
+                .delivery
                 .signal(SignalType::Logs)
                 .success(later, later)
                 .is_none()
