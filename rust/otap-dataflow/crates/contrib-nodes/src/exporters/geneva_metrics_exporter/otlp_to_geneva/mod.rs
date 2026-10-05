@@ -411,6 +411,12 @@ where
     if point.flags().no_recorded_value() {
         return Ok(MapPointResult::rejected(None));
     }
+    let Some(value) = point.value() else {
+        return Ok(MapPointResult::rejected(None));
+    };
+    if matches!(value, Value::Integer(value) if value < 0) {
+        return Ok(MapPointResult::rejected(None));
+    }
     let valid_name = valid_metric_name(name);
     let (context, overflow) = point_context(
         point.attributes(),
@@ -430,7 +436,7 @@ where
         point.time_unix_nano(),
         &mut sampling_type,
     )?;
-    let values = match point.value().unwrap_or(Value::Integer(0)) {
+    let values = match value {
         Value::Double(value) => MetricValues::Double(NumericValues {
             min: None,
             max: None,
@@ -482,6 +488,11 @@ where
     if point.flags().no_recorded_value() || !valid_explicit_histogram(point) {
         return Ok(MapPointResult::rejected(None));
     }
+    let Some(sum) = point.sum() else {
+        return Ok(MapPointResult::rejected(None));
+    };
+    let min = point.min();
+    let max = point.max();
     let valid_name = valid_metric_name(name);
     let (context, overflow) = point_context(
         point.attributes(),
@@ -495,8 +506,13 @@ where
         return Ok(MapPointResult::rejected(overflow));
     };
     let histogram = explicit_histogram(point);
-    let mut sampling_type =
-        MIN | MAX | SUM | COUNT | HISTOGRAM | metric_type | METRIC_ORIGIN_OPEN_TELEMETRY;
+    let mut sampling_type = SUM | COUNT | HISTOGRAM | metric_type | METRIC_ORIGIN_OPEN_TELEMETRY;
+    if min.is_some() {
+        sampling_type |= MIN;
+    }
+    if max.is_some() {
+        sampling_type |= MAX;
+    }
     let exemplars = map_point_exemplars(
         config,
         point.exemplars(),
@@ -516,10 +532,10 @@ where
             dimensions: context.dimensions,
             sampling_type,
             values: MetricValues::Double(NumericValues {
-                min: Some(point.min().unwrap_or(0.0)),
-                max: Some(point.max().unwrap_or(0.0)),
-                sum: Some(point.sum().unwrap_or(0.0)),
-                count: Some(narrow_scalar_count(point.count())),
+                min,
+                max,
+                sum: Some(sum),
+                count: Some(point.count()),
                 milliseconds: None,
                 histogram,
             }),
@@ -546,6 +562,11 @@ where
     {
         return Ok(MapPointResult::rejected(None));
     }
+    let Some(sum) = point.sum() else {
+        return Ok(MapPointResult::rejected(None));
+    };
+    let min = point.min();
+    let max = point.max();
     let Some(mut positive) = sparse_buckets(point.positive()) else {
         return Ok(MapPointResult::rejected(None));
     };
@@ -585,8 +606,13 @@ where
     let Some(context) = context else {
         return Ok(MapPointResult::rejected(overflow));
     };
-    let mut sampling_type =
-        MIN | MAX | SUM | COUNT | HISTOGRAM | metric_type | METRIC_ORIGIN_OPEN_TELEMETRY;
+    let mut sampling_type = SUM | COUNT | HISTOGRAM | metric_type | METRIC_ORIGIN_OPEN_TELEMETRY;
+    if min.is_some() {
+        sampling_type |= MIN;
+    }
+    if max.is_some() {
+        sampling_type |= MAX;
+    }
     let exemplars = map_point_exemplars(
         config,
         point.exemplars(),
@@ -606,10 +632,10 @@ where
             dimensions: context.dimensions,
             sampling_type,
             values: MetricValues::Double(NumericValues {
-                min: Some(point.min().unwrap_or(0.0)),
-                max: Some(point.max().unwrap_or(0.0)),
-                sum: Some(point.sum().unwrap_or(0.0)),
-                count: Some(narrow_scalar_count(point.count())),
+                min,
+                max,
+                sum: Some(sum),
+                count: Some(point.count()),
                 milliseconds: None,
                 histogram: Some(MetricHistogram::Exponential(
                     super::encoder::ExponentialHistogram {
@@ -756,10 +782,6 @@ fn unix_nanos_to_dotnet_seconds_ceil(value: u64) -> Option<u64> {
 
 fn unix_nanos_to_dotnet_ticks(value: u64) -> Option<u64> {
     (value <= i64::MAX as u64).then_some(value / NANOS_PER_DOTNET_TICK)
-}
-
-fn narrow_scalar_count(value: u64) -> u64 {
-    u64::from(value as u32)
 }
 
 #[cfg(test)]
@@ -1124,8 +1146,41 @@ mod tests {
         );
     }
 
+    /// Scenario: OTLP number points omit their value or contain a negative integer unsupported by the Geneva unsigned integer representation.
+    /// Guarantees: Invalid points are rejected instead of being published as zero or a wrapped unsigned value.
+    #[test]
+    fn rejects_missing_and_negative_integer_number_values() {
+        let scope = scope_with_metrics(vec![
+            gauge_metric("valid", gauge_point(Vec::new())),
+            gauge_metric(
+                "missing",
+                NumberDataPoint {
+                    time_unix_nano: TEST_TIME_NANOS,
+                    value: None,
+                    ..Default::default()
+                },
+            ),
+            gauge_metric(
+                "negative",
+                NumberDataPoint {
+                    time_unix_nano: TEST_TIME_NANOS,
+                    value: Some(number_data_point::Value::AsInt(-1)),
+                    ..Default::default()
+                },
+            ),
+        ]);
+
+        let mapped = map_request(&request(Vec::new(), scope), &config(), TEST_TIME_NANOS)
+            .expect("request should map");
+
+        assert_eq!(mapped.rejected_data_points, 2);
+        assert_eq!(mapped.publications.len(), 1);
+        assert_eq!(mapped.publications[0].packet.metrics.len(), 1);
+        assert_eq!(mapped.publications[0].packet.metrics[0].name, "valid");
+    }
+
     /// Scenario: OTLP explicit and exponential histograms contain valid distributions.
-    /// Guarantees: Dense OTLP buckets become the expected explicit and sparse exponential histogram models.
+    /// Guarantees: Dense OTLP buckets become the expected histogram models, and absent optional extrema remain absent.
     #[test]
     fn maps_histogram_distributions() {
         let explicit_point = HistogramDataPoint {
@@ -1215,8 +1270,8 @@ mod tests {
         assert_eq!(
             metrics[1].values,
             MetricValues::Double(NumericValues {
-                min: Some(0.0),
-                max: Some(0.0),
+                min: None,
+                max: None,
                 sum: Some(9.0),
                 count: Some(6),
                 milliseconds: None,
@@ -1231,24 +1286,59 @@ mod tests {
             })
         );
         assert_eq!(metrics[0].sampling_type & (MIN | MAX), MIN | MAX);
-        assert_eq!(metrics[1].sampling_type & (MIN | MAX), MIN | MAX);
+        assert_eq!(metrics[1].sampling_type & (MIN | MAX), 0);
         assert_eq!(metrics[0].sampling_type & IS_RAW_DATA, 0);
         assert_eq!(metrics[1].sampling_type & IS_RAW_DATA, 0);
     }
 
-    /// Scenario: Explicit and exponential histogram scalar counts exceed the Geneva u32 wire field.
-    /// Guarantees: Counts are narrowed to the wire representation while distributions and all metrics remain encodable.
+    /// Scenario: Explicit and exponential OTLP histograms omit the sum required by the Geneva metric representation.
+    /// Guarantees: Histograms with no sum are rejected instead of publishing a fabricated zero.
     #[test]
-    fn narrows_large_histogram_scalar_counts() {
+    fn rejects_histograms_without_sums() {
+        let scope = scope_with_metrics(vec![
+            gauge_metric("valid", gauge_point(Vec::new())),
+            otlp_metric(
+                "explicit",
+                metric::Data::Histogram(Histogram {
+                    data_points: vec![HistogramDataPoint {
+                        time_unix_nano: TEST_TIME_NANOS,
+                        count: 1,
+                        bucket_counts: vec![1],
+                        sum: None,
+                        ..Default::default()
+                    }],
+                    aggregation_temporality: AggregationTemporality::Cumulative as i32,
+                }),
+            ),
+            otlp_metric(
+                "exponential",
+                metric::Data::ExponentialHistogram(ExponentialHistogram {
+                    data_points: vec![ExponentialHistogramDataPoint {
+                        time_unix_nano: TEST_TIME_NANOS,
+                        count: 1,
+                        zero_count: 1,
+                        sum: None,
+                        ..Default::default()
+                    }],
+                    aggregation_temporality: AggregationTemporality::Cumulative as i32,
+                }),
+            ),
+        ]);
+
+        let mapped = map_request(&request(Vec::new(), scope), &config(), TEST_TIME_NANOS)
+            .expect("request should map");
+
+        assert_eq!(mapped.rejected_data_points, 2);
+        assert_eq!(mapped.publications.len(), 1);
+        assert_eq!(mapped.publications[0].packet.metrics.len(), 1);
+        assert_eq!(mapped.publications[0].packet.metrics[0].name, "valid");
+    }
+
+    /// Scenario: Explicit and exponential histogram scalar counts exceed the Geneva u32 wire field.
+    /// Guarantees: Oversized counts are rejected instead of wrapping while other valid metrics remain publishable.
+    #[test]
+    fn rejects_large_histogram_scalar_counts() {
         let count = u64::from(u32::MAX) + 1;
-        for (input, expected) in [
-            (0, 0),
-            (u64::from(u32::MAX), u64::from(u32::MAX)),
-            (count, 0),
-            (u64::MAX, u64::from(u32::MAX)),
-        ] {
-            assert_eq!(narrow_scalar_count(input), expected);
-        }
         let scope = scope_with_metrics(vec![
             gauge_metric("valid", gauge_point(Vec::new())),
             otlp_metric(
@@ -1281,18 +1371,12 @@ mod tests {
         let mapped = map_request(&request(Vec::new(), scope), &config(), TEST_TIME_NANOS)
             .expect("request should map");
 
-        assert_eq!(mapped.rejected_data_points, 0);
+        assert_eq!(mapped.rejected_data_points, 2);
         assert_eq!(mapped.publications.len(), 1);
-        assert_eq!(mapped.publications[0].packet.metrics.len(), 3);
+        assert_eq!(mapped.publications[0].packet.metrics.len(), 1);
         assert_eq!(mapped.publications[0].packet.metrics[0].name, "valid");
-        for metric in &mapped.publications[0].packet.metrics[1..] {
-            let MetricValues::Double(values) = &metric.values else {
-                panic!("histogram should use double values");
-            };
-            assert_eq!(values.count, Some(0));
-        }
         let _ = super::super::encoder::encode(&mapped.publications[0].packet)
-            .expect("all mapped metrics should encode");
+            .expect("remaining mapped metrics should encode");
     }
 
     /// Scenario: Receive and datapoint timestamps share a fractional whole-second boundary.
@@ -1337,7 +1421,7 @@ mod tests {
     }
 
     /// Scenario: An explicit histogram reports only scalar count and sum without a bucket distribution.
-    /// Guarantees: The mapped metric retains scalar fields without a histogram body and remains encodable.
+    /// Guarantees: The mapped metric retains supplied scalar fields without inventing extrema and remains encodable.
     #[test]
     fn maps_distributionless_explicit_histogram_as_scalar_only() {
         let point = HistogramDataPoint {
@@ -1360,13 +1444,13 @@ mod tests {
 
         assert_eq!(
             metric.sampling_type & (MIN | MAX | HISTOGRAM | IS_RAW_DATA),
-            MIN | MAX | HISTOGRAM
+            HISTOGRAM
         );
         assert_eq!(
             metric.values,
             MetricValues::Double(NumericValues {
-                min: Some(0.0),
-                max: Some(0.0),
+                min: None,
+                max: None,
                 sum: Some(12.5),
                 count: Some(17),
                 milliseconds: None,
