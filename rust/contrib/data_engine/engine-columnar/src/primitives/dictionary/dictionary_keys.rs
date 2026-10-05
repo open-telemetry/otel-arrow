@@ -186,70 +186,37 @@ pub enum DictionaryArrowKeyArray {
 }
 
 impl DictionaryArrowKeyArray {
-    pub fn len(&self) -> usize {
+    pub fn as_array(&self) -> &dyn Array {
         match self {
-            DictionaryArrowKeyArray::Int8(a) => a.len(),
-            DictionaryArrowKeyArray::Int16(a) => a.len(),
-            DictionaryArrowKeyArray::Int32(a) => a.len(),
-            DictionaryArrowKeyArray::Int64(a) => a.len(),
-            DictionaryArrowKeyArray::UInt8(a) => a.len(),
-            DictionaryArrowKeyArray::UInt16(a) => a.len(),
-            DictionaryArrowKeyArray::UInt32(a) => a.len(),
-            DictionaryArrowKeyArray::UInt64(a) => a.len(),
+            DictionaryArrowKeyArray::Int8(a) => a,
+            DictionaryArrowKeyArray::Int16(a) => a,
+            DictionaryArrowKeyArray::Int32(a) => a,
+            DictionaryArrowKeyArray::Int64(a) => a,
+            DictionaryArrowKeyArray::UInt8(a) => a,
+            DictionaryArrowKeyArray::UInt16(a) => a,
+            DictionaryArrowKeyArray::UInt32(a) => a,
+            DictionaryArrowKeyArray::UInt64(a) => a,
         }
+    }
+
+    pub fn len(&self) -> usize {
+        self.as_array().len()
     }
 
     pub fn is_empty(&self) -> bool {
-        match self {
-            DictionaryArrowKeyArray::Int8(a) => a.is_empty(),
-            DictionaryArrowKeyArray::Int16(a) => a.is_empty(),
-            DictionaryArrowKeyArray::Int32(a) => a.is_empty(),
-            DictionaryArrowKeyArray::Int64(a) => a.is_empty(),
-            DictionaryArrowKeyArray::UInt8(a) => a.is_empty(),
-            DictionaryArrowKeyArray::UInt16(a) => a.is_empty(),
-            DictionaryArrowKeyArray::UInt32(a) => a.is_empty(),
-            DictionaryArrowKeyArray::UInt64(a) => a.is_empty(),
-        }
+        self.as_array().is_empty()
     }
 
     pub fn is_null(&self, key_index: usize) -> bool {
-        match self {
-            DictionaryArrowKeyArray::Int8(a) => a.is_null(key_index),
-            DictionaryArrowKeyArray::Int16(a) => a.is_null(key_index),
-            DictionaryArrowKeyArray::Int32(a) => a.is_null(key_index),
-            DictionaryArrowKeyArray::Int64(a) => a.is_null(key_index),
-            DictionaryArrowKeyArray::UInt8(a) => a.is_null(key_index),
-            DictionaryArrowKeyArray::UInt16(a) => a.is_null(key_index),
-            DictionaryArrowKeyArray::UInt32(a) => a.is_null(key_index),
-            DictionaryArrowKeyArray::UInt64(a) => a.is_null(key_index),
-        }
+        self.as_array().is_null(key_index)
     }
 
     pub fn null_count(&self) -> usize {
-        match self {
-            DictionaryArrowKeyArray::Int8(a) => a.null_count(),
-            DictionaryArrowKeyArray::Int16(a) => a.null_count(),
-            DictionaryArrowKeyArray::Int32(a) => a.null_count(),
-            DictionaryArrowKeyArray::Int64(a) => a.null_count(),
-            DictionaryArrowKeyArray::UInt8(a) => a.null_count(),
-            DictionaryArrowKeyArray::UInt16(a) => a.null_count(),
-            DictionaryArrowKeyArray::UInt32(a) => a.null_count(),
-            DictionaryArrowKeyArray::UInt64(a) => a.null_count(),
-        }
+        self.as_array().null_count()
     }
 
     pub fn nulls(&self) -> Option<NullBuffer> {
-        (match self {
-            DictionaryArrowKeyArray::Int8(a) => a.nulls(),
-            DictionaryArrowKeyArray::Int16(a) => a.nulls(),
-            DictionaryArrowKeyArray::Int32(a) => a.nulls(),
-            DictionaryArrowKeyArray::Int64(a) => a.nulls(),
-            DictionaryArrowKeyArray::UInt8(a) => a.nulls(),
-            DictionaryArrowKeyArray::UInt16(a) => a.nulls(),
-            DictionaryArrowKeyArray::UInt32(a) => a.nulls(),
-            DictionaryArrowKeyArray::UInt64(a) => a.nulls(),
-        })
-        .cloned()
+        self.as_array().nulls().cloned()
     }
 
     pub fn data_type(&self) -> DataType {
@@ -288,12 +255,6 @@ impl DictionaryArrowKeyArray {
 
 macro_rules! impl_from_key_array {
     ($arrow_ty:ty, $variant:ident) => {
-        impl From<PrimitiveArray<$arrow_ty>> for DictionaryArrowKeyArray {
-            fn from(value: PrimitiveArray<$arrow_ty>) -> Self {
-                DictionaryArrowKeyArray::$variant(value)
-            }
-        }
-
         impl From<PrimitiveArray<$arrow_ty>> for DictionaryKeyArray {
             fn from(value: PrimitiveArray<$arrow_ty>) -> DictionaryKeyArray {
                 DictionaryKeyArray::KeyArray(DictionaryArrowKeyArray::$variant(value))

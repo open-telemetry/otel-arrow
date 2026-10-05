@@ -1,11 +1,11 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use std::{rc::Rc, sync::Arc};
+use std::rc::Rc;
 
 use ahash::{AHashMap, RandomState};
 use arrow::{array::*, buffer::*, datatypes::*};
-use chrono::{TimeZone, Utc};
+use chrono::{DateTime, TimeZone, Utc};
 use indexmap::IndexSet;
 use thiserror::Error;
 
@@ -17,7 +17,7 @@ pub type IndexLookup = Option<AHashMap<usize, Option<usize>>>;
 
 #[derive(Debug, Clone)]
 pub enum DictionaryValueArray<'a> {
-    Array(Arc<dyn Array>),
+    Array(DictionaryArrowValueArray),
     Vec(Rc<Vec<ValueOrRef<'a>>>),
     Set(Rc<ValueOrRefSet<'a>>),
     Boolean,
@@ -53,7 +53,7 @@ impl DictionaryValueArray<'_> {
 
     pub fn nulls(&self) -> Option<NullBuffer> {
         match self {
-            DictionaryValueArray::Array(a) => a.nulls().cloned(),
+            DictionaryValueArray::Array(a) => a.nulls(),
             DictionaryValueArray::Vec(a) => {
                 build_null_buffer(a.iter().map(|value| matches!(value, ValueOrRef::Null)))
             }
@@ -81,7 +81,7 @@ impl DictionaryValueArray<'_> {
 impl<'a> DictionaryValueArray<'a> {
     pub fn get_value_at(&self, index: usize) -> Result<ValueOrRef<'a>, ValueError> {
         match self {
-            DictionaryValueArray::Array(a) => get_value_from_array(a, index),
+            DictionaryValueArray::Array(a) => a.get_value_at(index),
             DictionaryValueArray::Vec(a) => Ok(a.get(index).cloned().unwrap_or(ValueOrRef::Null)),
             DictionaryValueArray::Set(a) => {
                 Ok(a.get_index(index).cloned().unwrap_or(ValueOrRef::Null))
@@ -119,17 +119,244 @@ impl PartialEq for DictionaryValueArray<'_> {
     }
 }
 
-impl<'a, T: Array + 'a> From<&T> for DictionaryValueArray<'a> {
-    fn from(value: &T) -> DictionaryValueArray<'a> {
-        DictionaryValueArray::Array((value as &dyn Array).slice(0, value.len()))
+#[derive(Debug, Clone)]
+pub enum DictionaryArrowValueArray {
+    Int8(PrimitiveArray<Int8Type>),
+    Int16(PrimitiveArray<Int16Type>),
+    Int32(PrimitiveArray<Int32Type>),
+    Int64(PrimitiveArray<Int64Type>),
+
+    UInt8(PrimitiveArray<UInt8Type>),
+    UInt16(PrimitiveArray<UInt16Type>),
+    UInt32(PrimitiveArray<UInt32Type>),
+    UInt64(PrimitiveArray<UInt64Type>),
+
+    Float16(PrimitiveArray<Float16Type>),
+    Float32(PrimitiveArray<Float32Type>),
+    Float64(PrimitiveArray<Float64Type>),
+
+    Utf8(StringArray),
+    LargeUtf8(LargeStringArray),
+
+    FixedSizeBinary(FixedSizeBinaryArray),
+
+    TimestampSecond(PrimitiveArray<TimestampSecondType>),
+    TimestampMillisecond(PrimitiveArray<TimestampMillisecondType>),
+    TimestampMicrosecond(PrimitiveArray<TimestampMicrosecondType>),
+    TimestampNanosecond(PrimitiveArray<TimestampNanosecondType>),
+}
+
+impl DictionaryArrowValueArray {
+    pub fn as_array(&self) -> &dyn Array {
+        match self {
+            DictionaryArrowValueArray::Int8(a) => a,
+            DictionaryArrowValueArray::Int16(a) => a,
+            DictionaryArrowValueArray::Int32(a) => a,
+            DictionaryArrowValueArray::Int64(a) => a,
+            DictionaryArrowValueArray::UInt8(a) => a,
+            DictionaryArrowValueArray::UInt16(a) => a,
+            DictionaryArrowValueArray::UInt32(a) => a,
+            DictionaryArrowValueArray::UInt64(a) => a,
+            DictionaryArrowValueArray::Float16(a) => a,
+            DictionaryArrowValueArray::Float32(a) => a,
+            DictionaryArrowValueArray::Float64(a) => a,
+            DictionaryArrowValueArray::Utf8(a) => a,
+            DictionaryArrowValueArray::LargeUtf8(a) => a,
+            DictionaryArrowValueArray::FixedSizeBinary(a) => a,
+            DictionaryArrowValueArray::TimestampSecond(a) => a,
+            DictionaryArrowValueArray::TimestampMillisecond(a) => a,
+            DictionaryArrowValueArray::TimestampMicrosecond(a) => a,
+            DictionaryArrowValueArray::TimestampNanosecond(a) => a,
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.as_array().len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.as_array().is_empty()
+    }
+
+    pub fn is_null(&self, key_index: usize) -> bool {
+        self.as_array().is_null(key_index)
+    }
+
+    pub fn null_count(&self) -> usize {
+        self.as_array().null_count()
+    }
+
+    pub fn nulls(&self) -> Option<NullBuffer> {
+        self.as_array().nulls().cloned()
+    }
+
+    fn get_value_at(&self, index: usize) -> Result<ValueOrRef<'static>, ValueError> {
+        if index >= self.len() || self.nulls().map(|n| n.is_null(index)).unwrap_or(false) {
+            return Ok(ValueOrRef::Null);
+        }
+
+        unsafe {
+            match self {
+                DictionaryArrowValueArray::Int8(array) => {
+                    Ok(ValueOrRef::Integer(array.value_unchecked(index) as i64))
+                }
+                DictionaryArrowValueArray::Int16(array) => {
+                    Ok(ValueOrRef::Integer(array.value_unchecked(index) as i64))
+                }
+                DictionaryArrowValueArray::Int32(array) => {
+                    Ok(ValueOrRef::Integer(array.value_unchecked(index) as i64))
+                }
+                DictionaryArrowValueArray::Int64(array) => {
+                    Ok(ValueOrRef::Integer(array.value_unchecked(index)))
+                }
+
+                DictionaryArrowValueArray::UInt8(array) => {
+                    Ok(ValueOrRef::Integer(array.value_unchecked(index) as i64))
+                }
+                DictionaryArrowValueArray::UInt16(array) => {
+                    Ok(ValueOrRef::Integer(array.value_unchecked(index) as i64))
+                }
+                DictionaryArrowValueArray::UInt32(array) => {
+                    Ok(ValueOrRef::Integer(array.value_unchecked(index) as i64))
+                }
+                DictionaryArrowValueArray::UInt64(array) => {
+                    let value = array.value_unchecked(index);
+
+                    match TryInto::<i64>::try_into(value) {
+                        Ok(v) => Ok(ValueOrRef::Integer(v)),
+                        Err(_) => Err(ValueError::IntegerConversionFailure {
+                            original_value: value,
+                        }),
+                    }
+                }
+                DictionaryArrowValueArray::Float16(array) => {
+                    Ok(ValueOrRef::Double(array.value_unchecked(index).into()))
+                }
+                DictionaryArrowValueArray::Float32(array) => {
+                    Ok(ValueOrRef::Double(array.value_unchecked(index) as f64))
+                }
+                DictionaryArrowValueArray::Float64(array) => {
+                    Ok(ValueOrRef::Double(array.value_unchecked(index)))
+                }
+
+                DictionaryArrowValueArray::Utf8(strings) => Ok(ValueOrRef::String(
+                    StringValueOrRef::new_utf8_unvalidated({
+                        let offsets = strings.value_offsets();
+                        let end = *offsets.get_unchecked(index + 1) as usize;
+                        let start = *offsets.get_unchecked(index) as usize;
+                        strings.values().slice_with_length(start, end - start)
+                    }),
+                )),
+                DictionaryArrowValueArray::LargeUtf8(strings) => Ok(ValueOrRef::String(
+                    StringValueOrRef::new_utf8_unvalidated({
+                        let offsets = strings.value_offsets();
+                        let end = *offsets.get_unchecked(index + 1) as usize;
+                        let start = *offsets.get_unchecked(index) as usize;
+                        strings.values().slice_with_length(start, end - start)
+                    }),
+                )),
+
+                DictionaryArrowValueArray::TimestampSecond(array) => {
+                    let value = array.value_unchecked(index);
+                    Self::finalize_date_time_conversion(
+                        value,
+                        TimeUnit::Second,
+                        Utc.timestamp_opt(value, 0).single(),
+                    )
+                }
+                DictionaryArrowValueArray::TimestampMillisecond(array) => {
+                    let value = array.value_unchecked(index);
+                    Self::finalize_date_time_conversion(
+                        value,
+                        TimeUnit::Millisecond,
+                        Utc.timestamp_millis_opt(value).single(),
+                    )
+                }
+                DictionaryArrowValueArray::TimestampMicrosecond(array) => {
+                    let value = array.value_unchecked(index);
+                    Self::finalize_date_time_conversion(
+                        value,
+                        TimeUnit::Microsecond,
+                        Utc.timestamp_micros(value).single(),
+                    )
+                }
+                DictionaryArrowValueArray::TimestampNanosecond(array) => {
+                    let value = array.value_unchecked(index);
+                    Self::finalize_date_time_conversion(
+                        value,
+                        TimeUnit::Nanosecond,
+                        Some(Utc.timestamp_nanos(value)),
+                    )
+                }
+
+                DictionaryArrowValueArray::FixedSizeBinary(bytes) => {
+                    Ok(ValueOrRef::Array(ArrayValueOrRef::Buffer({
+                        let start = bytes.value_offset(index) as usize;
+                        let buffer = bytes
+                            .values()
+                            .slice_with_length(start, bytes.value_length() as usize)
+                            .clone();
+                        BufferArray::new_u8(buffer)
+                    })))
+                }
+            }
+        }
+    }
+
+    fn finalize_date_time_conversion(
+        original_value: i64,
+        time_unit: TimeUnit,
+        value: Option<DateTime<Utc>>,
+    ) -> Result<ValueOrRef<'static>, ValueError> {
+        value.map(|value| ValueOrRef::DateTime(value.into())).ok_or(
+            ValueError::TimestampConversionFailure {
+                original_value,
+                time_unit,
+            },
+        )
     }
 }
 
-impl<'a> From<&dyn Array> for DictionaryValueArray<'a> {
-    fn from(value: &dyn Array) -> DictionaryValueArray<'a> {
-        DictionaryValueArray::Array(value.slice(0, value.len()))
-    }
+macro_rules! impl_from_value_array {
+    ($arrow_ty:ty, $variant:ident) => {
+        impl From<$arrow_ty> for DictionaryValueArray<'static> {
+            fn from(value: $arrow_ty) -> DictionaryValueArray<'static> {
+                DictionaryValueArray::Array(DictionaryArrowValueArray::$variant(value))
+            }
+        }
+
+        impl From<&$arrow_ty> for DictionaryValueArray<'static> {
+            fn from(value: &$arrow_ty) -> DictionaryValueArray<'static> {
+                DictionaryValueArray::Array(DictionaryArrowValueArray::$variant(value.clone()))
+            }
+        }
+    };
 }
+
+impl_from_value_array!(PrimitiveArray<Int8Type>, Int8);
+impl_from_value_array!(PrimitiveArray<Int16Type>, Int16);
+impl_from_value_array!(PrimitiveArray<Int32Type>, Int32);
+impl_from_value_array!(PrimitiveArray<Int64Type>, Int64);
+impl_from_value_array!(PrimitiveArray<UInt8Type>, UInt8);
+impl_from_value_array!(PrimitiveArray<UInt16Type>, UInt16);
+impl_from_value_array!(PrimitiveArray<UInt32Type>, UInt32);
+impl_from_value_array!(PrimitiveArray<UInt64Type>, UInt64);
+impl_from_value_array!(PrimitiveArray<Float16Type>, Float16);
+impl_from_value_array!(PrimitiveArray<Float32Type>, Float32);
+impl_from_value_array!(PrimitiveArray<Float64Type>, Float64);
+impl_from_value_array!(PrimitiveArray<TimestampSecondType>, TimestampSecond);
+impl_from_value_array!(
+    PrimitiveArray<TimestampMillisecondType>,
+    TimestampMillisecond
+);
+impl_from_value_array!(
+    PrimitiveArray<TimestampMicrosecondType>,
+    TimestampMicrosecond
+);
+impl_from_value_array!(PrimitiveArray<TimestampNanosecondType>, TimestampNanosecond);
+impl_from_value_array!(FixedSizeBinaryArray, FixedSizeBinary);
+impl_from_value_array!(StringArray, Utf8);
+impl_from_value_array!(LargeStringArray, LargeUtf8);
 
 impl<'a> From<ValueOrRefSet<'a>> for DictionaryValueArray<'a> {
     fn from(value: ValueOrRefSet<'a>) -> DictionaryValueArray<'a> {
@@ -156,169 +383,6 @@ pub enum ValueError {
     },
     #[error("Index value '{index_value}' could not be converted into 'Boolean'")]
     InvalidBoolean { index_value: usize },
-}
-
-fn get_value_from_array(
-    value: &Arc<dyn Array>,
-    index: usize,
-) -> Result<ValueOrRef<'static>, ValueError> {
-    if index >= value.len() || value.nulls().map(|n| n.is_null(index)).unwrap_or(false) {
-        return Ok(ValueOrRef::Null);
-    }
-
-    unsafe {
-        match value.data_type() {
-            DataType::Boolean => Ok(ValueOrRef::Boolean(
-                value.as_boolean().value_unchecked(index),
-            )),
-            DataType::Int8 => Ok(ValueOrRef::Integer(
-                *value
-                    .as_primitive::<Int8Type>()
-                    .values()
-                    .get_unchecked(index) as i64,
-            )),
-            DataType::Int16 => Ok(ValueOrRef::Integer(
-                *value
-                    .as_primitive::<Int16Type>()
-                    .values()
-                    .get_unchecked(index) as i64,
-            )),
-            DataType::Int32 => Ok(ValueOrRef::Integer(
-                *value
-                    .as_primitive::<Int32Type>()
-                    .values()
-                    .get_unchecked(index) as i64,
-            )),
-            DataType::Int64 => Ok(ValueOrRef::Integer(
-                *value
-                    .as_primitive::<Int64Type>()
-                    .values()
-                    .get_unchecked(index),
-            )),
-
-            DataType::UInt8 => Ok(ValueOrRef::Integer(
-                *value
-                    .as_primitive::<UInt8Type>()
-                    .values()
-                    .get_unchecked(index) as i64,
-            )),
-            DataType::UInt16 => Ok(ValueOrRef::Integer(
-                *value
-                    .as_primitive::<UInt16Type>()
-                    .values()
-                    .get_unchecked(index) as i64,
-            )),
-            DataType::UInt32 => Ok(ValueOrRef::Integer(
-                *value
-                    .as_primitive::<UInt32Type>()
-                    .values()
-                    .get_unchecked(index) as i64,
-            )),
-            DataType::UInt64 => {
-                let value = *value
-                    .as_primitive::<UInt64Type>()
-                    .values()
-                    .get_unchecked(index);
-
-                match TryInto::<i64>::try_into(value) {
-                    Ok(v) => Ok(ValueOrRef::Integer(v)),
-                    Err(_) => Err(ValueError::IntegerConversionFailure {
-                        original_value: value,
-                    }),
-                }
-            }
-            DataType::Float16 => Ok(ValueOrRef::Double(
-                (*value
-                    .as_primitive::<Float16Type>()
-                    .values()
-                    .get_unchecked(index))
-                .into(),
-            )),
-            DataType::Float32 => Ok(ValueOrRef::Double(
-                *value
-                    .as_primitive::<Float32Type>()
-                    .values()
-                    .get_unchecked(index) as f64,
-            )),
-            DataType::Float64 => Ok(ValueOrRef::Double(
-                *value
-                    .as_primitive::<Float64Type>()
-                    .values()
-                    .get_unchecked(index),
-            )),
-
-            DataType::Utf8 => Ok(ValueOrRef::String(StringValueOrRef::new_utf8_unvalidated(
-                {
-                    let strings = value.as_string::<i32>();
-                    let offsets = strings.value_offsets();
-                    let end = *offsets.get_unchecked(index + 1) as usize;
-                    let start = *offsets.get_unchecked(index) as usize;
-                    strings.values().slice_with_length(start, end - start)
-                },
-            ))),
-            DataType::LargeUtf8 => Ok(ValueOrRef::String(StringValueOrRef::new_utf8_unvalidated(
-                {
-                    let strings = value.as_string::<i64>();
-                    let offsets = strings.value_offsets();
-                    let end = *offsets.get_unchecked(index + 1) as usize;
-                    let start = *offsets.get_unchecked(index) as usize;
-                    strings.values().slice_with_length(start, end - start)
-                },
-            ))),
-
-            DataType::Timestamp(time_unit, _) => {
-                let (original_value, converted) = match time_unit {
-                    TimeUnit::Second => {
-                        let value = *value
-                            .as_primitive::<TimestampSecondType>()
-                            .values()
-                            .get_unchecked(index);
-                        (value, Utc.timestamp_opt(value, 0).single())
-                    }
-                    TimeUnit::Millisecond => {
-                        let value = *value
-                            .as_primitive::<TimestampMillisecondType>()
-                            .values()
-                            .get_unchecked(index);
-                        (value, Utc.timestamp_millis_opt(value).single())
-                    }
-                    TimeUnit::Microsecond => {
-                        let value = *value
-                            .as_primitive::<TimestampMicrosecondType>()
-                            .values()
-                            .get_unchecked(index);
-                        (value, Utc.timestamp_micros(value).single())
-                    }
-                    TimeUnit::Nanosecond => {
-                        let value = *value
-                            .as_primitive::<TimestampNanosecondType>()
-                            .values()
-                            .get_unchecked(index);
-                        (value, Some(Utc.timestamp_nanos(value)))
-                    }
-                };
-
-                converted
-                    .map(|value| ValueOrRef::DateTime(value.into()))
-                    .ok_or(ValueError::TimestampConversionFailure {
-                        original_value,
-                        time_unit: *time_unit,
-                    })
-            }
-
-            DataType::FixedSizeBinary(_) => Ok(ValueOrRef::Array(ArrayValueOrRef::Buffer({
-                let bytes = value.as_fixed_size_binary();
-                let start = bytes.value_offset(index) as usize;
-                let buffer = bytes
-                    .values()
-                    .slice_with_length(start, bytes.value_length() as usize)
-                    .clone();
-                BufferArray::new_u8(buffer)
-            }))),
-
-            d => todo!("{d} is not implemented"),
-        }
-    }
 }
 
 fn build_null_buffer(nulls: impl ExactSizeIterator<Item = bool>) -> Option<NullBuffer> {

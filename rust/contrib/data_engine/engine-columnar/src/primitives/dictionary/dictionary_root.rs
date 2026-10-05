@@ -124,15 +124,15 @@ impl<'a> Dictionary<'a> {
         Self { keys, values }
     }
 
-    pub fn from_array<K: ArrowDictionaryKeyType, V: ArrowPrimitiveType>(
-        values: &PrimitiveArray<V>,
+    pub fn new_unique_values<K: ArrowDictionaryKeyType>(
+        values: DictionaryValueArray<'a>,
     ) -> Dictionary<'a> {
         Self {
             keys: DictionaryKeyArray::UniqueValues {
                 data_type: K::DATA_TYPE,
                 length: values.len(),
             },
-            values: (values as &dyn Array).into(),
+            values,
         }
     }
 
@@ -216,15 +216,6 @@ impl<'a> Dictionary<'a> {
 
 macro_rules! impl_from_dictionary_array {
     ($arrow_ty:ty, $variant:ident) => {
-        impl<'a> From<&DictionaryArray<$arrow_ty>> for Dictionary<'a> {
-            fn from(value: &DictionaryArray<$arrow_ty>) -> Self {
-                Dictionary {
-                    keys: value.keys().into(),
-                    values: (value.values() as &dyn Array).into(),
-                }
-            }
-        }
-
         impl<'a, 'b, V> From<TypedDictionaryArray<'b, $arrow_ty, V>> for Dictionary<'a>
         where
             DictionaryValueArray<'a>: From<&'b V>,
@@ -250,8 +241,6 @@ impl_from_dictionary_array!(UInt64Type, UInt64);
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use super::*;
 
     /// Scenario: Dictionary keys include both null keys and keys that point to a null dictionary value.
@@ -358,32 +347,6 @@ mod tests {
         assert!(empty.is_null());
     }
 
-    /// Scenario: A real Arrow dictionary contains false, true, repeated, null-valued, and null-key Boolean rows.
-    /// Guarantees: Arrow-backed Boolean values convert without panicking and preserve both values and null semantics.
-    #[test]
-    fn arrow_boolean_dictionary_values_are_supported() {
-        let arrow = DictionaryArray::<Int8Type>::try_new(
-            Int8Array::from(vec![Some(0), Some(1), Some(0), Some(2), None]),
-            Arc::new(BooleanArray::from(vec![Some(false), Some(true), None])),
-        )
-        .unwrap();
-        let dictionary = Dictionary::from(&arrow);
-
-        assert_eq!(dictionary.get_value(0), Ok(ValueOrRef::Boolean(false)));
-        assert_eq!(dictionary.get_value(1), Ok(ValueOrRef::Boolean(true)));
-        assert_eq!(dictionary.get_value(2), Ok(ValueOrRef::Boolean(false)));
-        assert_eq!(dictionary.get_value(3), Ok(ValueOrRef::Null));
-        assert_eq!(dictionary.get_value(4), Ok(ValueOrRef::Null));
-
-        let nulls = dictionary.nulls().unwrap();
-        assert_eq!(nulls.null_count(), 2);
-        assert!(nulls.is_valid(0));
-        assert!(nulls.is_valid(1));
-        assert!(nulls.is_valid(2));
-        assert!(nulls.is_null(3));
-        assert!(nulls.is_null(4));
-    }
-
     /// Scenario: Scalar and null dictionaries are synthesized for a requested Arrow key type.
     /// Guarantees: Every row resolves to the scalar or Null and retains the requested key data type.
     #[test]
@@ -409,7 +372,7 @@ mod tests {
     #[test]
     fn primitive_array_dictionary_uses_unique_keys() {
         let values = Int32Array::from(vec![5, 8, 13]);
-        let dictionary = Dictionary::from_array::<UInt8Type, Int32Type>(&values);
+        let dictionary = Dictionary::new_unique_values::<UInt8Type>(values.into());
 
         assert_eq!(dictionary.len(), 3);
         assert_eq!(dictionary.get_value_index(2), Some(2));
