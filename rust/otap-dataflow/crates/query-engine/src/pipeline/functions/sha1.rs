@@ -1,7 +1,6 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use std::any::Any;
 use std::sync::Arc;
 
 use arrow::array::{
@@ -41,10 +40,6 @@ impl Sha1Func {
 }
 
 impl ScalarUDFImpl for Sha1Func {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn name(&self) -> &str {
         "sha1"
     }

@@ -5,23 +5,33 @@
 //! uses the lower-level otel_arrow_dfe_pdata::otap::groups module for
 //! merging and splitting batches.
 //!
+//! # Configuration
+//!
 //! Configuration is modelled on the (original) OpenTelemetry batch
 //! processor, not the relatively-new exporterhelper batcher, which
 //! supports batching by a sizer "bytes", "requests", or "items".
 //!
-//! There are two limits, a lower bound and an upper bound. Both are
-//! optional, the user can set one or the other or both. This
-//! component uses only the lower of the two numbers, along with the
-//! timeout.  Whether it reaches the lower bound or the timeout first,
-//! it will flush pending data. If the upper bound is set, merging and
-//! splitting will take place, otherwise only merging is performed.
+//! There are two limits, a lower bound (`min_size`) and an upper bound
+//! (`max_size`); at least one must be set, and an unset `min_size`
+//! defaults to `max_size`. Together they define the range of acceptable
+//! batch sizes `[min_size, max_size]` (unbounded above when `max_size` is
+//! unset). An arriving input already within that range is forwarded as-is
+//! with its original context. All other inputs are buffered and then re-batched
+//! and flushed when either pending data reaches the lower bound required to
+//! make at least one batch or the max_batch_duration is reached.
 //!
-//! When this component flushes because it has reached a limit, and
-//! splitting is configured, it means there can be residual data left
-//! after flushing. Retained data is always "first in line" for
-//! considering in the next flush event. Note that the lower-level
-//! function in otel_arrow_dfe_pdata::otap::groups is required to support
-//! "in-line" batching (see that component for the definition).
+//! Because in-range inputs bypass the buffer, output order is not
+//! preserved relative to data that is still buffered.
+//!
+//! # Flush behavior
+//!
+//! When this component flushes because it has reached a limit then there
+//! can be residual data left after the flush. This retained data is always
+//! "first in line" for considering in the next flush event and is guaranteed
+//! to be flushed in the next batch. The implication of this is that a batch
+//! can sit in the batch_processor for up to `2 * max_batch_duration`.
+//!
+//! # Pipeline Placement
 //!
 //! This component should be installed before any retry processor
 //! (i.e., only retry after batching). This component does not support
@@ -88,6 +98,10 @@ pub const DEFAULT_MAX_BATCH_DURATION_MS: u64 = 200;
 const LOG_MSG_BATCHING_FAILED_PREFIX: &str = "OTAP batch processor: low-level batching failed for";
 const LOG_MSG_BATCHING_FAILED_SUFFIX: &str = "; dropping";
 
+/// Event emitted at build time when a format is configured to forward every
+/// input without batching (`min_size: 0` and no `max_size`).
+const LOG_EVENT_FORWARDS_EVERYTHING: &str = "batch.config.forwards_everything";
+
 // Encodes each supported (format, signal) pair into a distinct batch-local
 // wakeup slot.
 const fn wakeup_slot(format: SignalFormat, signal: SignalType) -> WakeupSlot {
@@ -118,11 +132,11 @@ const fn signal_from_wakeup_slot(slot: WakeupSlot) -> Option<(SignalFormat, Sign
 /// Min/max size for a specific format
 #[derive(Debug, Clone, Deserialize)]
 pub struct FormatConfig {
-    /// Flush current batch when this count is reached, as a
-    /// minimum. Measures the quantity indicated by `sizer`. When
-    /// pending data reaches this threshold a new batch will form and
-    /// be sent.
-    pub min_size: Option<NonZeroUsize>,
+    /// Lower bound of the acceptable batch size. Measured in the quantity
+    /// indicated by `sizer`. When pending data reaches this threshold a
+    /// new batch will form and be sent. When unset, defaults to `max_size`.
+    /// Zero is allowed and means any input up to `max_size` is forwarded as-is.
+    pub min_size: Option<usize>,
 
     /// Optionally limit batch sizes to an upper bound. Measured in
     /// the quantity indicated by `sizer`, as described for min_size.
@@ -242,8 +256,8 @@ pub struct Config {
     pub format: BatchingFormat,
 }
 
-const fn default_otap_min_size_items() -> Option<NonZeroUsize> {
-    NonZeroUsize::new(DEFAULT_OTAP_MIN_SIZE_ITEMS)
+const fn default_otap_min_size_items() -> Option<usize> {
+    Some(DEFAULT_OTAP_MIN_SIZE_ITEMS)
 }
 
 const fn default_otap_max_size_items() -> Option<NonZeroUsize> {
@@ -255,8 +269,8 @@ const fn default_otap_sizer_items() -> Sizer {
     Sizer::Items
 }
 
-const fn default_otlp_min_size_bytes() -> Option<NonZeroUsize> {
-    NonZeroUsize::new(DEFAULT_OTLP_MIN_SIZE_BYTES)
+const fn default_otlp_min_size_bytes() -> Option<usize> {
+    Some(DEFAULT_OTLP_MIN_SIZE_BYTES)
 }
 
 const fn default_otlp_max_size_bytes() -> Option<NonZeroUsize> {
@@ -372,13 +386,33 @@ impl Config {
 
         Ok(())
     }
+
+    /// Emits a warning for each active format configured with `min_size: 0`
+    /// and no `max_size`, in which case every input is forwarded as-is and
+    /// the processor performs no batching.
+    fn warn_if_forwarding_everything(&self) {
+        let formats = [
+            (self.format.has_otap(), "otap", &self.otap),
+            (self.format.has_otlp(), "otlp", &self.otlp),
+        ];
+        for (active, name, fmtcfg) in formats {
+            if active && fmtcfg.forwards_everything() {
+                otel_warn!(
+                    LOG_EVENT_FORWARDS_EVERYTHING,
+                    format = name,
+                    message = "min_size is 0 and max_size is unset: every input is \
+                        forwarded as-is and no batching is performed"
+                );
+            }
+        }
+    }
 }
 
 impl FormatConfig {
     #[cfg(test)]
-    const fn new_items(min_size: usize, max_size: usize) -> FormatConfig {
+    const fn new_items(min_size: Option<usize>, max_size: usize) -> FormatConfig {
         FormatConfig {
-            min_size: NonZeroUsize::new(min_size),
+            min_size,
             max_size: NonZeroUsize::new(max_size),
             sizer: Sizer::Items,
             max_split_fragments: None,
@@ -388,9 +422,9 @@ impl FormatConfig {
     }
 
     #[cfg(test)]
-    const fn new_bytes(min_size: usize, max_size: usize) -> FormatConfig {
+    const fn new_bytes(min_size: Option<usize>, max_size: usize) -> FormatConfig {
         FormatConfig {
-            min_size: NonZeroUsize::new(min_size),
+            min_size,
             max_size: NonZeroUsize::new(max_size),
             sizer: Sizer::Bytes,
             max_split_fragments: default_max_split_fragments(),
@@ -399,16 +433,33 @@ impl FormatConfig {
         }
     }
 
-    /// The lower of the two size limits.
+    /// The effective lower bound of the acceptable batch size:
+    /// `min_size`, defaulting to `max_size` when unset. Pending data
+    /// reaching this threshold triggers a size flush.
     fn lower_limit(&self) -> usize {
-        self.min_size.or(self.max_size).expect("valid").get()
+        self.min_size
+            .or(self.max_size.map(NonZeroUsize::get))
+            .expect("valid")
+    }
+
+    /// True when a payload of `size` is already an acceptable batch, i.e.
+    /// `lower_limit() <= size <= max_size` (no upper bound when `max_size` is
+    /// unset). Such payloads are forwarded as-is.
+    fn in_passthrough_range(&self, size: usize) -> bool {
+        size >= self.lower_limit() && self.max_size.is_none_or(|max| size <= max.get())
+    }
+
+    /// True when every input is forwarded as-is: `min_size: 0` with no
+    /// `max_size` means the processor never batches.
+    const fn forwards_everything(&self) -> bool {
+        matches!(self.min_size, Some(0)) && self.max_size.is_none()
     }
 
     /// Validate the config, given its format. `immediate_flush` indicates the
     /// parent Config has max_batch_duration == 0.
     pub fn validate(&self, format: SignalFormat, immediate_flush: bool) -> Result<(), ConfigError> {
         // At least one size is set.
-        if self.min_size.or(self.max_size).is_none() {
+        if self.min_size.is_none() && self.max_size.is_none() {
             return Err(ConfigError::InvalidUserConfig {
                 error: "max_size or min_size must be set".into(),
             });
@@ -428,7 +479,7 @@ impl FormatConfig {
 
         // If both sizes are set, check max_size is >= the min_size.
         if let (Some(max_size), Some(min_size)) = (self.max_size, self.min_size)
-            && max_size < min_size
+            && max_size.get() < min_size
         {
             return Err(ConfigError::InvalidUserConfig {
                 error: format!(
@@ -441,18 +492,12 @@ impl FormatConfig {
         // immediate_flush indicates there is not a time-based flush criteria, which
         // raises requirements:
         if immediate_flush {
-            // If min_size is set, we need a max_batch_duration to avoid
-            // indefinite delay.
-            if self.min_size.is_some() {
+            // If a non-zero min_size is set, we need a max_batch_duration to
+            // avoid indefinite delay. min_size: 0 never buffers data below
+            // the lower bound, so no timeout is required.
+            if self.min_size.is_some_and(|min| min > 0) {
                 return Err(ConfigError::InvalidUserConfig {
-                    error: "min_size set requires max_batch_duration is set".into(),
-                });
-            }
-            // If max_size is unset, we're doing nothing with a batch processor,
-            // so this is considered an error.
-            if self.max_size.is_none() {
-                return Err(ConfigError::InvalidUserConfig {
-                    error: "max_batch_duration unset requires max_size is set".into(),
+                    error: "min_size > 0 requires max_batch_duration is set".into(),
                 });
             }
         }
@@ -582,6 +627,11 @@ pub struct BatchProcessorMetrics {
     /// Number of flushes triggered by timer (all signals)
     #[metric(unit = "{flush}")]
     flushes_timer: Counter<u64>,
+    /// Number of inputs forwarded as-is, without re-batching or completion
+    /// tracking, because their size was already within the configured
+    /// [min_size, max_size] range on arrival.
+    #[metric(unit = "{batch}")]
+    passthrough_batches: Counter<u64>,
 
     /// Number of input requests pending at flush time
     #[metric(unit = "{request}")]
@@ -667,6 +717,7 @@ impl BatchProcessor {
         // This checks that if both are present, max_size >= min_size, and
         // that at least one is present so that lower_limit is valid below.
         config.validate()?;
+        config.warn_if_forwarding_everything();
 
         let otap_signals: Option<SignalBatches<OtapArrowRecords>> = config
             .format
@@ -935,6 +986,12 @@ where
             return Ok(());
         }
 
+        // Pass-through: an input that is already an acceptable batch is
+        // forwarded as-is with its original context.
+        if self.fmtcfg.in_passthrough_range(weight) {
+            return self.forward_as_is(effect, ctx, payload).await;
+        }
+
         // Capture the receiver-observed peer address before `ctx` may be
         // moved into BatchContext below. The portion retains it so the
         // flush path can merge peer_addr across contributing inputs even
@@ -999,6 +1056,21 @@ where
             )
             .await
         }
+    }
+
+    /// Sends a whole input downstream unchanged with its original context.
+    /// Downstream Ack/Nack route directly to the input's subscribers, so no
+    /// inbound or outbound slot is used.
+    async fn forward_as_is(
+        &mut self,
+        effect: &mut local::EffectHandler<OtapPdata>,
+        ctx: Context,
+        payload: T,
+    ) -> Result<(), EngineError> {
+        self.metrics.passthrough_batches.inc();
+        let pdata = OtapPdata::new(ctx, payload.into());
+        effect.send_message_with_source_node(pdata).await?;
+        Ok(())
     }
 
     /// Flushes all of the input, merging and splitting as necessary to
@@ -1847,8 +1919,8 @@ mod tests {
     fn test_config_validation() {
         // Both sizes set, max >= batch: OK
         let cfg = Config {
-            otap: FormatConfig::new_items(100, 200),
-            otlp: FormatConfig::new_bytes(10000, 20000),
+            otap: FormatConfig::new_items(Some(100), 200),
+            otlp: FormatConfig::new_bytes(Some(10000), 20000),
             max_batch_duration: Duration::from_millis(100),
             ..Default::default()
         };
@@ -1857,8 +1929,8 @@ mod tests {
         // The OTLP configuration is invalid, but that's OK because
         // format is OTAP.
         let cfg = Config {
-            otap: FormatConfig::new_items(100, 0),
-            otlp: FormatConfig::new_items(0, 0),
+            otap: FormatConfig::new_items(Some(100), 0),
+            otlp: FormatConfig::new_items(None, 0),
             max_batch_duration: Duration::from_millis(100),
             format: BatchingFormat::Otap,
             ..Default::default()
@@ -1867,7 +1939,7 @@ mod tests {
 
         // Only max size: OK (OTLP default)
         let cfg = Config {
-            otap: FormatConfig::new_items(0, 200),
+            otap: FormatConfig::new_items(None, 200),
             max_batch_duration: Duration::from_millis(100),
             ..Default::default()
         };
@@ -1875,8 +1947,8 @@ mod tests {
 
         // All formats
         let cfg = Config {
-            otap: FormatConfig::new_items(0, 200),
-            otlp: FormatConfig::new_bytes(20000, 0),
+            otap: FormatConfig::new_items(None, 200),
+            otlp: FormatConfig::new_bytes(Some(20000), 0),
             max_batch_duration: Duration::from_millis(100),
             ..Default::default()
         };
@@ -1884,8 +1956,8 @@ mod tests {
 
         // Split-only: OK
         let cfg = Config {
-            otlp: FormatConfig::new_bytes(0, 100),
-            otap: FormatConfig::new_items(0, 0),
+            otlp: FormatConfig::new_bytes(None, 100),
+            otap: FormatConfig::new_items(None, 0),
             max_batch_duration: Duration::ZERO,
             format: BatchingFormat::Otlp,
             ..Default::default()
@@ -1894,7 +1966,7 @@ mod tests {
 
         // Format: preserve, 1 invalid
         let cfg = Config {
-            otlp: FormatConfig::new_bytes(0, 0),
+            otlp: FormatConfig::new_bytes(None, 0),
             format: BatchingFormat::Preserve,
             ..Default::default()
         };
@@ -1902,7 +1974,7 @@ mod tests {
 
         // Both None: ERROR
         let cfg = Config {
-            otap: FormatConfig::new_bytes(0, 0),
+            otap: FormatConfig::new_bytes(None, 0),
             format: BatchingFormat::Otap,
             max_batch_duration: Duration::from_millis(100),
             ..Default::default()
@@ -1911,7 +1983,7 @@ mod tests {
 
         // Max < batch: ERROR
         let cfg = Config {
-            otap: FormatConfig::new_items(200, 100),
+            otap: FormatConfig::new_items(Some(200), 100),
             max_batch_duration: Duration::from_millis(100),
             ..Default::default()
         };
@@ -1919,11 +1991,92 @@ mod tests {
 
         // lower-bound without timeout: ERROR
         let cfg = Config {
-            otap: FormatConfig::new_items(100, 200),
+            otap: FormatConfig::new_items(Some(100), 200),
             max_batch_duration: Duration::ZERO,
             ..Default::default()
         };
         assert!(cfg.validate().is_err());
+    }
+
+    /// Scenario: validation of configs using an explicit `min_size: 0`, with
+    /// and without `max_size` and `max_batch_duration`.
+    /// Guarantees: `min_size: 0` is accepted with or without a timeout and
+    /// with or without `max_size`; it satisfies `max_size >= min_size`; a
+    /// non-zero `min_size` without a timeout is still rejected.
+    #[test]
+    fn test_config_validation_min_size_zero() {
+        for timeout in [Duration::ZERO, Duration::from_millis(100)] {
+            // min_size: 0 with max_size: OK.
+            let cfg = Config {
+                otap: FormatConfig::new_items(Some(0), 200),
+                max_batch_duration: timeout,
+                format: BatchingFormat::Otap,
+                ..Default::default()
+            };
+            assert!(cfg.validate().is_ok(), "min 0 + max, timeout {timeout:?}");
+            assert!(!cfg.otap.forwards_everything());
+
+            // min_size: 0 without max_size: OK (warned at build time).
+            let cfg = Config {
+                otap: FormatConfig::new_items(Some(0), 0),
+                max_batch_duration: timeout,
+                format: BatchingFormat::Otap,
+                ..Default::default()
+            };
+            assert!(cfg.validate().is_ok(), "min 0 only, timeout {timeout:?}");
+            assert!(cfg.otap.forwards_everything());
+        }
+
+        // Non-zero min_size without timeout is still an error.
+        let cfg = Config {
+            otap: FormatConfig::new_items(Some(1), 200),
+            max_batch_duration: Duration::ZERO,
+            format: BatchingFormat::Otap,
+            ..Default::default()
+        };
+        assert!(cfg.validate().is_err());
+
+        // min_size: 0 parses from JSON.
+        let cfg: Config = serde_json::from_value(json!({
+            "format": "otap",
+            "otap": { "min_size": 0, "max_size": 10, "sizer": "items" },
+            "max_batch_duration": "0s"
+        }))
+        .expect("parse");
+        assert_eq!(cfg.otap.min_size, Some(0));
+        assert!(cfg.validate().is_ok());
+    }
+
+    /// Scenario: `lower_limit` and `in_passthrough_range` across min/max
+    /// combinations, including `min_size` unset and `min_size: 0`.
+    /// Guarantees: an unset `min_size` defaults to `max_size`; the
+    /// pass-through range is `[lower_limit, max_size]` inclusive, and has no
+    /// upper bound when `max_size` is unset.
+    #[test]
+    fn test_passthrough_range() {
+        let both = FormatConfig::new_items(Some(5), 10);
+        assert_eq!(both.lower_limit(), 5);
+        assert!(!both.in_passthrough_range(4));
+        assert!(!both.in_passthrough_range(11));
+        assert!(both.in_passthrough_range(5));
+        assert!(both.in_passthrough_range(10));
+
+        let max_only = FormatConfig::new_items(None, 10);
+        assert_eq!(max_only.lower_limit(), 10);
+        assert!(!max_only.in_passthrough_range(9));
+        assert!(!max_only.in_passthrough_range(11));
+        assert!(max_only.in_passthrough_range(10));
+
+        let min_only = FormatConfig::new_items(Some(5), 0);
+        assert_eq!(min_only.lower_limit(), 5);
+        assert!(!min_only.in_passthrough_range(4));
+        assert!(min_only.in_passthrough_range(usize::MAX));
+
+        let zero = FormatConfig::new_items(Some(0), 10);
+        assert_eq!(zero.lower_limit(), 0);
+        assert!(zero.in_passthrough_range(1));
+        assert!(zero.in_passthrough_range(10));
+        assert!(!zero.in_passthrough_range(11));
     }
 
     /// Test event: either process input or deliver pending timers
@@ -1977,6 +2130,13 @@ mod tests {
             wakeup_slot(SignalFormat::OtlpBytes, SignalType::Metrics),
             wakeup_slot(SignalFormat::OtlpBytes, SignalType::Traces),
         ]
+    }
+
+    /// Node index of the batch processor built by [`setup_test_runtime`].
+    /// Test inputs subscribe with other node ids, so a response whose next
+    /// subscriber is this index belongs to the batch processor.
+    fn batch_node_index() -> usize {
+        test_node("batch-processor-test").index
     }
 
     fn run_batch_processor_test<F, P>(
@@ -2088,22 +2248,42 @@ mod tests {
                                     .map(|p| p(total_outputs - 1, &new_output))
                                     .unwrap_or(AckPolicy::Ack);
 
+                                // Route like the engine: a response goes to
+                                // the batch processor only when it is the next
+                                // subscriber. A passed-through output carries
+                                // the input's own context, so its response
+                                // goes directly upstream.
                                 match policy {
                                     AckPolicy::Ack => {
-                                        ctx.process(Message::Control(NodeControlMsg::Ack(
-                                            next_ack(AckMsg::new(new_output)).expect("has subs").1,
-                                        )))
-                                        .await
-                                        .expect("process ack");
+                                        let (node_id, ack) =
+                                            next_ack(AckMsg::new(new_output)).expect("has subs");
+                                        if node_id == batch_node_index() {
+                                            ctx.process(Message::Control(NodeControlMsg::Ack(ack)))
+                                                .await
+                                                .expect("process ack");
+                                        } else {
+                                            let calldata: TestCallData =
+                                                ack.unwind.route.calldata.try_into().expect("cd");
+                                            received_acks.push(calldata);
+                                            looped += 1;
+                                        }
                                     }
                                     AckPolicy::Nack(reason) => {
-                                        ctx.process(Message::Control(NodeControlMsg::Nack(
+                                        let (node_id, nack) =
                                             next_nack(NackMsg::new(reason, new_output))
-                                                .expect("has subs")
-                                                .1,
-                                        )))
-                                        .await
-                                        .expect("process nack");
+                                                .expect("has subs");
+                                        if node_id == batch_node_index() {
+                                            ctx.process(Message::Control(NodeControlMsg::Nack(
+                                                nack,
+                                            )))
+                                            .await
+                                            .expect("process nack");
+                                        } else {
+                                            let calldata: TestCallData =
+                                                nack.unwind.route.calldata.try_into().expect("cd");
+                                            received_nacks.push(calldata);
+                                            looped += 1;
+                                        }
                                     }
                                 }
                             }
@@ -2572,7 +2752,7 @@ mod tests {
         let (_telemetry_registry, _metrics_reporter, phase) = setup_test_runtime(json!({
             "format": "otap",
             "otap": {
-                "min_size": 1,
+                "min_size": 4,
                 "max_size": 10,
                 "sizer": "items",
             },
@@ -2586,6 +2766,17 @@ mod tests {
                 ctx.set_pipeline_completion_sender(pipeline_completion_tx);
 
                 let mut datagen = DataGenerator::new(1);
+
+                // An unsubscribed 3-item input is buffered (below min_size) so
+                // the subscribed input below is merged with it rather than
+                // passed through, exercising outbound completion tracking.
+                let first: OtlpProtoMessage = datagen.generate_logs().into();
+                ctx.process(Message::PData(OtapPdata::new_default(
+                    otlp_message_to_bytes(&first).into(),
+                )))
+                .await
+                .expect("process first input");
+
                 let input: OtlpProtoMessage = datagen.generate_logs().into();
                 let input_bytes = otlp_message_to_bytes(&input);
 
@@ -4523,5 +4714,251 @@ mod tests {
     #[test]
     fn test_otlp_residual_nack_propagates_to_input() {
         check_residual_holds_input(ResidualFormat::Otlp, AckPolicy::Nack("downstream failed"));
+    }
+
+    // ---------------------------------------------------------------------
+    // Pass-through of inputs already within [min_size, max_size]. Uses the
+    // residual helpers above: one `residual_logs` unit is one sizer unit in
+    // both formats.
+    // ---------------------------------------------------------------------
+
+    /// Batch processor config for `fmt` with the given min/max in units and
+    /// a 1s timeout. `None` leaves the field unset.
+    fn passthrough_config(
+        fmt: ResidualFormat,
+        min_units: Option<usize>,
+        max_units: Option<usize>,
+        timeout: &str,
+    ) -> Value {
+        let unit = residual_unit_size(fmt);
+        let min = min_units.map(|u| u * unit);
+        let max = max_units.map(|u| u * unit);
+        match fmt {
+            ResidualFormat::Otap => json!({
+                "format": "otap",
+                "otap": { "min_size": min, "max_size": max, "sizer": "items" },
+                "max_batch_duration": timeout
+            }),
+            ResidualFormat::Otlp => json!({
+                "format": "otlp",
+                "otlp": { "min_size": min, "max_size": max, "sizer": "bytes" },
+                "max_batch_duration": timeout
+            }),
+        }
+    }
+
+    /// Size of an output in `fmt` units.
+    fn output_units(fmt: ResidualFormat, out: &OtapPdata) -> usize {
+        let mut out = out.clone();
+        match fmt {
+            ResidualFormat::Otap => out.num_items(),
+            ResidualFormat::Otlp => out.num_bytes().expect("otlp size") / residual_unit_size(fmt),
+        }
+    }
+
+    /// Deliver `policy` for an output that was passed through: its next
+    /// subscriber is the original input (node 1), not the batch processor,
+    /// so the response is routed straight upstream without calling the
+    /// processor. Returns the upstream calldata index.
+    fn respond_passthrough(out: OtapPdata, policy: &AckPolicy) -> (bool, TestCallData) {
+        match policy {
+            AckPolicy::Ack => {
+                let (node, ack) = next_ack(AckMsg::new(out)).expect("subs");
+                assert_eq!(node, 1, "passed-through output routes to the input");
+                (true, ack.unwind.route.calldata.try_into().expect("cd"))
+            }
+            AckPolicy::Nack(reason) => {
+                let (node, nack) = next_nack(NackMsg::new(*reason, out)).expect("subs");
+                assert_eq!(node, 1, "passed-through output routes to the input");
+                (false, nack.unwind.route.calldata.try_into().expect("cd"))
+            }
+        }
+    }
+
+    /// A shared helper that exercises the below scenario for multiple formats
+    /// and with either an ack or nack.
+    ///
+    /// Scenario: min=4/max=8; a 2-item input is buffered, then a
+    /// 5-item input arrives and either a downstream Ack or downstream nack
+    /// are delivered.
+    /// Guarantees: the in-range input is forwarded immediately and unchanged
+    /// with its original context, so its Ack/nack routes straight upstream with
+    /// no batch-processor tracking. The buffered input is untouched and later
+    /// timer-flushed through the tracked path; `passthrough.batches` counts
+    /// only the in-range input.
+    fn test_in_range_input_passes_through(fmt: ResidualFormat, response: AckPolicy) {
+        let (registry, reporter, phase) =
+            setup_test_runtime(passthrough_config(fmt, Some(4), Some(8), "1s"));
+        phase
+            .run_test(move |mut ctx| async move {
+                let (tx, mut rx) = pipeline_completion_msg_channel(16);
+                ctx.set_pipeline_completion_sender(tx);
+                let mut done = Completions::new(2);
+
+                ctx.process(Message::PData(residual_pdata(fmt, &residual_logs(0, 2), 0)))
+                    .await
+                    .expect("process A");
+                assert!(ctx.drain_pdata().await.is_empty(), "A is buffered");
+
+                ctx.process(Message::PData(residual_pdata(fmt, &residual_logs(1, 5), 1)))
+                    .await
+                    .expect("process B");
+                let outs = ctx.drain_pdata().await;
+                assert_eq!(outs.len(), 1, "B is forwarded immediately, A stays");
+                let b = outs.into_iter().next().expect("B");
+                assert_eq!(output_units(fmt, &b), 5, "B is forwarded unchanged");
+
+                let is_ack = matches!(response, AckPolicy::Ack);
+                let (acked, cd) = respond_passthrough(b, &response);
+                assert_eq!(acked, is_ack);
+                assert_eq!(cd, TestCallData::new_with(1, 0), "B's own calldata");
+
+                // The processor saw nothing from B's completion.
+                done.drain(&mut rx);
+                assert_eq!(done.acks, vec![0, 0]);
+                assert_eq!(done.nacks, vec![0, 0]);
+
+                flush_timer(&mut ctx).await;
+                let outs = ctx.drain_pdata().await;
+                assert_eq!(outs.len(), 1, "timer flushes buffered A");
+                let a = outs.into_iter().next().expect("A");
+                assert_eq!(output_units(fmt, &a), 2);
+                // A was buffered, so it is a regular tracked batch: its Ack
+                // goes through the batch processor, which then Acks A.
+                respond(&mut ctx, a, &AckPolicy::Ack).await;
+                done.drain(&mut rx);
+                assert_eq!(done.acks, vec![1, 0], "A acked via the processor");
+                assert_eq!(done.nacks, vec![0, 0]);
+
+                ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
+                    metrics_reporter: reporter,
+                }))
+                .await
+                .expect("collect telemetry");
+            })
+            .validate(move |_| async move {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                assert_eq!(
+                    counter_metric_value(&registry, "otap.processor.batch", "passthrough.batches"),
+                    1,
+                    "only B (in range on arrival) is passed through"
+                );
+            });
+    }
+
+    /// Scenario: See [`test_in_range_input_passes_through`] for OTAP + Ack
+    /// Guarantees: See [`test_in_range_input_passes_through`] for OTAP + Ack
+    #[test]
+    fn test_otap_in_range_input_passes_through() {
+        test_in_range_input_passes_through(ResidualFormat::Otap, AckPolicy::Ack);
+    }
+
+    /// Scenario: See [`test_in_range_input_passes_through`] for OTAP + Nack
+    /// Guarantees: See [`test_in_range_input_passes_through`] for OTAP + Nack
+    #[test]
+    fn test_otap_in_range_input_nack_routes_upstream() {
+        test_in_range_input_passes_through(ResidualFormat::Otap, AckPolicy::Nack("failed"));
+    }
+
+    /// Scenario: See [`test_in_range_input_passes_through`] for OTLP + Ack
+    /// Guarantees: See [`test_in_range_input_passes_through`] for OTLP + Ack
+    #[test]
+    fn test_otlp_in_range_input_passes_through() {
+        test_in_range_input_passes_through(ResidualFormat::Otlp, AckPolicy::Ack);
+    }
+
+    /// Scenario: See [`test_in_range_input_passes_through`] for OTLP + Nack
+    /// Guarantees: See [`test_in_range_input_passes_through`] for OTLP + Nack
+    #[test]
+    fn test_otlp_in_range_input_nack_routes_upstream() {
+        test_in_range_input_passes_through(ResidualFormat::Otlp, AckPolicy::Nack("failed"));
+    }
+
+    /// Drives `inputs` (sizes in units) through a processor configured with
+    /// `config`, without any timer event, and returns the output sizes.
+    fn outputs_for_inputs(fmt: ResidualFormat, config: Value, inputs: &[usize]) -> Vec<usize> {
+        let (_registry, _reporter, phase) = setup_test_runtime(config);
+        let inputs = inputs.to_vec();
+        let (tx, rx) = std::sync::mpsc::channel();
+        phase
+            .run_test(move |mut ctx| async move {
+                let mut sizes = Vec::new();
+                for (i, units) in inputs.into_iter().enumerate() {
+                    ctx.process(Message::PData(residual_pdata(
+                        fmt,
+                        &residual_logs(i, units),
+                        i,
+                    )))
+                    .await
+                    .expect("process");
+                    for out in ctx.drain_pdata().await {
+                        sizes.push(output_units(fmt, &out));
+                    }
+                }
+                tx.send(sizes).expect("send");
+            })
+            .validate(|_| async {});
+        rx.recv().expect("sizes")
+    }
+
+    /// Scenario: `max_size` only (min unset) with a timeout; inputs of 3
+    /// units (below max) and then 4 units (equal to max) with max=4.
+    /// Guarantees: an unset min_size defaults to max_size, so the input
+    /// below max is still buffered (no behavior change for max-only
+    /// configs), while the input equal to max is passed through as-is.
+    #[test]
+    fn test_max_only_buffers_below_max_passes_equal() {
+        for fmt in [ResidualFormat::Otap, ResidualFormat::Otlp] {
+            let cfg = passthrough_config(fmt, None, Some(4), "1s");
+            assert_eq!(
+                outputs_for_inputs(fmt, cfg, &[3, 4]),
+                vec![4],
+                "3 is buffered; 4 passes through"
+            );
+        }
+    }
+
+    /// Scenario: `min_size` only (no max) with a timeout; a 2-unit input
+    /// followed by a 10-unit input with min=4.
+    /// Guarantees: an input at or above min_size is passed through even
+    /// though smaller data is buffered, and the buffered data is not merged
+    /// into it.
+    #[test]
+    fn test_min_only_passes_through_large_input() {
+        for fmt in [ResidualFormat::Otap, ResidualFormat::Otlp] {
+            let cfg = passthrough_config(fmt, Some(4), None, "1s");
+            assert_eq!(outputs_for_inputs(fmt, cfg, &[2, 10]), vec![10]);
+        }
+    }
+
+    /// Scenario: `min_size: 0` with max=4 and no timeout; inputs of 1, 3, 4
+    /// and 9 units.
+    /// Guarantees: every input up to max_size is forwarded as-is without a
+    /// timer, and an input above max_size is still split exactly as before
+    /// (9 -> [4, 4, 1]).
+    #[test]
+    fn test_min_zero_passes_small_and_splits_oversize() {
+        for fmt in [ResidualFormat::Otap, ResidualFormat::Otlp] {
+            let cfg = passthrough_config(fmt, Some(0), Some(4), "0s");
+            assert_eq!(
+                outputs_for_inputs(fmt, cfg, &[1, 3, 4, 9]),
+                vec![1, 3, 4, 4, 4, 1]
+            );
+        }
+    }
+
+    /// Scenario: `min_size: 0` and no `max_size` for OTAP (valid, with a
+    /// build-time warning); inputs of 1 and 50 items arrive.
+    /// Guarantees: the processor builds successfully and forwards every
+    /// input unchanged and in order.
+    #[test]
+    fn test_min_zero_no_max_forwards_everything() {
+        let fmt = ResidualFormat::Otap;
+        let cfg = json!({
+            "format": "otap",
+            "otap": { "min_size": 0, "max_size": null, "sizer": "items" },
+            "max_batch_duration": "0s"
+        });
+        assert_eq!(outputs_for_inputs(fmt, cfg, &[1, 50]), vec![1, 50]);
     }
 }
