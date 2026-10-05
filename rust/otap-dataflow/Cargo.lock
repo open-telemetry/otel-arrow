@@ -3965,9 +3965,9 @@ dependencies = [
 
 [[package]]
 name = "geneva-uploader"
-version = "0.8.0"
+version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "90879010f13ff866783a19cc17413fd00bdf25a46306fcd439d145fe024736d5"
+checksum = "cca9af86a5e39e8c97c170e4b02446ba5e79c99582e92014197e4e0c52c57e2f"
 dependencies = [
  "azure_core 0.29.1",
  "azure_identity 0.29.0",
