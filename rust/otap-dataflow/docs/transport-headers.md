@@ -227,17 +227,6 @@ entry using `composite:member` syntax:
 
 ```yaml
 policies:
-  context:
-    entries:
-      product_user:
-        - type: authorized_identity
-          name: customer_id
-        - type: transport_header
-          name: workspace
-          store_as: workspace_id
-        - type: transport_header_match
-          name: environment
-          value: production
   transport_headers:
     header_capture:
       headers:
@@ -251,12 +240,28 @@ policies:
           type: named
           named: [product_user:workspace_id]
         name: stored_name
+
+  context:
+    entries:
+      product_user:
+        - type: authorized_identity
+          name: customer_id
+        - type: transport_header
+          name: workspace
+          store_as: workspace_id
+          
+        # Require environment, referring to "x-environment" to be
+        # equal to "production".
+        - type: transport_header_match
+          name: environment
+          value: production
 ```
 
-The `transport_header_match` entry type supports checking for exact
-transport header matches.
+The `transport_header_match` entry type supports exact-value matching
+over transport headers.
 
-The composite entry binding is on valid when all its conditions match.
+Composite entry bindings (e.g., `product_user:workspace`) are valid only
+when all conditional entries match (i.e., when `environment=production`)
 
 Matching has these semantics:
 
