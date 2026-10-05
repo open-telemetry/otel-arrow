@@ -63,7 +63,6 @@ use reqwest::{Client, Response};
 use secrecy::ExposeSecret;
 
 use self::config::Config;
-use self::diagnostics::DeliveryDiagnostic;
 use otel_arrow_dfe_otap::OTAP_EXPORTER_FACTORIES;
 use otel_arrow_dfe_otap::http_client_auth::*;
 use otel_arrow_dfe_otap::metrics::CompletedExporterAttempt;
@@ -1065,13 +1064,8 @@ async fn finalize_completed_export(
     let result = metrics.boundary.record(attempt);
     let pdata = OtapPdata::new(context, saved_payload);
 
-    // A delivery episode is scoped to backend completion, not the later Ack/Nack.
-    // Keep both attempt start and completion times so an older in-flight success
-    // cannot declare recovery from a failure observed after that attempt started.
-    let now = Instant::now();
-
-    // Compute the dynamic-auth rejection once so invalidation, the retained
-    // diagnostic sample, and the terminal Nack cannot diverge.
+    // Compute the dynamic-auth rejection once so the sampled warning, auth
+    // invalidation, and terminal Nack cannot diverge.
     let auth_failure = result
         .as_ref()
         .is_err_and(|error| auth_generation.is_some() && error.is_auth_failure());
@@ -1083,9 +1077,12 @@ async fn finalize_completed_export(
     // details are formatted only when the sampler selects an ordinary warning.
     let delivery_diagnostic = metrics.diagnostics.signal(signal_type);
     match &result {
-        Ok(()) => DeliveryDiagnostic::emit_recovery(
-            delivery_diagnostic.success(diagnostic_started_at, now),
+        Ok(()) => otel_summary_recover!(
+            delivery_diagnostic,
             signal_type,
+            diagnostic_started_at,
+            "otlp.exporter.http.export_recovered",
+            message = "OTLP HTTP export recovered"
         ),
         Err(error) => otel_summary_warn!(
             delivery_diagnostic,
@@ -3244,15 +3241,6 @@ mod test {
                     metrics.diagnostics.signal(SignalType::Logs).failure(
                         Instant::now() + Duration::from_secs(60),
                         OtlpHttpExporterErrorType::PartialRejection,
-                        false,
-                        || {
-                            capture_current_record(__log_record_impl!(
-                                target: "otel.exporter.otlp_http",
-                                Level::WARN,
-                                "test.diagnostic.detail",
-                                message = "test summary"
-                            ))
-                        },
                     )
                 })
                 .unwrap();
@@ -3351,18 +3339,10 @@ mod test {
         );
         let report = setup
             .with_subscriber(|| {
-                metrics.notifications.signal(SignalType::Logs).failure(
-                    later,
-                    DiagnosticErrorKind::Notification,
-                    || {
-                        capture_current_record(__log_record_impl!(
-                            target: "otel.exporter.otlp_http",
-                            Level::WARN,
-                            "test.diagnostic.detail",
-                            message = "still closed"
-                        ))
-                    },
-                )
+                metrics
+                    .notifications
+                    .signal(SignalType::Logs)
+                    .failure(later, DiagnosticErrorKind::Notification)
             })
             .unwrap();
         assert_eq!(

@@ -302,8 +302,9 @@ macro_rules! otel_summary_warn {
         let diagnostic_signal = $signal;
         if let Some(diagnostic_report) = ($tracker).failure($now, $category) {
             $crate::otel_warn!(target: $target, $name,
-                signal = diagnostic_signal.as_str(),
+                signal = $crate::attributes::AttributeEnum::as_str(diagnostic_signal),
                 diagnostic_kind = diagnostic_report.kind.as_str(),
+                $($fields)+,
                 episode_seconds = diagnostic_report.episode_duration.as_secs_f64(),
                 interval_seconds = diagnostic_report.interval_duration.as_secs_f64(),
                 successful_attempts = diagnostic_report.interval.successes,
@@ -313,51 +314,57 @@ macro_rules! otel_summary_warn {
                 total_failed_attempts = diagnostic_report.total.failures,
                 total_suppressed_diagnostics = diagnostic_report.total.suppressed,
                 error_counts = %diagnostic_report.interval,
-                total_error_counts = %diagnostic_report.total,
-                $($fields)+
+                total_error_counts = %diagnostic_report.total
             );
         }
     }};
 }
 
-/// Add diagnostic episode counters to a distinct ordinary event, such as a
-/// confirmed recovery notification.
+/// Observe successful operation completion and emit one ordinary INFO event
+/// when the diagnostic episode has confirmed recovery.
+///
+/// Like [`otel_summary_warn!`], the tracker decides before the tracing event
+/// is constructed. The selected event follows the normal logging path with
+/// diagnostic counters inserted before the caller's ordinary tracing fields
+/// and message.
 #[macro_export]
-macro_rules! otel_diagnostic_report {
-    (target: $target:expr, emit: $emit:ident, name: $name:literal, report: $report:expr, $($fields:tt)+) => {{
-        let diagnostic_report = $report;
-        $crate::$emit!(target: $target, $name,
-            diagnostic_kind = diagnostic_report.kind.as_str(),
-            episode_seconds = diagnostic_report.episode_duration.as_secs_f64(),
-            interval_seconds = diagnostic_report.interval_duration.as_secs_f64(),
-            successful_attempts = diagnostic_report.interval.successes,
-            failed_attempts = diagnostic_report.interval.failures,
-            suppressed_diagnostics = diagnostic_report.interval.suppressed,
-            total_successful_attempts = diagnostic_report.total.successes,
-            total_failed_attempts = diagnostic_report.total.failures,
-            total_suppressed_diagnostics = diagnostic_report.total.suppressed,
-            error_counts = %diagnostic_report.interval,
-            total_error_counts = %diagnostic_report.total,
+macro_rules! otel_summary_recover {
+    (target: $target:expr, $tracker:expr, $signal:expr, $started_at:expr, $name:literal, $($fields:tt)+) => {{
+        $crate::otel_summary_recover!(
+            target: $target,
+            at: std::time::Instant::now(),
+            $tracker,
+            $signal,
+            $started_at,
+            $name,
             $($fields)+
         );
+    }};
+    (target: $target:expr, at: $now:expr, $tracker:expr, $signal:expr, $started_at:expr, $name:literal, $($fields:tt)+) => {{
+        let diagnostic_signal = $signal;
+        if let Some(diagnostic_report) = ($tracker).success($started_at, $now) {
+            $crate::otel_info!(target: $target, $name,
+                signal = $crate::attributes::AttributeEnum::as_str(diagnostic_signal),
+                diagnostic_kind = diagnostic_report.kind.as_str(),
+                $($fields)+,
+                episode_seconds = diagnostic_report.episode_duration.as_secs_f64(),
+                interval_seconds = diagnostic_report.interval_duration.as_secs_f64(),
+                successful_attempts = diagnostic_report.interval.successes,
+                failed_attempts = diagnostic_report.interval.failures,
+                suppressed_diagnostics = diagnostic_report.interval.suppressed,
+                total_successful_attempts = diagnostic_report.total.successes,
+                total_failed_attempts = diagnostic_report.total.failures,
+                total_suppressed_diagnostics = diagnostic_report.total.suppressed,
+                error_counts = %diagnostic_report.interval,
+                total_error_counts = %diagnostic_report.total
+            );
+        }
     }};
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Build a test detail `LogRecord` whose body is `message`.
-    fn detail(message: &str) -> Option<LogRecord> {
-        Some(
-            crate::__log_record_impl!(
-                crate::_private::Level::WARN,
-                "test.diagnostic.detail",
-                message = %message
-            )
-            .into_record(crate::self_tracing::LogContext::new()),
-        )
-    }
 
     /// Scenario: A destination fails 100,000 times within each reporting window.
     /// Guarantees: Warnings and formatting are time bounded while all failures are counted.
@@ -366,9 +373,7 @@ mod tests {
         let mut tracker = DiagnosticTracker::default();
         let start = Instant::now();
         let first = tracker
-            .failure(start, DiagnosticErrorKind::Transport, || {
-                detail("DNS unavailable")
-            })
+            .failure(start, DiagnosticErrorKind::Transport)
             .unwrap();
         assert_eq!(first.kind, ReportKind::Degraded);
         assert_eq!(first.total.failures, 1);
@@ -378,26 +383,18 @@ mod tests {
                     .failure(
                         start + Duration::from_secs(1),
                         DiagnosticErrorKind::Transport,
-                        || -> Option<LogRecord> {
-                            panic!("suppressed diagnostics must not be formatted")
-                        }
                     )
                     .is_none()
             );
         }
         let summary = tracker
-            .failure(
-                start + SUMMARY_INTERVAL,
-                DiagnosticErrorKind::Rejected,
-                || detail("503"),
-            )
+            .failure(start + SUMMARY_INTERVAL, DiagnosticErrorKind::Rejected)
             .unwrap();
         assert_eq!(summary.kind, ReportKind::Summary);
         assert_eq!(summary.interval.failures, 100_001);
         assert_eq!(summary.total.failures, 100_002);
         assert_eq!(summary.interval.suppressed, 100_000);
         assert_eq!(summary.interval.to_string(), "transport=100000,rejected=1");
-        assert_eq!(summary.detail_str(), "503");
         assert_eq!(summary.interval_duration, SUMMARY_INTERVAL);
     }
 
@@ -410,7 +407,7 @@ mod tests {
         assert!(tracker.success(start, start).is_none());
         assert!(
             tracker
-                .failure(start, DiagnosticErrorKind::Transport, || detail("offline"))
+                .failure(start, DiagnosticErrorKind::Transport)
                 .is_some()
         );
         assert!(
@@ -427,9 +424,7 @@ mod tests {
         assert!(tracker.success(fresh, fresh).is_none());
         assert_eq!(
             tracker
-                .failure(fresh, DiagnosticErrorKind::Transport, || {
-                    detail("offline again")
-                })
+                .failure(fresh, DiagnosticErrorKind::Transport)
                 .unwrap()
                 .kind,
             ReportKind::Degraded
@@ -442,22 +437,23 @@ mod tests {
     fn intermittent_delivery_does_not_flap() {
         let mut tracker = DiagnosticTracker::default();
         let start = Instant::now();
-        let _ = tracker.failure(start, DiagnosticErrorKind::Transport, || detail("offline"));
+        let _ = tracker.failure(start, DiagnosticErrorKind::Transport);
         for second in 1..60 {
             let now = start + Duration::from_secs(second);
             assert!(tracker.success(now, now).is_none());
             assert!(
                 tracker
-                    .failure(now, DiagnosticErrorKind::Rejected, || detail("rejected"))
+                    .failure(now, DiagnosticErrorKind::Rejected)
                     .is_none()
             );
         }
-        let summary = tracker.success(start, start + SUMMARY_INTERVAL).unwrap();
+        let summary = tracker
+            .failure(start + SUMMARY_INTERVAL, DiagnosticErrorKind::Rejected)
+            .unwrap();
         assert_eq!(summary.kind, ReportKind::Summary);
-        assert_eq!(summary.interval.successes, 60);
-        assert_eq!(summary.interval.failures, 59);
-        assert_eq!(summary.detail_age, SUMMARY_INTERVAL);
-        let last_failure = start + Duration::from_secs(59);
+        assert_eq!(summary.interval.successes, 59);
+        assert_eq!(summary.interval.failures, 60);
+        let last_failure = start + SUMMARY_INTERVAL;
         assert!(
             tracker
                 .success(
@@ -490,7 +486,7 @@ mod tests {
                 assert_eq!(
                     instance
                         .signal(signal)
-                        .failure(now, DiagnosticErrorKind::Rejected, || detail("denied"))
+                        .failure(now, DiagnosticErrorKind::Rejected)
                         .unwrap()
                         .kind,
                     ReportKind::Degraded
@@ -509,28 +505,15 @@ mod tests {
         assert!(
             instances[1]
                 .signal(SignalType::Logs)
-                .failure(now, DiagnosticErrorKind::Rejected, || detail("denied"))
+                .failure(now, DiagnosticErrorKind::Rejected)
                 .is_none()
         );
         assert!(
             instances[0]
                 .signal(SignalType::Metrics)
-                .failure(now, DiagnosticErrorKind::Rejected, || detail("denied"))
+                .failure(now, DiagnosticErrorKind::Rejected)
                 .is_none()
         );
-    }
-
-    /// Scenario: A failure supplies detail text longer than the encode growth limit.
-    /// Guarantees: The retained detail is safely truncated with a `[...]` suffix, not silently dropped.
-    #[test]
-    fn representative_details_are_bounded() {
-        let mut tracker = DiagnosticTracker::default();
-        let text = "x".repeat(LOG_ARGUMENTS_ENCODE_INLINE * 2);
-        let report = tracker
-            .failure(Instant::now(), DiagnosticErrorKind::Other, || detail(&text))
-            .unwrap();
-        assert!(report.detail_str().len() < text.len());
-        assert!(report.detail_str().ends_with("[...]"));
     }
 
     /// Scenario: A new failure occurs exactly when recovery could otherwise be confirmed.
@@ -539,18 +522,14 @@ mod tests {
     fn failure_restarts_recovery_confirmation() {
         let start = Instant::now();
         let mut tracker = DiagnosticTracker::default();
-        let _ = tracker.failure(start, DiagnosticErrorKind::Transport, || detail("offline"));
+        let _ = tracker.failure(start, DiagnosticErrorKind::Transport);
         let later = start + RECOVERY_INTERVAL;
         assert!(
             tracker
-                .failure(later, DiagnosticErrorKind::Rejected, || detail("denied"))
+                .failure(later, DiagnosticErrorKind::Rejected)
                 .is_none()
         );
-        assert!(
-            tracker
-                .success(later, later + RECOVERY_INTERVAL)
-                .is_some_and(|r| r.kind == ReportKind::Summary)
-        );
+        assert!(tracker.success(later, later + RECOVERY_INTERVAL).is_none());
         assert_eq!(
             tracker
                 .success(later + Duration::from_secs(1), later + RECOVERY_INTERVAL)
@@ -560,14 +539,8 @@ mod tests {
         );
     }
 
-    /// Scenario: A first failure and a later summary are delivered via
-    /// `otel_diagnostic_report!`, which re-dispatches the retained detail
-    /// directly (splicing on report counters) instead of re-logging decoded
-    /// text as a field of a new event.
-    /// Guarantees: Both deliveries render through the same console path as
-    /// any other log record, preserving the original failure's file/line and
-    /// the `error_sample_age_seconds` relative age, never the stale capture
-    /// time as the event's own timestamp.
+    /// Scenario: A first failure and later selected failure use `otel_summary_warn!`.
+    /// Guarantees: Sampling constructs two ordinary warning events with summary counters.
     #[test]
     fn example_episode_start_and_summary_messages() {
         use crate::event::{LogEvent, ObservedEvent, ObservedEventReporter};
@@ -587,33 +560,27 @@ mod tests {
         let rendered: Vec<String> = setup.with_subscriber(|| {
             let mut tracker = DiagnosticTracker::default();
             let start = Instant::now();
-            let first = tracker
-                .failure(start, DiagnosticErrorKind::Transport, || {
-                    crate::tracing_init::capture_current_record(crate::__log_record_impl!(
-                        crate::Level::WARN,
-                        "test.diagnostic.detail",
-                        message = "connection reset by peer"
-                    ))
-                })
-                .unwrap();
-            otel_diagnostic_report!(
-                report: &first,
-                signal = "logs", retryable = true, diagnostic_kind = "first_failure"
+            crate::otel_summary_warn!(
+                target: "otel.exporter.test",
+                at: start,
+                &mut tracker,
+                SignalType::Logs,
+                DiagnosticErrorKind::Transport,
+                "test.diagnostic.detail",
+                retryable = true,
+                message = "connection reset by peer"
             );
 
             let later = start + SUMMARY_INTERVAL;
-            let summary = tracker
-                .failure(later, DiagnosticErrorKind::Transport, || {
-                    crate::tracing_init::capture_current_record(crate::__log_record_impl!(
-                        crate::Level::WARN,
-                        "test.diagnostic.detail",
-                        message = "unreachable"
-                    ))
-                })
-                .unwrap();
-            otel_diagnostic_report!(
-                report: &summary,
-                signal = "logs", retryable = true, diagnostic_kind = "summary"
+            crate::otel_summary_warn!(
+                target: "otel.exporter.test",
+                at: later,
+                &mut tracker,
+                SignalType::Logs,
+                DiagnosticErrorKind::Transport,
+                "test.diagnostic.detail",
+                retryable = true,
+                message = "unreachable"
             );
 
             receiver

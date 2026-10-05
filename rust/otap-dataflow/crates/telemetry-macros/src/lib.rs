@@ -137,6 +137,16 @@ pub fn otel_component_scope(input: TokenStream) -> TokenStream {
             };
         }
 
+        #[allow(unused_macros)]
+        macro_rules! otel_summary_recover {
+            ($($tokens:tt)*) => {
+                #telemetry::otel_summary_recover!(
+                    target: #target,
+                    $($tokens)*
+                )
+            };
+        }
+
     }
     .into()
 }

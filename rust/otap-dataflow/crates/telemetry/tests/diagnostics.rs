@@ -8,7 +8,7 @@ use otel_arrow_dfe_pdata_views::views::common::{AnyValueView, AttributeView};
 use otel_arrow_dfe_pdata_views::views::logs::LogRecordView;
 use otel_arrow_dfe_telemetry::diagnostics::{DiagnosticErrorKind, DiagnosticTracker};
 use otel_arrow_dfe_telemetry::event::{LogEvent, ObservedEvent, ObservedEventReporter};
-use otel_arrow_dfe_telemetry::self_tracing::{LogContext, LogRecord};
+use otel_arrow_dfe_telemetry::self_tracing::LogContext;
 use otel_arrow_dfe_telemetry::tracing_init::{ProviderSetup, TracingSetup};
 use std::cell::Cell;
 use std::sync::{Arc, Mutex};
@@ -16,15 +16,9 @@ use std::time::{Duration, Instant};
 use tracing::{Event, Level, Subscriber};
 use tracing_subscriber::{Layer, layer::Context, prelude::*};
 
-fn detail(message: &str) -> Option<LogRecord> {
-    Some(
-        otel_arrow_dfe_telemetry::__log_record_impl!(
-            Level::WARN,
-            "test.diagnostic.detail",
-            message = message
-        )
-        .into_record(LogContext::new()),
-    )
+fn counted_message(formats: &Cell<u64>) -> &'static str {
+    formats.set(formats.get() + 1);
+    "connection refused"
 }
 
 #[derive(Clone, Default)]
@@ -55,32 +49,26 @@ fn suppression_precedes_all_subscribers() {
         let mut tracker = DiagnosticTracker::default();
         for second in 0..=60 {
             for _ in 0..100 {
-                if let Some(report) = tracker.failure(
-                    start + Duration::from_secs(second),
+                otel_arrow_dfe_telemetry::otel_summary_warn!(
+                    target: "otel.exporter.test",
+                    at: start + Duration::from_secs(second),
+                    &mut tracker,
+                    otel_arrow_dfe_config::SignalType::Logs,
                     DiagnosticErrorKind::Transport,
-                    || {
-                        formats.set(formats.get() + 1);
-                        detail("connection refused")
-                    },
-                ) {
-                    otel_arrow_dfe_telemetry::otel_diagnostic_report!(
-                        target: "otel.exporter.test", emit: otel_warn,
-                        name: "test.export_error", report: &report,
-                        stage = "delivery", signal = "logs"
-                    );
-                }
+                    "test.export_error",
+                    stage = "delivery",
+                    message = counted_message(&formats)
+                );
             }
         }
-        let report = tracker
-            .success(
-                start + Duration::from_secs(61),
-                start + Duration::from_secs(90),
-            )
-            .expect("fresh success confirms recovery");
-        otel_arrow_dfe_telemetry::otel_diagnostic_report!(
-            target: "otel.exporter.test", emit: otel_info,
-            name: "test.export_recovered", report: &report,
-            stage = "delivery", signal = "logs"
+        otel_arrow_dfe_telemetry::otel_summary_recover!(
+            target: "otel.exporter.test",
+            at: start + Duration::from_secs(90),
+            &mut tracker,
+            otel_arrow_dfe_config::SignalType::Logs,
+            start + Duration::from_secs(61),
+            "test.export_recovered",
+            stage = "delivery"
         );
     });
     let expected = vec![
@@ -116,23 +104,15 @@ fn priority_detail_survives_bounded_its_encoding() {
     );
     setup.with_subscriber(|| {
         let mut tracker = DiagnosticTracker::default();
-        let report = tracker
-            .failure(Instant::now(), DiagnosticErrorKind::Transport, || {
-                let text = format!("root cause: {}", "x".repeat(4_000));
-                otel_arrow_dfe_telemetry::tracing_init::capture_current_record(
-                    otel_arrow_dfe_telemetry::__log_record_impl!(
-                        target: "otel.exporter.test",
-                        Level::WARN,
-                        "test.export_error",
-                        message = %text
-                    ),
-                )
-            })
-            .expect("first failure must produce a report");
-        otel_arrow_dfe_telemetry::otel_diagnostic_report!(
-            report: &report,
-            signal = "logs", retryable = true,
-            diagnostic_kind = "first_failure"
+        let text = format!("root cause: {}", "x".repeat(4_000));
+        otel_arrow_dfe_telemetry::otel_summary_warn!(
+            target: "otel.exporter.test",
+            &mut tracker,
+            otel_arrow_dfe_config::SignalType::Logs,
+            DiagnosticErrorKind::Transport,
+            "test.export_error",
+            retryable = true,
+            message = %text
         );
     });
 

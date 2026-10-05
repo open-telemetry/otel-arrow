@@ -1,9 +1,0 @@
-change_type: bug_fix
-component: observability
-note: Capture diagnostic report detail at the true failure site so its callsite metadata reflects where the failure happened.
-issues: [1746]
-subtext: |
-  Failure records now use the ordinary component target, filter decision,
-  entity context, callsite metadata, and structured encoding. Selected
-  records are delivered immediately or retained for summaries without
-  decoding, escaping, or re-encoding their bodies.

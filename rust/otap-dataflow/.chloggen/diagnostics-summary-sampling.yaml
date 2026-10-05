@@ -1,0 +1,8 @@
+change_type: bug_fix
+component: observability
+note: Apply bounded diagnostic sampling before constructing ordinary OTLP HTTP log events.
+issues: [1746]
+subtext: |
+  Selected failures and confirmed recoveries use normal component WARN/INFO
+  events with summary counters. Suppressed failures create no log event, and
+  error details are neither embedded in another record nor reformatted.

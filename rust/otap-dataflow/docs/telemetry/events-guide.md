@@ -387,7 +387,8 @@ stateDiagram-v2
     Unknown --> Degraded: First failure / open episode, WARN
     Healthy --> Degraded: First failure / open episode, WARN
 
-    Degraded --> Degraded: Completion without confirmed recovery
+    Degraded --> Degraded: Failure / count or emit due summary
+    Degraded --> Degraded: Success before confirmed recovery / count
     Degraded --> Healthy: Confirmed recovery / INFO, clear episode
 
     note right of Degraded
@@ -398,10 +399,9 @@ stateDiagram-v2
     end note
 ```
 
-- **Bounded volume:** the first failure emits a WARN. Further WARN summaries
-  require a completion, unreported failures, and the reporting interval to
-  elapse. Recovery takes priority over a due summary. Suppression happens before
-  log subscribers receive events.
+- **Bounded volume:** the first failure emits a WARN. A later failure emits a
+  WARN summary only after the reporting interval elapses. Other failures are
+  counted and suppressed before constructing a log event.
 - **Accurate counts:** while an episode is active, every success or failure is
   counted before reporting in both interval counters and episode totals.
   Failures also update error-category counts and, when no warning is emitted,
@@ -427,9 +427,11 @@ trackers; success at one boundary must not mark another boundary recovered.
 
 ### Report fields
 
-Selected reports keep the component's instrumentation target and pipeline/node
-context. `otel_diagnostic_report!` emits common interval and episode fields;
-each integration supplies its event names and operation-specific attributes.
+Selected reports are ordinary component log events, so they keep the component
+target, callsite, pipeline/node context, and normal filter behavior.
+`otel_summary_warn!` and `otel_summary_recover!` add common interval and episode
+fields after the sampling decision; each integration supplies its event names
+and operation-specific attributes.
 Counts describe attempts at the observed operation boundary, not unique batches
 or data loss:
 
@@ -443,25 +445,21 @@ or data loss:
 | `total_successful_attempts`, `total_failed_attempts` | Episode counts |
 | `total_suppressed_diagnostics` | Suppressed failures for the episode |
 | `error_counts`, `total_error_counts` | Bounded `category=count` lists |
-| `error_sample_age_seconds` | Age of the representative failure |
 
 Integrations may add bounded fields such as `signal`, `stage`, `message`, or a
-retry decision. Component documentation must define whether those fields
-describe the representative failure or the whole interval. Recovery reports
-retain the representative error sample and its age.
+retry decision. These fields describe the selected current event; the common
+counter fields describe its interval and complete episode.
 
-The first report includes its triggering failure. Later reports include the
-current observation and exclude observations already covered by earlier
-reports. Error text is formatted only when a failure report is selected,
-escaped for single-line display, and retained up to 1024 UTF-8 bytes.
-Success-triggered summaries reuse the previous representative error, its
-integration-specific metadata, and its age. Recovery reuses the error and its
-age.
-Callers must still redact sensitive data before supplying diagnostic text.
+The first report includes its triggering failure. Later summaries include the
+current failure and exclude observations already covered by earlier reports.
+Because sampling happens first, suppressed failures do not construct tracing
+events or format their fields. Recovery is a distinct current INFO event, not a
+copy of an earlier error. Callers must still redact sensitive data before
+supplying diagnostic text.
 
 Log frequency intentionally decreases; use component attempt and failure
-metrics for rates and impact. The shared emission helper emits common fields
-with the event name and severity chosen by the integration. Component-owned
+metrics for rates and impact. The summary macros emit common fields with the
+event name and severity chosen by the integration. Component-owned
 error categories, metric counts, and retry/permanent decisions remain
 unchanged. One process may emit several reports for an incident because
 operation scopes and cores are independent.
