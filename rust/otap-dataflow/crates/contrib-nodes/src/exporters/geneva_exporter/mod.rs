@@ -62,6 +62,7 @@ use futures::StreamExt;
 use geneva_uploader::AuthMethod;
 use geneva_uploader::client::{
     AccountRouting, EncodedBatch, GenevaClient, GenevaClientConfig, OboEventConfig, OboEventMap,
+    UploadError,
 };
 use geneva_uploader::{
     LogsEventNameMapping, LogsEventNameRoutingKey, SpanEventNameMapping, SpanEventNameRoutingKey,
@@ -1095,10 +1096,46 @@ enum GenevaExportError {
     /// the identical bytes can never succeed.
     Preparation { message: String, outcome: Outcome },
     /// Failed during upload; the outcome was already recorded against the
-    /// exporter-attempt metrics boundary. `permanent` reflects whether the
-    /// first recorded error is one that retrying the identical payload can
-    /// never resolve (see [`GenevaExporterErrorType::is_permanent`]).
-    AttemptAlreadyRecorded { message: String, permanent: bool },
+    /// exporter-attempt metrics boundary.
+    AttemptAlreadyRecorded(GenevaUploadFailure),
+}
+
+#[derive(Debug)]
+struct GenevaUploadFailure {
+    message: String,
+    permanent: bool,
+    cause: NackCause,
+}
+
+impl GenevaUploadFailure {
+    fn new(error: &UploadError, signal: SignalType, agent_fed: bool) -> Self {
+        let (permanent, cause) = match error {
+            UploadError::HttpStatus {
+                status: 408 | 429, ..
+            } => (false, NackCause::Unspecified),
+            UploadError::HttpStatus {
+                status: 401 | 403, ..
+            } => (true, NackCause::Unspecified),
+            UploadError::HttpStatus { status, .. } if (400..500).contains(status) => {
+                (true, NackCause::Refused)
+            }
+            UploadError::AccountGroupNotResolved { .. } => (!agent_fed, NackCause::Unspecified),
+            _ => (false, NackCause::Unspecified),
+        };
+        Self {
+            message: format!("Failed to upload {signal:?} batch: {error}"),
+            permanent,
+            cause,
+        }
+    }
+
+    fn merge(&mut self, other: Self) {
+        self.permanent &= other.permanent;
+        // Only blame the incoming request if every failure does.
+        if other.cause != NackCause::Refused {
+            self.cause = NackCause::Unspecified;
+        }
+    }
 }
 
 impl GenevaExportError {
@@ -1116,22 +1153,17 @@ impl GenevaExportError {
         }
     }
 
-    fn attempt_already_recorded(message: String, permanent: bool) -> Self {
-        Self::AttemptAlreadyRecorded { message, permanent }
-    }
-
     const fn unsubmitted_outcome(&self) -> Option<Outcome> {
         match self {
             Self::Preparation { outcome, .. } => Some(*outcome),
-            Self::AttemptAlreadyRecorded { .. } => None,
+            Self::AttemptAlreadyRecorded(_) => None,
         }
     }
 
     fn message(&self) -> &str {
         match self {
-            Self::Preparation { message, .. } | Self::AttemptAlreadyRecorded { message, .. } => {
-                message
-            }
+            Self::Preparation { message, .. } => message,
+            Self::AttemptAlreadyRecorded(failure) => &failure.message,
         }
     }
 
@@ -1141,7 +1173,21 @@ impl GenevaExportError {
     const fn is_permanent(&self) -> bool {
         match self {
             Self::Preparation { .. } => true,
-            Self::AttemptAlreadyRecorded { permanent, .. } => *permanent,
+            Self::AttemptAlreadyRecorded(failure) => failure.permanent,
+        }
+    }
+
+    fn into_nack(self, refused: OtapPdata) -> NackMsg<OtapPdata> {
+        let (message, permanent, cause) = match self {
+            Self::Preparation { message, .. } => (message, true, NackCause::Refused),
+            Self::AttemptAlreadyRecorded(failure) => {
+                (failure.message, failure.permanent, failure.cause)
+            }
+        };
+        if permanent {
+            NackMsg::new_permanent_with_cause(message, refused, cause)
+        } else {
+            NackMsg::new_with_cause(message, refused, cause)
         }
     }
 }
@@ -1151,8 +1197,11 @@ async fn upload_batch_attempt(
     batch: &EncodedBatch,
     signal: SignalType,
     attempt: otel_arrow_dfe_otap::metrics::ExporterAttempt,
-) -> otel_arrow_dfe_otap::metrics::CompletedExporterAttempt<u64, (GenevaExporterErrorType, String)>
-{
+    agent_fed: bool,
+) -> otel_arrow_dfe_otap::metrics::CompletedExporterAttempt<
+    u64,
+    (GenevaExporterErrorType, GenevaUploadFailure),
+> {
     attempt
         .run(async |attempt| {
             attempt.set_item_count_with(|| batch.row_count as u64);
@@ -1162,16 +1211,11 @@ async fn upload_batch_attempt(
                 .await
                 .map_err(|error| {
                     let error_type = GenevaExporterErrorType::from_upload_error(&error);
+                    let failure = GenevaUploadFailure::new(&error, signal, agent_fed);
                     if error_type.is_refusal() {
-                        attempt.refused((
-                            error_type,
-                            format!("Failed to upload {signal:?} batch: {error}"),
-                        ))
+                        attempt.refused((error_type, failure))
                     } else {
-                        attempt.failed((
-                            error_type,
-                            format!("Failed to upload {signal:?} batch: {error}"),
-                        ))
+                        attempt.failed((error_type, failure))
                     }
                 })
                 .map(|()| batch.row_count as u64)
@@ -1184,16 +1228,16 @@ fn record_completed_upload(
     signal: SignalType,
     completed: otel_arrow_dfe_otap::metrics::CompletedExporterAttempt<
         u64,
-        (GenevaExporterErrorType, String),
+        (GenevaExporterErrorType, GenevaUploadFailure),
     >,
-    // `(permanent, message)` for the first recorded error, so the NACK
-    // sent upstream can reflect whether retrying is worthwhile.
-    first_error: &mut Option<(bool, String)>,
+    first_error: &mut Option<GenevaUploadFailure>,
 ) {
     if let Err((error_type, error)) = metrics.boundary.record(completed) {
         metrics.record_failure(signal, error_type);
-        if first_error.is_none() {
-            *first_error = Some((error_type.is_permanent(), error));
+        if let Some(first_error) = first_error {
+            first_error.merge(error);
+        } else {
+            *first_error = Some(error);
         }
     }
 }
@@ -1288,12 +1332,9 @@ impl GenevaExporter {
     /// per-batch retry tracking (partial ACK/NACK or exporter-attached retry
     /// context on `OtapPdata`).
     ///
-    /// The permanence of the returned error is derived only from the first
-    /// completed failure (batches complete in arbitrary order). If a
-    /// permanent failure (e.g. an unresolved account group) races with a
-    /// transient one (e.g. throttling) and the transient failure completes
-    /// first, the whole payload is retried even though one batch can never
-    /// succeed.
+    /// The first failure supplies the error message, but the payload is
+    /// permanent only if every failed batch is permanent, independent of
+    /// completion order.
     async fn upload_batches_concurrent(
         &mut self,
         batches: &[EncodedBatch],
@@ -1302,6 +1343,7 @@ impl GenevaExporter {
         let batches_encoded = batches.len();
         let max_concurrent = self.config.max_concurrent_uploads.max(1);
         let client = &self.geneva_client;
+        let agent_fed = matches!(self.config.auth, AuthConfig::AgentFed);
         // Pre-start queued attempts only when their queueing duration is observable.
         // Otherwise create attempts as uploads are scheduled to bound retained state.
         let mut prestarted_attempts = self.metrics.measures_duration().then(|| {
@@ -1318,10 +1360,16 @@ impl GenevaExporter {
                 .as_mut()
                 .and_then(|attempts| attempts.next())
                 .unwrap_or_else(|| self.metrics.boundary.attempt(signal_type));
-            uploads.push(upload_batch_attempt(client, batch, signal_type, attempt));
+            uploads.push(upload_batch_attempt(
+                client,
+                batch,
+                signal_type,
+                attempt,
+                agent_fed,
+            ));
         }
 
-        let mut first_error: Option<(bool, String)> = None;
+        let mut first_error = None;
 
         while let Some(completed) = uploads.next().await {
             record_completed_upload(&mut self.metrics, signal_type, completed, &mut first_error);
@@ -1331,14 +1379,18 @@ impl GenevaExporter {
                     .as_mut()
                     .and_then(|attempts| attempts.next())
                     .unwrap_or_else(|| self.metrics.boundary.attempt(signal_type));
-                uploads.push(upload_batch_attempt(client, batch, signal_type, attempt));
+                uploads.push(upload_batch_attempt(
+                    client,
+                    batch,
+                    signal_type,
+                    attempt,
+                    agent_fed,
+                ));
             }
         }
 
-        if let Some((permanent, error)) = first_error {
-            Err(GenevaExportError::attempt_already_recorded(
-                error, permanent,
-            ))
+        if let Some(error) = first_error {
+            Err(GenevaExportError::AttemptAlreadyRecorded(error))
         } else {
             Ok(batches_encoded)
         }
@@ -1706,21 +1758,8 @@ impl Exporter<OtapPdata> for GenevaExporter {
                                 permanent = error.is_permanent(),
                                 message = "Failed to export to Geneva"
                             );
-                            // A permanent failure (malformed/unsupported payload, a
-                            // rejected request, or unresolved account routing) will
-                            // reproduce identically on every retry, so mark the NACK
-                            // permanent to tell a retry processor not to retry it.
                             let refused = OtapPdata::new(context, saved_payload);
-                            let nack = if error.is_permanent() {
-                                NackMsg::new_permanent_with_cause(
-                                    error.message(),
-                                    refused,
-                                    NackCause::Refused,
-                                )
-                            } else {
-                                NackMsg::new(error.message(), refused)
-                            };
-                            effect_handler.notify_nack(nack).await?;
+                            effect_handler.notify_nack(error.into_nack(refused)).await?;
                         }
                     }
                 }
@@ -1746,7 +1785,9 @@ mod tests {
     use std::sync::{Arc, RwLock};
 
     use bytes::Bytes;
-    use geneva_uploader::client::AgentFedCredentialSource;
+    use geneva_uploader::client::{
+        AgentFedCredential, AgentFedCredentialFuture, AgentFedCredentialSource,
+    };
     use otel_arrow_dfe_engine::Interests;
     use otel_arrow_dfe_engine::capability::auth::BearerToken;
     use otel_arrow_dfe_engine::capability::auth::agent_fed_credential_provider::{
@@ -2044,6 +2085,238 @@ mod tests {
             .expect("resolve local-only capabilities")
     }
 
+    #[derive(Debug)]
+    struct TestUploadCredentialSource {
+        credential: RwLock<AgentFedCredential>,
+    }
+
+    impl AgentFedCredentialSource for TestUploadCredentialSource {
+        fn current(&self) -> AgentFedCredentialFuture<'_> {
+            Box::pin(async {
+                Some(
+                    self.credential
+                        .read()
+                        .expect("credential read lock")
+                        .clone(),
+                )
+            })
+        }
+    }
+
+    fn test_upload_exporter(
+        endpoint: String,
+    ) -> (
+        GenevaExporter,
+        Vec<EncodedBatch>,
+        Arc<TestUploadCredentialSource>,
+    ) {
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+        let config = Config::parse(&agent_fed_test_config()).expect("agent-fed config");
+        let source = Arc::new(TestUploadCredentialSource {
+            credential: RwLock::new(AgentFedCredential::new(
+                "test-token",
+                endpoint,
+                std::collections::HashMap::from([(
+                    "test-group".to_owned(),
+                    "test-moniker".to_owned(),
+                )]),
+            )),
+        });
+        let client =
+            GenevaClient::with_agent_fed_source(config.to_geneva_client_config(), source.clone())
+                .expect("test client");
+        let mut records = OtapArrowRecords::Logs(Default::default());
+        records
+            .set(ArrowPayloadType::Logs, create_test_logs_batch())
+            .expect("logs batch");
+        let view = OtapLogsView::try_from(&records).expect("logs view");
+        let batches = client
+            .encode_and_compress_logs(&view)
+            .expect("encoded logs");
+        assert!(!batches.is_empty());
+        let exporter = GenevaExporter {
+            config,
+            metrics: GenevaExporterMetrics::register(&create_test_pipeline_context()),
+            geneva_client: client,
+        };
+        (exporter, batches, source)
+    }
+
+    /// Scenario: Geneva returns client, timeout, throttle, and server errors during real uploads.
+    /// Guarantees: NACK permanence preserves retries, while exporter credentials are not blamed on incoming telemetry.
+    #[tokio::test]
+    async fn upload_statuses_preserve_nack_permanence_and_cause() {
+        use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
+
+        let server = MockServer::start().await;
+        let (mut exporter, batches, _) = test_upload_exporter(server.uri());
+        for (status, permanent, cause) in [
+            (400, true, NackCause::Refused),
+            (401, true, NackCause::Unspecified),
+            (403, true, NackCause::Unspecified),
+            (408, false, NackCause::Unspecified),
+            (429, false, NackCause::Unspecified),
+            (503, false, NackCause::Unspecified),
+        ] {
+            server.reset().await;
+            Mock::given(method("POST"))
+                .respond_with(ResponseTemplate::new(status))
+                .expect(batches.len() as u64)
+                .mount(&server)
+                .await;
+            let error = exporter
+                .upload_batches_concurrent(&batches, SignalType::Logs)
+                .await
+                .expect_err("upload must fail");
+            let nack =
+                error.into_nack(OtapPdata::new_default(OtapPayload::empty(SignalType::Logs)));
+            assert_eq!(nack.permanent, permanent, "HTTP {status}");
+            assert_eq!(nack.cause, cause, "HTTP {status}");
+            assert!(nack.reason.contains(&status.to_string()), "{}", nack.reason);
+            server.verify().await;
+        }
+    }
+
+    /// Scenario: The host adds a missing agent-fed account group after the first upload fails.
+    /// Guarantees: The first NACK remains retryable and the identical encoded batches succeed after rotation.
+    #[tokio::test]
+    async fn agent_fed_missing_account_group_recovers_after_rotation() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{method, query_param},
+        };
+
+        let server = MockServer::start().await;
+        let (mut exporter, batches, source) = test_upload_exporter(server.uri());
+        source
+            .credential
+            .write()
+            .expect("credential write lock")
+            .primary_monikers
+            .clear();
+        Mock::given(method("POST"))
+            .and(query_param("moniker", "rotated-moniker"))
+            .respond_with(
+                ResponseTemplate::new(202).set_body_json(serde_json::json!({"ticket": "accepted"})),
+            )
+            .expect(batches.len() as u64)
+            .mount(&server)
+            .await;
+        let error = exporter
+            .upload_batches_concurrent(&batches, SignalType::Logs)
+            .await
+            .expect_err("missing account group");
+        let nack = error.into_nack(OtapPdata::new_default(OtapPayload::empty(SignalType::Logs)));
+        assert!(!nack.permanent);
+        assert_eq!(nack.cause, NackCause::Unspecified);
+        assert!(nack.reason.contains("was not resolved"), "{}", nack.reason);
+        assert!(
+            server
+                .received_requests()
+                .await
+                .expect("requests")
+                .is_empty()
+        );
+
+        let _ = source
+            .credential
+            .write()
+            .expect("credential write lock")
+            .primary_monikers
+            .insert("test-group".to_owned(), "rotated-moniker".to_owned());
+        assert_eq!(
+            exporter
+                .upload_batches_concurrent(&batches, SignalType::Logs)
+                .await
+                .expect("retry succeeds"),
+            batches.len()
+        );
+        server.verify().await;
+    }
+
+    /// Scenario: Routing errors use either static or agent-fed authentication and other uploader errors occur.
+    /// Guarantees: Static routing remains permanent but not client-caused, and transport/fallback errors remain retryable.
+    #[test]
+    fn upload_failure_classification_preserves_non_http_semantics() {
+        for agent_fed in [false, true] {
+            for (error, permanent) in [
+                (
+                    UploadError::AccountGroupNotResolved {
+                        requested: "missing".to_owned(),
+                        available: vec!["known".to_owned()],
+                    },
+                    !agent_fed,
+                ),
+                (UploadError::Transport("network".to_owned()), false),
+                (UploadError::Other("internal".to_owned()), false),
+                (
+                    UploadError::HttpStatus {
+                        status: 302,
+                        retry_after: None,
+                        message: "redirect".to_owned(),
+                    },
+                    false,
+                ),
+            ] {
+                let error = GenevaExportError::AttemptAlreadyRecorded(GenevaUploadFailure::new(
+                    &error,
+                    SignalType::Logs,
+                    agent_fed,
+                ));
+                assert_eq!(error.is_permanent(), permanent);
+                assert_eq!(error.unsubmitted_outcome(), None);
+                let nack =
+                    error.into_nack(OtapPdata::new_default(OtapPayload::empty(SignalType::Logs)));
+                assert_eq!(nack.permanent, permanent);
+                assert_eq!(nack.cause, NackCause::Unspecified);
+            }
+        }
+    }
+
+    /// Scenario: Permanent and transient batch failures complete in either order.
+    /// Guarantees: Any transient failure preserves retries, all failures contribute to cause, and the first message is retained.
+    #[tokio::test]
+    async fn completed_batch_failures_aggregate_independently_of_order() {
+        for (statuses, permanent, cause) in [
+            ([400, 408], false, NackCause::Unspecified),
+            ([408, 400], false, NackCause::Unspecified),
+            ([400, 403], true, NackCause::Unspecified),
+            ([403, 400], true, NackCause::Unspecified),
+            ([400, 400], true, NackCause::Refused),
+        ] {
+            let mut metrics = GenevaExporterMetrics::register(&create_test_pipeline_context());
+            let mut first_error = None;
+            for status in statuses {
+                let error = UploadError::HttpStatus {
+                    status,
+                    retry_after: None,
+                    message: status.to_string(),
+                };
+                let completed = metrics
+                    .boundary
+                    .attempt(SignalType::Logs)
+                    .run(async |attempt| {
+                        Err::<u64, _>(attempt.refused((
+                            GenevaExporterErrorType::from_upload_error(&error),
+                            GenevaUploadFailure::new(&error, SignalType::Logs, false),
+                        )))
+                    })
+                    .await;
+                record_completed_upload(
+                    &mut metrics,
+                    SignalType::Logs,
+                    completed,
+                    &mut first_error,
+                );
+            }
+            let nack = GenevaExportError::AttemptAlreadyRecorded(first_error.expect("failure"))
+                .into_nack(OtapPdata::new_default(OtapPayload::empty(SignalType::Logs)));
+            assert_eq!(nack.permanent, permanent, "{statuses:?}");
+            assert_eq!(nack.cause, cause, "{statuses:?}");
+            assert!(nack.reason.contains(&statuses[0].to_string()));
+        }
+    }
+
     /// Scenario: Concurrent Geneva batch submissions complete with mixed terminal outcomes.
     /// Guarantees: Every completed batch is recorded once and the first error remains the outer NACK reason.
     #[tokio::test]
@@ -2060,16 +2333,32 @@ mod tests {
                 .boundary
                 .attempt(SignalType::Logs)
                 .run(async |attempt| {
-                    Err(attempt
-                        .refused((GenevaExporterErrorType::Throttled, "throttled".to_string())))
+                    Err(attempt.refused((
+                        GenevaExporterErrorType::Throttled,
+                        GenevaUploadFailure::new(
+                            &UploadError::HttpStatus {
+                                status: 429,
+                                retry_after: None,
+                                message: "throttled".to_owned(),
+                            },
+                            SignalType::Logs,
+                            false,
+                        ),
+                    )))
                 })
                 .await,
             metrics
                 .boundary
                 .attempt(SignalType::Logs)
                 .run(async |attempt| {
-                    Err(attempt
-                        .failed((GenevaExporterErrorType::Transport, "transport".to_string())))
+                    Err(attempt.failed((
+                        GenevaExporterErrorType::Transport,
+                        GenevaUploadFailure::new(
+                            &UploadError::Transport("transport".to_owned()),
+                            SignalType::Logs,
+                            false,
+                        ),
+                    )))
                 })
                 .await,
         ];
@@ -2079,11 +2368,10 @@ mod tests {
             record_completed_upload(&mut metrics, SignalType::Logs, completed, &mut first_error);
         }
 
-        assert_eq!(
-            first_error,
-            Some((false, "throttled".to_string())),
-            "throttled errors are transient, so the outer NACK must remain retryable"
-        );
+        let first_error = first_error.expect("upload failure");
+        assert!(first_error.message.contains("throttled"));
+        assert!(!first_error.permanent);
+        assert_eq!(first_error.cause, NackCause::Unspecified);
         let snapshots = metrics.terminal_snapshots();
         for outcome in ["success", "refused", "failure"] {
             assert!(snapshots.iter().any(|snapshot| {

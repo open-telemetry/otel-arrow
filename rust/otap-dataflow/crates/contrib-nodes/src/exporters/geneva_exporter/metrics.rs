@@ -62,28 +62,6 @@ impl GenevaExporterErrorType {
     pub(super) const fn is_refusal(self) -> bool {
         matches!(self, Self::Throttled | Self::Client)
     }
-
-    /// Returns whether retrying the exact same payload can never succeed.
-    ///
-    /// Permanent failures are caused by the payload or configuration itself
-    /// (malformed data, an unsupported signal, a rejected request, or
-    /// unresolved account routing) rather than a transient backend or
-    /// network condition. Throttling, server errors, transport failures, and
-    /// other uncategorized uploader errors are excluded because backing off
-    /// and retrying the same payload can succeed.
-    #[must_use]
-    pub(super) const fn is_permanent(self) -> bool {
-        matches!(
-            self,
-            Self::TransportDecoding
-                | Self::Conversion
-                | Self::ProtobufDecoding
-                | Self::Encoding
-                | Self::Client
-                | Self::AccountRouting
-                | Self::UnsupportedSignal
-        )
-    }
 }
 
 /// Bounded reason that a Geneva PData message did not require an upload.
