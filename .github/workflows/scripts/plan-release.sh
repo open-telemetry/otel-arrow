@@ -38,6 +38,8 @@ if [[ ! "$LAST_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     exit 1
 fi
 
+IFS='.' read -r MAJOR MINOR PATCH <<< "$LAST_VERSION"
+
 ENTRY_COUNT=0
 IMPACT='patch'
 
@@ -62,12 +64,23 @@ for entry in "$ENTRIES_DIR"/*.yaml "$ENTRIES_DIR"/*.yml; do
         bug_fix)
             ;;
         enhancement)
-            if [ "$COMPONENT" != 'dependencies' ]; then
+            if [ "$COMPONENT" != 'dependencies' ] && [ "$IMPACT" != 'major' ]; then
                 IMPACT='minor'
             fi
             ;;
-        breaking | deprecation | new_component)
-            IMPACT='minor'
+        breaking)
+            if [ "$MAJOR" -eq 0 ]; then
+                if [ "$IMPACT" != 'major' ]; then
+                    IMPACT='minor'
+                fi
+            else
+                IMPACT='major'
+            fi
+            ;;
+        deprecation | new_component)
+            if [ "$IMPACT" != 'major' ]; then
+                IMPACT='minor'
+            fi
             ;;
         *)
             echo "Error: ${entry} has unsupported change_type '${CHANGE_TYPE}'." >&2
@@ -94,13 +107,20 @@ if [ "$ENTRY_COUNT" -eq 0 ]; then
     exit 0
 fi
 
-IFS='.' read -r MAJOR MINOR PATCH <<< "$LAST_VERSION"
-if [ "$IMPACT" = 'minor' ]; then
-    MINOR=$((MINOR + 1))
-    PATCH=0
-else
-    PATCH=$((PATCH + 1))
-fi
+case "$IMPACT" in
+    major)
+        MAJOR=$((MAJOR + 1))
+        MINOR=0
+        PATCH=0
+        ;;
+    minor)
+        MINOR=$((MINOR + 1))
+        PATCH=0
+        ;;
+    patch)
+        PATCH=$((PATCH + 1))
+        ;;
+esac
 NEXT_VERSION="${MAJOR}.${MINOR}.${PATCH}"
 
 jq -n \

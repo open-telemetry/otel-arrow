@@ -78,9 +78,31 @@ test_minor_release() {
     assert_json "$plan" '.next_version' '0.59.0'
 }
 
+# Scenario: A pre-1.0 component has a pending breaking change.
+# Guarantees: The planner uses a minor release while the major version is zero.
+test_pre_one_breaking_release() {
+    local plan
+    create_entry "$TEST_ROOT/rust/otap-dataflow/.chloggen/breaking.yaml" breaking engine
+    plan=$(cd "$TEST_ROOT" && "$PLAN_SCRIPT" rust)
+    assert_json "$plan" '.impact' 'minor'
+    assert_json "$plan" '.next_version' '0.59.0'
+}
+
+# Scenario: A post-1.0 component has a pending breaking change.
+# Guarantees: The planner increments the major version and resets minor and patch.
+test_post_one_breaking_release() {
+    local plan
+    create_entry "$TEST_ROOT/go/.chloggen/breaking.yaml" breaking all
+    plan=$(cd "$TEST_ROOT" && "$PLAN_SCRIPT" go)
+    assert_json "$plan" '.impact' 'major'
+    assert_json "$plan" '.next_version' '2.0.0'
+}
+
 setup_repository
 test_no_pending_entries
 test_patch_release
 test_minor_release
+test_pre_one_breaking_release
+test_post_one_breaking_release
 
 echo "plan-release tests passed"

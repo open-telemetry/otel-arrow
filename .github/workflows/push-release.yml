@@ -94,6 +94,9 @@ jobs:
                 minor)
                   expected="${major}.$((minor + 1)).0"
                   ;;
+                major)
+                  expected="$((major + 1)).0.0"
+                  ;;
                 *)
                   echo "Error: invalid ${target} release impact '${impact}'"
                   exit 1

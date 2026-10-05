@@ -402,16 +402,19 @@ jobs:
             echo "After this PR merges, Push Release starts automatically and waits for approval from the protected \`release\` environment."
           } > /tmp/pr_body.md
 
-          LABEL_ARGS=(--label release)
+          CREATE_LABEL_ARGS=(--label release)
+          EDIT_LABEL_ARGS=(--add-label release)
           if [ "$GO_RELEASE" = "true" ]; then
             gh label create release-go --repo "$GITHUB_REPOSITORY" \
               --color 0E8A16 --description "Includes a Go release" --force
-            LABEL_ARGS+=(--label release-go)
+            CREATE_LABEL_ARGS+=(--label release-go)
+            EDIT_LABEL_ARGS+=(--add-label release-go)
           fi
           if [ "$RUST_RELEASE" = "true" ]; then
             gh label create release-rust --repo "$GITHUB_REPOSITORY" \
               --color D93F0B --description "Includes a Rust OTAP Dataflow release" --force
-            LABEL_ARGS+=(--label release-rust)
+            CREATE_LABEL_ARGS+=(--label release-rust)
+            EDIT_LABEL_ARGS+=(--add-label release-rust)
           fi
 
           EXISTING_PR=$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number // empty')
@@ -421,14 +424,14 @@ jobs:
               --title "$TITLE" \
               --body-file /tmp/pr_body.md \
               --base main \
-              "${LABEL_ARGS[@]}"
+              "${EDIT_LABEL_ARGS[@]}"
           else
             gh pr create \
               --title "$TITLE" \
               --body-file /tmp/pr_body.md \
               --head "$BRANCH" \
               --base main \
-              "${LABEL_ARGS[@]}"
+              "${CREATE_LABEL_ARGS[@]}"
           fi
 
       - name: Verify release window remains stable
