@@ -184,14 +184,15 @@ convention when its meaning and attributes match.
 
 Project-defined metrics SHOULD use an established, stable namespace and follow
 this general pattern:
-`<namespace>.<entity>[.<thing>].<measurement>`
+`<namespace>[.<entity>[.<thing>]].<measurement>`
 
 Where:
 
 - `<namespace>` identifies the standard domain, subsystem, or component kind
   that owns the metric (for example, `system`, `process`, `pipeline`,
   `receiver`, or `exporter`). A universal project prefix is not required.
-- `<entity>` identifies the primary entity or operation being measured.
+- `<entity>` optionally identifies the primary entity or operation when the
+  namespace alone does not already identify it.
 - `<thing>` optionally narrows the entity, operation, or stage.
 - `<measurement>` names the measured quantity with a precise noun or noun
   phrase.

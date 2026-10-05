@@ -151,8 +151,10 @@ Attributes:
 
 The `channel.id` format depends on the channel kind:
 
-- Control Channel: `control:{node.id}`
-- PData Channel: `pdata:{source_node.id}:{output_port}`
+- Control Channel: `{owner}:control`, where the owner is the node or extension
+  that owns the channel.
+- PData Channel: `hyperedge:<hash>`, where the stable hash covers the complete
+  source, destination, and dispatch-policy signature.
 
 ## Stability and identity guarantees
 
@@ -170,9 +172,8 @@ and may change on restart or reconfiguration.
 - `thread.id`: Stable for the thread lifetime; may be reused after thread exit.
 - `pipeline.group.id`, `pipeline.id`, `node.id`: Stable across configuration
   reloads; intended to remain consistent for the same logical pipeline graph.
-- `channel.id`: Identifies the source + output port only and is stable
-  across configuration reloads as long as the source node id and port are
-  unchanged.
+- `channel.id`: Stable across configuration reloads while its owner or complete
+  PData hyperedge signature remains unchanged.
 - `node.port`: Stable across configuration reloads for a given pipeline graph.
 
 ## Entity relationships
@@ -186,8 +187,8 @@ Service -> Process -> Execution Engine -> Pipeline Group -> Pipeline -> Node
 
 Channels connect nodes:
 
-- `channel.id` identifies the source node + output port only; fan-out receivers
-  share the same `channel.id`.
+- `channel.id` identifies one control-channel owner or one complete PData
+  hyperedge; all endpoints of a PData hyperedge share the same `channel.id`.
 - Node identity is carried by the `node.*` attributes on each signal.
 - Endpoint role is implied by the metric set (e.g. `channel.sender` vs
   `channel.receiver`), not by a channel attribute.

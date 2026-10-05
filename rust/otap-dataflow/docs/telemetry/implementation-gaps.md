@@ -36,7 +36,6 @@ Goal:
 | Service identity | `process.instance.id` used instead of `service.instance.id`       |
 | Execution engine | `thread.id` not set                                               |
 | Execution engine | `core.id` used instead of `cpu.logical_number`                    |
-| Channels         | Channel id format not enforced                                    |
 
 ### Tooling and process
 
