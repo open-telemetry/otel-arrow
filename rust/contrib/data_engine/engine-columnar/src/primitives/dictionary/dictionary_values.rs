@@ -97,26 +97,6 @@ impl<'a> DictionaryValueArray<'a> {
 
 impl PartialEq for DictionaryValueArray<'_> {
     fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (DictionaryValueArray::Array(left), DictionaryValueArray::Array(right))
-                if Arc::ptr_eq(left, right) =>
-            {
-                return true;
-            }
-            (DictionaryValueArray::Vec(left), DictionaryValueArray::Vec(right))
-                if Rc::ptr_eq(left, right) =>
-            {
-                return true;
-            }
-            (DictionaryValueArray::Set(left), DictionaryValueArray::Set(right))
-                if Rc::ptr_eq(left, right) =>
-            {
-                return true;
-            }
-            (DictionaryValueArray::Boolean, DictionaryValueArray::Boolean) => return true,
-            _ => {}
-        }
-
         let length = self.len();
 
         if length != other.len() {
