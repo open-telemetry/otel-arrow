@@ -91,6 +91,7 @@ impl CodecMetadata {
     }
 
     /// Returns the stable representation identity.
+    /// FOO
     #[must_use]
     pub const fn encoding(&self) -> &PdataEncoding {
         &self.encoding
