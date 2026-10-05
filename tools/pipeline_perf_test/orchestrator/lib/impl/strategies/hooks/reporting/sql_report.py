@@ -321,12 +321,6 @@ hooks:
         """Flatten and register in-memory telemetry tables and regaister in duckdb
 
         This method extracts the various attribute dicts into their own columns for easier querying.
-
-        Metrics pushed via OTLP to the suite's metrics sink (if one is running)
-        are concatenated onto the framework 'metrics' rows before flattening, so
-        a single 'metrics' table serves both scrape-based and push-based reports.
-        A run uses one collection method, so the table is homogeneous: either
-        Prometheus-style names (scrape) or OTLP names (push).
         """
         # Append OTLP-pushed rows (if any) to the framework metrics rows. The
         # sink already emits MetricRow-shaped rows, so a plain concat lines the
