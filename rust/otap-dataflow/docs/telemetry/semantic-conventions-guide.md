@@ -63,9 +63,12 @@ Source:
 ### Reserved namespaces
 
 - The `otel.*` namespace is reserved.
-- Custom metric, event, and attribute names SHOULD use a project-specific prefix
-  and MUST NOT clash with existing semantic convention namespaces. We use the
-  same prefix as the OTel Collector: `otelcol.*`.
+- Custom semantic identifiers MUST NOT clash with existing semantic convention
+  namespaces. Metric and event names SHOULD use an established namespace that
+  identifies the domain, subsystem, protocol, or component kind that owns the
+  signal; a universal project prefix is not required.
+- Project-defined attribute names use the `otelcol.*` namespace as described in
+  the [Attributes Guide](attributes-guide.md).
 
 ## 2. Metric naming and semantics
 

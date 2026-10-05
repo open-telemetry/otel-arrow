@@ -176,20 +176,48 @@ units are mandatory. Units must follow UCUM conventions and use braces notation
 only for annotation units (e.g. `{batch}`, `{signal}`). See the [Units](#units)
 section below for details.
 
-Metric set naming should follow the pattern `otelcol.<entity>` or
-`otelcol.<entity>.<subentity>` when applicable. Examples of metric sets in this
-project:
+### Metric naming
 
-- For generic entities:
-  - `otelcol.pipeline`, `otelcol.node`
-  - `otelcol.channel.sender`, `otelcol.channel.receiver`
-  - ...
-- For specific node types:
-  - `otelcol.node.retry`
-  - `otelcol.node.batch`
-  - `otelcol.node.otlp_receiver`
-  - `otelcol.node.otlp_grpc_exporter`
-  - ...
+Metric names MUST be stable, low-cardinality, and describe what is measured,
+not how the SDK records or aggregates it. Reuse an OpenTelemetry semantic
+convention when its meaning and attributes match.
+
+Project-defined metrics SHOULD use an established, stable namespace and follow
+this general pattern:
+`<namespace>.<entity>[.<thing>].<measurement>`
+
+Where:
+
+- `<namespace>` identifies the standard domain, subsystem, or component kind
+  that owns the metric (for example, `system`, `process`, `pipeline`,
+  `receiver`, or `exporter`). A universal project prefix is not required.
+- `<entity>` identifies the primary entity or operation being measured.
+- `<thing>` optionally narrows the entity, operation, or stage.
+- `<measurement>` names the measured quantity with a precise noun or noun
+  phrase.
+
+Use dots to express the hierarchy and underscores only within one segment.
+Choose the namespace from the metric's semantics, not from the crate or module
+that happens to implement it.
+
+Do not append an instrument or aggregation label such as `counter`, `gauge`,
+`histogram`, or `total`. Avoid a generic `count` suffix merely because the
+instrument records a count. Name the discrete occurrences instead, such as
+`operations`, `attempts`, `failures`, or `messages`. Use `count` when population
+size is itself the semantic measurement and the noun alone would be ambiguous,
+such as `system.process.count`.
+
+Examples:
+
+| Prefer | Avoid | Reason |
+| --- | --- | --- |
+| `exporter.parquet.file.operations` | `exporter.parquet.files.count` | Names the operations being counted instead of the aggregation. |
+| `exporter.attempted.messages` | `exporter.attempted.message_counter` | The instrument type is metadata, not metric identity. |
+| `system.process.count` | `system.processes` | `count` distinguishes a population measurement from process behavior. |
+
+Metric-set namespaces identify the entity or operation shared by their metrics.
+Examples include `pipeline`, `node`, `channel.sender`, `receiver.journald`,
+`exporter.azure_monitor`, and `exporter.attempted`.
 
 ## Attributes and entity context
 
