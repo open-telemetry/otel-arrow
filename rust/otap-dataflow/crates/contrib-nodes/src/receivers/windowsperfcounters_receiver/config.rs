@@ -64,7 +64,8 @@ pub struct RuntimeConfig {
 #[serde(deny_unknown_fields)]
 struct Config {
     metrics: BTreeMap<String, MetricConfig>,
-    perfcounters: Vec<ObjectConfig>,
+    #[serde(rename = "perfcounters")]
+    perf_counters: Vec<ObjectConfig>,
     #[serde(default = "default_interval", with = "humantime_serde")]
     collection_interval: Duration,
     #[serde(default = "default_initial_delay", with = "humantime_serde")]
@@ -318,7 +319,7 @@ impl RuntimeConfig {
         if user.metrics.is_empty() {
             return Err(invalid("metrics must contain at least one entry"));
         }
-        if user.perfcounters.is_empty() {
+        if user.perf_counters.is_empty() {
             return Err(invalid("perfcounters must contain at least one entry"));
         }
 
@@ -344,10 +345,10 @@ impl RuntimeConfig {
             );
         }
 
-        let expanded_count = expanded_counter_count(&user.perfcounters)?;
+        let expanded_count = expanded_counter_count(&user.perf_counters)?;
         let mut counters = Vec::with_capacity(expanded_count);
         let mut referenced_metrics = HashSet::new();
-        for (object_index, object) in user.perfcounters.iter().enumerate() {
+        for (object_index, object) in user.perf_counters.iter().enumerate() {
             let object_field = format!("perfcounters[{object_index}]");
             let object_name =
                 validate_object_or_instance(&format!("{object_field}.object"), &object.object)?;
