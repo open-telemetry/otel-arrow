@@ -396,12 +396,7 @@ impl<'a> TreeNodeVisitor<'a> for ProjectedSchemaExprVisitor {
         // `col("scope").field("name")` which produces a ScalarFunction expression invoking the
         // `GetFieldFunc` function with arguments ("scope", "name").
         if let Expr::ScalarFunction(scalar_udf) = node
-            && scalar_udf
-                .func
-                .as_ref()
-                .inner()
-                .as_any()
-                .is::<GetFieldFunc>()
+            && scalar_udf.func.as_ref().inner().is::<GetFieldFunc>()
         {
             let source = scalar_udf.args.first();
             let field = scalar_udf.args.get(1);
