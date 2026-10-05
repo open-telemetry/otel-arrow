@@ -116,17 +116,11 @@ class Suite(FrameworkElement):
                 self.context.status = ExecutionStatus.SUCCESS
             except BaseException as e:  # noqa: BLE001 (re-raised below)
                 test_error = e
+                logger.error("test_error: %s", test_error)
                 raise
             finally:
                 try:
                     self._run_hooks(HookableTestPhase.POST_RUN, self.context)
                 except Exception as post_error:
-                    # A cleanup failure must not mask the original test error.
-                    if test_error is not None:
-                        logger.error(
-                            "POST_RUN hooks failed while handling a prior "
-                            "error; preserving the original error: %s",
-                            post_error,
-                        )
-                    else:
+                        logger.error("POST_RUN hooks failed: post: %s", test_error)
                         raise
