@@ -211,42 +211,32 @@ impl ClientTlsFilePaths {
 
         let configured_paths = [&paths.ca, &paths.cert, &paths.key]
             .into_iter()
-            .filter_map(Option::as_deref)
+            .filter_map(Option::as_ref)
+            .cloned()
             .collect::<Vec<_>>();
-        let Some(parent) = configured_paths.first().and_then(|path| path.parent()) else {
-            return Ok(paths);
-        };
-        if configured_paths
-            .iter()
-            .any(|path| path.parent() != Some(parent))
-        {
-            return Ok(paths);
-        }
-
-        let data_link = parent.join("..data");
-        let metadata = match tokio::fs::symlink_metadata(&data_link).await {
-            Ok(metadata) => metadata,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(paths),
-            Err(error) => return Err(error),
-        };
-        if !metadata.file_type().is_symlink() {
-            return Ok(paths);
-        }
-
+        let mut projected_root = None;
         let mut relative_paths = Vec::with_capacity(configured_paths.len());
         for path in &configured_paths {
-            let metadata = tokio::fs::symlink_metadata(path).await?;
-            if !metadata.file_type().is_symlink() {
-                return Ok(paths);
-            }
-            let target = tokio::fs::read_link(path).await?;
-            let Some(relative) = projected_data_relative_path(&target) else {
+            let Some(root) = projected_volume_root(path).await? else {
                 return Ok(paths);
             };
+            if projected_root
+                .as_ref()
+                .is_some_and(|existing| existing != &root)
+            {
+                return Ok(paths);
+            }
+            let Some(relative) = safe_relative_path(path, &root) else {
+                return Ok(paths);
+            };
+            projected_root = Some(root);
             relative_paths.push(relative);
         }
 
-        let generation_dir = tokio::fs::canonicalize(data_link).await?;
+        let Some(projected_root) = projected_root else {
+            return Ok(paths);
+        };
+        let generation_dir = tokio::fs::canonicalize(projected_root.join("..data")).await?;
         for (path, relative) in [&mut paths.ca, &mut paths.cert, &mut paths.key]
             .into_iter()
             .flatten()
@@ -258,20 +248,59 @@ impl ClientTlsFilePaths {
     }
 }
 
-fn projected_data_relative_path(target: &Path) -> Option<PathBuf> {
+async fn projected_volume_root(path: &Path) -> Result<Option<PathBuf>, io::Error> {
     use std::path::Component;
 
-    let mut components = target.components();
-    match components.next()? {
-        Component::Normal(component) if component == "..data" => {}
-        _ => return None,
+    for root in path.ancestors().skip(1) {
+        let data_link = root.join("..data");
+        let metadata = match tokio::fs::symlink_metadata(&data_link).await {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        };
+        if !metadata.file_type().is_symlink() {
+            continue;
+        }
+
+        let Some(relative) = safe_relative_path(path, root) else {
+            continue;
+        };
+        let Some(Component::Normal(top_level)) = relative.components().next() else {
+            continue;
+        };
+        let top_level_link = root.join(top_level);
+        let metadata = match tokio::fs::symlink_metadata(&top_level_link).await {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        };
+        if !metadata.file_type().is_symlink() {
+            continue;
+        }
+
+        let target = tokio::fs::read_link(top_level_link).await?;
+        let mut target_components = target.components();
+        if matches!(
+            (target_components.next(), target_components.next()),
+            (
+                Some(Component::Normal(data)),
+                Some(Component::Normal(target_top_level))
+            ) if data == "..data" && target_top_level == top_level
+        ) && target_components.next().is_none()
+        {
+            return Ok(Some(root.to_path_buf()));
+        }
     }
 
-    let relative = components.collect::<PathBuf>();
+    Ok(None)
+}
+
+fn safe_relative_path(path: &Path, root: &Path) -> Option<PathBuf> {
+    let relative = path.strip_prefix(root).ok()?.to_path_buf();
     (!relative.as_os_str().is_empty()
         && relative
             .components()
-            .all(|component| matches!(component, Component::Normal(_))))
+            .all(|component| matches!(component, std::path::Component::Normal(_))))
     .then_some(relative)
 }
 
@@ -3024,6 +3053,7 @@ mod tests {
                 .expect("create projected leaf symlink");
         }
         symlink(&v1, root.join("..data")).expect("point ..data at v1");
+        let canonical_v1 = fs::canonicalize(&v1).expect("canonicalize v1");
 
         let config = TlsClientConfig {
             config: TlsConfig {
@@ -3054,7 +3084,78 @@ mod tests {
             (paths.key.as_deref(), "v1-tls.key"),
         ] {
             let path = path.expect("configured projected path");
-            assert!(path.starts_with(&v1));
+            assert!(path.starts_with(&canonical_v1));
+            assert_eq!(
+                fs::read_to_string(path).expect("read captured path"),
+                expected
+            );
+        }
+    }
+
+    /// Scenario: CA and identity files use nested paths whose top-level
+    /// directories point through one Kubernetes projected volume's `..data`.
+    /// Guarantees: resolving the common volume root once pins every nested file
+    /// to one generation across a subsequent `..data` swap.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn projected_volume_paths_pin_nested_files_across_swap() {
+        use std::os::unix::fs::symlink;
+
+        let dir = TempDir::new().expect("temp dir");
+        let root = dir.path();
+        let v1 = root.join("..2026_09_17_08_06_30.1");
+        let v2 = root.join("..2026_09_18_08_06_30.2");
+        for (generation, prefix) in [(&v1, "v1"), (&v2, "v2")] {
+            fs::create_dir_all(generation.join("identity")).expect("create identity dir");
+            fs::create_dir_all(generation.join("trust")).expect("create trust dir");
+            fs::write(
+                generation.join("identity/tls.crt"),
+                format!("{prefix}-tls.crt"),
+            )
+            .expect("write certificate");
+            fs::write(
+                generation.join("identity/tls.key"),
+                format!("{prefix}-tls.key"),
+            )
+            .expect("write key");
+            fs::write(generation.join("trust/ca.crt"), format!("{prefix}-ca.crt"))
+                .expect("write CA");
+        }
+        symlink(&v1, root.join("..data")).expect("point ..data at v1");
+        symlink("..data/identity", root.join("identity")).expect("project identity directory");
+        symlink("..data/trust", root.join("trust")).expect("project trust directory");
+        let canonical_v1 = fs::canonicalize(&v1).expect("canonicalize v1");
+
+        let config = TlsClientConfig {
+            config: TlsConfig {
+                cert_file: Some(root.join("identity/tls.crt")),
+                cert_pem: None,
+                key_file: Some(root.join("identity/tls.key")),
+                key_pem: None,
+                reload_interval: Some(Duration::from_secs(1)),
+            },
+            ca_file: Some(root.join("trust/ca.crt")),
+            ca_pem: None,
+            include_system_ca_certs_pool: Some(false),
+            server_name: None,
+            insecure: None,
+            insecure_skip_verify: None,
+        };
+
+        let paths = ClientTlsFilePaths::resolve(&config)
+            .await
+            .expect("resolve nested projected generation");
+        let replacement = root.join("..data_tmp");
+        symlink(&v2, &replacement).expect("point temporary link at v2");
+        fs::rename(replacement, root.join("..data")).expect("swap ..data");
+
+        for (path, expected) in [
+            (paths.ca.as_deref(), "v1-ca.crt"),
+            (paths.cert.as_deref(), "v1-tls.crt"),
+            (paths.key.as_deref(), "v1-tls.key"),
+        ] {
+            let path = path.expect("configured projected path");
+            assert!(path.starts_with(&canonical_v1));
             assert_eq!(
                 fs::read_to_string(path).expect("read captured path"),
                 expected

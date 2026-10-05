@@ -53,6 +53,9 @@ pub(crate) struct ClientTlsGeneration {
 /// Outcome of a single reload attempt.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum ReloadOutcome {
+    /// Another reload attempt is already in progress, so this request was
+    /// coalesced with it.
+    Busy,
     /// Material was byte-for-byte identical to the current generation.
     Unchanged,
     /// A new generation was validated and published; carries its number.
@@ -69,12 +72,15 @@ pub(crate) struct ClientTlsProvider {
     endpoint_uri: String,
     /// Interval between reload checks, or `None` when reload is disabled.
     reload_interval: Option<Duration>,
+    /// Prevents overlapping loads from publishing generations out of order.
+    /// Contention is coalesced instead of queued because the next scheduled
+    /// poll will re-read the latest contents.
+    reload_guard: tokio::sync::Mutex<()>,
     /// Current generation. `ArcSwap` gives exporters a lock-free read on their
     /// hot path while the single reload task publishes new generations; the two
     /// run on different tasks, so shared interior mutability is required here.
     current: Arc<ArcSwap<ClientTlsGeneration>>,
-    /// Next generation number to assign. Interior mutability so publishing can
-    /// happen behind `&self`; only the single reload task mutates it.
+    /// Next generation number to assign.
     next_number: AtomicU64,
     /// Notifies subscribers of the latest published generation number.
     notify: tokio::sync::watch::Sender<u64>,
@@ -92,6 +98,10 @@ impl ClientTlsProvider {
         config: Option<&TlsClientConfig>,
         endpoint_uri: &str,
     ) -> Result<Option<Self>, io::Error> {
+        let Some(material) = load_client_tls_material(config, endpoint_uri).await? else {
+            return Ok(None);
+        };
+
         let reload_interval = config.and_then(|c| c.config.reload_interval);
         if reload_interval.is_some_and(|interval| interval.is_zero()) {
             return Err(io::Error::new(
@@ -99,10 +109,6 @@ impl ClientTlsProvider {
                 "TLS configuration error: reload_interval must be greater than zero or null to disable reload",
             ));
         }
-
-        let Some(material) = load_client_tls_material(config, endpoint_uri).await? else {
-            return Ok(None);
-        };
 
         let generation = Arc::new(ClientTlsGeneration {
             number: 0,
@@ -114,6 +120,7 @@ impl ClientTlsProvider {
             config: config.cloned(),
             endpoint_uri: endpoint_uri.to_string(),
             reload_interval,
+            reload_guard: tokio::sync::Mutex::new(()),
             current: Arc::new(ArcSwap::from(generation)),
             next_number: AtomicU64::new(1),
             notify,
@@ -150,6 +157,10 @@ impl ClientTlsProvider {
     /// On validation/read failure, or if the configuration now resolves to
     /// no-TLS, the current generation is retained.
     pub(crate) async fn poll_once(&self) -> ReloadOutcome {
+        let Ok(_guard) = self.reload_guard.try_lock() else {
+            return ReloadOutcome::Busy;
+        };
+
         match load_client_tls_material(self.config.as_ref(), &self.endpoint_uri).await {
             Ok(Some(candidate)) => {
                 let current = self.current.load();
@@ -293,6 +304,27 @@ mod tests {
         assert!(provider.is_none());
     }
 
+    /// Scenario: configure a zero reload interval on an insecure TLS block that
+    /// does not create a client TLS provider.
+    /// Guarantees: provider-specific interval validation does not reject a
+    /// configuration that preserves the existing no-provider behavior.
+    #[tokio::test]
+    async fn zero_reload_interval_is_ignored_without_provider() {
+        let config = TlsClientConfig {
+            config: TlsConfig {
+                reload_interval: Some(Duration::ZERO),
+                ..TlsConfig::default()
+            },
+            insecure: Some(true),
+            ..TlsClientConfig::default()
+        };
+
+        let provider = ClientTlsProvider::new(Some(&config), ENDPOINT)
+            .await
+            .expect("no-provider configuration must remain valid");
+        assert!(provider.is_none());
+    }
+
     /// Scenario: configure an explicit null reload interval for valid file-backed
     /// TLS material.
     /// Guarantees: reload remains disabled and running the provider returns
@@ -393,6 +425,25 @@ mod tests {
 
         let updates = provider.subscribe();
         assert_eq!(*updates.borrow(), 1);
+    }
+
+    /// Scenario: request another reload while one attempt already holds the
+    /// provider's publication guard.
+    /// Guarantees: overlapping attempts are coalesced, so generations cannot be
+    /// published out of order.
+    #[tokio::test]
+    async fn poll_once_coalesces_concurrent_attempts() {
+        crate::crypto::ensure_crypto_provider();
+        let dir = TempDir::new().expect("temp dir");
+        let config = write_material(dir.path(), "ca-1", "client-1");
+        let provider = ClientTlsProvider::new(Some(&config), ENDPOINT)
+            .await
+            .expect("load")
+            .expect("provider present");
+        let _guard = provider.reload_guard.lock().await;
+
+        assert_eq!(provider.poll_once().await, ReloadOutcome::Busy);
+        assert_eq!(provider.current().number, 0);
     }
 
     /// Scenario: poll when nothing on disk has changed.
