@@ -156,7 +156,7 @@ jobs:
           fi
 
           echo "Found $XML_COUNT JUnit XML files"
-          find junit-artifacts -type f -name '*.xml' | head -50
+          find junit-artifacts -type f -name '*.xml' | sed -n '1,50p'
 
       - name: Parse JUnit XML and detect flaky tests
         id: parse

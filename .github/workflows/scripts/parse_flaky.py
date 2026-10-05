@@ -29,6 +29,9 @@ MAX_JOB_LINKS = 5
 # Maximum number of flaky tests to include in the issue body
 MAX_REPORT_TESTS = 50
 
+# Maximum size of the encoded hidden history marker
+MAX_HISTORY_MARKER_BYTES = 32 * 1024
+
 # Marker used to persist bounded last-seen history in the issue body.
 HISTORY_MARKER_RE = re.compile(
     r"<!-- flaky-history: ([A-Za-z0-9_-]+={0,2}) -->"
@@ -57,8 +60,9 @@ def parse_junit_files(artifacts_dir):
     """Parse all JUnit XML files and collect test results.
 
     Also loads ``metadata.json`` from each artifact directory (when
-    present) and returns it as a second value.  Artifacts uploaded
-    before the metadata step was added simply won't have the file.
+    present). Returns the test results, artifact metadata, and number of
+    successfully parsed JUnit files. Artifacts uploaded before the metadata
+    step was added simply won't have the file.
     """
     test_results = defaultdict(lambda: {
         "flaky_direct": 0,   # nextest flakyFailure count
@@ -72,11 +76,12 @@ def parse_junit_files(artifacts_dir):
     })
     # (run_id, artifact_name) -> metadata dict from metadata.json
     artifact_metadata = {}
+    parsed_junit_files = 0
 
     artifacts_path = Path(artifacts_dir)
     if not artifacts_path.exists():
         print("No artifacts directory found", file=sys.stderr)
-        return test_results, artifact_metadata
+        return test_results, artifact_metadata, parsed_junit_files
 
     for xml_file in artifacts_path.rglob("*.xml"):
         # Extract run ID and artifact name from path
@@ -120,6 +125,7 @@ def parse_junit_files(artifacts_dir):
             testsuites = [root]
         else:
             continue
+        parsed_junit_files += 1
 
         for testsuite in testsuites:
             for testcase in testsuite.findall("testcase"):
@@ -166,7 +172,7 @@ def parse_junit_files(artifacts_dir):
                 ):
                     result["pass_by_os"][os_name].add(run_id)
 
-    return test_results, artifact_metadata
+    return test_results, artifact_metadata, parsed_junit_files
 
 
 def identify_flaky_tests(test_results):
@@ -305,7 +311,14 @@ def encode_flaky_history(history):
         separators=(",", ":"),
         sort_keys=True,
     ).encode()
-    return base64.urlsafe_b64encode(payload).decode()
+    encoded = base64.urlsafe_b64encode(payload).decode()
+    if len(encoded) > MAX_HISTORY_MARKER_BYTES:
+        raise ValueError(
+            "Flaky history marker exceeds the "
+            f"{MAX_HISTORY_MARKER_BYTES}-byte limit; refusing to discard "
+            "retained tests"
+        )
+    return encoded
 
 
 def parse_flaky_history(body, fallback_date):
@@ -416,11 +429,10 @@ def format_issue_body(
     sample_metadata=None,
 ):
     """Format the GitHub issue body as Markdown."""
-    current_tests = flaky_tests[:MAX_REPORT_TESTS]
-    current_names = {t["name"] for t in current_tests}
+    current_names = {t["name"] for t in flaky_tests}
     current_last_seen = {
         t["name"]: get_test_last_seen(t, sample_metadata, report_date)
-        for t in current_tests
+        for t in flaky_tests
     }
     previous_history = previous_history or {}
 
@@ -433,19 +445,27 @@ def format_issue_body(
                 and 0 <= (report_date - last_seen).days <= retention_days
             ),
             key=lambda item: (-item[1].toordinal(), item[0]),
-        )[:max(0, MAX_REPORT_TESTS - len(current_tests))]
+        )
     )
     new_names = current_names - set(previous_history)
 
     history = {
         t["name"]: current_last_seen[t["name"]].isoformat()
-        for t in current_tests
+        for t in flaky_tests
     }
     history.update(
         {
             name: last_seen.isoformat()
             for name, last_seen in retained_history.items()
         }
+    )
+    encoded_history = encode_flaky_history(history)
+
+    current_tests = flaky_tests[:MAX_REPORT_TESTS]
+    retained_tests = dict(
+        list(retained_history.items())[
+            :max(0, MAX_REPORT_TESTS - len(current_tests))
+        ]
     )
 
     lines = []
@@ -468,7 +488,7 @@ def format_issue_body(
         )
         lines.append("")
 
-    if not current_tests and not retained_history:
+    if not flaky_tests and not retained_history:
         lines.append("**No flaky tests detected.** :tada:")
         lines.append("")
         lines.append(
@@ -476,12 +496,12 @@ def format_issue_body(
             " if flaky tests are detected in future runs."
         )
         lines.append("")
-        lines.append(f"<!-- flaky-history: {encode_flaky_history({})} -->")
+        lines.append(f"<!-- flaky-history: {encoded_history} -->")
         return "\n".join(lines)
 
     lines.append(
-        f"**{len(current_tests) + len(retained_history)} flaky test(s) "
-        f"tracked:** **{len(current_tests)} observed** in the current sample"
+        f"**{len(history)} flaky test(s) tracked:** "
+        f"**{len(flaky_tests)} observed** in the current sample"
         f" and **{len(retained_history)} retained** from the previous "
         f"{retention_days} days."
     )
@@ -489,10 +509,12 @@ def format_issue_body(
         lines.append(
             f" :new: **{len(new_names)} new** since last report."
         )
-    if len(flaky_tests) > len(current_tests):
+    visible_count = len(current_tests) + len(retained_tests)
+    if len(history) > visible_count:
         lines.append(
-            f" Showing the first **{len(current_tests)}** currently observed "
-            f"tests; **{len(flaky_tests) - len(current_tests)}** omitted."
+            f" Showing **{visible_count}** tests; "
+            f"**{len(history) - visible_count}** stored only in hidden "
+            "history."
         )
     lines.append("")
     lines.append(
@@ -545,7 +567,7 @@ def format_issue_body(
             f" | {t['fail_count']} | {run_links} |"
         )
 
-    for name, last_seen in retained_history.items():
+    for name, last_seen in retained_tests.items():
         lines.append(
             f"| :hourglass_flowing_sand: | "
             f"<code>{format_test_name(name)}</code> | n/a"
@@ -598,7 +620,7 @@ def format_issue_body(
     )
     lines.append("")
     lines.append(
-        f"<!-- flaky-history: {encode_flaky_history(history)} -->"
+        f"<!-- flaky-history: {encoded_history} -->"
     )
 
     return "\n".join(lines)
@@ -615,7 +637,16 @@ if __name__ == "__main__":
     retention_days = int(os.environ.get("LAST_SEEN_RETENTION_DAYS", "7"))
     report_date = datetime.now(timezone.utc).date()
 
-    test_results, artifact_metadata = parse_junit_files("junit-artifacts")
+    (
+        test_results,
+        artifact_metadata,
+        parsed_junit_files,
+    ) = parse_junit_files("junit-artifacts")
+    if parsed_junit_files == 0:
+        raise RuntimeError(
+            "No valid JUnit XML files were parsed; refusing to update the "
+            "report"
+        )
     flaky_tests = identify_flaky_tests(test_results)
     if flaky_tests and repo_slug:
         lookup_job_urls(flaky_tests, repo_slug, artifact_metadata)
