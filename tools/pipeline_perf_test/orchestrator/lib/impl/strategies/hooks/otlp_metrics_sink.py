@@ -73,9 +73,8 @@ STOP_HOOK_NAME = "stop_otlp_metrics_sink"
 # Namespace used to store the sink on the suite runtime.
 OTLP_METRICS_SINK_RUNTIME = "otlp_metrics_sink"
 
-# Columns emitted per data point. The first group matches the framework
-# 'MetricRow' schema so these rows can be concatenated onto the 'metrics'
-# table; 'start_timestamp' and 'temporality' are push-specific extras.
+# Columns emitted per data point. Note: 'start_timestamp' and 'temporality' are
+# push-specific fields.
 PUSHED_METRIC_COLUMNS = [
     "timestamp",
     "metric_name",
@@ -84,6 +83,8 @@ PUSHED_METRIC_COLUMNS = [
     "resource_attributes",
     "scope_attributes",
     "metric_attributes",
+
+    # Push specific
     "start_timestamp",
     "temporality",
 ]

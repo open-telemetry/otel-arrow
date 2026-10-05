@@ -326,7 +326,7 @@ hooks:
         # sink already emits MetricRow-shaped rows, so a plain concat lines the
         # columns up; flatten_columns then explodes the shared attribute dicts.
         pushed = self._pushed_metrics_rows(ctx)
-        if not pushed.empty:
+        if pushed is not None:
             metrics = pd.concat([metrics, pushed], ignore_index=True)
 
         # Flatten and register metrics
@@ -347,12 +347,12 @@ hooks:
         self.conn.register("events", events)
 
     @staticmethod
-    def _pushed_metrics_rows(ctx: BaseContext) -> pd.DataFrame:
+    def _pushed_metrics_rows(ctx: BaseContext) -> Optional[pd.DataFrame]:
         """Return OTLP-pushed metric rows from the suite's sink, or an empty
         frame when no sink is running."""
         sink = get_otlp_metrics_sink(ctx)
         if sink is None:
-            return pd.DataFrame(columns=PUSHED_METRIC_COLUMNS)
+            return None
         return sink.to_dataframe().reset_index(drop=True)
 
     def _build_result_dataframes(self):
