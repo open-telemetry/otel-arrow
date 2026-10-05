@@ -7,30 +7,10 @@
 //! Composite selections instead name the composite and optionally its member; the
 //! definition supplies each member's domain and the entire entry's presence gate.
 //! Original wire names are supported only for transport-header values.
-//!
-//! # Type map
-//!
-//! - `ContextEntryTarget`: a domain-scoped primitive, composite member, or whole composite.
-//! - `ContextEntrySelector`: an explicit target and the representation a consumer requests.
-//! - `ContextEntrySelectorForm`: the value, stored-name, or original-name representation.
-//! - `ContextConsumerSelector`: a named-entry or all-entry consumer selection.
-//! - `ContextDeclaration`: one component or engine declaration of context behavior.
-//! - `ContextDeclarationProvider`: a component factory's declaration callback registration.
-//! - `ContextDeclarationFn`: the signature implemented by declaration callbacks.
-//! - `ConfigNodeContextDeclaration`: typed component configs that derive and validate declarations.
-//! - `NodeContextDeclarations`: a sorted, deduplicated declaration set for one node.
-//! - `CompiledContextBindings`: compiled node bindings for every pipeline in a configuration.
-//! - `CompiledNodeBindings`: component declarations, transport-header behavior, and authorized
-//!   identity capture for one node.
-//! - `ContextDeclarationsByPipeline`: declarations indexed by pipeline and node.
-//! - `ContextRuntimeRequirements`: immutable engine-lifetime requirements for binding preparation.
-//! - `OriginalNameRetention`: the default and per-name original-header retention disposition.
-//! - `PreparedContext`: requirements and bindings prepared from one resolved configuration.
-//! - `ContextLayout`: logical context fields, composites, and resolved projections.
-//! - `CompiledHeaderPropagationPolicy`: exporter propagation resolved from configured selectors.
-//! - `TestDeclarationConfig`: test-only typed configuration used to verify declaration matching.
 
+/// Compiles logical context layouts and resolves field projections.
 mod layout;
+/// Compiles and applies exporter transport-header propagation policies.
 mod propagation;
 
 pub use layout::*;
@@ -51,7 +31,7 @@ use otel_arrow_dfe_config::{ContextEntryName, NodeId as ConfigNodeId, PipelineKe
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
-/// A context source selected without inferring its authority domain.
+/// Selects a domain-scoped primitive, a composite member, or a whole composite.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ContextEntryTarget {
     /// A primitive stored name within its source domain.
@@ -76,6 +56,7 @@ pub enum ContextEntryTarget {
 }
 
 impl ContextEntryTarget {
+    /// Returns the enclosing composite name, or none for a primitive.
     fn composite_name(&self) -> Option<&ContextEntryName> {
         match self {
             Self::Primitive { .. } => None,
@@ -84,6 +65,7 @@ impl ContextEntryTarget {
         }
     }
 
+    /// Visits selected value sources with their domains, excluding condition-only fields.
     fn visit_sources(
         &self,
         composites: &[ConfigContextEntryDeclaration],
@@ -116,12 +98,14 @@ impl ContextEntryTarget {
     }
 }
 
+/// Wraps a context compilation failure as an invalid user configuration.
 fn invalid_context(error: impl Into<String>) -> Error {
     Error::InvalidUserConfig {
         error: error.into(),
     }
 }
 
+/// Finds exactly one composite declaration or reports a missing or duplicate name.
 fn composite_declaration<'a>(
     name: &ContextEntryName,
     declarations: &'a [ConfigContextEntryDeclaration],
@@ -138,30 +122,27 @@ fn composite_declaration<'a>(
     Ok(declaration)
 }
 
-/// A context selection and its requested representation.
-///
-/// For a composite, the form applies to every selected value member, not to
-/// condition-only fields. Selecting a member does not weaken its presence gate.
+/// Pairs a target with its value representation without weakening composite presence requirements.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ContextEntrySelector {
     /// Primitive source or explicitly qualified composite selection.
     pub target: ContextEntryTarget,
-    /// Requested representation.
+    /// Representation applied to selected value members, excluding condition-only fields.
     pub form: ContextEntrySelectorForm,
 }
 
-/// Context entry representation.
+/// Specifies whether a consumer needs values, stored names, or original wire names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ContextEntrySelectorForm {
     /// Value only.
     Value,
     /// Stored name and value, preserving configured spelling.
     StoredKeyValue,
-    /// Original wire name and value; every selected field must be a transport header.
+    /// Original wire name and value for transport-header fields only.
     OriginalKeyValue,
 }
 
-/// Context entries read by a consumer.
+/// Selects named entries or all stored primitives within one source domain.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ContextConsumerSelector {
     /// Selects named context entries in order.
@@ -179,9 +160,9 @@ pub enum ContextConsumerSelector {
 /// A node's declared context behavior.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ContextDeclaration {
-    /// Declares a primitive produced by the node; composites are derived from definitions.
+    /// Declares a primitive produced by the node without granting write authority.
     Produces {
-        /// Source authority domain. This declaration does not grant write authority.
+        /// Source authority domain.
         domain: ContextDomain,
         /// Produced entry name.
         entry: ContextEntryName,
@@ -209,10 +190,12 @@ pub enum ContextDeclaration {
 }
 
 impl ContextDeclaration {
+    /// Returns whether the declaration describes component reads or writes.
     fn is_component_declaration(&self) -> bool {
         matches!(self, Self::Produces { .. } | Self::Consumes { .. })
     }
 
+    /// Validates selected sources and computes their original-header-name retention needs.
     fn context_runtime_requirements(
         &self,
         composites: &[ConfigContextEntryDeclaration],
@@ -268,17 +251,17 @@ impl ContextDeclaration {
     }
 }
 
-/// Derives context declarations from component configuration.
+/// Registers a component factory's context declaration callback.
 #[derive(Clone, Copy)]
 pub struct ContextDeclarationProvider {
     /// Declaration callback.
     pub declarations: ContextDeclarationFn,
 }
 
-/// Derives deterministic context declarations from node configuration.
+/// Derives deterministic declarations from serialized node configuration.
 pub type ContextDeclarationFn = fn(&serde_json::Value) -> Result<NodeContextDeclarations, Error>;
 
-/// Context declarations derived from typed node configuration.
+/// Derives and validates context declarations from typed node configuration.
 pub trait ConfigNodeContextDeclaration: serde::de::DeserializeOwned {
     /// Declares the context reads and writes for this configuration.
     fn context_declarations(&self) -> NodeContextDeclarations;
@@ -298,7 +281,7 @@ pub trait ConfigNodeContextDeclaration: serde::de::DeserializeOwned {
     }
 }
 
-/// Sorted, unique context declarations.
+/// Stores one node's declarations in sorted, deduplicated order.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct NodeContextDeclarations {
     /// Sorted and deduplicated declarations.
@@ -306,6 +289,7 @@ pub struct NodeContextDeclarations {
 }
 
 impl FromIterator<ContextDeclaration> for NodeContextDeclarations {
+    /// Collects declarations into a sorted, deduplicated set.
     fn from_iter<T>(iter: T) -> Self
     where
         T: IntoIterator<Item = ContextDeclaration>,
@@ -320,9 +304,12 @@ impl FromIterator<ContextDeclaration> for NodeContextDeclarations {
 }
 
 impl IntoIterator for NodeContextDeclarations {
+    /// An owned context declaration.
     type Item = ContextDeclaration;
+    /// An owning iterator over declarations in sorted order.
     type IntoIter = std::vec::IntoIter<ContextDeclaration>;
 
+    /// Consumes the set and yields declarations in sorted order.
     fn into_iter(self) -> Self::IntoIter {
         self.declarations.into_vec().into_iter()
     }
@@ -360,6 +347,7 @@ impl ContextDeclarationProvider {
     }
 }
 
+/// Deserializes typed node configuration and derives its context declarations.
 fn typed_context_declarations<T>(
     config: &serde_json::Value,
 ) -> Result<NodeContextDeclarations, Error>
@@ -379,7 +367,7 @@ pub struct CompiledContextBindings {
     by_pipeline: HashMap<PipelineKey, HashMap<ConfigNodeId, CompiledNodeBindings>>,
 }
 
-/// Declarations and transport-header policies compiled for one node.
+/// Stores one node's component declarations, selected composites, and engine context policies.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CompiledNodeBindings {
     /// Declarations supplied by the component factory.
@@ -401,12 +389,16 @@ type ContextDeclarationsByPipeline =
 /// Validated declarations with their selected definitions and capture requirements.
 #[derive(Debug)]
 struct PreparedNodeContextDeclarations {
+    /// Sorted component and engine declarations for the node.
     declarations: NodeContextDeclarations,
+    /// Selected composite definitions in canonical order with their full presence gates.
     composites: Box<[ConfigContextEntryDeclaration]>,
+    /// Original-header-name retention needs derived from the declarations.
     requirements: ContextRuntimeRequirements,
 }
 
 impl PreparedNodeContextDeclarations {
+    /// Validates selections, canonicalizes composite definitions, and derives runtime requirements.
     fn new(
         declarations: NodeContextDeclarations,
         context: &[ConfigContextEntryDeclaration],
@@ -473,6 +465,7 @@ pub struct PreparedContext {
 }
 
 impl ContextRuntimeRequirements {
+    /// Combines runtime requirements from every node in every pipeline.
     fn compile(declarations: &ContextDeclarationsByPipeline) -> Self {
         declarations
             .values()
@@ -482,6 +475,7 @@ impl ContextRuntimeRequirements {
             })
     }
 
+    /// Creates requirements that retain no original header names.
     fn none() -> Self {
         Self {
             original_name_retention: OriginalNameRetention {
@@ -491,6 +485,7 @@ impl ContextRuntimeRequirements {
         }
     }
 
+    /// Combines both sets of runtime requirements.
     fn union(self, other: Self) -> Self {
         Self {
             original_name_retention: self
@@ -514,6 +509,7 @@ impl ContextRuntimeRequirements {
 }
 
 impl OriginalNameRetention {
+    /// Combines retention policies and keeps only overrides that differ from the new default.
     fn union(self, other: Self) -> Self {
         let default_preserve_original =
             self.default_preserve_original || other.default_preserve_original;
@@ -540,6 +536,7 @@ impl OriginalNameRetention {
         }
     }
 
+    /// Returns whether this policy retains every name required by the candidate.
     fn can_satisfy(&self, candidate: &Self) -> bool {
         if candidate.default_preserve_original && !self.default_preserve_original {
             return false;
@@ -552,10 +549,12 @@ impl OriginalNameRetention {
             })
     }
 
+    /// Returns the retention disposition for a case-insensitive stored header name.
     fn preserves_original_name(&self, name: &ContextEntryName) -> bool {
         self.preserves_original_key(&original_name_key(name))
     }
 
+    /// Looks up a lowercase name's override or falls back to the default disposition.
     fn preserves_original_key(&self, name: &str) -> bool {
         self.overrides
             .get(name)
@@ -564,11 +563,13 @@ impl OriginalNameRetention {
     }
 }
 
+/// Converts a stored header name to its ASCII-lowercase retention key.
 fn original_name_key(name: &ContextEntryName) -> Box<str> {
     name.as_str().to_ascii_lowercase().into()
 }
 
 impl CompiledNodeBindings {
+    /// Compiles header capture and separates component declarations from engine policies.
     fn compile(
         prepared: PreparedNodeContextDeclarations,
         requirements: &ContextRuntimeRequirements,
@@ -605,6 +606,7 @@ impl CompiledNodeBindings {
         }
     }
 
+    /// Returns whether the node has no component declarations or engine context policies.
     fn is_empty(&self) -> bool {
         self.component_declarations.is_empty()
             && self.header_capture.is_none()
@@ -614,7 +616,7 @@ impl CompiledNodeBindings {
 }
 
 impl CompiledContextBindings {
-    /// Creates an empty binding set. Node validation always fails.
+    /// Creates an empty binding set that rejects all node declaration validation.
     #[must_use]
     pub fn empty() -> Self {
         Self {
@@ -622,6 +624,7 @@ impl CompiledContextBindings {
         }
     }
 
+    /// Compiles every node's bindings using the same engine-wide runtime requirements.
     fn compile(
         declarations: ContextDeclarationsByPipeline,
         requirements: &ContextRuntimeRequirements,
@@ -684,10 +687,7 @@ impl CompiledContextBindings {
             .as_ref()
     }
 
-    /// Returns whether two binding sets contain identical non-empty bindings for one pipeline.
-    ///
-    /// Nodes without context declarations do not affect compiled bindings and
-    /// may be added, removed, or renamed during an otherwise safe live update.
+    /// Compares one pipeline's bindings while ignoring nodes without context declarations.
     #[must_use]
     pub fn pipeline_bindings_match(&self, other: &Self, pipeline: &PipelineKey) -> bool {
         let current = self.by_pipeline.get(pipeline);
@@ -715,8 +715,7 @@ impl CompiledContextBindings {
                 })
     }
 
-    /// Checks component declarations against this node's compiled bindings.
-    /// Call after parsing the node configuration.
+    /// Checks declarations from parsed component configuration against the node's compiled bindings.
     pub fn validate_node_declarations(
         &self,
         pipeline: &PipelineKey,
@@ -749,7 +748,7 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
         })
     }
 
-    /// Compiles candidate bindings using the immutable installed requirements.
+    /// Derives candidate requirements and compiles bindings using the installed runtime requirements.
     pub fn compile_candidate_context(
         &self,
         resolved: &ResolvedOtelDataflowSpec,
@@ -764,6 +763,7 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
         })
     }
 
+    /// Wraps compiled bindings in an immutable shared handle for pipeline runtimes.
     fn compile_bindings(
         declarations: ContextDeclarationsByPipeline,
         requirements: &ContextRuntimeRequirements,
@@ -771,6 +771,7 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
         Arc::new(CompiledContextBindings::compile(declarations, requirements))
     }
 
+    /// Collects and validates component and engine declarations for each resolved pipeline node.
     fn context_declarations(
         &self,
         resolved: &ResolvedOtelDataflowSpec,
@@ -810,6 +811,7 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
         Ok(declarations)
     }
 
+    /// Derives engine declarations from node header overrides and resolved pipeline policies.
     fn wrapper_context_declarations(
         node: &NodeUserConfig,
         pipeline_policy: &Option<TransportHeadersPolicy>,
@@ -862,6 +864,7 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
         Ok(declarations)
     }
 
+    /// Validates node configuration and rejects engine-owned factory declarations.
     fn node_context_declarations(
         &self,
         kind: NodeKind,
@@ -924,6 +927,7 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
     }
 }
 
+/// Exercises declaration compilation, retention requirements, and live-update compatibility.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -934,14 +938,18 @@ mod tests {
     /// Typed component configuration used to exercise declaration validation.
     #[derive(serde::Deserialize)]
     struct TestDeclarationConfig {
+        /// Selected primitive or composite member name.
         entry: ContextEntryName,
+        /// Optional composite containing the selected member.
         #[serde(default)]
         composite: Option<ContextEntryName>,
+        /// Whether the consumer requests the original transport-header name.
         #[serde(default)]
         original: bool,
     }
 
     impl ConfigNodeContextDeclaration for TestDeclarationConfig {
+        /// Declares one test consumer with the configured target and name representation.
         fn context_declarations(&self) -> NodeContextDeclarations {
             [ContextDeclaration::Consumes {
                 selector: ContextConsumerSelector::Entries {
@@ -970,14 +978,17 @@ mod tests {
         }
     }
 
+    /// Builds a pipeline key from test group and pipeline names.
     fn pipeline(group: &str, name: &str) -> PipelineKey {
         PipelineKey::new(group.to_owned().into(), name.to_owned().into())
     }
 
+    /// Parses a test context name and fails if it is invalid.
     fn context_name(name: &str) -> ContextEntryName {
         name.try_into().expect("valid test context entry name")
     }
 
+    /// Fails if context compilation unexpectedly constructs a receiver.
     fn unused_test_receiver(
         _: crate::context::PipelineContext,
         _: crate::node::NodeId,
@@ -988,6 +999,7 @@ mod tests {
         unreachable!("context compilation does not construct test nodes")
     }
 
+    /// Fails if context compilation unexpectedly constructs an exporter.
     fn unused_test_exporter(
         _: crate::context::PipelineContext,
         _: crate::node::NodeId,
@@ -998,6 +1010,7 @@ mod tests {
         unreachable!("context compilation does not construct test nodes")
     }
 
+    /// Fails if context compilation unexpectedly constructs a processor.
     fn unused_test_processor(
         _: crate::context::PipelineContext,
         _: crate::node::NodeId,
@@ -1008,10 +1021,12 @@ mod tests {
         unreachable!("context compilation does not construct test nodes")
     }
 
+    /// Accepts configuration for test factories that need no typed validation.
     fn accept_test_config(_: &serde_json::Value) -> Result<(), Error> {
         Ok(())
     }
 
+    /// Registers test receivers without constructing runtime nodes.
     static TEST_RECEIVERS: [crate::ReceiverFactory<()>; 2] = [
         crate::ReceiverFactory {
             name: "urn:test:receiver:example",
@@ -1029,6 +1044,7 @@ mod tests {
         },
     ];
 
+    /// Registers ordinary exporters and a typed context consumer for compilation tests.
     static TEST_EXPORTERS: [crate::ExporterFactory<()>; 4] = [
         crate::ExporterFactory {
             name: "urn:test:exporter:example",
@@ -1064,6 +1080,7 @@ mod tests {
         },
     ];
 
+    /// Registers the type router used by resolved test pipelines.
     static TEST_PROCESSORS: [crate::ProcessorFactory<()>; 1] = [crate::ProcessorFactory {
         name: "urn:otel:processor:type_router",
         create: unused_test_processor,
@@ -1072,10 +1089,12 @@ mod tests {
         validate_config: accept_test_config,
     }];
 
+    /// Builds a pipeline factory from the test node registrations.
     fn test_pipeline_factory() -> PipelineFactory<()> {
         PipelineFactory::new(&TEST_RECEIVERS, &TEST_PROCESSORS, &TEST_EXPORTERS, &[])
     }
 
+    /// Builds pipeline YAML with a composite definition and an exporter propagation selector.
     fn conditional_pipeline_yaml(composite: &str, selector: &str) -> String {
         format!(
             r#"
@@ -1109,6 +1128,7 @@ groups:
         )
     }
 
+    /// Resolves test pipeline YAML containing a composite propagation selector.
     fn resolve_conditional_pipeline(composite: &str, selector: &str) -> ResolvedOtelDataflowSpec {
         otel_arrow_dfe_config::engine::OtelDataflowSpec::from_yaml(&conditional_pipeline_yaml(
             composite, selector,
@@ -1117,6 +1137,7 @@ groups:
         .resolve()
     }
 
+    /// Prepares declarations for one test node without composite definitions.
     fn declarations_by_pipeline(
         effective: NodeContextDeclarations,
     ) -> ContextDeclarationsByPipeline {
@@ -1129,18 +1150,21 @@ groups:
         )])
     }
 
+    /// Compiles one test node's bindings using its own runtime requirements.
     fn compiled_bindings(effective: NodeContextDeclarations) -> CompiledContextBindings {
         let declarations = declarations_by_pipeline(effective);
         let requirements = ContextRuntimeRequirements::compile(&declarations);
         CompiledContextBindings::compile(declarations, &requirements)
     }
 
+    /// Derives runtime requirements from one test node's declarations.
     fn context_runtime_requirements(
         effective: NodeContextDeclarations,
     ) -> ContextRuntimeRequirements {
         ContextRuntimeRequirements::compile(&declarations_by_pipeline(effective))
     }
 
+    /// Builds a primitive test target in the specified source domain.
     fn primitive_target(domain: ContextDomain, name: &str) -> ContextEntryTarget {
         ContextEntryTarget::Primitive {
             domain,
@@ -1148,6 +1172,7 @@ groups:
         }
     }
 
+    /// Builds a test target for one qualified composite member.
     fn member_target(composite: &str, member: &str) -> ContextEntryTarget {
         ContextEntryTarget::CompositeMember {
             composite: context_name(composite),
@@ -1155,6 +1180,7 @@ groups:
         }
     }
 
+    /// Declares one test consumer for the given target and representation.
     fn consumer(
         target: ContextEntryTarget,
         form: ContextEntrySelectorForm,
@@ -1168,6 +1194,7 @@ groups:
         .collect()
     }
 
+    /// Builds a conditional test composite with aliased header and identity members.
     fn mixed_composite() -> ConfigContextEntryDeclaration {
         use otel_arrow_dfe_config::context_policy::{ContextEntryDefinition, ContextScope};
 
@@ -1374,6 +1401,7 @@ groups:
         }
     }
 
+    /// Resolves a test pipeline whose exporter consumes the specified composite member.
     fn resolve_consumer_pipeline(
         composite: &str,
         member: &str,
@@ -1764,8 +1792,7 @@ groups:
     }
 
     /// Scenario: node and pipeline header policies and an identity policy are configured.
-    /// Guarantees: node header policies take precedence, pipeline headers provide the fallback,
-    /// and authorized identity capture is declared only for receivers.
+    /// Guarantees: node headers override pipeline defaults and only receivers declare identity capture.
     #[test]
     fn wrapper_declarations_resolve_policy_precedence() {
         let identity_policy: AuthorizedIdentityPolicy =
@@ -2085,9 +2112,7 @@ default:
     }
 
     /// Scenario: a receiver declares an authorized identity claim projection.
-    /// Guarantees: compiled node bindings retain the exact policy and
-    /// live-update compatibility rejects changed projections in either
-    /// comparison direction.
+    /// Guarantees: bindings retain the policy and reject changed projections in either comparison direction.
     #[test]
     fn authorized_identity_policy_is_a_compiled_receiver_binding() {
         let policy: AuthorizedIdentityPolicy =
@@ -2122,7 +2147,7 @@ default:
     }
 
     /// Scenario: a node declares a context read and a propagation policy.
-    /// Guarantees: undeclared reads and nodes fail. The propagation declaration is retained.
+    /// Guarantees: undeclared reads and nodes fail while the propagation declaration is retained.
     #[test]
     fn parsed_config_declarations_are_validated_against_compiled_policy() {
         let pipeline = pipeline("group", "pipeline");

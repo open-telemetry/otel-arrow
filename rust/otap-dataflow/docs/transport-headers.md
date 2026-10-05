@@ -238,7 +238,7 @@ policies:
       default:
         selector:
           type: named
-          named: [product_user:workspace_id]
+          named: [product_user:workspace]
         name: stored_name
 
   context:
