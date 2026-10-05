@@ -1,5 +1,0 @@
-change_type: bug_fix
-component: otap
-note: "Reliably reload changed CA certificates after rapid atomic replacement on Windows."
-issues: [4186]
-subtext:

@@ -1457,14 +1457,11 @@ fn get_file_identity(path: &Path) -> Result<u64, io::Error> {
 
 #[cfg(windows)]
 fn get_file_identity(path: &Path) -> Result<u64, io::Error> {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-
-    // Windows can report the same last-write timestamp for rapid atomic replacements.
-    // Hash the bounded file contents so a changed certificate is always distinguishable.
-    let mut hasher = DefaultHasher::new();
-    read_file_with_limit_sync(path)?.hash(&mut hasher);
-    Ok(hasher.finish())
+    // On Windows, use last_write_time() which has 100-nanosecond precision (FILETIME),
+    // unlike get_mtime() which truncates to seconds and can miss rapid file replacements.
+    use std::os::windows::fs::MetadataExt;
+    let metadata = std::fs::metadata(path)?;
+    Ok(metadata.last_write_time())
 }
 
 #[cfg(not(any(unix, windows)))]
