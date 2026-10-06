@@ -225,12 +225,6 @@ impl ReceiverMetrics {
         }
     }
 
-    /// Registers the shared receiver metric sets with an entity-bound registrar.
-    #[must_use]
-    pub fn register_with(registrar: &impl MetricSetRegistrar, interests: Interests) -> Self {
-        Self::register_with_distribution(registrar, interests, DistributionTier::Normal)
-    }
-
     /// Registers the shared receiver metric sets with an entity-bound registrar and duration tier.
     #[must_use]
     pub fn register_with_distribution(
