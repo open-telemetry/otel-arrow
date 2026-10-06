@@ -105,6 +105,7 @@ contrib-receivers = [
     "etw",
     "kafka",
     "user-events",
+    "windows-event-forwarding",
 ]
 contrib-processors = [
     "condense-attributes",
@@ -112,8 +113,6 @@ contrib-processors = [
     "resource-validator",
 ]
 
-# Shared cross-platform building blocks consumed by multiple nodes.
-bounded-xml = ["dep:quick-xml"]
 contrib-exporters = [
     "azure-monitor",
     "clickhouse",
@@ -148,6 +147,9 @@ oracle = [
     "dep:secrecy",
 ]
 etw = ["dep:one_collect", "dep:humantime-serde"]
+# Windows Event Forwarding receiver. Gates the shared bounded XML parser; the
+# receiver's remaining optional dependencies land with the receiver itself.
+windows-event-forwarding = ["dep:quick-xml"]
 user-events = [
     "dep:base64",
     "dep:chrono",
