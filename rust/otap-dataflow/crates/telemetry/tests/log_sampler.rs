@@ -162,7 +162,7 @@ fn outcome_sampling() {
 }
 
 /// Scenario: Every scoped logging macro uses a sampler.
-/// Guarantees: Levels, empty events, and field formatting are preserved.
+/// Guarantees: Samplers are borrowed; levels and field formatting are preserved.
 #[test]
 fn macro_forms() {
     struct Keep;
@@ -178,14 +178,14 @@ fn macro_forms() {
         Level::ERROR,
     ];
     setup.with_subscriber(|| {
-        otel_debug!(logger: &mut sampler, "test.debug");
-        otel_info!(logger: &mut sampler, "test.info", count = 1);
-        otel_warn!(logger: &mut sampler, "test.warn", value = %"display");
+        otel_debug!(logger: sampler, "test.debug");
+        otel_info!(logger: sampler, "test.info", count = 1);
+        otel_warn!(logger: sampler, "test.warn", value = %"display");
         otel_error!(logger: &mut sampler, "test.error", value = ?Some(42));
         for level in levels {
-            otel_event!(logger: &mut sampler, level, "test.dynamic");
+            otel_event!(logger: sampler, level, "test.dynamic");
         }
-        otel_event!(logger: &mut sampler, Level::WARN, "test.formatted", "answer {}", 42);
+        otel_event!(logger: sampler, Level::WARN, "test.formatted", "answer {}", 42);
     });
     let emitted = records(&receiver);
     assert_eq!(emitted.len(), 10);

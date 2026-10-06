@@ -114,14 +114,14 @@ otel_info!(
 ### Logging suppression and sampling
 
 The `otel_arrow_dfe_telemetry::log_sampler::Sampler` interface
-supports custom logs sampling. A `&mut Sampler` is passed to the event
-after standard `tracing` filters, enabling stateful observation of
-logs events before full evaluation of the body and attributes.
+supports custom logs sampling. After standard `tracing` filters, the macro
+mutably borrows the expression supplied as `logger:`, enabling stateful
+observation of the event before its body and attributes are evaluated.a
 
 Note the `otel_component_scope!` declaration is required to enable
 sampling in a given module.
 
-```
+```rust
 struct O11y {
    /// Export request preparation errors (e.g., parse errors)
    /// are emitted peridiocally after the first occurance.
@@ -132,7 +132,20 @@ struct O11y {
 
    // Pass the self.o11y.preparation sampler for these failures.
    otel_warn!(
-       logger: &mut self.o11y.preparation,
+       logger: self.o11y.preparation,
+       "otlp.exporter.http.parse_error",
+       ...
+   );
+```
+
+The expression may return a temporary, for example the following
+calls `outcome(&result)` to determine the logger that makes the
+decision:
+
+```rust
+   // Pass the self.o11y.preparation sampler for these failures.
+   otel_warn!(
+       logger: self.o11y.delivery_episodes.outcome(&result),
        "otlp.exporter.http.parse_error",
        ...
    );

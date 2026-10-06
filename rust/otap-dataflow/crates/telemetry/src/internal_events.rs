@@ -359,11 +359,11 @@ macro_rules! __otel_logger_event {
                 $crate::_private::with_dispatch(|dispatch| {
                     let metadata = __CALLSITE.metadata();
                     if interest.is_always() || dispatch.enabled(metadata) {
-                        let mut logger = $logger;
-                        if $crate::log_sampler::Sampler::should_sample(&mut logger, metadata) {
+                        let logger = &mut ($logger);
+                        if $crate::log_sampler::Sampler::should_sample(logger, metadata) {
                             (|values: $crate::_private::ValueSet<'_>| {
                                 let event = $crate::_private::Event::new(metadata, &values);
-                                $crate::log_sampler::Sampler::emit(&mut logger, &event, dispatch);
+                                $crate::log_sampler::Sampler::emit(logger, &event, dispatch);
                             })($crate::_private::valueset_all!(metadata.fields(), $($($fields)+)?));
                         }
                     }
