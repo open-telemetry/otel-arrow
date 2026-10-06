@@ -335,6 +335,11 @@ termination verb `cancel`, and one internal safety verb `abort`.
 
 ## Repeated operation failures
 
+> [!NOTE]
+> This feature is being re-implemented using the logs sampler API, after
+> which diagnostic events will appear as ordinary logging events e.g., 
+> `otel_warn!(logger: &mut failure_sampler, "failure.name", ...)`.
+
 This shared policy supports recurring operation failures across exporters,
 receivers, and processors. Each integration documents its concrete event
 contract alongside the component that owns it.

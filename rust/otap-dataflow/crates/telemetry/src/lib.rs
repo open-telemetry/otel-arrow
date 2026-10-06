@@ -51,6 +51,8 @@ pub mod instrument;
 pub mod internal_events;
 /// Runtime-reloadable filtering for internal logs.
 pub mod log_filter;
+/// Explicit log sampling policies and per-observation adapters.
+pub mod log_sampler;
 /// Internal log tap for admin-side log queries.
 pub mod log_tap;
 pub mod metrics;

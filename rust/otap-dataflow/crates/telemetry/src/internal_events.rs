@@ -16,7 +16,17 @@ pub mod _private {
     pub use tracing::field::ValueSet;
     pub use tracing::metadata::Kind;
     pub use tracing::{Event, Level};
-    pub use tracing::{callsite2, debug, error, info, trace, valueset, warn};
+    pub use tracing::{
+        callsite2, debug, error, info, level_enabled, trace, valueset, valueset_all, warn,
+    };
+
+    /// Adapts tracing's `FnMut` callback to allow a logger expression to move an adapter.
+    pub fn with_dispatch<R>(f: impl FnOnce(&tracing::Dispatch) -> R) -> R {
+        let mut f = Some(f);
+        tracing::dispatcher::get_default(|dispatch| {
+            f.take().expect("get_default invokes its callback once")(dispatch)
+        })
+    }
 
     /// Compile-time validator for OpenTelemetry event names used by the
     /// `otel_info!` / `otel_warn!` / `otel_debug!` / `otel_error!` /
@@ -296,6 +306,70 @@ macro_rules! otel_event {
     }};
     ($level:expr, $name:expr) => {{
         $crate::otel_event!(target: env!("CARGO_PKG_NAME"), $level, $name);
+    }};
+}
+
+/// Constructs an event lazily through an explicit logger after tracing accepts its metadata.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __otel_logger_event {
+    (@dispatch target: $target:expr, logger: $logger:expr, $level:expr, $name:expr $(, $($fields:tt)+)?) => {{
+        match $level {
+            $crate::_private::Level::TRACE => {
+                $crate::__otel_logger_event!(
+                    target: $target, logger: $logger, $crate::_private::Level::TRACE, $name $(, $($fields)+)?
+                );
+            }
+            $crate::_private::Level::DEBUG => {
+                $crate::__otel_logger_event!(
+                    target: $target, logger: $logger, $crate::_private::Level::DEBUG, $name $(, $($fields)+)?
+                );
+            }
+            $crate::_private::Level::INFO => {
+                $crate::__otel_logger_event!(
+                    target: $target, logger: $logger, $crate::_private::Level::INFO, $name $(, $($fields)+)?
+                );
+            }
+            $crate::_private::Level::WARN => {
+                $crate::__otel_logger_event!(
+                    target: $target, logger: $logger, $crate::_private::Level::WARN, $name $(, $($fields)+)?
+                );
+            }
+            $crate::_private::Level::ERROR => {
+                $crate::__otel_logger_event!(
+                    target: $target, logger: $logger, $crate::_private::Level::ERROR, $name $(, $($fields)+)?
+                );
+            }
+        }
+    }};
+    (target: $target:expr, logger: $logger:expr, $level:expr, $name:expr $(, $($fields:tt)+)?) => {{
+        const _: () = $crate::_private::validate_event_name($name);
+        use $crate::_private::Callsite;
+
+        if $crate::_private::level_enabled!($level) {
+            static __CALLSITE: $crate::_private::DefaultCallsite = $crate::_private::callsite2! {
+                name: $name,
+                kind: $crate::_private::Kind::EVENT,
+                target: $target,
+                level: $level,
+                fields: $($($fields)+)?
+            };
+            let interest = __CALLSITE.interest();
+            if !interest.is_never() {
+                $crate::_private::with_dispatch(|dispatch| {
+                    let metadata = __CALLSITE.metadata();
+                    if interest.is_always() || dispatch.enabled(metadata) {
+                        let mut logger = $logger;
+                        if $crate::log_sampler::Sampler::should_sample(&mut logger, metadata) {
+                            (|values: $crate::_private::ValueSet<'_>| {
+                                let event = $crate::_private::Event::new(metadata, &values);
+                                $crate::log_sampler::Sampler::emit(&mut logger, &event, dispatch);
+                            })($crate::_private::valueset_all!(metadata.fields(), $($($fields)+)?));
+                        }
+                    }
+                });
+            }
+        }
     }};
 }
 
