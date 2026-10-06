@@ -1073,8 +1073,8 @@ async fn finalize_completed_export(
         .as_ref()
         .is_err_and(|error| error.is_retryable() || auth_failure);
 
-    // Success is normally silent and only selects confirmed recovery. Failure
-    // details are formatted only when the sampler selects an ordinary warning.
+    // Success is normally silent but can select a due summary or confirmed recovery.
+    // Failure details are formatted only when the sampler selects an ordinary warning.
     match &result {
         Ok(()) => otel_summary_recover!(
             &mut metrics.delivery,

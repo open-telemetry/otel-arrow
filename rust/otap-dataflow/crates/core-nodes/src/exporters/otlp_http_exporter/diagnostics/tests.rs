@@ -107,19 +107,35 @@ impl CapturedEvent {
         }
     }
 
-    fn assert_recovery_contract(&self, name: &str, level: Level, kind: &str) {
+    fn assert_contract(&self, name: &str, level: Level, kind: &str) {
         assert_eq!(self.name, name);
         assert_eq!(self.target, "otel.exporter.otlp_http");
         assert_eq!(self.level, level);
         assert_eq!(self.fields["diagnostic_kind"], kind);
+        assert!(self.fields["signal"].is_string());
+        for field in [
+            "episode_seconds",
+            "interval_seconds",
+            "error_sample_age_seconds",
+        ] {
+            assert!(self.fields[field].is_f64(), "{field} must be a number");
+        }
+        for field in [
+            "successful_attempts",
+            "failed_attempts",
+            "suppressed_diagnostics",
+            "total_successful_attempts",
+            "total_failed_attempts",
+            "total_suppressed_diagnostics",
+        ] {
+            assert!(self.fields[field].is_u64(), "{field} must be an integer");
+        }
+        assert!(self.fields["error_counts"].is_string());
+        assert!(self.fields["total_error_counts"].is_string());
     }
 
     fn assert_summary_contract(&self, name: &str, kind: &str) {
-        assert_eq!(self.name, name);
-        assert_eq!(self.target, "otel.exporter.otlp_http");
-        assert_eq!(self.level, Level::WARN);
-        assert_eq!(self.fields["diagnostic_kind"], kind);
-        assert!(self.fields["signal"].is_string());
+        self.assert_contract(name, Level::WARN, kind);
     }
 }
 
@@ -161,7 +177,7 @@ fn with_capture<R>(f: impl FnOnce(StructuredLogEmitter) -> R) -> (R, Capture) {
 }
 
 /// Scenario: Mixed failures and stale successes select summaries across independent signals.
-/// Guarantees: HTTP events preserve typed legacy fields and matching sample metadata through recovery.
+/// Guarantees: HTTP records retain typed counters and matching failure samples through recovery.
 #[test]
 fn delivery_event_contract_and_sampled_failures() {
     use OtlpHttpExporterErrorType::{PartialRejection, Transport};
@@ -246,20 +262,35 @@ fn delivery_event_contract_and_sampled_failures() {
     events[0].assert_summary_contract("otlp.exporter.http.export_error", "first_failure");
     assert_eq!(events[0].body.as_deref(), Some("connection refused"));
     assert_eq!(events[0].fields["retryable"], true);
+    assert_eq!(events[0].fields["error_sample_age_seconds"], 0.0);
     events[1].assert_summary_contract("otlp.exporter.http.export_error", "summary");
     assert_eq!(events[1].body.as_deref(), Some("connection refused"));
     assert_eq!(events[1].fields["retryable"], true);
+    assert_eq!(events[1].fields["error_sample_age_seconds"], 60.0);
+    assert_eq!(events[1].fields["error_counts"], "partial_rejection=1");
+    assert_eq!(
+        events[1].fields["total_error_counts"],
+        "transport=1,partial_rejection=1"
+    );
     events[2].assert_summary_contract("otlp.exporter.http.export_error", "summary");
     assert_eq!(events[2].body.as_deref(), Some("partial acceptance"));
     assert_eq!(events[2].fields["retryable"], false);
+    assert_eq!(events[2].fields["signal"], "logs");
+    assert_eq!(events[2].fields["error_sample_age_seconds"], 0.0);
     events[3].assert_summary_contract("otlp.exporter.http.export_error", "first_failure");
     assert_eq!(events[3].body.as_deref(), Some("trace connection refused"));
     assert_eq!(events[3].fields["retryable"], true);
     assert_eq!(events[3].fields["signal"], "traces");
+    assert_eq!(events[3].fields["error_sample_age_seconds"], 0.0);
     events[4].assert_summary_contract("otlp.exporter.http.export_error", "summary");
     assert_eq!(events[4].body.as_deref(), Some("partial acceptance"));
     assert_eq!(events[4].fields["retryable"], false);
-    events[5].assert_recovery_contract(
+    assert_eq!(events[4].fields["signal"], "logs");
+    assert_eq!(events[4].fields["error_sample_age_seconds"], 60.0);
+    assert_eq!(events[4].fields["failed_attempts"], 1);
+    assert_eq!(events[4].fields["successful_attempts"], 1);
+    assert_eq!(events[4].fields["suppressed_diagnostics"], 1);
+    events[5].assert_contract(
         "otlp.exporter.http.export_recovered",
         Level::INFO,
         "recovery",
@@ -269,6 +300,11 @@ fn delivery_event_contract_and_sampled_failures() {
         Some("OTLP HTTP export recovered")
     );
     assert_eq!(events[5].fields["signal"], "logs");
+    assert_eq!(events[5].fields["error_sample_age_seconds"], 61.0);
+    assert_eq!(events[5].fields["episode_seconds"], 181.0);
+    assert_eq!(events[5].fields["total_failed_attempts"], 5);
+    assert_eq!(events[5].fields["total_successful_attempts"], 3);
+    assert_eq!(events[5].fields["total_suppressed_diagnostics"], 3);
     assert!(!events[5].fields.contains_key("retryable"));
 }
 
@@ -349,6 +385,11 @@ fn preparation_and_notification_event_contracts() {
     for event in events.iter() {
         assert!(!event.fields.contains_key("retryable"));
         assert!(event.body.is_some());
+    }
+    for index in [2, 3] {
+        assert_eq!(events[index].fields["total_failed_attempts"], 3);
+        assert_eq!(events[index].fields["failed_attempts"], 2);
+        assert_eq!(events[index].fields["suppressed_diagnostics"], 1);
     }
 }
 

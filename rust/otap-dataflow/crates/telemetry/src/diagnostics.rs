@@ -155,7 +155,7 @@ pub struct DiagnosticReport<E> {
     pub total: Counts<E>,
     /// Most recently emitted failure event without summary attributes.
     pub detail: Option<LogRecord>,
-    /// Age of the saved failure event.
+    /// Age of the sampled failure; zero when selecting a new warning.
     pub detail_age: Duration,
 }
 
@@ -229,14 +229,18 @@ impl<E: AttributeEnum> DiagnosticTracker<E> {
         if !emit {
             return None;
         }
-        Some(episode.report(
+        let mut report = episode.report(
             if first_report {
                 ReportKind::Degraded
             } else {
                 ReportKind::Summary
             },
             now,
-        ))
+        );
+        // The warning carries the current failure. The saved sample's timestamp
+        // changes only if that warning passes the filter and is remembered.
+        report.detail_age = Duration::ZERO;
+        Some(report)
     }
 
     /// Saves the unannotated ordinary failure event selected by [`Self::failure`].
@@ -363,9 +367,9 @@ macro_rules! __otel_summary_attributes {
 
 /// Sample repeated failures and emit one ordinary warning when selected.
 ///
-/// The tracker decides before the tracing event is constructed. The selected
-/// event follows the normal logging path, with diagnostic counters inserted
-/// before the caller's ordinary tracing fields and message.
+/// Sampling precedes record construction. The active engine subscriber filters
+/// the selected record, then the engine emitter delivers it with summary
+/// attributes appended after the caller's ordinary fields and message.
 #[macro_export]
 macro_rules! otel_summary_warn {
     (target: $target:expr, $diagnostics:expr, $signal:expr, $category:expr, $name:literal, $($fields:tt)+) => {{
@@ -380,11 +384,12 @@ macro_rules! otel_summary_warn {
         );
     }};
     (target: $target:expr, at: $now:expr, $diagnostics:expr, $signal:expr, $category:expr, $name:literal, $($fields:tt)+) => {{
+        let diagnostic_now = $now;
         let diagnostic_signal = $signal;
         let diagnostic_state = &mut *($diagnostics);
         let diagnostic_emitter = diagnostic_state.emitter().clone();
         let diagnostic_tracker = diagnostic_state.signal(diagnostic_signal);
-        if let Some(diagnostic_report) = diagnostic_tracker.failure($now, $category) {
+        if let Some(diagnostic_report) = diagnostic_tracker.failure(diagnostic_now, $category) {
             let diagnostic_attrs =
                 $crate::__otel_summary_attributes!(&diagnostic_report, diagnostic_signal);
             let diagnostic_event = $crate::__log_record_impl!(
@@ -399,19 +404,17 @@ macro_rules! otel_summary_warn {
                 diagnostic_attrs,
             );
             if let Some(captured) = captured {
-                diagnostic_tracker.remember($now, captured);
+                diagnostic_tracker.remember(diagnostic_now, captured);
             }
         }
     }};
 }
 
-/// Observe successful operation completion and emit one ordinary INFO event
-/// when the diagnostic episode has confirmed recovery.
+/// Observe successful completion and replay a due summary or emit an INFO recovery.
 ///
-/// Like [`otel_summary_warn!`], the tracker decides before the tracing event
-/// is constructed. The selected event follows the normal logging path with
-/// diagnostic counters inserted before the caller's ordinary tracing fields
-/// and message.
+/// Summaries reuse the saved failure's encoded body and attributes. Recovery
+/// creates a new record. Both use the active engine filter and emitter, with
+/// fresh summary attributes appended after the ordinary fields.
 #[macro_export]
 macro_rules! otel_summary_recover {
     (target: $target:expr, $diagnostics:expr, $signal:expr, $started_at:expr, $name:literal, $($fields:tt)+) => {{
@@ -432,10 +435,10 @@ macro_rules! otel_summary_recover {
         if let Some(diagnostic_report) =
             diagnostic_state.signal(diagnostic_signal).success($started_at, $now)
         {
+            let diagnostic_attrs =
+                $crate::__otel_summary_attributes!(&diagnostic_report, diagnostic_signal);
             if diagnostic_report.kind == $crate::diagnostics::ReportKind::Summary {
                 if let Some(detail) = diagnostic_report.detail.clone() {
-                    let diagnostic_attrs =
-                        $crate::__otel_summary_attributes!(&diagnostic_report, diagnostic_signal);
                     diagnostic_emitter.emit_saved(
                         std::time::SystemTime::now(),
                         detail,
@@ -443,21 +446,16 @@ macro_rules! otel_summary_recover {
                     );
                 }
             } else {
-                $crate::otel_info!(target: $target, $name,
-                    signal = $crate::attributes::AttributeEnum::as_str(diagnostic_signal),
-                    diagnostic_kind = diagnostic_report.kind.as_str(),
-                    $($fields)+,
-                    episode_seconds = diagnostic_report.episode_duration.as_secs_f64(),
-                    interval_seconds = diagnostic_report.interval_duration.as_secs_f64(),
-                    successful_attempts = diagnostic_report.interval.successes,
-                    failed_attempts = diagnostic_report.interval.failures,
-                    suppressed_diagnostics = diagnostic_report.interval.suppressed,
-                    total_successful_attempts = diagnostic_report.total.successes,
-                    total_failed_attempts = diagnostic_report.total.failures,
-                    total_suppressed_diagnostics = diagnostic_report.total.suppressed,
-                    error_counts = %diagnostic_report.interval,
-                    total_error_counts = %diagnostic_report.total,
-                    error_sample_age_seconds = diagnostic_report.detail_age.as_secs_f64()
+                let diagnostic_event = $crate::__log_record_impl!(
+                    target: $target,
+                    $crate::Level::INFO,
+                    $name,
+                    $($fields)+
+                );
+                let _ = diagnostic_emitter.emit_annotated(
+                    std::time::SystemTime::now(),
+                    diagnostic_event,
+                    diagnostic_attrs,
                 );
             }
         }
@@ -468,8 +466,13 @@ macro_rules! otel_summary_recover {
 mod tests {
     use super::*;
 
+    fn sample_record(message: &str) -> LogRecord {
+        crate::__log_record_impl!(crate::Level::WARN, "test.failure", message = message)
+            .into_record(crate::self_tracing::LogContext::new())
+    }
+
     /// Scenario: A destination fails 100,000 times within each reporting window.
-    /// Guarantees: Warnings and formatting are time bounded while all failures are counted.
+    /// Guarantees: Warnings are bounded, failures are counted, and unsaved reports do not reset sample age.
     #[test]
     fn sustained_failure_is_bounded_and_counted() {
         let mut tracker = DiagnosticTracker::default();
@@ -479,6 +482,8 @@ mod tests {
             .unwrap();
         assert_eq!(first.kind, ReportKind::Degraded);
         assert_eq!(first.total.failures, 1);
+        assert_eq!(first.detail_age, Duration::ZERO);
+        tracker.remember(start, sample_record("DNS unavailable"));
         for _ in 0..100_000 {
             assert!(
                 tracker
@@ -498,6 +503,15 @@ mod tests {
         assert_eq!(summary.interval.suppressed, 100_000);
         assert_eq!(summary.interval.to_string(), "transport=100000,rejected=1");
         assert_eq!(summary.interval_duration, SUMMARY_INTERVAL);
+        assert_eq!(summary.detail_age, Duration::ZERO);
+        let recovered = tracker
+            .success(
+                start + SUMMARY_INTERVAL + Duration::from_secs(1),
+                start + SUMMARY_INTERVAL + RECOVERY_INTERVAL,
+            )
+            .unwrap();
+        assert_eq!(recovered.kind, ReportKind::Recovered);
+        assert_eq!(recovered.detail_age, SUMMARY_INTERVAL + RECOVERY_INTERVAL);
     }
 
     /// Scenario: Concurrent old attempts complete successfully after a new failure.
@@ -540,6 +554,7 @@ mod tests {
         let mut tracker = DiagnosticTracker::default();
         let start = Instant::now();
         let _ = tracker.failure(start, DiagnosticErrorKind::Transport);
+        tracker.remember(start, sample_record("offline"));
         for second in 1..60 {
             let now = start + Duration::from_secs(second);
             assert!(tracker.success(now, now).is_none());
@@ -549,13 +564,12 @@ mod tests {
                     .is_none()
             );
         }
-        let summary = tracker
-            .failure(start + SUMMARY_INTERVAL, DiagnosticErrorKind::Rejected)
-            .unwrap();
+        let summary = tracker.success(start, start + SUMMARY_INTERVAL).unwrap();
         assert_eq!(summary.kind, ReportKind::Summary);
-        assert_eq!(summary.interval.successes, 59);
-        assert_eq!(summary.interval.failures, 60);
-        let last_failure = start + SUMMARY_INTERVAL;
+        assert_eq!(summary.interval.successes, 60);
+        assert_eq!(summary.interval.failures, 59);
+        assert_eq!(summary.detail_age, SUMMARY_INTERVAL);
+        let last_failure = start + Duration::from_secs(59);
         assert!(
             tracker
                 .success(
@@ -564,15 +578,16 @@ mod tests {
                 )
                 .is_none()
         );
+        let recovered = tracker
+            .success(
+                last_failure + Duration::from_secs(1),
+                last_failure + RECOVERY_INTERVAL,
+            )
+            .unwrap();
+        assert_eq!(recovered.kind, ReportKind::Recovered);
         assert_eq!(
-            tracker
-                .success(
-                    last_failure + Duration::from_secs(1),
-                    last_failure + RECOVERY_INTERVAL
-                )
-                .unwrap()
-                .kind,
-            ReportKind::Recovered
+            recovered.detail_age,
+            Duration::from_secs(59) + RECOVERY_INTERVAL
         );
     }
 
@@ -625,13 +640,18 @@ mod tests {
         let start = Instant::now();
         let mut tracker = DiagnosticTracker::default();
         let _ = tracker.failure(start, DiagnosticErrorKind::Transport);
+        tracker.remember(start, sample_record("offline"));
         let later = start + RECOVERY_INTERVAL;
         assert!(
             tracker
                 .failure(later, DiagnosticErrorKind::Rejected)
                 .is_none()
         );
-        assert!(tracker.success(later, later + RECOVERY_INTERVAL).is_none());
+        assert!(
+            tracker
+                .success(later, later + RECOVERY_INTERVAL)
+                .is_some_and(|r| r.kind == ReportKind::Summary)
+        );
         assert_eq!(
             tracker
                 .success(later + Duration::from_secs(1), later + RECOVERY_INTERVAL)

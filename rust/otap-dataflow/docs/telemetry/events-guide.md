@@ -426,8 +426,9 @@ trackers; success at one boundary must not mark another boundary recovered.
 
 ### Report fields
 
-Selected reports are ordinary component log events, so they keep the component
-target, callsite, pipeline/node context, and normal filter behavior.
+Selected reports are engine-owned structured log records. They keep the component
+target, callsite, and pipeline/node context and use the configured engine sink.
+Both new records and saved-record replays respect the active engine log filter.
 `otel_summary_warn!` and `otel_summary_recover!` add common interval and episode
 fields after the sampling decision; each integration supplies its event names
 and operation-specific attributes.
@@ -444,7 +445,7 @@ or data loss:
 | `total_successful_attempts`, `total_failed_attempts` | Episode counts |
 | `total_suppressed_diagnostics` | Suppressed failures for the episode |
 | `error_counts`, `total_error_counts` | Bounded `category=count` lists |
-| `error_sample_age_seconds` | Age of the saved failure event |
+| `error_sample_age_seconds` | Age of the sample; zero for a new failure |
 
 Integrations may add bounded fields such as `signal`, `stage`, `message`, or a
 retry decision. These fields describe the selected failure event; the common

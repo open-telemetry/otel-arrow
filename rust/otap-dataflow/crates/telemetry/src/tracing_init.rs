@@ -178,8 +178,14 @@ impl StructuredLogEmitter {
         Some(base)
     }
 
-    /// Replays a saved event with freshly encoded annotations.
+    /// Replays a saved event with fresh annotations if the active engine filter allows it.
     pub fn emit_saved(&self, time: SystemTime, saved: LogRecord, annotations: StackLogRecord) {
+        let enabled = tracing::dispatcher::get_default(|dispatch| {
+            dispatch.enabled(saved.callsite_id.0.metadata())
+        });
+        if !enabled {
+            return;
+        }
         let annotation_record = annotations.into_record(LogContext::new());
         let capacity = saved.body_attrs_bytes.len() + annotation_record.body_attrs_bytes.len();
         let mut buf = ProtoBuffer::with_capacity_and_limit(capacity, capacity);
@@ -383,6 +389,58 @@ mod tests {
                 emit_info();
                 assert!(receiver.try_recv().is_err());
             });
+        });
+    }
+
+    /// Scenario: A saved warning is replayed across severity and target filter updates.
+    /// Guarantees: Replay uses the current engine filter and preserves the original record.
+    #[test]
+    fn saved_event_applies_runtime_filter_updates() {
+        let (reporter, receiver) = test_reporter();
+        let (filter, handle) = RuntimeLogFilter::new_configured(&level("warn"));
+        let setup =
+            test_setup(internal_async_provider(reporter), level("warn")).with_log_filter(filter);
+        setup.with_subscriber(|| {
+            let emitter = setup.log_emitter();
+            let saved = emitter
+                .emit_annotated(
+                    SystemTime::now(),
+                    crate::__log_record_impl!(
+                        target: "otel.exporter.test",
+                        crate::Level::WARN,
+                        "test.export_error",
+                        retryable = true,
+                        message = "connection refused"
+                    ),
+                    crate::__log_record_impl!(crate::Level::TRACE, "test.annotations"),
+                )
+                .expect("initial warning is enabled");
+            assert!(matches!(receiver.try_recv(), Ok(ObservedEvent::Log(_))));
+
+            for (directive, enabled) in [
+                ("off", false),
+                ("error", false),
+                ("warn", true),
+                ("warn,otel.exporter.test=off", false),
+                ("off,otel.exporter.test=warn", true),
+            ] {
+                handle.apply(Some(&level(directive)));
+                emitter.emit_saved(
+                    SystemTime::now(),
+                    saved.clone(),
+                    crate::__log_record_impl!(crate::Level::TRACE, "test.annotations"),
+                );
+                if enabled {
+                    let ObservedEvent::Log(event) = receiver.try_recv().expect("replay is enabled")
+                    else {
+                        panic!("expected a log event");
+                    };
+                    assert_eq!(event.record.callsite_id, saved.callsite_id);
+                    assert_eq!(event.record.body_attrs_bytes, saved.body_attrs_bytes);
+                    assert_eq!(event.record.context, saved.context);
+                }
+                assert!(receiver.is_empty(), "unexpected replay for {directive}");
+            }
         });
     }
 

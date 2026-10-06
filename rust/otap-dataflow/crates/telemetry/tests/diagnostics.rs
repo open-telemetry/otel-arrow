@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Verify suppression happens before subscribers receive operation diagnostics.
+//! Verify sampling happens before constructing engine diagnostic records.
 
 use otel_arrow_dfe_pdata::views::otlp::bytes::logs::RawLogRecord;
 use otel_arrow_dfe_pdata_views::views::common::{AnyValueView, AttributeView};
@@ -22,7 +22,7 @@ fn counted_message(formats: &Cell<u64>) -> &'static str {
 /// Scenario: A busy outage produces a first warning, summary, and recovery.
 /// Guarantees: Sampling constructs only the selected events and formats only selected details.
 #[test]
-fn suppression_precedes_all_subscribers() {
+fn suppression_precedes_record_construction() {
     let (sender, receiver) = flume::unbounded();
     let setup = TracingSetup::new(
         ProviderSetup::InternalAsync {
