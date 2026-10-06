@@ -600,7 +600,6 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                                     .boundary
                                     .record(completed)
                                     .expect("topic message processing is infallible");
-                                let send_started_at = Instant::now();
                                 // Use source-tag-aware send so fan-in wiring can attribute source node.
                                 match effect_handler.try_send_message_with_source_node(pdata) {
                                     Ok(()) => {
@@ -619,6 +618,7 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                                     Err(otel_arrow_dfe_engine::error::TypedError::ChannelSendError(
                                         SendError::Full(pdata),
                                     )) => {
+                                        let send_started_at = Instant::now();
                                         let effect_handler = effect_handler.clone();
                                         pending_forward = Some(PendingForward {
                                             delivery,

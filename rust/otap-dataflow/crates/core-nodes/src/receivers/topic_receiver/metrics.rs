@@ -271,8 +271,12 @@ mod tests {
     use otel_arrow_dfe_config::SignalType;
     use otel_arrow_dfe_engine::Interests;
     use otel_arrow_dfe_engine::context::ControllerContext;
-    use otel_arrow_dfe_engine::testing::test_pipeline_ctx_with_interests;
+    use otel_arrow_dfe_engine::testing::{
+        test_pipeline_ctx_with_interests,
+        test_pipeline_ctx_with_interests_and_duration_distribution,
+    };
     use otel_arrow_dfe_otap::metrics::ErrorWithOutcome;
+    use otel_arrow_dfe_telemetry::metrics::MetricValue;
     use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
 
     fn new_test_metrics() -> TopicReceiverMetrics {
@@ -359,26 +363,39 @@ mod tests {
         }));
     }
 
-    /// Scenario: A topic receiver waits for downstream capacity with normal duration fidelity enabled.
-    /// Guarantees: The wait uses the configured histogram tier and crossing 500ms records one backpressure event.
+    /// Scenario: A topic receiver waits for downstream capacity with each duration tier enabled.
+    /// Guarantees: The wait uses the configured distribution tier and crossing 500ms records one backpressure event.
     #[test]
     fn downstream_blocking_uses_configured_duration_distribution() {
-        let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(Interests::NODE_LOCAL_DURATION);
-        let mut metrics = TopicReceiverMetrics::register(&pipeline_ctx, "test-topic".into());
+        for (tier, expected_tier) in [
+            (DistributionTier::Basic, "basic"),
+            (DistributionTier::Normal, "normal"),
+            (DistributionTier::Detailed, "detailed"),
+        ] {
+            let (pipeline_ctx, _) = test_pipeline_ctx_with_interests_and_duration_distribution(
+                Interests::NODE_LOCAL_DURATION,
+                tier,
+            );
+            let mut metrics = TopicReceiverMetrics::register(&pipeline_ctx, "test-topic".into());
 
-        assert!(metrics.record_downstream_blocked(Duration::from_millis(600)));
-        assert_eq!(metrics.general.downstream_backpressure_events.get(), 1);
+            assert!(metrics.record_downstream_blocked(Duration::from_millis(600)));
+            assert_eq!(metrics.general.downstream_backpressure_events.get(), 1);
 
-        let snapshots = metrics.terminal_snapshots();
-        assert!(snapshots.iter().any(|snapshot| {
-            snapshot.descriptor().name == "receiver.topic.downstream.blocked"
-                && snapshot
-                    .descriptor()
-                    .metrics
-                    .iter()
-                    .any(|metric| metric.name == "duration")
-        }));
-        assert_eq!(metrics.general.downstream_backpressure_events.get(), 0);
+            let snapshot = metrics
+                .terminal_snapshots()
+                .into_iter()
+                .find(|snapshot| snapshot.descriptor().name == "receiver.topic.downstream.blocked")
+                .expect("downstream blocked duration snapshot");
+            let [MetricValue::Distribution(value)] = snapshot.get_metrics() else {
+                panic!("expected downstream blocked duration distribution");
+            };
+            assert_eq!(
+                value.tier_name(),
+                expected_tier,
+                "configured tier: {tier:?}"
+            );
+            assert_eq!(metrics.general.downstream_backpressure_events.get(), 0);
+        }
     }
 
     /// Scenario: A topic receiver waits for downstream capacity without duration telemetry enabled.
