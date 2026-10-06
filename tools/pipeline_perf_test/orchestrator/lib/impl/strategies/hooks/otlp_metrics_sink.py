@@ -167,9 +167,10 @@ def flatten_export_request(
                         rows.append(
                             {
                                 **base,
+                                **_dp_base(dp),
                                 "metric_type": _METRIC_TYPE[data_kind],
                                 "temporality": temporality,
-                                **_number_point(dp),
+                                "value": _number_point(dp),
                             }
                         )
                 elif data_kind in ("histogram", "exponential_histogram"):
@@ -178,11 +179,12 @@ def flatten_export_request(
                         rows.append(
                             {
                                 **base,
+                                **_dp_base(dp),
                                 "metric_type": _METRIC_TYPE[data_kind],
                                 "temporality": _TEMPORALITY.get(
                                     data.aggregation_temporality
                                 ),
-                                **_distribution_point(dp),
+                                "value": _distribution_point(dp),
                             }
                         )
                 elif data_kind == "summary":
@@ -190,46 +192,44 @@ def flatten_export_request(
                         rows.append(
                             {
                                 **base,
+                                **_dp_base(dp),
                                 "metric_type": _METRIC_TYPE[data_kind],
                                 "temporality": None,
-                                **_distribution_point(dp),
+                                "value": _distribution_point(dp),
                             }
                         )
     return rows
 
 
-def _number_point(dp: metrics_pb2.NumberDataPoint) -> Dict[str, Any]:
+def _dp_base(dp) -> Dict[str, Any]:
+    # Fields shared by every data point kind: the interval timestamps and the
+    # per-point attributes. Only the 'value' differs between number and
+    # distribution points (see '_number_point'/'_distribution_point').
+    return {
+        "start_timestamp": _ts(dp.start_time_unix_nano),
+        "timestamp": _ts(dp.time_unix_nano),
+        "metric_attributes": attributes_to_dict(dp.attributes),
+    }
+
+
+def _number_point(dp: metrics_pb2.NumberDataPoint) -> Any:
     kind = dp.WhichOneof("value")
     if kind == "as_int":
         # Keep integer counters exact. Casting sint64 counts to float would lose
         # precision above 2^53.
-        value: Any = int(dp.as_int)
-    elif kind == "as_double":
-        value = float(dp.as_double)
-    else:
-        value = None
-    return {
-        "start_timestamp": _ts(dp.start_time_unix_nano),
-        "timestamp": _ts(dp.time_unix_nano),
-        "value": value,
-        "metric_attributes": attributes_to_dict(dp.attributes),
-    }
+        return int(dp.as_int)
+    if kind == "as_double":
+        return float(dp.as_double)
+    return None
 
 
-def _distribution_point(dp) -> Dict[str, Any]:
+def _distribution_point(dp) -> Optional[float]:
     # 'sum' is optional on Histogram/ExponentialHistogram data points, so an
     # absent sum must map to NULL rather than a phantom 0.0. Summary data points
     # have a non-optional 'sum' (no field presence), so read it directly.
     if isinstance(dp, metrics_pb2.SummaryDataPoint):
-        value: Optional[float] = float(dp.sum)
-    else:
-        value = float(dp.sum) if dp.HasField("sum") else None
-    return {
-        "start_timestamp": _ts(dp.start_time_unix_nano),
-        "timestamp": _ts(dp.time_unix_nano),
-        "value": value,
-        "metric_attributes": attributes_to_dict(dp.attributes),
-    }
+        return float(dp.sum)
+    return float(dp.sum) if dp.HasField("sum") else None
 
 
 class _MetricsServicer(metrics_service_pb2_grpc.MetricsServiceServicer):

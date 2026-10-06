@@ -130,10 +130,10 @@ def test_number_point_preserves_large_integer_value():
         as_int=big,
     )
 
-    row = _number_point(dp)
+    value = _number_point(dp)
 
-    assert row["value"] == big
-    assert isinstance(row["value"], int)
+    assert value == big
+    assert isinstance(value, int)
 
 
 # Scenario: A NumberDataPoint carries a floating point (as_double) value.
@@ -146,10 +146,10 @@ def test_number_point_preserves_double_value():
         as_double=1.5,
     )
 
-    row = _number_point(dp)
+    value = _number_point(dp)
 
-    assert row["value"] == 1.5
-    assert isinstance(row["value"], float)
+    assert value == 1.5
+    assert isinstance(value, float)
 
 
 # Scenario: A HistogramDataPoint is exported without its optional 'sum' field
@@ -170,8 +170,8 @@ def test_distribution_point_missing_sum_is_null():
         sum=0.0,
     )
 
-    assert _distribution_point(without_sum)["value"] is None
-    assert _distribution_point(with_zero_sum)["value"] == 0.0
+    assert _distribution_point(without_sum) is None
+    assert _distribution_point(with_zero_sum) == 0.0
 
 
 # Scenario: A SummaryDataPoint (whose 'sum' has no field presence) is flattened.
@@ -185,7 +185,7 @@ def test_distribution_point_summary_sum_read_directly():
         sum=12.5,
     )
 
-    assert _distribution_point(dp)["value"] == 12.5
+    assert _distribution_point(dp) == 12.5
 
 
 # Scenario: A real OTLP/gRPC client exports several delta batches to a running
