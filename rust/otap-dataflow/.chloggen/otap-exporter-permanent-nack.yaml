@@ -2,4 +2,4 @@ change_type: bug_fix
 component: pipeline
 note: OTAP exporter now emits a permanent NACK for a permanently rejected batch (e.g. a gRPC INVALID_ARGUMENT batch status), so a retry processor no longer resends data the server cannot accept
 issues: [1921]
-subtext:
+subtext: The OTLP gRPC exporter now reports OUT_OF_RANGE failures as `unavailable` instead of `rejected`, matching its retryable handling.
