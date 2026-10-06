@@ -43,18 +43,12 @@ use crate::pipeline::{BoxedPipelineStage, PipelineStage};
 use otel_arrow_dfe_pdata::otlp::metrics::MetricType;
 
 /// Which signal types may flow through the current pipeline context.
-///
-/// This is used during planning to validate that field references are valid for the
-/// signal type(s) that the pipeline may encounter.
 #[derive(Clone, Debug)]
 pub enum SignalContext {
-    /// All three signal types -- source was `signals`.
-    /// Field validation uses intersection semantics: only fields common to all
-    /// signal types are valid.
+    /// All three signal types
     All,
 
-    /// Exactly one signal type -- source was `logs`, `metrics`, `traces`,
-    /// or narrowed via `if (is Log) { ... }`, etc.
+    /// Exactly one signal type
     Single(SignalKind),
 }
 
@@ -69,21 +63,9 @@ pub enum SignalKind {
     Traces,
 }
 
-impl std::fmt::Display for SignalKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Logs => write!(f, "logs"),
-            Self::Metrics(MetricTypeContext::All) => write!(f, "metrics"),
-            Self::Metrics(MetricTypeContext::Single(mt)) => write!(f, "metrics ({mt:?})"),
-            Self::Traces => write!(f, "traces"),
-        }
-    }
-}
-
 /// Which concrete metric types may flow through a metrics pipeline.
 ///
-/// For example, `gauges` narrows to `Single(Gauge)`, while `metrics` gives `All`.
-/// This context is used to derive `DataPointContext` when entering a nested
+/// This context is also used to derive `DataPointContext` when entering a nested
 /// `apply data_points { ... }` pipeline.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MetricTypeContext {
@@ -97,23 +79,14 @@ pub enum MetricTypeContext {
 #[derive(Clone, Debug)]
 pub enum DataPointContext {
     /// All four data point types.
-    /// Field validation uses intersection semantics: only fields common to all
-    /// data point types are valid.
     All,
 
     /// A single data point type (narrowed by metric type source or smart cast).
     Single(MetricDataPointType),
 }
 
-impl DataPointContext {
-    /// Derive the data point context from a metric type context.
-    ///
-    /// Each metric type maps to a specific data point type:
-    /// - Gauge/Sum -> NumberDataPoint
-    /// - Histogram -> HistogramDataPoint
-    /// - ExponentialHistogram -> ExponentialHistogramDataPoint
-    /// - Summary -> SummaryDataPoint
-    pub fn from_metric_type_context(ctx: &MetricTypeContext) -> Self {
+impl From<&MetricTypeContext> for DataPointContext {
+    fn from(ctx: &MetricTypeContext) -> Self {
         match ctx {
             MetricTypeContext::All => Self::All,
             MetricTypeContext::Single(mt) => Self::Single(match mt {
@@ -1117,7 +1090,7 @@ impl PipelinePlanner {
                             let dp_ctx = match &self.record_type {
                                 RecordType::Signal(SignalContext::Single(SignalKind::Metrics(
                                     mt_ctx,
-                                ))) => DataPointContext::from_metric_type_context(mt_ctx),
+                                ))) => mt_ctx.into(),
                                 _ => DataPointContext::All,
                             };
                             RecordType::Child(ChildRecordKind::DataPoint, dp_ctx)

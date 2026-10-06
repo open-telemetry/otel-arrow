@@ -935,7 +935,7 @@ mod test {
         let metrics_reporter = runtime.metrics_reporter();
         let processor = create_processor_with_config(
             serde_json::json!({
-                "partition_by": { "opl_expression": "dropped_attributes_count / 0" },
+                "partition_by": { "opl_expression": "severity_number / 0" },
                 "partition_header_name": "partition-header",
             }),
             &runtime,

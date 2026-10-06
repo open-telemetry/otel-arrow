@@ -116,9 +116,7 @@ pub(crate) fn parse_pipeline(
     for rule in rule.into_inner() {
         match rule.as_rule() {
             // The source keyword (logs, metrics, traces, signals, gauges, sums, etc.)
-            // is consumed by the grammar but not encoded into the AST. Signal type
-            // scoping and metric type filtering are handled by the Pipeline at
-            // execution time based on its SignalContext, not by injecting AST nodes.
+            // is consumed by the grammar but not currently encoded into the AST.
             Rule::source => {}
             Rule::pipeline_stage => {
                 parse_pipeline_stage(rule, &mut inner_pipeline_builder)?;

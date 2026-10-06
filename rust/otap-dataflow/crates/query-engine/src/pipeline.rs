@@ -324,8 +324,12 @@ pub struct Pipeline {
 impl Pipeline {
     /// Create a new [`Pipeline`] instance that will evaluate the passed [`PipelineExpression`].
     ///
-    /// The signal context is automatically inferred from the query source keyword
-    /// (e.g. `logs`, `metrics`, `traces`, `signals`).
+    /// The signal context will be automatically inferred from the query source keyword (e.g.
+    /// `logs`, `metrics`, `traces`, `signals`) or is assumed to be metrics if the source is some
+    /// valid metrics type (`summaries`, `gauges`, `sums`, `histograms` or `exponential_histograms`).
+    ///
+    /// Note: This inference assumes the syntax of the passed query is OPL or KQL and that there is
+    /// no comment at the beginning the program.
     ///
     /// # Errors
     ///
@@ -394,45 +398,46 @@ impl Pipeline {
     /// Infer the signal context from the query source keyword in the pipeline expression.
     ///
     /// Returns an error if the query does not start with a recognized source keyword.
+    ///
+    /// TODO: this needs to be reworked because it doesn't handle if the program is non-OPL/KQL or
+    /// starts with a comment / whitespace. Eventually we should add the source into the AST.
     fn infer_signal_context(pipeline_def: &PipelineExpression) -> Result<SignalContext> {
         let query = pipeline_def.get_query();
         let trimmed = query.trim_start();
-        // Note: order matters -- "exponential_histograms" must be checked before
-        // "histograms" to avoid a false prefix match, and "signals" before "sums".
-        if trimmed.starts_with("logs") {
-            Ok(SignalContext::Single(SignalKind::Logs))
-        } else if trimmed.starts_with("traces") {
-            Ok(SignalContext::Single(SignalKind::Traces))
-        } else if trimmed.starts_with("metrics") {
-            Ok(SignalContext::Single(SignalKind::Metrics(
+        let source = trimmed
+            .split(|c: char| c.is_ascii_whitespace() || c == '|')
+            .next()
+            .unwrap_or("");
+        match source {
+            "logs" => Ok(SignalContext::Single(SignalKind::Logs)),
+            "traces" => Ok(SignalContext::Single(SignalKind::Traces)),
+            "metrics" => Ok(SignalContext::Single(SignalKind::Metrics(
                 MetricTypeContext::All,
-            )))
-        } else if trimmed.starts_with("gauges") {
-            Ok(SignalContext::Single(SignalKind::Metrics(
+            ))),
+            "signals" => Ok(SignalContext::All),
+            "gauges" => Ok(SignalContext::Single(SignalKind::Metrics(
                 MetricTypeContext::Single(MetricType::Gauge),
-            )))
-        } else if trimmed.starts_with("signals") {
-            Ok(SignalContext::All)
-        } else if trimmed.starts_with("summaries") {
-            Ok(SignalContext::Single(SignalKind::Metrics(
-                MetricTypeContext::Single(MetricType::Summary),
-            )))
-        } else if trimmed.starts_with("exponential_histograms") {
-            Ok(SignalContext::Single(SignalKind::Metrics(
-                MetricTypeContext::Single(MetricType::ExponentialHistogram),
-            )))
-        } else if trimmed.starts_with("histograms") {
-            Ok(SignalContext::Single(SignalKind::Metrics(
+            ))),
+            "sums" => Ok(SignalContext::Single(SignalKind::Metrics(
+                MetricTypeContext::Single(MetricType::Sum),
+            ))),
+            "histograms" => Ok(SignalContext::Single(SignalKind::Metrics(
                 MetricTypeContext::Single(MetricType::Histogram),
-            )))
-        } else {
-            Err(Error::InvalidPipelineError {
-                cause: "could not determine signal type from query source; \
+            ))),
+            "exponential_histograms" => Ok(SignalContext::Single(SignalKind::Metrics(
+                MetricTypeContext::Single(MetricType::ExponentialHistogram),
+            ))),
+            "summaries" => Ok(SignalContext::Single(SignalKind::Metrics(
+                MetricTypeContext::Single(MetricType::Summary),
+            ))),
+            _ => Err(Error::InvalidPipelineError {
+                cause: format!(
+                    "could not determine signal type from query source '{source}'; \
                      expected one of: logs, metrics, traces, signals, gauges, \
                      sums, histograms, exponential_histograms, summaries"
-                    .into(),
+                ),
                 query_location: None,
-            })
+            }),
         }
     }
 
@@ -473,8 +478,8 @@ impl Pipeline {
                 SignalContext::Single(SignalKind::Logs) => SignalType::Logs,
                 SignalContext::Single(SignalKind::Metrics(_)) => SignalType::Metrics,
                 SignalContext::Single(SignalKind::Traces) => SignalType::Traces,
-                // All accepts everything -- unreachable since accepts_signal_type
-                // returns true for All
+                // safety: All accepts everything -- unreachable since accepts_signal_type returns
+                // true for SignalContext::All
                 SignalContext::All => unreachable!(),
             };
             return Err(PdataError::UnexpectedSignalType {
@@ -496,14 +501,13 @@ impl Pipeline {
             let mut stages =
                 planner.plan_stages(&self.pipeline_definition, &session_ctx, &otap_batch)?;
 
-            // If scoped to a concrete metric type, wrap all planned stages in a
-            // conditional that filters by the metric_type column. Non-matching rows
-            // pass through unmodified.
+            // If scoped to a concrete metric type, wrap all planned stages in a conditional that
+            // filters by the metric_type column. Non-matching rows pass through unmodified.
             //
-            // TODO: this wrapping in ConditionalPipelineStage is functionally correct
-            // but not optimal -- it splits the batch, runs stages on the matching
-            // subset, then concatenates back. A dedicated metric-type-aware execution
-            // path could avoid the split/concat overhead.
+            // TODO: this wrapping in ConditionalPipelineStage is functionally correct but not
+            // optimal -- it splits the OTAP batch, runs stages on the matching subset, then
+            // concatenates back. A dedicated metric-type-aware execution path could avoid the
+            // split/concat overhead.
             if let SignalContext::Single(SignalKind::Metrics(MetricTypeContext::Single(
                 metric_type,
             ))) = &self.options.signal_context

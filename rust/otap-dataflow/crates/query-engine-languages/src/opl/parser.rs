@@ -371,13 +371,9 @@ mod test {
         }
     }
 
-    /// Scenario: Parse OPL pipelines that use plural concrete metric types as source.
-    /// Guarantees: The parser produces a query plan that only processes rows that have the
-    /// selected metric type
-    #[test]
     /// Scenario: metric type source keywords produce the same AST as other sources.
-    /// Guarantees: the parser does not inject BranchDataExpression wrapping for metric
-    /// type sources; metric type filtering is handled by the Pipeline at execution time.
+    /// Guarantees: valid plural metric type names are accepted as source values
+    #[test]
     fn test_parses_program_for_metrics_types() {
         let test_cases = [
             "gauges",
