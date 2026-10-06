@@ -8,7 +8,9 @@ name: df-engine-internal-observability
 # registry, runs df_engine wired to emit its internal telemetry into
 # weaver via OTLP, exercises every declared event with per-event
 # triggers, and fails if any declared event receives zero samples or
-# has an event-level violation. Attribute-level findings (attributes
+# has an event-level violation. Events whose registry entry carries a
+# `live_check.exempt` annotation, stating why CI cannot drive them, may
+# receive zero samples. Attribute-level findings (attributes
 # emitted by the engine but not yet declared) are tolerated today and
 # tightened in follow-up PRs as the registry is filled in.
 #
@@ -46,6 +48,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           submodules: true
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
           toolchain: stable
@@ -128,7 +131,8 @@ jobs:
           # no script here. Adding a new event: declare it in
           # `semconv/groups/event.<name>.yaml`; if it cannot be exercised
           # purely by the engine config, drop a script in
-          # `semconv/triggers/` that drives it.
+          # `semconv/triggers/` that drives it. If neither can drive it,
+          # annotate the group with `live_check.exempt` and the reason.
           shopt -s nullglob
           for trigger in rust/otap-dataflow/semconv/triggers/*.sh; do
             echo "--- $(basename "$trigger") ---"
@@ -210,6 +214,17 @@ jobs:
             exit 1
           fi
 
+          # Zero samples are allowed only for events annotated
+          # `live_check.exempt`; samples they do receive are still checked.
+          declare -A exempt=()
+          while read -r name; do
+            exempt["$name"]=1
+          done < <(
+            yq eval-all '.groups[] | select(.type == "event" and .annotations.live_check.exempt != null) | .name' \
+              rust/otap-dataflow/semconv/groups/*.yaml \
+              | grep -Ev '^(---|null)?$' | sort -u
+          )
+
           fail=0
           for name in "${expected[@]}"; do
             read -r count worst < <(jq -r --arg n "$name" '
@@ -226,14 +241,16 @@ jobs:
                   )
                 ]
               | @tsv' "$REPORT")
-            echo "| \`$name\` | $count | $worst |" >> "$GITHUB_STEP_SUMMARY"
-            if [ "$count" = "0" ]; then
+            if [ "$count" = "0" ] && [ -n "${exempt[$name]:-}" ]; then
+              worst="exempt"
+            elif [ "$count" = "0" ]; then
               echo "::error::declared event \`$name\` received zero samples"
               fail=1
             elif [ "$worst" = "violation" ]; then
               echo "::error::event \`$name\` has event-level violations"
               fail=1
             fi
+            echo "| \`$name\` | $count | $worst |" >> "$GITHUB_STEP_SUMMARY"
           done
           exit "$fail"
       - name: Bundle live-check artifacts

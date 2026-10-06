@@ -93,9 +93,9 @@ new namespace or source reads. An ownership object must follow actual resource
 lifetime, not merely the async task or join-handle lifetime.
 
 Source stores retain their own publication and recovery barriers. A generic
-success result cannot erase a requirement to sync a recovered authority marker
+success result cannot erase a requirement to make recovered authority durable
 before new progress or cleanup. Sharing this boundary does not adopt Filelog's
-CURRENT layout or v1 envelope for Journald.
+single-file checkpoint layout or v1 envelope for Journald.
 
 ## Lifecycle, readiness, and termination
 

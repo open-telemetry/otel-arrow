@@ -41,6 +41,7 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
           ref: ${{ github.ref }}
+          persist-credentials: false
 
       - name: Create GitHub App token
         if: "!inputs.dry_run"
@@ -49,6 +50,7 @@ jobs:
         with:
           client-id: ${{ vars.OTELBOT_ARROW_CLIENT_ID }}
           private-key: ${{ secrets.OTELBOT_ARROW_PRIVATE_KEY }}
+          permission-contents: write
 
       - name: Get GitHub App User ID
         if: "!inputs.dry_run"
@@ -66,6 +68,8 @@ jobs:
           fetch-tags: true
           ref: ${{ github.ref }}
           token: ${{ steps.app-token.outputs.token }}
+          # zizmor: ignore[artipacked] Credentials are required by the tag pushes below.
+          persist-credentials: true
 
       - name: Validate inputs
         run: |

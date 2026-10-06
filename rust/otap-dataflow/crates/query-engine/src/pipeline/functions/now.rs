@@ -1,7 +1,6 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use std::any::Any;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use arrow::datatypes::{DataType, TimeUnit};
@@ -9,6 +8,7 @@ use datafusion::common::exec_err;
 use datafusion::error::Result;
 use datafusion::logical_expr::{ColumnarValue, ScalarUDFImpl, Signature, Volatility};
 use datafusion::scalar::ScalarValue;
+use otel_arrow_dfe_pdata::schema::UTC_TIME_ZONE;
 
 /// Scalar UDF implementation that evaluates to the current time.
 ///
@@ -36,10 +36,6 @@ impl NowFunc {
 }
 
 impl ScalarUDFImpl for NowFunc {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn name(&self) -> &str {
         "now"
     }
@@ -49,7 +45,10 @@ impl ScalarUDFImpl for NowFunc {
     }
 
     fn return_type(&self, _arg_types: &[DataType]) -> Result<DataType> {
-        Ok(DataType::Timestamp(TimeUnit::Nanosecond, None))
+        Ok(DataType::Timestamp(
+            TimeUnit::Nanosecond,
+            Some(UTC_TIME_ZONE.into()),
+        ))
     }
 
     fn invoke_with_args(
@@ -70,7 +69,7 @@ impl ScalarUDFImpl for NowFunc {
 
         Ok(ColumnarValue::Scalar(ScalarValue::TimestampNanosecond(
             i64::try_from(now.as_nanos()).ok(),
-            None,
+            Some(UTC_TIME_ZONE.into()),
         )))
     }
 }

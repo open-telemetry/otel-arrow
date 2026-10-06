@@ -1,6 +1,0 @@
-change_type: breaking
-component: pipeline
-note: "Replace Syslog CEF component counters with shared receiver lifecycle metrics."
-issues: [3822]
-subtext: |
-  Migration: Replace `receiver.syslog_cef.received.items` with `receiver.received.messages`. `forwards.items` has no exact replacement. Use `node.output.items` for Ack/Nack outcomes (enable detailed runtime metrics or `item_counts`), or `channel.sender.messages` for immediate batch send results.

@@ -1,5 +1,0 @@
-change_type: breaking
-component: pipeline
-note: Add Cargo features that group related core and contrib nodes while preserving the complete default build.
-issues: [4085]
-subtext: "Migration: Consumers using `otel-arrow-dfe-core-nodes` with `default-features = false` must enable `core-nodes` for the previous complete set or select features such as `otlp`, `durable-buffer`, and `parquet`."

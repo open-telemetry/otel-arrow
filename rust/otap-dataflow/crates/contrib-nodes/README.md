@@ -58,6 +58,7 @@ Receivers ingest data into a pipeline.
 | --- | --- | --- | --- |
 | `receiver:etw` | `etw` | Experimental | Ingests Event Tracing for Windows events as logs. |
 | [`receiver:kafka`](src/receivers/kafka_receiver/README.md) | `kafka` | Experimental | Consumes traces, metrics, and logs from Kafka. |
+| [`urn:otel:receiver:oracle`](src/receivers/oracle_receiver/README.md) | `oracle` | Experimental | Polls Oracle queries into logs; explicitly opt-in and requires separately installed Oracle Client libraries. |
 | [`receiver:user_events`](src/receivers/user_events_receiver/README.md) | `user-events` | Experimental | Ingests Linux `user_events` tracepoints as logs. |
 
 ## Processors
@@ -83,11 +84,16 @@ Exporters send data out of a pipeline.
 
 ## Feature Aggregates
 
-- `contrib-nodes`: enables all contrib receivers, processors, and exporters.
-- `contrib-receivers`: enables all contrib receivers.
+- `contrib-nodes`: enables contrib receivers, processors, and exporters, except
+  the explicitly opt-in Oracle receiver.
+- `contrib-receivers`: enables contrib receivers except Oracle.
 - `contrib-processors`: enables all contrib processors.
 - `contrib-exporters`: enables all contrib exporters.
 - `kafka`: enables both the Kafka receiver and exporter.
+
+Enable `oracle` explicitly to include Oracle. It is excluded from both
+`contrib-receivers` and `contrib-nodes` because Oracle Client libraries must be
+provisioned separately.
 
 When these features are enabled in the top-level binary, their factories are
 registered into the OTAP pipeline factory maps.

@@ -1,0 +1,7 @@
+type: journald
+status:
+  class: receiver
+  codeowners:
+    active:
+      - timr-dev
+      - lalitb
