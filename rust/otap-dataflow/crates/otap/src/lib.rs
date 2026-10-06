@@ -36,7 +36,7 @@ pub mod testing;
 /// compression formats
 pub mod compression;
 
-pub(crate) mod socket_options;
+pub mod socket_options;
 
 /// Shared concurrency limiting across protocol servers
 pub mod shared_concurrency;
