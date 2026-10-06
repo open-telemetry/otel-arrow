@@ -2142,7 +2142,7 @@ async fn run_nested_attr_assign_to_all_data_point_type_test(
     let pipeline_expr = OplParser::parse_with_options(query, default_parser_options())
         .unwrap()
         .pipeline;
-    let mut pipeline = Pipeline::new(pipeline_expr);
+    let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
     let metrics = vec![
         Metric::build()
@@ -2420,7 +2420,7 @@ async fn test_assign_nested_path_from_data_point_field_on_data_points() {
     let pipeline_expr = OplParser::parse_with_options(query, default_parser_options())
         .unwrap()
         .pipeline;
-    let mut pipeline = Pipeline::new(pipeline_expr);
+    let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
     let metrics = vec![
         Metric::build()

@@ -92,8 +92,8 @@ impl PipelineStage for AttributeTransformPipelineStage {
 
     fn supports_exec_on(&self, record_type: &RecordType) -> bool {
         match record_type {
-            RecordType::Signal => true,
-            RecordType::Child(ChildRecordKind::DataPoint) => {
+            RecordType::Signal(_) => true,
+            RecordType::DataPoint(_) => {
                 matches!(self.attrs_id, AttributesIdentifier::Record(_))
             }
             RecordType::Attributes => false,
@@ -778,7 +778,7 @@ mod test {
             let pipeline_expr = OplParser::parse_with_options(query, default_parser_options())
                 .unwrap()
                 .pipeline;
-            let mut pipeline = Pipeline::new(pipeline_expr);
+            let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
             let input = otlp_to_otap(&OtlpProtoMessage::Metrics(to_metrics_data(metrics)));
             let result = pipeline.execute(input).await.unwrap();
             let OtlpProtoMessage::Metrics(md) = otap_to_otlp(&result) else {
@@ -881,7 +881,7 @@ mod test {
             let pipeline_expr = OplParser::parse_with_options(query, default_parser_options())
                 .unwrap()
                 .pipeline;
-            let mut pipeline = Pipeline::new(pipeline_expr);
+            let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
             let input = otlp_to_otap(&OtlpProtoMessage::Metrics(to_metrics_data(metrics)));
             let result = pipeline.execute(input).await.unwrap();
 

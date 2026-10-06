@@ -191,7 +191,7 @@ mod test {
     };
     use otel_arrow_dfe_query_engine_languages::opl::parser::OplParser;
 
-    use cratE::parser::default_parser_options;
+    use crate::parser::default_parser_options;
     use crate::pipeline::{
         Pipeline,
         planner::{PipelinePlanner, RecordType, SignalContext, SignalKind},
@@ -671,11 +671,12 @@ mod test {
         let query = r#"logs | apply attributes {
             where value > 10.0
         }"#;
-        let mut pipeline = Pipeline::new(
+        let mut pipeline = Pipeline::try_new(
             OplParser::parse_with_options(query, default_parser_options())
                 .unwrap()
                 .pipeline,
-        );
+        )
+        .unwrap();
 
         let result = pipeline.execute(input.clone()).await.unwrap();
         let expected = to_logs_data(vec![LogRecord::build().attributes(Vec::new()).finish()]);
@@ -688,11 +689,12 @@ mod test {
         let query = r#"logs | apply attributes {
             where value == 0.0
         }"#;
-        let mut pipeline = Pipeline::new(
+        let mut pipeline = Pipeline::try_new(
             OplParser::parse_with_options(query, default_parser_options())
                 .unwrap()
                 .pipeline,
-        );
+        )
+        .unwrap();
 
         let result = pipeline.execute(input.clone()).await.unwrap();
         let expected = to_logs_data(log_records.clone());
@@ -719,11 +721,12 @@ mod test {
         let query = r#"logs | apply attributes {
             where (value as Integer) > 6
         }"#;
-        let mut pipeline = Pipeline::new(
+        let mut pipeline = Pipeline::try_new(
             OplParser::parse_with_options(query, default_parser_options())
                 .unwrap()
                 .pipeline,
-        );
+        )
+        .unwrap();
 
         let result = pipeline.execute(input.clone()).await.unwrap();
         let expected = to_logs_data(vec![
@@ -750,11 +753,12 @@ mod test {
             }
         "#;
 
-        let mut pipeline = Pipeline::new(
+        let mut pipeline = Pipeline::try_new(
             OplParser::parse_with_options(query, default_parser_options())
                 .unwrap()
                 .pipeline,
-        );
+        )
+        .unwrap();
 
         let input1 = otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(vec![
             LogRecord::build()
@@ -1458,7 +1462,7 @@ mod test {
             }"#;
 
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         // just make sure we don't panic/return error and that we end up with zero attrs
         let result = pipeline.execute(input).await.unwrap();
         assert!(result.get(ArrowPayloadType::LogAttrs).is_none());
