@@ -18,11 +18,11 @@ use datafusion::physical_plan::{ExecutionPlan, execute_stream};
 use datafusion::prelude::col;
 use otel_arrow_contrib_data_engine_expressions::PipelineExpression;
 use otel_arrow_dfe_config::SignalType;
-use otel_arrow_dfe_pdata::OtapArrowRecords;
 use otel_arrow_dfe_pdata::error::Error as PdataError;
 use otel_arrow_dfe_pdata::otlp::metrics::MetricType;
 use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otel_arrow_dfe_pdata::schema::consts;
+use otel_arrow_dfe_pdata::{OtapArrowRecords, OtapPayloadHelpers};
 use std::sync::Arc;
 
 use crate::error::{Error, Result};
@@ -397,32 +397,29 @@ impl Pipeline {
         exec_state: &mut ExecutionState,
     ) -> Result<OtapArrowRecords> {
         // Reject batches with incompatible signal types
-        let batch_signal_type = Self::batch_signal_type(&otap_batch);
-        if !self.accepts_signal_type(batch_signal_type) {
-            let expected = match &self.options.signal_context {
-                SignalContext::Single(SignalKind::Logs) => SignalType::Logs,
-                SignalContext::Single(SignalKind::Metrics(_)) => SignalType::Metrics,
-                SignalContext::Single(SignalKind::Traces) => SignalType::Traces,
-                // safety: All accepts everything -- unreachable since accepts_signal_type returns
-                // true for SignalContext::All
-                SignalContext::All => unreachable!(),
+        if let SignalContext::Single(kind) = &self.options.signal_context {
+            let expected = match kind {
+                SignalKind::Logs => SignalType::Logs,
+                SignalKind::Metrics(_) => SignalType::Metrics,
+                SignalKind::Traces => SignalType::Traces,
             };
-            return Err(PdataError::UnexpectedSignalType {
-                found: batch_signal_type,
-                expected,
+            if otap_batch.signal_type() != expected {
+                return Err(PdataError::UnexpectedSignalType {
+                    found: otap_batch.signal_type(),
+                    expected,
+                }
+                .into());
             }
-            .into());
         }
 
         // lazily plan the pipeline if have not already done so
         if self.planned_pipeline.is_none() {
             let session_ctx = Self::create_session_context();
-            let planner = PipelinePlanner::new_with_record_type(RecordType::Signal(
-                self.options.signal_context.clone(),
-            ))
-            .with_filter_attribute_keys_case_sensitive(
-                self.options.filter_attribute_keys_case_sensitive,
-            );
+            let planner =
+                PipelinePlanner::new(RecordType::Signal(self.options.signal_context.clone()))
+                    .with_filter_attribute_keys_case_sensitive(
+                        self.options.filter_attribute_keys_case_sensitive,
+                    );
             let mut stages =
                 planner.plan_stages(&self.pipeline_definition, &session_ctx, &otap_batch)?;
 
@@ -477,15 +474,6 @@ impl Pipeline {
             .with_repartition_sorts(false);
 
         SessionContext::new_with_config(session_config)
-    }
-
-    /// Get the signal type from an OTAP batch.
-    fn batch_signal_type(batch: &OtapArrowRecords) -> SignalType {
-        match batch {
-            OtapArrowRecords::Logs(_) => SignalType::Logs,
-            OtapArrowRecords::Metrics(_) => SignalType::Metrics,
-            OtapArrowRecords::Traces(_) => SignalType::Traces,
-        }
     }
 
     /// Wrap a vec of pipeline stages in a `ConditionalPipelineStage` that filters

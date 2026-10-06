@@ -1594,6 +1594,7 @@ mod test {
 
     #[test]
     fn test_signal_scope_all() {
+        // test ensure it will only operate on all signals
         let runtime = TestRuntime::<OtapPdata>::new();
         let query = "signals | where name == \"foo\"";
         let processor = try_create_with_kql_query(query, &runtime).expect("created processor");

@@ -2592,7 +2592,11 @@ mod test {
 
     use crate::{
         parser::default_parser_options,
-        pipeline::{Pipeline, planner::PipelinePlanner, test::exec_logs_pipeline},
+        pipeline::{
+            Pipeline, SignalContext, SignalKind,
+            planner::{PipelinePlanner, RecordType},
+            test::exec_logs_pipeline,
+        },
     };
 
     async fn test_insert_root_column_from_scalar<P: Parser>() {
@@ -2894,7 +2898,7 @@ mod test {
         let pipeline = P::parse("logs | extend event_name = 1").unwrap().pipeline;
         let session_ctx = Pipeline::create_session_context();
         let otap_batch = OtapArrowRecords::Logs(Logs::default());
-        let planner = PipelinePlanner::new();
+        let planner = PipelinePlanner::new(RecordType::Signal(SignalContext::All));
         let result = planner.plan_stages(&pipeline, &session_ctx, &otap_batch);
         match result {
             Err(e) => {
@@ -2924,7 +2928,8 @@ mod test {
         let pipeline = P::parse("logs | extend bad_column = 1").unwrap().pipeline;
         let session_ctx = Pipeline::create_session_context();
         let otap_batch = OtapArrowRecords::Logs(Logs::default());
-        let planner = PipelinePlanner::new();
+        let planner =
+            PipelinePlanner::new(RecordType::Signal(SignalContext::Single(SignalKind::Logs)));
         let result = planner.plan_stages(&pipeline, &session_ctx, &otap_batch);
         match result {
             Err(e) => {
@@ -2957,7 +2962,8 @@ mod test {
             .pipeline;
         let session_ctx = Pipeline::create_session_context();
         let otap_batch = OtapArrowRecords::Logs(Logs::default());
-        let planner = PipelinePlanner::new();
+        let planner =
+            PipelinePlanner::new(RecordType::Signal(SignalContext::Single(SignalKind::Logs)));
         let result = planner.plan_stages(&pipeline, &session_ctx, &otap_batch);
         match result {
             Err(e) => {
@@ -2980,7 +2986,8 @@ mod test {
             .pipeline;
         let session_ctx = Pipeline::create_session_context();
         let otap_batch = OtapArrowRecords::Logs(Logs::default());
-        let planner = PipelinePlanner::new();
+        let planner =
+            PipelinePlanner::new(RecordType::Signal(SignalContext::Single(SignalKind::Logs)));
         let result = planner.plan_stages(&pipeline, &session_ctx, &otap_batch);
         match result {
             Err(e) => {
@@ -6019,7 +6026,8 @@ mod test {
             .pipeline;
         let session_ctx = Pipeline::create_session_context();
         let otap_batch = OtapArrowRecords::Logs(Logs::default());
-        let planner = PipelinePlanner::new();
+        let planner =
+            PipelinePlanner::new(RecordType::Signal(SignalContext::Single(SignalKind::Logs)));
 
         let result = planner.plan_stages(&pipeline, &session_ctx, &otap_batch);
         match result {

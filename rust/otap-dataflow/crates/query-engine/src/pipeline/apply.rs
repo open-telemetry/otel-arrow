@@ -200,9 +200,7 @@ mod test {
 
     /// Create a planner for log signal pipelines (used in tests).
     fn logs_planner() -> PipelinePlanner {
-        PipelinePlanner::new_with_record_type(RecordType::Signal(SignalContext::Single(
-            SignalKind::Logs,
-        )))
+        PipelinePlanner::new(RecordType::Signal(SignalContext::Single(SignalKind::Logs)))
     }
 
     mod data_point;

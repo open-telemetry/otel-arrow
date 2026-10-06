@@ -161,7 +161,7 @@ impl From<&MetricTypeContext> for DataPointContext {
 /// Carries context about which signal types or data point types are valid, enabling
 /// field validation during planning.
 ///
-/// Note: this is distinct from `RecordScope` which is runtime concepts that identify which
+/// Note: this is distinct from `RecordScope` which is a runtime concept that identify which
 /// batch an expression is evaluated against. `RecordType` is a planning concept that carries
 /// validation context.
 #[derive(Clone, Debug)]
@@ -210,17 +210,7 @@ pub struct PipelinePlanner {
 }
 
 impl PipelinePlanner {
-    /// Creates a new instance of `PipelinePlanner` with `SignalContext::All`.
-    ///
-    /// This means the planner will use intersection semantics for field validation,
-    /// only accepting fields common to all signal types. Use `new_with_record_type`
-    /// to specify a narrower signal context.
-    #[allow(dead_code)]
-    pub const fn new() -> Self {
-        Self::new_with_record_type(RecordType::Signal(SignalContext::All))
-    }
-
-    pub const fn new_with_record_type(record_type: RecordType) -> Self {
+    pub const fn new(record_type: RecordType) -> Self {
         Self {
             filter_attribute_keys_case_sensitive: true,
             record_type,
@@ -1088,7 +1078,7 @@ impl PipelinePlanner {
                         }
                     };
 
-                    let planner = Self::new_with_record_type(nested_pipeline_record_type);
+                    let planner = Self::new(nested_pipeline_record_type);
 
                     let child_pipeline = planner.plan_data_exprs(
                         &inner_pipeline_data_exprs,
@@ -1421,9 +1411,7 @@ mod test {
 
     /// Create a planner for log signal pipelines (used in tests).
     fn logs_planner() -> PipelinePlanner {
-        PipelinePlanner::new_with_record_type(RecordType::Signal(SignalContext::Single(
-            SignalKind::Logs,
-        )))
+        PipelinePlanner::new(RecordType::Signal(SignalContext::Single(SignalKind::Logs)))
     }
 
     #[test]
