@@ -221,7 +221,7 @@ impl<'buf, B: BoundedBuf> DirectFieldVisitor<'buf, B> {
     }
 
     /// Encode the body as a string (empty strings are skipped), truncating
-    /// safely via [`encode_plain_string`].
+    /// safely via [`BoundedBuf::encode_string_truncating`].
     #[inline]
     pub fn encode_body_string(&mut self, value: &str) {
         if value.is_empty() {
@@ -229,7 +229,8 @@ impl<'buf, B: BoundedBuf> DirectFieldVisitor<'buf, B> {
         }
         let _ = self.buf.try_encode(|buf| {
             buf.encode_len_delimited_partial(LOG_RECORD_BODY, |buf| {
-                encode_plain_string(buf, value).map(|_| ())
+                buf.encode_string_truncating(ANY_VALUE_STRING_VALUE, value)
+                    .map(|_| ())
             })
         });
     }
@@ -366,30 +367,6 @@ fn encode_debug_string<B: BoundedBuf>(
         truncated = was_truncated;
         if was_truncated && buf.len() <= content_start {
             // Nothing useful was written (not even the suffix fit).
-            return Err(EncodeFailure::Dropped);
-        }
-        Ok(())
-    })?;
-    Ok(truncated)
-}
-
-/// Encode a plain `&str` as a protobuf string field, mirroring
-/// [`encode_debug_string`] but writing the bytes directly (no `Debug`
-/// formatting needed) and returning `Ok(true)` if truncated with a `[...]`
-/// suffix, `Ok(false)` if it fit, or `Err(Dropped)` if nothing useful fit.
-#[inline]
-fn encode_plain_string<B: BoundedBuf>(buf: &mut B, value: &str) -> Result<bool, EncodeFailure> {
-    let mut truncated = false;
-    buf.encode_len_delimited_partial(ANY_VALUE_STRING_VALUE, |buf| {
-        use std::fmt::Write as _;
-        let mut adapter = BoundedBufFmt::new(buf);
-        // Copy the string's bytes directly; silently discards overflow after the suffix.
-        let _ = adapter.write_str(value);
-        let was_truncated = adapter.truncated;
-        let content_start = adapter.content_start;
-        truncated = was_truncated;
-        if was_truncated && buf.len() <= content_start {
-            // Not even the truncation suffix fit, so nothing was written.
             return Err(EncodeFailure::Dropped);
         }
         Ok(())
