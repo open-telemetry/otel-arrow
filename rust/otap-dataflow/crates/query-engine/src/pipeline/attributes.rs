@@ -13,12 +13,12 @@ use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use std::sync::Arc;
 
 use crate::error::{Error, Result};
-use crate::pipeline::PipelineStage;
 use crate::pipeline::expr::ChildRecordKind;
 use crate::pipeline::expr::RecordScope;
 use crate::pipeline::expr::types::MetricDataPointType;
 use crate::pipeline::planner::{AttributesIdentifier, RecordType};
 use crate::pipeline::state::ExecutionState;
+use crate::pipeline::{ParentBehavior, PipelineStage};
 
 /// This pipeline stage can be used to rename and delete attributes according to the transformation
 /// specified by the [`AttributesTransform`]
@@ -97,6 +97,15 @@ impl PipelineStage for AttributeTransformPipelineStage {
                 matches!(self.attrs_id, AttributesIdentifier::Record(_))
             }
             RecordType::Attributes => false,
+        }
+    }
+
+    // Renaming or deleting non-record attributes changes scope/resource parent metadata.
+    fn parent_behavior(&self) -> ParentBehavior {
+        if matches!(self.attrs_id, AttributesIdentifier::NonRecord(_)) {
+            ParentBehavior::RequiresReindex
+        } else {
+            ParentBehavior::Preserves
         }
     }
 }

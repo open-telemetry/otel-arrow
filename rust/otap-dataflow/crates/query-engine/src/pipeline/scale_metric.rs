@@ -19,9 +19,9 @@ use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otel_arrow_dfe_pdata::schema::consts;
 
 use crate::error::{Error, Result};
-use crate::pipeline::PipelineStage;
 use crate::pipeline::planner::RecordType;
 use crate::pipeline::state::ExecutionState;
+use crate::pipeline::{ParentBehavior, PipelineStage};
 
 pub(crate) struct ScaleMetricPipelineStage {
     multiplier: f64,
@@ -163,6 +163,11 @@ impl PipelineStage for ScaleMetricPipelineStage {
 
     fn supports_exec_on(&self, record_type: &RecordType) -> bool {
         matches!(record_type, RecordType::Signal)
+    }
+
+    // Scaling changes metric values and units without changing resource or scope parents.
+    fn parent_behavior(&self) -> ParentBehavior {
+        ParentBehavior::Preserves
     }
 }
 

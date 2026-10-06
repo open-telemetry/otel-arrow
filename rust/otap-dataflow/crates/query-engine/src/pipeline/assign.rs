@@ -63,7 +63,6 @@ use otel_arrow_dfe_pdata::schema::consts::metadata;
 use otel_arrow_dfe_pdata::schema::{consts, get_field_metadata, update_field_metadata};
 
 use crate::error::{Error, Result};
-use crate::pipeline::PipelineStage;
 use crate::pipeline::expr::eval::{EvalContext, scoped_value_to_join_input};
 use crate::pipeline::expr::join::JoinInput;
 use crate::pipeline::expr::join::{
@@ -84,6 +83,7 @@ use crate::pipeline::project::anyval::{
     is_any_value_data_type, wrap_as_any_value_struct,
 };
 use crate::pipeline::state::ExecutionState;
+use crate::pipeline::{ParentBehavior, PipelineStage};
 
 /// Representation of assignment source and destination
 pub struct Assignment<'a> {
@@ -1470,6 +1470,21 @@ impl PipelineStage for AssignPipelineStage {
                 | RecordType::Signal
                 | RecordType::Child(ChildRecordKind::DataPoint)
         )
+    }
+
+    // Assignments to non-record attributes change metadata shared by the parent hierarchy.
+    fn parent_behavior(&self) -> ParentBehavior {
+        if matches!(
+            self.dest_columns.first(),
+            Some(
+                ColumnAccessor::Attributes(AttributesIdentifier::NonRecord(_), _)
+                    | ColumnAccessor::NestedAttribute(AttributesIdentifier::NonRecord(_), _, _)
+            )
+        ) {
+            ParentBehavior::RequiresReindex
+        } else {
+            ParentBehavior::Preserves
+        }
     }
 
     fn init_state_for_conditional_branch(

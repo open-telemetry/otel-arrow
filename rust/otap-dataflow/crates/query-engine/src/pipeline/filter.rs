@@ -4,13 +4,13 @@
 use std::sync::Arc;
 
 use crate::error::{Error, Result};
-use crate::pipeline::PipelineStage;
 use crate::pipeline::expr::eval::{EvalContext, align_value_to_record};
 use crate::pipeline::expr::types::MetricDataPointType;
 use crate::pipeline::expr::{ChildRecordKind, RecordScope};
 use crate::pipeline::expr::{DataScope, ScopedExpr, ScopedValue, eval::resolve_attrs_payload_type};
 use crate::pipeline::planner::{AttributesIdentifier, RecordType};
 use crate::pipeline::state::ExecutionState;
+use crate::pipeline::{ParentBehavior, PipelineStage};
 
 use arrow::array::{
     Array, ArrayRef, BooleanArray, BooleanBufferBuilder, RecordBatch, UInt16Array, UInt32Array,
@@ -175,6 +175,11 @@ impl PipelineStage for FilterPipelineStage {
             RecordType::Attributes => true,
             RecordType::Child(ChildRecordKind::DataPoint) => true,
         }
+    }
+
+    // Filtering removes records but does not change or duplicate their parent identities.
+    fn parent_behavior(&self) -> ParentBehavior {
+        ParentBehavior::Preserves
     }
 }
 
