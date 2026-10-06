@@ -425,7 +425,7 @@ mod tests {
     }
 
     /// Scenario: Values are accessed from Arrow, Vec, Set, and Boolean dictionary storage at valid, null, and invalid indexes.
-    /// Guarantees: Every storage variant returns values and Null consistently while invalid Boolean indexes remain typed errors.
+    /// Guarantees: Every storage variant returns values and Null consistently.
     #[test]
     fn dictionary_value_storage_variants_share_result_contract() {
         let array = DictionaryValueArray::from(&Int32Array::from(vec![Some(7), None, Some(9)]));
@@ -763,7 +763,7 @@ mod tests {
     }
 
     /// Scenario: Engine-owned and Boolean dictionary values are queried for validity and bounds.
-    /// Guarantees: Validity marks only Null entries and Boolean lookup rejects indexes outside its two-value domain.
+    /// Guarantees: Validity marks only Null entries and Boolean lookup returns Null for indexes outside its two-value domain.
     #[test]
     fn owned_and_boolean_values_report_nulls_and_bounds() {
         let values = DictionaryValueArray::from(vec![
