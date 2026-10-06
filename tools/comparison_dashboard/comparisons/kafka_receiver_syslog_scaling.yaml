@@ -1,0 +1,36 @@
+slug: kafka_receiver_syslog_scaling
+name: Syslog Kafka receiver-only core and topology scaling
+description: >-
+  Nine short topology cells at each aggregate 100k and 300k logs/s target, not per core or
+  topic. Actual broker-confirmed rate is reported separately. No sustained-load
+  or stable-capacity claim. Each configured core runs one receiver -> local Perf
+  pipeline with a unique Kafka client ID in the same group. All scaling cases
+  use the explicit round_robin assignor, unlike the historical suite's default.
+  A one-partition
+  control cannot use every core; inspect real member assignments and per-core
+  successful item telemetry. Missing/unrun cases are unavailable, not zero.
+  CPU Total is container CPU in core-percent; normalized CPU divides by allocated
+  cores. Topic packing holds total partitions at four (1x4, 2x2, 4x1).
+  Final item snapshots precede shutdown after a bounded 10s producer-off drain.
+  Committed partition progress/lag and count deficits are not proven log loss.
+chart:
+  metrics:
+    default: logs_received_rate
+  axes:
+    x:
+      title: Topics x partitions per topic (equal aggregate offered load)
+tests:
+  - {name: t1p1-100k, label: "1 x 1 / 100k", loadgen_rate: 100000}
+  - {name: t1p2-100k, label: "1 x 2 / 100k", loadgen_rate: 100000}
+  - {name: t1p4-100k, label: "1 x 4 / 100k", loadgen_rate: 100000}
+  - {name: t2p2-100k, label: "2 x 2 / 100k", loadgen_rate: 100000}
+  - {name: t4p1-100k, label: "4 x 1 / 100k", loadgen_rate: 100000}
+  - {name: t1p1-300k, label: "1 x 1 / 300k", loadgen_rate: 300000}
+  - {name: t1p2-300k, label: "1 x 2 / 300k", loadgen_rate: 300000}
+  - {name: t1p4-300k, label: "1 x 4 / 300k", loadgen_rate: 300000}
+  - {name: t2p2-300k, label: "2 x 2 / 300k", loadgen_rate: 300000}
+  - {name: t4p1-300k, label: "4 x 1 / 300k", loadgen_rate: 300000}
+suites:
+  - {slug: dfe_logs_kafka_syslog_scaling_1core, name: Syslog Kafka local Perf scaling - 1 core, short: 1 allocated core}
+  - {slug: dfe_logs_kafka_syslog_scaling_2cores, name: Syslog Kafka local Perf scaling - 2 cores, short: 2 allocated cores}
+  - {slug: dfe_logs_kafka_syslog_scaling_4cores, name: Syslog Kafka local Perf scaling - 4 cores, short: 4 allocated cores}

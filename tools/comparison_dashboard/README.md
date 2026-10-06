@@ -105,6 +105,10 @@ match the deployed layout under `docs/` on the `benchmarks` branch.
 
 ## Syslog Kafka receiver-only benchmark
 
+The historical single-core suite below is unchanged. The separate
+[short scaling suites](#short-receiver-only-core-and-topology-scaling) vary only
+allocated pipeline cores and topic/partition layout at equal aggregate load.
+
 This suite measures **Kafka receiver -> local Perf**: Syslog decoding, Arrow
 materialization, internal handoff and counting on pipeline core 1. It deploys
 exactly three components (Python generator, Kafka broker, DFE consumer), not a
@@ -179,6 +183,84 @@ cutoff, not proven loss; `group_lag=0` is not drain evidence. Missing decode-err
 series are unavailable, not zero. No network-output bytes or dropped-loss
 estimates are emitted. The default seven high-rate cases allow backlog; only an
 explicit `rates: [1000]` suite override activates full count-equality checking.
+
+### Short receiver-only core and topology scaling
+
+The scaling comparison is a **short characterization, not a sustainable capacity
+test**: no soak, long repeats, backend, batching, network exporter or performance
+optimization. Nine `(cores, topics, partitions per topic)` cells each run at
+**100k and 300k aggregate configured logs/s** (18 cases):
+
+| Purpose | Cells |
+| --- | --- |
+| Core-only single-partition controls | `(1,1,1)`, `(2,1,1)`, `(4,1,1)` |
+| Partition-only controls | `(1,1,2)`, `(1,1,4)` |
+| Matched core/partition scaling | `(2,1,2)`, `(4,1,4)` |
+| Four-partition topic packing | `(4,2,2)`, `(4,4,1)` versus `(4,1,4)` |
+
+Every core has its own `coreN` pipeline and Kafka client ID in the same group.
+All scaling cases explicitly use `rebalance_strategy: round_robin`; the new
+1-core/1-partition controls are **not bit-identical** to the historical suite's
+default-assignor configuration. Topic names are explicit (`otel-syslog-1` through
+`otel-syslog-4`). Total partitions equal topic count times partitions per topic.
+The single producer routes accepted records round-robin over every topic/partition
+pair. Queue-full retries retain their routing slot. Counters expose actual
+broker-confirmed deliveries per pair. The aggregate target is never multiplied
+by core, topic, partition or producer thread count.
+
+Use a clean, committed native Linux/WSL checkout and at least five logical CPUs
+(allocated pipeline indices 1..4) plus spare resources for Kafka and the producer.
+Build a **separately tagged producer**, never replace a shared benchmark image.
+The three `syslog_scaling_*_image` manifest variables are independent of the
+historical suite. Pin them to inspected image IDs for measured runs. A temporary
+untracked manifest beside `manifest.yaml` can hold these overrides; pass it with
+`--manifest` so tracked source stays clean. For example:
+
+```bash
+# Repository root, after committing the implementation and recording its SHA.
+docker build -t load_generator:kafka-syslog-scaling \
+  tools/pipeline_perf_test/load_generator
+cd tools/comparison_dashboard
+python dashboard.py validate
+python dashboard.py run "suites/dfe/dfe-logs-kafka-syslog-scaling-*.yaml" \
+  --generate-only --observation-interval 20
+python -u dashboard.py run "suites/dfe/dfe-logs-kafka-syslog-scaling-*.yaml" \
+  --observation-interval 20
+python dashboard.py build
+python dashboard.py serve --port 3002
+```
+
+Use `--tests t1p1-100k` with a single suite for a bounded smoke check. Runs are
+sequential; do not overlap image builds or other benchmarks. Ports and container
+guards are the same as the historical suite. The timed phases remain 10s warmup,
+20s observation and 10s producer-off drain; topic creation, readiness, group CLI
+scans, flushing, shutdown and monitoring teardown add wall time. Expect roughly
+30-60 minutes for 18 cases, depending on host and teardown. Kafka assignment/offset
+scans run **before observation-start** and **after the final live item capture**,
+never as a heavy polling loop inside observation. Consequently partition progress
+brackets observation plus drain, not exactly the 20s rate window.
+
+The report computes each core's successful Perf item delta before summing, and
+includes per-core and all-core logs/s, actual broker-confirmed input/s, aggregate
+consumer CPU, CPU divided by allocated cores, and average/peak consumer RAM.
+Allocation is not a CPU quota. Missing item telemetry remains `null`; even an
+expected idle core is not silently assigned a zero. `scaling-evidence.yaml` in
+each dashboard case exposes configured/assigned core counts, active versus
+unassigned coverage, real group members/partitions, committed progress/lag,
+producer distribution, flags, snapshots and provenance. An incomplete all-core
+aggregate is unavailable; active-core charts are diagnostics, not a substitute.
+Assignment changes and unavailable/nonadvancing partition commits are flagged.
+Commits/lag are Kafka progress proxies, not downstream acknowledgements.
+The per-pipeline queue capacities and fetch/commit settings otherwise match the
+baseline; aggregate pipeline queue capacity grows with the number of pipelines.
+
+Open `/compare/kafka_receiver_syslog_scaling/` on the selected server port.
+Unrun combinations remain NA. Raw captures and report hashes belong under
+`.data/dfe_logs_kafka_syslog_scaling_*/*/tests/<topology>-<rate>/`; the rendered
+engine configuration and `scaling-evidence.yaml` are also published in
+`.site/data/suite/`. The root benchmark summary distinguishes historical results
+from new measured runs, their source commit and actual image IDs. A source SHA
+does not establish the retained engine binary's unknown build-source commit.
 
 ## Directory Structure
 

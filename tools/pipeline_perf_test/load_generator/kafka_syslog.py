@@ -2,7 +2,30 @@
 
 import math
 import socket
+import threading
 import time
+
+
+class BalancedKafkaRouter:
+    """Serialize only enqueue attempts; queue-full retries do not consume slots."""
+
+    def __init__(self, topics, partitions_per_topic):
+        self.targets = tuple(
+            (topic, partition)
+            for topic in topics
+            for partition in range(partitions_per_topic)
+        )
+        self._next = 0
+        self._lock = threading.Lock()
+
+    def produce(self, producer, payload, callback_factory):
+        with self._lock:
+            topic, partition = self.targets[self._next]
+            producer.produce(
+                topic, partition=partition, value=payload,
+                on_delivery=callback_factory(len(payload), (topic, partition)),
+            )
+            self._next = (self._next + 1) % len(self.targets)
 
 
 def producer_config(args):
@@ -36,9 +59,9 @@ class KafkaSyslogWorker:
         self.producer_factory = producer_factory
         self.producer = None
 
-    def _delivered(self, size):
+    def _delivered(self, size, target=None):
         def callback(error, _message):
-            self.loadgen.record_kafka_delivery(size, error)
+            self.loadgen.record_kafka_delivery(size, error, target)
         return callback
 
     def send(self, payload):
@@ -46,11 +69,16 @@ class KafkaSyslogWorker:
         deadline = time.monotonic() + self.args["kafka_send_timeout"]
         while not self.loadgen.stop_event.is_set():
             try:
-                self.producer.produce(
-                    self.args["kafka_topic"],
-                    value=payload,
-                    on_delivery=self._delivered(len(payload)),
-                )
+                if self.loadgen.kafka_router is None:
+                    self.producer.produce(
+                        self.args["kafka_topic"],
+                        value=payload,
+                        on_delivery=self._delivered(len(payload)),
+                    )
+                else:
+                    self.loadgen.kafka_router.produce(
+                        self.producer, payload, self._delivered
+                    )
             except BufferError:
                 self.loadgen.increment_metric("kafka_queue_full")
                 self.producer.poll(0)

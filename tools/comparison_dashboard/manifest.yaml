@@ -19,6 +19,9 @@ variables:
   rotel_image: streamfold/rotel:latest
   kafka_image: apache/kafka:latest
   syslog_loadgen_image: load_generator:kafka-syslog
+  syslog_scaling_loadgen_image: load_generator:kafka-syslog-scaling
+  syslog_scaling_engine_image: df_engine:latest
+  syslog_scaling_broker_image: apache/kafka:latest
 
 # Allowed values for every meta key a suite may declare. Validation rejects
 # any meta key not listed here, and any value (or list element) outside the
@@ -76,6 +79,18 @@ glossary:
 # per-test metric records in published suite data; units come from those
 # records (manifest declares label only).
 metrics:
+  - name: cpu_percentage_total_avg
+    label: CPU Total Average
+  - name: cpu_percentage_total_max
+    label: CPU Total Max
+  - name: logs_received_rate_core1
+    label: Core 1 Received Log Rate
+  - name: logs_received_rate_core2
+    label: Core 2 Received Log Rate
+  - name: logs_received_rate_core3
+    label: Core 3 Received Log Rate
+  - name: logs_received_rate_core4
+    label: Core 4 Received Log Rate
   - name: cpu_percentage_normalized_avg
     label: CPU Average
   - name: cpu_percentage_normalized_max
@@ -142,6 +157,9 @@ suites:
   - suites/dfe/dfe-traces-otlphttp-zstd-baseline.yaml
   # Isolated Kafka benchmarks (receiver vs exporter, logs signal).
   - suites/dfe/dfe-logs-kafka-syslog-receiver-only.yaml
+  - suites/dfe/dfe-logs-kafka-syslog-scaling-1core.yaml
+  - suites/dfe/dfe-logs-kafka-syslog-scaling-2cores.yaml
+  - suites/dfe/dfe-logs-kafka-syslog-scaling-4cores.yaml
   - suites/dfe/dfe-logs-kafka-otlp-recv-baseline.yaml
   - suites/dfe/dfe-logs-kafka-otlp-export-baseline.yaml
   - suites/dfe/dfe-logs-kafka-otap-recv-baseline.yaml
@@ -236,6 +254,7 @@ suites:
 # existing YAML file with `slug` and `suites` (a list of suite refs).
 comparisons:
   - comparisons/kafka_receiver_syslog_receiver_only.yaml
+  - comparisons/kafka_receiver_syslog_scaling.yaml
   - comparisons/log_baselines_multi_rate.yaml
   - comparisons/metric_baselines_multi_rate.yaml
   - comparisons/trace_baselines_multi_rate.yaml

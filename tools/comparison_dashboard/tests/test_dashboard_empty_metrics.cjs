@@ -55,6 +55,7 @@ function dashboard() {
       'TIMESERIES_METRICS.find((metric) => metric.key === "logs_received_rate").label',
       context,
     ),
+    series: vm.runInContext("TIMESERIES_METRICS", context),
   };
 }
 
@@ -146,4 +147,19 @@ test("partial results distinguish missing values from zero", () => {
 // Guarantees: The common time-series label does not imply remote backend delivery.
 test("received log time series uses an endpoint-neutral label", () => {
   assert.equal(dashboard().rateLabel, "Received Log Rate");
+});
+
+// Scenario: Multicore runs report aggregate CPU and separate per-core log rates.
+// Guarantees: Each scaling series has its own label and matching scalar average.
+test("scaling series preserve per-core identity and aggregate CPU", () => {
+  const series = dashboard().series;
+  for (const core of [1, 2, 3, 4]) {
+    const key = `logs_received_rate_core${core}`;
+    const metric = series.find((value) => value.key === key);
+    assert.equal(metric.avg, key);
+    assert.equal(metric.label, `Core ${core} Received Log Rate`);
+  }
+  const cpu = series.find((value) => value.key === "cpu_percentage_total");
+  assert.equal(cpu.label, "CPU Total");
+  assert.equal(cpu.avg, "cpu_percentage_total_avg");
 });

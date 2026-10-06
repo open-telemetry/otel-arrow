@@ -1,0 +1,309 @@
+# Independent receiver -> local Perf endpoint; no remote backend or loss estimate.
+# Never turn an unobserved idle core into an observed zero-valued counter.
+queries:
+  - name: Filter metadata
+    sql: |
+      CREATE VIEW metadata_filtered AS
+      SELECT * FROM metadata WHERE Attribute NOT LIKE 'test.ctx.%';
+
+  - name: Observation window
+    sql: |
+      CREATE TABLE observation_window AS
+      SELECT
+        TO_TIMESTAMP(start.timestamp / 1000000000.0) AS start_ts,
+        TO_TIMESTAMP(stop.timestamp / 1000000000.0) AS stop_ts
+      FROM events start
+      JOIN events stop
+        ON start."attributes.test.name" = stop."attributes.test.name"
+      JOIN metadata_row
+        ON metadata_row."test.name" = start."attributes.test.name"
+      WHERE start.name = 'observation_start' AND stop.name = 'observation_stop'
+        AND start.timestamp < stop.timestamp;
+      SELECT CASE WHEN COUNT(*) = 1 THEN 1
+        ELSE error('Expected exactly one valid observation window') END
+      FROM observation_window;
+
+  - name: Stable consumer allocation and expected pipelines
+    sql: |
+      CREATE TABLE consumer_allocation AS
+      SELECT CASE WHEN COUNT(*) > 0 AND COUNT(value) = COUNT(*)
+        AND MIN(value) = MAX(value)
+        AND BOOL_AND(isfinite(value) AND value BETWEEN 1 AND 4
+          AND value = floor(value)) THEN CAST(MIN(value) AS INTEGER)
+        ELSE error('Receiver scaling requires stable integer allocated_cores=1..4')
+      END AS allocated_cores
+      FROM metrics
+      WHERE metric_name = 'container.cpu.allocated'
+        AND "metric_attributes.component_name" = 'kafka-consumer';
+      CREATE TABLE expected_cores AS
+      SELECT core_id, 'core' || core_id AS pipeline_id,
+        'logs_received_rate_core' || core_id AS metric
+      FROM consumer_allocation, range(1, allocated_cores + 1) r(core_id);
+
+  - name: Producer and per-core successful local Perf counters
+    sql: |
+      CREATE TABLE endpoint_counters AS
+      SELECT timestamp, value, 'logs_produced_rate' AS metric
+      FROM metrics CROSS JOIN observation_window ow
+      WHERE timestamp > (SELECT CAST("test.start" AS TIMESTAMPTZ) FROM metadata_row)
+        AND timestamp <= ow.stop_ts
+        AND metric_name = 'logs_produced'
+        AND "metric_attributes.component_name" = 'load-generator'
+      UNION ALL
+      SELECT timestamp, value, expected.metric
+      FROM metrics
+      JOIN expected_cores expected
+        ON "metric_attributes.otel_scope_core_id" = CAST(expected.core_id AS VARCHAR)
+        AND "metric_attributes.otel_scope_pipeline_id" = expected.pipeline_id
+      CROSS JOIN observation_window ow
+      WHERE timestamp > (SELECT CAST("test.start" AS TIMESTAMPTZ) FROM metadata_row)
+        AND timestamp <= ow.stop_ts
+        AND metric_name = 'items'
+        AND "metric_attributes.component_name" = 'kafka-consumer'
+        AND "metric_attributes.otel_scope_name" = 'node.input'
+        AND "metric_attributes.otel_scope_node_id" = 'perf'
+        AND "metric_attributes.otel_scope_pipeline_group_id" = 'default'
+        AND "metric_attributes.signal" = 'logs'
+        AND "metric_attributes.outcome" = 'success';
+      CREATE TABLE endpoint_rates AS
+      WITH previous AS (
+        SELECT *, LAG(value) OVER w AS previous_value,
+          LAG(timestamp) OVER w AS previous_timestamp
+        FROM endpoint_counters
+        WINDOW w AS (PARTITION BY metric ORDER BY timestamp)
+      )
+      SELECT *, (value - previous_value) /
+        NULLIF(EXTRACT(EPOCH FROM timestamp - previous_timestamp), 0) AS rate
+      FROM previous;
+      SELECT CASE WHEN COUNT(*) = COUNT(value)
+        AND COALESCE(BOOL_AND(isfinite(value) AND value >= 0
+          AND value = floor(value)), true)
+        AND COUNT(*) = COUNT(DISTINCT (metric, timestamp))
+        AND NOT COALESCE(BOOL_OR(value < previous_value), false)
+        AND COALESCE(BOOL_AND(rate IS NULL OR isfinite(rate)), true)
+        THEN 1 ELSE error('Invalid, duplicate or reset producer/local Perf counters')
+        END
+      FROM endpoint_rates;
+
+  - name: Common observation interval and per-core rates
+    sql: |
+      CREATE TABLE counter_stats AS
+      SELECT metric, COUNT(*) AS samples, MIN(timestamp) AS first_ts,
+        MAX(timestamp) AS last_ts, MIN(value) AS first_value, MAX(value) AS last_value
+      FROM endpoint_counters CROSS JOIN observation_window ow
+      WHERE timestamp BETWEEN ow.start_ts AND ow.stop_ts
+      GROUP BY metric;
+      CREATE TABLE core_interval AS
+      WITH measurable AS (
+        SELECT metric FROM counter_stats JOIN expected_cores USING (metric)
+        WHERE samples >= 2
+      ), common_scrapes AS (
+        SELECT timestamp
+        FROM endpoint_counters JOIN measurable USING (metric)
+        CROSS JOIN observation_window ow
+        WHERE timestamp BETWEEN ow.start_ts AND ow.stop_ts
+        GROUP BY timestamp
+        HAVING COUNT(*) = (SELECT COUNT(*) FROM measurable)
+      )
+      SELECT MIN(timestamp) AS first_ts, MAX(timestamp) AS last_ts
+      FROM common_scrapes;
+      CREATE TABLE core_summary AS
+      SELECT expected.core_id, expected.pipeline_id, expected.metric,
+        COALESCE(stats.samples, 0) AS samples,
+        interval.first_ts, interval.last_ts,
+        last.value - first.value AS successful_items_delta,
+        (last.value - first.value) /
+          NULLIF(EXTRACT(EPOCH FROM interval.last_ts - interval.first_ts), 0)
+          AS logs_received_rate,
+        stats.samples >= 2 AND interval.first_ts < interval.last_ts
+          AND first.value IS NOT NULL AND last.value IS NOT NULL
+          AS measurement_available,
+        CASE WHEN stats.samples IS NULL THEN 'missing_core_counter'
+          WHEN stats.samples < 2 THEN 'insufficient_core_samples'
+          WHEN interval.first_ts IS NULL OR interval.first_ts = interval.last_ts
+            THEN 'no_common_core_interval'
+          ELSE 'available' END AS measurement_status
+      FROM expected_cores expected
+      LEFT JOIN counter_stats stats USING (metric)
+      CROSS JOIN core_interval interval
+      LEFT JOIN endpoint_counters first ON first.metric = expected.metric
+        AND first.timestamp = interval.first_ts AND stats.samples >= 2
+      LEFT JOIN endpoint_counters last ON last.metric = expected.metric
+        AND last.timestamp = interval.last_ts AND stats.samples >= 2
+      ORDER BY expected.core_id;
+      UPDATE core_summary SET measurement_available = false
+      WHERE measurement_available IS NULL;
+
+  - name: Producer and complete aggregate summary
+    sql: |
+      CREATE TABLE endpoint_summary AS
+      SELECT 'logs_produced_rate' AS metric,
+        CASE WHEN stats.samples >= 2 AND isfinite(
+          (last_value - first_value) /
+            NULLIF(EXTRACT(EPOCH FROM last_ts - first_ts), 0))
+          THEN (last_value - first_value) /
+            EXTRACT(EPOCH FROM last_ts - first_ts)
+          ELSE error('Missing or insufficient producer counters') END AS rate,
+        true AS measurement_available, 'available' AS measurement_status
+      FROM (VALUES ('logs_produced_rate')) expected(metric)
+      LEFT JOIN counter_stats stats USING (metric)
+      UNION ALL
+      SELECT 'logs_received_rate',
+        CASE WHEN BOOL_AND(measurement_available)
+          THEN CASE WHEN isfinite(SUM(logs_received_rate))
+            THEN SUM(logs_received_rate)
+            ELSE error('Nonfinite aggregate receiver rate') END ELSE NULL END,
+        BOOL_AND(measurement_available),
+        CASE WHEN BOOL_AND(measurement_available) THEN 'available'
+          ELSE 'unavailable_core_measurement' END
+      FROM core_summary;
+
+  - name: Consumer CPU and memory
+    sql: |
+      CREATE TABLE consumer_resources AS
+      SELECT timestamp, metric_name, value
+      FROM metrics CROSS JOIN observation_window ow
+      WHERE timestamp BETWEEN ow.start_ts AND ow.stop_ts
+        AND "metric_attributes.component_name" = 'kafka-consumer'
+        AND metric_name IN ('container.cpu.usage', 'container.memory.usage');
+      CREATE TABLE resource_summary AS
+      WITH stats AS (
+        SELECT metric_name, COUNT(*) AS n, COUNT(value) AS values_present,
+          COUNT(DISTINCT timestamp) AS timestamps,
+          BOOL_AND(isfinite(value) AND value >= 0) AS valid,
+          AVG(value) AS average, MAX(value) AS maximum
+        FROM consumer_resources GROUP BY metric_name
+      )
+      SELECT expected.metric_name,
+        CASE WHEN n >= 2 AND values_present = n AND timestamps = n AND valid
+          AND isfinite(average) AND isfinite(maximum)
+          THEN average ELSE error('Missing or invalid consumer CPU/memory samples')
+        END AS average, maximum
+      FROM (VALUES ('container.cpu.usage'),
+        ('container.memory.usage')) expected(metric_name)
+      LEFT JOIN stats USING (metric_name);
+
+  - name: Dashboard metrics
+    sql: |
+      CREATE TABLE gh_actions_benchmark AS
+      SELECT metric AS name, 'logs/sec' AS unit, rate AS value,
+        metadata_row."test.suite" || '/' || metadata_row."test.name" ||
+        CASE WHEN metric = 'logs_received_rate' THEN ' - Local Perf success input; '
+          ELSE ' - Broker-confirmed raw Kafka records; ' END ||
+        measurement_status AS extra
+      FROM endpoint_summary CROSS JOIN metadata_row
+      UNION ALL
+      SELECT metric, 'logs/sec', logs_received_rate,
+        'Local Perf success input; ' || pipeline_id || '; ' || measurement_status
+      FROM core_summary
+      UNION ALL
+      SELECT 'cpu_percentage_total_avg', '%', average * 100,
+        'Kafka consumer container CPU; total across allocated cores'
+      FROM resource_summary WHERE metric_name = 'container.cpu.usage'
+      UNION ALL
+      SELECT 'cpu_percentage_total_max', '%', maximum * 100,
+        'Kafka consumer container CPU; total across allocated cores'
+      FROM resource_summary WHERE metric_name = 'container.cpu.usage'
+      UNION ALL
+      SELECT 'cpu_percentage_normalized_avg', '%', average / allocated_cores * 100,
+        'Kafka consumer container CPU; normalized by allocated_cores'
+      FROM resource_summary CROSS JOIN consumer_allocation
+      WHERE metric_name = 'container.cpu.usage'
+      UNION ALL
+      SELECT 'cpu_percentage_normalized_max', '%', maximum / allocated_cores * 100,
+        'Kafka consumer container CPU; normalized by allocated_cores'
+      FROM resource_summary CROSS JOIN consumer_allocation
+      WHERE metric_name = 'container.cpu.usage'
+      UNION ALL
+      SELECT 'ram_mib_avg', 'MiB', average / 1048576,
+        'Kafka consumer container memory'
+      FROM resource_summary WHERE metric_name = 'container.memory.usage'
+      UNION ALL
+      SELECT 'ram_mib_max', 'MiB', maximum / 1048576,
+        'Kafka consumer container memory'
+      FROM resource_summary WHERE metric_name = 'container.memory.usage'
+      UNION ALL
+      SELECT 'test_duration', 'seconds', EXTRACT(EPOCH FROM stop_ts - start_ts),
+        'Observation only; excludes warmup and producer-off bounded drain'
+      FROM observation_window;
+
+  - name: Dashboard time series
+    sql: |
+      CREATE TABLE core_timeseries AS
+      WITH observed_scrapes AS (
+        SELECT DISTINCT timestamp
+        FROM endpoint_rates JOIN expected_cores USING (metric)
+        CROSS JOIN observation_window ow
+        WHERE timestamp BETWEEN ow.start_ts AND ow.stop_ts
+      ), scrapes AS (
+        SELECT timestamp FROM observed_scrapes
+        UNION ALL
+        SELECT start_ts FROM observation_window
+        WHERE NOT EXISTS (SELECT 1 FROM observed_scrapes)
+      )
+      SELECT scrapes.timestamp, expected.metric, rates.previous_timestamp, rates.rate
+      FROM scrapes CROSS JOIN expected_cores expected
+      LEFT JOIN endpoint_rates rates
+        ON rates.timestamp = scrapes.timestamp AND rates.metric = expected.metric;
+      CREATE TABLE dashboard_timeseries AS
+      SELECT EXTRACT(EPOCH FROM timestamp - ow.start_ts) AS t, metric, rate AS value
+      FROM endpoint_rates CROSS JOIN observation_window ow
+      WHERE timestamp BETWEEN ow.start_ts AND ow.stop_ts
+        AND metric = 'logs_produced_rate'
+      UNION ALL
+      SELECT EXTRACT(EPOCH FROM timestamp - ow.start_ts), metric, rate
+      FROM core_timeseries CROSS JOIN observation_window ow
+      UNION ALL
+      SELECT EXTRACT(EPOCH FROM timestamp - ow.start_ts), 'logs_received_rate',
+        CASE WHEN COUNT(*) = allocated_cores AND COUNT(rate) = allocated_cores
+          AND COUNT(DISTINCT previous_timestamp) = 1
+          THEN CASE WHEN isfinite(SUM(rate)) THEN SUM(rate)
+            ELSE error('Nonfinite aggregate receiver time-series rate') END
+          ELSE NULL END
+      FROM core_timeseries CROSS JOIN observation_window ow
+        CROSS JOIN consumer_allocation
+      GROUP BY timestamp, ow.start_ts, allocated_cores
+      UNION ALL
+      SELECT EXTRACT(EPOCH FROM timestamp - ow.start_ts),
+        'cpu_percentage_total', value * 100
+      FROM consumer_resources CROSS JOIN observation_window ow
+      WHERE metric_name = 'container.cpu.usage'
+      UNION ALL
+      SELECT EXTRACT(EPOCH FROM timestamp - ow.start_ts),
+        'cpu_percentage_normalized', value / allocated_cores * 100
+      FROM consumer_resources CROSS JOIN observation_window ow
+        CROSS JOIN consumer_allocation
+      WHERE metric_name = 'container.cpu.usage'
+      UNION ALL
+      SELECT EXTRACT(EPOCH FROM timestamp - ow.start_ts), 'ram_mib', value / 1048576
+      FROM consumer_resources CROSS JOIN observation_window ow
+      WHERE metric_name = 'container.memory.usage'
+      ORDER BY metric, t;
+
+result_tables:
+  - name: metadata_filtered
+    description: Test metadata.
+  - name: consumer_allocation
+    description: Stable allocated_cores metadata (integer 1..4) from the consumer.
+  - name: core_summary
+    description: >-
+      Expected default/core1..coreN local Perf successful input counters, deltas
+      and rates on a common observed interval. Unobserved or insufficient cores
+      are unavailable (NULL), not zero. Status distinguishes unavailable data.
+  - name: endpoint_summary
+    description: >-
+      Actual broker-confirmed producer rate and sum of per-core local Perf rates.
+      Aggregate receiver rate is NULL unless every allocated core is measurable
+      on the same interval. No loss is inferred from windowed counters.
+  - name: resource_summary
+    description: Kafka consumer CPU usage (cores) and memory (bytes) in observation.
+  - name: gh_actions_benchmark
+    description: >-
+      Dynamic per-core and aggregate receiver rates; total and per-allocated-core
+      CPU percentages; average and peak RAM MiB. NULL metrics mean unavailable,
+      never an inferred zero or dropped-log estimate.
+  - name: dashboard_timeseries
+    description: >-
+      Actual endpoint rates and consumer resources. Aggregate points require all
+      expected cores at the same current and previous scrape timestamps.
+    display: false

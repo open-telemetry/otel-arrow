@@ -84,7 +84,7 @@ from opentelemetry.proto.logs.v1 import logs_pb2
 from opentelemetry.proto.common.v1 import common_pb2
 from pydantic import BaseModel, Field, field_validator, model_validator, ValidationError
 
-from kafka_syslog import KafkaSyslogWorker
+from kafka_syslog import BalancedKafkaRouter, KafkaSyslogWorker
 
 
 FLASK_PORT = 5001
@@ -274,6 +274,10 @@ def _valid_kafka_topic(topic: str) -> bool:
     )
 
 
+def _prometheus_label(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("\n", "\\n").replace('"', '\\"')
+
+
 class LoadGenConfig(BaseModel):
     body_size: int = Field(
         25, gt=0, description="Size of log message body in characters"
@@ -320,6 +324,12 @@ class LoadGenConfig(BaseModel):
     )
     kafka_brokers: str = "localhost:9092"
     kafka_topic: str = "otel-syslog"
+    kafka_topics: Optional[list[str]] = Field(
+        None, min_length=1, max_length=256, strict=True
+    )
+    kafka_partitions_per_topic: Optional[int] = Field(
+        None, gt=0, le=256, strict=True
+    )
     kafka_queue_max_messages: int = Field(10000, gt=0, le=10000000)
     kafka_queue_max_kbytes: int = Field(16384, gt=0, le=2147483647)
     kafka_send_timeout: float = Field(5, gt=0, le=300, allow_inf_nan=False)
@@ -332,6 +342,21 @@ class LoadGenConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_kafka(self):
+        if (self.kafka_topics is None) != (self.kafka_partitions_per_topic is None):
+            raise ValueError(
+                "kafka_topics and kafka_partitions_per_topic must be set together"
+            )
+        if self.kafka_topics is not None:
+            if self.syslog_transport != "kafka":
+                raise ValueError("Explicit topic routing requires Kafka transport")
+            if "kafka_topic" in self.model_fields_set:
+                raise ValueError("Use kafka_topics or kafka_topic, not both")
+            if len(set(self.kafka_topics)) != len(self.kafka_topics):
+                raise ValueError("kafka_topics must contain unique topic names")
+            if not all(_valid_kafka_topic(topic) for topic in self.kafka_topics):
+                raise ValueError("Invalid topic name in kafka_topics")
+            if len(self.kafka_topics) * self.kafka_partitions_per_topic > 256:
+                raise ValueError("Explicit Kafka routing is limited to 256 targets")
         if self.syslog_transport != "kafka":
             return self
         if self.load_type != "syslog":
@@ -447,6 +472,8 @@ class LoadGenerator:
         self.lock = threading.Lock()
         self.lifecycle_lock = threading.Lock()
         self.kafka_producer_factory = kafka_producer_factory
+        self.kafka_router = None
+        self.kafka_target_metrics = {}
         self.status = "idle"
         self.errors = []
         self.metrics = dict.fromkeys((
@@ -506,7 +533,7 @@ class LoadGenerator:
                 if key in self.metrics:
                     self.metrics[key] += amount
 
-    def record_kafka_delivery(self, size, error):
+    def record_kafka_delivery(self, size, error, target=None):
         """Publish broker-confirmed delivery counters atomically."""
         with self.lock:
             self.metrics["kafka_pending"] -= 1
@@ -515,6 +542,10 @@ class LoadGenerator:
                 self.metrics["logs_produced"] += 1
                 self.metrics["bytes_sent"] += size
                 self.metrics["logs_bytes_produced"] += size
+                if target is not None:
+                    counters = self.kafka_target_metrics[target]
+                    counters["records"] += 1
+                    counters["bytes"] += size
             else:
                 self.metrics["failed"] += 1
                 self.metrics["kafka_delivery_failed"] += 1
@@ -984,6 +1015,16 @@ class LoadGenerator:
                 self.status = "running"
                 self.errors = []
                 self.metrics = dict.fromkeys(self.metrics, 0)
+                self.kafka_router = (
+                    BalancedKafkaRouter(
+                        config.kafka_topics, config.kafka_partitions_per_topic
+                    ) if config.kafka_topics is not None else None
+                )
+                self.kafka_target_metrics = (
+                    {target: {"records": 0, "bytes": 0}
+                     for target in self.kafka_router.targets}
+                    if self.kafka_router is not None else {}
+                )
             self.controller_thread = threading.Thread(
                 target=self.run_loadgen, args=(config.model_dump(),)
             )
@@ -1028,15 +1069,24 @@ class LoadGenerator:
                     controller and controller.is_alive()
                 ),
                 "errors": self.errors.copy(),
-                "metrics": self.metrics.copy(),
+                "metrics": self._metrics_snapshot(),
             }
+
+    def _metrics_snapshot(self):
+        """Called under self.lock so per-target sums match global counters."""
+        metrics = self.metrics.copy()
+        for (topic, partition), counters in self.kafka_target_metrics.items():
+            labels = f'topic="{_prometheus_label(topic)}",partition="{partition}"'
+            for unit, count in counters.items():
+                metrics[f"kafka_delivered_{unit}{{{labels}}}"] = count
+        return metrics
 
     def get_metrics(self):
         """
         Get a copy of the current metrics.
         """
         with self.lock:
-            return self.metrics.copy()
+            return self._metrics_snapshot()
 
 
 # Create a global LoadGenerator instance for the Flask app to use
@@ -1261,8 +1311,19 @@ def main():
         parser.add_argument(
             "--" + name.replace("_", "-"),
             type=LoadGenConfig.model_fields[name].annotation,
-            default=get_default_value(name),
+            default=(
+                argparse.SUPPRESS if name == "kafka_topic"
+                else get_default_value(name)
+            ),
         )
+    parser.add_argument(
+        "--kafka-topics", nargs="+", default=None,
+        help="Unique topic names for balanced routing; omit --kafka-topic",
+    )
+    parser.add_argument(
+        "--kafka-partitions-per-topic", type=int, default=None,
+        help="Partitions per topic; required with --kafka-topics (<=256 targets)",
+    )
     args = parser.parse_args()
     if args.syslog_format is None:
         args.syslog_format = (
@@ -1308,7 +1369,9 @@ def main():
         syslog_format=args.syslog_format,
         syslog_content_type=args.syslog_content_type,
         message_size=args.message_size,
-        **{name: getattr(args, name) for name in kafka_fields},
+        kafka_topics=args.kafka_topics,
+        kafka_partitions_per_topic=args.kafka_partitions_per_topic,
+        **{name: getattr(args, name) for name in kafka_fields if hasattr(args, name)},
     )
 
     start_time = time.time()

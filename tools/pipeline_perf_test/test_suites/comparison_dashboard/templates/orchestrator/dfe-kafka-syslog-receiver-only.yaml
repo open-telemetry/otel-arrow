@@ -13,7 +13,7 @@ components:
   load-generator:
     deployment:
       docker:
-        image: {{syslog_loadgen_image}}
+        image: {{syslog_scaling_loadgen_image if variables.scaling | default(false) else syslog_loadgen_image}}
         network: kafka-syslog-benchmark
         command: ["--serve"]
         ports:
@@ -26,7 +26,7 @@ components:
   kafka-broker:
     deployment:
       docker:
-        image: {{kafka_image}}
+        image: {{syslog_scaling_broker_image if variables.scaling | default(false) else kafka_image}}
         network: kafka-syslog-benchmark
         ports:
           - {published: 19094, target: 19094, host_ip: "127.0.0.1"}
@@ -50,7 +50,7 @@ components:
   kafka-consumer:
     deployment:
       docker:
-        image: {{df_engine_image}}
+        image: {{syslog_scaling_engine_image if variables.scaling | default(false) else df_engine_image}}
         network: kafka-syslog-benchmark
         ports:
           - {published: 18088, target: 8080, host_ip: "127.0.0.1"}
@@ -59,13 +59,16 @@ components:
         command: ["--config", "./config.yaml", "--http-admin-bind", "0.0.0.0:8080"]
     monitoring:
       docker_component:
-        allocated_cores: 1
+        allocated_cores: {{variables.cores | default(1)}}
       prometheus:
         endpoint: http://localhost:18088/api/v1/telemetry/metrics?format=prometheus&reset=false
 
 tests:
-{%- for rate in variables.rates %}
-  - name: {{rate // 1000}}k
+{%- set scaling = variables.scaling | default(false) %}
+{%- for case in (variables.cases if scaling else variables.rates) %}
+{%- for rate in (variables.rates if scaling else [case]) %}
+{%- set case_name = (case.name ~ '-' ~ (rate // 1000) ~ 'k') if scaling else ((rate // 1000) ~ 'k') %}
+  - name: {{case_name}}
     from_template:
       path: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/steps/df-engine-kafka-syslog-receiver-only.yaml
       variables:
@@ -74,8 +77,13 @@ tests:
 {%- endfor %}
         variables: {{variables | tojson}}
         data_dir: {{data_dir | tojson}}
-        test_dir: {{(data_dir ~ '/tests/' ~ (rate // 1000) ~ 'k') | tojson}}
-        report_name: "DFE Kafka Syslog receiver -> local Perf {{rate // 1000}}k"
+        test_dir: {{(data_dir ~ '/tests/' ~ case_name) | tojson}}
+        report_name: "DFE Kafka Syslog receiver -> local Perf {{case_name}}"
         observation_interval: {{observation_interval}}
         target_rate: {{rate}}
+{%- if scaling %}
+        topics: {{case.topics | tojson}}
+        partitions_per_topic: {{case.partitions_per_topic}}
+{%- endif %}
+{%- endfor %}
 {%- endfor %}

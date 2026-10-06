@@ -568,6 +568,11 @@ const TIMESERIES_METRICS = [
   { key: "network_rx_bytes_rate", label: "Network RX Rate", unit: "bytes/sec", avg: "network_rx_bytes_rate_avg" },
   { key: "logs_produced_rate", label: "Offered Load Rate", unit: "logs/sec", avg: "logs_produced_rate" },
   { key: "logs_received_rate", label: "Received Log Rate", unit: "logs/sec", avg: "logs_received_rate" },
+  { key: "cpu_percentage_total", label: "CPU Total", unit: "%", avg: "cpu_percentage_total_avg" },
+  ...[1, 2, 3, 4].map((core) => ({
+    key: `logs_received_rate_core${core}`, label: `Core ${core} Received Log Rate`,
+    unit: "logs/sec", avg: `logs_received_rate_core${core}`,
+  })),
   { key: "metrics_produced_rate", label: "Offered Load Rate", unit: "metrics/sec", avg: "metrics_produced_rate" },
   { key: "metrics_received_rate", label: "Backend Received Rate", unit: "metrics/sec", avg: "metrics_received_rate" },
   { key: "spans_produced_rate", label: "Offered Load Rate", unit: "spans/sec", avg: "spans_produced_rate" },

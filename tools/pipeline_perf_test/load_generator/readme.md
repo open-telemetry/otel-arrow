@@ -68,6 +68,62 @@ callbacks advance `logs_produced`, `bytes_sent`, and `logs_bytes_produced`.
 `kafka_pending`, delivery/enqueue failures and flush timeouts remain observable.
 These acknowledgements (`acks=1` by default) do not prove consumer delivery.
 
+#### Explicit topic/partition routing
+
+To balance accepted records deterministically across a pre-created topology, set
+both `kafka_topics` (an ordered list of unique topic names) and
+`kafka_partitions_per_topic` (a positive integer). The product of topic count and
+partitions per topic must not exceed 256. Names must be 1-249 ASCII letters,
+digits, `.`, `_`, or `-`, except `.` and `..`. Explicit routing requires Syslog
+Kafka mode and cannot be combined with an explicitly supplied `kafka_topic`,
+even its default value.
+
+```bash
+python loadgen.py --load-type syslog --syslog-transport kafka \
+  --kafka-brokers localhost:19094 --kafka-topics syslog-a syslog-b \
+  --kafka-partitions-per-topic 4 --threads 4 --target-rate 100000 \
+  --message-size 1024 --duration 30
+```
+
+The equivalent `/start` fields are:
+
+```json
+{
+  "load_type": "syslog",
+  "syslog_transport": "kafka",
+  "kafka_topics": ["syslog-a", "syslog-b"],
+  "kafka_partitions_per_topic": 4,
+  "threads": 4,
+  "target_rate": 100000,
+  "message_size": 1024
+}
+```
+
+One shared round-robin cursor advances only after a successful enqueue. It
+visits topics in list order and each topic's partitions from zero upward,
+wrapping after the last target. Workers share this cursor; queue-full retries
+do not consume a slot, and polling/backpressure waits do not hold its lock.
+`target_rate` remains the **total** requested records per second across all
+workers and targets, not a per-topic or per-partition rate. Each worker receives
+an equal share regardless of topology. This is a pacing target, not a throughput
+guarantee.
+
+`/metrics` exposes broker-confirmed counters for every configured target,
+including targets with zero deliveries:
+
+```text
+kafka_delivered_records{topic="syslog-a",partition="0"} 0
+kafka_delivered_bytes{topic="syslog-a",partition="0"} 0
+```
+
+In explicit mode their sums match `logs_produced` and `logs_bytes_produced`
+respectively in each atomic snapshot, also returned by `/status` and `/stop`.
+Pending or failed records never count as delivered. A new run resets the cursor
+and all target series. Omitting both topology fields preserves the singular
+`kafka_topic` behavior: librdkafka chooses the partition and no per-target series
+are emitted. Topics and partitions must already exist; the generator does not
+create them or discover additional broker partitions.
+
 Kafka options are available as CLI flags (`--kafka-send-timeout`, for example)
 and corresponding underscore-named JSON fields. `/status` returns lifecycle,
 bounded error details and metrics, with HTTP 500 on failure. `/stop` stops and

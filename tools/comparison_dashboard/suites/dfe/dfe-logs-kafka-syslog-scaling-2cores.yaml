@@ -1,0 +1,28 @@
+name: Syslog Kafka local Perf scaling - 2 cores
+slug: dfe_logs_kafka_syslog_scaling_2cores
+description: >-
+  Short receiver-only topology characterization at equal aggregate offered load.
+  Two explicitly pinned receiver/Perf pipelines sharing one consumer group.
+  Single-partition control does not imply both cores ingest logs.
+orchestrator_template: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/orchestrator/dfe-kafka-syslog-receiver-only.yaml
+meta:
+  binary: dfe
+  protocols: [syslog]
+  signals: [logs]
+  compression: none
+variables:
+  scaling: true
+  cores: 2
+  rates: [100000, 300000]
+  cases:
+    - {name: t1p1, topics: [otel-syslog-1], partitions_per_topic: 1}
+    - {name: t1p2, topics: [otel-syslog-1], partitions_per_topic: 2}
+  report: ../pipeline_perf_test/test_suites/comparison_dashboard/reports/report_logs_receiver_scaling.yaml
+  kafka_consumer_config: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/engine/kafka-consumer-syslog-scaling.yaml.j2
+  loadgen_threads: 1
+  loadgen_batch_size: 100
+  message_size: 1024
+  wait_for_data_interval: 10
+  drain_wait_secs: 10
+  drain_timeout_secs: 15
+  kafka_consumer_group_id: kafka-syslog-scaling

@@ -1,3 +1,5 @@
+{% set scaling = variables.scaling | default(false) %}
+{% set verifier = 'kafka_syslog_scaling.py' if scaling else 'kafka_syslog_receiver_only.py' %}
 {% macro forward_variables() -%}
 {%- for k, v in variables.items() %}
                 {{k}}: {{v | tojson}}
@@ -28,10 +30,18 @@ steps:
       run:
         pre:
           - run_command:
+{%- if scaling %}
+              command: >-
+                python3 kafka_syslog_scaling.py prepare --output-dir "{{test_dir}}"
+                --topics '{{topics | tojson}}' --partitions {{partitions_per_topic}}
+                --cores {{cores}} --target-rate {{target_rate}}
+                --group {{kafka_consumer_group_id}}
+{%- else %}
               command: >-
                 docker exec kafka-broker /opt/kafka/bin/kafka-topics.sh
                 --bootstrap-server localhost:9092 --create --if-not-exists
                 --topic otel-syslog --partitions 1 --replication-factor 1
+{%- endif %}
   - name: Deploy Kafka Consumer
     action:
       component_action:
@@ -46,6 +56,9 @@ steps:
               variables:{{forward_variables()}}
                 core_start: 1
                 core_end: 1
+{%- if scaling %}
+                topics: {{topics | tojson}}
+{%- endif %}
           - run_command:
               command: 'cp "{{test_dir}}/kafka-consumer-config.rendered.yaml" "{{data_dir}}/kafka-consumer-config.rendered.yaml"'
         post:
@@ -91,7 +104,12 @@ steps:
                 syslog_format: rfc5424
                 syslog_content_type: random
                 kafka_brokers: kafka-broker:9092
+{%- if scaling %}
+                kafka_topics: {{topics | tojson}}
+                kafka_partitions_per_topic: {{partitions_per_topic}}
+{%- else %}
                 kafka_topic: otel-syslog
+{%- endif %}
                 target_rate: {{target_rate}}
                 threads: {{loadgen_threads}}
                 batch_size: {{loadgen_batch_size}}
@@ -108,18 +126,22 @@ steps:
     hooks:
       run:
         pre:
+{%- if scaling %}
+          - run_command:
+              command: 'python3 kafka_syslog_scaling.py group --output-dir "{{test_dir}}" --phase before'
+{%- endif %}
           - send_http_request:
               url: http://localhost:18085/status
               method: GET
           - run_command:
-              command: 'python3 kafka_syslog_receiver_only.py snapshot --output-dir "{{test_dir}}" --phase observation-start'
+              command: 'python3 {{verifier}} snapshot --output-dir "{{test_dir}}" --phase observation-start'
           - record_event:
               name: observation_start
         post:
           - record_event:
               name: observation_stop
           - run_command:
-              command: 'python3 kafka_syslog_receiver_only.py snapshot --output-dir "{{test_dir}}" --phase observation-stop'
+              command: 'python3 {{verifier}} snapshot --output-dir "{{test_dir}}" --phase observation-stop'
           - send_http_request:
               url: http://localhost:18085/status
               method: GET
@@ -147,7 +169,11 @@ steps:
       run:
         pre:
           - run_command:
-              command: 'python3 kafka_syslog_receiver_only.py snapshot --output-dir "{{test_dir}}" --phase final'
+              command: 'python3 {{verifier}} snapshot --output-dir "{{test_dir}}" --phase final'
+{%- if scaling %}
+          - run_command:
+              command: 'python3 kafka_syslog_scaling.py group --output-dir "{{test_dir}}" --phase final'
+{%- endif %}
   - name: Stop Kafka Consumer
     action:
       no_op: {}
@@ -168,10 +194,10 @@ steps:
           - run_command:
               command: >-
                 timeout 20 docker exec kafka-broker /opt/kafka/bin/kafka-console-consumer.sh
-                --bootstrap-server localhost:9092 --topic otel-syslog --from-beginning
+                --bootstrap-server localhost:9092 --topic {{topics[0] if scaling else 'otel-syslog'}} --from-beginning
                 --max-messages 1 --timeout-ms 10000 > "{{test_dir}}/kafka-record.txt"
           - run_command:
-              command: 'python3 kafka_syslog_receiver_only.py verify --output-dir "{{test_dir}}"{% if target_rate == 1000 %} --expect-full-delivery{% endif %}'
+              command: 'python3 {{verifier}} verify --output-dir "{{test_dir}}"{% if not scaling and target_rate == 1000 %} --expect-full-delivery{% endif %}'
   - name: Wait For Metrics Update
     action:
       wait:
@@ -195,7 +221,7 @@ steps:
         # report unless the saved pre-shutdown evidence still passes the gate.
         pre:
           - run_command:
-              command: 'python3 kafka_syslog_receiver_only.py verify --output-dir "{{test_dir}}"{% if target_rate == 1000 %} --expect-full-delivery{% endif %}'
+              command: 'python3 {{verifier}} verify --output-dir "{{test_dir}}"{% if not scaling and target_rate == 1000 %} --expect-full-delivery{% endif %}'
         post:
           - print_container_logs: {}
           - sql_report:
