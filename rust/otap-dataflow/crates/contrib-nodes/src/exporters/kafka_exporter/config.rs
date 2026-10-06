@@ -662,6 +662,9 @@ fn validate_signal_topics(signal: &SignalConfig) -> Result<(), String> {
     if signal.encoding == MessageFormat::Syslog {
         return Err("encoding: syslog is not supported by the Kafka exporter".to_string());
     }
+    if signal.encoding == MessageFormat::OtlpJson {
+        return Err("encoding: otlp_json is not supported by the Kafka exporter".to_string());
+    }
     validate_kafka_topic(&signal.topic).map_err(|e| format!("topic: {e}"))?;
     for (i, t) in signal.allowed_topics.iter().enumerate() {
         validate_kafka_topic(t).map_err(|e| format!("allowed_topics[{i}]: {e}"))?;

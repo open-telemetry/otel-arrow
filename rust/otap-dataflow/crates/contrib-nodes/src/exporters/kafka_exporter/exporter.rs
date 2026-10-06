@@ -28,7 +28,9 @@ use super::topic_router::TopicRouter;
 use crate::common::kafka::aws::ProducerClientContext;
 #[cfg(feature = "aws")]
 use crate::common::kafka::security::build_aws_msk_context;
-use crate::common::kafka::{MSG_FORMAT_OTAP, MSG_FORMAT_OTLP, MSG_FORMAT_SYSLOG, MessageFormat};
+use crate::common::kafka::{
+    MSG_FORMAT_OTAP, MSG_FORMAT_OTLP, MSG_FORMAT_OTLP_JSON, MSG_FORMAT_SYSLOG, MessageFormat,
+};
 use async_trait::async_trait;
 use futures::stream::FuturesUnordered;
 use futures::{FutureExt, StreamExt};
@@ -539,6 +541,7 @@ impl KafkaExporter {
         // Always write the message format header.
         let format_value = match encoding {
             MessageFormat::OtlpProto => MSG_FORMAT_OTLP,
+            MessageFormat::OtlpJson => MSG_FORMAT_OTLP_JSON,
             MessageFormat::OtapProto => MSG_FORMAT_OTAP,
             MessageFormat::Syslog => MSG_FORMAT_SYSLOG,
         };
@@ -691,6 +694,9 @@ impl KafkaExporter {
         let encoding_start = Instant::now();
         let encode_result = match encoding {
             MessageFormat::OtlpProto => encoder::encode_to_otlp_bytes(payload.clone()),
+            MessageFormat::OtlpJson => Err(KafkaExporterError::Configuration(
+                "otlp_json encoding is not supported by the Kafka exporter".to_string(),
+            )),
             MessageFormat::OtapProto => encoder::encode_to_batch_arrow_record_bytes(
                 payload.clone(),
                 &mut self.pdata_producer,
@@ -6879,26 +6885,19 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (Kafka integration: encodings and routing): a caller configures the not-yet-implemented `otlp_json`
-        /// message format via config deserialization.
-        /// Guarantees: `MessageFormat` accepts `otlp_proto` and `otap_proto` but
-        /// rejects `otlp_json`, pinning the documented gap that OTLP JSON
-        /// encoding is not available (so a silent partial rollout cannot slip
-        /// in an unhandled format).
+        /// Scenario (Kafka integration: encodings and routing): a caller configures
+        /// the not-yet-implemented `otlp_json` exporter message format.
+        /// Guarantees: exporter validation rejects `otlp_json` while allowing the
+        /// shared format enum to support receiver-side OTLP JSON decoding.
         #[test]
         fn otlp_json_message_format_is_unavailable() {
-            assert!(
-                serde_json::from_str::<MessageFormat>("\"otlp_proto\"").is_ok(),
-                "otlp_proto must be a valid message format"
+            let config = KafkaExporterConfigBuilder::new("unused:9092", "client").with_logs(
+                SignalConfig::new("logs".to_string(), MessageFormat::OtlpJson),
             );
-            assert!(
-                serde_json::from_str::<MessageFormat>("\"otap_proto\"").is_ok(),
-                "otap_proto must be a valid message format"
-            );
-            assert!(
-                serde_json::from_str::<MessageFormat>("\"otlp_json\"").is_err(),
-                "otlp_json is not implemented and must be rejected"
-            );
+
+            let error = KafkaExporterConfig::try_from(config)
+                .expect_err("otlp_json exporter encoding must be rejected");
+            assert!(error.contains("otlp_json is not supported"));
         }
 
         /// Scenario (Kafka integration: encodings and routing): route a record to a topic named by a transport header while

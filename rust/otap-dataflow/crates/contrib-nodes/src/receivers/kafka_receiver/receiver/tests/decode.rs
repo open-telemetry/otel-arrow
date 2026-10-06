@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Payload decode unit tests: OTLP-proto, OTAP-proto, and Syslog decoders per signal, plus poison-input handling.
+//! Payload decode unit tests: OTLP-proto, OTLP-JSON, OTAP-proto, and Syslog decoders per signal, plus poison-input handling.
 
 use super::*;
 
@@ -51,6 +51,85 @@ fn decode_logs_payload_otlp_proto() {
             .expect("should decode");
     let proto = take_otlp_proto(&mut pdata);
     assert!(matches!(proto, OtlpProtoBytes::ExportLogsRequest(_)));
+}
+
+/// Scenario (routing and payload correctness): valid OTLP JSON requests are decoded
+/// for traces, metrics, and logs.
+/// Guarantees: each JSON document becomes the matching OTLP protobuf request variant
+/// while preserving representative signal data.
+#[test]
+fn decode_otlp_json_payloads() {
+    let cases = [
+        (
+            SignalType::Traces,
+            br#"{"resourceSpans":[{"scopeSpans":[{"spans":[{"traceId":"01010101010101010101010101010101","spanId":"0202020202020202","name":"operation"}]}]}]}"#
+                .as_slice(),
+        ),
+        (
+            SignalType::Metrics,
+            br#"{"resourceMetrics":[{"scopeMetrics":[{"metrics":[{"name":"requests","gauge":{"dataPoints":[{"timeUnixNano":"42","asInt":"7"}]}}]}]}]}"#
+                .as_slice(),
+        ),
+        (
+            SignalType::Logs,
+            br#"{"resourceLogs":[{"scopeLogs":[{"logRecords":[{"timeUnixNano":"42","severityNumber":9,"body":{"stringValue":"ready"}}]}]}]}"#
+                .as_slice(),
+        ),
+    ];
+
+    for (signal, json) in cases {
+        let mut pdata = SignalDecoder::decode_signal_payload(signal, json, MessageFormat::OtlpJson)
+            .expect("valid OTLP JSON should decode");
+        let proto = take_otlp_proto(&mut pdata);
+
+        match (signal, proto) {
+            (SignalType::Traces, OtlpProtoBytes::ExportTracesRequest(bytes)) => {
+                let request =
+                    ExportTraceServiceRequest::decode(bytes).expect("decode traces protobuf");
+                assert_eq!(
+                    request.resource_spans[0].scope_spans[0].spans[0].name,
+                    "operation"
+                );
+            }
+            (SignalType::Metrics, OtlpProtoBytes::ExportMetricsRequest(bytes)) => {
+                let request =
+                    ExportMetricsServiceRequest::decode(bytes).expect("decode metrics protobuf");
+                assert_eq!(
+                    request.resource_metrics[0].scope_metrics[0].metrics[0].name,
+                    "requests"
+                );
+            }
+            (SignalType::Logs, OtlpProtoBytes::ExportLogsRequest(bytes)) => {
+                let request =
+                    ExportLogsServiceRequest::decode(bytes).expect("decode logs protobuf");
+                assert_eq!(
+                    request.resource_logs[0].scope_logs[0].log_records[0].severity_number,
+                    9
+                );
+            }
+            _ => panic!("signal routed to the wrong OTLP request variant"),
+        }
+    }
+}
+
+/// Scenario (routing and payload correctness): malformed JSON is received with the
+/// OTLP JSON message format.
+/// Guarantees: decoding returns a recoverable pdata conversion error instead of
+/// forwarding invalid bytes as an OTLP protobuf request.
+#[test]
+fn decode_invalid_otlp_json_payload_returns_error() {
+    let error = SignalDecoder::decode_signal_payload(
+        SignalType::Logs,
+        br#"{"resourceLogs":"invalid"}"#,
+        MessageFormat::OtlpJson,
+    )
+    .expect_err("invalid OTLP JSON must fail");
+
+    assert!(
+        error
+            .to_string()
+            .contains("Failed to decode OTLP JSON logs payload")
+    );
 }
 
 /// Scenario (routing and payload correctness): OTAP-Arrow traces bytes are decoded.

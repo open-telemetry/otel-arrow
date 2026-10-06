@@ -1,0 +1,5 @@
+change_type: enhancement
+component: pipeline
+note: "Add OTLP JSON decoding support to the Kafka receiver for traces, metrics, and logs."
+issues: []
+subtext:

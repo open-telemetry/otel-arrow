@@ -11,8 +11,8 @@
 ## Overview
 
 The Kafka receiver consumes OpenTelemetry traces, metrics, and logs from
-Apache Kafka topics. It supports OTLP and OTAP protobuf encodings for all
-signals and Syslog encoding for logs,
+Apache Kafka topics. It supports OTLP protobuf, OTLP JSON, and OTAP Arrow
+protobuf encodings for all signals, plus Syslog encoding for logs,
 per-signal topic routing, SASL authentication (PLAIN, SCRAM, AWS MSK IAM),
 TLS, manual and automatic offset commit modes, and Kafka message header
 extraction into resource attributes or pipeline transport headers.
@@ -62,7 +62,7 @@ config:
 | `resource_attrs_from_headers` | map | `{}` | Rules for extracting Kafka message headers into resource attributes. |
 | `enable_idempotency` | bool | `false` | Skip duplicate messages by offset (manual commit mode only). |
 | `rebalance_strategy` | string | *none* | Partition assignment strategy: `range`, `round_robin`, or `cooperative_sticky`. When omitted, librdkafka uses its default (`range,roundrobin`). |
-| `message_format_header` | string | `"MessageFormat"` | Kafka header key for per-message format detection. The receiver checks each message for a header with this key and value `otlp`, `otap`, or `syslog` to override the per-signal encoding. Syslog is valid only for logs. |
+| `message_format_header` | string | `"MessageFormat"` | Kafka header key for per-message format detection. The receiver checks each message for a header with this key and value `otlp`, `otlp_json`, `otap`, or `syslog` to override the per-signal encoding. Syslog is valid only for logs. |
 | `debug` | list | *none* | List of librdkafka debug contexts: `generic`, `broker`, `topic`, `metadata`, `feature`, `queue`, `msg`, `protocol`, `cgrp`, `security`, `fetch`, `interceptor`, `plugin`, `consumer`, `admin`, `eos`, `mock`, `assignor`, `conf`, `telemetry`, `all`. |
 | `log_level` | string | *none* | Librdkafka log level: `emerg`, `alert`, `critical`, `error`, `warning`, `notice`, `info`, `debug`. When omitted, inferred from the application's log configuration. |
 | `consumer_config` | map | `{}` | Additional librdkafka consumer settings as key-value string pairs. |
@@ -75,7 +75,7 @@ Each signal type (`traces`, `metrics`, `logs`) accepts a nested configuration:
 | --- | --- | --- | --- |
 | `topics` | list | `[]` | Topics to subscribe to. Entries starting with `^` are regex patterns. |
 | `exclude_topics` | list | `[]` | Regex patterns for topics to exclude (requires at least one regex in `topics`). |
-| `encoding` | string | `otlp_proto` | Default encoding format: `otlp_proto`, `otap_proto`, or `syslog`. Syslog is valid only for logs. |
+| `encoding` | string | `otlp_proto` | Default encoding format: `otlp_proto`, `otlp_json`, `otap_proto`, or `syslog`. Syslog is valid only for logs. |
 
 At least one signal must have non-empty `topics` for the receiver to consume any data. Topic names must be **disjoint across signal types** -- the receiver rejects configurations where the same topic appears in more than one signal type.
 
@@ -129,6 +129,7 @@ Each signal can specify its own encoding format via the `encoding` field:
 | Value | Description |
 | --- | --- |
 | `otlp_proto` | OTLP protobuf encoding (default). |
+| `otlp_json` | OTLP JSON encoding. |
 | `otap_proto` | OTAP Arrow protobuf encoding. |
 | `syslog` | One RFC 3164 or RFC 5424 message per Kafka record (logs only). CEF in the message body is decoded using the Syslog/CEF receiver mapping. |
 
@@ -144,7 +145,7 @@ config:
     encoding: otap_proto
 ```
 
-Individual Kafka messages can override the per-signal encoding via the `message_format_header` header (defaults to `"MessageFormat"`). The receiver checks each incoming message for a header matching the configured key. If the header is present and its value is `otlp`, `otap`, or `syslog`, that encoding is used instead of the per-signal default. Syslog overrides are valid only for log topics. If the header is absent or unrecognized, the per-signal encoding is used as a fallback.
+Individual Kafka messages can override the per-signal encoding via the `message_format_header` header (defaults to `"MessageFormat"`). The receiver checks each incoming message for a header matching the configured key. If the header is present and its value is `otlp`, `otlp_json`, `otap`, or `syslog`, that encoding is used instead of the per-signal default. Syslog overrides are valid only for log topics. If the header is absent or unrecognized, the per-signal encoding is used as a fallback.
 
 ### Commit Configuration
 
@@ -287,7 +288,7 @@ The Go receiver also consumes a `profiles` signal. This receiver supports
 | --- | --- | --- |
 | `otlp_proto` | yes | yes |
 | `otap_proto` (OTAP Arrow) | no | yes |
-| `otlp_json` | yes | no |
+| `otlp_json` | yes | yes |
 | `jaeger_proto` / `jaeger_json` (traces) | yes | no |
 | `zipkin_proto` / `zipkin_json` / `zipkin_thrift` (traces) | yes | no |
 | `raw` / `text` / `text_<encoding>` / `json` (logs) | yes | no |
@@ -391,8 +392,9 @@ the Go Kafka receiver:
 
 Out of scope for error handling, but worth noting as general differences: the Go
 receiver supports additional encodings (e.g. `jaeger_proto`, `zipkin_json`,
-`raw`, `text`, `json`) whereas this receiver supports `otlp_proto` and
-`otap_proto`; available authentication mechanisms may also differ.
+`raw`, `text`, `json`) whereas this receiver supports `otlp_proto`,
+`otlp_json`, and `otap_proto`, plus `syslog` for logs; available
+authentication mechanisms may also differ.
 
 #### Auto Mode (`commit.mode: auto`)
 

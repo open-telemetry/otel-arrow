@@ -5,7 +5,7 @@
 //!
 //! Packs and unpacks Kafka message identity (topic id, partition, offset,
 //! delivery generation) into [`CallData`] for Ack/Nack routing, and decodes
-//! OTLP-proto / OTAP-proto / Syslog payloads (optionally applying header
+//! OTLP-proto / OTLP-JSON / OTAP-proto / Syslog payloads (optionally applying header
 //! extractions) into [`OtapPdata`].
 //!
 //! [`SignalDecoder`] maps a [`SignalType`] onto the configured encoding,
@@ -16,6 +16,9 @@ use super::super::headers::HeaderExtractions;
 use super::super::identity::DeliveryGeneration;
 use crate::common::kafka::MessageFormat;
 use bytes::Bytes;
+use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
+use opentelemetry_proto::tonic::collector::metrics::v1::ExportMetricsServiceRequest;
+use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
 use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_core_nodes::receivers::syslog_cef_receiver::{
     MAX_MESSAGE_SIZE as MAX_SYSLOG_MESSAGE_SIZE,
@@ -128,6 +131,30 @@ impl SignalDecoder {
         OtapPdata::new(Context::default(), otlp.into())
     }
 
+    /// Decode an OTLP JSON request and re-encode it as the equivalent OTLP
+    /// protobuf request used by the pipeline's existing pdata path.
+    fn decode_otlp_json(signal: SignalType, data: &[u8]) -> Result<Vec<u8>, EngineError> {
+        fn decode<M>(signal: SignalType, data: &[u8]) -> Result<Vec<u8>, EngineError>
+        where
+            M: serde::de::DeserializeOwned + Message,
+        {
+            serde_json::from_slice::<M>(data)
+                .map(|request| request.encode_to_vec())
+                .map_err(|error| EngineError::PdataConversionError {
+                    error: format!(
+                        "Failed to decode OTLP JSON {} payload: {error}",
+                        SignalDecoder::label(signal),
+                    ),
+                })
+        }
+
+        match signal {
+            SignalType::Traces => decode::<ExportTraceServiceRequest>(signal, data),
+            SignalType::Metrics => decode::<ExportMetricsServiceRequest>(signal, data),
+            SignalType::Logs => decode::<ExportLogsServiceRequest>(signal, data),
+        }
+    }
+
     /// Decode OTAP Arrow bytes into the [`OtapArrowRecords`] variant for
     /// `signal`.
     ///
@@ -205,6 +232,10 @@ impl SignalDecoder {
     ) -> Result<OtapPdata, EngineError> {
         match message_format {
             MessageFormat::OtlpProto => Ok(Self::otlp_pdata(signal, data)),
+            MessageFormat::OtlpJson => {
+                let proto = Self::decode_otlp_json(signal, data)?;
+                Ok(Self::otlp_pdata(signal, &proto))
+            }
             MessageFormat::OtapProto => {
                 let records = Self::decode_otap(signal, data)?;
                 Ok(OtapPdata::new(Context::default(), records.into()))
@@ -233,6 +264,16 @@ impl SignalDecoder {
         data: &[u8],
         message_format: MessageFormat,
     ) -> Result<OtapPdata, EngineError> {
+        let json_proto = if message_format == MessageFormat::OtlpJson {
+            Some(Self::decode_otlp_json(signal, data)?)
+        } else {
+            None
+        };
+        let (data, message_format) = match json_proto.as_deref() {
+            Some(proto) => (proto, MessageFormat::OtlpProto),
+            None => (data, message_format),
+        };
+
         let apply_otlp: fn(&HeaderExtractions, &[u8]) -> Result<OtapPdata, EngineError> =
             match signal {
                 SignalType::Traces => HeaderExtractions::apply_otlp_traces,
@@ -290,12 +331,18 @@ where
     if !extractors.is_empty() {
         let extractions = match message_format {
             MessageFormat::OtlpProto => HeaderExtractions::otlp(kafka_message, extractors),
+            MessageFormat::OtlpJson => {
+                unreachable!("OTLP JSON must be normalized before header extraction")
+            }
             MessageFormat::OtapProto => HeaderExtractions::otap(kafka_message, extractors),
             MessageFormat::Syslog => HeaderExtractions::otap(kafka_message, extractors),
         };
         if extractions.has_any() {
             return match message_format {
                 MessageFormat::OtlpProto => apply_otlp(&extractions, data),
+                MessageFormat::OtlpJson => {
+                    unreachable!("OTLP JSON must be normalized before header extraction")
+                }
                 MessageFormat::OtapProto => apply_otap(&extractions, data),
                 MessageFormat::Syslog => apply_syslog(&extractions, data),
             };

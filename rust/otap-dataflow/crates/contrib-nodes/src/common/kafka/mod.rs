@@ -223,8 +223,7 @@ pub enum MessageFormat {
     /// OTLP protobuf encoding.
     OtlpProto,
     /// OTLP JSON encoding.
-    // Todo: implement
-    //OtlpJson,
+    OtlpJson,
     /// OTAP (Arrow) protobuf encoding.
     OtapProto,
     /// Syslog encoding for Kafka log records.
@@ -390,6 +389,9 @@ pub fn default_message_format_header() -> String {
 
 /// header value for OTLP format in bytes
 pub const MSG_FORMAT_OTLP: &[u8] = b"otlp";
+
+/// Header value for OTLP JSON format in bytes.
+pub const MSG_FORMAT_OTLP_JSON: &[u8] = b"otlp_json";
 
 /// header value for OTAP format in bytes
 pub const MSG_FORMAT_OTAP: &[u8] = b"otap";
