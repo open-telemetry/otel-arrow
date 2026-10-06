@@ -1654,24 +1654,19 @@ impl<
         for (pipeline_entry, pipeline_placement) in
             pipelines.iter().zip(placement_snapshot.pipelines.iter())
         {
-            runtime.register_committed_pipeline(
-                pipeline_entry.clone(),
-                pipeline_placement.clone(),
-                0,
-            );
-            let num_cores = pipeline_placement.core_count();
-            let listener_group_snapshot = Arc::new(listener_group::snapshot_for_pipeline(
-                pipeline_entry,
-                pipeline_placement,
-                placement_snapshot.generation,
-            ));
             let deployment = LogicalPipelineDeployment::new(
                 pipeline_entry.clone(),
                 Arc::clone(&context.bindings),
                 0,
                 pipeline_placement.clone(),
-                listener_group_snapshot,
+                Arc::new(listener_group::snapshot_for_pipeline(
+                    pipeline_entry,
+                    pipeline_placement,
+                    placement_snapshot.generation,
+                )),
             );
+            runtime.register_committed_pipeline(&deployment);
+            let num_cores = pipeline_placement.core_count();
 
             let core_allocation = pipeline_entry
                 .policies

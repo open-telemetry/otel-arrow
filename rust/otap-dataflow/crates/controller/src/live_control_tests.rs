@@ -791,7 +791,33 @@ fn register_pipeline(
     let placement = runtime
         .pipeline_placement_for_resolved(&resolved)
         .expect("resolved pipeline placement should exist");
-    runtime.register_committed_pipeline(resolved, placement, 0);
+    register_committed_pipeline(runtime, resolved, placement, 0);
+}
+
+fn register_committed_pipeline(
+    runtime: &ControllerRuntime<()>,
+    resolved: ResolvedPipelineConfig,
+    placement: PipelinePlacement,
+    generation: u64,
+) {
+    let context_bindings = {
+        let state = runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        Arc::clone(&state.latest_context_bindings)
+    };
+    let listener_group_snapshot = Arc::new(listener_group::snapshot_for_pipeline(
+        &resolved, &placement, 0,
+    ));
+    let deployment = LogicalPipelineDeployment::new(
+        resolved,
+        context_bindings,
+        generation,
+        placement,
+        listener_group_snapshot,
+    );
+    runtime.register_committed_pipeline(&deployment);
 }
 
 fn register_runtime_instance(
@@ -1232,7 +1258,7 @@ groups:
     .expect("startup placement should resolve");
 
     for (pipeline, placement) in resolved.iter().cloned().zip(placement_snapshot.pipelines) {
-        runtime.register_committed_pipeline(pipeline, placement, 0);
+        register_committed_pipeline(&runtime, pipeline, placement, 0);
     }
     for core_id in 4..=7 {
         let _receiver = register_runtime_instance(
@@ -1335,7 +1361,7 @@ groups:
     .expect("startup placement should resolve");
 
     for (pipeline, placement) in resolved.iter().cloned().zip(placement_snapshot.pipelines) {
-        runtime.register_committed_pipeline(pipeline, placement, 0);
+        register_committed_pipeline(&runtime, pipeline, placement, 0);
     }
     for core_id in 0..=1 {
         let _receiver = register_runtime_instance(
@@ -1508,7 +1534,7 @@ groups:
     .expect("startup placement should resolve");
 
     for (pipeline, placement) in resolved.iter().cloned().zip(placement_snapshot.pipelines) {
-        runtime.register_committed_pipeline(pipeline, placement, 0);
+        register_committed_pipeline(&runtime, pipeline, placement, 0);
     }
     for core_id in 2..=3 {
         let _receiver = register_runtime_instance(
@@ -1651,7 +1677,7 @@ groups:
     .expect("startup placement should resolve");
 
     for (pipeline, placement) in resolved.iter().cloned().zip(placement_snapshot.pipelines) {
-        runtime.register_committed_pipeline(pipeline, placement, 0);
+        register_committed_pipeline(&runtime, pipeline, placement, 0);
     }
 
     let p2_resize = PipelineConfig::from_yaml(
@@ -1788,7 +1814,7 @@ groups:
     .expect("startup placement should resolve");
 
     for (pipeline, placement) in resolved.iter().cloned().zip(placement_snapshot.pipelines) {
-        runtime.register_committed_pipeline(pipeline, placement, 0);
+        register_committed_pipeline(&runtime, pipeline, placement, 0);
     }
 
     let p2_resize = PipelineConfig::from_yaml(
@@ -1975,7 +2001,8 @@ connections:
                 && pipeline.pipeline_id.as_ref() == "p3"
         })
         .expect("p3 should resolve");
-    runtime.register_committed_pipeline(
+    register_committed_pipeline(
+        &runtime,
         p3_resolved,
         PipelinePlacement {
             pipeline_group_id: "g1".to_owned().into(),
@@ -4027,7 +4054,7 @@ fn delete_pipeline_recompiles_context_bindings_without_removed_declarations() {
     let placement = runtime
         .pipeline_placement_for_resolved(&resolved)
         .expect("resolved pipeline placement should exist");
-    runtime.register_committed_pipeline(resolved.clone(), placement, 0);
+    register_committed_pipeline(&runtime, resolved.clone(), placement, 0);
     let deployment = runtime
         .state
         .lock()
@@ -5334,7 +5361,7 @@ groups:
         };
         let group_id = resolved.pipeline_group_id.as_ref().to_owned();
         let pipeline_id = resolved.pipeline_id.as_ref().to_owned();
-        runtime.register_committed_pipeline(resolved, placement, 0);
+        register_committed_pipeline(&runtime, resolved, placement, 0);
         for core_id in assigned_cores {
             let _rx = register_runtime_instance(
                 &runtime,
