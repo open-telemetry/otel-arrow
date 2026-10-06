@@ -63,34 +63,21 @@ impl DictionaryValueArray<'_> {
             DictionaryValueArray::Boolean => None,
         }
     }
-
-    pub(crate) fn is_null_at(&self, index: usize) -> bool {
-        match self {
-            DictionaryValueArray::Array(a) => index >= a.len() || a.is_null(index),
-            DictionaryValueArray::Vec(a) => a
-                .get(index)
-                .is_none_or(|value| matches!(value, ValueOrRef::Null)),
-            DictionaryValueArray::Set(a) => a
-                .get_index(index)
-                .is_none_or(|value| matches!(value, ValueOrRef::Null)),
-            DictionaryValueArray::Boolean => index >= 2,
-        }
-    }
 }
 
 impl<'a> DictionaryValueArray<'a> {
-    pub fn get_value_at(&self, index: usize) -> Result<ValueOrRef<'a>, ValueError> {
+    pub fn get_value_at(&self, index: usize) -> Result<ValueOrRef<'a>, DictionaryValueError> {
         match self {
             DictionaryValueArray::Array(a) => a.get_value_at(index),
             DictionaryValueArray::Vec(a) => Ok(a.get(index).cloned().unwrap_or(ValueOrRef::Null)),
             DictionaryValueArray::Set(a) => {
                 Ok(a.get_index(index).cloned().unwrap_or(ValueOrRef::Null))
             }
-            DictionaryValueArray::Boolean => match index {
-                0 => Ok(ValueOrRef::Boolean(false)),
-                1 => Ok(ValueOrRef::Boolean(true)),
-                v => Err(ValueError::InvalidBoolean { index_value: v }),
-            },
+            DictionaryValueArray::Boolean => Ok(match index {
+                0 => ValueOrRef::Boolean(false),
+                1 => ValueOrRef::Boolean(true),
+                _ => ValueOrRef::Null,
+            }),
         }
     }
 }
@@ -190,7 +177,7 @@ impl DictionaryArrowValueArray {
         self.as_array().nulls().cloned()
     }
 
-    fn get_value_at(&self, index: usize) -> Result<ValueOrRef<'static>, ValueError> {
+    fn get_value_at(&self, index: usize) -> Result<ValueOrRef<'static>, DictionaryValueError> {
         if index >= self.len() || self.nulls().map(|n| n.is_null(index)).unwrap_or(false) {
             return Ok(ValueOrRef::Null);
         }
@@ -224,7 +211,7 @@ impl DictionaryArrowValueArray {
 
                     match TryInto::<i64>::try_into(value) {
                         Ok(v) => Ok(ValueOrRef::Integer(v)),
-                        Err(_) => Err(ValueError::IntegerConversionFailure {
+                        Err(_) => Err(DictionaryValueError::IntegerConversionFailure {
                             original_value: value,
                         }),
                     }
@@ -307,9 +294,9 @@ impl DictionaryArrowValueArray {
         original_value: i64,
         time_unit: TimeUnit,
         value: Option<DateTime<Utc>>,
-    ) -> Result<ValueOrRef<'static>, ValueError> {
+    ) -> Result<ValueOrRef<'static>, DictionaryValueError> {
         value.map(|value| ValueOrRef::DateTime(value.into())).ok_or(
-            ValueError::TimestampConversionFailure {
+            DictionaryValueError::TimestampConversionFailure {
                 original_value,
                 time_unit,
             },
@@ -371,7 +358,7 @@ impl<'a> From<Vec<ValueOrRef<'a>>> for DictionaryValueArray<'a> {
 }
 
 #[derive(Error, Debug, PartialEq)]
-pub enum ValueError {
+pub enum DictionaryValueError {
     #[error("UInt64 value '{original_value}' could not be converted into 'Integer'")]
     IntegerConversionFailure { original_value: u64 },
     #[error(
@@ -381,8 +368,6 @@ pub enum ValueError {
         original_value: i64,
         time_unit: TimeUnit,
     },
-    #[error("Index value '{index_value}' could not be converted into 'Boolean'")]
-    InvalidBoolean { index_value: usize },
 }
 
 fn build_null_buffer(nulls: impl ExactSizeIterator<Item = bool>) -> Option<NullBuffer> {
@@ -468,10 +453,7 @@ mod tests {
         let boolean = DictionaryValueArray::Boolean;
         assert_eq!(boolean.get_value_at(0), Ok(ValueOrRef::Boolean(false)));
         assert_eq!(boolean.get_value_at(1), Ok(ValueOrRef::Boolean(true)));
-        assert_eq!(
-            boolean.get_value_at(2),
-            Err(ValueError::InvalidBoolean { index_value: 2 })
-        );
+        assert_eq!(boolean.get_value_at(2), Ok(ValueOrRef::Null));
     }
 
     /// Scenario: Arrow UInt64 values straddle the largest value representable by the engine's i64 integer type.
@@ -490,13 +472,13 @@ mod tests {
         assert_eq!(values.get_value_at(1), Ok(ValueOrRef::Integer(i64::MAX)));
         assert_eq!(
             values.get_value_at(2),
-            Err(ValueError::IntegerConversionFailure {
+            Err(DictionaryValueError::IntegerConversionFailure {
                 original_value: i64::MAX as u64 + 1,
             })
         );
         assert_eq!(
             values.get_value_at(3),
-            Err(ValueError::IntegerConversionFailure {
+            Err(DictionaryValueError::IntegerConversionFailure {
                 original_value: u64::MAX,
             })
         );
@@ -653,14 +635,14 @@ mod tests {
         ] {
             assert_eq!(
                 values.get_value_at(0),
-                Err(ValueError::TimestampConversionFailure {
+                Err(DictionaryValueError::TimestampConversionFailure {
                     original_value: i64::MIN,
                     time_unit,
                 })
             );
             assert_eq!(
                 values.get_value_at(1),
-                Err(ValueError::TimestampConversionFailure {
+                Err(DictionaryValueError::TimestampConversionFailure {
                     original_value: i64::MAX,
                     time_unit,
                 })
@@ -718,7 +700,7 @@ mod tests {
             ));
             assert_eq!(
                 values.get_value_at(1),
-                Err(ValueError::TimestampConversionFailure {
+                Err(DictionaryValueError::TimestampConversionFailure {
                     original_value: below_min,
                     time_unit,
                 })
@@ -729,7 +711,7 @@ mod tests {
             ));
             assert_eq!(
                 values.get_value_at(3),
-                Err(ValueError::TimestampConversionFailure {
+                Err(DictionaryValueError::TimestampConversionFailure {
                     original_value: above_max,
                     time_unit,
                 })
@@ -811,9 +793,6 @@ mod tests {
         let boolean = DictionaryValueArray::Boolean;
         assert_eq!(boolean.get_value_at(0), Ok(ValueOrRef::Boolean(false)));
         assert_eq!(boolean.get_value_at(1), Ok(ValueOrRef::Boolean(true)));
-        assert_eq!(
-            boolean.get_value_at(2),
-            Err(ValueError::InvalidBoolean { index_value: 2 })
-        );
+        assert_eq!(boolean.get_value_at(2), Ok(ValueOrRef::Null));
     }
 }

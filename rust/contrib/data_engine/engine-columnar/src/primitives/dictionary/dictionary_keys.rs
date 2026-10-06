@@ -153,23 +153,6 @@ impl DictionaryKeyArray {
             }
         }
     }
-
-    pub(crate) fn has_value_index_out_of_bounds(&self, value_count: usize) -> bool {
-        match self {
-            DictionaryKeyArray::KeyArray(_) | DictionaryKeyArray::BooleanArray { .. } => {
-                (0..self.len()).any(|key_index| {
-                    self.get_value_index_for_key_index(key_index)
-                        .is_some_and(|value_index| value_index >= value_count)
-                })
-            }
-            DictionaryKeyArray::UniqueValues { length, .. } => *length > value_count,
-            DictionaryKeyArray::SingleValue {
-                length,
-                value_index,
-                ..
-            } => *length > 0 && value_index.is_some_and(|value_index| value_index >= value_count),
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -251,6 +234,19 @@ impl DictionaryArrowKeyArray {
             })
         }
     }
+
+    pub fn iter(&self) -> DictionaryArrowKeyArrayIter<'_> {
+        match self {
+            DictionaryArrowKeyArray::Int8(a) => DictionaryArrowKeyArrayIter::Int8(a.iter()),
+            DictionaryArrowKeyArray::Int16(a) => DictionaryArrowKeyArrayIter::Int16(a.iter()),
+            DictionaryArrowKeyArray::Int32(a) => DictionaryArrowKeyArrayIter::Int32(a.iter()),
+            DictionaryArrowKeyArray::Int64(a) => DictionaryArrowKeyArrayIter::Int64(a.iter()),
+            DictionaryArrowKeyArray::UInt8(a) => DictionaryArrowKeyArrayIter::UInt8(a.iter()),
+            DictionaryArrowKeyArray::UInt16(a) => DictionaryArrowKeyArrayIter::UInt16(a.iter()),
+            DictionaryArrowKeyArray::UInt32(a) => DictionaryArrowKeyArrayIter::UInt32(a.iter()),
+            DictionaryArrowKeyArray::UInt64(a) => DictionaryArrowKeyArrayIter::UInt64(a.iter()),
+        }
+    }
 }
 
 macro_rules! impl_from_key_array {
@@ -277,6 +273,35 @@ impl_from_key_array!(UInt8Type, UInt8);
 impl_from_key_array!(UInt16Type, UInt16);
 impl_from_key_array!(UInt32Type, UInt32);
 impl_from_key_array!(UInt64Type, UInt64);
+
+impl<'a> Iterator for DictionaryArrowKeyArrayIter<'a> {
+    type Item = Option<usize>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            DictionaryArrowKeyArrayIter::Int8(i) => i.next().map(|v| v.map(|v| v as usize)),
+            DictionaryArrowKeyArrayIter::Int16(i) => i.next().map(|v| v.map(|v| v as usize)),
+            DictionaryArrowKeyArrayIter::Int32(i) => i.next().map(|v| v.map(|v| v as usize)),
+            DictionaryArrowKeyArrayIter::Int64(i) => i.next().map(|v| v.map(|v| v as usize)),
+            DictionaryArrowKeyArrayIter::UInt8(i) => i.next().map(|v| v.map(|v| v as usize)),
+            DictionaryArrowKeyArrayIter::UInt16(i) => i.next().map(|v| v.map(|v| v as usize)),
+            DictionaryArrowKeyArrayIter::UInt32(i) => i.next().map(|v| v.map(|v| v as usize)),
+            DictionaryArrowKeyArrayIter::UInt64(i) => i.next().map(|v| v.map(|v| v as usize)),
+        }
+    }
+}
+
+pub enum DictionaryArrowKeyArrayIter<'a> {
+    Int8(PrimitiveIter<'a, Int8Type>),
+    Int16(PrimitiveIter<'a, Int16Type>),
+    Int32(PrimitiveIter<'a, Int32Type>),
+    Int64(PrimitiveIter<'a, Int64Type>),
+
+    UInt8(PrimitiveIter<'a, UInt8Type>),
+    UInt16(PrimitiveIter<'a, UInt16Type>),
+    UInt32(PrimitiveIter<'a, UInt32Type>),
+    UInt64(PrimitiveIter<'a, UInt64Type>),
+}
 
 fn get_bool_array_value_index_for_key_index(
     array: &BooleanArray,
@@ -334,32 +359,5 @@ mod tests {
         assert!(null.is_null());
         assert_eq!(null.nulls().unwrap().null_count(), 2);
         assert_eq!(null.get_value_index_for_key_index(2), None);
-    }
-
-    /// Scenario: Synthetic unique and scalar key layouts are checked against shorter and equal-length value tables.
-    /// Guarantees: Their out-of-bounds fast paths detect invalid references without scanning individual rows.
-    #[test]
-    fn synthetic_key_arrays_detect_out_of_bounds_value_indices() {
-        let unique = DictionaryKeyArray::UniqueValues {
-            data_type: DataType::UInt16,
-            length: 2,
-        };
-        assert!(!unique.has_value_index_out_of_bounds(2));
-        assert!(unique.has_value_index_out_of_bounds(1));
-
-        let scalar = DictionaryKeyArray::SingleValue {
-            data_type: DataType::Int32,
-            length: 3,
-            value_index: Some(1),
-        };
-        assert!(!scalar.has_value_index_out_of_bounds(2));
-        assert!(scalar.has_value_index_out_of_bounds(1));
-
-        let empty = DictionaryKeyArray::SingleValue {
-            data_type: DataType::Int32,
-            length: 0,
-            value_index: Some(1),
-        };
-        assert!(!empty.has_value_index_out_of_bounds(0));
     }
 }

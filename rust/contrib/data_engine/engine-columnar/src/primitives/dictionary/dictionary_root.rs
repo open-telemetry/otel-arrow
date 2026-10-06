@@ -5,6 +5,7 @@ use std::fmt::{self, Write};
 
 use arrow::{array::*, buffer::*, datatypes::*};
 use otel_arrow_contrib_data_engine_expressions::*;
+use thiserror::Error;
 
 use crate::*;
 
@@ -23,22 +24,6 @@ impl Dictionary<'_> {
         self.keys.is_empty()
     }
 
-    pub fn is_null(&self) -> bool {
-        if self.keys.is_null() || self.values.is_null() {
-            return true;
-        }
-
-        for key_index in 0..self.len() {
-            if let Some(value_index) = self.keys.get_value_index_for_key_index(key_index)
-                && !self.values.is_null_at(value_index)
-            {
-                return false;
-            }
-        }
-
-        true
-    }
-
     pub fn nulls(&self) -> Option<NullBuffer> {
         let key_nulls = self.keys.nulls();
 
@@ -48,14 +33,9 @@ impl Dictionary<'_> {
             return key_nulls;
         }
 
-        let value_nulls = self.values.nulls();
-        let has_value_nulls = value_nulls
-            .as_ref()
-            .is_some_and(|nulls| nulls.null_count() > 0);
-        let has_invalid_value_indices =
-            !has_value_nulls && self.keys.has_value_index_out_of_bounds(self.values.len());
-
-        if has_value_nulls || has_invalid_value_indices {
+        if let Some(value_nulls) = self.values.nulls()
+            && value_nulls.null_count() > 0
+        {
             let key_length = self.keys.len();
 
             let mut builder: BooleanBufferBuilder = key_nulls.map_or_else(
@@ -73,10 +53,7 @@ impl Dictionary<'_> {
 
             for key_index in 0..key_length {
                 if let Some(value_index) = self.keys.get_value_index_for_key_index(key_index)
-                    && (value_index >= self.values.len()
-                        || value_nulls
-                            .as_ref()
-                            .is_some_and(|nulls| nulls.is_null(value_index)))
+                    && (value_index >= self.values.len() || value_nulls.is_null(value_index))
                 {
                     builder.set_bit(key_index, false);
                 }
@@ -120,7 +97,46 @@ impl Dictionary<'_> {
 }
 
 impl<'a> Dictionary<'a> {
-    pub fn new(keys: DictionaryKeyArray, values: DictionaryValueArray<'a>) -> Dictionary<'a> {
+    pub fn new(
+        keys: DictionaryKeyArray,
+        values: DictionaryValueArray<'a>,
+    ) -> Result<Dictionary<'a>, DictionaryError> {
+        match &keys {
+            DictionaryKeyArray::KeyArray(array) => {
+                for (key_index, value_index) in array.iter().enumerate() {
+                    if let Some(value_index) = value_index
+                        && value_index >= values.len()
+                    {
+                        return Err(DictionaryError::InvalidKey { key_index });
+                    }
+                }
+            }
+            DictionaryKeyArray::BooleanArray { .. } => {}
+            DictionaryKeyArray::SingleValue { value_index, .. } => {
+                if let Some(value_index) = value_index
+                    && *value_index >= values.len()
+                {
+                    return Err(DictionaryError::InvalidKey { key_index: 0 });
+                }
+            }
+            DictionaryKeyArray::UniqueValues { length, .. } => {
+                if *length > values.len() {
+                    return Err(DictionaryError::InvalidKey { key_index: *length });
+                }
+            }
+        }
+        Ok(Self { keys, values })
+    }
+
+    /// # Safety
+    ///
+    /// Validation that keys point to valid values is NOT performed. Only call
+    /// when prior validation has been performed to ensure keys point to valid
+    /// values (or null).
+    pub unsafe fn new_unvalidated(
+        keys: DictionaryKeyArray,
+        values: DictionaryValueArray<'a>,
+    ) -> Dictionary<'a> {
         Self { keys, values }
     }
 
@@ -160,14 +176,16 @@ impl<'a> Dictionary<'a> {
         key_count: usize,
         value: ValueOrRef<'a>,
     ) -> Dictionary<'a> {
-        Dictionary::new(
-            DictionaryKeyArray::SingleValue {
-                data_type: K::DATA_TYPE,
-                length: key_count,
-                value_index: Some(0),
-            },
-            vec![value].into(),
-        )
+        unsafe {
+            Dictionary::new_unvalidated(
+                DictionaryKeyArray::SingleValue {
+                    data_type: K::DATA_TYPE,
+                    length: key_count,
+                    value_index: Some(0),
+                },
+                vec![value].into(),
+            )
+        }
     }
 
     pub fn new_null_with_data_type(count: usize, data_type: DataType) -> Dictionary<'a> {
@@ -187,14 +205,16 @@ impl<'a> Dictionary<'a> {
     }
 
     pub fn new_null<K: ArrowDictionaryKeyType>(count: usize) -> Dictionary<'a> {
-        Dictionary::new(
-            DictionaryKeyArray::SingleValue {
-                data_type: K::DATA_TYPE,
-                length: count,
-                value_index: None,
-            },
-            vec![].into(),
-        )
+        unsafe {
+            Dictionary::new_unvalidated(
+                DictionaryKeyArray::SingleValue {
+                    data_type: K::DATA_TYPE,
+                    length: count,
+                    value_index: None,
+                },
+                vec![].into(),
+            )
+        }
     }
 
     pub fn values(&self) -> &DictionaryValueArray<'a> {
@@ -205,7 +225,7 @@ impl<'a> Dictionary<'a> {
         (self.keys, self.values)
     }
 
-    pub fn get_value(&self, key_index: usize) -> Result<ValueOrRef<'a>, ValueError> {
+    pub fn get_value(&self, key_index: usize) -> Result<ValueOrRef<'a>, DictionaryValueError> {
         if let Some(value_index) = self.get_value_index(key_index) {
             return self.values.get_value_at(value_index);
         }
@@ -239,6 +259,12 @@ impl_from_dictionary_array!(UInt16Type, UInt16);
 impl_from_dictionary_array!(UInt32Type, UInt32);
 impl_from_dictionary_array!(UInt64Type, UInt64);
 
+#[derive(Error, Debug, PartialEq)]
+pub enum DictionaryError {
+    #[error("Key index '{key_index}' refers to an invalid value")]
+    InvalidKey { key_index: usize },
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -250,7 +276,8 @@ mod tests {
         let dictionary = Dictionary::new(
             DictionaryKeyArray::from(Int8Array::from(vec![Some(0), Some(1), None, Some(0)])),
             DictionaryValueArray::from(vec![ValueOrRef::Integer(10), ValueOrRef::Null]),
-        );
+        )
+        .expect("valid");
 
         let nulls = dictionary.nulls().unwrap();
         assert_eq!(nulls.null_count(), 2);
@@ -272,7 +299,8 @@ mod tests {
         let dictionary = Dictionary::new(
             DictionaryKeyArray::from(&keys),
             DictionaryValueArray::from(vec![ValueOrRef::Integer(10), ValueOrRef::Null]),
-        );
+        )
+        .expect("valid");
 
         let nulls = dictionary.nulls().unwrap();
         assert_eq!(nulls.len(), 3);
@@ -282,19 +310,37 @@ mod tests {
     }
 
     /// Scenario: Valid, oversized, negative, and null keys reference a value table with no intrinsic nulls.
-    /// Guarantees: Invalid references resolve to Null and contribute null row validity without requiring constructor validation.
+    /// Guarantees: Invalid references resolve to Null but don't contribute to null row validity
     #[test]
     fn dictionary_handles_invalid_references_without_value_nulls() {
-        let dictionary = Dictionary::new(
-            DictionaryKeyArray::from(Int8Array::from(vec![Some(0), Some(1), Some(-1), None])),
-            DictionaryValueArray::from(vec![ValueOrRef::Integer(10)]),
+        assert!(
+            Dictionary::new(
+                DictionaryKeyArray::from(Int8Array::from(vec![Some(0), Some(1), None])),
+                DictionaryValueArray::from(vec![ValueOrRef::Integer(10)]),
+            )
+            .is_err()
         );
 
+        assert!(
+            Dictionary::new(
+                DictionaryKeyArray::from(Int8Array::from(vec![Some(0), Some(-1)])),
+                DictionaryValueArray::from(vec![ValueOrRef::Integer(10)]),
+            )
+            .is_err()
+        );
+
+        let dictionary = unsafe {
+            Dictionary::new_unvalidated(
+                DictionaryKeyArray::from(Int8Array::from(vec![Some(0), Some(1), Some(-1), None])),
+                DictionaryValueArray::from(vec![ValueOrRef::Integer(10)]),
+            )
+        };
+
         let nulls = dictionary.nulls().unwrap();
-        assert_eq!(nulls.null_count(), 3);
+        assert_eq!(nulls.null_count(), 1);
         assert!(nulls.is_valid(0));
-        assert!(nulls.is_null(1));
-        assert!(nulls.is_null(2));
+        assert!(nulls.is_valid(1));
+        assert!(nulls.is_valid(2));
         assert!(nulls.is_null(3));
         assert_eq!(dictionary.get_value(0), Ok(ValueOrRef::Integer(10)));
         assert_eq!(dictionary.get_value(1), Ok(ValueOrRef::Null));
@@ -306,10 +352,20 @@ mod tests {
     /// Guarantees: Value nulls and invalid references are combined into one effective row-validity buffer.
     #[test]
     fn dictionary_combines_value_nulls_and_invalid_references() {
-        let dictionary = Dictionary::new(
-            DictionaryKeyArray::from(Int8Array::from(vec![0, 1, 2])),
-            DictionaryValueArray::from(vec![ValueOrRef::Integer(10), ValueOrRef::Null]),
+        assert!(
+            Dictionary::new(
+                DictionaryKeyArray::from(Int8Array::from(vec![0, 1, 2])),
+                DictionaryValueArray::from(vec![ValueOrRef::Integer(10), ValueOrRef::Null]),
+            )
+            .is_err()
         );
+
+        let dictionary = unsafe {
+            Dictionary::new_unvalidated(
+                DictionaryKeyArray::from(Int8Array::from(vec![0, 1, 2])),
+                DictionaryValueArray::from(vec![ValueOrRef::Integer(10), ValueOrRef::Null]),
+            )
+        };
 
         let nulls = dictionary.nulls().unwrap();
         assert_eq!(nulls.null_count(), 2);
@@ -325,26 +381,29 @@ mod tests {
         let repeated_null = Dictionary::new(
             DictionaryKeyArray::from(Int8Array::from(vec![Some(0), Some(0)])),
             DictionaryValueArray::from(vec![ValueOrRef::Null, ValueOrRef::Integer(10)]),
-        );
-        assert!(repeated_null.is_null());
+        )
+        .expect("valid")
+        .nulls()
+        .expect("valid");
+        assert_eq!(repeated_null.null_count(), 2);
 
         let key_and_value_null = Dictionary::new(
             DictionaryKeyArray::from(Int8Array::from(vec![Some(0), None])),
             DictionaryValueArray::from(vec![ValueOrRef::Null, ValueOrRef::Integer(10)]),
-        );
-        assert!(key_and_value_null.is_null());
+        )
+        .expect("valid")
+        .nulls()
+        .expect("valid");
+        assert_eq!(key_and_value_null.null_count(), 2);
 
         let includes_non_null = Dictionary::new(
             DictionaryKeyArray::from(Int8Array::from(vec![Some(0), Some(1)])),
             DictionaryValueArray::from(vec![ValueOrRef::Null, ValueOrRef::Integer(10)]),
-        );
-        assert!(!includes_non_null.is_null());
-
-        let empty = Dictionary::new(
-            DictionaryKeyArray::from(Int8Array::from(Vec::<i8>::new())),
-            DictionaryValueArray::from(Vec::new()),
-        );
-        assert!(empty.is_null());
+        )
+        .expect("valid")
+        .nulls()
+        .expect("valid");
+        assert_eq!(includes_non_null.null_count(), 1);
     }
 
     /// Scenario: Scalar and null dictionaries are synthesized for a requested Arrow key type.
@@ -355,14 +414,13 @@ mod tests {
             Dictionary::new_scalar_with_data_type(DataType::UInt16, 3, ValueOrRef::Integer(42));
         assert_eq!(scalar.len(), 3);
         assert_eq!(scalar.keys().data_type(), DataType::UInt16);
-        assert!(!scalar.is_null());
+        assert!(scalar.nulls().is_none());
         assert_eq!(scalar.get_value(2), Ok(ValueOrRef::Integer(42)));
         assert_eq!(scalar.get_value(3), Ok(ValueOrRef::Null));
 
         let null = Dictionary::new_null_with_data_type(3, DataType::Int32);
         assert_eq!(null.len(), 3);
         assert_eq!(null.keys().data_type(), DataType::Int32);
-        assert!(null.is_null());
         assert_eq!(null.nulls().unwrap().null_count(), 3);
         assert_eq!(null.get_value(0), Ok(ValueOrRef::Null));
     }
@@ -388,11 +446,12 @@ mod tests {
         let dictionary = Dictionary::new(
             DictionaryKeyArray::from(Int8Array::from(vec![0])),
             DictionaryValueArray::from(&UInt64Array::from(vec![u64::MAX])),
-        );
+        )
+        .expect("valid");
 
         assert_eq!(
             dictionary.get_value(0),
-            Err(ValueError::IntegerConversionFailure {
+            Err(DictionaryValueError::IntegerConversionFailure {
                 original_value: u64::MAX,
             })
         );
