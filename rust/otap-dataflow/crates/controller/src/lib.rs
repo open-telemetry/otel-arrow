@@ -379,9 +379,8 @@ struct PreparedControllerExtension {
 }
 
 struct DeclaredTopics<PData: 'static + Clone + Send + Sync + std::fmt::Debug> {
-    broker: TopicBroker<PData>,
-    global_names: HashMap<TopicName, TopicName>,
-    group_names: HashMap<(PipelineGroupId, TopicName), TopicName>,
+    global_bindings: HashMap<TopicName, PipelineTopicBinding<PData>>,
+    group_bindings: HashMap<PipelineGroupId, HashMap<TopicName, PipelineTopicBinding<PData>>>,
     inferred_mode_reports: Vec<InferredTopicModeReport>,
 }
 
@@ -1123,20 +1122,23 @@ impl<
         name: TopicName,
         spec: &TopicSpec,
         inferred_mode: InferredTopicMode,
-    ) -> Result<(), Error> {
+    ) -> Result<PipelineTopicBinding<PData>, Error> {
         Self::validate_topic_runtime_support(&name, spec, inferred_mode)?;
         let opts = Self::map_topic_spec_to_options(spec, inferred_mode);
-        match spec.backend {
-            TopicBackendKind::InMemory => {
-                _ = broker
-                    .create_topic(name, opts, InMemoryBackend)
-                    .map_err(|e| Error::PipelineRuntimeError {
-                        source: Box::new(e),
-                    })?;
-                Ok(())
-            }
+        let handle = match spec.backend {
+            TopicBackendKind::InMemory => broker
+                .create_topic(name, opts, InMemoryBackend)
+                .map_err(|e| Error::PipelineRuntimeError {
+                    source: Box::new(e),
+                })?,
             TopicBackendKind::Quiver => unreachable!("unsupported backend must be rejected above"),
-        }
+        };
+        let handle = handle.with_default_publish_outcome_config(
+            Self::map_topic_spec_to_publish_outcome_config(spec),
+        );
+        Ok(PipelineTopicBinding::from(handle)
+            .with_default_queue_on_full(spec.policies.balanced.on_full.clone())
+            .with_default_ack_propagation_mode(spec.policies.ack_propagation.mode))
     }
 
     fn parse_topic_name(raw: &str) -> Result<TopicName, Error> {
@@ -1154,6 +1156,9 @@ impl<
         let (inferred_modes, mut inferred_mode_reports) =
             Self::infer_topic_modes(config, &global_names, &group_names)?;
         let default_selection_policy = config.engine.topics.impl_selection;
+        let mut global_bindings = HashMap::new();
+        let mut group_bindings =
+            HashMap::<PipelineGroupId, HashMap<TopicName, PipelineTopicBinding<PData>>>::new();
 
         for (topic_name, spec) in &config.topics {
             let declared_name = global_names
@@ -1180,7 +1185,8 @@ impl<
                 selection_policy,
                 selected_mode,
             );
-            Self::declare_topic(&broker, declared_name, spec, selected_mode)?;
+            let binding = Self::declare_topic(&broker, declared_name, spec, selected_mode)?;
+            _ = global_bindings.insert(topic_name.clone(), binding);
         }
 
         for (group_id, group_cfg) in &config.groups {
@@ -1210,25 +1216,27 @@ impl<
                     selection_policy,
                     selected_mode,
                 );
-                Self::declare_topic(&broker, declared_name, spec, selected_mode)?;
+                let binding = Self::declare_topic(&broker, declared_name, spec, selected_mode)?;
+                _ = group_bindings
+                    .entry(group_id.clone())
+                    .or_default()
+                    .insert(topic_name.clone(), binding);
             }
         }
 
         Ok(DeclaredTopics {
-            broker,
-            global_names,
-            group_names,
+            global_bindings,
+            group_bindings,
             inferred_mode_reports,
         })
     }
 
     fn build_pipeline_topic_set(
-        config: &OtelDataflowSpec,
         declared: &DeclaredTopics<PData>,
         pipeline_group_id: &PipelineGroupId,
         pipeline_id: &PipelineId,
         core_id: usize,
-    ) -> Result<TopicSet<PData>, Error> {
+    ) -> TopicSet<PData> {
         let set_name = format!(
             "{}::{}::core-{}",
             pipeline_group_id.as_ref(),
@@ -1237,52 +1245,18 @@ impl<
         );
         let set = TopicSet::new(set_name);
 
-        for (global_topic_name, topic_spec) in &config.topics {
-            if let Some(declared_name) = declared.global_names.get(global_topic_name) {
-                let handle = declared
-                    .broker
-                    .get_topic_required(declared_name)
-                    .map_err(|e| Error::PipelineRuntimeError {
-                        source: Box::new(e),
-                    })?;
-                let handle = handle.with_default_publish_outcome_config(
-                    Self::map_topic_spec_to_publish_outcome_config(topic_spec),
-                );
-                let binding = PipelineTopicBinding::from(handle)
-                    .with_default_queue_on_full(topic_spec.policies.balanced.on_full.clone())
-                    .with_default_ack_propagation_mode(topic_spec.policies.ack_propagation.mode);
-                _ = set.insert(global_topic_name.clone(), binding);
+        for (topic_name, binding) in &declared.global_bindings {
+            _ = set.insert(topic_name.clone(), binding.clone());
+        }
+
+        if let Some(group_bindings) = declared.group_bindings.get(pipeline_group_id) {
+            for (topic_name, binding) in group_bindings {
+                // Group-local declarations override globals with the same local name.
+                _ = set.insert(topic_name.clone(), binding.clone());
             }
         }
 
-        if let Some(group_cfg) = config.groups.get(pipeline_group_id) {
-            for (group_topic_name, topic_spec) in &group_cfg.topics {
-                if let Some(declared_name) = declared
-                    .group_names
-                    .get(&(pipeline_group_id.clone(), group_topic_name.clone()))
-                {
-                    let handle =
-                        declared
-                            .broker
-                            .get_topic_required(declared_name)
-                            .map_err(|e| Error::PipelineRuntimeError {
-                                source: Box::new(e),
-                            })?;
-                    let handle = handle.with_default_publish_outcome_config(
-                        Self::map_topic_spec_to_publish_outcome_config(topic_spec),
-                    );
-                    let binding = PipelineTopicBinding::from(handle)
-                        .with_default_queue_on_full(topic_spec.policies.balanced.on_full.clone())
-                        .with_default_ack_propagation_mode(
-                            topic_spec.policies.ack_propagation.mode,
-                        );
-                    // Group-local declarations override globals with the same local name.
-                    _ = set.insert(group_topic_name.clone(), binding);
-                }
-            }
-        }
-
-        Ok(set)
+        set
     }
 
     fn run_with_mode(
@@ -3459,14 +3433,12 @@ groups: {{}}
         declared: &DeclaredTopics<()>,
         topic_name: &str,
     ) -> otel_arrow_dfe_engine::topic::TopicHandle<()> {
-        let declared_name = declared
-            .global_names
-            .get(topic_name)
-            .expect("global topic must be declared");
         declared
-            .broker
-            .get_topic_required(declared_name)
-            .expect("declared topic must exist in broker")
+            .global_bindings
+            .get(topic_name)
+            .expect("global topic must be declared")
+            .handle()
+            .clone()
     }
 
     fn group_topic_handle(
@@ -3474,18 +3446,13 @@ groups: {{}}
         group_id: &str,
         topic_name: &str,
     ) -> otel_arrow_dfe_engine::topic::TopicHandle<()> {
-        let key = (
-            PipelineGroupId::from(group_id.to_owned()),
-            TopicName::parse(topic_name).expect("topic name must parse"),
-        );
-        let declared_name = declared
-            .group_names
-            .get(&key)
-            .expect("group topic must be declared");
         declared
-            .broker
-            .get_topic_required(declared_name)
-            .expect("declared topic must exist in broker")
+            .group_bindings
+            .get(group_id)
+            .and_then(|bindings| bindings.get(topic_name))
+            .expect("group topic must be declared")
+            .handle()
+            .clone()
     }
 
     #[test]
@@ -4450,7 +4417,16 @@ groups:
         let config = OtelDataflowSpec::from_yaml(yaml).expect("test config should parse");
         let declared = Controller::<()>::declare_topics(&config).expect("topics should declare");
 
-        assert_eq!(declared.broker.topic_names().len(), 4);
+        assert_eq!(declared.global_bindings.len(), 2);
+        assert_eq!(declared.group_bindings.len(), 1);
+        assert_eq!(
+            declared
+                .group_bindings
+                .get("g1")
+                .expect("g1 topic bindings should exist")
+                .len(),
+            2
+        );
     }
 
     #[test]
@@ -5319,14 +5295,7 @@ groups:
         let declared = Controller::<()>::declare_topics(&config).expect("topics should declare");
         let group_id: PipelineGroupId = "g1".into();
         let pipeline_id: PipelineId = "p1".into();
-        let set = Controller::<()>::build_pipeline_topic_set(
-            &config,
-            &declared,
-            &group_id,
-            &pipeline_id,
-            0,
-        )
-        .expect("topic set should build");
+        let set = Controller::<()>::build_pipeline_topic_set(&declared, &group_id, &pipeline_id, 0);
 
         let local_block = set
             .get_required(TopicName::from("local_block"))

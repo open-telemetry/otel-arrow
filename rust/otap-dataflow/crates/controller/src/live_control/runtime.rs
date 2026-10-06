@@ -106,7 +106,6 @@ impl<
             core_id,
             deployment_generation,
         };
-        let live_config = self.engine_config_snapshot();
         let mut pipeline_ctx = self.controller_context.pipeline_context_with_placement(
             pipeline_key.pipeline_group_id.clone(),
             pipeline_key.pipeline_id.clone(),
@@ -117,12 +116,11 @@ impl<
             core_placement.numa_node_id,
         );
         let topic_set = Controller::<PData>::build_pipeline_topic_set(
-            &live_config,
             &self.declared_topics,
             &pipeline_key.pipeline_group_id,
             &pipeline_key.pipeline_id,
             pipeline_key.core_id,
-        )?;
+        );
         pipeline_ctx.set_topic_set(topic_set);
         pipeline_ctx
             .set_listener_group_snapshot_arc(Arc::clone(&deployment.listener_group_snapshot));
