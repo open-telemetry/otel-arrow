@@ -1,4 +1,4 @@
-name: Oracle Receiver Integration
+name: Database Receiver Integration
 
 permissions:
   contents: read
@@ -10,7 +10,7 @@ on:
   merge_group:
 
 concurrency:
-  group: oracle-receiver-integration-${{ github.event.pull_request.number || github.ref }}
+  group: database-receiver-integration-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 env:
@@ -18,10 +18,10 @@ env:
 
 jobs:
   changes:
-    name: Detect Oracle changes
+    name: Detect database receiver changes
     runs-on: ubuntu-latest
     outputs:
-      oracle: ${{ steps.filter.outputs.oracle }}
+      database: ${{ steps.filter.outputs.database }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -43,16 +43,16 @@ jobs:
           fi
 
           if git diff --name-only "$base" "$GITHUB_SHA" | grep -Eq \
-            '^(\.github/workflows/oracle-receiver-integration\.yml|rust/otap-dataflow/(Cargo\.(toml|lock)|configs/oracle-oci-console\.yaml|crates/(scraper/|contrib-nodes/(Cargo\.toml|examples/oracle_load_generator\.rs|src/receivers/(mod\.rs|oracle_receiver/)))))'; then
-            echo "oracle=true" >> "$GITHUB_OUTPUT"
+            '^(\.github/workflows/database-receiver-integration\.yml|rust/otap-dataflow/(Cargo\.(toml|lock)|configs/oracle-oci-console\.yaml|crates/(scraper/|contrib-nodes/(Cargo\.toml|examples/oracle_load_generator\.rs|src/receivers/(mod\.rs|oracle_receiver/)))))'; then
+            echo "database=true" >> "$GITHUB_OUTPUT"
           else
-            echo "oracle=false" >> "$GITHUB_OUTPUT"
+            echo "database=false" >> "$GITHUB_OUTPUT"
           fi
 
-  oracle-integration:
-    name: Run Oracle receiver integration
+  database-integration:
+    name: Run database receiver integration (Oracle)
     needs: changes
-    if: needs.changes.outputs.oracle == 'true'
+    if: needs.changes.outputs.database == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     services:
@@ -148,25 +148,25 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: oracle-receiver-integration-logs
+          name: database-receiver-integration-oracle-logs
           path: oracle-container.log
           if-no-files-found: ignore
           retention-days: 14
 
-  oracle-integration-required:
-    name: Oracle receiver integration required
+  database-integration-required:
+    name: Database receiver integration required
     if: always()
     needs:
       - changes
-      - oracle-integration
+      - database-integration
     runs-on: ubuntu-latest
     steps:
       - name: Enforce relevant integration result
         shell: bash
         env:
-          RELEVANT: ${{ needs.changes.outputs.oracle }}
+          RELEVANT: ${{ needs.changes.outputs.database }}
           CHANGE_RESULT: ${{ needs.changes.result }}
-          INTEGRATION_RESULT: ${{ needs.oracle-integration.result }}
+          INTEGRATION_RESULT: ${{ needs.database-integration.result }}
         run: |
           set -euo pipefail
           if [[ "$CHANGE_RESULT" != "success" ]]; then
@@ -174,7 +174,7 @@ jobs:
             exit 1
           fi
           if [[ "$RELEVANT" == "true" && "$INTEGRATION_RESULT" != "success" ]]; then
-            echo "Oracle integration did not succeed: $INTEGRATION_RESULT" >&2
+            echo "Database receiver integration did not succeed: $INTEGRATION_RESULT" >&2
             exit 1
           fi
-          echo "Oracle integration gate passed."
+          echo "Database receiver integration gate passed."

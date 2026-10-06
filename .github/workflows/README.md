@@ -3,8 +3,8 @@
 This directory contains the repository's main CI workflows:
 
 - [`rust-ci.yml`](rust-ci.yml): Rust validation.
-- [`oracle-receiver-integration.yml`](oracle-receiver-integration.yml):
-  Path-aware Oracle receiver integration testing.
+- [`database-receiver-integration.yml`](database-receiver-integration.yml):
+  Path-aware database receiver integration testing, currently covering Oracle.
 - [`go-ci.yml`](go-ci.yml): Go validation and CodeQL.
 - [`repo-lint.yaml`](repo-lint.yaml): Repository lint and sanity checks.
 - [`changelog.yml`](changelog.yml): Changelog validation.
@@ -12,7 +12,7 @@ This directory contains the repository's main CI workflows:
 
 ## Event model
 
-| Event | Rust | Oracle | Go | Repository |
+| Event | Rust | Database receivers | Go | Repository |
 | --- | --- | --- | --- | --- |
 | Pull request | Required and non-required jobs | Required for Oracle changes | Required jobs | Lint and changelog |
 | Merge queue | Required jobs and coverage | Required for Oracle changes | Required jobs | Lint and changelog |
