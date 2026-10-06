@@ -112,7 +112,7 @@ impl<'a> Dictionary<'a> {
                 }
             }
             DictionaryKeyArray::BooleanArray { .. } => {
-                if values.len() > 2 {
+                if values.len() != 2 {
                     return Err(DictionaryError::InvalidBooleanValues);
                 }
             }
@@ -296,7 +296,7 @@ pub enum DictionaryError {
     #[error("Key index '{key_index}' refers to an invalid value")]
     InvalidKey { key_index: usize },
 
-    #[error("Boolean dictionary should have two defined values")]
+    #[error("Boolean dictionary should have exactly two values")]
     InvalidBooleanValues,
 
     #[error("Data type '{data_type}' is not supported for keys")]
@@ -462,6 +462,26 @@ mod tests {
         assert_eq!(null.keys().data_type(), DataType::Int32);
         assert_eq!(null.nulls().unwrap().null_count(), 3);
         assert_eq!(null.get_value(0), Ok(ValueOrRef::Null));
+    }
+
+    /// Scenario: Boolean dictionary keys are paired with zero- or one-entry value tables.
+    /// Guarantees: The checked constructor rejects both incomplete tables because Boolean keys can reference indexes zero and one.
+    #[test]
+    fn boolean_dictionary_rejects_incomplete_value_tables() {
+        let keys = DictionaryKeyArray::BooleanArray {
+            data_type: DataType::Int8,
+            values: BooleanArray::from(vec![true]),
+        };
+
+        for values in [
+            Vec::<ValueOrRef<'static>>::new(),
+            vec![ValueOrRef::Boolean(false)],
+        ] {
+            assert_eq!(
+                Dictionary::new(keys.clone(), values.into()),
+                Err(DictionaryError::InvalidBooleanValues)
+            );
+        }
     }
 
     /// Scenario: A nullable Boolean array is encoded as a dictionary using a generic Arrow key type.
