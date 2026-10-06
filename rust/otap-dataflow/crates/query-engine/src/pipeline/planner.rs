@@ -182,49 +182,6 @@ impl PipelinePlanner {
         self
     }
 
-    /// Attempt to narrow the record type based on a branch condition (smart-cast).
-    ///
-    /// If the condition is a type check like `is Log`, `is Metric`, `is Span`, or a
-    /// metric subtype check like `is Gauge`, the returned `RecordType` will carry a
-    /// narrowed `SignalContext`. Otherwise returns the current record type unchanged.
-    fn try_narrow_record_type(&self, condition: &LogicalExpression) -> RecordType {
-        if let LogicalExpression::EqualTo(eq) = condition
-            && let (
-                ScalarExpression::GetRecordType(_),
-                ScalarExpression::Static(StaticScalarExpression::String(typename)),
-            ) = (eq.get_left(), eq.get_right())
-        {
-            let narrowed = match typename.get_value() {
-                "Log" => Some(SignalContext::Single(SignalKind::Logs)),
-                "Metric" => Some(SignalContext::Single(SignalKind::Metrics(
-                    MetricTypeContext::All,
-                ))),
-                "Span" => Some(SignalContext::Single(SignalKind::Traces)),
-                // Metric subtypes narrow to both the signal and metric type
-                "Gauge" => Some(SignalContext::Single(SignalKind::Metrics(
-                    MetricTypeContext::Single(MetricType::Gauge),
-                ))),
-                "Sum" => Some(SignalContext::Single(SignalKind::Metrics(
-                    MetricTypeContext::Single(MetricType::Sum),
-                ))),
-                "Histogram" => Some(SignalContext::Single(SignalKind::Metrics(
-                    MetricTypeContext::Single(MetricType::Histogram),
-                ))),
-                "ExponentialHistogram" => Some(SignalContext::Single(SignalKind::Metrics(
-                    MetricTypeContext::Single(MetricType::ExponentialHistogram),
-                ))),
-                "Summary" => Some(SignalContext::Single(SignalKind::Metrics(
-                    MetricTypeContext::Single(MetricType::Summary),
-                ))),
-                _ => None,
-            };
-            if let Some(signal_ctx) = narrowed {
-                return RecordType::Signal(signal_ctx);
-            }
-        }
-        self.record_type.clone()
-    }
-
     /// Create pipeline stages from the pipeline definition.
     ///
     /// # Parameters
@@ -437,18 +394,7 @@ impl PipelinePlanner {
                     let mut default_branch = None;
                     let mut pipeline_branches = vec![];
                     for (i, branch) in branch_expr.get_branches().iter().enumerate() {
-                        // Try to narrow the signal context based on the branch
-                        // condition (smart-cast). For example, if the condition is
-                        // `is Log`, the inner pipeline uses SignalContext::Single(Logs).
-                        let narrowed_record_type = match branch.get_condition() {
-                            Some(condition) => self.try_narrow_record_type(condition),
-                            None => self.record_type.clone(),
-                        };
-                        let branch_planner = Self::new_with_record_type(narrowed_record_type)
-                            .with_filter_attribute_keys_case_sensitive(
-                                self.filter_attribute_keys_case_sensitive,
-                            );
-                        let pipeline_stages = branch_planner.plan_data_exprs(
+                        let pipeline_stages = self.plan_data_exprs(
                             branch.get_expressions(),
                             functions,
                             session_ctx,
