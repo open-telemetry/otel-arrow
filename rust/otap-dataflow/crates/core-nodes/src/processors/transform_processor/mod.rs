@@ -151,8 +151,10 @@ impl TransformProcessor {
                     .pipeline;
                 let signal_context =
                     SignalContext::try_infer(&pipeline_expr).map_err(map_pipeline_err)?;
-                let mut options = PipelineOptions::new_with_signal_context(signal_context);
-                options.filter_attribute_keys_case_sensitive = filter_attribute_keys_case_sensitive;
+                let options = PipelineOptions {
+                    signal_context,
+                    filter_attribute_keys_case_sensitive,
+                };
                 let pipeline = Pipeline::new_with_options(pipeline_expr, options);
                 (vec![Transform { pipeline }], TransformLanguage::Kql)
             }
@@ -162,8 +164,10 @@ impl TransformProcessor {
                     .pipeline;
                 let signal_context =
                     SignalContext::try_infer(&pipeline_expr).map_err(map_pipeline_err)?;
-                let mut options = PipelineOptions::new_with_signal_context(signal_context);
-                options.filter_attribute_keys_case_sensitive = filter_attribute_keys_case_sensitive;
+                let options = PipelineOptions {
+                    signal_context,
+                    filter_attribute_keys_case_sensitive,
+                };
                 let pipeline = Pipeline::new_with_options(pipeline_expr, options);
                 (vec![Transform { pipeline }], TransformLanguage::Opl)
             }

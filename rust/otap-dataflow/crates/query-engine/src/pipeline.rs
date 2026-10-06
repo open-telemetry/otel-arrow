@@ -298,17 +298,6 @@ pub struct PipelineOptions {
     pub signal_context: SignalContext,
 }
 
-impl PipelineOptions {
-    /// Create options with the given signal context.
-    #[must_use]
-    pub fn new_with_signal_context(signal_context: SignalContext) -> Self {
-        Self {
-            signal_context,
-            ..Default::default()
-        }
-    }
-}
-
 impl Default for PipelineOptions {
     fn default() -> Self {
         Self {
@@ -334,14 +323,15 @@ pub struct Pipeline {
 impl Pipeline {
     /// Create a new [`Pipeline`] instance that will evaluate the passed [`PipelineExpression`].
     ///
-    /// Create a new [`Pipeline`] with signal context inferred from the query source keyword.
-    ///
     /// # Errors
     ///
     /// Returns an error if the signal type cannot be determined from the query source.
     pub fn try_new(pipeline_definition: PipelineExpression) -> Result<Self> {
         let signal_context = SignalContext::try_infer(&pipeline_definition)?;
-        let options = PipelineOptions::new_with_signal_context(signal_context);
+        let options = PipelineOptions {
+            signal_context,
+            ..Default::default()
+        };
         Ok(Self::new_with_options(pipeline_definition, options))
     }
 
