@@ -55,6 +55,7 @@ queries:
           AND "metric_attributes.otel_scope_name" = 'node.output'
           AND "metric_attributes.signal" = 'logs'
           AND "metric_attributes.component_name" = 'load-generator'
+          AND "metric_attributes.outcome" = 'success'
           AND timestamp BETWEEN start_ts AND stop_ts
       ),
       samples AS (

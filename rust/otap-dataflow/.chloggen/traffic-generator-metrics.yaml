@@ -4,4 +4,4 @@ note: >-
   Migrated traffic generator receiver telemetry from flat counters to dimensioned metric populations with enum attributes.
 issues: [3530]
 subtext: |
-  Migration: Update queries: runs -> `smooth.runs.terminations{outcome}`, sends -> `smooth.payload.sends.attempts{attempt, outcome}`. Removed `signals.produced`, `completion.completions`, and `logs_bytes_produced` (use `node.output.items`, `node.output.messages`, and `node.output.size` instead).
+  Migration: Update queries: runs -> `smooth.runs.terminations{outcome}`, sends -> `smooth.payload.sends.attempts{attempt, outcome}`. Replace `logs_produced`, `spans_produced`, and `metrics_produced` with `node.output.items{signal, outcome}`; replace `completion.acks`/`completion.nacks` with `node.output.messages{signal, outcome}`; replace `logs_bytes_produced` with `node.output.size` and enable the corresponding telemetry measurements.

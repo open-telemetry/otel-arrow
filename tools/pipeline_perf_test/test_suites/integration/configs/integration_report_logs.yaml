@@ -119,6 +119,7 @@ queries:
                 "metric_attributes.otel_scope_name" = 'node.output'
                 AND "metric_attributes.signal" = 'logs'
                 AND "metric_attributes.component_name" = 'load-generator'
+                AND "metric_attributes.outcome" = 'success'
               )
             ) AND timestamp > (
                 SELECT CAST("test.start" AS TIMESTAMP WITH TIME ZONE)
