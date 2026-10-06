@@ -3,6 +3,8 @@
 This directory contains the repository's main CI workflows:
 
 - [`rust-ci.yml`](rust-ci.yml): Rust validation.
+- [`oracle-receiver-integration.yml`](oracle-receiver-integration.yml):
+  Path-aware Oracle receiver integration testing.
 - [`go-ci.yml`](go-ci.yml): Go validation and CodeQL.
 - [`repo-lint.yaml`](repo-lint.yaml): Repository lint and sanity checks.
 - [`changelog.yml`](changelog.yml): Changelog validation.
@@ -10,11 +12,11 @@ This directory contains the repository's main CI workflows:
 
 ## Event model
 
-| Event | Rust | Go | Repository |
-| --- | --- | --- | --- |
-| Pull request | Required and non-required jobs | Required jobs | Lint and changelog |
-| Merge queue | Required jobs and coverage | Required jobs | Lint and changelog |
-| Merge to `main` | Shared-cache maintenance | CodeQL | - |
+| Event | Rust | Oracle | Go | Repository |
+| --- | --- | --- | --- | --- |
+| Pull request | Required and non-required jobs | Required for Oracle changes | Required jobs | Lint and changelog |
+| Merge queue | Required jobs and coverage | Required for Oracle changes | Required jobs | Lint and changelog |
+| Merge to `main` | Shared-cache maintenance | - | CodeQL | - |
 
 Pull requests provide broad feedback. Merge-queue runs validate what is
 required for merging and upload complete Rust and Go coverage for the commit

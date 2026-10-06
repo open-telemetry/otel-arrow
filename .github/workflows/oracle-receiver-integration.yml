@@ -1,0 +1,180 @@
+name: Oracle Receiver Integration
+
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    branches:
+      - main
+  merge_group:
+
+concurrency:
+  group: oracle-receiver-integration-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  changes:
+    name: Detect Oracle changes
+    runs-on: ubuntu-latest
+    outputs:
+      oracle: ${{ steps.filter.outputs.oracle }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Detect relevant paths
+        id: filter
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            base="$PR_BASE_SHA"
+          else
+            base="$MERGE_GROUP_BASE_SHA"
+          fi
+
+          if git diff --name-only "$base" "$GITHUB_SHA" | grep -Eq \
+            '^(\.github/workflows/oracle-receiver-integration\.yml|rust/otap-dataflow/(Cargo\.(toml|lock)|configs/oracle-oci-console\.yaml|crates/(scraper/|contrib-nodes/(Cargo\.toml|examples/oracle_load_generator\.rs|src/receivers/(mod\.rs|oracle_receiver/)))))'; then
+            echo "oracle=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "oracle=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  oracle-integration:
+    name: Run Oracle receiver integration
+    needs: changes
+    if: needs.changes.outputs.oracle == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    services:
+      oracle:
+        image: gvenzl/oracle-free@sha256:0489e0c1f20b2ca632075653c66f284234689ccff62c9a39809d9a5b3e7c1642
+        env:
+          ORACLE_RANDOM_PASSWORD: "true"
+          APP_USER: OTAPTEST
+          APP_USER_PASSWORD: CiOraclePass_3821
+        ports:
+          - 1521/tcp
+        options: >-
+          --health-cmd healthcheck.sh
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: true
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: ./rust/otap-dataflow
+          cache-bin: false
+          save-if: false
+      - name: Install Oracle Instant Client
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes libaio1t64 unzip
+          curl --fail --location --silent --show-error \
+            https://download.oracle.com/otn_software/linux/instantclient/2326000/instantclient-basiclite-linux.x64-23.26.0.0.0.zip \
+            --output "$RUNNER_TEMP/instantclient.zip"
+          echo "94a458f43873a420e5be6fdf18e9a85df0393b4a1e2999ed406d8ec50f235e71  $RUNNER_TEMP/instantclient.zip" \
+            | sha256sum --check
+          unzip -q "$RUNNER_TEMP/instantclient.zip" -d "$RUNNER_TEMP"
+          echo "ORACLE_INSTANT_CLIENT_DIR=$RUNNER_TEMP/instantclient_23_26" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$RUNNER_TEMP/instantclient_23_26" >> "$GITHUB_ENV"
+      - name: Create Oracle credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s' 'OTAPTEST' > "$RUNNER_TEMP/oracle-username"
+          printf '%s' 'CiOraclePass_3821' > "$RUNNER_TEMP/oracle-password"
+          chmod 600 "$RUNNER_TEMP/oracle-username" "$RUNNER_TEMP/oracle-password"
+          echo "ORACLE_USERNAME_FILE=$RUNNER_TEMP/oracle-username" >> "$GITHUB_ENV"
+          echo "ORACLE_PASSWORD_FILE=$RUNNER_TEMP/oracle-password" >> "$GITHUB_ENV"
+      - name: Seed Oracle source data
+        env:
+          ORACLE_USERNAME: OTAPTEST
+          ORACLE_PWD: CiOraclePass_3821
+          ORACLE_CONNECT_STRING: //127.0.0.1:${{ job.services.oracle.ports[1521] }}/FREEPDB1
+        shell: bash
+        run: |
+          cargo run --locked \
+            -p otel-arrow-dfe-contrib-nodes \
+            --features oracle-receiver \
+            --example oracle_load_generator \
+            -- \
+            --rows 10 \
+            --collision-size 2 \
+            --reset
+        working-directory: ./rust/otap-dataflow
+      - name: Run live Oracle receiver test
+        env:
+          OTAP_ORACLE_RECEIVER_E2E: "1"
+          ORACLE_CONNECT_STRING: //127.0.0.1:${{ job.services.oracle.ports[1521] }}/FREEPDB1
+        shell: bash
+        run: |
+          cargo test --locked \
+            -p otel-arrow-dfe-contrib-nodes \
+            --features oracle-receiver \
+            emits_oracle_rows_when_live_test_is_enabled \
+            -- \
+            --nocapture \
+            --test-threads=1
+        working-directory: ./rust/otap-dataflow
+      - name: Capture Oracle logs
+        if: failure()
+        shell: bash
+        run: |
+          container_id="$(docker ps --format '{{.ID}} {{.Image}}' \
+            | awk '/gvenzl\/oracle-free/ { print $1; exit }')"
+          if [[ -n "$container_id" ]]; then
+            docker logs "$container_id" > oracle-container.log 2>&1
+          fi
+      - name: Upload Oracle diagnostics
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: oracle-receiver-integration-logs
+          path: oracle-container.log
+          if-no-files-found: ignore
+          retention-days: 14
+
+  oracle-integration-required:
+    name: Oracle receiver integration required
+    if: always()
+    needs:
+      - changes
+      - oracle-integration
+    runs-on: ubuntu-latest
+    steps:
+      - name: Enforce relevant integration result
+        shell: bash
+        env:
+          RELEVANT: ${{ needs.changes.outputs.oracle }}
+          CHANGE_RESULT: ${{ needs.changes.result }}
+          INTEGRATION_RESULT: ${{ needs.oracle-integration.result }}
+        run: |
+          set -euo pipefail
+          if [[ "$CHANGE_RESULT" != "success" ]]; then
+            echo "Oracle path detection did not succeed: $CHANGE_RESULT" >&2
+            exit 1
+          fi
+          if [[ "$RELEVANT" == "true" && "$INTEGRATION_RESULT" != "success" ]]; then
+            echo "Oracle integration did not succeed: $INTEGRATION_RESULT" >&2
+            exit 1
+          fi
+          echo "Oracle integration gate passed."
