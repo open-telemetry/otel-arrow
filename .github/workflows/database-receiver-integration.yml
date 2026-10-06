@@ -55,25 +55,27 @@ jobs:
     if: needs.changes.outputs.database == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    services:
-      oracle:
-        image: gvenzl/oracle-free@sha256:0489e0c1f20b2ca632075653c66f284234689ccff62c9a39809d9a5b3e7c1642
-        env:
-          ORACLE_RANDOM_PASSWORD: "true"
-          APP_USER: OTAPTEST
-          APP_USER_PASSWORD: CiOraclePass_3821
-        ports:
-          - 1521/tcp
-        options: >-
-          --health-cmd healthcheck.sh
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           submodules: true
           persist-credentials: false
+      - name: Start Oracle
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --detach \
+            --name oracle-receiver-ci \
+            --publish 127.0.0.1:1521:1521 \
+            --env ORACLE_RANDOM_PASSWORD=true \
+            --env APP_USER=OTAPTEST \
+            --env APP_USER_PASSWORD=CiOraclePass_3821 \
+            --health-cmd healthcheck.sh \
+            --health-interval 10s \
+            --health-timeout 5s \
+            --health-retries 60 \
+            gvenzl/oracle-free@sha256:0489e0c1f20b2ca632075653c66f284234689ccff62c9a39809d9a5b3e7c1642
+          echo "ORACLE_CONNECT_STRING=//127.0.0.1:1521/FREEPDB1" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
           toolchain: stable
@@ -104,11 +106,28 @@ jobs:
           chmod 600 "$RUNNER_TEMP/oracle-password"
           echo "ORACLE_USERNAME=OTAPTEST" >> "$GITHUB_ENV"
           echo "ORACLE_PASSWORD_FILE=$RUNNER_TEMP/oracle-password" >> "$GITHUB_ENV"
+      - name: Wait for Oracle
+        shell: bash
+        run: |
+          set -euo pipefail
+          for _ in {1..60}; do
+            state="$(docker inspect --format '{{.State.Status}}' oracle-receiver-ci)"
+            health="$(docker inspect --format '{{.State.Health.Status}}' oracle-receiver-ci)"
+            if [[ "$health" == "healthy" ]]; then
+              exit 0
+            fi
+            if [[ "$state" != "running" ]]; then
+              break
+            fi
+            sleep 10
+          done
+          docker logs oracle-receiver-ci > oracle-container.log 2>&1 || true
+          echo "Oracle did not become healthy." >&2
+          exit 1
       - name: Seed Oracle source data
         env:
           ORACLE_USERNAME: OTAPTEST
           ORACLE_PWD: CiOraclePass_3821
-          ORACLE_CONNECT_STRING: //127.0.0.1:${{ job.services.oracle.ports[1521] }}/FREEPDB1
         shell: bash
         run: |
           cargo run --locked \
@@ -123,7 +142,6 @@ jobs:
       - name: Run live Oracle receiver test
         env:
           OTAP_ORACLE_RECEIVER_E2E: "1"
-          ORACLE_CONNECT_STRING: //127.0.0.1:${{ job.services.oracle.ports[1521] }}/FREEPDB1
         shell: bash
         run: |
           cargo test --locked \
@@ -138,10 +156,8 @@ jobs:
         if: failure()
         shell: bash
         run: |
-          container_id="$(docker ps --format '{{.ID}} {{.Image}}' \
-            | awk '/gvenzl\/oracle-free/ { print $1; exit }')"
-          if [[ -n "$container_id" ]]; then
-            docker logs "$container_id" > oracle-container.log 2>&1
+          if docker inspect oracle-receiver-ci > /dev/null 2>&1; then
+            docker logs oracle-receiver-ci > oracle-container.log 2>&1
           fi
       - name: Upload Oracle diagnostics
         if: failure()
@@ -151,6 +167,10 @@ jobs:
           path: oracle-container.log
           if-no-files-found: ignore
           retention-days: 14
+      - name: Remove Oracle container
+        if: always()
+        shell: bash
+        run: docker rm --force oracle-receiver-ci > /dev/null 2>&1 || true
 
   database-integration-required:
     name: Database receiver integration required
