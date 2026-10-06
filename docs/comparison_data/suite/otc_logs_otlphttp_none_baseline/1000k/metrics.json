@@ -3,66 +3,66 @@
     "extra": "OTC OTLP/HTTP Baseline (Logs)/1000k - Dropped Logs %",
     "name": "dropped_logs_percentage",
     "unit": "%",
-    "value": -0.9183180332183838
+    "value": 0.8725559115409851
   },
   {
     "extra": "OTC OTLP/HTTP Baseline (Logs)/1000k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 100.15668982021113
+    "value": 100.18701882632249
   },
   {
     "extra": "OTC OTLP/HTTP Baseline (Logs)/1000k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 100.51337913803873
+    "value": 100.52308653545768
   },
   {
     "extra": "OTC OTLP/HTTP Baseline (Logs)/1000k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 5401.10625
+    "value": 5708.655338541666
   },
   {
     "extra": "OTC OTLP/HTTP Baseline (Logs)/1000k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 5555.56640625
+    "value": 5857.9609375
   },
   {
     "extra": "OTC OTLP/HTTP Baseline (Logs)/1000k - Log Throughput",
     "name": "logs_produced_rate",
     "unit": "logs/sec",
-    "value": 278282.01074085844
+    "value": 264434.5322430005
   },
   {
     "extra": "OTC OTLP/HTTP Baseline (Logs)/1000k - Log Throughput",
     "name": "logs_received_rate",
     "unit": "logs/sec",
-    "value": 279882.6081460014
+    "value": 263919.01491396787
   },
   {
     "extra": "OTC OTLP/HTTP Baseline (Logs)/1000k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000562
+    "value": 60.000523
   },
   {
     "extra": "OTC OTLP/HTTP Baseline (Logs)/1000k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 5486559.635829053
+    "value": 5541824.580803771
   },
   {
     "extra": "OTC OTLP/HTTP Baseline (Logs)/1000k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 100563949.12974079
+    "value": 100722010.88336769
   },
   {
     "extra": "OTC OTLP/HTTP Baseline (Logs)/1000k - Egress Bytes Per Log",
     "name": "egress_bytes_per_log",
     "unit": "bytes/log",
-    "value": 19.603074561056598
+    "value": 20.998201219454728
   }
 ]

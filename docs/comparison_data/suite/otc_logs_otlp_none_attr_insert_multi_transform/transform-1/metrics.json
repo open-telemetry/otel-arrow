@@ -9,60 +9,60 @@
     "extra": "OTC OTLP Attr Insert Multi Transform (Logs)/transform-1 - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 73.35598116876983
+    "value": 61.65084840246231
   },
   {
     "extra": "OTC OTLP Attr Insert Multi Transform (Logs)/transform-1 - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 92.67967681789932
+    "value": 62.77586034912718
   },
   {
     "extra": "OTC OTLP Attr Insert Multi Transform (Logs)/transform-1 - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 94.14283854166666
+    "value": 102.03177083333334
   },
   {
     "extra": "OTC OTLP Attr Insert Multi Transform (Logs)/transform-1 - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 98.70703125
+    "value": 109.9921875
   },
   {
     "extra": "OTC OTLP Attr Insert Multi Transform (Logs)/transform-1 - Log Throughput",
     "name": "logs_produced_rate",
     "unit": "logs/sec",
-    "value": 200282.993079968
+    "value": 200434.71572080988
   },
   {
     "extra": "OTC OTLP Attr Insert Multi Transform (Logs)/transform-1 - Log Throughput",
     "name": "logs_received_rate",
     "unit": "logs/sec",
-    "value": 200627.8086192971
+    "value": 200434.71572080988
   },
   {
     "extra": "OTC OTLP Attr Insert Multi Transform (Logs)/transform-1 - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000602
+    "value": 60.000518
   },
   {
     "extra": "OTC OTLP Attr Insert Multi Transform (Logs)/transform-1 - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 178884310.82279477
+    "value": 178675617.9734753
   },
   {
     "extra": "OTC OTLP Attr Insert Multi Transform (Logs)/transform-1 - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 171834752.31805784
+    "value": 171592458.5053578
   },
   {
     "extra": "OTC OTLP Attr Insert Multi Transform (Logs)/transform-1 - Egress Bytes Per Log",
     "name": "egress_bytes_per_log",
     "unit": "bytes/log",
-    "value": 891.6227119952155
+    "value": 891.4404739264663
   }
 ]

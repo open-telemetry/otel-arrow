@@ -9,54 +9,54 @@
     "extra": "OTC OTLP Baseline w/ Zstd (Metrics)/100k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 22.425183293347384
+    "value": 17.93467890577447
   },
   {
     "extra": "OTC OTLP Baseline w/ Zstd (Metrics)/100k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 22.719600873090116
+    "value": 19.150324189526184
   },
   {
     "extra": "OTC OTLP Baseline w/ Zstd (Metrics)/100k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 65.02369791666666
+    "value": 73.5484375
   },
   {
     "extra": "OTC OTLP Baseline w/ Zstd (Metrics)/100k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 65.734375
+    "value": 74.76953125
   },
   {
     "extra": "OTC OTLP Baseline w/ Zstd (Metrics)/100k - Metric Throughput",
     "name": "metrics_produced_rate",
     "unit": "metrics/sec",
-    "value": 99230.08053261056
+    "value": 98759.01596583448
   },
   {
     "extra": "OTC OTLP Baseline w/ Zstd (Metrics)/100k - Metric Throughput",
     "name": "metrics_received_rate",
     "unit": "metrics/sec",
-    "value": 100911.94630434972
+    "value": 100603.13254680687
   },
   {
     "extra": "OTC OTLP Baseline w/ Zstd (Metrics)/100k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000647
+    "value": 60.000488
   },
   {
     "extra": "OTC OTLP Baseline w/ Zstd (Metrics)/100k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 3028450.6845381376
+    "value": 3068912.852355827
   },
   {
     "extra": "OTC OTLP Baseline w/ Zstd (Metrics)/100k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 3003541.604888064
+    "value": 3047465.6747084185
   }
 ]

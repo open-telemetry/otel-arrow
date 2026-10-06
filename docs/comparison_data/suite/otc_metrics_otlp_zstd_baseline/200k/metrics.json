@@ -3,60 +3,60 @@
     "extra": "OTC OTLP Baseline w/ Zstd (Metrics)/200k - Dropped Metrics %",
     "name": "dropped_metrics_percentage",
     "unit": "%",
-    "value": -1.6949152946472168
+    "value": -3.4661147594451904
   },
   {
     "extra": "OTC OTLP Baseline w/ Zstd (Metrics)/200k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 45.253328226122264
+    "value": 34.131432836994854
   },
   {
     "extra": "OTC OTLP Baseline w/ Zstd (Metrics)/200k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 46.21265127885215
+    "value": 34.68087118855009
   },
   {
     "extra": "OTC OTLP Baseline w/ Zstd (Metrics)/200k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 69.26341145833334
+    "value": 76.03385416666667
   },
   {
     "extra": "OTC OTLP Baseline w/ Zstd (Metrics)/200k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 71.984375
+    "value": 77.13671875
   },
   {
     "extra": "OTC OTLP Baseline w/ Zstd (Metrics)/200k - Metric Throughput",
     "name": "metrics_produced_rate",
     "unit": "metrics/sec",
-    "value": 199417.0465138909
+    "value": 197003.55854875947
   },
   {
     "extra": "OTC OTLP Baseline w/ Zstd (Metrics)/200k - Metric Throughput",
     "name": "metrics_received_rate",
     "unit": "metrics/sec",
-    "value": 201417.51605272427
+    "value": 201065.5401277222
   },
   {
     "extra": "OTC OTLP Baseline w/ Zstd (Metrics)/200k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000581
+    "value": 60.000514
   },
   {
     "extra": "OTC OTLP Baseline w/ Zstd (Metrics)/200k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 6056332.121290897
+    "value": 6141964.455205383
   },
   {
     "extra": "OTC OTLP Baseline w/ Zstd (Metrics)/200k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 6004617.395964419
+    "value": 6094380.718171234
   }
 ]

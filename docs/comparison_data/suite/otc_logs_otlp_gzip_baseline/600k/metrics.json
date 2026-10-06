@@ -3,66 +3,66 @@
     "extra": "OTC OTLP Baseline w/ Gzip (Logs)/600k - Dropped Logs %",
     "name": "dropped_logs_percentage",
     "unit": "%",
-    "value": 2.144057512283325
+    "value": 2.097820281982422
   },
   {
     "extra": "OTC OTLP Baseline w/ Gzip (Logs)/600k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 99.97495957050178
+    "value": 100.05750462177205
   },
   {
     "extra": "OTC OTLP Baseline w/ Gzip (Logs)/600k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 100.50421675490502
+    "value": 100.43892834890966
   },
   {
     "extra": "OTC OTLP Baseline w/ Gzip (Logs)/600k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 3638.7545572916665
+    "value": 3919.014583333333
   },
   {
     "extra": "OTC OTLP Baseline w/ Gzip (Logs)/600k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 3958.68359375
+    "value": 4292.953125
   },
   {
     "extra": "OTC OTLP Baseline w/ Gzip (Logs)/600k - Log Throughput",
     "name": "logs_produced_rate",
     "unit": "logs/sec",
-    "value": 291484.5648222604
+    "value": 289842.38200880436
   },
   {
     "extra": "OTC OTLP Baseline w/ Gzip (Logs)/600k - Log Throughput",
     "name": "logs_received_rate",
     "unit": "logs/sec",
-    "value": 285724.1910322805
+    "value": 283275.98378296563
   },
   {
     "extra": "OTC OTLP Baseline w/ Gzip (Logs)/600k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000571
+    "value": 60.000618
   },
   {
     "extra": "OTC OTLP Baseline w/ Gzip (Logs)/600k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 5373551.800125503
+    "value": 5642265.741977317
   },
   {
     "extra": "OTC OTLP Baseline w/ Gzip (Logs)/600k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 7371009.460540418
+    "value": 7842295.988787591
   },
   {
     "extra": "OTC OTLP Baseline w/ Gzip (Logs)/600k - Egress Bytes Per Log",
     "name": "egress_bytes_per_log",
     "unit": "bytes/log",
-    "value": 18.806779295486432
+    "value": 19.91791067717265
   }
 ]

@@ -9,60 +9,60 @@
     "extra": "OTC OTLP Transform Rename Replace (Logs)/100k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 23.35026954045018
+    "value": 18.96073609370213
   },
   {
     "extra": "OTC OTLP Transform Rename Replace (Logs)/100k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 24.33100687929956
+    "value": 19.835414330218068
   },
   {
     "extra": "OTC OTLP Transform Rename Replace (Logs)/100k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 56.39088541666667
+    "value": 64.87708333333333
   },
   {
     "extra": "OTC OTLP Transform Rename Replace (Logs)/100k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 57.75
+    "value": 67.54296875
   },
   {
     "extra": "OTC OTLP Transform Rename Replace (Logs)/100k - Log Throughput",
     "name": "logs_produced_rate",
     "unit": "logs/sec",
-    "value": 100705.4500698602
+    "value": 100599.85851300566
   },
   {
     "extra": "OTC OTLP Transform Rename Replace (Logs)/100k - Log Throughput",
     "name": "logs_received_rate",
     "unit": "logs/sec",
-    "value": 100705.4500698602
+    "value": 100599.85851300566
   },
   {
     "extra": "OTC OTLP Transform Rename Replace (Logs)/100k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000607
+    "value": 60.000523
   },
   {
     "extra": "OTC OTLP Transform Rename Replace (Logs)/100k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 36291181.963824295
+    "value": 38099399.21739648
   },
   {
     "extra": "OTC OTLP Transform Rename Replace (Logs)/100k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 35932984.59484456
+    "value": 37772213.4368711
   },
   {
     "extra": "OTC OTLP Transform Rename Replace (Logs)/100k - Egress Bytes Per Log",
     "name": "egress_bytes_per_log",
     "unit": "bytes/log",
-    "value": 360.36959209902545
+    "value": 378.72219484753003
   }
 ]

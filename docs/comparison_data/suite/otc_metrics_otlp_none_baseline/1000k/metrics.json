@@ -3,60 +3,60 @@
     "extra": "OTC OTLP Baseline (Metrics)/1000k - Dropped Metrics %",
     "name": "dropped_metrics_percentage",
     "unit": "%",
-    "value": 2.133617639541626
+    "value": -0.16300749778747559
   },
   {
     "extra": "OTC OTLP Baseline (Metrics)/1000k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 100.22255246330577
+    "value": 96.53605407406793
   },
   {
     "extra": "OTC OTLP Baseline (Metrics)/1000k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 100.55532353860582
+    "value": 97.92640200062519
   },
   {
     "extra": "OTC OTLP Baseline (Metrics)/1000k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 4775.698567708333
+    "value": 106.77786458333334
   },
   {
     "extra": "OTC OTLP Baseline (Metrics)/1000k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 5325.08203125
+    "value": 110.12890625
   },
   {
     "extra": "OTC OTLP Baseline (Metrics)/1000k - Metric Throughput",
     "name": "metrics_produced_rate",
     "unit": "metrics/sec",
-    "value": 686945.1733351763
+    "value": 1002014.7313673078
   },
   {
     "extra": "OTC OTLP Baseline (Metrics)/1000k - Metric Throughput",
     "name": "metrics_received_rate",
     "unit": "metrics/sec",
-    "value": 660768.0794390031
+    "value": 998453.5133304097
   },
   {
     "extra": "OTC OTLP Baseline (Metrics)/1000k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000632
+    "value": 60.005565
   },
   {
     "extra": "OTC OTLP Baseline (Metrics)/1000k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 129295917.14357921
+    "value": 196602444.78271744
   },
   {
     "extra": "OTC OTLP Baseline (Metrics)/1000k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 135037916.34067136
+    "value": 197389797.01244792
   }
 ]

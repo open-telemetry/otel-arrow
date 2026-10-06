@@ -3,60 +3,60 @@
     "extra": "OTC OTLP Baseline w/ Gzip (Traces)/400k - Dropped Spans %",
     "name": "dropped_spans_percentage",
     "unit": "%",
-    "value": 7.281025409698486
+    "value": 3.074730157852173
   },
   {
     "extra": "OTC OTLP Baseline w/ Gzip (Traces)/400k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 100.11589598236444
+    "value": 100.13541592227655
   },
   {
     "extra": "OTC OTLP Baseline w/ Gzip (Traces)/400k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 100.38166146158652
+    "value": 100.46555866791161
   },
   {
     "extra": "OTC OTLP Baseline w/ Gzip (Traces)/400k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 2562.048046875
+    "value": 491.5921875
   },
   {
     "extra": "OTC OTLP Baseline w/ Gzip (Traces)/400k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 3435.55859375
+    "value": 693.83984375
   },
   {
     "extra": "OTC OTLP Baseline w/ Gzip (Traces)/400k - Span Throughput",
     "name": "spans_produced_rate",
     "unit": "spans/sec",
-    "value": 77598.871984613
+    "value": 82252.86769154755
   },
   {
     "extra": "OTC OTLP Baseline w/ Gzip (Traces)/400k - Span Throughput",
     "name": "spans_received_rate",
     "unit": "spans/sec",
-    "value": 71703.79495108132
+    "value": 79723.81393031284
   },
   {
     "extra": "OTC OTLP Baseline w/ Gzip (Traces)/400k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000655
+    "value": 60.000579
   },
   {
     "extra": "OTC OTLP Baseline w/ Gzip (Traces)/400k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 9379487.704316307
+    "value": 10818345.905059617
   },
   {
     "extra": "OTC OTLP Baseline w/ Gzip (Traces)/400k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 11766015.947565246
+    "value": 11890414.956841903
   }
 ]

@@ -3,66 +3,66 @@
     "extra": "OTC OTLP Attr Rename (Logs)/1000k - Dropped Logs %",
     "name": "dropped_logs_percentage",
     "unit": "%",
-    "value": 3.6199889183044434
+    "value": 3.0566866397857666
   },
   {
     "extra": "OTC OTLP Attr Rename (Logs)/1000k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 100.05881559383663
+    "value": 100.13507152570517
   },
   {
     "extra": "OTC OTLP Attr Rename (Logs)/1000k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 100.52024906600249
+    "value": 100.61386533665835
   },
   {
     "extra": "OTC OTLP Attr Rename (Logs)/1000k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 6943.138671875
+    "value": 6645.555859375
   },
   {
     "extra": "OTC OTLP Attr Rename (Logs)/1000k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 7704.10546875
+    "value": 7517.4296875
   },
   {
     "extra": "OTC OTLP Attr Rename (Logs)/1000k - Log Throughput",
     "name": "logs_produced_rate",
     "unit": "logs/sec",
-    "value": 572766.2230350903
+    "value": 631587.1829221857
   },
   {
     "extra": "OTC OTLP Attr Rename (Logs)/1000k - Log Throughput",
     "name": "logs_received_rate",
     "unit": "logs/sec",
-    "value": 559613.77362622
+    "value": 604953.8206769896
   },
   {
     "extra": "OTC OTLP Attr Rename (Logs)/1000k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000643
+    "value": 60.000587
   },
   {
     "extra": "OTC OTLP Attr Rename (Logs)/1000k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 201601853.16644484
+    "value": 228408420.5748248
   },
   {
     "extra": "OTC OTLP Attr Rename (Logs)/1000k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 206887874.95456287
+    "value": 236011572.76162168
   },
   {
     "extra": "OTC OTLP Attr Rename (Logs)/1000k - Egress Bytes Per Log",
     "name": "egress_bytes_per_log",
     "unit": "bytes/log",
-    "value": 360.2517712530424
+    "value": 377.56339867267604
   }
 ]

@@ -3,60 +3,60 @@
     "extra": "OTC OTLP Baseline w/ Gzip (Metrics)/400k - Dropped Metrics %",
     "name": "dropped_metrics_percentage",
     "unit": "%",
-    "value": 3.197737693786621
+    "value": 3.574453592300415
   },
   {
     "extra": "OTC OTLP Baseline w/ Gzip (Metrics)/400k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 99.98794809119899
+    "value": 100.09635965459391
   },
   {
     "extra": "OTC OTLP Baseline w/ Gzip (Metrics)/400k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 100.26420461634436
+    "value": 100.45081854964208
   },
   {
     "extra": "OTC OTLP Baseline w/ Gzip (Metrics)/400k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 1475.580859375
+    "value": 1439.1674479166666
   },
   {
     "extra": "OTC OTLP Baseline w/ Gzip (Metrics)/400k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 1677.828125
+    "value": 1568.96484375
   },
   {
     "extra": "OTC OTLP Baseline w/ Gzip (Metrics)/400k - Metric Throughput",
     "name": "metrics_produced_rate",
     "unit": "metrics/sec",
-    "value": 154176.8054461942
+    "value": 198286.3198025454
   },
   {
     "extra": "OTC OTLP Baseline w/ Gzip (Metrics)/400k - Metric Throughput",
     "name": "metrics_received_rate",
     "unit": "metrics/sec",
-    "value": 148743.38662251786
+    "value": 190549.96059612944
   },
   {
     "extra": "OTC OTLP Baseline w/ Gzip (Metrics)/400k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000612
+    "value": 60.00051
   },
   {
     "extra": "OTC OTLP Baseline w/ Gzip (Metrics)/400k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 6578908.494587241
+    "value": 8309825.8023828
   },
   {
     "extra": "OTC OTLP Baseline w/ Gzip (Metrics)/400k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 6874327.797251132
+    "value": 8588954.989154039
   }
 ]

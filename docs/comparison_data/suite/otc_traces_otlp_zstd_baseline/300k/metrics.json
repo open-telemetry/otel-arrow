@@ -3,60 +3,60 @@
     "extra": "OTC OTLP Baseline w/ Zstd (Traces)/300k - Dropped Spans %",
     "name": "dropped_spans_percentage",
     "unit": "%",
-    "value": 3.496263265609741
+    "value": 3.0656933784484863
   },
   {
     "extra": "OTC OTLP Baseline w/ Zstd (Traces)/300k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 100.05577757859756
+    "value": 100.12126486291311
   },
   {
     "extra": "OTC OTLP Baseline w/ Zstd (Traces)/300k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 100.40801493466086
+    "value": 100.4331197511664
   },
   {
     "extra": "OTC OTLP Baseline w/ Zstd (Traces)/300k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 4462.514583333334
+    "value": 4365.239322916666
   },
   {
     "extra": "OTC OTLP Baseline w/ Zstd (Traces)/300k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 5183.6953125
+    "value": 4781.546875
   },
   {
     "extra": "OTC OTLP Baseline w/ Zstd (Traces)/300k - Span Throughput",
     "name": "spans_produced_rate",
     "unit": "spans/sec",
-    "value": 197103.10083763147
+    "value": 207802.88893205242
   },
   {
     "extra": "OTC OTLP Baseline w/ Zstd (Traces)/300k - Span Throughput",
     "name": "spans_received_rate",
     "unit": "spans/sec",
-    "value": 189242.4574229739
+    "value": 200098.86075742744
   },
   {
     "extra": "OTC OTLP Baseline w/ Zstd (Traces)/300k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000653
+    "value": 60.000611
   },
   {
     "extra": "OTC OTLP Baseline w/ Zstd (Traces)/300k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 11467236.344913082
+    "value": 12598175.121851927
   },
   {
     "extra": "OTC OTLP Baseline w/ Zstd (Traces)/300k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 12853724.187503576
+    "value": 13802076.343494058
   }
 ]

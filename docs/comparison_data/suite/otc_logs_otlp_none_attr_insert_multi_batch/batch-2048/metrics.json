@@ -3,66 +3,66 @@
     "extra": "OTC OTLP Attr Insert Multi Batch (Logs)/batch-2048 - Dropped Logs %",
     "name": "dropped_logs_percentage",
     "unit": "%",
-    "value": -0.4184100329875946
+    "value": 1.6666667461395264
   },
   {
     "extra": "OTC OTLP Attr Insert Multi Batch (Logs)/batch-2048 - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 60.82359025782098
+    "value": 55.08948574548551
   },
   {
     "extra": "OTC OTLP Attr Insert Multi Batch (Logs)/batch-2048 - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 62.060718076803
+    "value": 56.87543783110003
   },
   {
     "extra": "OTC OTLP Attr Insert Multi Batch (Logs)/batch-2048 - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 73.79674479166667
+    "value": 74.73919270833333
   },
   {
     "extra": "OTC OTLP Attr Insert Multi Batch (Logs)/batch-2048 - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 76.7421875
+    "value": 76.9296875
   },
   {
     "extra": "OTC OTLP Attr Insert Multi Batch (Logs)/batch-2048 - Log Throughput",
     "name": "logs_produced_rate",
     "unit": "logs/sec",
-    "value": 402171.4363273516
+    "value": 404705.6952360727
   },
   {
     "extra": "OTC OTLP Attr Insert Multi Batch (Logs)/batch-2048 - Log Throughput",
     "name": "logs_received_rate",
     "unit": "logs/sec",
-    "value": 403854.16200236144
+    "value": 397276.1534887866
   },
   {
     "extra": "OTC OTLP Attr Insert Multi Batch (Logs)/batch-2048 - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000602
+    "value": 60.000518
   },
   {
     "extra": "OTC OTLP Attr Insert Multi Batch (Logs)/batch-2048 - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 159096272.22685778
+    "value": 165844762.6304967
   },
   {
     "extra": "OTC OTLP Attr Insert Multi Batch (Logs)/batch-2048 - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 144064812.3178183
+    "value": 150834498.55405012
   },
   {
     "extra": "OTC OTLP Attr Insert Multi Batch (Logs)/batch-2048 - Egress Bytes Per Log",
     "name": "egress_bytes_per_log",
     "unit": "bytes/log",
-    "value": 393.94486226918593
+    "value": 417.4546122994966
   }
 ]

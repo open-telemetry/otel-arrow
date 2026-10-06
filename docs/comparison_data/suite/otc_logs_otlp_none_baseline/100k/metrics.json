@@ -9,60 +9,60 @@
     "extra": "OTC OTLP Baseline (Logs)/100k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 13.327293159805931
+    "value": 13.13905355407651
   },
   {
     "extra": "OTC OTLP Baseline (Logs)/100k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 17.91700187382886
+    "value": 13.673965571205008
   },
   {
     "extra": "OTC OTLP Baseline (Logs)/100k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 55.599609375
+    "value": 62.33033854166667
   },
   {
     "extra": "OTC OTLP Baseline (Logs)/100k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 57.3359375
+    "value": 64.93359375
   },
   {
     "extra": "OTC OTLP Baseline (Logs)/100k - Log Throughput",
     "name": "logs_produced_rate",
     "unit": "logs/sec",
-    "value": 99168.24400201887
+    "value": 98879.27381988718
   },
   {
     "extra": "OTC OTLP Baseline (Logs)/100k - Log Throughput",
     "name": "logs_received_rate",
     "unit": "logs/sec",
-    "value": 100849.06169696833
+    "value": 100728.25183029949
   },
   {
     "extra": "OTC OTLP Baseline (Logs)/100k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000602
+    "value": 60.000643
   },
   {
     "extra": "OTC OTLP Baseline (Logs)/100k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 36387210.945685044
+    "value": 38028647.84574985
   },
   {
     "extra": "OTC OTLP Baseline (Logs)/100k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 36011639.560516715
+    "value": 37701350.99558728
   },
   {
     "extra": "OTC OTLP Baseline (Logs)/100k - Egress Bytes Per Log",
     "name": "egress_bytes_per_log",
     "unit": "bytes/log",
-    "value": 360.80862165105196
+    "value": 377.53705792311456
   }
 ]
