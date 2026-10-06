@@ -4,6 +4,7 @@
 //! Metrics for the topic receiver node.
 
 use otel_arrow_dfe_config::policy::DistributionTier;
+use otel_arrow_dfe_engine::Interests;
 use otel_arrow_dfe_engine::context::PipelineContext;
 use otel_arrow_dfe_otap::metrics::ReceiverMetrics;
 use otel_arrow_dfe_telemetry::instrument::{Counter, HistogramDetailed, HistogramNormal, Mmsc};
@@ -12,6 +13,8 @@ use otel_arrow_dfe_telemetry::metrics::{
 };
 use otel_arrow_dfe_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
 use std::time::Duration;
+
+const DOWNSTREAM_BACKPRESSURE_WARNING_THRESHOLD: Duration = Duration::from_millis(500);
 
 /// Lag events for topic receiver broadcast subscriptions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, AttributeEnum)]
@@ -187,7 +190,7 @@ pub struct TopicReceiverMetrics {
     pub bridge: MeasurementMetricSet<TopicBridgeMetrics>,
     /// General un-dimensioned metrics.
     pub general: MetricSet<TopicGeneralMetrics>,
-    blocked_duration: TopicBlockedDurationMetricSet,
+    blocked_duration: Option<TopicBlockedDurationMetricSet>,
 }
 
 impl TopicReceiverMetrics {
@@ -206,10 +209,9 @@ impl TopicReceiverMetrics {
             lag_events: TopicLagEventMetrics::register(&registrar),
             bridge: TopicBridgeMetrics::register(&registrar),
             general: TopicGeneralMetrics::register(&registrar),
-            blocked_duration: TopicBlockedDurationMetricSet::register(
-                &registrar,
-                duration_distribution,
-            ),
+            blocked_duration: interests.contains(Interests::NODE_LOCAL_DURATION).then(|| {
+                TopicBlockedDurationMetricSet::register(&registrar, duration_distribution)
+            }),
         }
     }
 
@@ -219,7 +221,9 @@ impl TopicReceiverMetrics {
         snapshots.extend(self.lag_events.terminal_snapshots());
         snapshots.extend(self.bridge.terminal_snapshots());
         snapshots.extend(self.general.terminal_snapshots());
-        snapshots.extend(self.blocked_duration.terminal_snapshots());
+        if let Some(blocked_duration) = &mut self.blocked_duration {
+            snapshots.extend(blocked_duration.terminal_snapshots());
+        }
         snapshots
     }
 
@@ -232,7 +236,9 @@ impl TopicReceiverMetrics {
         reporter.report_measurement(&mut self.lag_events)?;
         reporter.report_measurement(&mut self.bridge)?;
         reporter.report(&mut self.general)?;
-        self.blocked_duration.report(reporter)?;
+        if let Some(blocked_duration) = &mut self.blocked_duration {
+            blocked_duration.report(reporter)?;
+        }
         Ok(())
     }
 
@@ -248,8 +254,10 @@ impl TopicReceiverMetrics {
     /// Records one downstream channel wait and returns whether it crossed the
     /// backpressure warning threshold.
     pub fn record_downstream_blocked(&mut self, duration: Duration) -> bool {
-        self.blocked_duration.record(duration);
-        let backpressured = duration >= Duration::from_millis(500);
+        if let Some(blocked_duration) = &mut self.blocked_duration {
+            blocked_duration.record(duration);
+        }
+        let backpressured = duration >= DOWNSTREAM_BACKPRESSURE_WARNING_THRESHOLD;
         if backpressured {
             self.general.downstream_backpressure_events.inc();
         }
@@ -373,6 +381,24 @@ mod tests {
         assert_eq!(metrics.general.downstream_backpressure_events.get(), 0);
     }
 
+    /// Scenario: A topic receiver waits for downstream capacity without duration telemetry enabled.
+    /// Guarantees: The warning event remains active while no blocked-duration distribution is emitted.
+    #[test]
+    fn downstream_blocking_duration_is_interest_gated() {
+        let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(Interests::empty());
+        let mut metrics = TopicReceiverMetrics::register(&pipeline_ctx, "test-topic".into());
+
+        assert!(metrics.record_downstream_blocked(Duration::from_millis(600)));
+        assert_eq!(metrics.general.downstream_backpressure_events.get(), 1);
+
+        let snapshots = metrics.terminal_snapshots();
+        assert!(
+            snapshots
+                .iter()
+                .all(|snapshot| snapshot.descriptor().name != "receiver.topic.downstream.blocked")
+        );
+    }
+
     /// Scenario: A terminal snapshot is taken from the topic receiver.
     /// Guarantees: Terminal snapshots capture the measurement attributes properly and clear the buffers so subsequent snapshots are empty.
     #[test]
@@ -396,7 +422,7 @@ mod tests {
         metrics.general.lagged_messages.add(42);
 
         let snapshots = metrics.terminal_snapshots();
-        assert_eq!(snapshots.len(), 4);
+        assert_eq!(snapshots.len(), 3);
 
         assert!(snapshots.iter().any(|snapshot| {
             snapshot.descriptor().name == "receiver.topic.bridge"
@@ -412,23 +438,13 @@ mod tests {
                 .iter()
                 .any(|snapshot| { snapshot.descriptor().name == "receiver.topic" })
         );
-        assert!(
-            snapshots.iter().any(|snapshot| {
-                snapshot.descriptor().name == "receiver.topic.downstream.blocked"
-            })
-        );
 
         let second = metrics.terminal_snapshots();
-        assert_eq!(second.len(), 2);
+        assert_eq!(second.len(), 1);
         assert!(
             second
                 .iter()
                 .any(|snapshot| { snapshot.descriptor().name == "receiver.topic" })
-        );
-        assert!(
-            second.iter().any(|snapshot| {
-                snapshot.descriptor().name == "receiver.topic.downstream.blocked"
-            })
         );
     }
 }

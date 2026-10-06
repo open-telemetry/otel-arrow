@@ -652,54 +652,6 @@ impl PipelineContext {
         }
     }
 
-    /// Registers a metric set for the current node entity, scoped by an additional `topic` attribute.
-    ///
-    /// This is used by topic-aware nodes so their metric series can be filtered by `topic`.
-    #[must_use]
-    pub fn register_metrics_with_topic<T: MetricSetHandler + Default + Debug + Send + Sync>(
-        &self,
-        topic: Cow<'static, str>,
-    ) -> MetricSet<T> {
-        let entity_key = self.register_topic_entity(topic);
-
-        let metrics = self
-            .controller_context
-            .telemetry_registry_handle
-            .register_metric_set_for_entity::<T>(entity_key);
-
-        if let Some(telemetry) = current_node_telemetry_handle() {
-            telemetry.track_metric_set(metrics.metric_set_key());
-            telemetry.track_entity(entity_key);
-        }
-
-        metrics
-    }
-
-    /// Registers a measurement metric set for the current node entity, scoped by an additional `topic` attribute.
-    ///
-    /// This is used by topic-aware nodes so their measurement metric series can be filtered by `topic`.
-    #[must_use]
-    pub fn register_measurement_metrics_with_topic<
-        T: MeasurementMetricSetHandler + Debug + Send + Sync,
-    >(
-        &self,
-        topic: Cow<'static, str>,
-    ) -> MeasurementMetricSet<T> {
-        let entity_key = self.register_topic_entity(topic);
-
-        let metrics = self
-            .controller_context
-            .telemetry_registry_handle
-            .register_metric_set_with_measurement_attributes_for_entity::<T>(entity_key);
-
-        if let Some(telemetry) = current_node_telemetry_handle() {
-            telemetry.track_metric_set(metrics.metric_set_key());
-            telemetry.track_entity(entity_key);
-        }
-
-        metrics
-    }
-
     /// Registers the pipeline entity for this context.
     #[must_use]
     pub fn register_pipeline_entity(&self) -> EntityKey {
@@ -1463,19 +1415,18 @@ mod tests {
         );
     }
 
-    /// Scenario: a node registers a measurement metric set with a topic dimension.
+    /// Scenario: a node registers a measurement metric set through a topic registrar.
     /// Guarantees: the registered measurement set links to the topic entity, preserving
     /// topic, node, and custom identity attributes when configured, and omitting empty custom attributes when not.
     #[test]
-    fn register_measurement_metrics_with_topic_links_entity_with_and_without_custom_attrs() {
+    fn topic_metric_registrar_links_entity_with_and_without_custom_attrs() {
         use crate::flow_metrics::FlowInputMessageMetrics;
 
         // Without custom attributes
         let registry = TelemetryRegistryHandle::new();
         let ctx = pipeline_ctx_with_custom_attrs(registry.clone(), HashMap::new());
-        let metrics = ctx.register_measurement_metrics_with_topic::<FlowInputMessageMetrics>(
-            Cow::Borrowed("test-topic"),
-        );
+        let registrar = ctx.metric_set_registrar_with_topic(Cow::Borrowed("test-topic"));
+        let metrics = FlowInputMessageMetrics::register(&registrar);
         let key = metrics.entity_key();
         let (schema, rendered) = registry
             .visit_entity(key, |a| (a.schema_name(), a.attributes_to_string()))
@@ -1498,9 +1449,8 @@ mod tests {
             TelemetryAttribute::new(AttributeValue::String("bar".to_string())),
         );
         let ctx = pipeline_ctx_with_custom_attrs(registry.clone(), custom);
-        let metrics = ctx.register_measurement_metrics_with_topic::<FlowInputMessageMetrics>(
-            Cow::Borrowed("test-topic"),
-        );
+        let registrar = ctx.metric_set_registrar_with_topic(Cow::Borrowed("test-topic"));
+        let metrics = FlowInputMessageMetrics::register(&registrar);
         let key = metrics.entity_key();
         let (schema, rendered) = registry
             .visit_entity(key, |a| (a.schema_name(), a.attributes_to_string()))
