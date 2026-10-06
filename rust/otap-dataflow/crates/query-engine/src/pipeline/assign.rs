@@ -1472,15 +1472,20 @@ impl PipelineStage for AssignPipelineStage {
         )
     }
 
-    // Assignments to non-record attributes change metadata shared by the parent hierarchy.
+    // Parent struct fields, scope schema URLs, and non-record attributes are shared metadata.
     fn parent_behavior(&self) -> ParentBehavior {
-        if matches!(
-            self.dest_columns.first(),
-            Some(
-                ColumnAccessor::Attributes(AttributesIdentifier::NonRecord(_), _)
-                    | ColumnAccessor::NestedAttribute(AttributesIdentifier::NonRecord(_), _, _)
-            )
-        ) {
+        let requires_reindex = self.dest_columns.iter().any(|dest| match dest {
+            ColumnAccessor::ColumnName(name) => name == consts::SCHEMA_URL,
+            ColumnAccessor::StructCol(struct_name, _) => {
+                matches!(*struct_name, consts::RESOURCE | consts::SCOPE)
+            }
+            ColumnAccessor::Attributes(AttributesIdentifier::NonRecord(_), _)
+            | ColumnAccessor::NestedAttribute(AttributesIdentifier::NonRecord(_), _, _) => true,
+            ColumnAccessor::Attributes(AttributesIdentifier::Record(_), _)
+            | ColumnAccessor::NestedAttribute(AttributesIdentifier::Record(_), _, _) => false,
+        });
+
+        if requires_reindex {
             ParentBehavior::RequiresReindex
         } else {
             ParentBehavior::Preserves

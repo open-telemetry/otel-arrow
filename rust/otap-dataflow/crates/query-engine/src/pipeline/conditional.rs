@@ -791,6 +791,107 @@ mod test {
         );
     }
 
+    /// Scenario: A selected branch changes the instrumentation scope name stored in the root batch.
+    /// Guarantees: The selected and default records retain distinct scope metadata.
+    #[tokio::test]
+    async fn test_conditional_reindexes_scope_struct_field_assignment() {
+        let input = LogsData::new(vec![ResourceLogs::new(
+            shared_resource(),
+            vec![ScopeLogs::new(
+                shared_scope(),
+                vec![
+                    LogRecord::build().severity_text("a").finish(),
+                    LogRecord::build().severity_text("b").finish(),
+                ],
+            )],
+        )]);
+
+        let result = exec_logs_pipeline::<OplParser>(
+            r#"
+            logs | if (severity_text == "a") {
+                set instrumentation_scope.name = "changed"
+            }"#,
+            input,
+        )
+        .await;
+
+        assert_eq!(result.resource_logs.len(), 2);
+        assert_eq!(
+            result.resource_logs[0].scope_logs[0]
+                .scope
+                .as_ref()
+                .unwrap()
+                .name,
+            "changed"
+        );
+        assert_eq!(
+            result.resource_logs[1].scope_logs[0]
+                .scope
+                .as_ref()
+                .unwrap()
+                .name,
+            ""
+        );
+    }
+
+    /// Scenario: A selected branch changes the resource schema URL stored in a struct field.
+    /// Guarantees: The selected and default records retain distinct resource metadata.
+    #[tokio::test]
+    async fn test_conditional_reindexes_resource_struct_field_assignment() {
+        let input = LogsData::new(vec![ResourceLogs::new(
+            shared_resource(),
+            vec![ScopeLogs::new(
+                shared_scope(),
+                vec![
+                    LogRecord::build().severity_text("a").finish(),
+                    LogRecord::build().severity_text("b").finish(),
+                ],
+            )],
+        )]);
+
+        let result = exec_logs_pipeline::<OplParser>(
+            r#"
+            logs | if (severity_text == "a") {
+                set resource.schema_url = "changed"
+            }"#,
+            input,
+        )
+        .await;
+
+        assert_eq!(result.resource_logs.len(), 2);
+        assert_eq!(result.resource_logs[0].schema_url, "changed");
+        assert_eq!(result.resource_logs[1].schema_url, "");
+    }
+
+    /// Scenario: A bulk root assignment places scope schema_url after a record-only destination.
+    /// Guarantees: Every destination is inspected and the parent metadata remains branch-local.
+    #[tokio::test]
+    async fn test_conditional_reindexes_later_bulk_schema_url_assignment() {
+        let input = LogsData::new(vec![ResourceLogs::new(
+            shared_resource(),
+            vec![ScopeLogs::new(
+                shared_scope(),
+                vec![
+                    LogRecord::build().severity_text("a").finish(),
+                    LogRecord::build().severity_text("b").finish(),
+                ],
+            )],
+        )]);
+
+        let result = exec_logs_pipeline::<OplParser>(
+            r#"
+            logs | if (severity_text == "a") {
+                set severity_number = 1, schema_url = "changed"
+            }"#,
+            input,
+        )
+        .await;
+
+        assert_eq!(result.resource_logs.len(), 2);
+        assert_eq!(result.resource_logs[0].scope_logs[0].schema_url, "changed");
+        assert_eq!(result.resource_logs[1].scope_logs[0].schema_url, "");
+    }
+
     /// Scenario: A conditional branch forks a record into multiple reindexed branch results.
     /// Guarantees: Forked records and the conditional default retain distinct valid parents.
     #[tokio::test]
