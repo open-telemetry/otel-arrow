@@ -10,7 +10,7 @@ use tracing::{Dispatch, Event, Metadata};
 /// the metadata, before the event is fully evaluated. May be
 /// stateful.
 pub trait Sampler {
-    /// Observes one enabled log event and decide to keep or drop.
+    /// Observes one enabled log event and decides to keep or drop.
     /// By default, keep.
     fn should_sample(&mut self, _metadata: &Metadata<'_>) -> bool {
         true

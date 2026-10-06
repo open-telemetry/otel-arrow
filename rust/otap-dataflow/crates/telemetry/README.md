@@ -116,7 +116,7 @@ otel_info!(
 The `otel_arrow_dfe_telemetry::log_sampler::Sampler` interface
 supports custom logs sampling. After standard `tracing` filters, the macro
 mutably borrows the expression supplied as `logger:`, enabling stateful
-observation of the event before its body and attributes are evaluated.a
+observation of the event before its body and attributes are evaluated.
 
 Note the `otel_component_scope!` declaration is required to enable
 sampling in a given module.
@@ -124,7 +124,7 @@ sampling in a given module.
 ```rust
 struct O11y {
    /// Export request preparation errors (e.g., parse errors)
-   /// are emitted peridiocally after the first occurance.
+   /// are emitted periodically after the first occurrence.
    preparation: SignalSuppression,
 }
 

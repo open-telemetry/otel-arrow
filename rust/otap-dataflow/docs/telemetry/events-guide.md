@@ -337,7 +337,7 @@ termination verb `cancel`, and one internal safety verb `abort`.
 
 > [!NOTE]
 > This feature is being re-implemented using the logs sampler API, after
-> which diagnostic events will appear as ordinary logging events e.g., 
+> which diagnostic events will appear as ordinary logging events, e.g.,
 > `otel_warn!(logger: &mut failure_sampler, "failure.name", ...)`.
 
 This shared policy supports recurring operation failures across exporters,
