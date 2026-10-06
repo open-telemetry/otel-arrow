@@ -1371,6 +1371,19 @@ fn rejects_composite_predicate_lookalikes_and_set_operations() {
     }
 }
 
+/// Scenario: Composite cursor result names are aliases for unrelated columns or expressions.
+/// Guarantees: Checkpoints can only use direct projections of both configured cursor columns.
+#[test]
+fn rejects_aliased_or_derived_composite_cursor_projections() {
+    for statement in [
+        "SELECT OTHER_ID AS AUDIT_ID, LAST_UPDATED, PAYLOAD FROM AUDIT_LOGS WHERE LAST_UPDATED > :last_timestamp OR (LAST_UPDATED = :last_timestamp AND AUDIT_ID > :last_tie_breaker) ORDER BY LAST_UPDATED ASC, AUDIT_ID ASC",
+        "SELECT AUDIT_ID, OTHER_TS AS LAST_UPDATED, PAYLOAD FROM AUDIT_LOGS WHERE LAST_UPDATED > :last_timestamp OR (LAST_UPDATED = :last_timestamp AND AUDIT_ID > :last_tie_breaker) ORDER BY LAST_UPDATED ASC, AUDIT_ID ASC",
+        "SELECT AUDIT_ID + 1 AS AUDIT_ID, LAST_UPDATED, PAYLOAD FROM AUDIT_LOGS WHERE LAST_UPDATED > :last_timestamp OR (LAST_UPDATED = :last_timestamp AND AUDIT_ID > :last_tie_breaker) ORDER BY LAST_UPDATED ASC, AUDIT_ID ASC",
+    ] {
+        assert!(parsed(with_statement(statement)).is_err(), "{statement}");
+    }
+}
+
 /// Scenario: Native Oracle configuration supplies only the original max_batch_bytes setting.
 /// Guarantees: It parses without an additional field and uses that limit for both row storage and encoding.
 #[test]

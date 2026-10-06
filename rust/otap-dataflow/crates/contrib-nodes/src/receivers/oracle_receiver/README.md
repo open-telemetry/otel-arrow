@@ -247,7 +247,10 @@ ORDER BY EVENT_ID ASC
 Replace the column and bind with the configured names. One enclosing pair of
 predicate parentheses is accepted. Extra predicates, OR branches, non-strict
 comparisons, subqueries, and alternate ordering are rejected, as in composite
-mode. Native parameters are bound directly, never interpolated into SQL text.
+mode. The cursor column must be selected directly under its configured name;
+aliases and derived cursor expressions are rejected. Other result columns may
+use aliases or expressions. Native parameters are bound directly, never
+interpolated into SQL text.
 
 | `initial.type` | Oracle column | Value requirements |
 | --- | --- | --- |
@@ -348,6 +351,9 @@ Configuration validation requires:
   are not supported.
 - Both configured binds as real parameter tokens, not string literals or
   prefixes of other parameter names.
+- Both configured cursor columns selected directly under their configured
+  names. Cursor aliases and derived cursor expressions are rejected; other
+  result columns may use aliases or expressions.
 - A final outer `ORDER BY <timestamp> ASC, <tie_breaker> ASC`. Trailing clauses,
   including `FOR UPDATE`, are rejected.
 
@@ -355,11 +361,10 @@ The adapter binds cursor values through named parameters, uses read-only
 transactions, and checks live result metadata before polling. Result-column
 names must be unique, ignoring ASCII case.
 
-**Source-query responsibility:** selected cursor values must represent the same
-values used in the predicate and ordering. Do not alias a different column or
-expression to a configured cursor name. The validator does not prove that
-projection identity, nor does it prove that every selected database function
-is free of side effects. Use a least-privileged account and a reviewed query.
+**Source-query responsibility:** the validator proves that configured cursor
+columns are selected directly and used in the required predicate and ordering.
+It does not prove that every other selected database function is free of side
+effects. Use a least-privileged account and a reviewed query.
 
 ### Output Mapping
 

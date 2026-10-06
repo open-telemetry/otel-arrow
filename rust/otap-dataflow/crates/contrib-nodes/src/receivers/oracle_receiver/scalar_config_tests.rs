@@ -56,6 +56,9 @@ fn scalar_types_compile_without_timestamp_coercion() {
 fn scalar_sql_rejects_unsafe_lookalikes() {
     for sql in [
         "SELECT CURSOR_KEY FROM T ORDER BY CURSOR_KEY ASC",
+        "SELECT PAYLOAD FROM T WHERE CURSOR_KEY > :last_key ORDER BY CURSOR_KEY ASC",
+        "SELECT OTHER AS CURSOR_KEY FROM T WHERE CURSOR_KEY > :last_key ORDER BY CURSOR_KEY ASC",
+        "SELECT CURSOR_KEY + 1 AS CURSOR_KEY FROM T WHERE CURSOR_KEY > :last_key ORDER BY CURSOR_KEY ASC",
         "SELECT CURSOR_KEY FROM T WHERE CURSOR_KEY >= :last_key ORDER BY CURSOR_KEY ASC",
         "SELECT CURSOR_KEY FROM T WHERE CURSOR_KEY = :last_key ORDER BY CURSOR_KEY ASC",
         "SELECT CURSOR_KEY FROM T WHERE CURSOR_KEY > :last_key OR 1 = 1 ORDER BY CURSOR_KEY ASC",
@@ -75,6 +78,11 @@ fn scalar_sql_rejects_unsafe_lookalikes() {
     let mut value = scalar_config(ScalarValue::Int64(0));
     value["query"]["statement"] =
         "select CURSOR_KEY from T where (CURSOR_KEY > :last_key) order by CURSOR_KEY asc;".into();
+    assert!(parsed(value).is_ok());
+    let mut value = scalar_config(ScalarValue::Int64(0));
+    value["query"]["statement"] =
+        "SELECT CURSOR_KEY, PAYLOAD AS BODY FROM T WHERE CURSOR_KEY > :last_key ORDER BY CURSOR_KEY ASC"
+            .into();
     assert!(parsed(value).is_ok());
 }
 

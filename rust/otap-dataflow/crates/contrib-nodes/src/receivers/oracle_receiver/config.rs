@@ -372,6 +372,7 @@ fn validate_statement(
                 bind,
                 matches!(initial, ScalarValue::String(_)),
             )?;
+            validate_cursor_projections(&tokens, [column.as_str()])?;
             return Ok(statement);
         }
     };
@@ -458,6 +459,10 @@ fn validate_statement(
             "query.statement requires exactly timestamp > :timestamp OR (timestamp = :timestamp AND tie_breaker > :tie_breaker)",
         ));
     }
+    validate_cursor_projections(
+        &tokens,
+        [timestamp.column.as_str(), tie_breaker.column.as_str()],
+    )?;
 
     /// Finds a required cursor comparison at any parenthesis depth.
     fn contains_comparison(tokens: &[SqlToken], column: &str, operator: &str, bind: &str) -> bool {
@@ -470,6 +475,36 @@ fn validate_statement(
         })
     }
     Ok(statement)
+}
+
+/// Requires cursor result columns to be direct projections of the configured columns.
+fn validate_cursor_projections<'a>(
+    tokens: &[SqlToken],
+    columns: impl IntoIterator<Item = &'a str>,
+) -> Result<(), OracleConfigError> {
+    let from = tokens
+        .iter()
+        .position(|token| token.depth == 0 && token.text == "FROM")
+        .ok_or_else(|| OracleConfigError::new("query.statement requires a top-level FROM"))?;
+    let projections = tokens[1..from]
+        .split(|token| token.depth == 0 && token.text == ",")
+        .collect::<Vec<_>>();
+    for column in columns {
+        let column = column.to_ascii_uppercase();
+        if !projections
+            .iter()
+            .any(|projection| is_direct_cursor_projection(projection, &column))
+        {
+            return Err(OracleConfigError::new(
+                "query.statement must select each configured cursor column directly without an alias or derived expression",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn is_direct_cursor_projection(projection: &[SqlToken], column: &str) -> bool {
+    projection.len() == 1 && projection[0].depth == 0 && projection[0].text == column
 }
 
 /// Requires one strict scalar keyset predicate and a matching outer ordering.
