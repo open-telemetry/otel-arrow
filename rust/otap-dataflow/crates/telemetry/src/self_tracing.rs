@@ -38,8 +38,8 @@ pub const LOG_ARGUMENTS_ENCODE_INITIAL: usize = 256;
 /// Maximum size an encoded log event's body/attributes may grow to.
 ///
 /// Rare events that overflow `LOG_ARGUMENTS_ENCODE_INITIAL` are allowed to grow
-/// the `Vec` (one reallocation) up to this limit rather than being truncated
-/// immediately; events that still don't fit are truncated and counted via
+/// the `Vec` up to this limit rather than being truncated immediately; events
+/// that still don't fit are truncated and counted via
 /// `dropped_attributes_count`, same as always.
 pub const LOG_ARGUMENTS_ENCODE_LIMIT: usize = 2048;
 
@@ -206,8 +206,8 @@ impl LogRecord {
     ///
     /// Pre-allocates a heap buffer sized to `LOG_ARGUMENTS_ENCODE_INITIAL`
     /// (no allocation beyond this for the common case) and allows it to grow,
-    /// at most once, up to `LOG_ARGUMENTS_ENCODE_LIMIT` for rare oversized
-    /// events. Attributes that still don't fit are counted via
+    /// up to `LOG_ARGUMENTS_ENCODE_LIMIT` for rare oversized events.
+    /// Attributes that still don't fit are counted via
     /// `dropped_attributes_count`.
     #[must_use]
     pub fn new(event: &Event<'_>, context: LogContext) -> Self {

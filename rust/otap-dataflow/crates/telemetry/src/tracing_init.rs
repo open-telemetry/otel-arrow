@@ -512,6 +512,42 @@ mod tests {
         });
     }
 
+    /// Scenario: a log body exceeds 256 bytes but remains below the 2 KiB encoding limit.
+    /// Guarantees: the encoding buffer grows and preserves the complete body without drops.
+    #[test]
+    fn log_body_grows_beyond_initial_capacity() {
+        crate::with_cleared_rust_log(|| {
+            use crate::self_tracing::{LOG_ARGUMENTS_ENCODE_INITIAL, LOG_ARGUMENTS_ENCODE_LIMIT};
+
+            let (reporter, receiver) = test_reporter();
+            let setup = test_setup(internal_async_provider(reporter), level("info"));
+            let body = "x".repeat(LOG_ARGUMENTS_ENCODE_INITIAL * 2);
+
+            setup.with_subscriber_ignoring_env(|| {
+                otel_info!("growth.test", message = body.as_str());
+            });
+
+            let event = receiver.try_recv().expect("should receive log");
+            let log_event = match &event {
+                ObservedEvent::Log(log_event) => log_event,
+                _ => panic!("expected log"),
+            };
+            assert!(
+                log_event.record.body_attrs_bytes.len() > LOG_ARGUMENTS_ENCODE_INITIAL,
+                "encoded record should exceed its initial capacity"
+            );
+            assert!(
+                log_event.record.body_attrs_bytes.len() < LOG_ARGUMENTS_ENCODE_LIMIT,
+                "encoded record should remain below its limit"
+            );
+            assert_eq!(log_event.record.dropped_attributes_count, 0);
+            assert!(
+                event.to_string().contains(&body),
+                "formatted event should preserve the complete body"
+            );
+        });
+    }
+
     /// Scenario: oversized structured attributes overflow the inline log encoding buffer.
     /// Guarantees: the dropped-attribute count survives ITS encoding and OTLP parsing.
     #[test]

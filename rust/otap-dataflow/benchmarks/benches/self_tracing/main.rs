@@ -524,8 +524,8 @@ fn bench_bytes_conversion(c: &mut Criterion) {
 
     // Naive heap growth: initial capacity of 256 is insufficient for larger
     // payloads, so Vec::extend_from_slice must reallocate (and copy the
-    // existing prefix) to fit. This is the "two allocations" case a
-    // grow-once-to-LARGER design is meant to avoid.
+    // existing prefix) to fit. This measures the cost of allowing uncommon
+    // larger records to grow rather than pre-allocating their maximum size.
     for &size in sizes.iter().filter(|&&s| s > 256) {
         let content = vec![0xABu8; size];
         _ = group.throughput(Throughput::Bytes(size as u64));
