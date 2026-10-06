@@ -5,7 +5,7 @@
 ## Metadata
 
 - Type: `processor:filter` (`urn:otel:processor:filter`)
-- Feature gate: Default
+- Feature gate: Always enabled
 - Stability: Experimental
 
 ## Overview
@@ -152,11 +152,16 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 
 ### Metric Sets
 
-#### `processor.filter.pdata`
+#### `processor.filter`
 
 | Metric | Unit | Description |
 | --- | --- | --- |
-| `processor.filter.pdata.dropped.items` | `{item}` | Number of signal items (log records, spans, or metric data points) a decision node chose to drop. |
+| `processor.filter.dropped.items` | `{item}` | Number of signal items (log records, spans, or metric data points) a decision node chose to drop. |
+
+Use the engine-managed `node.input.messages` metric for batches received by
+the processor and `node.output.items` for items kept and forwarded. The active
+include and exclude paths are available from the node configuration rather than
+repeated as per-batch telemetry.
 
 ### Events
 

@@ -38,7 +38,7 @@ pub const LOG_ARGUMENTS_ENCODE_INLINE: usize = 256;
 /// Default buffer size for log formatting. Note that we truncate and
 /// recognize dropped_attributes_count at the top-level of each log
 /// record.
-pub const LOG_BUFFER_SIZE: usize = 512;
+pub const LOG_BUFFER_SIZE: usize = 1024;
 
 /// A log record with structural metadata and pre-encoded body/attributes.
 /// A SystemTime value for the event is presumed to be external.

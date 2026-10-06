@@ -1,7 +1,6 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use std::any::Any;
 use std::sync::Arc;
 
 use arrow::array::{
@@ -20,10 +19,8 @@ use datafusion::scalar::ScalarValue;
 fn murmur3_32(data: &[u8]) -> i64 {
     const C1: u32 = 0xcc9e2d51;
     const C2: u32 = 0x1b873593;
-
     let mut h: u32 = 0;
-    let chunks = data.chunks_exact(4);
-    let remainder = chunks.remainder();
+    let (chunks, remainder) = data.as_chunks::<4>();
 
     for chunk in chunks {
         let mut k = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
@@ -85,10 +82,6 @@ impl Murmur3HashFunc {
 }
 
 impl ScalarUDFImpl for Murmur3HashFunc {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn name(&self) -> &str {
         "murmur3"
     }

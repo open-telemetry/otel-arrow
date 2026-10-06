@@ -343,6 +343,7 @@ Important behavior:
 
 `engine` is the home for engine-wide settings:
 
+- `state_dir`
 - `topics`
 - `http_admin`
 - `telemetry`
@@ -350,6 +351,14 @@ Important behavior:
 - `observability`
 - `controller/extensions`
 - `custom`
+
+### Engine State Directory
+
+`engine.state_dir` is an optional explicit absolute path, provisioned before
+pipelines start on Linux. It has no default and cannot be added, removed, or
+changed during live reconfiguration. Existing journald and scraper checkpoints
+are not automatically migrated. See [Engine state directory](state-directory.md)
+for permission, durability, platform, and consumer-adoption requirements.
 
 ### Engine Topic Settings
 
@@ -493,7 +502,8 @@ engine:
 ## Policy Hierarchy
 
 Policies include channel capacity, health, runtime telemetry, resources
-controls, runtime recovery, and transport headers:
+controls, runtime recovery, transport headers, and authorized identity claim
+capture:
 
 ```yaml
 policies:
@@ -543,10 +553,35 @@ policies:
       default:
         selector:
           type: all_captured
+  authorized_identity:
+    - claim: sub
+      store_as: customer_id
+    - claim: groups
+      store_as: access_groups
 ```
 
 For full transport header policy documentation, see
 [transport-headers.md](transport-headers.md).
+
+`authorized_identity` selects verified authorization claims for storage in
+pdata context. It can be configured at top-level, group, or pipeline policy
+scope. The nearest configured scope replaces the complete broader policy list;
+entries are not merged across scopes. An empty list at a narrower scope
+disables inherited identity capture.
+
+Only OTLP HTTP and gRPC receivers currently produce authorized identity
+entries, and only when the receiver binds a `bearer_token_authorizer`
+capability. Configuring the policy on another receiver, or on an OTLP receiver
+without an authorizer, captures no entries. Missing claims are omitted without
+rejecting the request. Single- and multi-valued claims retain their original
+cardinality.
+
+Authorized identity entries remain distinct from transport headers. The
+current policy does not propagate claims as outbound headers or provide
+routing, predicates, composites, required-entry enforcement, or generic
+context consumers. See the
+[OTLP receiver documentation](../crates/core-nodes/src/receivers/otlp_receiver/README.md)
+for the supported authorization path.
 
 Resolution order:
 
@@ -573,6 +608,7 @@ Defaults at top-level:
 - `runtime_recovery.startup_timeout = 30s`
 - `runtime_recovery.reset_after = 60s`
 - `transport_headers = not set` (opt-in; no headers captured or propagated)
+- `authorized_identity = not set` (opt-in; no verified claims captured)
 
 ### Core Allocation
 
@@ -700,13 +736,17 @@ Telemetry policy notes:
 - `telemetry.runtime_metrics` accepts `none`, `basic`, `normal`, or `detailed`
 - this level now gates:
   - channel endpoint transport metrics
-  - per-node produced/consumed outcome metrics
+  - per-node input/output outcome metrics
   - shared pipeline control-plane metrics such as `pipeline.runtime_control`
     and `pipeline.completion`
 - `basic` exports gauges and transport counters
 - `normal` adds message and phase counters
 - `detailed` adds latency/duration summaries and completion unwind-depth
   distribution
+- node-local `telemetry.duration_distribution` accepts `basic`, `normal`, or
+  `detailed` and defaults to `normal`
+- shared receiver and exporter local duration instruments use the selected
+  node-local distribution tier when `duration: true`
 - See [Node and Flow Metrics](node-and-flow-metrics.md) to configure and
   interpret node item metrics and processor flow metrics.
 
@@ -772,7 +812,8 @@ topics:
         on_full: drop_newest
       broadcast:
         queue_capacity: 1000
-        on_lag: drop_oldest
+        on_lag: disconnect
+        ack_mode: all
       ack_propagation:
         mode: auto
         max_in_flight: 1024
@@ -802,6 +843,12 @@ Supported `broadcast.on_lag` values:
 - `drop_oldest`
 - `disconnect`
 
+Supported `broadcast.ack_mode` values:
+
+- `first` (default): the first subscriber Ack/Nack resolves upstream
+- `all`: all subscribers eligible at publish time must Ack; requires
+  `on_lag: disconnect` and `ack_propagation.mode: auto`
+
 Supported `ack_propagation` fields:
 
 - `mode`:
@@ -827,13 +874,36 @@ and
 [`signal_type_router`](../crates/core-nodes/src/processors/signal_type_router/README.md)
 processor docs.
 
-Current limitation: in broadcast mode, `ack_propagation.mode: auto` does not
-aggregate acknowledgements across all subscribers. The first broadcast
-subscriber Ack/Nack resolves the upstream message, so upstream completion does
-not mean all broadcast subscribers processed the message. This matters
-especially with `broadcast.on_lag: drop_oldest`, where one subscriber may miss
-a message that another subscriber still Acks upstream. Future enhancements are
-tracked in [GH-2252](https://github.com/open-telemetry/otel-arrow/issues/2252).
+With `ack_propagation.mode: auto`, `broadcast.ack_mode: all` resolves upstream
+as Ack only after every subscriber eligible at publish time Acks. Any required
+Nack, or a required subscriber disappearing before Acking, resolves upstream
+as Nack. Subscribers added after publish are not required. `all` requires
+`on_lag: disconnect`, `ack_propagation.mode: auto`, and a broadcast-only
+inferred topic mode; startup rejects other combinations.
+
+If no subscribers are eligible at publish time, the empty consensus resolves
+immediately as Nack. This prevents a producer from reporting successful
+delivery before topic receivers subscribe during startup or live
+reconfiguration. The upstream source must retry or durably buffer Nacked
+messages for recovery.
+
+Choose the branch topology based on the required Ack boundary:
+
+```text
+export completion:  receiver -> retry          -> exporter
+durable acceptance: receiver -> durable buffer -> exporter
+```
+
+Retry branches keep aggregate topic completion pending until every exporter
+reaches a terminal outcome. Durable-buffer branches persist before Acking the
+topic and retry exporters independently from branch-local storage. Configure
+`ack_propagation.timeout` to exceed the retry budget or expected durable write
+latency, respectively.
+
+`ack_mode: all` provides aggregate outcome reporting, not atomic commit or
+rollback. A destination that already succeeded keeps the data even if another
+destination later fails. Once every branch durably accepts the message, export
+completion is owned by the branch-local durable buffers.
 
 Topic defaults:
 
@@ -843,6 +913,7 @@ Topic defaults:
 - `policies.balanced.on_full = block`
 - `policies.broadcast.queue_capacity = 128`
 - `policies.broadcast.on_lag = drop_oldest`
+- `policies.broadcast.ack_mode = first`
 - `policies.ack_propagation.mode = disabled`
 - `policies.ack_propagation.max_in_flight = 1024`
 - `policies.ack_propagation.timeout = 30s`
@@ -866,6 +937,8 @@ Exporter-local `queue_on_full` behavior:
 - queue capacities remain topic-declaration-only (no exporter-local override)
 - broadcast lag handling remains topic-declaration-only via
   `policies.broadcast.on_lag`
+- broadcast Ack aggregation remains topic-declaration-only via
+  `policies.broadcast.ack_mode`
 - Ack/Nack tracking limits remain topic-declaration-only via
   `policies.ack_propagation`
 

@@ -81,7 +81,6 @@ enum FormatConfig {
     /// receiver flattens EventHeader structs into `Struct.field` attributes but
     /// does not attach semantic meaning to field names. Schema-specific
     /// interpretation belongs in processors.
-    #[cfg(feature = "user_events-eventheader")]
     EventHeader,
 }
 
@@ -301,9 +300,7 @@ impl UserEventsReceiver {
             drain,
             batching,
             cpu_id: pipeline.core_id(),
-            metrics: Rc::new(RefCell::new(
-                pipeline.register_metrics::<UserEventsReceiverMetrics>(),
-            )),
+            metrics: Rc::new(RefCell::new(UserEventsReceiverMetrics::register(&pipeline))),
             admission_state: LocalReceiverAdmissionState::from_process_state(
                 &pipeline.memory_pressure_state(),
             ),
@@ -539,12 +536,12 @@ async fn process_drained_records(
             &subscription.format,
         );
         builder.append(decoded);
-        if builder.len() >= batch_cfg.max_size {
-            if let Err(error) = flush_batch(effect_handler, metrics, builder).await {
-                let remaining = u64::try_from(drained.count()).unwrap_or(u64::MAX);
-                add_dropped_send_error(metrics, remaining);
-                return Err(error);
-            }
+        if builder.len() >= batch_cfg.max_size
+            && let Err(error) = flush_batch(effect_handler, metrics, builder).await
+        {
+            let remaining = u64::try_from(drained.count()).unwrap_or(u64::MAX);
+            add_dropped_send_error(metrics, remaining);
+            return Err(error);
         }
     }
 
@@ -589,6 +586,7 @@ pub static USER_EVENTS_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
                 receiver_config,
             ))
         },
+    context_declarations: None,
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<
         UserEventsReceiverConfig,
@@ -649,8 +647,9 @@ impl local::Receiver<OtapPdata> for UserEventsReceiver {
                         }
                         Ok(NodeControlMsg::DrainIngress { deadline, .. }) => {
                             let _ = telemetry_timer_handle.cancel().await;
-                            if let Some(session) = session.as_mut() {
-                                if Instant::now() < deadline {
+                            if let Some(session) = session.as_mut()
+                                && Instant::now() < deadline
+                            {
                                     let drain_stats = session
                                         .drain_once(&drain_cfg, &mut drained_records)
                                         .map_err(|error| Error::ReceiverError {
@@ -672,7 +671,6 @@ impl local::Receiver<OtapPdata> for UserEventsReceiver {
                                     )
                                     .await?;
                                 }
-                            }
                             if self.admission_state.should_shed_ingress() {
                                 drop_batch(&self.metrics, &mut builder);
                             } else {
@@ -837,7 +835,6 @@ mod linux_integration_tests {
     use std::io;
     use std::time::Duration;
 
-    #[cfg(feature = "user_events-eventheader")]
     use eventheader_dynamic::{EventBuilder, FieldFormat, Level, Provider};
     use tokio::time;
 
@@ -926,7 +923,6 @@ mod linux_integration_tests {
         true
     }
 
-    #[cfg(feature = "user_events-eventheader")]
     async fn write_eventheader_sample(event_set: &eventheader_dynamic::EventSet) -> bool {
         for _ in 0..20 {
             if event_set.enabled() {
@@ -1039,7 +1035,6 @@ mod linux_integration_tests {
             "tracefs session should decode the emitted ci_answer and ci_message fields"
         );
 
-        #[cfg(feature = "user_events-eventheader")]
         {
             let provider_name = format!("otel_arrow_dfe_ci_{}", std::process::id());
             let tracepoint = format!("user_events:{provider_name}_L4K1");
@@ -1149,9 +1144,9 @@ mod config_tests {
 
     fn test_metrics() -> Rc<RefCell<MetricSet<UserEventsReceiverMetrics>>> {
         let (pipeline_ctx, _) = test_pipeline_ctx();
-        Rc::new(RefCell::new(
-            pipeline_ctx.register_metrics::<UserEventsReceiverMetrics>(),
-        ))
+        Rc::new(RefCell::new(UserEventsReceiverMetrics::register(
+            &pipeline_ctx,
+        )))
     }
 
     fn test_effect_handler(
@@ -1178,6 +1173,7 @@ mod config_tests {
                 None,
                 runtime_tx,
                 metrics_reporter,
+                otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
             ),
             rx,
         )
@@ -1531,27 +1527,6 @@ mod config_tests {
             error
                 .to_string()
                 .contains("unknown field `max_pending_events`"),
-            "unexpected error: {error}"
-        );
-    }
-
-    #[cfg(not(feature = "user_events-eventheader"))]
-    #[test]
-    fn deserialize_config_rejects_event_header_without_feature() {
-        let error = serde_json::from_value::<UserEventsReceiverConfig>(serde_json::json!({
-            "subscriptions": [
-                {
-                    "tracepoint": "user_events:example_L5K1",
-                    "format": {
-                        "type": "event_header"
-                    }
-                }
-            ]
-        }))
-        .expect_err("event_header rejected without feature");
-
-        assert!(
-            error.to_string().contains("unknown variant `event_header`"),
             "unexpected error: {error}"
         );
     }

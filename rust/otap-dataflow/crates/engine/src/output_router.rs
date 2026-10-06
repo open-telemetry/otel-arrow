@@ -186,7 +186,7 @@ where
     pub async fn send_default_stamped(&self, mut data: S::Data) -> Result<(), TypedError<S::Data>> {
         match &self.default {
             Some((_, sender, idx)) => {
-                data.stamp_output_port_index(*idx);
+                data.stamp_output_port_index(self.node_id.index, *idx);
                 sender
                     .output_send(data)
                     .await
@@ -203,7 +203,7 @@ where
     pub fn try_send_default_stamped(&self, mut data: S::Data) -> Result<(), TypedError<S::Data>> {
         match &self.default {
             Some((_, sender, idx)) => {
-                data.stamp_output_port_index(*idx);
+                data.stamp_output_port_index(self.node_id.index, *idx);
                 sender
                     .try_output_send(data)
                     .map_err(TypedError::ChannelSendError)
@@ -225,7 +225,7 @@ where
         let port_name: PortName = port.into();
         match self.ports.get(&port_name) {
             Some((sender, idx)) => {
-                data.stamp_output_port_index(*idx);
+                data.stamp_output_port_index(self.node_id.index, *idx);
                 sender
                     .output_send(data)
                     .await
@@ -249,7 +249,7 @@ where
         let port_name: PortName = port.into();
         match self.ports.get(&port_name) {
             Some((sender, idx)) => {
-                data.stamp_output_port_index(*idx);
+                data.stamp_output_port_index(self.node_id.index, *idx);
                 sender
                     .try_output_send(data)
                     .map_err(TypedError::ChannelSendError)

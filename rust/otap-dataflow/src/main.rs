@@ -19,6 +19,9 @@ use otel_arrow_dfe_controller::{BuildInfo, Controller, ControllerRunOptions};
 // distributed-slice registrations (core nodes) are visible
 // in `OTAP_PIPELINE_FACTORY` at runtime.
 use otel_arrow_dfe_core_nodes as _;
+// Development nodes are omitted from builds that disable `dev-tools`.
+#[cfg(feature = "dev-tools")]
+use otel_arrow_dfe_dev_nodes as _;
 use otel_arrow_dfe_otap::OTAP_PIPELINE_FACTORY;
 // Keep this side-effect import so the experimental wasm-host crate is linked
 // and its `linkme` distributed-slice registration (the `wasm_processor`
@@ -247,6 +250,7 @@ fn validate_engine_config_for_startup(
 ) -> Result<(), Box<dyn std::error::Error>> {
     startup::validate_engine_components(engine_cfg, &OTAP_PIPELINE_FACTORY)?;
     startup::validate_controller_extensions(engine_cfg, &run_options.extensions)?;
+    _ = OTAP_PIPELINE_FACTORY.compile_initial_context(&engine_cfg.resolve())?;
     Ok(())
 }
 
@@ -426,6 +430,51 @@ groups: {{}}
         let message = err.to_string();
         assert!(message.contains("Invalid config for controller extension"));
         assert!(message.contains("greater than zero"));
+    }
+
+    /// Scenario: validate-and-exit encounters a qualified selector for an unknown composite.
+    /// Guarantees: startup validation resolves context bindings and rejects the selector.
+    #[test]
+    fn validate_engine_config_for_startup_rejects_invalid_qualified_selector() {
+        let engine_cfg = OtelDataflowSpec::from_yaml(
+            r#"
+version: otel_dataflow/v1
+engine: {}
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          receiver:
+            type: receiver:otlp
+            config:
+              protocols:
+                grpc:
+                  listening_addr: "127.0.0.1:4317"
+          exporter:
+            type: exporter:noop
+            config: {}
+            header_propagation:
+              default:
+                selector:
+                  type: named
+                  named: [missing:workspace_id]
+        connections:
+          - from: receiver
+            to: exporter
+"#,
+        )
+        .expect("config should parse");
+
+        let error =
+            validate_engine_config_for_startup(&engine_cfg, &ControllerRunOptions::default())
+                .expect_err("validate-and-exit path should resolve qualified selectors");
+
+        assert!(
+            error
+                .to_string()
+                .contains("unknown composite context entry `missing`")
+        );
     }
 
     #[test]

@@ -92,7 +92,7 @@ queries:
             SELECT
               * REPLACE (
               CASE
-                WHEN metric_name = 'consumed_items' THEN 'logs'
+                WHEN metric_name = 'items' THEN 'logs'
                 ELSE metric_name
               END AS metric_name
             ),
@@ -106,11 +106,11 @@ queries:
               'bytes_sent',
               'sent',
               'late_batches',
-              'consumed_items'
+              'items'
             ) AND (
-              metric_name <> 'consumed_items'
+              metric_name <> 'items'
               OR (
-                "metric_attributes.otel_scope_name" = 'node.consumer'
+                "metric_attributes.otel_scope_name" = 'node.input'
                 AND "metric_attributes.otel_scope_node_id" = 'perf'
                 AND "metric_attributes.signal" = 'logs'
                 AND "metric_attributes.outcome" = 'success'
@@ -399,4 +399,18 @@ result_tables:
     description: Log throughput rates (logs/sec) calculated from total counts and observation window duration
   - name: gh_actions_benchmark
     description: The final metrics used with gh_actions_benchmark.
+    finite_columns: [value]
+    required_values:
+      name:
+        - dropped_logs_percentage
+        - cpu_percentage_normalized_avg
+        - cpu_percentage_normalized_max
+        - ram_mib_avg
+        - ram_mib_max
+        - logs_produced_rate
+        - logs_received_rate
+        - test_duration
+        - network_tx_bytes_rate_avg
+        - network_rx_bytes_rate_avg
+        - egress_bytes_per_log
     #display: False

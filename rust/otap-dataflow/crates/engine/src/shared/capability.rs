@@ -18,6 +18,14 @@ pub mod auth {
     pub mod agent_fed_credential_provider {
         pub use crate::capability::auth::agent_fed_credential_provider::shared::AgentFedCredentialProvider;
     }
+    /// Shared (Send + Sync) trait variant of the api-key-provider capability.
+    pub mod api_key_provider {
+        pub use crate::capability::auth::api_key_provider::shared::ApiKeyProvider;
+    }
+    /// Shared (Send + Sync) trait variant of the basic-auth-provider capability.
+    pub mod basic_auth_provider {
+        pub use crate::capability::auth::basic_auth_provider::shared::BasicAuthProvider;
+    }
     /// Shared (Send + Sync) trait variant of the bearer-token-authorizer capability.
     pub mod bearer_token_authorizer {
         pub use crate::capability::auth::bearer_token_authorizer::shared::BearerTokenAuthorizer;
@@ -25,6 +33,10 @@ pub mod auth {
     /// Shared (Send + Sync) trait variant of the bearer-token-provider capability.
     pub mod bearer_token_provider {
         pub use crate::capability::auth::bearer_token_provider::shared::BearerTokenProvider;
+    }
+    /// Shared (Send + Sync) trait variant of the SASL credential-provider capability.
+    pub mod sasl_credential_provider {
+        pub use crate::capability::auth::sasl_credential_provider::shared::SaslCredentialProvider;
     }
 }
 

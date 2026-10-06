@@ -24,11 +24,13 @@
 //! IPC-decoded OTAP batches are Rust-allocated today, but future zero-copy or
 //! mmap ingest would be under-counted by retained-memory accounting.
 //!
-//! This module does not cache sizes inside pdata. `OtapArrowRecords` and its
-//! stores are cloneable and mutable through `set()` and `remove()`, so an
-//! internal cache would be easy to stale. Consumers that need charge/refund
-//! symmetry should compute once when retention starts and store the value with
-//! their retained state or ticket.
+//! `OtapArrowRecords` does not cache these sizes. Its stores are cloneable and
+//! mutable through `set()` and `remove()`, so a cache owned by the records could
+//! become stale. [`crate::OtapPayload`] safely caches logical size at the wrapper
+//! level because accessing records for mutation consumes the wrapper; wrapping
+//! the resulting records again starts with a fresh cache. Consumers retaining
+//! bare records should compute once when retention starts and store the value
+//! with their retained state or ticket.
 //!
 //! Sizing performance is proportional to the number of arrays and buffers, not
 //! to the number of rows or byte values. Each column calls `to_data()`, which

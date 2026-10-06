@@ -3,6 +3,7 @@
 
 //! Error and result types
 
+use crate::otlp::common::EncodeFailure;
 use crate::otlp::metrics::MetricType;
 use crate::{
     otlp::attributes::AttributeValueType, proto::opentelemetry::arrow::v1::ArrowPayloadType,
@@ -252,10 +253,13 @@ pub enum Error {
         found: SignalType,
         expected: SignalType,
     },
+
+    #[error("Unsupported batch store type: no OTAP signal has batch width {batch_width}")]
+    UnsupportedBatchStoreType { batch_width: usize },
 }
 
-impl From<crate::otlp::common::Dropped> for Error {
-    fn from(_: crate::otlp::common::Dropped) -> Self {
+impl From<EncodeFailure> for Error {
+    fn from(_: EncodeFailure) -> Self {
         Error::Dropped
     }
 }

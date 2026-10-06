@@ -1,9 +1,0 @@
-# Copyright The OpenTelemetry Authors
-# SPDX-License-Identifier: Apache-2.0
-
-change_type: enhancement
-component: pipeline
-note: "Reduce allocation overhead when exporting raw OTLP logs to ClickHouse."
-issues: [3512]
-subtext: |
-  Raw OTLP log transformation reuses attribute storage and sizes Arrow builders from recent batches without changing exported values.

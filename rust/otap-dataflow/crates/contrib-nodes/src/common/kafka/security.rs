@@ -95,13 +95,12 @@ pub fn apply_sasl_config(auth: Option<&Auth>, config: &mut ClientConfig) {
 #[cfg(feature = "aws")]
 #[must_use]
 pub fn build_aws_msk_context(auth: Option<&Auth>) -> Option<AwsMskAuthClientContext> {
-    if let Some(Auth::Sasl(sasl_auth)) = auth {
-        if sasl_auth.mechanism() == SaslMechanism::AwsMskIamOauthbearer {
-            if let Some(aws_msk) = sasl_auth.aws_msk() {
-                let region = Region::new(Cow::Owned(aws_msk.region().to_owned()));
-                return Some(AwsMskAuthClientContext::new(region));
-            }
-        }
+    if let Some(Auth::Sasl(sasl_auth)) = auth
+        && sasl_auth.mechanism() == SaslMechanism::AwsMskIamOauthbearer
+        && let Some(aws_msk) = sasl_auth.aws_msk()
+    {
+        let region = Region::new(Cow::Owned(aws_msk.region().to_owned()));
+        return Some(AwsMskAuthClientContext::new(region));
     }
     None
 }

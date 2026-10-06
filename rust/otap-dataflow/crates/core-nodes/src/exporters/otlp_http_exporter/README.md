@@ -5,7 +5,7 @@
 ## Metadata
 
 - Type: `exporter:otlp_http` (`urn:otel:exporter:otlp_http`)
-- Feature gate: Default
+- Feature gate: `otlp`
 - Stability: Experimental
 
 ## Overview
@@ -73,10 +73,10 @@ timeout, TCP keepalive, TLS, request-body compression, and static request
 
 `http.headers` is a map of header name to value applied to every outbound
 request (multi-tenant routing IDs, tracing-vendor headers, and similar). For
-request authentication, prefer the `bearer_token_provider` capability (see
-[Authentication](#authentication)) rather than hard-coding an `authorization`
-header here. Values are sent verbatim, so treat any secret in the rendered
-config as sensitive.
+request authentication, prefer one of the provider capabilities described in
+[Authentication](#authentication) rather than hard-coding credentials here.
+Values are sent verbatim, so treat any secret in the rendered config as
+sensitive.
 
 Validation at config load rejects:
 
@@ -91,11 +91,38 @@ Protocol headers always take precedence over configured headers.
 
 ## Authentication
 
+By default the exporter sends requests without any authentication.
+Authentication can be enabled by binding a [provider extension](../../../../contrib-extensions/README.md) to the exporter node
+via its `capabilities` map. The following providers are supported:
+
+- [`BearerTokenProvider`](#bearertokenprovider): Provides authentication via `Authorization: Bearer
+  <token>` HTTP header.
+- [`ApiKeyProvider`](#apikeyprovider): Provides authentication via a custom HTTP header in the form
+  `<header_name>: <optional_scheme> <api_key>`.
+- [`BasicAuthProvider`](#basicauthprovider): Provides authentication via `Authorization: Basic
+  <base64-encoded(username:password)>` HTTP header.
+- [`AgentFedCredentialProvider`](#agentfedcredentialprovider): Provides authentication using a credential
+  snapshot published by the embedding host as `Authorization: Bearer <token>`
+  HTTP header.
+
+> [!IMPORTANT]
+> Only one authentication provider can be bound to the exporter node at a time.
+> If multiple providers are bound, the exporter will reject the configuration.
+
+<!-- Separate consecutive admonitions. -->
+
+> [!NOTE]
+> Static authentication headers can be registered via the `http.headers`
+> configuration (for example, `http.headers.authorization: "Bearer <token>"`)
+> but this is NOT recommended because the credential remains embedded in the
+> rendered configuration and cannot be refreshed by a provider.
+
+### BearerTokenProvider
+
 The exporter can inject an OAuth `Authorization: Bearer <token>` on every
-outbound request by consuming the `bearer_token_provider` capability. Binding is
-optional and additive: without it the exporter sends no `authorization` header
-(the default); with it, the bound extension acquires and refreshes the token in
-the background so credentials rotate without restarting the exporter.
+outbound request by consuming the `bearer_token_provider` capability. The bound
+extension acquires and refreshes the token in the background so credentials
+rotate without restarting the exporter.
 
 Declare a provider extension in the pipeline's `extensions:` section and bind it
 on the exporter node via the node's `capabilities:` map. Any provider works and
@@ -131,19 +158,134 @@ groups:
               http: {}
 ```
 
-The bearer token is applied per request, so it takes precedence over any
-statically configured `authorization` header. The exporter subscribes to the
-provider's token stream and caches the built header, rebuilding it only when the
-provider refreshes the token, so credential work stays off the per-request path.
-When no usable token is cached yet -- before the provider's first publish, or in
-a degraded window where a refresh is failing and the cached token is within a
-small safety margin of expiring -- the exporter **stops accepting new batches**
-(back-pressures upstream) rather than sending an unauthenticated or soon-to-lapse
-request. It resumes as soon as a usable token arrives; nothing is dropped. (If
-buffered batches are force-drained during shutdown while no token is available,
-they are NACK'd as **retryable**.) A token is guaranteed to eventually arrive:
-the bound extension holds data-path startup until its first token publish, and
-its token stream stays live for the exporter's lifetime.
+The provider-generated Authorization header takes precedence over a statically
+configured header of the same name. Ensure that the provider's configured
+resource or scopes match the OTLP destination; a mismatch is reported by the
+destination as an authentication failure rather than detected at startup.
+
+### ApiKeyProvider
+
+The `api_key_provider` capability supplies an API key together with the HTTP
+header name and an optional authentication scheme. The exporter sends either
+`<header_name>: <api_key>` or
+`<header_name>: <header_scheme> <api_key>`, depending on whether the provider
+sets `http.header_scheme`.
+
+The [`flat_file_api_key_auth`](../../../../contrib-extensions/src/flat_file_api_key_auth/README.md)
+extension can load the key from a file and poll for rotations. The
+`http.header_name` attribute is required for OTLP/HTTP; `http.header_scheme` is
+optional.
+
+```yaml
+groups:
+  default:
+    pipelines:
+      main:
+        extensions:
+          api_key:
+            type: "urn:otel:extension:flat_file_api_key_auth"
+            config:
+              key_secret_file: "/etc/secrets/otlp_api_key"
+              key_secret_file_refresh: 30m
+              attributes:
+                http.header_name: "x-api-key"
+                http.header_scheme: "ApiKey"
+
+        nodes:
+          otlp-http-exporter:
+            type: "urn:otel:exporter:otlp_http"
+            capabilities:
+              api_key_provider: api_key
+            config:
+              endpoint: "https://otlp.example.com:4318"
+              client_pool_size: 1
+              http: {}
+```
+
+Omit `http.header_scheme` when the destination expects the raw key, such as
+`x-api-key: <api_key>`. See the extension README for inline-key configuration
+and the complete field reference.
+
+### BasicAuthProvider
+
+The `basic_auth_provider` capability supplies a username and password. The
+exporter constructs the HTTP Basic authentication header from the current
+credential; the encoded header value is not configured directly.
+
+The [`flat_file_user_pass_auth`](../../../../contrib-extensions/src/flat_file_user_pass_auth/README.md)
+extension accepts a configured username and can load the password from a file
+that is polled for rotations.
+
+```yaml
+groups:
+  default:
+    pipelines:
+      main:
+        extensions:
+          basic_auth:
+            type: "urn:otel:extension:flat_file_user_pass_auth"
+            config:
+              username: "otlp-client"
+              password_secret_file: "/etc/secrets/otlp_password"
+              password_secret_file_refresh: 30m
+
+        nodes:
+          otlp-http-exporter:
+            type: "urn:otel:exporter:otlp_http"
+            capabilities:
+              basic_auth_provider: basic_auth
+            config:
+              endpoint: "https://otlp.example.com:4318"
+              client_pool_size: 1
+              http: {}
+```
+
+See the extension README for inline-password configuration, credential
+validation rules, and the complete field reference.
+
+### AgentFedCredentialProvider
+
+`agent_fed_credential_provider` is intended for deployments where the embedding
+host supplies a bearer token and vendor attributes as one credential snapshot.
+The exporter uses the snapshot's token for the HTTP Authorization header.
+Vendor attributes are ignored because the configured OTLP endpoint and headers
+remain authoritative.
+
+```yaml
+nodes:
+  otlp-http-exporter:
+    type: "urn:otel:exporter:otlp_http"
+    capabilities:
+      # "agent_auth" is an embedding-host extension instance that provides
+      # agent_fed_credential_provider.
+      agent_fed_credential_provider: agent_auth
+    config:
+      endpoint: "https://my-endpoint:4318"
+      client_pool_size: 1
+      http: {}
+```
+
+There is no agent-fed token field in the exporter configuration. The embedding
+host must register an extension instance that provides the capability and
+publish credential updates through that provider.
+
+### Credential refresh and failures
+
+For every provider type, the exporter subscribes to the provider's credential
+stream and caches the prepared HTTP header. Credential acquisition and encoding
+therefore stay off the per-request path.
+
+The exporter stops accepting new batches when no usable credential is cached,
+including before the first credential arrives, when a credential is malformed,
+or when an expiring credential reaches its safety margin. This back-pressures
+upstream instead of sending an unauthenticated request. It resumes when the
+provider publishes a usable credential; buffered batches force-drained during
+shutdown are NACK'd as retryable.
+
+HTTP 401 responses invalidate the exact credential generation used by the
+rejected request and are treated as retryable. The exporter does not reuse that
+generation and resumes after the provider publishes a replacement. A delayed
+401 for an older generation does not invalidate a newer credential.
 
 ## Examples
 
@@ -169,12 +311,14 @@ Input PData message volume is reported by the engine through
 `channel.receiver.messages` with its `signal` attribute on the PData input
 channel and is not duplicated by the exporter.
 
-#### `exporter.exports`
+#### `exporter.attempted`
 
 | Metric | Unit | Attributes | Description |
 | --- | --- | --- | --- |
-| `exporter.exports.messages` | `{message}` | `signal`, `outcome` | Number of PData messages whose export reached a terminal outcome. |
-| `exporter.exports.duration` | `s` | `signal`, `outcome` | Time from dequeuing PData through the terminal HTTP export result, including encoding, compression, and in-flight queueing but excluding Ack/Nack notification. |
+| `exporter.attempted.messages` | `{message}` | `signal`, `outcome` | Number of component-local HTTP delivery attempts, including preparation failures. |
+| `exporter.attempted.duration` | `s` | `signal`, `outcome` | Attempt time through the terminal local or backend result, excluding Ack/Nack notification. Emitted when component duration is enabled. |
+| `exporter.attempted.payload.size` | `By` | `signal`, `outcome` | Uncompressed OTLP protobuf payload bytes produced or submitted by the attempt. Emitted when size measurement is enabled and bytes are available. |
+| `exporter.attempted.items` | `{item}` | `signal`, `outcome` | Signal items handled by the attempt. Emitted when item counting is enabled. |
 
 #### `exporter.otlp_http.failures`
 
@@ -188,6 +332,15 @@ channel and is not duplicated by the exporter.
 `partial_rejection`, or `other`. Successful exports, zero-rejection partial
 successes, and Ack/Nack notification failures do not emit this metric.
 
+#### `exporter.otlp_http.authentication`
+
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `exporter.otlp_http.authentication.ready` | `{1}` | `source` | Whether authenticated progress is currently possible (`0` for not ready, `1` for ready). |
+
+Authentication `source` is the name of the HTTP client auth implementation (ex:
+`BearerAuth`) selected based on the auth capability configured.
+
 ### Events
 
 | Event | Severity | Description |
@@ -197,9 +350,52 @@ successes, and Ack/Nack notification failures do not emit this metric.
 | `otlp.exporter.http.receive` | `debug` | A pdata batch was received by the exporter loop. |
 | `otlp.exporter.http.shutdown` | `info` | Exporter shutdown and terminal reason. |
 | `otlp.exporter.http.zero_partial_rejected` | `debug` | A zero-length partial-success response was rejected. |
-| `otlp.exporter.http.export_error` | `warn` | An HTTP export request did not complete successfully. |
-| `otlp.exporter.http.invalid_bearer_token` | `warn` | A bearer token from the provider could not be turned into a valid `Authorization` header. |
-| `otlp.exporter.http.token_stream_closed` | `warn` | The bearer token provider closed its refresh stream; the last token (if any) is reused and no longer refreshes. |
+| `otlp.exporter.http.export_error` | `warn` | First failed export and further failure summaries at most once per 60 seconds. |
+| `otlp.exporter.http.export_recovered` | `info` | Confirmed recovery after 30 failure-free seconds and fresh success. |
+| `otlp.exporter.http.notification_error` | `warn` | Independently bounded Ack/Nack notification failures. |
+| `otlp.exporter.http.preparation_error` | `warn` | Independently bounded encoding and compression failures. |
+| `otlp.exporter.http.auth.invalid` | `warn` | A credential from the auth provider could not be turned into a valid header. |
+| `otlp.exporter.http.auth.stream_closed` | `warn` | The auth provider closed its refresh stream; the last credential (if any) is reused and no longer refreshes. |
+
+#### Bounded failure diagnostics
+
+The exporter applies the
+[shared repeated-operation policy](../../../../../docs/telemetry/events-guide.md#repeated-operation-failures)
+at three independent boundaries: HTTP delivery, payload preparation, and
+upstream Ack/Nack notification. State is local to an exporter instance/core,
+signal, and configured destination. A success for one signal or boundary cannot
+clear failures for another. The `signal` field uses the canonical lowercase
+values `logs`, `metrics`, and `traces`; the event name identifies the boundary.
+
+`otlp.exporter.http.export_error` reports the first failed delivery and further
+summaries at most once every 60 seconds while new failures are observed.
+`otlp.exporter.http.export_recovered` confirms recovery only after 30 seconds
+without an observed failure and a successful request that started after the
+latest failure. An older in-flight success cannot clear a newer failure.
+Preparation and notification failures have independent bounded summaries and
+cannot establish delivery recovery.
+
+Successful delivery before the first failure is silent. Reports are evaluated
+on completions without probes or timers, so idle periods produce no reports and
+do not establish recovery. Changing error categories does not restart an
+episode or bypass the summary interval.
+
+Export, preparation, and notification diagnostics include `diagnostic_kind`
+(`first_failure`, `summary`, or `recovery`) and interval/episode counts.
+Existing export and notification error event names are preserved. Export errors
+retain a string `message` and boolean `retryable` describing the representative
+failure, which may differ from other failures counted in the summary. Recovery
+events retain that error sample and its age but omit `retryable`. Notification
+errors retain a lowercase `operation` (`ack` or `nack`) and the representative
+`error` sample. Preparation errors retain their representative `error` sample.
+
+Operation-specific fields are encoded before interval and episode counters so
+the bounded ITS record preserves actionable error details. Oversized details
+are truncated with an explicit suffix instead of being dropped.
+
+Diagnostic frequency is bounded before logs reach subscribers. No reports are
+emitted during idle periods, and silence does not establish recovery. Use
+failure metrics for rates; existing error-event filters do not need renaming.
 
 ## Limits
 
@@ -212,3 +408,6 @@ successes, and Ack/Nack notification failures do not emit this metric.
 - [Configuration model](../../../../../docs/configuration-model.md)
 - [Proxy support](../../../../../docs/proxy-support.md)
 - [Core node catalog](../../../README.md)
+
+See the [shared operation diagnostic policy](../../../../../docs/telemetry/events-guide.md#repeated-operation-failures)
+for generic report fields, scoping guidance, and recovery semantics.

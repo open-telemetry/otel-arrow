@@ -419,6 +419,8 @@ pub(super) struct RuntimeInstanceRecord {
     // The controller drops this sender once shutdown is requested so the
     // pipeline control loop can observe channel closure after node tasks exit.
     pub(super) control_sender: Option<Arc<dyn PipelineAdminSender>>,
+    /// Compiled context bindings used by this runtime instance.
+    pub(super) context_bindings: Arc<CompiledContextBindings>,
     pub(super) lifecycle: RuntimeInstanceLifecycle,
 }
 
@@ -463,6 +465,8 @@ pub(super) struct PipelineOperationReservationState {
 pub(super) struct RuntimeRecoveryState {
     /// Generation currently selected to serve this logical core.
     pub(super) serving_generation: u64,
+    /// Compiled context bindings to reuse when restarting this generation.
+    pub(super) context_bindings: Arc<CompiledContextBindings>,
     /// Replacement launches consumed in the current failure streak.
     pub(super) restart_count: usize,
     /// Time at which the current serving replacement reported ready.
@@ -479,6 +483,8 @@ pub(super) struct RuntimeRecoveryState {
 /// Committed logical pipeline config plus the active deployment generation.
 pub(super) struct LogicalPipelineRecord {
     pub(super) resolved: ResolvedPipelineConfig,
+    /// Compiled context bindings for this deployment generation.
+    pub(super) context_bindings: Arc<CompiledContextBindings>,
     /// Pipeline-wide config generation; recovered cores may serve newer generations.
     pub(super) active_generation: u64,
     pub(super) placement: PipelinePlacement,
@@ -522,6 +528,8 @@ pub(super) struct ControllerRuntimeState {
     pub(super) live_config: OtelDataflowSpec,
     /// Monotonic revision for committed logical config changes.
     pub(super) config_revision: u64,
+    /// Latest node-binding snapshot compiled for the committed live configuration.
+    pub(super) latest_context_bindings: Arc<CompiledContextBindings>,
     /// Committed logical pipelines keyed by group/pipeline id.
     pub(super) logical_pipelines: HashMap<PipelineKey, LogicalPipelineRecord>,
     /// Deployed runtime instances keyed by group/pipeline/core/generation.
@@ -529,7 +537,8 @@ pub(super) struct ControllerRuntimeState {
     /// Per-core restart streak and active recovery-worker state.
     pub(super) runtime_recoveries: HashMap<(PipelineKey, usize), RuntimeRecoveryState>,
     /// Runtime failures held while an explicit operation owns their lifecycle.
-    pub(super) deferred_runtime_recoveries: HashMap<DeployedPipelineKey, RuntimeInstanceError>,
+    pub(super) deferred_runtime_recoveries:
+        HashMap<DeployedPipelineKey, (Arc<CompiledContextBindings>, RuntimeInstanceError)>,
     /// Planning-stage lifecycle reservations keyed by logical pipeline.
     pub(super) pipeline_operation_reservations:
         HashMap<PipelineKey, PipelineOperationReservationState>,
@@ -555,6 +564,8 @@ pub(super) struct ControllerRuntimeState {
     pub(super) active_instances: usize,
     /// Whether at least one engine-wide shutdown request has been accepted.
     pub(super) global_shutdown_requested: bool,
+    /// The deadline for the global shutdown, if requested.
+    pub(super) global_shutdown_deadline: Option<Instant>,
     /// Number of phased global-shutdown coordinators still running.
     pub(super) global_shutdown_coordinators: usize,
     /// Active engine-scoped live operation, if any.
@@ -604,6 +615,20 @@ impl ControllerRuntimeState {
                 .get(pipeline_key)
                 .is_some_and(|reservation| reservation.kind == PipelineOperationKind::Shutdown)
     }
+
+    /// Returns true if there is pending lifecycle work that prevents immediate shutdown completion.
+    pub(super) fn has_pending_lifecycle_work(&self) -> bool {
+        self.active_instances > 0
+            || self
+                .runtime_instances
+                .values()
+                .any(|instance| matches!(instance.lifecycle, RuntimeInstanceLifecycle::Active))
+            || !self.active_rollouts.is_empty()
+            || !self.active_shutdowns.is_empty()
+            || self.active_engine_operation.is_some()
+            || !self.pipeline_operation_reservations.is_empty()
+            || self.global_shutdown_coordinators > 0
+    }
 }
 
 #[derive(Debug)]
@@ -621,6 +646,8 @@ pub(super) struct CandidateRolloutPlan {
     pub(super) action: RolloutAction,
     /// Resolved target pipeline config after applying the request.
     pub(super) resolved_pipeline: ResolvedPipelineConfig,
+    /// Compiled context bindings for the target runtime instances.
+    pub(super) context_bindings: Arc<CompiledContextBindings>,
     /// Runtime config revision used to build this plan.
     pub(super) base_config_revision: u64,
     /// Current committed record, absent for create rollouts.

@@ -11,6 +11,75 @@ changes. See [`RELEASING.md`](../RELEASING.md) for the versioning policy.
 
 <!-- next version -->
 
+## v0.59.0
+
+No changes. This release maintains version parity across the repository.
+
+<!-- previous-version -->
+
+## v0.58.0
+
+### :bulb: Enhancements :bulb:
+
+- `pkg/arrow`: OTAP timestamp columns are now required to be in nanoseconds with a time zone
+set to either 'UTC', '+00:00', or no timezone. In the future no timezone will also be rejected.
+ ([#2369](https://github.com/open-telemetry/otel-arrow/issues/2369))
+  Data produced by this library already used UTC nanosecond timestamps, so no
+  action is needed. Received data that omits the time zone is still accepted and
+  read as UTC, so upgrading senders and receivers in any order is safe.
+
+<!-- previous-version -->
+
+## v0.57.0
+
+### :bulb: Enhancements :bulb:
+
+- `dependencies`: Upgrade various Go dependencies. ([#4119](https://github.com/open-telemetry/otel-arrow/issues/4119))
+
+<!-- previous-version -->
+
+## v0.56.0
+
+No changes. This release maintains version parity across the repository.
+
+<!-- previous-version -->
+
+## v0.55.0
+
+### :bulb: Enhancements :bulb:
+
+- `dependencies`: Upgrade various Go dependencies. ([#3951](https://github.com/open-telemetry/otel-arrow/issues/3951), [#4014](https://github.com/open-telemetry/otel-arrow/issues/4014))
+
+<!-- previous-version -->
+
+## v0.54.1
+
+### :bulb: Enhancements :bulb:
+
+- `dependencies`: Upgrade various Go dependencies. ([#3974](https://github.com/open-telemetry/otel-arrow/issues/3974))
+
+<!-- previous-version -->
+
+## v0.54.0
+
+No changes. This release maintains version parity across the repository.
+
+<!-- previous-version -->
+
+## v0.53.0
+
+No changes. This release maintains version parity across the repository.
+
+<!-- previous-version -->
+
+## v0.52.0
+
+### :bulb: Enhancements :bulb:
+
+- `dependencies`: Upgrade various Go dependencies. ([#3761](https://github.com/open-telemetry/otel-arrow/issues/3761), [#3783](https://github.com/open-telemetry/otel-arrow/issues/3783))
+
+<!-- previous-version -->
+
 ## v0.51.0
 
 ### :bulb: Enhancements :bulb:

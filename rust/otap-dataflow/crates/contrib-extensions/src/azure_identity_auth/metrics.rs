@@ -6,7 +6,7 @@
 use otel_arrow_dfe_telemetry::instrument::{Counter, Mmsc};
 use otel_arrow_dfe_telemetry_macros::metric_set;
 
-use crate::common::token_refresh::TokenProviderMetrics;
+use crate::common::background_refresh::BackgroundProviderMetrics;
 
 /// Telemetry metrics for the Azure Identity Auth extension.
 #[metric_set(name = "extension.azure_identity_auth")]
@@ -26,7 +26,7 @@ pub struct AzureIdentityAuthMetrics {
     pub auth_success_latency: Mmsc,
 }
 
-impl TokenProviderMetrics for AzureIdentityAuthMetrics {
+impl BackgroundProviderMetrics for AzureIdentityAuthMetrics {
     fn successes(&mut self) -> &mut Counter<u64> {
         &mut self.auth_successes
     }

@@ -107,7 +107,7 @@ impl PipelineStage for RouteToPipelineStage {
 
 #[cfg(test)]
 mod test {
-    use data_engine_expressions::{
+    use otel_arrow_contrib_data_engine_expressions::{
         DataExpression, OutputDataExpression, OutputExpression, PipelineExpressionBuilder,
         QueryLocation, StringScalarExpression,
     };

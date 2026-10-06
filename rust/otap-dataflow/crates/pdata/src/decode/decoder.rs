@@ -109,7 +109,8 @@ impl Consumer {
                     record,
                 });
             } else {
-                //todo: handle stream reader finished
+                // A payload with no record batch would be dropped silently, so error out.
+                return Err(Error::RecordBatchNotFound { payload_type });
             }
         }
         Ok(records)
@@ -246,20 +247,34 @@ mod tests {
             DataType::Float64 => Arc::new(Float64Array::from_iter(
                 (0..num_rows).map(|_| r.random::<f64>()),
             )) as Arc<_>,
-            DataType::Timestamp(unit, _) => match unit {
-                TimeUnit::Second => Arc::new(TimestampSecondArray::from_iter(
-                    &Int64Array::from_iter((0..num_rows).map(|_| r.random::<i64>())),
-                )) as Arc<_>,
-                TimeUnit::Millisecond => Arc::new(TimestampMillisecondArray::from_iter(
-                    &Int64Array::from_iter((0..num_rows).map(|_| r.random::<i64>())),
-                )) as Arc<_>,
-                TimeUnit::Microsecond => Arc::new(TimestampMicrosecondArray::from_iter(
-                    &Int64Array::from_iter((0..num_rows).map(|_| r.random::<i64>())),
-                )) as Arc<_>,
+            // Preserve the column's time zone so the generated array matches
+            // the schema it is generated for.
+            DataType::Timestamp(unit, time_zone) => match unit {
+                TimeUnit::Second => Arc::new(
+                    TimestampSecondArray::from_iter(&Int64Array::from_iter(
+                        (0..num_rows).map(|_| r.random::<i64>()),
+                    ))
+                    .with_timezone_opt(time_zone.clone()),
+                ) as Arc<_>,
+                TimeUnit::Millisecond => Arc::new(
+                    TimestampMillisecondArray::from_iter(&Int64Array::from_iter(
+                        (0..num_rows).map(|_| r.random::<i64>()),
+                    ))
+                    .with_timezone_opt(time_zone.clone()),
+                ) as Arc<_>,
+                TimeUnit::Microsecond => Arc::new(
+                    TimestampMicrosecondArray::from_iter(&Int64Array::from_iter(
+                        (0..num_rows).map(|_| r.random::<i64>()),
+                    ))
+                    .with_timezone_opt(time_zone.clone()),
+                ) as Arc<_>,
 
-                TimeUnit::Nanosecond => Arc::new(TimestampNanosecondArray::from_iter(
-                    &Int64Array::from_iter((0..num_rows).map(|_| r.random::<i64>())),
-                )) as Arc<_>,
+                TimeUnit::Nanosecond => Arc::new(
+                    TimestampNanosecondArray::from_iter(&Int64Array::from_iter(
+                        (0..num_rows).map(|_| r.random::<i64>()),
+                    ))
+                    .with_timezone_opt(time_zone.clone()),
+                ) as Arc<_>,
             },
             DataType::Binary | DataType::LargeBinary => Arc::new(BinaryArray::from_iter(
                 (0..num_rows).map(|_| Some(Alphanumeric.sample_string(&mut r, 10))),
@@ -275,7 +290,10 @@ mod tests {
 
     use super::Consumer;
     use crate::Producer;
-    use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+    use crate::error::Error;
+    use crate::proto::opentelemetry::arrow::v1::{
+        ArrowPayload, ArrowPayloadType, BatchArrowRecords,
+    };
     use crate::testing::fixtures::{
         logs_with_full_resource_and_scope, metrics_sum_with_full_resource_and_scope,
         traces_with_full_resource_and_scope,
@@ -283,9 +301,7 @@ mod tests {
     use crate::testing::round_trip::{encode_logs, encode_metrics, encode_traces};
 
     /// Helper: produce BatchArrowRecords from OTAP data using the Producer.
-    fn produce_bar(
-        otap: &mut crate::otap::OtapArrowRecords,
-    ) -> crate::proto::opentelemetry::arrow::v1::BatchArrowRecords {
+    fn produce_bar(otap: &mut crate::otap::OtapArrowRecords) -> BatchArrowRecords {
         let mut producer = Producer::new();
         producer
             .produce_bar(otap)
@@ -467,5 +483,29 @@ mod tests {
         writer.flush().unwrap();
         *reader.get_mut() = Cursor::new(std::mem::take(writer.get_mut()));
         assert_eq!(batch2, reader.next().unwrap().unwrap());
+    }
+
+    /// Scenario: a payload carries a schema but no record batch, so the stream reader yields nothing.
+    /// Guarantees: consume_bar returns RecordBatchNotFound instead of silently dropping the payload.
+    #[test]
+    fn test_consume_bar_payload_without_record_batch_errors() {
+        let schema = Arc::new(create_test_schema());
+        let mut writer = arrow::ipc::writer::StreamWriter::try_new(vec![], &schema).unwrap();
+        writer.finish().unwrap();
+        let schema_only_bytes = std::mem::take(writer.get_mut());
+
+        let mut bar = BatchArrowRecords {
+            batch_id: 0,
+            arrow_payloads: vec![ArrowPayload {
+                schema_id: "0".to_string(),
+                r#type: ArrowPayloadType::Logs as i32,
+                record: schema_only_bytes,
+            }],
+            ..Default::default()
+        };
+
+        let mut consumer = Consumer::default();
+        let result = consumer.consume_bar(&mut bar);
+        assert!(matches!(result, Err(Error::RecordBatchNotFound { .. })));
     }
 }

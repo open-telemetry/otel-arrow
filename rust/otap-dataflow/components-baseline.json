@@ -102,13 +102,19 @@
     "attributes": {}
   },
   {
-    "id": "urn:otel:extension:oauth2_client_auth",
+    "id": "urn:otel:extension:flat_file_user_pass_auth",
     "category": "Extension",
     "description": null,
     "attributes": {}
   },
   {
     "id": "urn:otel:extension:k8s_service_account_token_auth",
+    "category": "Extension",
+    "description": null,
+    "attributes": {}
+  },
+  {
+    "id": "urn:otel:extension:oauth2_client_auth",
     "category": "Extension",
     "description": null,
     "attributes": {}
@@ -163,6 +169,12 @@
   },
   {
     "id": "urn:otel:processor:filter",
+    "category": "Processor",
+    "description": null,
+    "attributes": {}
+  },
+  {
+    "id": "urn:otel:processor:log_parser",
     "category": "Processor",
     "description": null,
     "attributes": {}
@@ -241,6 +253,12 @@
   },
   {
     "id": "urn:otel:receiver:kafka",
+    "category": "Receiver",
+    "description": null,
+    "attributes": {}
+  },
+  {
+    "id": "urn:otel:receiver:oracle",
     "category": "Receiver",
     "description": null,
     "attributes": {}

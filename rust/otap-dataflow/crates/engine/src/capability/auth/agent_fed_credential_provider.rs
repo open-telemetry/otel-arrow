@@ -10,8 +10,10 @@
 
 use super::BearerToken;
 use crate::capability::error::CapabilityError;
+use futures::Stream;
 use otel_arrow_dfe_engine_macros::capability;
 use serde_json::{Map, Value};
+use std::pin::Pin;
 use std::sync::Arc;
 
 /// One generation-consistent host credential and attribute snapshot.
@@ -44,6 +46,23 @@ impl AgentFedCredentialSnapshot {
     }
 }
 
+/// A per-consumer subscription to credential snapshot refreshes.
+///
+/// The item is a plain [`AgentFedCredentialSnapshot`], not a `Result`: a refresh failure does not
+/// terminate the subscription. The stream simply does not emit until the next
+/// successful refresh, and failures surface via [`AgentFedCredentialProvider::get_credential`]
+/// and telemetry instead. Because the item is [`Clone`], a provider can fan one
+/// refreshed credential snapshot out to all subscribers via a `watch`/`broadcast` channel.
+///
+/// Boxed to hide the concrete stream type so providers can back it differently
+/// (e.g. a `watch` channel or an `unfold`) without changing the signature. The
+/// `Send` bound is intentionally omitted: the subscription is always consumed
+/// on the core that created it (thread-per-core), so it need not be `Send`. The
+/// `#[capability]` macro emits this signature into both the `local` (`?Send`)
+/// and `shared` (`Send + Sync`) trait variants unchanged.
+pub type AgentFedCredentialSnapshotStream =
+    Pin<Box<dyn Stream<Item = AgentFedCredentialSnapshot> + 'static>>;
+
 /// Provides atomically-paired agent-fed credentials and vendor attributes.
 #[capability(
     name = "agent_fed_credential_provider",
@@ -56,12 +75,36 @@ pub trait AgentFedCredentialProvider {
     /// that same generation. It must not reconstruct this result by calling
     /// separate token and vendor capabilities.
     ///
+    /// Providers must clone and return the same published `Arc` while the host
+    /// snapshot is unchanged. Consumers use `Arc::ptr_eq` as the snapshot
+    /// generation identity so rejected credentials are not retried until the
+    /// host publishes a replacement.
+    ///
     /// The returned future must be cancellation-safe because consumers may
     /// enforce a lookup deadline and drop it before completion. Cancellation
     /// must not leave shared state or locks unusable. Implementations should
-    /// normally clone an already-published snapshot and avoid network I/O or
-    /// other unbounded work in this method.
+    /// avoid network I/O or other unbounded work in this method.
     async fn get_credential(&self) -> Result<Arc<AgentFedCredentialSnapshot>, CapabilityError>;
+
+    /// Subscribes to the stream of credential snapshot refreshes.
+    ///
+    /// Yields each newly published credential snapshot for the lifetime of the extension;
+    /// each call returns an independent subscription. The stream does not carry
+    /// errors: a failed refresh does not end the subscription, and the next
+    /// successful refresh still yields an credential snapshot (see [`AgentFedCredentialSnapshotStream`]).
+    ///
+    /// # Contract
+    ///
+    /// A subscription created *after* an credential snapshot has already been published
+    /// MUST immediately yield the current credential snapshot rather than block until the
+    /// next refresh. This lets a consumer subscribe at any point (for example
+    /// after the provider's readiness gate has fired) and obtain a usable API
+    /// Key without a separate [`get_credential`](Self::get_credential) call, avoiding
+    /// a race between reading the current token and subscribing to updates. A
+    /// `tokio::sync::watch`-backed implementation satisfies this naturally,
+    /// since a fresh receiver observes the channel's current value on its first
+    /// poll.
+    fn credential_stream(&self) -> AgentFedCredentialSnapshotStream;
 }
 
 #[cfg(test)]

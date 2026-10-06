@@ -275,14 +275,15 @@ pub(super) fn handle_key_event(key: KeyEvent, app: &mut AppState) -> EventOutcom
             EventOutcome::Refresh
         }
         KeyCode::Enter => {
-            if app.view == View::Engine && app.focus == FocusArea::List {
-                if let Some((group_id, pipeline_id)) = app.selected_engine_pipeline_target() {
-                    app.view = View::Pipelines;
-                    app.pipeline_selected = Some(format!("{group_id}:{pipeline_id}"));
-                    app.focus = FocusArea::Detail;
-                    app.reset_scroll();
-                    return EventOutcome::Refresh;
-                }
+            if app.view == View::Engine
+                && app.focus == FocusArea::List
+                && let Some((group_id, pipeline_id)) = app.selected_engine_pipeline_target()
+            {
+                app.view = View::Pipelines;
+                app.pipeline_selected = Some(format!("{group_id}:{pipeline_id}"));
+                app.focus = FocusArea::Detail;
+                app.reset_scroll();
+                return EventOutcome::Refresh;
             }
             app.focus = FocusArea::Detail;
             app.reset_scroll();

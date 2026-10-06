@@ -1,5 +1,8 @@
 # OTAP Dataflow Engine Controller
 
+This crate is currently pre-1.0. Its public API may evolve between minor
+releases.
+
 The OTAP Dataflow Engine Controller is responsible for deploying, managing, and
 monitoring pipeline groups within a single OTAP Dataflow Engine process.
 

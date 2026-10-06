@@ -17,6 +17,7 @@ use crate::arrays::NullableArrayAccessor;
 use crate::error::Error;
 use crate::otap::OtapArrowRecords;
 use crate::otlp::attributes::{Attribute16Arrays, AttributeValueType};
+use crate::otlp::common::{ResourceArrays, ScopeArrays};
 use crate::otlp::logs::{LogBodyArrays, LogsArrays};
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use crate::schema::{SpanId, TraceId};
@@ -37,6 +38,8 @@ pub struct OtapLogsView<'a> {
     // with 0 rows, so when this is `None` the view simply emits 0 rows (the
     // hierarchy maps below are empty).
     columns: Option<LogsArrays<'a>>, // ~220 bytes when present
+    resource_columns: Option<ResourceArrays<'a>>,
+    scope_columns: Option<ScopeArrays<'a>>,
 
     resource_attrs: Option<Attribute16Arrays<'a>>, // ~168 bytes when present
     scope_attrs: Option<Attribute16Arrays<'a>>,    // ~168 bytes when present
@@ -94,6 +97,8 @@ impl<'a> OtapLogsView<'a> {
     ) -> Result<Self, Error> {
         // 1. Cache root columns for O(1) access.
         let columns = logs_batch.map(LogsArrays::try_from).transpose()?;
+        let resource_columns = logs_batch.map(ResourceArrays::try_from).transpose()?;
+        let scope_columns = logs_batch.map(ScopeArrays::try_from).transpose()?;
 
         // 2. Pre-compute resource/scope grouping. When the root batch is missing
         //    these stay empty, so iteration yields 0 rows.
@@ -128,6 +133,8 @@ impl<'a> OtapLogsView<'a> {
 
         Ok(Self {
             columns,
+            resource_columns,
+            scope_columns,
             resource_attrs: resource_attrs
                 .map(Attribute16Arrays::try_from)
                 .transpose()?,
@@ -210,7 +217,7 @@ impl<'a> Iterator for OtapResourceLogsIter<'a> {
 pub struct OtapResourceLogsView<'a> {
     view: &'a OtapLogsView<'a>,
     resource_id: u16,
-    #[allow(dead_code)]
+    // row index of the first log
     row_indices: &'a RowGroup,
 }
 
@@ -232,9 +239,11 @@ impl<'a> ResourceLogsView for OtapResourceLogsView<'a> {
 
     #[inline]
     fn resource(&self) -> Option<Self::Resource<'_>> {
+        let first_row_index = self.row_indices.iter().next()?;
         Some(OtapResourceView {
             view: self.view,
             resource_id: self.resource_id,
+            first_row_index,
         })
     }
 
@@ -245,8 +254,14 @@ impl<'a> ResourceLogsView for OtapResourceLogsView<'a> {
 
     #[inline]
     fn schema_url(&self) -> Option<Str<'_>> {
-        // TODO: Implement schema_url lookup from logs batch
-        None
+        let first_row = self.row_indices.iter().next()?;
+        self.view
+            .resource_columns
+            .as_ref()?
+            .schema_url
+            .as_ref()
+            .and_then(|c| c.str_at(first_row))
+            .map(|s| s.as_bytes())
     }
 }
 
@@ -315,9 +330,11 @@ impl<'a> ScopeLogsView for OtapScopeLogsView<'a> {
 
     #[inline]
     fn scope(&self) -> Option<Self::Scope<'_>> {
+        let first_row_index = self.row_indices.iter().next()?;
         Some(OtapInstrumentationScopeView {
             view: self.view,
             scope_id: self.scope_id,
+            first_row_index,
         })
     }
 
@@ -328,9 +345,13 @@ impl<'a> ScopeLogsView for OtapScopeLogsView<'a> {
 
     #[inline]
     fn schema_url(&self) -> Option<Str<'_>> {
-        // get_schema_url_for_scope(self.view.logs_batch, self.scope_id)
-        // TODO: Implement schema_url lookup for scope
-        None
+        let first_row = self.row_indices.iter().next()?;
+        self.view
+            .columns
+            .as_ref()?
+            .schema_url
+            .as_ref()
+            .and_then(|col| col.str_at(first_row).map(|s| s.as_bytes()))
     }
 }
 
@@ -517,6 +538,7 @@ impl<'a> OtapLogRecordView<'a> {
 pub struct OtapResourceView<'a> {
     view: &'a OtapLogsView<'a>,
     resource_id: u16,
+    first_row_index: usize,
 }
 
 impl<'a> ResourceView for OtapResourceView<'a> {
@@ -548,7 +570,18 @@ impl<'a> ResourceView for OtapResourceView<'a> {
 
     #[inline]
     fn dropped_attributes_count(&self) -> u32 {
-        0 // TODO: implement if stored in OTAP
+        self.view
+            .resource_columns
+            .as_ref()
+            .and_then(|cols| cols.dropped_attributes_count.as_ref())
+            .map(|col| {
+                if col.is_valid(self.first_row_index) {
+                    col.value(self.first_row_index)
+                } else {
+                    0
+                }
+            })
+            .unwrap_or(0)
     }
 }
 
@@ -556,6 +589,7 @@ impl<'a> ResourceView for OtapResourceView<'a> {
 pub struct OtapInstrumentationScopeView<'a> {
     view: &'a OtapLogsView<'a>,
     scope_id: u16,
+    first_row_index: usize,
 }
 
 impl<'a> InstrumentationScopeView for OtapInstrumentationScopeView<'a> {
@@ -571,12 +605,22 @@ impl<'a> InstrumentationScopeView for OtapInstrumentationScopeView<'a> {
 
     #[inline]
     fn name(&self) -> Option<Str<'_>> {
-        None // TODO: implement - get from scope table
+        self.view
+            .scope_columns
+            .as_ref()?
+            .name
+            .as_ref()
+            .and_then(|col| col.str_at(self.first_row_index).map(|s| s.as_bytes()))
     }
 
     #[inline]
     fn version(&self) -> Option<Str<'_>> {
-        None // TODO: implement - get from scope table
+        self.view
+            .scope_columns
+            .as_ref()?
+            .version
+            .as_ref()
+            .and_then(|col| col.str_at(self.first_row_index).map(|s| s.as_bytes()))
     }
 
     #[inline]
@@ -597,7 +641,18 @@ impl<'a> InstrumentationScopeView for OtapInstrumentationScopeView<'a> {
 
     #[inline]
     fn dropped_attributes_count(&self) -> u32 {
-        0 // TODO: implement if stored in OTAP
+        self.view
+            .scope_columns
+            .as_ref()
+            .and_then(|cols| cols.dropped_attributes_count.as_ref())
+            .map(|col| {
+                if col.is_valid(self.first_row_index) {
+                    col.value(self.first_row_index)
+                } else {
+                    0
+                }
+            })
+            .unwrap_or(0)
     }
 }
 
@@ -605,6 +660,10 @@ fn get_body_from_struct<'a>(
     cols: &'a LogBodyArrays<'a>,
     row_idx: usize,
 ) -> Option<OtapAnyValueView<'a>> {
+    if !cols.is_valid(row_idx) {
+        return None;
+    }
+
     let anyval = &cols.anyval_arrays;
     let type_array = &anyval.attr_type;
 
@@ -664,10 +723,15 @@ fn get_body_from_struct<'a>(
                 .map(OtapAnyValueView::Bytes)
                 .unwrap_or(OtapAnyValueView::Empty),
         ),
-        _ => {
-            // For other types (Map, Slice), return empty for now
-            Some(OtapAnyValueView::Empty)
-        }
+        AttributeValueType::Map | AttributeValueType::Slice => Some(
+            anyval
+                .attr_ser
+                .as_ref()
+                .and_then(|accessor| accessor.slice_at(row_idx))
+                .map(OtapAnyValueView::Serialized)
+                .unwrap_or(OtapAnyValueView::Empty),
+        ),
+        _ => Some(OtapAnyValueView::Empty),
     }
 }
 
@@ -684,11 +748,26 @@ fn get_log_id(id_array: Option<&UInt16Array>, row_idx: usize) -> Option<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::otap::{Logs, from_record_messages};
+    use crate::proto::opentelemetry::arrow::v1::BatchArrowRecords;
+    use crate::proto::opentelemetry::common::v1::AnyValue;
+    use crate::proto::opentelemetry::common::v1::ArrayValue;
+    use crate::proto::opentelemetry::common::v1::KeyValue;
+    use crate::proto::opentelemetry::common::v1::KeyValueList;
+    use crate::proto::opentelemetry::common::v1::any_value;
+    use crate::proto::opentelemetry::logs::v1::LogRecord;
+    use crate::schema::UTC_TIME_ZONE;
+    use crate::schema::consts;
+    use crate::testing::round_trip::to_otap_logs;
+    use crate::{Consumer, Producer};
     use arrow::array::{
-        ArrayRef, Int32Array, Int64Array, StringArray, StructArray, UInt8Array, UInt16Array,
+        ArrayRef, BinaryArray, DictionaryArray, Int32Array, Int64Array, StringArray, StructArray,
+        UInt8Array, UInt16Array,
     };
-    use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
-    use otel_arrow_dfe_pdata_views::views::common::{AnyValueView, AttributeView};
+    use arrow::buffer::NullBuffer;
+    use arrow::datatypes::{DataType, Field, Fields, Schema, TimeUnit};
+    use otel_arrow_dfe_pdata_views::views::common::{AnyValueView, AttributeView, ValueType};
+    use prost::Message;
     use std::sync::Arc;
 
     /// Helper to create a logs batch with optional ID column
@@ -696,13 +775,29 @@ mod tests {
         // Define schema matching OTAP logs structure
         let resource_field = Field::new(
             "resource",
-            DataType::Struct(vec![Field::new("id", DataType::UInt16, false)].into()),
+            DataType::Struct(
+                vec![
+                    Field::new("id", DataType::UInt16, false),
+                    Field::new("dropped_attributes_count", DataType::UInt32, true),
+                ]
+                .into(),
+            ),
             false,
         );
 
         let scope_field = Field::new(
             "scope",
-            DataType::Struct(vec![Field::new("id", DataType::UInt16, false)].into()),
+            DataType::Struct(
+                vec![
+                    Field::new("id", DataType::UInt16, false),
+                    Field::new(
+                        "name",
+                        DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+                        true,
+                    ),
+                ]
+                .into(),
+            ),
             false,
         );
 
@@ -716,12 +811,12 @@ mod tests {
             scope_field,
             Field::new(
                 "time_unix_nano",
-                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                 true,
             ),
             Field::new(
                 "observed_time_unix_nano",
-                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                 true,
             ),
             Field::new("severity_number", DataType::Int32, true),
@@ -748,29 +843,54 @@ mod tests {
 
         // Resource structs (all from resource_id=1)
         let resource_id_array = UInt16Array::from(vec![1, 1, 1]);
-        let resource_struct = StructArray::from(vec![(
-            Arc::new(Field::new("id", DataType::UInt16, false)),
-            Arc::new(resource_id_array) as ArrayRef,
-        )]);
+        let resource_struct = StructArray::from(vec![
+            (
+                Arc::new(Field::new("id", DataType::UInt16, false)),
+                Arc::new(resource_id_array) as ArrayRef,
+            ),
+            (
+                Arc::new(Field::new(
+                    "dropped_attributes_count",
+                    DataType::UInt32,
+                    true,
+                )),
+                Arc::new(UInt32Array::from_iter([Some(1), Some(0), None])) as ArrayRef,
+            ),
+        ]);
 
         // Scope structs (logs 1-2 from scope_id=10, log 3 from scope_id=11)
         let scope_id_array = UInt16Array::from(vec![10, 10, 11]);
-        let scope_struct = StructArray::from(vec![(
-            Arc::new(Field::new("id", DataType::UInt16, false)),
-            Arc::new(scope_id_array) as ArrayRef,
-        )]);
+        let scope_struct = StructArray::from(vec![
+            (
+                Arc::new(Field::new("id", DataType::UInt16, false)),
+                Arc::new(scope_id_array) as ArrayRef,
+            ),
+            (
+                Arc::new(Field::new(
+                    "name",
+                    DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+                    true,
+                )),
+                Arc::new(DictionaryArray::new(
+                    UInt8Array::from_iter([Some(0), None, None]),
+                    Arc::new(StringArray::from_iter_values(["foo"])),
+                )) as ArrayRef,
+            ),
+        ]);
 
         let time_array = TimestampNanosecondArray::from(vec![
             Some(1000000000),
             Some(2000000000),
             Some(3000000000),
-        ]);
+        ])
+        .with_timezone(UTC_TIME_ZONE);
 
         let observed_time_array = TimestampNanosecondArray::from(vec![
             Some(1000000100),
             Some(2000000100),
             Some(3000000100),
-        ]);
+        ])
+        .with_timezone(UTC_TIME_ZONE);
 
         let severity_array = Int32Array::from(vec![Some(9), Some(17), Some(13)]); // INFO, ERROR, WARN
         let severity_text_array =
@@ -898,18 +1018,35 @@ mod tests {
         let mut scope_count = 0;
         let mut log_count = 0;
 
-        for resource_logs in logs_view.resources() {
+        for (rl_idx, resource_logs) in logs_view.resources().enumerate() {
             resource_count += 1;
 
-            // Verify resource attributes
-            if let Some(resource) = resource_logs.resource() {
-                let attr_count = resource.attributes().count();
-                assert_eq!(attr_count, 2, "Expected 2 resource attributes");
-            }
+            let resource = resource_logs.resource().unwrap();
+            let attr_count = resource.attributes().count();
+            assert_eq!(attr_count, 2, "Expected 2 resource attributes");
+            let dropped_attr_count = resource.dropped_attributes_count();
+            let expected_dropped_attrs = match rl_idx {
+                0 => 1,
+                1 | 2 => 0,
+                _ => {
+                    panic!("too many resource logs")
+                }
+            };
+            assert_eq!(dropped_attr_count, expected_dropped_attrs);
 
-            for scope_logs in resource_logs.scopes() {
+            for (sl_idx, scope_logs) in resource_logs.scopes().enumerate() {
                 scope_count += 1;
 
+                let scope = scope_logs.scope().unwrap();
+                let scope_name = scope.name();
+                let expected_scope_name = match sl_idx {
+                    0 => Some("foo".as_bytes()),
+                    1 => None,
+                    _ => {
+                        panic!("too many scope logs")
+                    }
+                };
+                assert_eq!(scope_name, expected_scope_name);
                 for log_record in scope_logs.log_records() {
                     log_count += 1;
 
@@ -978,6 +1115,224 @@ mod tests {
         }
 
         assert_eq!(log_count, 3, "Expected 3 logs through view");
+    }
+
+    /// Scenario: A log record whose body is a KeyValueList, encoded through the real OTAP path.
+    /// Guarantees: the body decodes as a KeyValueList the view can iterate, not Empty.
+    #[test]
+    fn test_map_body_decodes_from_serialized_column() {
+        let log = LogRecord {
+            body: Some(AnyValue {
+                value: Some(any_value::Value::KvlistValue(KeyValueList {
+                    values: vec![KeyValue {
+                        key: "k".to_string(),
+                        value: Some(AnyValue {
+                            value: Some(any_value::Value::StringValue("v".to_string())),
+                        }),
+                    }],
+                })),
+            }),
+            ..Default::default()
+        };
+        let otap = to_otap_logs(vec![log]);
+        let view = OtapLogsView::try_from(&otap).expect("logs view");
+
+        let mut checked = 0;
+        for resource_logs in view.resources() {
+            for scope_logs in resource_logs.scopes() {
+                for log_record in scope_logs.log_records() {
+                    let body = log_record.body().expect("body");
+                    assert_eq!(body.value_type(), ValueType::KeyValueList);
+                    let entries: Vec<_> = body.as_kvlist().expect("kvlist").collect();
+                    assert_eq!(entries.len(), 1);
+                    assert_eq!(entries[0].key(), b"k".as_slice());
+                    let entry_value = entries[0].value().expect("entry value");
+                    assert_eq!(entry_value.as_string(), Some(b"v".as_slice()));
+                    checked += 1;
+                }
+            }
+        }
+        assert_eq!(checked, 1);
+    }
+
+    /// Scenario: A log record whose body is an array, encoded through the real OTAP path.
+    /// Guarantees: the body decodes as an Array the view can iterate, not Empty.
+    #[test]
+    fn test_slice_body_decodes_from_serialized_column() {
+        let log = LogRecord {
+            body: Some(AnyValue {
+                value: Some(any_value::Value::ArrayValue(ArrayValue {
+                    values: vec![
+                        AnyValue {
+                            value: Some(any_value::Value::StringValue("a".to_string())),
+                        },
+                        AnyValue {
+                            value: Some(any_value::Value::IntValue(1)),
+                        },
+                    ],
+                })),
+            }),
+            ..Default::default()
+        };
+        let otap = to_otap_logs(vec![log]);
+        let view = OtapLogsView::try_from(&otap).expect("logs view");
+
+        let mut checked = 0;
+        for resource_logs in view.resources() {
+            for scope_logs in resource_logs.scopes() {
+                for log_record in scope_logs.log_records() {
+                    let body = log_record.body().expect("body");
+                    assert_eq!(body.value_type(), ValueType::Array);
+                    let items: Vec<_> = body.as_array().expect("array").collect();
+                    assert_eq!(items.len(), 2);
+                    assert_eq!(items[0].as_string(), Some(b"a".as_slice()));
+                    assert_eq!(items[1].as_int64(), Some(1));
+                    checked += 1;
+                }
+            }
+        }
+        assert_eq!(checked, 1);
+    }
+
+    /// Scenario: Map and array log bodies cross the serialized OTAP wire representation.
+    /// Guarantees: Producer/Consumer Arrow IPC and protobuf round-tripping preserves both bodies
+    /// exactly once for native iteration through OtapLogsView, independent of log-record order.
+    #[test]
+    fn test_composite_bodies_survive_otap_wire_round_trip() {
+        let map_body = AnyValue {
+            value: Some(any_value::Value::KvlistValue(KeyValueList {
+                values: vec![
+                    KeyValue {
+                        key: "EVENT_TIME".to_string(),
+                        value: Some(AnyValue {
+                            value: Some(any_value::Value::StringValue(
+                                "2026-09-18T20:51:05.892842000".to_string(),
+                            )),
+                        }),
+                    },
+                    KeyValue {
+                        key: "EVENT_ID".to_string(),
+                        value: Some(AnyValue {
+                            value: Some(any_value::Value::StringValue("19".to_string())),
+                        }),
+                    },
+                    KeyValue {
+                        key: "MESSAGE".to_string(),
+                        value: Some(AnyValue {
+                            value: Some(any_value::Value::StringValue("oracle event".to_string())),
+                        }),
+                    },
+                ],
+            })),
+        };
+        let array_body = AnyValue {
+            value: Some(any_value::Value::ArrayValue(ArrayValue {
+                values: vec![
+                    AnyValue {
+                        value: Some(any_value::Value::StringValue("a".to_string())),
+                    },
+                    AnyValue {
+                        value: Some(any_value::Value::IntValue(1)),
+                    },
+                    AnyValue {
+                        value: Some(any_value::Value::BoolValue(true)),
+                    },
+                ],
+            })),
+        };
+
+        let mut encoded = to_otap_logs(vec![
+            LogRecord {
+                event_name: "map-body".to_string(),
+                body: Some(map_body),
+                ..Default::default()
+            },
+            LogRecord {
+                event_name: "array-body".to_string(),
+                body: Some(array_body),
+                ..Default::default()
+            },
+        ]);
+
+        let bar = Producer::new()
+            .produce_bar(&mut encoded)
+            .expect("produce BatchArrowRecords");
+        let mut wire_bytes = Vec::new();
+        bar.encode(&mut wire_bytes)
+            .expect("encode BatchArrowRecords protobuf");
+        let mut decoded_bar =
+            BatchArrowRecords::decode(wire_bytes.as_slice()).expect("decode wire payload");
+        let record_messages = Consumer::default()
+            .consume_bar(&mut decoded_bar)
+            .expect("consume Arrow IPC payloads");
+        let decoded = OtapArrowRecords::Logs(
+            from_record_messages::<Logs>(record_messages).expect("rebuild OTAP logs"),
+        );
+
+        let view = OtapLogsView::try_from(&decoded).expect("logs view");
+        let mut map_count = 0;
+        let mut array_count = 0;
+        for resource in view.resources() {
+            for scope in resource.scopes() {
+                for log_record in scope.log_records() {
+                    let body = log_record.body().expect("body");
+                    match log_record.event_name().expect("event name") {
+                        b"map-body" => {
+                            map_count += 1;
+                            assert_eq!(body.value_type(), ValueType::KeyValueList);
+                            let entries: Vec<_> = body.as_kvlist().expect("kvlist").collect();
+                            assert_eq!(entries.len(), 3);
+                            for (key, expected) in [
+                                ("EVENT_TIME", "2026-09-18T20:51:05.892842000"),
+                                ("EVENT_ID", "19"),
+                                ("MESSAGE", "oracle event"),
+                            ] {
+                                let entry = entries
+                                    .iter()
+                                    .find(|entry| entry.key() == key.as_bytes())
+                                    .unwrap_or_else(|| panic!("missing map entry {key}"));
+                                let value = entry.value().expect("map entry value");
+                                assert_eq!(value.as_string(), Some(expected.as_bytes()));
+                            }
+                        }
+                        b"array-body" => {
+                            array_count += 1;
+                            assert_eq!(body.value_type(), ValueType::Array);
+                            let items: Vec<_> = body.as_array().expect("array").collect();
+                            assert_eq!(items.len(), 3);
+                            assert_eq!(items[0].as_string(), Some(b"a".as_slice()));
+                            assert_eq!(items[1].as_int64(), Some(1));
+                            assert_eq!(items[2].as_bool(), Some(true));
+                        }
+                        name => panic!("unexpected log event name: {name:?}"),
+                    }
+                }
+            }
+        }
+        assert_eq!(map_count, 1, "map record must appear exactly once");
+        assert_eq!(array_count, 1, "array record must appear exactly once");
+    }
+
+    /// Scenario: The body struct cell is null while its Map type and ser children still hold values.
+    /// Guarantees: get_body_from_struct honors the parent validity and returns None, not the child bytes.
+    #[test]
+    fn test_map_body_under_null_parent_is_none() {
+        // {"k":"v"} as indefinite CBOR, the kind of value a Map body would carry.
+        let cbor: &[u8] = &[0xbf, 0x61, b'k', 0x61, b'v', 0xff];
+        let body_struct = StructArray::new(
+            Fields::from(vec![
+                Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+                Field::new(consts::ATTRIBUTE_SER, DataType::Binary, true),
+            ]),
+            vec![
+                Arc::new(UInt8Array::from(vec![AttributeValueType::Map as u8])) as ArrayRef,
+                Arc::new(BinaryArray::from_iter_values([cbor])) as ArrayRef,
+            ],
+            Some(NullBuffer::from_iter(vec![false])),
+        );
+
+        let body = LogBodyArrays::try_from(&body_struct).expect("body arrays");
+        assert!(get_body_from_struct(&body, 0).is_none());
     }
 
     #[test]
@@ -1234,12 +1589,12 @@ mod tests {
             ),
             Field::new(
                 "time_unix_nano",
-                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                 false,
             ),
             Field::new(
                 "observed_time_unix_nano",
-                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                 false,
             ),
         ]));
@@ -1255,8 +1610,10 @@ mod tests {
             Arc::new(Field::new("id", DataType::UInt16, false)),
             Arc::new(scope_id_array) as ArrayRef,
         )]);
-        let time_array = TimestampNanosecondArray::from(vec![1_000_000_000]);
-        let observed_time_array = TimestampNanosecondArray::from(vec![1_000_000_000]);
+        let time_array =
+            TimestampNanosecondArray::from(vec![1_000_000_000]).with_timezone(UTC_TIME_ZONE);
+        let observed_time_array =
+            TimestampNanosecondArray::from(vec![1_000_000_000]).with_timezone(UTC_TIME_ZONE);
 
         let logs_batch = RecordBatch::try_new(
             logs_schema,
@@ -1433,168 +1790,73 @@ mod tests {
         assert_eq!(log_count, 3, "Should still iterate through all 3 logs");
     }
 
+    /// Scenario: A log record attribute holds a nested array of an int, bytes, and a kvlist, encoded through the real OTAP path.
+    /// Guarantees: OtapLogsView decodes the composite attribute value from its CBOR column, matching the source structure.
     #[test]
-    fn test_dictionary_encoded_resource_and_scope_ids() {
-        use arrow::array::DictionaryArray;
-        use arrow::datatypes::UInt8Type;
+    fn test_nested_attribute_decodes_from_serialized_column() {
+        use crate::proto::opentelemetry::common::v1::{
+            AnyValue, ArrayValue, KeyValue, KeyValueList, any_value,
+        };
+        use crate::proto::opentelemetry::logs::v1::LogRecord;
+        use crate::testing::round_trip::to_otap_logs;
+        use otel_arrow_dfe_pdata_views::views::common::ValueType;
 
-        // Test that dictionary-encoded resource.id and scope.id columns work correctly
-        // This is a common optimization in Arrow for columns with repeated values
-        // Note: MaybeDictArrayAccessor supports UInt8/UInt16 key types
+        let log = LogRecord {
+            attributes: vec![KeyValue {
+                key: "attr".to_string(),
+                value: Some(AnyValue {
+                    value: Some(any_value::Value::ArrayValue(ArrayValue {
+                        values: vec![
+                            AnyValue {
+                                value: Some(any_value::Value::IntValue(-7)),
+                            },
+                            AnyValue {
+                                value: Some(any_value::Value::BytesValue(vec![0, 255])),
+                            },
+                            AnyValue {
+                                value: Some(any_value::Value::KvlistValue(KeyValueList {
+                                    values: vec![KeyValue {
+                                        key: "ready".to_string(),
+                                        value: Some(AnyValue {
+                                            value: Some(any_value::Value::BoolValue(true)),
+                                        }),
+                                    }],
+                                })),
+                            },
+                        ],
+                    })),
+                }),
+            }],
+            ..Default::default()
+        };
+        let otap = to_otap_logs(vec![log]);
+        let view = OtapLogsView::try_from(&otap).expect("logs view");
 
-        // Create dictionary-encoded resource IDs: [0, 0, 1] (indices) -> [10, 20] (values)
-        let resource_id_keys = UInt8Array::from(vec![0, 0, 1]);
-        let resource_id_values = UInt16Array::from(vec![10, 20]);
-        let resource_id_dict =
-            DictionaryArray::<UInt8Type>::try_new(resource_id_keys, Arc::new(resource_id_values))
-                .unwrap();
-
-        let resource_struct = StructArray::from(vec![(
-            Arc::new(Field::new(
-                "id",
-                DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::UInt16)),
-                false,
-            )),
-            Arc::new(resource_id_dict) as ArrayRef,
-        )]);
-
-        // Create dictionary-encoded scope IDs: [0, 1, 1] (indices) -> [100, 200] (values)
-        let scope_id_keys = UInt8Array::from(vec![0, 1, 1]);
-        let scope_id_values = UInt16Array::from(vec![100, 200]);
-        let scope_id_dict =
-            DictionaryArray::<UInt8Type>::try_new(scope_id_keys, Arc::new(scope_id_values))
-                .unwrap();
-
-        let scope_struct = StructArray::from(vec![(
-            Arc::new(Field::new(
-                "id",
-                DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::UInt16)),
-                false,
-            )),
-            Arc::new(scope_id_dict) as ArrayRef,
-        )]);
-
-        // Create minimal log data
-        let time_array = TimestampNanosecondArray::from(vec![1_000_000, 2_000_000, 3_000_000]);
-
-        let body_type_array = UInt8Array::from(vec![1, 1, 1]); // Str type
-        let body_str_array = StringArray::from(vec!["log1", "log2", "log3"]);
-        let body_struct = StructArray::from(vec![
-            (
-                Arc::new(Field::new("type", DataType::UInt8, false)),
-                Arc::new(body_type_array) as ArrayRef,
-            ),
-            (
-                Arc::new(Field::new("str", DataType::Utf8, true)),
-                Arc::new(body_str_array) as ArrayRef,
-            ),
-        ]);
-
-        let schema = Arc::new(Schema::new(vec![
-            Field::new(
-                "resource",
-                DataType::Struct(
-                    vec![Field::new(
-                        "id",
-                        DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::UInt16)),
-                        false,
-                    )]
-                    .into(),
-                ),
-                false,
-            ),
-            Field::new(
-                "scope",
-                DataType::Struct(
-                    vec![Field::new(
-                        "id",
-                        DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::UInt16)),
-                        false,
-                    )]
-                    .into(),
-                ),
-                false,
-            ),
-            Field::new(
-                "time_unix_nano",
-                DataType::Timestamp(TimeUnit::Nanosecond, None),
-                true,
-            ),
-            Field::new(
-                "body",
-                DataType::Struct(
-                    vec![
-                        Field::new("type", DataType::UInt8, false),
-                        Field::new("str", DataType::Utf8, true),
-                    ]
-                    .into(),
-                ),
-                true,
-            ),
-        ]));
-
-        let logs_batch = RecordBatch::try_new(
-            schema,
-            vec![
-                Arc::new(resource_struct) as ArrayRef,
-                Arc::new(scope_struct) as ArrayRef,
-                Arc::new(time_array) as ArrayRef,
-                Arc::new(body_struct) as ArrayRef,
-            ],
-        )
-        .unwrap();
-
-        // Create view with dictionary-encoded IDs
-        let logs_view = OtapLogsView::new(Some(&logs_batch), None, None, None)
-            .expect("Should create view with dictionary-encoded IDs");
-
-        // Verify correct grouping by resource
-        let mut resource_count = 0;
-        let mut scope_count = 0;
-        let mut log_count = 0;
-
-        for resource_logs in logs_view.resources() {
-            resource_count += 1;
+        let mut checked = 0;
+        for resource_logs in view.resources() {
             for scope_logs in resource_logs.scopes() {
-                scope_count += 1;
-                for _log in scope_logs.log_records() {
-                    log_count += 1;
+                for log_record in scope_logs.log_records() {
+                    let attrs: Vec<_> = log_record.attributes().collect();
+                    assert_eq!(attrs.len(), 1);
+                    assert_eq!(attrs[0].key(), b"attr".as_slice());
+                    let value = attrs[0].value().expect("attr value");
+                    assert_eq!(value.value_type(), ValueType::Array);
+                    let items: Vec<_> = value.as_array().expect("array").collect();
+                    assert_eq!(items.len(), 3);
+                    assert_eq!(items[0].as_int64(), Some(-7));
+                    assert_eq!(items[1].as_bytes(), Some([0u8, 255u8].as_slice()));
+                    assert_eq!(items[2].value_type(), ValueType::KeyValueList);
+                    let entries: Vec<_> = items[2].as_kvlist().expect("kvlist").collect();
+                    assert_eq!(entries.len(), 1);
+                    assert_eq!(entries[0].key(), b"ready".as_slice());
+                    assert_eq!(
+                        entries[0].value().expect("entry value").as_bool(),
+                        Some(true)
+                    );
+                    checked += 1;
                 }
             }
         }
-
-        // Expected: 2 resources (ID 10 and 20), 3 scopes total, 3 logs
-        assert_eq!(
-            resource_count, 2,
-            "Should have 2 resource groups from dictionary-encoded resource.id"
-        );
-        assert_eq!(
-            scope_count, 3,
-            "Should have 3 scope groups from dictionary-encoded scope.id"
-        );
-        assert_eq!(log_count, 3, "Should iterate all 3 logs");
-
-        // Verify the grouping is correct by checking log distribution
-        let resources: Vec<_> = logs_view.resources().collect();
-
-        // First resource (ID 10) should have 2 logs
-        let first_resource_logs: usize = resources[0]
-            .scopes()
-            .map(|scope| scope.log_records().count())
-            .sum();
-        assert_eq!(
-            first_resource_logs, 2,
-            "First resource should have 2 logs (indices 0, 1)"
-        );
-
-        // Second resource (ID 20) should have 1 log
-        let second_resource_logs: usize = resources[1]
-            .scopes()
-            .map(|scope| scope.log_records().count())
-            .sum();
-        assert_eq!(
-            second_resource_logs, 1,
-            "Second resource should have 1 log (index 2)"
-        );
+        assert_eq!(checked, 1);
     }
 }

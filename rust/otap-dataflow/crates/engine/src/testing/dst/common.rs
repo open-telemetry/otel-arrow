@@ -86,8 +86,10 @@ pub(super) fn frame(node_id: usize, interests: Interests, tag: u64) -> Frame {
             entry_time_ns: clock::nanos_since_birth(),
             output_port_index: 0,
         },
-        produced_items: 0,
-        consumed_items: 0,
+        output_items: 0,
+        input_items: 0,
+        output_size: 0,
+        input_size: 0,
     }
 }
 
@@ -141,6 +143,7 @@ pub(super) fn build_manager<PData>(
     let (_memory_pressure_tx, memory_pressure_rx) =
         watch::channel(MemoryPressureChanged::initial());
 
+    let (forced_shutdown_trigger, _) = crate::forced_shutdown::ForcedShutdownTrigger::pair();
     let manager = RuntimeCtrlMsgManager::new(
         otel_arrow_dfe_config::DeployedPipelineKey {
             pipeline_group_id,
@@ -165,6 +168,7 @@ pub(super) fn build_manager<PData>(
         Vec::new(),
         empty_node_metric_handles(),
         crate::terminal_state::TerminalMetricsDeadline::default(),
+        forced_shutdown_trigger,
     );
 
     (

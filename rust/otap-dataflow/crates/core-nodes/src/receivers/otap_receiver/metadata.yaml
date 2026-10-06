@@ -1,0 +1,6 @@
+type: otap
+status:
+  class: receiver
+  codeowners:
+    active:
+      - lquerel

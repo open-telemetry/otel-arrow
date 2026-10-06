@@ -90,28 +90,6 @@ pub fn take_record_batch_ranges(
     RecordBatch::try_new(rb.schema(), new_columns)
 }
 
-/// Create a new record batch by removing the specified ranges from the provided record batch.
-pub(crate) fn remove_record_batch_ranges(
-    rb: &RecordBatch,
-    ranges: &[Range<usize>],
-) -> arrow::error::Result<RecordBatch> {
-    let new_len = rb.num_rows() - ranges.iter().map(|r| r.end - r.start).sum::<usize>();
-    let mut new_columns = Vec::with_capacity(rb.num_columns());
-    for column in rb.columns() {
-        let data = column.to_data();
-        let mut new_data = MutableArrayData::new(vec![&data], false, new_len);
-        let mut pos = 0;
-        for range in ranges {
-            new_data.extend(0, pos, range.start);
-            pos = range.end;
-        }
-        new_data.extend(0, pos, rb.num_rows());
-        new_columns.push(make_array(new_data.freeze()));
-    }
-
-    RecordBatch::try_new(rb.schema(), new_columns)
-}
-
 pub(crate) fn sort_otap_batch_by_parent_then_id<const N: usize>(
     batches: &mut [Option<RecordBatch>; N],
 ) -> Result<()> {
@@ -376,24 +354,24 @@ pub(crate) fn replace_column(
         let field_index = schema.index_of(struct_col_name).ok();
         if let Some(field_index) = field_index {
             let struct_column = columns[field_index].as_any().downcast_ref::<StructArray>();
-            if let Some(struct_column) = struct_column {
-                if let Some((struct_idx, _)) = struct_column.fields().find(ID) {
-                    // replace the encoding metadata on the struct field
-                    let mut new_struct_fields = struct_column.fields().to_vec();
-                    update_field_encoding_metadata(ID, encoding, &mut new_struct_fields);
+            if let Some(struct_column) = struct_column
+                && let Some((struct_idx, _)) = struct_column.fields().find(ID)
+            {
+                // replace the encoding metadata on the struct field
+                let mut new_struct_fields = struct_column.fields().to_vec();
+                update_field_encoding_metadata(ID, encoding, &mut new_struct_fields);
 
-                    // build new struct array
-                    let mut new_struct_columns = struct_column.columns().to_vec();
-                    new_struct_columns[struct_idx] = new_column;
-                    let new_struct_array = Arc::new(StructArray::new(
-                        new_struct_fields.into(),
-                        new_struct_columns,
-                        struct_column.nulls().cloned(),
-                    ));
+                // build new struct array
+                let mut new_struct_columns = struct_column.columns().to_vec();
+                new_struct_columns[struct_idx] = new_column;
+                let new_struct_array = Arc::new(StructArray::new(
+                    new_struct_fields.into(),
+                    new_struct_columns,
+                    struct_column.nulls().cloned(),
+                ));
 
-                    // replace the original struct column with the new one
-                    columns[field_index] = new_struct_array;
-                }
+                // replace the original struct column with the new one
+                columns[field_index] = new_struct_array;
             }
         }
         return;
@@ -422,17 +400,17 @@ pub(crate) fn update_field_encoding_metadata(
             .enumerate()
             .find(|(_, f)| f.name().as_str() == struct_col_name);
 
-        if let Some((idx, field)) = found_field {
-            if let DataType::Struct(struct_fields) = field.data_type() {
-                let mut new_struct_fields = struct_fields.to_vec();
-                update_field_encoding_metadata(ID, encoding, &mut new_struct_fields);
+        if let Some((idx, field)) = found_field
+            && let DataType::Struct(struct_fields) = field.data_type()
+        {
+            let mut new_struct_fields = struct_fields.to_vec();
+            update_field_encoding_metadata(ID, encoding, &mut new_struct_fields);
 
-                let new_field = field
-                    .as_ref()
-                    .clone()
-                    .with_data_type(DataType::Struct(new_struct_fields.into()));
-                fields[idx] = Arc::new(new_field)
-            }
+            let new_field = field
+                .as_ref()
+                .clone()
+                .with_data_type(DataType::Struct(new_struct_fields.into()));
+            fields[idx] = Arc::new(new_field)
         }
     }
 

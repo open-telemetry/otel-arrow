@@ -281,9 +281,11 @@ impl<'a> ResourceSpansView for OtapResourceSpansView<'a> {
 
     #[inline]
     fn resource(&self) -> Option<Self::Resource<'_>> {
+        let first_row_index = self.row_indices.iter().next()?;
         Some(OtapTraceResourceView {
             view: self.view,
             resource_id: self.resource_id,
+            first_row_index,
         })
     }
 
@@ -369,9 +371,11 @@ impl<'a> ScopeSpansView for OtapScopeSpansView<'a> {
 
     #[inline]
     fn scope(&self) -> Option<Self::Scope<'_>> {
+        let first_row_index = self.row_indices.iter().next()?;
         Some(OtapTraceInstrumentationScopeView {
             view: self.view,
             scope_id: self.scope_id,
+            first_row_index,
         })
     }
 
@@ -661,7 +665,7 @@ impl<'a> OtapSpanView<'a> {
     /// Get the span's row ID from the "id" column (used for attribute/event/link matching)
     #[inline]
     fn get_span_row_id(&self) -> Option<u16> {
-        let array = &self.columns()?.id;
+        let array = self.columns()?.id?;
         if array.is_valid(self.row_idx) {
             Some(array.value(self.row_idx))
         } else {
@@ -981,6 +985,7 @@ impl<'a> StatusView for OtapStatusView<'a> {
 pub struct OtapTraceResourceView<'a> {
     view: &'a OtapTracesView<'a>,
     resource_id: u16,
+    first_row_index: usize,
 }
 
 impl<'a> ResourceView for OtapTraceResourceView<'a> {
@@ -1012,14 +1017,13 @@ impl<'a> ResourceView for OtapTraceResourceView<'a> {
 
     #[inline]
     fn dropped_attributes_count(&self) -> u32 {
-        let first_row = self.find_first_row_for_resource().unwrap_or(0);
         self.view
             .resource_columns
             .as_ref()
             .and_then(|cols| cols.dropped_attributes_count.as_ref())
             .map(|col| {
-                if col.is_valid(first_row) {
-                    col.value(first_row)
+                if col.is_valid(self.first_row_index) {
+                    col.value(self.first_row_index)
                 } else {
                     0
                 }
@@ -1028,22 +1032,11 @@ impl<'a> ResourceView for OtapTraceResourceView<'a> {
     }
 }
 
-impl<'a> OtapTraceResourceView<'a> {
-    /// Find the first row in the spans batch that belongs to this resource.
-    fn find_first_row_for_resource(&self) -> Option<usize> {
-        for (idx, row_group) in &self.view.resource_groups {
-            if *idx == self.resource_id {
-                return row_group.iter().next();
-            }
-        }
-        None
-    }
-}
-
 /// View of an InstrumentationScope in OTAP traces format
 pub struct OtapTraceInstrumentationScopeView<'a> {
     view: &'a OtapTracesView<'a>,
     scope_id: u16,
+    first_row_index: usize,
 }
 
 impl<'a> InstrumentationScopeView for OtapTraceInstrumentationScopeView<'a> {
@@ -1059,25 +1052,22 @@ impl<'a> InstrumentationScopeView for OtapTraceInstrumentationScopeView<'a> {
 
     #[inline]
     fn name(&self) -> Option<Str<'_>> {
-        // Scope name is in the scope struct column; find a row with this scope_id
-        let first_row = self.find_first_row_for_scope()?;
         self.view
             .scope_columns
             .as_ref()?
             .name
             .as_ref()
-            .and_then(|col| col.str_at(first_row).map(|s| s.as_bytes()))
+            .and_then(|col| col.str_at(self.first_row_index).map(|s| s.as_bytes()))
     }
 
     #[inline]
     fn version(&self) -> Option<Str<'_>> {
-        let first_row = self.find_first_row_for_scope()?;
         self.view
             .scope_columns
             .as_ref()?
             .version
             .as_ref()
-            .and_then(|col| col.str_at(first_row).map(|s| s.as_bytes()))
+            .and_then(|col| col.str_at(self.first_row_index).map(|s| s.as_bytes()))
     }
 
     #[inline]
@@ -1098,14 +1088,13 @@ impl<'a> InstrumentationScopeView for OtapTraceInstrumentationScopeView<'a> {
 
     #[inline]
     fn dropped_attributes_count(&self) -> u32 {
-        let first_row = self.find_first_row_for_scope().unwrap_or(0);
         self.view
             .scope_columns
             .as_ref()
             .and_then(|cols| cols.dropped_attributes_count.as_ref())
             .map(|col| {
-                if col.is_valid(first_row) {
-                    col.value(first_row)
+                if col.is_valid(self.first_row_index) {
+                    col.value(self.first_row_index)
                 } else {
                     0
                 }
@@ -1114,24 +1103,10 @@ impl<'a> InstrumentationScopeView for OtapTraceInstrumentationScopeView<'a> {
     }
 }
 
-impl<'a> OtapTraceInstrumentationScopeView<'a> {
-    /// Find the first row in the spans batch that belongs to this scope.
-    /// All rows with the same scope_id share the same scope name/version.
-    fn find_first_row_for_scope(&self) -> Option<usize> {
-        for scope_list in self.view.scope_groups_map.values() {
-            for (sid, row_group) in scope_list {
-                if *sid == self.scope_id {
-                    return row_group.iter().next(); // type known
-                }
-            }
-        }
-        None
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::schema::UTC_TIME_ZONE;
     use arrow::array::{
         ArrayRef, DurationNanosecondArray, FixedSizeBinaryArray, Int32Array, StringArray,
         StructArray, TimestampNanosecondArray, UInt16Array, UInt32Array,
@@ -1155,7 +1130,7 @@ mod tests {
             ),
             Field::new(
                 "start_time_unix_nano",
-                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                 false,
             ),
             Field::new(
@@ -1187,7 +1162,8 @@ mod tests {
         )]);
 
         let start_time =
-            TimestampNanosecondArray::from(vec![1_000_000_000, 2_000_000_000, 3_000_000_000]);
+            TimestampNanosecondArray::from(vec![1_000_000_000, 2_000_000_000, 3_000_000_000])
+                .with_timezone(UTC_TIME_ZONE);
         let duration = DurationNanosecondArray::from(vec![100_000, 200_000, 300_000]);
 
         // Create valid trace IDs (16 bytes each)
@@ -1234,6 +1210,34 @@ mod tests {
             ],
         )
         .unwrap()
+    }
+
+    /// Rebuilds a record batch without the named column, as a producer that omits it sends.
+    fn drop_column(rb: &RecordBatch, name: &str) -> RecordBatch {
+        let idx = rb.schema().index_of(name).expect("column present");
+        let mut fields = rb.schema().fields().to_vec();
+        let _ = fields.remove(idx);
+        let mut columns = rb.columns().to_vec();
+        let _ = columns.remove(idx);
+        RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).expect("rebuild batch")
+    }
+
+    /// Scenario: a spans-only batch omits the id column that nothing references.
+    /// Guarantees: the traces view still builds and exposes every span.
+    #[test]
+    fn test_spans_batch_without_id_column_builds() {
+        let spans_batch = drop_column(&create_test_spans_batch(), "id");
+        let view =
+            OtapTracesView::new(Some(&spans_batch), None, None, None, None, None, None, None)
+                .expect("view builds without an id column");
+
+        let mut span_count = 0;
+        for resource in view.resources() {
+            for scope in resource.scopes() {
+                span_count += scope.spans().count();
+            }
+        }
+        assert_eq!(span_count, 3, "all spans ingest without an id column");
     }
 
     #[test]
@@ -1319,7 +1323,7 @@ mod tests {
             ),
             Field::new(
                 "start_time_unix_nano",
-                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                 false,
             ),
             Field::new(
@@ -1344,7 +1348,8 @@ mod tests {
             Arc::new(Field::new("id", DataType::UInt16, false)),
             Arc::new(UInt16Array::from(vec![1])) as ArrayRef,
         )]);
-        let start_time = TimestampNanosecondArray::from(vec![1_000_000_000]);
+        let start_time =
+            TimestampNanosecondArray::from(vec![1_000_000_000]).with_timezone(UTC_TIME_ZONE);
 
         let status_code = Int32Array::from(vec![2]); // ERROR
         let status_message = StringArray::from(vec!["something went wrong"]);
@@ -1403,7 +1408,7 @@ mod tests {
             ),
             Field::new(
                 "start_time_unix_nano",
-                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                 false,
             ),
         ]));
@@ -1417,7 +1422,8 @@ mod tests {
             Arc::new(Field::new("id", DataType::UInt16, false)),
             Arc::new(UInt16Array::from(vec![1])) as ArrayRef,
         )]);
-        let start_time = TimestampNanosecondArray::from(vec![1_000_000_000]);
+        let start_time =
+            TimestampNanosecondArray::from(vec![1_000_000_000]).with_timezone(UTC_TIME_ZONE);
 
         let batch = RecordBatch::try_new(
             schema,
@@ -1466,7 +1472,7 @@ mod tests {
             Field::new("parent_id", DataType::UInt16, false),
             Field::new(
                 "time_unix_nano",
-                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                 true,
             ),
             Field::new("name", DataType::Utf8, true),
@@ -1476,9 +1482,10 @@ mod tests {
             events_schema,
             vec![
                 Arc::new(UInt16Array::from(vec![0, 0, 1])) as ArrayRef, // 2 events for span 0, 1 for span 1
-                Arc::new(TimestampNanosecondArray::from(vec![
-                    1_100_000, 1_200_000, 2_100_000,
-                ])) as ArrayRef,
+                Arc::new(
+                    TimestampNanosecondArray::from(vec![1_100_000, 1_200_000, 2_100_000])
+                        .with_timezone(UTC_TIME_ZONE),
+                ) as ArrayRef,
                 Arc::new(StringArray::from(vec!["event-a", "event-b", "event-c"])) as ArrayRef,
             ],
         )
@@ -1522,7 +1529,7 @@ mod tests {
             Field::new("parent_id", DataType::UInt16, false),
             Field::new(
                 "time_unix_nano",
-                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                 true,
             ),
             Field::new("name", DataType::Utf8, true),
@@ -1532,7 +1539,9 @@ mod tests {
             events_schema.clone(),
             vec![
                 Arc::new(UInt16Array::from(vec![0])) as ArrayRef,
-                Arc::new(TimestampNanosecondArray::from(vec![1_100_000])) as ArrayRef,
+                Arc::new(
+                    TimestampNanosecondArray::from(vec![1_100_000]).with_timezone(UTC_TIME_ZONE),
+                ) as ArrayRef,
                 Arc::new(StringArray::from(vec!["integration-event"])) as ArrayRef,
             ],
         )

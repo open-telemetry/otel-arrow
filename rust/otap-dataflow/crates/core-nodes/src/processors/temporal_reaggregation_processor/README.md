@@ -5,7 +5,7 @@
 ## Metadata
 
 - Type: `processor:temporal_reaggregation` (`urn:otel:processor:temporal_reaggregation`)
-- Feature gate: Default
+- Feature gate: Always enabled
 - Stability: Experimental
 
 ## Overview
@@ -84,13 +84,82 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 
 ### Metric Sets
 
-#### `processor.temporal_reaggregation.pdata`
+#### `processor.temporal_reaggregation`
+
+Four metric populations are tracked.
+
+**`metrics`** - input metric records containing metric data:
+
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `processor.temporal_reaggregation.metrics` | `{metric}` | `type`, `aggregable`, `temporality` | Number of input metric records containing metric data. |
+
+| `type` value | Description |
+| --- | --- |
+| `gauge` | The metric contains gauge data. |
+| `sum` | The metric contains sum data. |
+| `histogram` | The metric contains histogram data. |
+| `exp_histogram` | The metric contains exponential histogram data. |
+| `summary` | The metric contains summary data. |
+
+| `aggregable` value | Description |
+| --- | --- |
+| `true` | The processor classified the metric as aggregable using its current settings and capabilities. |
+| `false` | The processor classified the metric as non-aggregatable, so it passes through unchanged. |
+
+| `temporality` value | Description |
+| --- | --- |
+| `delta` | The metric has delta aggregation temporality. |
+| `cumulative` | The metric has cumulative aggregation temporality. |
+| `unspecified` | Aggregation temporality is unspecified or does not apply. Gauges and summaries use this value. |
+
+Each record is counted once before internal overflow retries, independently of
+later aggregation, flushing, processing, or delivery outcomes. Metrics without
+data are excluded. Summing series where `aggregable=false` gives the
+pass-through population.
+
+**`operations`** - one terminal result per metrics PData input:
 
 | Metric | Unit | Description |
 | --- | --- | --- |
-| `processor.temporal_reaggregation.pdata.flushes_timer` | `{flush}` | Number of flushes triggered by the regular timer. |
-| `processor.temporal_reaggregation.pdata.flushes_overflow` | `{flush}` | Number of flushes triggered by exceeding the maximum stream count. |
-| `processor.temporal_reaggregation.pdata.batches_rejected` | `{batch}` | Number of incoming batches rejected because they individually exceed some specified limit or fail to be processed into a view. |
+| `processor.temporal_reaggregation.operations` | `{operation}` | Number of input operations. Success means data was staged or passed through; failure means local processing or immediate downstream handoff failed. |
+
+**`failures`** - one entry per failed input, with actionable cause:
+
+| Metric | Attributes | Description |
+| --- | --- | --- |
+| `processor.temporal_reaggregation.failures` | `error.type` | Number of failed input operations, broken down by cause. |
+
+| `error.type` value | Description |
+| --- | --- |
+| `view_creation` | Could not decode the input records into a metrics view. |
+| `id_overflow` | Batch was too large to aggregate even after an overflow flush. |
+| `stream_cardinality_exceeded` | Batch was too large to aggregate even after an overflow flush. |
+| `output_send` | An immediate downstream send failed. |
+| `internal` | Internal scheduling or processor state handling failed. |
+
+**`flushes`** - one entry per non-empty flush attempt, recorded after the result is known:
+
+| Metric | Attributes | Description |
+| --- | --- | --- |
+| `processor.temporal_reaggregation.flushes` | `outcome`, `reason` | Number of non-empty flushes and their result. Empty flushes are not counted. |
+
+| `outcome` value | Description |
+| --- | --- |
+| `success` | Flush was sent downstream without error. |
+| `failure` | Sending the flush downstream returned an error. |
+
+| `reason` value | Description |
+| --- | --- |
+| `timer` | Regular collection-period timer fired. |
+| `id_overflow` | ID counter overflow triggered an early flush. |
+| `stream_cardinality_exceeded` | Stream cardinality limit triggered an early flush. |
+| `shutdown` | Processor is shutting down; remaining data was flushed. |
+
+An input operation is counted as successful when the data is either staged in
+the aggregation buffer or passed through to the next node. Delayed downstream
+acknowledgements (ACKs/NACKs on the flushed output) do not change the local
+operation outcome recorded here.
 
 ### Events
 

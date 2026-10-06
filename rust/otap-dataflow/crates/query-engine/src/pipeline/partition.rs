@@ -20,10 +20,10 @@ use arrow::buffer::{BooleanBuffer, MutableBuffer, NullBuffer};
 use arrow::compute::SortOptions;
 use arrow::datatypes::DataType;
 use arrow::util::bit_util;
-use data_engine_expressions::{PipelineFunction, ScalarExpression};
 use datafusion::execution::context::SessionContext;
 use datafusion::logical_expr::ColumnarValue;
 use datafusion::scalar::ScalarValue;
+use otel_arrow_contrib_data_engine_expressions::{PipelineFunction, ScalarExpression};
 use otel_arrow_dfe_pdata::OtapArrowRecords;
 use otel_arrow_dfe_pdata::otap::filter::{IdBitmapPool, filter_otap_batch};
 use otel_arrow_dfe_pdata::otlp::attributes::AttributeValueType;
@@ -31,9 +31,10 @@ use otel_arrow_dfe_pdata::schema::consts;
 
 use crate::error::{Error, Result};
 use crate::pipeline::Pipeline;
-use crate::pipeline::expr::ScopedExpr;
-use crate::pipeline::expr::eval::align_value_to_root;
+use crate::pipeline::expr::eval::{EvalContext, align_value_to_record};
 use crate::pipeline::expr::planner::ExprPlanner;
+use crate::pipeline::expr::{RecordScope, ScopedExpr};
+use crate::pipeline::planner::RecordType;
 use crate::pipeline::project::anyval::is_any_value_data_type;
 
 /// Produces partitioned record batches by the results of some evaluated expression.
@@ -83,7 +84,7 @@ impl Partitioner {
         scalar_expr: ScalarExpression,
         functions: Vec<PipelineFunction>,
     ) -> Result<Self> {
-        let expr_planner = ExprPlanner::new();
+        let expr_planner = ExprPlanner::new(true, RecordType::Signal);
         let planned_expr = expr_planner.plan_scalar(&scalar_expr, &functions)?;
 
         Ok(Self {
@@ -268,6 +269,8 @@ impl PartitionValue {
             | ScalarValue::FixedSizeList(_)
             | ScalarValue::List(_)
             | ScalarValue::LargeList(_)
+            | ScalarValue::ListView(_)
+            | ScalarValue::LargeListView(_)
             | ScalarValue::Map(_)
             | ScalarValue::Union(_, _, _) => {
                 return Err(Error::ExecutionError {
@@ -363,15 +366,20 @@ fn partition(
     id_bitmap_pool: &mut IdBitmapPool,
     group_id_pool: &mut GroupIdPool,
 ) -> Result<()> {
-    // nothing to evaluate
     if otap_batch.num_items() == 0 {
+        // nothing to evaluate
         return Ok(());
     }
 
-    let eval_result = match expr.execute_as_value(&otap_batch, session_ctx)? {
+    let Some(root_rb) = otap_batch.root_record_batch() else {
+        // nothing to evaluate
+        return Ok(());
+    };
+
+    let eval_result = match expr.execute_as_value(&otap_batch, &EvalContext::new(session_ctx))? {
         Some(result) => {
             // align value to root so we can calculate partitions for the root record batch
-            align_value_to_root(result, &otap_batch)?
+            align_value_to_record(result, RecordScope::Signal, root_rb, &otap_batch)?
         }
         None => {
             // the result evaluated to `null` for all rows, which means there is only one

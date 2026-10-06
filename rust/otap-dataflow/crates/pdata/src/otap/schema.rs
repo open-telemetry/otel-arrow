@@ -97,15 +97,15 @@ impl SchemaIdBuilder {
 
             Map(field, _) => {
                 self.out.push_str("Map<");
-                if let Struct(fields) = field.data_type() {
-                    if fields.len() == 2 {
-                        // Assume the first field is key type and the second field is value type for simplicity
-                        // arrow-go has similar logic
-                        // See https://github.com/apache/arrow-go/blob/3ae84281674622d33b4617c878e099d13d4a1113/arrow/datatype_nested.go#L593-L596
-                        self.write_data_type(fields[0].data_type());
-                        self.out.push(',');
-                        self.write_data_type(fields[1].data_type());
-                    }
+                if let Struct(fields) = field.data_type()
+                    && fields.len() == 2
+                {
+                    // Assume the first field is key type and the second field is value type for simplicity
+                    // arrow-go has similar logic
+                    // See https://github.com/apache/arrow-go/blob/3ae84281674622d33b4617c878e099d13d4a1113/arrow/datatype_nested.go#L593-L596
+                    self.write_data_type(fields[0].data_type());
+                    self.out.push(',');
+                    self.write_data_type(fields[1].data_type());
                 }
                 self.out.push('>');
             }

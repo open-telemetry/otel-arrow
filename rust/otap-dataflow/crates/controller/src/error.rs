@@ -11,6 +11,10 @@ use otel_arrow_dfe_config::topic::TopicBackendKind;
 /// Errors that can occur in the controller crate.
 #[derive(thiserror::Error, Debug, Diagnostic)]
 pub enum Error {
+    /// Startup could not establish the configured stable state root.
+    #[error(transparent)]
+    StateDirectory(#[from] otel_arrow_dfe_engine::state_dir::StateDirectoryError),
+
     /// A collection of errors that occurred during parsing or validating the configuration.
     #[error("Invalid configuration: {errors:?}")]
     InvalidConfiguration {
@@ -109,6 +113,24 @@ pub enum Error {
         policy: &'static str,
         /// The configured policy value.
         value: String,
+    },
+
+    /// A topic policy is incompatible with the selected runtime mode.
+    #[error(
+        "Topic `{topic}` policy `{policy}={value}` requires mode `{required_mode}`, but selected mode is `{selected_mode}`"
+    )]
+    #[diagnostic(code(data_plane::invalid_topic_policy_for_mode), url(docsrs))]
+    InvalidTopicPolicyForMode {
+        /// The declared topic name.
+        topic: TopicName,
+        /// The incompatible policy key.
+        policy: &'static str,
+        /// The configured policy value.
+        value: String,
+        /// The runtime mode required by this policy.
+        required_mode: &'static str,
+        /// The selected runtime mode.
+        selected_mode: String,
     },
 
     /// A cycle was detected in the global topic wiring graph.

@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use data_engine_expressions::*;
+use otel_arrow_contrib_data_engine_expressions::*;
 
 use crate::processors::recordset_kql_processor::otlp_bridge::{
     serializer::protobuf_writer::ProtobufWriter, *,
@@ -277,7 +277,7 @@ mod tests {
     use std::collections::HashMap;
 
     use chrono::{SecondsFormat, Utc};
-    use data_engine_recordset::*;
+    use otel_arrow_contrib_data_engine_recordset::*;
     use prost::Message;
     use regex::Regex;
 

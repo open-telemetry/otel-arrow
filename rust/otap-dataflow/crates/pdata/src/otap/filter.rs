@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use arrow::array::{
-    Array, ArrayRef, BooleanArray, BooleanBuilder, DictionaryArray, Float64Array, Int64Array,
-    PrimitiveArray, RecordBatch, StringArray, StructArray, UInt16Array, UInt32Array,
+    Array, ArrayRef, AsArray, BooleanArray, BooleanBuilder, DictionaryArray, Float64Array,
+    Int64Array, PrimitiveArray, RecordBatch, StringArray, StructArray, UInt16Array, UInt32Array,
 };
 use arrow::compute::filter_record_batch;
 use arrow::datatypes::{ArrowPrimitiveType, DataType, UInt8Type, UInt16Type, UInt32Type};
@@ -189,6 +189,73 @@ impl IdBitmap {
         }
     }
 
+    /// Try to populate this bitmap from an ID/parent ID column from an OTAP batch.
+    ///
+    /// This expects that the type of the ID column is one of the known types used for id column
+    /// or parent_id columns in the OTAP spec, which includes arrays of type `u16`, `u32`, and
+    /// `Dict<u8/u16, u32>`. If the passed `id_column` argument is not one of these types, this
+    /// method will return an error.
+    ///
+    /// This method has the same behaviour as `[Self::populate]` with respect to clearing the
+    /// bitmap / reusing existing allocations.
+    pub fn try_populate_from_id_column(&mut self, id_column: &ArrayRef) -> Result<()> {
+        match id_column.data_type() {
+            DataType::UInt16 => {
+                let id_column = id_column.as_primitive::<UInt16Type>();
+                if id_column.nulls().is_some() {
+                    self.populate(id_column.iter().flatten().map(|i| i as u32));
+                } else {
+                    self.populate(id_column.values().iter().map(|i| *i as u32));
+                }
+            }
+            DataType::UInt32 => {
+                let id_column = id_column.as_primitive::<UInt32Type>();
+                if id_column.nulls().is_some() {
+                    self.populate(id_column.iter().flatten());
+                } else {
+                    self.populate(id_column.values().iter().copied());
+                }
+            }
+            DataType::Dictionary(k, _) => match k.as_ref() {
+                DataType::UInt8 => {
+                    let dict_arr = id_column.as_dictionary::<UInt8Type>();
+                    if let Some(typed_dict) = dict_arr.downcast_dict::<UInt32Array>() {
+                        self.populate(typed_dict.into_iter().flatten());
+                    } else {
+                        return Err(Error::UnsupportedDictionaryValueType {
+                            expect_oneof: vec![DataType::UInt32],
+                            actual: dict_arr.value_type(),
+                        });
+                    }
+                }
+                DataType::UInt16 => {
+                    let dict_arr = id_column.as_dictionary::<UInt16Type>();
+                    if let Some(typed_dict) = dict_arr.downcast_dict::<UInt32Array>() {
+                        self.populate(typed_dict.into_iter().flatten());
+                    } else {
+                        return Err(Error::UnsupportedDictionaryValueType {
+                            expect_oneof: vec![DataType::UInt32],
+                            actual: dict_arr.value_type(),
+                        });
+                    }
+                }
+                other => {
+                    return Err(Error::UnsupportedDictionaryKeyType {
+                        expect_oneof: vec![DataType::UInt8, DataType::UInt16],
+                        actual: other.clone(),
+                    });
+                }
+            },
+            other => {
+                return Err(Error::InvalidIdColumnType {
+                    data_type: other.clone(),
+                });
+            }
+        }
+
+        Ok(())
+    }
+
     /// In-place union: `self |= other`.
     pub fn union_with(&mut self, other: &Self) {
         if other.pages.len() > self.pages.len() {
@@ -227,12 +294,12 @@ impl IdBitmap {
     /// In-place difference: `self &= !other`.
     pub fn difference_with(&mut self, other: &Self) {
         for (i, self_page) in self.pages.iter_mut().enumerate() {
-            if let Some(sp) = self_page {
-                if let Some(Some(op)) = other.pages.get(i) {
-                    sp.last_used_generation = self.generation;
-                    for (sw, ow) in sp.words.iter_mut().zip(op.words.iter()) {
-                        *sw &= !ow;
-                    }
+            if let Some(sp) = self_page
+                && let Some(Some(op)) = other.pages.get(i)
+            {
+                sp.last_used_generation = self.generation;
+                for (sw, ow) in sp.words.iter_mut().zip(op.words.iter()) {
+                    *sw &= !ow;
                 }
             }
         }
@@ -342,16 +409,16 @@ impl Iterator for IdBitmapIter<'_> {
             // Find the next non-zero word, advancing through words and pages as needed.
             loop {
                 // Try the next word in the current page
-                if let Some(Some(page)) = self.bitmap.pages.get(self.page_idx) {
-                    if self.word_idx < ID_BITMAP_PAGE_WORDS {
-                        let word = page.words[self.word_idx];
-                        self.word_idx += 1;
-                        if word != 0 {
-                            self.current_word = word;
-                            break; // Break inner loop, outer loop will extract bits
-                        }
-                        continue; // Try next word in this page
+                if let Some(Some(page)) = self.bitmap.pages.get(self.page_idx)
+                    && self.word_idx < ID_BITMAP_PAGE_WORDS
+                {
+                    let word = page.words[self.word_idx];
+                    self.word_idx += 1;
+                    if word != 0 {
+                        self.current_word = word;
+                        break; // Break inner loop, outer loop will extract bits
                     }
+                    continue; // Try next word in this page
                 }
 
                 // No more words in this page (or page was None) -- advance to the next page
@@ -1552,7 +1619,7 @@ impl ChildBatchFilterIdHelper for UInt32Type {
 /// Reads the filtered parent from `output` to determine surviving IDs, reads
 /// the original child rows from `input`, and writes the filtered child into
 /// `output`.
-fn filter_child_batch<T: ChildBatchFilterIdHelper>(
+pub fn filter_child_batch<T: ChildBatchFilterIdHelper>(
     input: &OtapArrowRecords,
     output: &mut OtapArrowRecords,
     child_payload_type: ArrowPayloadType,

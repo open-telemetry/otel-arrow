@@ -13,16 +13,22 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use arrow::array::{
-    Array, ArrayRef, MutableArrayData, NullArray, RecordBatch, StructArray, UInt8Array,
-    UInt8Builder, make_array,
+    Array, ArrayRef, BinaryArray, BooleanArray, DictionaryArray, Float64Array, Int64Array,
+    MutableArrayData, NullArray, RecordBatch, StringArray, StructArray, UInt8Array, UInt8Builder,
+    UInt16Array, make_array,
 };
+use arrow::buffer::{BooleanBuffer, MutableBuffer, OffsetBuffer, ScalarBuffer};
+use arrow::compute::kernels::cmp::neq;
 use arrow::datatypes::{DataType, Field, Schema};
+use otel_arrow_dfe_pdata::error::Error as PdataError;
 use otel_arrow_dfe_pdata::otap::transform::util::take_record_batch_ranges;
 use otel_arrow_dfe_pdata::otlp::attributes::AttributeValueType;
 use otel_arrow_dfe_pdata::schema::consts;
 use smallvec::SmallVec;
 
 use crate::error::{Error, Result};
+use crate::pipeline::expr::VALUE_COLUMN_NAME;
+use crate::pipeline::project::{Projection, ProjectionColumns};
 
 /// Detect AnyValue columns by structural shape: a struct field containing a sub-field
 /// named `consts::ATTRIBUTE_TYPE` (`"type"`) with `DataType::UInt8`.
@@ -659,10 +665,10 @@ fn stitch_as_any_value_struct(
     // We'll create one value column per distinct field name.
     let mut distinct_fields: Vec<(&'static str, AttributeValueType)> = Vec::new();
     for &(type_val, field_name) in &partition_type_info {
-        if let Some(field_name) = field_name {
-            if !distinct_fields.iter().any(|(n, _)| *n == field_name) {
-                distinct_fields.push((field_name, type_val));
-            }
+        if let Some(field_name) = field_name
+            && !distinct_fields.iter().any(|(n, _)| *n == field_name)
+        {
+            distinct_fields.push((field_name, type_val));
         }
     }
 
@@ -786,6 +792,206 @@ fn stitch_as_any_value_struct(
 
     let struct_array = StructArray::try_new(all_fields.into(), all_columns, None)?;
     Ok(Arc::new(struct_array))
+}
+
+impl Projection {
+    /// Ensure that any referenced columns exists if an `AnyValue` is present in the projected
+    /// columns.
+    ///
+    /// When handling `AnyValue`s, there's a unique situation where there is a `type` column
+    /// used to discriminate the value's type, which effectively indicates which column contains
+    /// the attributes value for some row.
+    ///
+    /// The value columns can be absent, which indicates that it may have contained entirely
+    /// default values. In this case, this method creates an empty placeholder column if the
+    /// column with values of this type is referenced by the projection and if the `type` column
+    /// indicates a value should be read from this type's value column.
+    ///
+    /// The projection may also reference a virtual column called "value", in which case the value
+    /// column to use must be inferred from the type column. For this reason, if there are
+    /// heterogeneous types present in the passed columns, we produce an error (although in the
+    /// future, we may employ a partitioned execution strategy to handle this).
+    ///
+    /// Because at least one single row is needed to make this type determination, this function
+    /// currently does not accept empty batches and will produce an error if one is passed.
+    ///
+    pub(super) fn ensure_attrs_value_column_present(
+        &self,
+        projection_cols: &mut ProjectionColumns,
+    ) -> Result<()> {
+        let (type_col_index, _) =
+            projection_cols
+                .find(consts::ATTRIBUTE_TYPE)
+                .ok_or_else(|| PdataError::ColumnNotFound {
+                    name: consts::ATTRIBUTE_TYPE.into(),
+                })?;
+
+        let type_column = &projection_cols.columns[type_col_index];
+        let type_column = type_column
+            .as_any()
+            .downcast_ref::<UInt8Array>()
+            .ok_or_else(|| Error::ExecutionError {
+                cause: PdataError::ColumnDataTypeMismatch {
+                    name: consts::ATTRIBUTE_TYPE.into(),
+                    expect: DataType::UInt8,
+                    actual: type_column.data_type().clone(),
+                }
+                .to_string(),
+            })?;
+
+        if type_column.null_count() != 0 {
+            // even though we only look at the first non-null value to determine the input type,
+            // we'll be strict here validate that there aren't any nulls
+            return Err(Error::ExecutionError {
+                cause: "attribute record batch type column should not contain nulls".into(),
+            });
+        }
+
+        let input_attr_type =
+            type_column
+                .iter()
+                .flatten()
+                .next()
+                .ok_or_else(|| Error::ExecutionError {
+                    cause:
+                        "Cannot ensure values column during projection for empty attributes batch"
+                            .into(),
+                })?;
+
+        let input_attr_type =
+            AttributeValueType::try_from(input_attr_type).map_err(|e| Error::ExecutionError {
+                cause: format!("invalid attribute type {input_attr_type}: {e}"),
+            })?;
+
+        let references_value_column = self.references_column(VALUE_COLUMN_NAME);
+        if references_value_column {
+            // check if every value is the same type - if not, we may have problems evaluating the
+            // expression (if the value is used in the expression).
+            let all_rows_same_attr_type =
+                neq(type_column, &UInt8Array::new_scalar(input_attr_type as u8))?.true_count() == 0;
+
+            if !all_rows_same_attr_type {
+                // if not all the attribute types are the same, we can't determine a single value
+                // column to use in the projection, so return an error for now. In practice, the batch
+                // should be split apart before this pipeline stage using other operators to ensure
+                // we only have one value type
+                //
+                // In some rare cases, it may be possible to write an expression that makes sense on
+                // multiple types simultaneously .. e.g. exprs like `value + value` could be an int
+                // or a double. For now, lamentably, we'll force the user to handle this explicitly.
+                return Err(Error::ExecutionError {
+                    cause: "All input rows for attribute assignment must have the same type \
+                                if value used in expression"
+                        .into(),
+                });
+            }
+        }
+
+        // get the name of the column containing the actual values identified by the type column.
+        // this is named "physical_..." to distinguish it from the virtual "values" column which
+        // might also be found in the projection
+        let physical_values_column_name = match input_attr_type {
+            AttributeValueType::Bool => Some(consts::ATTRIBUTE_BOOL),
+            AttributeValueType::Double => Some(consts::ATTRIBUTE_DOUBLE),
+            AttributeValueType::Int => Some(consts::ATTRIBUTE_INT),
+            AttributeValueType::Str => Some(consts::ATTRIBUTE_STR),
+            AttributeValueType::Empty => None,
+            other => {
+                return Err(Error::NotYetSupportedError {
+                    message: format!(
+                        "Setting attributes of type {:?} in nested pipeline not yet supported",
+                        other
+                    ),
+                });
+            }
+        };
+
+        let num_rows = projection_cols.num_rows;
+
+        // insert default placeholder column for column values only if projection references it
+        if let Some(values_column_name) = physical_values_column_name {
+            let existing_col = projection_cols.find(values_column_name);
+            let projection_references_values_col = self.references_column(values_column_name);
+
+            if projection_references_values_col && existing_col.is_none() {
+                let values_col = default_attrs_values_column(input_attr_type, num_rows);
+                projection_cols.append_column(
+                    Field::new(values_column_name, values_col.data_type().clone(), true),
+                    values_col,
+                );
+            }
+        }
+
+        // create the virtual "value" column
+        if references_value_column {
+            if let Some(values_column_name) = physical_values_column_name {
+                if let Some((index, field)) = projection_cols.find(values_column_name) {
+                    if !self.schema.is_empty() && self.references_column(values_column_name) {
+                        // duplicate the column to be the values column as it's referenced both
+                        // virtually (as "value") and by its actual physical column name
+                        projection_cols.append_column(
+                            field.as_ref().clone().with_name(VALUE_COLUMN_NAME),
+                            projection_cols.columns()[index].clone(),
+                        );
+                    } else {
+                        // column is referenced only virtually as "value" so simply rename it
+                        projection_cols.rename_column_at_index(index, VALUE_COLUMN_NAME);
+                    }
+                } else {
+                    // insert placeholder column with the correct attributes type of default values
+                    let values_col = default_attrs_values_column(input_attr_type, num_rows);
+                    projection_cols.append_column(
+                        Field::new(VALUE_COLUMN_NAME, values_col.data_type().clone(), true),
+                        values_col,
+                    );
+                }
+            } else {
+                // "Empty" type attribute doesn't have a values column, so create a new virtual
+                // all-null column
+                projection_cols.append_column(
+                    Field::new(VALUE_COLUMN_NAME, DataType::Null, true),
+                    default_attrs_values_column(AttributeValueType::Empty, num_rows),
+                );
+            }
+        }
+
+        Ok(())
+    }
+}
+
+fn default_attrs_values_column(attr_type: AttributeValueType, num_rows: usize) -> ArrayRef {
+    match attr_type {
+        AttributeValueType::Bool => {
+            Arc::new(BooleanArray::new(BooleanBuffer::new_unset(num_rows), None))
+        }
+        AttributeValueType::Double => Arc::new(Float64Array::new(
+            ScalarBuffer::from(vec![0.0; num_rows]),
+            None,
+        )),
+        AttributeValueType::Int => Arc::new(DictionaryArray::new(
+            UInt8Array::new(ScalarBuffer::from(vec![0; num_rows]), None),
+            Arc::new(Int64Array::new(ScalarBuffer::from(vec![0]), None)),
+        )),
+        AttributeValueType::Str => Arc::new(DictionaryArray::new(
+            UInt16Array::new(ScalarBuffer::from(vec![0; num_rows]), None),
+            Arc::new(StringArray::new(
+                OffsetBuffer::new_zeroed(1),
+                MutableBuffer::new(0).into(),
+                None,
+            )),
+        )),
+        AttributeValueType::Bytes | AttributeValueType::Map | AttributeValueType::Slice => {
+            Arc::new(DictionaryArray::new(
+                UInt16Array::new(ScalarBuffer::from(vec![0; num_rows]), None),
+                Arc::new(BinaryArray::new(
+                    OffsetBuffer::new_zeroed(1),
+                    MutableBuffer::new(0).into(),
+                    None,
+                )),
+            ))
+        }
+        AttributeValueType::Empty => Arc::new(NullArray::new(num_rows)),
+    }
 }
 
 #[cfg(test)]

@@ -81,7 +81,7 @@ pub enum Error {
     },
 
     /// Unexpected HTTP status.
-    #[error("Unexpected status ({status})")]
+    #[error("Unexpected status ({status}): {body}")]
     UnexpectedStatus {
         /// The HTTP status code.
         status: StatusCode,
@@ -193,6 +193,29 @@ impl Error {
             self,
             Error::Network { .. } | Error::RateLimited { .. } | Error::ServerError { .. }
         )
+    }
+
+    /// Returns true if the backend explicitly refused this export attempt.
+    ///
+    /// Any 4xx client-error status is treated as a backend refusal: the request
+    /// reached the ingestion endpoint and was rejected, so it is not an exporter
+    /// failure and retrying the same payload will not help. Transport and 5xx
+    /// errors remain failures.
+    ///
+    /// Note: this classification is independent of [`Self::is_retryable`]. A
+    /// 429 is both a refusal (the backend rejected this attempt) and retryable
+    /// (a later attempt with the same payload may succeed after backoff), so
+    /// every retried attempt records `outcome=refused` on the shared
+    /// `exporter.attempted.*` metrics. See `telemetry.md` for the outcome
+    /// contract.
+    #[must_use]
+    pub fn is_refusal(&self) -> bool {
+        match self {
+            Error::Auth { .. } | Error::PayloadTooLarge | Error::RateLimited { .. } => true,
+            Error::UnexpectedStatus { status, .. } => status.is_client_error(),
+            Error::ExportFailed { last_error, .. } => last_error.is_refusal(),
+            _ => false,
+        }
     }
 
     /// Returns true if this error was caused by an HTTP 401 response.
@@ -361,10 +384,13 @@ mod tests {
     fn test_unexpected_status_message() {
         let error = Error::UnexpectedStatus {
             status: StatusCode::IM_A_TEAPOT,
-            body: "I'm a teapot".to_string(),
+            body: "hello from the teapot".to_string(),
         };
         // Note: http crate canonical_reason() returns "I'm a teapot" (lowercase)
-        assert_eq!(error.to_string(), "Unexpected status (418 I'm a teapot)");
+        assert_eq!(
+            error.to_string(),
+            "Unexpected status (418 I'm a teapot): hello from the teapot"
+        );
     }
 
     // ==================== Export Error Tests ====================
