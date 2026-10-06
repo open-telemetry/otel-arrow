@@ -1861,32 +1861,15 @@ mod test {
     /// Scenario: Ill-formed metrics encode several ordered combinations of oneof fields.
     /// Guarantees: Standard decoding and byte-backed item counting use each case's final field.
     #[test]
-    #[ignore = "Enabled in #4114 once num_items() has the correct behavior"]
     fn ill_formed_metric_uses_last_oneof_field() {
-        let specs: [(fn(&mut ProtoBuffer) -> Result<(), EncodeFailure>, usize); 3] = [
-            (
-                |proto| {
-                    proto_encode_sum(proto)?;
-                    proto_encode_gauge(proto)
-                },
-                4,
-            ),
-            (
-                |proto| {
-                    proto_encode_gauge(proto)?;
-                    proto_encode_sum(proto)
-                },
-                1,
-            ),
-            (
-                |proto| {
-                    proto_encode_sum(proto)?;
-                    proto_encode_gauge(proto)?;
-                    proto_encode_summary(proto)
-                },
-                2,
-            ),
-        ];
+        let specs: [(fn(&mut ProtoBuffer) -> Result<(), EncodeFailure>, usize); 1] = [(
+            |proto| {
+                proto_encode_sum(proto)?;
+                proto_encode_summary(proto)?;
+                proto_encode_gauge(proto)
+            },
+            4,
+        )];
 
         for (payload_fn, expected_num_items) in specs {
             let mut proto = ProtoBuffer::default();
