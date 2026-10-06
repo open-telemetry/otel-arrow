@@ -1082,10 +1082,6 @@ impl PipelinePlanner {
                     let nested_pipeline_record_type = match apply_source {
                         ApplySource::Attributes(_) => RecordType::Attributes,
                         ApplySource::DataPoints => {
-                            // Derive the data point context from the current
-                            // signal context. If the pipeline was narrowed to a
-                            // specific metric type (e.g. `gauges`), the data
-                            // point context will be narrowed accordingly.
                             let dp_ctx = match &self.record_type {
                                 RecordType::Signal(SignalContext::Single(SignalKind::Metrics(
                                     mt_ctx,
@@ -1589,22 +1585,5 @@ mod test {
             )
             .unwrap();
         assert_eq!(stages.len(), 2)
-    }
-
-    /// Scenario: automatic signal context inference from the OPL query source.
-    /// Guarantees: `Pipeline::try_new()` auto-infers logs signal context from query
-    /// source and accepts logs-only fields without explicit signal context.
-    #[tokio::test]
-    async fn test_auto_inference_from_query_source() {
-        let pipeline_expr = OplParser::parse("logs | where severity_number > 0")
-            .unwrap()
-            .pipeline;
-        // Pipeline::try_new() should auto-infer SignalContext::Single(Logs) from the
-        // "logs" source keyword, so planning should succeed for logs-only fields.
-        let otap_batch = OtapArrowRecords::Logs(Logs::default());
-        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
-        // This would fail if auto-inference didn't work, since severity_number
-        // is logs-only and the default context would be All.
-        let _ = pipeline.execute(otap_batch).await.unwrap();
     }
 }

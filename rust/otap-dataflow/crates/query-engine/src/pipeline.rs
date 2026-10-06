@@ -294,8 +294,7 @@ pub struct PipelineOptions {
     /// Whether to treat attribute key match as case sensitive during filtering stages
     pub filter_attribute_keys_case_sensitive: bool,
 
-    /// Which signal types the pipeline may encounter, derived from the query source keyword.
-    /// Used during planning to validate field references against the signal type context.
+    /// Which signal types the pipeline may encounter
     pub signal_context: SignalContext,
 }
 
@@ -362,10 +361,6 @@ impl Pipeline {
 
     /// Create a new [`Pipeline`] instance that will evaluate the passed [`PipelineExpression`]
     /// with the specified options.
-    ///
-    /// The caller is responsible for setting `options.signal_context` appropriately.
-    /// Use [`Pipeline::try_new`] or [`Pipeline::try_new_with_options`] for automatic inference
-    /// from the query source keyword.
     #[must_use]
     pub const fn new_with_options(
         pipeline_definition: PipelineExpression,
@@ -592,6 +587,7 @@ mod test {
 
     use datafusion::catalog::streaming::StreamingTable;
     use datafusion::logical_expr::{col, lit};
+    use otel_arrow_contrib_data_engine_kql_parser::KqlParser;
     use otel_arrow_contrib_data_engine_parser_abstractions::Parser;
     use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
     use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
@@ -830,5 +826,93 @@ mod test {
             Err(Error::InvalidPipelineError { cause, .. })
                 if cause == "scale_metric can only be applied to metrics"
         ));
+    }
+
+    // -- Signal context inference tests --
+
+    /// Scenario: Pipeline::try_new infers signal context from each source keyword.
+    /// Guarantees: every recognized source keyword produces the correct SignalContext.
+    #[test]
+    fn test_infer_signal_context_all_sources() {
+        use super::planner::MetricTypeContext;
+
+        let cases = [
+            ("logs | where true", SignalContext::Single(SignalKind::Logs)),
+            (
+                "traces | where true",
+                SignalContext::Single(SignalKind::Traces),
+            ),
+            (
+                "metrics | where true",
+                SignalContext::Single(SignalKind::Metrics(MetricTypeContext::All)),
+            ),
+            ("signals | where true", SignalContext::All),
+            (
+                "gauges | where true",
+                SignalContext::Single(SignalKind::Metrics(MetricTypeContext::Single(
+                    MetricType::Gauge,
+                ))),
+            ),
+            (
+                "sums | where true",
+                SignalContext::Single(SignalKind::Metrics(MetricTypeContext::Single(
+                    MetricType::Sum,
+                ))),
+            ),
+            (
+                "histograms | where true",
+                SignalContext::Single(SignalKind::Metrics(MetricTypeContext::Single(
+                    MetricType::Histogram,
+                ))),
+            ),
+            (
+                "exponential_histograms | where true",
+                SignalContext::Single(SignalKind::Metrics(MetricTypeContext::Single(
+                    MetricType::ExponentialHistogram,
+                ))),
+            ),
+            (
+                "summaries | where true",
+                SignalContext::Single(SignalKind::Metrics(MetricTypeContext::Single(
+                    MetricType::Summary,
+                ))),
+            ),
+        ];
+
+        for (query, expected) in cases {
+            let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+            let inferred = Pipeline::infer_signal_context(&pipeline_expr)
+                .unwrap_or_else(|e| panic!("inference failed for '{query}': {e}"));
+            assert_eq!(
+                format!("{inferred:?}"),
+                format!("{expected:?}"),
+                "wrong signal context for source '{query}'"
+            );
+        }
+    }
+
+    /// Scenario: Pipeline::try_new rejects unrecognized source keywords.
+    /// Guarantees: an unknown source produces an error containing the source token.
+    #[test]
+    fn test_infer_signal_context_rejects_unknown_source() {
+        let pipeline_expr = KqlParser::parse("bogus | where true").unwrap().pipeline;
+        let result = Pipeline::infer_signal_context(&pipeline_expr);
+        match result {
+            Err(Error::InvalidPipelineError { cause, .. }) => {
+                assert!(
+                    cause.contains("bogus"),
+                    "error should mention the bad source token, got: {cause}"
+                );
+            }
+            other => panic!("expected InvalidPipelineError, got: {other:?}"),
+        }
+    }
+
+    /// Scenario: Pipeline::try_new does exact token matching, not prefix matching.
+    /// Guarantees: a source like "logsfoo" is rejected rather than matching "logs".
+    #[test]
+    fn test_infer_signal_context_exact_token_match() {
+        let pipeline_expr = KqlParser::parse("logsfoo | where true").unwrap().pipeline;
+        assert!(Pipeline::infer_signal_context(&pipeline_expr).is_err());
     }
 }

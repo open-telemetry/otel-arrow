@@ -1588,13 +1588,9 @@ mod test {
 
     #[test]
     fn test_signal_scope_all() {
-        // Test that a signals pipeline with a smart-cast narrows correctly.
-        // Uses `if (is Metric) / if (is Span)` to filter by name which is valid for
-        // both metrics and traces but not common to all signal types.
         let runtime = TestRuntime::<OtapPdata>::new();
-        let query = "signals | if (is Metric) { where name == \"foo\" } \
-                     | if (is Span) { where name == \"foo\" }";
-        let processor = try_create_with_opl_query(query, &runtime).expect("created processor");
+        let query = "signals | where name == \"foo\"";
+        let processor = try_create_with_kql_query(query, &runtime).expect("created processor");
         runtime
             .set_processor(processor)
             .run_test(|mut ctx| async move {

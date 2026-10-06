@@ -954,7 +954,6 @@ mod test {
                                 LogRecord::build()
                                     .event_name("event0")
                                     .severity_number(1)
-                                    .dropped_attributes_count(1u32)
                                     .finish(),
                             ],
                         )],
