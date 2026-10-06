@@ -557,7 +557,7 @@ impl<
                 .runtime_recoveries
                 .entry(recovery_key)
                 .or_insert_with(|| RuntimeRecoveryState {
-                    serving_generation: current_deployment.create_or_replace_generation,
+                    serving_generation: current_deployment.baseline_generation,
                     context_bindings: Arc::clone(&context_bindings),
                     restart_count: 0,
                     ready_since: None,

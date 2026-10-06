@@ -1166,7 +1166,7 @@ connections:
     assert!(plan.removed_assigned_cores.is_empty());
     assert_eq!(plan.resize_start_cores, vec![1]);
     assert!(plan.resize_stop_cores.is_empty());
-    assert_eq!(plan.target_deployment.create_or_replace_generation, 0);
+    assert_eq!(plan.target_deployment.baseline_generation, 0);
     assert_eq!(plan.target_deployment.listener_group_snapshot.generation, 1);
     assert_eq!(
         plan.rollout
@@ -2382,7 +2382,7 @@ connections:
         .expect("resize should be planned");
 
     assert_eq!(plan.action, RolloutAction::Replace);
-    assert_eq!(plan.target_deployment.create_or_replace_generation, 1);
+    assert_eq!(plan.target_deployment.baseline_generation, 1);
     assert!(plan.resize_start_cores.is_empty());
     assert!(plan.resize_stop_cores.is_empty());
     assert_eq!(plan.target_deployment.listener_group_snapshot.generation, 1);
@@ -2467,7 +2467,7 @@ connections:
         .expect("listener scale-down should be planned");
 
     assert_eq!(plan.action, RolloutAction::Replace);
-    assert_eq!(plan.target_deployment.create_or_replace_generation, 1);
+    assert_eq!(plan.target_deployment.baseline_generation, 1);
     assert_eq!(plan.current_assigned_cores, vec![0, 1, 2]);
     assert_eq!(plan.target_assigned_cores, vec![0, 1]);
     assert_eq!(plan.removed_assigned_cores, vec![2]);
@@ -2560,7 +2560,7 @@ connections:
     assert_eq!(plan.removed_assigned_cores, vec![1]);
     assert!(plan.resize_start_cores.is_empty());
     assert_eq!(plan.resize_stop_cores, vec![1]);
-    assert_eq!(plan.target_deployment.create_or_replace_generation, 0);
+    assert_eq!(plan.target_deployment.baseline_generation, 0);
     assert_eq!(plan.target_deployment.listener_group_snapshot.generation, 1);
     assert_eq!(
         plan.rollout
@@ -2638,7 +2638,7 @@ connections:
         .expect("identical updates should be planned");
 
     assert_eq!(plan.action, RolloutAction::NoOp);
-    assert_eq!(plan.target_deployment.create_or_replace_generation, 0);
+    assert_eq!(plan.target_deployment.baseline_generation, 0);
     assert_eq!(plan.target_deployment.listener_group_snapshot.generation, 0);
     assert!(plan.rollout.cores.is_empty());
     assert!(plan.resize_start_cores.is_empty());
@@ -2812,7 +2812,7 @@ connections:
         .expect("scope-only limiter change should be planned");
 
     assert_eq!(plan.action, RolloutAction::NoOp);
-    assert_eq!(plan.target_deployment.create_or_replace_generation, 0);
+    assert_eq!(plan.target_deployment.baseline_generation, 0);
     assert!(plan.rollout.cores.is_empty());
 }
 
@@ -2971,7 +2971,7 @@ connections:
         .expect("runtime shape changes should still be planned");
 
     assert_eq!(plan.action, RolloutAction::Replace);
-    assert_eq!(plan.target_deployment.create_or_replace_generation, 1);
+    assert_eq!(plan.target_deployment.baseline_generation, 1);
     assert_eq!(plan.common_assigned_cores, vec![0]);
     assert_eq!(plan.added_assigned_cores, vec![1]);
     assert!(plan.resize_start_cores.is_empty());
@@ -3409,18 +3409,13 @@ connections:
         .insert_rollout(&plan.pipeline_key, plan.rollout.clone())
         .expect("rollout should register");
 
-    let candidate_key = deployed_key(
-        "g1",
-        "p1",
-        0,
-        plan.target_deployment.create_or_replace_generation,
-    );
+    let candidate_key = deployed_key("g1", "p1", 0, plan.target_deployment.baseline_generation);
     let mut candidate_rx = register_runtime_instance(
         &runtime,
         "g1",
         "p1",
         0,
-        plan.target_deployment.create_or_replace_generation,
+        plan.target_deployment.baseline_generation,
         RuntimeInstanceLifecycle::Active,
     );
 
@@ -3500,7 +3495,7 @@ connections:
         "g1",
         "p1",
         0,
-        plan.target_deployment.create_or_replace_generation,
+        plan.target_deployment.baseline_generation,
         RuntimeInstanceLifecycle::Active,
     );
 
@@ -3584,18 +3579,13 @@ connections:
         .insert_rollout(&plan.pipeline_key, plan.rollout.clone())
         .expect("rollout should register");
 
-    let started_key = deployed_key(
-        "g1",
-        "p1",
-        1,
-        plan.target_deployment.create_or_replace_generation,
-    );
+    let started_key = deployed_key("g1", "p1", 1, plan.target_deployment.baseline_generation);
     let started_rx = register_runtime_instance(
         &runtime,
         "g1",
         "p1",
         1,
-        plan.target_deployment.create_or_replace_generation,
+        plan.target_deployment.baseline_generation,
         RuntimeInstanceLifecycle::Active,
     );
     let exit_thread = complete_instance_exit_on_shutdown(
@@ -3687,18 +3677,13 @@ connections:
         .insert_rollout(&plan.pipeline_key, plan.rollout.clone())
         .expect("rollout should register");
 
-    let added_key = deployed_key(
-        "g1",
-        "p1",
-        1,
-        plan.target_deployment.create_or_replace_generation,
-    );
+    let added_key = deployed_key("g1", "p1", 1, plan.target_deployment.baseline_generation);
     let added_rx = register_runtime_instance(
         &runtime,
         "g1",
         "p1",
         1,
-        plan.target_deployment.create_or_replace_generation,
+        plan.target_deployment.baseline_generation,
         RuntimeInstanceLifecycle::Active,
     );
     let exit_thread = complete_instance_exit_on_shutdown(
@@ -4794,7 +4779,7 @@ fn reconcile_engine_config_preserves_generation_for_context_declaration_changes(
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let pipeline_key = PipelineKey::new("g1".into(), "p1".into());
         assert_eq!(
-            state.logical_pipelines[&pipeline_key].create_or_replace_generation,
+            state.logical_pipelines[&pipeline_key].baseline_generation,
             0
         );
         assert_eq!(state.generation_counters[&pipeline_key], 1);
