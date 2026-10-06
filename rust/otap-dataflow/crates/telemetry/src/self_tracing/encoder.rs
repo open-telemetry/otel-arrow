@@ -221,50 +221,28 @@ impl<'buf, B: BoundedBuf> DirectFieldVisitor<'buf, B> {
     }
 
     /// Encode the body as a string (empty strings are skipped), truncating
-    /// safely via [`encode_plain_string`] and counting truncation/drop via
-    /// `dropped_count`, matching attribute-field behavior.
+    /// safely via [`encode_plain_string`].
     #[inline]
     pub fn encode_body_string(&mut self, value: &str) {
         if value.is_empty() {
             return;
         }
-        let mut truncated = false;
-        let fit = self.buf.try_encode(|buf| {
+        let _ = self.buf.try_encode(|buf| {
             buf.encode_len_delimited_partial(LOG_RECORD_BODY, |buf| {
-                match encode_plain_string(buf, value) {
-                    Ok(was_truncated) => {
-                        truncated = was_truncated;
-                        Ok(())
-                    }
-                    Err(failure) => Err(failure),
-                }
+                encode_plain_string(buf, value).map(|_| ())
             })
         });
-        if fit.is_err() || truncated {
-            self.dropped_count += 1;
-        }
     }
 
     /// Encode the body from a Debug value without allocation, truncating
-    /// safely (see [`Self::encode_body_string`]) and counting truncation/drop
-    /// via `dropped_count`.
+    /// safely (see [`Self::encode_body_string`]).
     #[inline]
     pub fn encode_body_debug(&mut self, value: &dyn std::fmt::Debug) {
-        let mut truncated = false;
-        let fit = self.buf.try_encode(|buf| {
+        let _ = self.buf.try_encode(|buf| {
             buf.encode_len_delimited_partial(LOG_RECORD_BODY, |buf| {
-                match encode_debug_string(buf, value) {
-                    Ok(was_truncated) => {
-                        truncated = was_truncated;
-                        Ok(())
-                    }
-                    Err(failure) => Err(failure),
-                }
+                encode_debug_string(buf, value).map(|_| ())
             })
         });
-        if fit.is_err() || truncated {
-            self.dropped_count += 1;
-        }
     }
 }
 
@@ -1616,15 +1594,12 @@ mod tests {
         );
     }
 
-    /// Scenario: a bare `&str` `message` body overflows the available
-    /// buffer.
-    /// Guarantees: the body is truncated with a `[...]` suffix instead of
-    /// being hard-dropped entirely, and `dropped_count` is incremented,
-    /// matching `record_debug`'s overflow behavior for the `message` field.
+    /// Scenario: a bare `&str` `message` body overflows the available buffer.
+    /// Guarantees: the decoded body ends with `[...]` without incrementing
+    /// OTLP `dropped_attributes_count`.
     #[test]
     fn record_str_message_overflow_truncates_with_suffix() {
-        use otel_arrow_dfe_pdata::otlp::common::{BoundedBuf, StackProtoBuffer, TRUNCATION_SUFFIX};
-        use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::AnyValue as ProtoAnyValue;
+        use otel_arrow_dfe_pdata::otlp::common::{StackProtoBuffer, TRUNCATION_SUFFIX};
         use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::any_value::Value;
         use prost::Message;
         use tracing::field::Visit;
@@ -1641,8 +1616,8 @@ mod tests {
         visitor.record_str(&message, &huge);
         assert_eq!(
             visitor.dropped_count(),
-            1,
-            "the oversized message body should be counted as dropped (truncated)"
+            0,
+            "body truncation must not be counted as a dropped attribute"
         );
 
         assert!(
@@ -1650,19 +1625,58 @@ mod tests {
             "buffer should contain a truncated body, not be empty"
         );
 
-        // Decode the LOG_RECORD_BODY field and verify the value ends with
-        // the suffix.
-        let bytes = buf.as_ref().to_vec();
-        let mut cursor = bytes.as_slice();
-        let (tag, n) = read_varint(cursor);
-        cursor = &cursor[n..];
-        assert_eq!(tag >> 3, LOG_RECORD_BODY);
-        assert_eq!(tag & 0x7, wire_types::LEN);
-        let (len, n) = read_varint(cursor);
-        cursor = &cursor[n..];
-        let any_value = ProtoAnyValue::decode(&cursor[..len as usize]).unwrap();
-        let s = match any_value.value.as_ref().unwrap() {
-            Value::StringValue(s) => s.clone(),
+        let record = LogRecord::decode(buf.as_ref()).expect("log record should decode");
+        assert_eq!(record.dropped_attributes_count, 0);
+        let s = match record.body.unwrap().value.unwrap() {
+            Value::StringValue(s) => s,
+            other => panic!("expected StringValue, got {other:?}"),
+        };
+        let suffix = std::str::from_utf8(TRUNCATION_SUFFIX).unwrap();
+        assert!(
+            s.ends_with(suffix),
+            "truncated body should end with {suffix}, got: {s}"
+        );
+        assert!(
+            s.len() > suffix.len(),
+            "truncated body should have content before the suffix"
+        );
+    }
+
+    /// Scenario: a Debug-formatted `message` body overflows the available buffer.
+    /// Guarantees: the decoded body ends with `[...]` without incrementing
+    /// OTLP `dropped_attributes_count`.
+    #[test]
+    fn record_debug_message_overflow_truncates_with_suffix() {
+        use otel_arrow_dfe_pdata::otlp::common::{StackProtoBuffer, TRUNCATION_SUFFIX};
+        use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::any_value::Value;
+        use prost::Message;
+        use tracing::field::Visit;
+
+        struct Huge;
+        impl std::fmt::Debug for Huge {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                for _ in 0..512 {
+                    f.write_str("xxxxxxxx")?;
+                }
+                Ok(())
+            }
+        }
+
+        let fields = MESSAGE_TEST_METADATA.fields();
+        let message = fields.field("message").unwrap();
+        let mut buf = StackProtoBuffer::<64>::default();
+        let mut visitor = DirectFieldVisitor::new(&mut buf);
+        visitor.record_debug(&message, &Huge);
+        assert_eq!(
+            visitor.dropped_count(),
+            0,
+            "body truncation must not be counted as a dropped attribute"
+        );
+
+        let record = LogRecord::decode(buf.as_ref()).expect("log record should decode");
+        assert_eq!(record.dropped_attributes_count, 0);
+        let s = match record.body.unwrap().value.unwrap() {
+            Value::StringValue(s) => s,
             other => panic!("expected StringValue, got {other:?}"),
         };
         let suffix = std::str::from_utf8(TRUNCATION_SUFFIX).unwrap();

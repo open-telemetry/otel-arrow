@@ -20,6 +20,6 @@ issues: [1746]
 # characters and subtext to 300 characters.
 subtext: |
   A bare &str log message body that overflowed the encoding buffer was
-  silently dropped in full, with no truncation marker and no signal in
-  dropped_attributes_count. It now truncates with a "[...]" suffix, like
-  Debug-formatted bodies and attribute fields already did, and is counted.
+  silently dropped in full with no truncation marker. It now truncates with
+  a "[...]" suffix, like Debug-formatted bodies and attribute fields already
+  did.
