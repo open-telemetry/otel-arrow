@@ -18,4 +18,3 @@ issues: [4193]
 # Use pipe (|) for multiline entries. Breaking entries must include a `Migration:`
 # section with the specific action consumers must take. Keep notes to 200
 # characters and subtext to 300 characters.
-subtext: Scalar progress retains ACK-driven checkpoints and replay. Oracle string keys require nonempty VARCHAR2 values, AL32UTF8 storage, and explicit BINARY collation. Existing composite checkpoints remain compatible.

@@ -265,15 +265,42 @@ national-character cursor types are rejected. A NUMBER column can contain values
 outside the selected Rust integer range; those rows stop progress rather than
 rounding or wrapping. Full uint64 values never pass through i64 or floating point.
 
-Scalar and composite timestamps follow the current PR's native type handling:
-metadata discovery uses a universal zoned bind; subsequent polls use the exact
-Oracle timestamp family and precision. Configured initial timestamps are
-canonicalized to UTC before fingerprinting. Cursors are extracted from the
-already-normalized output row, without a second native decode.
+Scalar and composite timestamps use native type-aware handling. Metadata
+discovery uses a universal zoned bind; subsequent polls use the exact Oracle
+timestamp family and precision. Configured initial timestamps are canonicalized
+to UTC before fingerprinting. Cursors are extracted from the already-normalized
+output row, without a second native decode.
 
 Only timestamp scalar keys are also used as the OTLP event timestamp. Integer
 and string keys remain ordinary body fields; their event time uses the shared
 observation-time fallback instead of treating a key as time.
+
+For example, consider an integer scalar watermark on `EVENT_ID` with
+`source_id: oracle-audit`. The query returns this input row:
+
+| EVENT_ID | MESSAGE |
+| ---: | --- |
+| 42 | `ready` |
+
+The resulting OTLP `LogRecord`, shown in abbreviated YAML, is:
+
+```yaml
+time_unix_nano: <poll observation time>
+observed_time_unix_nano: <poll observation time>
+severity_text: INFO
+event_name: database.query.row
+body:
+  EVENT_ID: 42
+  MESSAGE: ready
+attributes:
+  receiver.database.source_id: oracle-audit
+  receiver.database.query.name: oracle-audit
+```
+
+`EVENT_ID` remains in the body even though it controls polling progress. Because
+it is an integer rather than a timestamp, both record times use the observation
+time. A timestamp scalar watermark would instead supply `time_unix_nano` while
+`observed_time_unix_nano` would still record when the row was collected.
 
 ##### Oracle string ordering
 
@@ -299,16 +326,15 @@ and [comparison rules](https://docs.oracle.com/en/database/oracle/oracle-databas
 ordering are not supported. A server/configuration without COLLATE support will
 reject statement preparation; no linguistic fallback is used.
 
-Scalar progress uses the same one-page ACK/NACK and durable checkpoint flow as
-composite progress. Only the last emitted row is committed after ACK and a
-successful write; rejected or byte-deferred rows are re-queried. The mode, key,
-bind, and typed initial value identify scalar checkpoints. The current PR baseline's composite fingerprint schema and checkpoint
-representations are preserved. The upstream UTC normalization change can affect
-fingerprints created with earlier PR revisions; resolve compatibility errors
-explicitly rather than deleting checkpoints or bypassing validation. Switching mode
-or type requires an intentional new checkpoint identity or migration, not
-reinterpreting existing progress. Source commit visibility and retention remain
-requirements for both modes; monotonically allocated IDs alone are insufficient.
+Scalar progress uses the ACK/NACK and durable checkpoint behavior defined by the
+[shared scraper delivery contract][scraper-delivery]. Only the last emitted row
+is committed after ACK and a successful write; rejected or byte-deferred rows
+are re-queried. The mode, key, bind, and typed initial value identify scalar
+checkpoints. Existing composite fingerprint schemas and checkpoint
+representations are preserved. Switching mode or type requires an intentional
+new checkpoint identity or migration, not reinterpreting existing progress.
+Source commit visibility and retention remain requirements for both modes;
+monotonically allocated IDs alone are insufficient.
 
 ### Checkpoint
 
@@ -808,6 +834,7 @@ Common engine resource and node context may still accompany them.
 - [Source coordination: open-telemetry/otel-arrow#4001][source-coordination]
 
 [scraper]: ../../../../scraper/README.md
+[scraper-delivery]: ../../../../scraper/README.md#polling-and-delivery-semantics
 [example-config]: ../../../../../configs/oracle-oci-console.yaml
 [load-generator]: ../../../examples/oracle_load_generator.rs
 [instant-client]: https://www.oracle.com/database/technologies/instant-client/downloads.html
