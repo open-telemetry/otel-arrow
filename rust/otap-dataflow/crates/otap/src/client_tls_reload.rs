@@ -14,13 +14,16 @@
 //! the engine-owned TLS reload service can host it later without touching
 //! exporter code.
 //!
-//! Change detection is content-based: sources are re-read through their
-//! configured paths (following the current symlink target each time), so a
-//! Kubernetes projected-Secret rotation -- which swaps the `..data` symlink to a
-//! new timestamped directory rather than rewriting the leaf files -- is picked
-//! up without a restart. A candidate is published only after it validates,
-//! including the certificate/key match check; on any failure the last-known-good
-//! generation is retained.
+//! Change detection is content-based. For one Kubernetes projected volume, the
+//! loader resolves `..data` once per attempt and reads direct or nested files
+//! from that captured generation. Independent paths are read normally and
+//! rejected when validation detects an inconsistent candidate. A candidate is
+//! published only after it validates, including the certificate/key match
+//! check; on any failure the last-known-good generation is retained.
+//!
+//! Explicit `reload_interval: null` disables the loop, while zero is rejected
+//! for configurations that create a provider. Overlapping attempts are
+//! coalesced so generation numbers and notifications cannot regress.
 
 // Wired into the OTLP/gRPC and OTLP/HTTP exporters in the follow-up stages of
 // #4160; the reload machinery lands first so it can be reviewed on its own.
@@ -77,8 +80,8 @@ pub(crate) struct ClientTlsProvider {
     /// poll will re-read the latest contents.
     reload_guard: tokio::sync::Mutex<()>,
     /// Current generation. `ArcSwap` gives exporters a lock-free read on their
-    /// hot path while the single reload task publishes new generations; the two
-    /// run on different tasks, so shared interior mutability is required here.
+    /// hot path while the guarded reload attempt publishes new generations; the
+    /// two run on different tasks, so shared interior mutability is required.
     current: Arc<ArcSwap<ClientTlsGeneration>>,
     /// Next generation number to assign.
     next_number: AtomicU64,
@@ -92,8 +95,9 @@ impl ClientTlsProvider {
     /// or `insecure` with no custom CA) -- the same decision as
     /// [`load_client_tls_material`].
     ///
-    /// Fails if the initially configured material is missing or invalid, keeping
-    /// startup behavior identical to the pre-reload loader.
+    /// Fails if the initial material is missing or invalid, or if an active
+    /// provider is configured with a zero reload interval. In particular, the
+    /// shared loader rejects empty or malformed custom CA bundles.
     pub(crate) async fn new(
         config: Option<&TlsClientConfig>,
         endpoint_uri: &str,
@@ -138,7 +142,8 @@ impl ClientTlsProvider {
         self.notify.subscribe()
     }
 
-    /// The effective reload interval.
+    /// The configured reload interval, or `None` when periodic reload is
+    /// disabled.
     pub(crate) fn reload_interval(&self) -> Option<Duration> {
         self.reload_interval
     }
@@ -155,7 +160,8 @@ impl ClientTlsProvider {
     /// sources, publishing a new generation only when the content changed.
     ///
     /// On validation/read failure, or if the configuration now resolves to
-    /// no-TLS, the current generation is retained.
+    /// no-TLS, the current generation is retained. If another attempt is in
+    /// progress, this request returns [`ReloadOutcome::Busy`] without queueing.
     pub(crate) async fn poll_once(&self) -> ReloadOutcome {
         let Ok(_guard) = self.reload_guard.try_lock() else {
             return ReloadOutcome::Busy;
@@ -197,7 +203,8 @@ impl ClientTlsProvider {
 
     /// Runs the bounded reload loop until `cancel` resolves.
     ///
-    /// Each tick performs at most one [`poll_once`]; cancellation is checked with
+    /// Returns immediately when periodic reload is disabled. Otherwise, each
+    /// tick performs at most one [`poll_once`]; cancellation is checked with
     /// priority so shutdown is prompt. The caller owns how this future is driven
     /// (for example, spawned local to the exporter's core), keeping the loop free
     /// of any engine-specific task machinery.

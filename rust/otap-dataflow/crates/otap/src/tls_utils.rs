@@ -202,6 +202,9 @@ struct ClientTlsFilePaths {
 }
 
 impl ClientTlsFilePaths {
+    /// Captures one Kubernetes AtomicWriter generation when every configured
+    /// file belongs to the same projected volume. Other path layouts are
+    /// returned unchanged and validated as independent sources.
     async fn resolve(config: &TlsClientConfig) -> Result<Self, io::Error> {
         let mut paths = Self {
             ca: config.ca_file.clone(),
@@ -248,6 +251,8 @@ impl ClientTlsFilePaths {
     }
 }
 
+/// Finds the projected-volume root whose top-level entry points through
+/// `..data`, including when `path` names a regular file below that entry.
 async fn projected_volume_root(path: &Path) -> Result<Option<PathBuf>, io::Error> {
     use std::path::Component;
 
@@ -327,9 +332,10 @@ pub(crate) async fn load_client_tls_config(
 ///
 /// Files are read exactly once here; the returned snapshot owns the resulting
 /// bytes so a transport can be built from them without touching the filesystem
-/// again. Returns `Ok(None)` when the connection should not use a configured TLS
-/// block (plaintext `http://` with no config, or `insecure` with no custom CA),
-/// letting the endpoint scheme decide.
+/// again. Configured custom CA bundles must contain at least one valid
+/// certificate. Returns `Ok(None)` when the connection should not use a
+/// configured TLS block (plaintext `http://` with no config, or `insecure` with
+/// no custom CA), letting the endpoint scheme decide.
 pub(crate) async fn load_client_tls_material(
     config: Option<&TlsClientConfig>,
     endpoint_uri: &str,

@@ -2,7 +2,7 @@ change_type: bug_fix
 
 component: otap
 
-note: Reject empty or malformed custom CA bundles before OTLP exporter client TLS setup or reload.
+note: Reject empty or malformed custom CA bundles during OTLP exporter client TLS setup.
 
 issues: [4025, 4160]
 
