@@ -60,6 +60,7 @@ regex = { workspace = true, optional = true }
 ahash = { workspace = true, optional = true }
 flate2 = { workspace = true, optional = true }
 http = { workspace = true, optional = true }
+httpdate = { workspace = true, optional = true }
 rand = { workspace = true, optional = true }
 ryu = { workspace = true, optional = true }
 
@@ -108,6 +109,7 @@ contrib-processors = [
     "resource-validator",
 ]
 contrib-exporters = [
+    "azure-data-explorer",
     "azure-monitor",
     "clickhouse",
     "geneva",
@@ -153,6 +155,20 @@ recordset-kql = [
 resource-validator = []
 
 # Exporters.
+azure-data-explorer = [
+    "dep:reqwest",
+    "dep:flate2",
+    "dep:http",
+    "dep:httpdate",
+    "dep:rand",
+    "dep:sysinfo",
+    "dep:chrono",
+    "dep:humantime-serde",
+    "dep:itoa",
+    "dep:ryu",
+    "dep:urlencoding",
+    "dep:uuid",
+]
 azure-monitor = [
     "dep:opentelemetry-proto",
     "dep:reqwest",

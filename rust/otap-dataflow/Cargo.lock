@@ -7400,6 +7400,7 @@ dependencies = [
  "geneva-uploader",
  "hex",
  "http 1.5.0",
+ "httpdate",
  "humantime",
  "humantime-serde",
  "insta",

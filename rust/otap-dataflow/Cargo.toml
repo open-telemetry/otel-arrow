@@ -127,6 +127,7 @@ futures-util = "0.3.32"
 async-channel = { version = "2.5.0" }
 hashbrown = { version = "0.17", features = ["equivalent"] }
 http = "1.4"
+httpdate = "1"
 humantime = "2.3.0"
 humantime-serde = "1.1.1"
 iso8601 = "0.6.3"
@@ -333,10 +334,17 @@ parquet = ["otel-arrow-dfe-core-nodes/parquet"]
 
 # Contrib-node feature forwarding. Keep these lists aligned with
 # `crates/contrib-nodes/Cargo.toml`.
-contrib-nodes = ["otel-arrow-dfe-contrib-nodes/contrib-nodes"]
+contrib-nodes = [
+    "otel-arrow-dfe-contrib-nodes/contrib-nodes",
+    "azure-identity-auth",
+]
 contrib-receivers = ["otel-arrow-dfe-contrib-nodes/contrib-receivers"]
 contrib-processors = ["otel-arrow-dfe-contrib-nodes/contrib-processors"]
-contrib-exporters = ["otel-arrow-dfe-contrib-nodes/contrib-exporters"]
+# Authenticated exporters in this umbrella share the Azure Identity provider.
+contrib-exporters = [
+    "otel-arrow-dfe-contrib-nodes/contrib-exporters",
+    "azure-identity-auth",
+]
 
 # Contrib integrations with both sources and destinations.
 kafka = ["otel-arrow-dfe-contrib-nodes/kafka"]
@@ -351,6 +359,12 @@ recordset-kql = ["otel-arrow-dfe-contrib-nodes/recordset-kql"]
 resource-validator = ["otel-arrow-dfe-contrib-nodes/resource-validator"]
 
 # Contrib exporters.
+# The Azure Data Explorer exporter requires the Azure Identity auth extension to
+# authenticate outbound requests, so enabling it pulls in that extension.
+azure-data-explorer = [
+    "otel-arrow-dfe-contrib-nodes/azure-data-explorer",
+    "azure-identity-auth",
+]
 # The Azure Monitor exporter requires the Azure Identity auth extension to
 # authenticate outbound requests, so enabling it pulls in that extension.
 azure-monitor = [

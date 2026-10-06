@@ -76,6 +76,7 @@ Exporters send data out of a pipeline.
 
 | Type | Feature | Stability | Description |
 | --- | --- | --- | --- |
+| [`urn:microsoft:exporter:azure_data_explorer`](src/exporters/azure_data_explorer_exporter/README.md) | `azure-data-explorer` | Alpha; logs, metrics, and traces | Streams OpenTelemetry data to Azure Data Explorer. |
 | [`urn:microsoft:exporter:azure_monitor`](src/exporters/azure_monitor_exporter/README.md) | `azure-monitor` | Alpha; supports logs | Sends OpenTelemetry logs to Azure Monitor. |
 | [`exporter:clickhouse`](src/exporters/clickhouse_exporter/README.md) | `clickhouse` | Experimental | Writes logs and traces to ClickHouse. |
 | [`urn:microsoft:exporter:geneva`](src/exporters/geneva_exporter/README.md) | `geneva` | Alpha; logs and traces | Sends telemetry to Microsoft's Geneva backend. |
@@ -83,7 +84,8 @@ Exporters send data out of a pipeline.
 
 ## Feature Aggregates
 
-- `contrib-nodes`: enables all contrib receivers, processors, and exporters.
+- `contrib-nodes`: enables all contrib receivers, processors, exporters, and
+  extensions required by those nodes.
 - `contrib-receivers`: enables all contrib receivers.
 - `contrib-processors`: enables all contrib processors.
 - `contrib-exporters`: enables all contrib exporters.

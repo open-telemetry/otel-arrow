@@ -1,5 +1,11 @@
 [
   {
+    "id": "urn:microsoft:exporter:azure_data_explorer",
+    "category": "Exporter",
+    "description": null,
+    "attributes": {}
+  },
+  {
     "id": "urn:microsoft:exporter:azure_monitor",
     "category": "Exporter",
     "description": null,
@@ -102,13 +108,13 @@
     "attributes": {}
   },
   {
-    "id": "urn:otel:extension:oauth2_client_auth",
+    "id": "urn:otel:extension:k8s_service_account_token_auth",
     "category": "Extension",
     "description": null,
     "attributes": {}
   },
   {
-    "id": "urn:otel:extension:k8s_service_account_token_auth",
+    "id": "urn:otel:extension:oauth2_client_auth",
     "category": "Extension",
     "description": null,
     "attributes": {}

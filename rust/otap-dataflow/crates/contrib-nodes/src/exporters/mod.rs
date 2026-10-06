@@ -12,6 +12,10 @@ pub mod azure_monitor_exporter;
 /// ClickHouse Exporter for columnar telemetry storage
 #[cfg(feature = "clickhouse")]
 pub mod clickhouse_exporter;
+
+/// Azure Data Explorer (ADX) Exporter for Kusto streaming ingestion
+#[cfg(feature = "azure-data-explorer")]
+pub mod azure_data_explorer_exporter;
 /// Kafka Exporter for Apache Kafka
 #[cfg(feature = "kafka")]
 pub mod kafka_exporter;
