@@ -249,7 +249,7 @@ policies:
         - type: transport_header
           name: workspace
           store_as: workspace_id
-          
+
         # Require environment, referring to "x-environment" to be
         # equal to "production".
         - type: transport_header_match
