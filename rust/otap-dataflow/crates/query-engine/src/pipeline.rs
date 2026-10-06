@@ -135,7 +135,7 @@ pub trait PipelineStage {
     /// being used in an operation call like `apply attributes { ... }`
     ///
     /// If an implementation overrides this to return `true` for `RecordType::Attributes`,
-    /// should also implement `execute_on_attributes`. Likewise for `RecordType::Child(DataPoint)`
+    /// should also implement `execute_on_attributes`. Likewise for `RecordType::DataPoint`
     /// and `execute_on_metric_data_points`.
     fn supports_exec_on(&self, record_type: &RecordType) -> bool {
         matches!(record_type, RecordType::Signal(_))

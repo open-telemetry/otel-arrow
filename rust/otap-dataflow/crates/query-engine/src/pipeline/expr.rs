@@ -186,7 +186,9 @@ impl DataScope {
     pub fn from_record_column(column: &ColumnAccessor, record_type: &RecordType) -> Self {
         match column {
             ColumnAccessor::ColumnName(_) => match record_type {
-                RecordType::Child(child, _) => Self::Record(RecordScope::Child(*child)),
+                RecordType::DataPoint(_) => {
+                    Self::Record(RecordScope::Child(ChildRecordKind::DataPoint))
+                }
                 _ => Self::Record(RecordScope::Signal),
             },
             ColumnAccessor::StructCol(struct_name, _) => match *struct_name {

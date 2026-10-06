@@ -52,8 +52,8 @@ use crate::pipeline::expr::types::{
     ExprLogicalType, cast_expr, coerce_arithmetic, nested_struct_field_type, root_field_type,
 };
 use crate::pipeline::expr::{
-    DataScope, LeafEval, RecordScope, RootParentStruct, ScopedExpr, ShortCircuitStrategy,
-    SignalTypePredicate, VALUE_COLUMN_NAME, arg_column_name,
+    ChildRecordKind, DataScope, LeafEval, RecordScope, RootParentStruct, ScopedExpr,
+    ShortCircuitStrategy, SignalTypePredicate, VALUE_COLUMN_NAME, arg_column_name,
 };
 use crate::pipeline::functions::compare::CompareFunc;
 use crate::pipeline::functions::expr_fn::contains;
@@ -101,7 +101,7 @@ impl ExprPlanner {
     /// should return the record scope identifying this data.
     fn record_scope(&self) -> RecordScope {
         match &self.record_type {
-            RecordType::Child(child, _) => RecordScope::Child(*child),
+            RecordType::DataPoint(_) => RecordScope::Child(ChildRecordKind::DataPoint),
             // In attributes mode the attributes batch IS the "root" for evaluation,
             // so we use Signal scope -- same as the top-level signal case.
             _ => RecordScope::Signal,
@@ -1625,11 +1625,9 @@ impl ExprPlanner {
                 Operator::Eq,
                 ScalarExpression::Static(StaticScalarExpression::String(typename_expr)),
             ) => {
-                if let RecordType::Child(child_kind, _) = &self.record_type {
+                if let RecordType::DataPoint(_) = &self.record_type {
                     return Err(Error::NotYetSupportedError {
-                        message: format!(
-                            "Checking record type for {child_kind:?} not yet supported"
-                        ),
+                        message: "Checking record type for data points not yet supported".into(),
                     });
                 }
 
@@ -2078,7 +2076,7 @@ impl ScopedExpr {
 
                 if *align_children_to_record {
                     let record_scope = match record_type {
-                        RecordType::Child(child, _) => RecordScope::Child(*child),
+                        RecordType::DataPoint(_) => RecordScope::Child(ChildRecordKind::DataPoint),
                         _ => RecordScope::Signal,
                     };
                     return Ok(Cow::Owned(DataScope::Record(record_scope)));
@@ -2128,7 +2126,7 @@ impl ScopedExpr {
             }
             Self::BitmapAnd(_, _) | Self::BitmapOr(_, _) | Self::BitmapNot(_) => {
                 let record_scope = match record_type {
-                    RecordType::Child(child_kind, _) => RecordScope::Child(*child_kind),
+                    RecordType::DataPoint(_) => RecordScope::Child(ChildRecordKind::DataPoint),
                     _ => RecordScope::Signal,
                 };
                 Ok(Cow::Owned(DataScope::Record(record_scope)))

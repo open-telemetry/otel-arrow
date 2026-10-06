@@ -110,18 +110,17 @@ impl From<&MetricTypeContext> for DataPointContext {
 ///
 /// Carries context about which signal types or data point types are valid, enabling
 /// field validation during planning.
+///
+/// Note: this is distinct from `RecordScope` which is runtime concepts that identify which
+/// batch an expression is evaluated against. `RecordType` is a planning concept that carries
+/// validation context.
 #[derive(Clone, Debug)]
 pub enum RecordType {
     /// Logs, Metrics, Traces -- with context about which signal types are valid
     Signal(SignalContext),
 
-    /// A repeated, child field such as metric data points.
-    ///
-    /// The `DataPointContext` carries which data point types are valid (only meaningful
-    /// when the child kind is `DataPoint`). It lives here rather than on
-    /// `ChildRecordKind` because `ChildRecordKind` is shared with `RecordScope`
-    /// (a runtime type that does not need validation context).
-    Child(ChildRecordKind, DataPointContext),
+    /// Metric data points, with context about which data point types are valid
+    DataPoint(DataPointContext),
 
     /// Attributes treated as elements of the stream
     Attributes,
@@ -133,7 +132,7 @@ impl RecordType {
     }
 
     pub fn is_data_point(&self) -> bool {
-        matches!(self, Self::Child(ChildRecordKind::DataPoint, _))
+        matches!(self, Self::DataPoint(_))
     }
 
     /// Returns a reference to the signal context, if this is a Signal record type.
@@ -640,7 +639,7 @@ impl PipelinePlanner {
         let record_scope =
             match self.record_type {
                 RecordType::Signal(_) => RecordScope::Signal,
-                RecordType::Child(child, _) => RecordScope::Child(child),
+                RecordType::DataPoint(_) => RecordScope::Child(ChildRecordKind::DataPoint),
                 RecordType::Attributes => return Err(Error::InvalidPipelineError {
                     cause:
                         "rename operation not supported on nested pipeline applied to attributes"
@@ -755,7 +754,7 @@ impl PipelinePlanner {
 
         let record_scope = match self.record_type {
             RecordType::Signal(_) => RecordScope::Signal,
-            RecordType::Child(child, _) => RecordScope::Child(child),
+            RecordType::DataPoint(_) => RecordScope::Child(ChildRecordKind::DataPoint),
             RecordType::Attributes => return Err(Error::InvalidPipelineError {
                 cause:
                     "remove attributes operation not supported on nested pipeline applied to attributes"
@@ -1061,7 +1060,7 @@ impl PipelinePlanner {
                     }
 
                     let record_scope = match &self.record_type {
-                        RecordType::Child(child, _) => RecordScope::Child(*child),
+                        RecordType::DataPoint(_) => RecordScope::Child(ChildRecordKind::DataPoint),
                         RecordType::Signal(_) => RecordScope::Signal,
                         RecordType::Attributes => {
                             return Err(Error::InvalidPipelineError {
@@ -1093,7 +1092,7 @@ impl PipelinePlanner {
                                 ))) => mt_ctx.into(),
                                 _ => DataPointContext::All,
                             };
-                            RecordType::Child(ChildRecordKind::DataPoint, dp_ctx)
+                            RecordType::DataPoint(dp_ctx)
                         }
                     };
 
@@ -1300,10 +1299,10 @@ impl ColumnAccessor {
             });
         };
 
-        if let RecordType::Child(child_kind, _) = record_type {
+        if let RecordType::DataPoint(_) = record_type {
             return Err(Error::NotYetSupportedError {
                 message: format!(
-                    "parent struct {struct_column_name} access not yet supported for {child_kind:?}"
+                    "parent struct {struct_column_name} access not yet supported for data points"
                 ),
             });
         }
@@ -1355,7 +1354,9 @@ impl ColumnAccessor {
                     ATTRIBUTES_FIELD_NAME => {
                         let record_scope = match record_type {
                             RecordType::Signal(_) => RecordScope::Signal,
-                            RecordType::Child(child, _) => RecordScope::Child(*child),
+                            RecordType::DataPoint(_) => {
+                                RecordScope::Child(ChildRecordKind::DataPoint)
+                            }
                             RecordType::Attributes => {
                                 return Err(Error::InvalidPipelineError {
                                     cause: format!("{column_name} is not a field on attributes"),

@@ -75,9 +75,7 @@ use crate::pipeline::expr::types::{
     ExprLogicalType, MetricDataPointType, nested_struct_field_type,
     root_field_supports_dict_encoding, root_field_type,
 };
-use crate::pipeline::expr::{
-    ChildRecordKind, DataScope, RecordScope, RootParentStruct, ScopedExpr, ScopedValue,
-};
+use crate::pipeline::expr::{DataScope, RecordScope, RootParentStruct, ScopedExpr, ScopedValue};
 use crate::pipeline::planner::{AttributesIdentifier, ColumnAccessor, RecordType};
 use crate::pipeline::project::anyval::{
     attempt_coerce_value_column_from_any_value_struct_column, fill_null_type_as_empty,
@@ -1466,9 +1464,7 @@ impl PipelineStage for AssignPipelineStage {
     fn supports_exec_on(&self, record_type: &RecordType) -> bool {
         matches!(
             record_type,
-            RecordType::Attributes
-                | RecordType::Signal(_)
-                | RecordType::Child(ChildRecordKind::DataPoint, _)
+            RecordType::Attributes | RecordType::Signal(_) | RecordType::DataPoint(_)
         )
     }
 

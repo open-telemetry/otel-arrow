@@ -173,7 +173,7 @@ impl PipelineStage for FilterPipelineStage {
         match record_type {
             RecordType::Signal(_) => true,
             RecordType::Attributes => true,
-            RecordType::Child(ChildRecordKind::DataPoint, _) => true,
+            RecordType::DataPoint(_) => true,
         }
     }
 }
