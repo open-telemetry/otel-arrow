@@ -52,6 +52,56 @@ pub enum SignalContext {
     Single(SignalKind),
 }
 
+impl SignalContext {
+    /// Infer the signal context from a [`PipelineExpression`] by inspecting its
+    /// query source keyword.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the query does not start with a recognized source keyword.
+    ///
+    /// TODO: this needs to be reworked because it doesn't handle if the program is
+    /// non-OPL/KQL or starts with a comment / whitespace. Eventually we should add
+    /// the source into the AST.
+    pub fn try_infer(pipeline_def: &PipelineExpression) -> Result<Self> {
+        let query = pipeline_def.get_query();
+        let trimmed = query.trim_start();
+        let source = trimmed
+            .split(|c: char| c.is_ascii_whitespace() || c == '|')
+            .next()
+            .unwrap_or("");
+        match source {
+            "logs" => Ok(Self::Single(SignalKind::Logs)),
+            "traces" => Ok(Self::Single(SignalKind::Traces)),
+            "metrics" => Ok(Self::Single(SignalKind::Metrics(MetricTypeContext::All))),
+            "signals" => Ok(Self::All),
+            "gauges" => Ok(Self::Single(SignalKind::Metrics(
+                MetricTypeContext::Single(MetricType::Gauge),
+            ))),
+            "sums" => Ok(Self::Single(SignalKind::Metrics(
+                MetricTypeContext::Single(MetricType::Sum),
+            ))),
+            "histograms" => Ok(Self::Single(SignalKind::Metrics(
+                MetricTypeContext::Single(MetricType::Histogram),
+            ))),
+            "exponential_histograms" => Ok(Self::Single(SignalKind::Metrics(
+                MetricTypeContext::Single(MetricType::ExponentialHistogram),
+            ))),
+            "summaries" => Ok(Self::Single(SignalKind::Metrics(
+                MetricTypeContext::Single(MetricType::Summary),
+            ))),
+            _ => Err(Error::InvalidPipelineError {
+                cause: format!(
+                    "could not determine signal type from query source '{source}'; \
+                     expected one of: logs, metrics, traces, signals, gauges, \
+                     sums, histograms, exponential_histograms, summaries"
+                ),
+                query_location: None,
+            }),
+        }
+    }
+}
+
 /// Identifies which signal type a pipeline is scoped to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SignalKind {

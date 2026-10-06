@@ -298,6 +298,17 @@ pub struct PipelineOptions {
     pub signal_context: SignalContext,
 }
 
+impl PipelineOptions {
+    /// Create options with the given signal context.
+    #[must_use]
+    pub fn new_with_signal_context(signal_context: SignalContext) -> Self {
+        Self {
+            signal_context,
+            ..Default::default()
+        }
+    }
+}
+
 impl Default for PipelineOptions {
     fn default() -> Self {
         Self {
@@ -323,44 +334,19 @@ pub struct Pipeline {
 impl Pipeline {
     /// Create a new [`Pipeline`] instance that will evaluate the passed [`PipelineExpression`].
     ///
-    /// The signal context will be automatically inferred from the query source keyword (e.g.
-    /// `logs`, `metrics`, `traces`, `signals`) or is assumed to be metrics if the source is some
-    /// valid metrics type (`summaries`, `gauges`, `sums`, `histograms` or `exponential_histograms`).
-    ///
-    /// Note: This inference assumes the syntax of the passed query is OPL or KQL and that there is
-    /// no comment at the beginning the program.
+    /// Create a new [`Pipeline`] with signal context inferred from the query source keyword.
     ///
     /// # Errors
     ///
     /// Returns an error if the signal type cannot be determined from the query source.
     pub fn try_new(pipeline_definition: PipelineExpression) -> Result<Self> {
-        let signal_context = Self::infer_signal_context(&pipeline_definition)?;
-        let options = PipelineOptions {
-            signal_context,
-            ..Default::default()
-        };
-        Ok(Self::new_with_options(pipeline_definition, options))
-    }
-
-    /// Create a new [`Pipeline`] instance, inferring the signal context from the query
-    /// source keyword, but using the caller's other options.
-    ///
-    /// This is useful when the caller needs to set options like
-    /// `filter_attribute_keys_case_sensitive` but still wants auto-inference of signal context.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the signal type cannot be determined from the query source.
-    pub fn try_new_with_options(
-        pipeline_definition: PipelineExpression,
-        mut options: PipelineOptions,
-    ) -> Result<Self> {
-        options.signal_context = Self::infer_signal_context(&pipeline_definition)?;
+        let signal_context = SignalContext::try_infer(&pipeline_definition)?;
+        let options = PipelineOptions::new_with_signal_context(signal_context);
         Ok(Self::new_with_options(pipeline_definition, options))
     }
 
     /// Create a new [`Pipeline`] instance that will evaluate the passed [`PipelineExpression`]
-    /// with the specified options.
+    /// with the specified options
     #[must_use]
     pub const fn new_with_options(
         pipeline_definition: PipelineExpression,
@@ -387,52 +373,6 @@ impl Pipeline {
                     | (SignalKind::Metrics(_), SignalType::Metrics)
                     | (SignalKind::Traces, SignalType::Traces)
             ),
-        }
-    }
-
-    /// Infer the signal context from the query source keyword in the pipeline expression.
-    ///
-    /// Returns an error if the query does not start with a recognized source keyword.
-    ///
-    /// TODO: this needs to be reworked because it doesn't handle if the program is non-OPL/KQL or
-    /// starts with a comment / whitespace. Eventually we should add the source into the AST.
-    fn infer_signal_context(pipeline_def: &PipelineExpression) -> Result<SignalContext> {
-        let query = pipeline_def.get_query();
-        let trimmed = query.trim_start();
-        let source = trimmed
-            .split(|c: char| c.is_ascii_whitespace() || c == '|')
-            .next()
-            .unwrap_or("");
-        match source {
-            "logs" => Ok(SignalContext::Single(SignalKind::Logs)),
-            "traces" => Ok(SignalContext::Single(SignalKind::Traces)),
-            "metrics" => Ok(SignalContext::Single(SignalKind::Metrics(
-                MetricTypeContext::All,
-            ))),
-            "signals" => Ok(SignalContext::All),
-            "gauges" => Ok(SignalContext::Single(SignalKind::Metrics(
-                MetricTypeContext::Single(MetricType::Gauge),
-            ))),
-            "sums" => Ok(SignalContext::Single(SignalKind::Metrics(
-                MetricTypeContext::Single(MetricType::Sum),
-            ))),
-            "histograms" => Ok(SignalContext::Single(SignalKind::Metrics(
-                MetricTypeContext::Single(MetricType::Histogram),
-            ))),
-            "exponential_histograms" => Ok(SignalContext::Single(SignalKind::Metrics(
-                MetricTypeContext::Single(MetricType::ExponentialHistogram),
-            ))),
-            "summaries" => Ok(SignalContext::Single(SignalKind::Metrics(
-                MetricTypeContext::Single(MetricType::Summary),
-            ))),
-            _ => Err(Error::InvalidPipelineError {
-                cause: format!(
-                    "could not determine signal type from query source '{source}'; \
-                     expected one of: logs, metrics, traces, signals, gauges, \
-                     sums, histograms, exponential_histograms, summaries"
-                ),
-                query_location: None,
-            }),
         }
     }
 
@@ -881,7 +821,7 @@ mod test {
 
         for (query, expected) in cases {
             let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-            let inferred = Pipeline::infer_signal_context(&pipeline_expr)
+            let inferred = SignalContext::try_infer(&pipeline_expr)
                 .unwrap_or_else(|e| panic!("inference failed for '{query}': {e}"));
             assert_eq!(
                 format!("{inferred:?}"),
@@ -896,7 +836,7 @@ mod test {
     #[test]
     fn test_infer_signal_context_rejects_unknown_source() {
         let pipeline_expr = KqlParser::parse("bogus | where true").unwrap().pipeline;
-        let result = Pipeline::infer_signal_context(&pipeline_expr);
+        let result = SignalContext::try_infer(&pipeline_expr);
         match result {
             Err(Error::InvalidPipelineError { cause, .. }) => {
                 assert!(
@@ -913,6 +853,6 @@ mod test {
     #[test]
     fn test_infer_signal_context_exact_token_match() {
         let pipeline_expr = KqlParser::parse("logsfoo | where true").unwrap().pipeline;
-        assert!(Pipeline::infer_signal_context(&pipeline_expr).is_err());
+        assert!(SignalContext::try_infer(&pipeline_expr).is_err());
     }
 }

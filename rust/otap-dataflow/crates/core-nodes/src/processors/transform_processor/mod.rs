@@ -139,10 +139,6 @@ impl TransformProcessor {
         let parser_options = default_parser_options();
 
         let filter_attribute_keys_case_sensitive = config.filter_attribute_keys_case_sensitive;
-        let base_options = PipelineOptions {
-            filter_attribute_keys_case_sensitive,
-            ..Default::default()
-        };
 
         let map_pipeline_err = |e| ConfigError::InvalidUserConfig {
             error: format!("Could not create pipeline: {e}"),
@@ -153,16 +149,22 @@ impl TransformProcessor {
                 let pipeline_expr = KqlParser::parse_with_options(query, parser_options)
                     .map_err(map_parser_err)?
                     .pipeline;
-                let pipeline = Pipeline::try_new_with_options(pipeline_expr, base_options)
-                    .map_err(map_pipeline_err)?;
+                let signal_context =
+                    SignalContext::try_infer(&pipeline_expr).map_err(map_pipeline_err)?;
+                let mut options = PipelineOptions::new_with_signal_context(signal_context);
+                options.filter_attribute_keys_case_sensitive = filter_attribute_keys_case_sensitive;
+                let pipeline = Pipeline::new_with_options(pipeline_expr, options);
                 (vec![Transform { pipeline }], TransformLanguage::Kql)
             }
             Query::OplQuery(query) => {
                 let pipeline_expr = OplParser::parse_with_options(query, parser_options)
                     .map_err(map_parser_err)?
                     .pipeline;
-                let pipeline = Pipeline::try_new_with_options(pipeline_expr, base_options)
-                    .map_err(map_pipeline_err)?;
+                let signal_context =
+                    SignalContext::try_infer(&pipeline_expr).map_err(map_pipeline_err)?;
+                let mut options = PipelineOptions::new_with_signal_context(signal_context);
+                options.filter_attribute_keys_case_sensitive = filter_attribute_keys_case_sensitive;
+                let pipeline = Pipeline::new_with_options(pipeline_expr, options);
                 (vec![Transform { pipeline }], TransformLanguage::Opl)
             }
             Query::Ottl(ottl_config) => {
