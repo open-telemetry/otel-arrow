@@ -100,10 +100,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          printf '%s' 'OTAPTEST' > "$RUNNER_TEMP/oracle-username"
           printf '%s' 'CiOraclePass_3821' > "$RUNNER_TEMP/oracle-password"
-          chmod 600 "$RUNNER_TEMP/oracle-username" "$RUNNER_TEMP/oracle-password"
-          echo "ORACLE_USERNAME_FILE=$RUNNER_TEMP/oracle-username" >> "$GITHUB_ENV"
+          chmod 600 "$RUNNER_TEMP/oracle-password"
+          echo "ORACLE_USERNAME=OTAPTEST" >> "$GITHUB_ENV"
           echo "ORACLE_PASSWORD_FILE=$RUNNER_TEMP/oracle-password" >> "$GITHUB_ENV"
       - name: Seed Oracle source data
         env:
@@ -114,7 +113,7 @@ jobs:
         run: |
           cargo run --locked \
             -p otel-arrow-dfe-contrib-nodes \
-            --features oracle-receiver \
+            --features oracle \
             --example oracle_load_generator \
             -- \
             --rows 10 \
@@ -129,7 +128,7 @@ jobs:
         run: |
           cargo test --locked \
             -p otel-arrow-dfe-contrib-nodes \
-            --features oracle-receiver \
+            --features oracle \
             emits_oracle_rows_when_live_test_is_enabled \
             -- \
             --nocapture \
