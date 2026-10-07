@@ -41,7 +41,7 @@ from ....core.strategies.deployment_strategy import (
     DeploymentStrategyConfig,
 )
 from ....runner.registry import deployment_registry, PluginMeta
-from ..common.process import ComponentProcessRuntime
+from ..common.process import ComponentProcessRuntime, terminate_process_tree
 from ..hooks.process.ensure_process import EnsureProcess, EnsureProcessConfig
 
 STRATEGY_NAME = "process"
@@ -188,7 +188,9 @@ components:
                 logger.warning(
                     f"Process for {component.name} did not terminate, killing it."
                 )
-                process.kill()  # Force kill if terminate fails
+                # Force-kill the whole tree (process + descendants), not just the
+                # direct child, so nothing is left orphaned.
+                terminate_process_tree(process.pid, logger)
 
             stdout_logs, stderr_logs = process.communicate()
             args = ctx.get_suite().get_runtime("args")

@@ -89,6 +89,7 @@ class TestProcessDeployment(unittest.TestCase):
         with self.assertRaises(FileNotFoundError):
             process_deployment.start(mock_component, MagicMock())
 
+    @patch("lib.impl.strategies.deployment.process.terminate_process_tree")
     @patch("lib.impl.strategies.deployment.process.subprocess.Popen")
     @patch("lib.impl.strategies.deployment.process.Component.get_or_create_runtime")
     @patch("lib.impl.strategies.deployment.process.Component.set_runtime_data")
@@ -99,6 +100,7 @@ class TestProcessDeployment(unittest.TestCase):
         mock_set_runtime_data,
         mock_get_or_create_runtime,
         mock_popen,
+        mock_terminate_tree,
     ):
         # Setup mocks
         mock_logger = MagicMock()
@@ -118,13 +120,15 @@ class TestProcessDeployment(unittest.TestCase):
         mock_runtime.process = mock_process
         mock_component.get_or_create_runtime.return_value = mock_runtime
 
-        # Ensure the process is killed after a timeout
+        # Ensure the process tree is killed after a timeout
         process_deployment = ProcessDeployment(
             config=ProcessDeploymentConfig(command="echo 'hello world'")
         )
         process_deployment.stop(mock_component, MagicMock())
 
-        mock_process.kill.assert_called_once()  # Assert kill was called after timeout
+        # Assert the whole process tree was force-killed after the timeout.
+        mock_terminate_tree.assert_called_once()
+        self.assertEqual(mock_terminate_tree.call_args.args[0], 1234)
 
     @patch("lib.impl.strategies.deployment.process.subprocess.Popen")
     @patch("lib.impl.strategies.deployment.process.Component.get_or_create_runtime")
@@ -245,6 +249,7 @@ class TestProcessDeployment(unittest.TestCase):
         mock_process.terminate.assert_called_once()
         mock_process.wait.assert_called_once()
 
+    @patch("lib.impl.strategies.deployment.process.terminate_process_tree")
     @patch("lib.impl.strategies.deployment.process.subprocess.Popen")
     @patch("lib.impl.strategies.deployment.process.Component.get_or_create_runtime")
     @patch("lib.impl.strategies.deployment.process.Component.set_runtime_data")
@@ -255,6 +260,7 @@ class TestProcessDeployment(unittest.TestCase):
         mock_set_runtime_data,
         mock_get_or_create_runtime,
         mock_popen,
+        mock_terminate_tree,
     ):
         # Setup mocks
         mock_logger = MagicMock()
@@ -280,8 +286,9 @@ class TestProcessDeployment(unittest.TestCase):
         )
         process_deployment.stop(mock_component, MagicMock())
 
-        # Assert that kill was called after the timeout
-        mock_process.kill.assert_called_once()
+        # Assert the whole process tree was force-killed after the timeout.
+        mock_terminate_tree.assert_called_once()
+        self.assertEqual(mock_terminate_tree.call_args.args[0], 1234)
 
     @patch("lib.impl.strategies.deployment.process.subprocess.Popen")
     @patch("lib.impl.strategies.deployment.process.Component.get_or_create_runtime")
