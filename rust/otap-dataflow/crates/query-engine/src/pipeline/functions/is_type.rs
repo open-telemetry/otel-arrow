@@ -1,8 +1,6 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use std::any::Any;
-
 use arrow::array::{Array, BooleanArray, BooleanBufferBuilder};
 use arrow::buffer::BooleanBuffer;
 use arrow::datatypes::{DataType, TimeUnit};
@@ -13,6 +11,7 @@ use datafusion::logical_expr::{
 };
 use datafusion::scalar::ScalarValue;
 use otel_arrow_dfe_pdata::otlp::attributes::AttributeValueType;
+use otel_arrow_dfe_pdata::schema::is_valid_timestamp_time_zone;
 
 use crate::pipeline::expr::types::ExprLogicalType;
 use crate::pipeline::project::anyval::{
@@ -114,10 +113,6 @@ fn evaluate_anyvalue_subtype(arr: &arrow::array::ArrayRef, target: u8) -> Result
 }
 
 impl ScalarUDFImpl for IsTypeFunc {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn name(&self) -> &str {
         "is_type"
     }
@@ -198,10 +193,10 @@ impl ScalarUDFImpl for IsTypeFunc {
             ExprLogicalType::DurationNanoSecond => {
                 is_logically_type(&arg_data_type, &DataType::Duration(TimeUnit::Nanosecond))
             }
-            ExprLogicalType::TimestampNanosecond => is_logically_type(
-                &arg_data_type,
-                &DataType::Timestamp(TimeUnit::Nanosecond, None),
-            ),
+            // Timestamp columns may carry any time zone spelling that the OTAP
+            // schema accepts, so compare the unit and validate the time zone
+            // rather than comparing against a single concrete DataType.
+            ExprLogicalType::TimestampNanosecond => is_timestamp_nanosecond(&arg_data_type),
             ExprLogicalType::String => is_logically_type(&arg_data_type, &DataType::Utf8),
             ExprLogicalType::Binary => is_logically_type(&arg_data_type, &DataType::Binary),
             ExprLogicalType::FixedSizeBinary(size) => {
@@ -235,6 +230,24 @@ fn is_logically_type(source: &DataType, expected: &DataType) -> bool {
     } else {
         false
     }
+}
+
+/// Returns true if `source` is an OTAP nanosecond timestamp column, unwrapping
+/// a dictionary encoding if present.
+///
+/// Any time zone that the OTAP schema accepts qualifies, so that a query does
+/// not need to know which accepted spelling a producer used.
+fn is_timestamp_nanosecond(source: &DataType) -> bool {
+    let source = match source {
+        DataType::Dictionary(_, v) => v.as_ref(),
+        other => other,
+    };
+
+    matches!(
+        source,
+        DataType::Timestamp(TimeUnit::Nanosecond, tz)
+            if is_valid_timestamp_time_zone(tz.as_ref().map(|tz| tz.as_ref()))
+    )
 }
 
 /// Build a uniform boolean [`ColumnarValue`] with the same shape (scalar / array length) as
@@ -573,6 +586,37 @@ mod tests {
         )
         .unwrap();
         assert!(v);
+    }
+
+    /// Scenario: `is_type(..., Timestamp)` is applied to timestamp values that
+    /// carry each time zone spelling the OTAP schema accepts, and to one that
+    /// it does not.
+    /// Guarantees: The predicate is insensitive to which accepted spelling a
+    /// producer used, so queries keep working as producers move to UTC, while a
+    /// non-UTC zone is still reported as not a timestamp.
+    #[test]
+    fn test_timestamp_nanosecond_matches_accepted_time_zones() {
+        for time_zone in [Some("UTC"), Some("+00:00"), None] {
+            let v = invoke_scalar(
+                ExprLogicalType::TimestampNanosecond,
+                ColumnarValue::Scalar(ScalarValue::TimestampNanosecond(
+                    Some(1_000_000),
+                    time_zone.map(Into::into),
+                )),
+            )
+            .unwrap();
+            assert!(v, "time zone {time_zone:?} should be a timestamp");
+        }
+
+        let v = invoke_scalar(
+            ExprLogicalType::TimestampNanosecond,
+            ColumnarValue::Scalar(ScalarValue::TimestampNanosecond(
+                Some(1_000_000),
+                Some("America/Denver".into()),
+            )),
+        )
+        .unwrap();
+        assert!(!v, "a non-UTC time zone should not be a timestamp");
     }
 
     #[test]

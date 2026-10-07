@@ -1,0 +1,6 @@
+type: topic
+status:
+  class: receiver
+  codeowners:
+    active:
+      - lquerel

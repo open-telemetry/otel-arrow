@@ -21,9 +21,10 @@ use crate::effect_handler::SourceTagging;
 use crate::entity_context::NodeTelemetryGuard;
 use crate::error::{Error, ProcessorErrorKind};
 use crate::flow_metrics::{
-    FlowDroppedItemsMetrics, FlowDurationMetrics, FlowInputItemsMetrics, FlowInputMessageMetrics,
+    FlowDroppedItemsMetrics, FlowDurationMetricSet, FlowInputItemsMetrics, FlowInputMessageMetrics,
     FlowInputSizeMetrics, FlowOutputItemsMetrics, FlowOutputMessageMetrics, FlowOutputSizeMetrics,
 };
+use crate::forced_shutdown::ForcedShutdownSignal;
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::local::processor as local;
 use crate::message::{Message, ProcessorInbox, Receiver, Sender};
@@ -588,42 +589,6 @@ impl<PData> ProcessorWrapper<PData> {
         }
     }
 
-    /// Start the processor using the services owned by its pipeline runtime.
-    pub async fn start(
-        self,
-        runtime_ctrl_msg_tx: RuntimeCtrlMsgSender<PData>,
-        pipeline_completion_msg_tx: PipelineCompletionMsgSender<PData>,
-        metrics_reporter: MetricsReporter,
-        node_interests: Interests,
-        runtime_services: PipelineRuntimeServices,
-    ) -> Result<(), Error>
-    where
-        PData: ReceivedAtNode + FlowMetricHook,
-    {
-        self.start_with_completion_metrics(
-            runtime_ctrl_msg_tx,
-            pipeline_completion_msg_tx,
-            metrics_reporter,
-            node_interests,
-            None,
-            false,
-            false,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            false,
-            false,
-            TerminalMetricsDeadline::default(),
-            runtime_services,
-        )
-        .await
-    }
-
     pub(crate) async fn start_with_completion_metrics(
         self,
         runtime_ctrl_msg_tx: RuntimeCtrlMsgSender<PData>,
@@ -636,7 +601,7 @@ impl<PData> ProcessorWrapper<PData> {
         flow_input_message_metric: Option<MeasurementMetricSet<FlowInputMessageMetrics>>,
         flow_input_items_metric: Option<MeasurementMetricSet<FlowInputItemsMetrics>>,
         flow_input_size_metric: Option<MeasurementMetricSet<FlowInputSizeMetrics>>,
-        flow_duration_metric: Option<MeasurementMetricSet<FlowDurationMetrics>>,
+        flow_duration_metric: Option<FlowDurationMetricSet>,
         flow_output_items_metric: Option<MeasurementMetricSet<FlowOutputItemsMetrics>>,
         flow_output_message_metric: Option<MeasurementMetricSet<FlowOutputMessageMetrics>>,
         flow_output_size_metric: Option<MeasurementMetricSet<FlowOutputSizeMetrics>>,
@@ -644,6 +609,7 @@ impl<PData> ProcessorWrapper<PData> {
         flow_metrics_active: bool,
         flow_needs_timing: bool,
         terminal_metrics_deadline: TerminalMetricsDeadline,
+        forced_shutdown_signal: ForcedShutdownSignal,
         runtime_services: PipelineRuntimeServices,
     ) -> Result<(), Error>
     where
@@ -653,203 +619,202 @@ impl<PData> ProcessorWrapper<PData> {
             .prepare_runtime(metrics_reporter.clone(), node_interests, runtime_services)
             .await?;
 
-        match runtime {
-            ProcessorWrapperRuntime::Local {
-                mut processor,
-                mut inbox,
-                mut effect_handler,
-            } => {
-                effect_handler
-                    .core
-                    .set_runtime_ctrl_msg_sender(runtime_ctrl_msg_tx);
-                effect_handler
-                    .core
-                    .set_pipeline_completion_msg_sender(pipeline_completion_msg_tx);
-                effect_handler.core.set_node_interests(node_interests);
-                effect_handler
-                    .core
-                    .set_completion_emission_metrics(completion_emission_metrics.clone());
-                effect_handler.set_flow_roles(
-                    flow_is_start,
-                    flow_is_end,
-                    flow_input_message_metric,
-                    flow_input_items_metric,
-                    flow_input_size_metric,
-                    flow_duration_metric,
-                    flow_output_items_metric,
-                    flow_output_message_metric,
-                    flow_output_size_metric,
-                    flow_dropped_items_metric,
-                    flow_metrics_active,
-                    flow_needs_timing,
-                );
+        let mut processing_error: Option<Error> = None;
+        let run = async {
+            match runtime {
+                ProcessorWrapperRuntime::Local {
+                    mut processor,
+                    mut inbox,
+                    mut effect_handler,
+                } => {
+                    effect_handler
+                        .core
+                        .set_runtime_ctrl_msg_sender(runtime_ctrl_msg_tx);
+                    effect_handler
+                        .core
+                        .set_pipeline_completion_msg_sender(pipeline_completion_msg_tx);
+                    effect_handler.core.set_node_interests(node_interests);
+                    effect_handler
+                        .core
+                        .set_completion_emission_metrics(completion_emission_metrics.clone());
+                    effect_handler.set_flow_roles(
+                        flow_is_start,
+                        flow_is_end,
+                        flow_input_message_metric,
+                        flow_input_items_metric,
+                        flow_input_size_metric,
+                        flow_duration_metric,
+                        flow_output_items_metric,
+                        flow_output_message_metric,
+                        flow_output_size_metric,
+                        flow_dropped_items_metric,
+                        flow_metrics_active,
+                        flow_needs_timing,
+                    );
 
-                // Preserve the first processing error so final metric
-                // collection can run before the error is returned.
-                let mut processing_error: Option<Error> = None;
-                while let Ok(mut msg) = inbox.recv_when(processor.accept_pdata()).await {
-                    if effect_handler.flow_metrics_active() {
-                        match &mut msg {
-                            Message::Control(NodeControlMsg::CollectTelemetry { .. })
-                                if effect_handler.is_flow_start()
-                                    || effect_handler.is_flow_end()
-                                    || effect_handler.is_flow_decision() =>
-                            {
-                                effect_handler.report_flow_metrics();
+                    // Preserve the first processing error so final metric
+                    // collection can run before the error is returned.
+                    while let Ok(mut msg) = inbox.recv_when(processor.accept_pdata()).await {
+                        if effect_handler.flow_metrics_active() {
+                            match &mut msg {
+                                Message::Control(NodeControlMsg::CollectTelemetry { .. })
+                                    if effect_handler.is_flow_start()
+                                        || effect_handler.is_flow_end()
+                                        || effect_handler.is_flow_decision() =>
+                                {
+                                    effect_handler.report_flow_metrics();
+                                }
+                                Message::PData(data) => {
+                                    data.after_processor_receive(&effect_handler);
+                                    effect_handler.begin_process_timing();
+                                }
+                                _ => {}
                             }
-                            Message::PData(data) => {
-                                data.after_processor_receive(&effect_handler);
-                                effect_handler.begin_process_timing();
-                            }
-                            _ => {}
+                        }
+                        if let Err(err) = processor.process(msg, &mut effect_handler).await {
+                            processing_error = Some(err);
+                            break;
                         }
                     }
-                    if let Err(err) = processor.process(msg, &mut effect_handler).await {
-                        processing_error = Some(err);
-                        break;
-                    }
-                }
-                // Collect final metrics before exiting
-                let terminal_metrics_deadline = terminal_metrics_deadline.get();
-                if (effect_handler.is_flow_start()
-                    || effect_handler.is_flow_end()
-                    || effect_handler.is_flow_decision())
-                    && let Err(error) = effect_handler
-                        .report_flow_metrics_reliably(terminal_metrics_deadline)
-                        .await
-                {
-                    otel_arrow_dfe_telemetry::otel_warn!(
-                        "processor.flow_metrics.final_reporting.fail",
-                        error = error.to_string()
-                    );
-                }
-                let (terminal_metrics_tx, terminal_metrics_rx) = flume::unbounded();
-                let terminal_metrics_reporter = MetricsReporter::new(terminal_metrics_tx);
-                let collect_result = processor
-                    .process(
-                        Message::Control(NodeControlMsg::CollectTelemetry {
-                            metrics_reporter: terminal_metrics_reporter,
-                        }),
-                        &mut effect_handler,
-                    )
-                    .await;
-                while let Ok(snapshot) = terminal_metrics_rx.try_recv() {
-                    if let Err(error) = metrics_reporter
-                        .report_snapshot_reliably_until(snapshot, terminal_metrics_deadline)
-                        .await
+                    // Collect final metrics before exiting
+                    let terminal_metrics_deadline = terminal_metrics_deadline.get();
+                    if (effect_handler.is_flow_start()
+                        || effect_handler.is_flow_end()
+                        || effect_handler.is_flow_decision())
+                        && let Err(error) = effect_handler
+                            .report_flow_metrics_reliably(terminal_metrics_deadline)
+                            .await
                     {
                         otel_arrow_dfe_telemetry::otel_warn!(
-                            "processor.metrics.final_reporting.fail",
+                            "processor.flow_metrics.final_reporting.fail",
                             error = error.to_string()
                         );
                     }
-                }
-                // Return the original processing error if present; otherwise
-                // surface any error from the final CollectTelemetry call.
-                if let Some(err) = processing_error {
-                    return Err(err);
-                }
-                collect_result?
-            }
-            ProcessorWrapperRuntime::Shared {
-                mut processor,
-                mut inbox,
-                mut effect_handler,
-            } => {
-                effect_handler
-                    .core
-                    .set_runtime_ctrl_msg_sender(runtime_ctrl_msg_tx);
-                effect_handler
-                    .core
-                    .set_pipeline_completion_msg_sender(pipeline_completion_msg_tx);
-                effect_handler.core.set_node_interests(node_interests);
-                effect_handler
-                    .core
-                    .set_completion_emission_metrics(completion_emission_metrics);
-                effect_handler.set_flow_roles(
-                    flow_is_start,
-                    flow_is_end,
-                    flow_input_message_metric,
-                    flow_input_items_metric,
-                    flow_input_size_metric,
-                    flow_duration_metric,
-                    flow_output_items_metric,
-                    flow_output_message_metric,
-                    flow_output_size_metric,
-                    flow_dropped_items_metric,
-                    flow_metrics_active,
-                    flow_needs_timing,
-                );
-
-                // Preserve the first processing error so final metric
-                // collection can run before the error is returned.
-                let mut processing_error: Option<Error> = None;
-                while let Ok(mut msg) = inbox.recv_when(processor.accept_pdata()).await {
-                    if effect_handler.flow_metrics_active() {
-                        match &mut msg {
-                            Message::Control(NodeControlMsg::CollectTelemetry { .. })
-                                if effect_handler.is_flow_start()
-                                    || effect_handler.is_flow_end()
-                                    || effect_handler.is_flow_decision() =>
-                            {
-                                effect_handler.report_flow_metrics();
-                            }
-                            Message::PData(data) => {
-                                data.after_processor_receive(&effect_handler);
-                                effect_handler.begin_process_timing();
-                            }
-                            _ => {}
+                    let (terminal_metrics_tx, terminal_metrics_rx) = flume::unbounded();
+                    let terminal_metrics_reporter = MetricsReporter::new(terminal_metrics_tx);
+                    let collect_result = processor
+                        .process(
+                            Message::Control(NodeControlMsg::CollectTelemetry {
+                                metrics_reporter: terminal_metrics_reporter,
+                            }),
+                            &mut effect_handler,
+                        )
+                        .await;
+                    while let Ok(snapshot) = terminal_metrics_rx.try_recv() {
+                        if let Err(error) = metrics_reporter
+                            .report_snapshot_reliably_until(snapshot, terminal_metrics_deadline)
+                            .await
+                        {
+                            otel_arrow_dfe_telemetry::otel_warn!(
+                                "processor.metrics.final_reporting.fail",
+                                error = error.to_string()
+                            );
                         }
                     }
-                    if let Err(err) = processor.process(msg, &mut effect_handler).await {
-                        processing_error = Some(err);
-                        break;
-                    }
+                    collect_result?
                 }
-                // Collect final metrics before exiting
-                let terminal_metrics_deadline = terminal_metrics_deadline.get();
-                if (effect_handler.is_flow_start()
-                    || effect_handler.is_flow_end()
-                    || effect_handler.is_flow_decision())
-                    && let Err(error) = effect_handler
-                        .report_flow_metrics_reliably(terminal_metrics_deadline)
-                        .await
-                {
-                    otel_arrow_dfe_telemetry::otel_warn!(
-                        "processor.flow_metrics.final_reporting.fail",
-                        error = error.to_string()
+                ProcessorWrapperRuntime::Shared {
+                    mut processor,
+                    mut inbox,
+                    mut effect_handler,
+                } => {
+                    effect_handler
+                        .core
+                        .set_runtime_ctrl_msg_sender(runtime_ctrl_msg_tx);
+                    effect_handler
+                        .core
+                        .set_pipeline_completion_msg_sender(pipeline_completion_msg_tx);
+                    effect_handler.core.set_node_interests(node_interests);
+                    effect_handler
+                        .core
+                        .set_completion_emission_metrics(completion_emission_metrics);
+                    effect_handler.set_flow_roles(
+                        flow_is_start,
+                        flow_is_end,
+                        flow_input_message_metric,
+                        flow_input_items_metric,
+                        flow_input_size_metric,
+                        flow_duration_metric,
+                        flow_output_items_metric,
+                        flow_output_message_metric,
+                        flow_output_size_metric,
+                        flow_dropped_items_metric,
+                        flow_metrics_active,
+                        flow_needs_timing,
                     );
-                }
-                let (terminal_metrics_tx, terminal_metrics_rx) = flume::unbounded();
-                let terminal_metrics_reporter = MetricsReporter::new(terminal_metrics_tx);
-                let collect_result = processor
-                    .process(
-                        Message::Control(NodeControlMsg::CollectTelemetry {
-                            metrics_reporter: terminal_metrics_reporter,
-                        }),
-                        &mut effect_handler,
-                    )
-                    .await;
-                while let Ok(snapshot) = terminal_metrics_rx.try_recv() {
-                    if let Err(error) = metrics_reporter
-                        .report_snapshot_reliably_until(snapshot, terminal_metrics_deadline)
-                        .await
+
+                    // Preserve the first processing error so final metric
+                    // collection can run before the error is returned.
+                    while let Ok(mut msg) = inbox.recv_when(processor.accept_pdata()).await {
+                        if effect_handler.flow_metrics_active() {
+                            match &mut msg {
+                                Message::Control(NodeControlMsg::CollectTelemetry { .. })
+                                    if effect_handler.is_flow_start()
+                                        || effect_handler.is_flow_end()
+                                        || effect_handler.is_flow_decision() =>
+                                {
+                                    effect_handler.report_flow_metrics();
+                                }
+                                Message::PData(data) => {
+                                    data.after_processor_receive(&effect_handler);
+                                    effect_handler.begin_process_timing();
+                                }
+                                _ => {}
+                            }
+                        }
+                        if let Err(err) = processor.process(msg, &mut effect_handler).await {
+                            processing_error = Some(err);
+                            break;
+                        }
+                    }
+                    // Collect final metrics before exiting
+                    let terminal_metrics_deadline = terminal_metrics_deadline.get();
+                    if (effect_handler.is_flow_start()
+                        || effect_handler.is_flow_end()
+                        || effect_handler.is_flow_decision())
+                        && let Err(error) = effect_handler
+                            .report_flow_metrics_reliably(terminal_metrics_deadline)
+                            .await
                     {
                         otel_arrow_dfe_telemetry::otel_warn!(
-                            "processor.metrics.final_reporting.fail",
+                            "processor.flow_metrics.final_reporting.fail",
                             error = error.to_string()
                         );
                     }
+                    let (terminal_metrics_tx, terminal_metrics_rx) = flume::unbounded();
+                    let terminal_metrics_reporter = MetricsReporter::new(terminal_metrics_tx);
+                    let collect_result = processor
+                        .process(
+                            Message::Control(NodeControlMsg::CollectTelemetry {
+                                metrics_reporter: terminal_metrics_reporter,
+                            }),
+                            &mut effect_handler,
+                        )
+                        .await;
+                    while let Ok(snapshot) = terminal_metrics_rx.try_recv() {
+                        if let Err(error) = metrics_reporter
+                            .report_snapshot_reliably_until(snapshot, terminal_metrics_deadline)
+                            .await
+                        {
+                            otel_arrow_dfe_telemetry::otel_warn!(
+                                "processor.metrics.final_reporting.fail",
+                                error = error.to_string()
+                            );
+                        }
+                    }
+                    collect_result?
                 }
-                // Return the original processing error if present; otherwise
-                // surface any error from the final CollectTelemetry call.
-                if let Some(err) = processing_error {
-                    return Err(err);
-                }
-                collect_result?
             }
-        }
-        Ok(())
+            Ok(())
+        };
+        let result = tokio::select! {
+            biased;
+            _ = forced_shutdown_signal.triggered() => Ok(()),
+            result = run => result,
+        };
+        // Return the original processing error if present; otherwise surface
+        // any error from final metrics collection.
+        processing_error.map_or(result, Err)
     }
 
     /// Takes the PData receiver from the wrapper and returns it.
@@ -1008,8 +973,8 @@ mod tests {
     };
     use crate::error::ProcessorErrorKind;
     use crate::flow_metrics::{
-        FlowAttributeSet, FlowDroppedItemsMetrics, FlowDurationMetrics, FlowInputItemsMetrics,
-        FlowOutputItemsMetrics,
+        FlowAttributeSet, FlowDroppedItemsMetrics, FlowDurationNormalMetrics,
+        FlowInputItemsMetrics, FlowOutputItemsMetrics,
     };
     use crate::local::message::{LocalReceiver, LocalSender};
     use crate::local::processor as local;
@@ -1373,7 +1338,7 @@ mod tests {
             .metrics_registry()
             .register_entity(FlowAttributeSet::default());
         let registrar = pipeline_ctx.metric_set_registrar_for_entity(entity_key);
-        let duration_metric = FlowDurationMetrics::register(&registrar);
+        let duration_metric = FlowDurationNormalMetrics::register(&registrar);
         let output_items_metric = FlowOutputItemsMetrics::register(&registrar);
         let (metrics_rx, metrics_reporter) =
             otel_arrow_dfe_telemetry::reporter::MetricsReporter::create_new_and_receiver(4);
@@ -1390,7 +1355,7 @@ mod tests {
             None,
             None,
             None,
-            Some(duration_metric),
+            Some(duration_metric.into()),
             Some(output_items_metric),
             None,
             None,
@@ -1485,7 +1450,7 @@ mod tests {
         let entity_key = pipeline_ctx.metrics_registry().register_entity(attrs);
         let registrar = pipeline_ctx.metric_set_registrar_for_entity(entity_key);
         let start_metric_set = FlowInputItemsMetrics::register(&registrar);
-        let duration_metric_set = FlowDurationMetrics::register(&registrar);
+        let duration_metric_set = FlowDurationNormalMetrics::register(&registrar);
         let outgoing_metric_set = FlowOutputItemsMetrics::register(&registrar);
 
         let config = ProcessorConfig::new("auto_measure_processor");
@@ -1528,19 +1493,21 @@ mod tests {
         local_tasks
             .run_until(async move {
                 let processor_task = tokio::task::spawn_local(async move {
+                    let (_, forced_shutdown_signal) =
+                        crate::forced_shutdown::ForcedShutdownTrigger::pair();
                     processor
                         .start_with_completion_metrics(
                             runtime_ctrl_tx,
                             completion_tx,
                             metrics_reporter,
-                            crate::Interests::COMPONENT_DURATION,
+                            crate::Interests::NODE_LOCAL_DURATION,
                             None,
                             true,
                             true,
                             None,
                             Some(start_metric_set),
                             None,
-                            Some(duration_metric_set),
+                            Some(duration_metric_set.into()),
                             Some(outgoing_metric_set),
                             None,
                             None,
@@ -1548,6 +1515,7 @@ mod tests {
                             true,
                             true,
                             crate::terminal_state::TerminalMetricsDeadline::default(),
+                            forced_shutdown_signal,
                             crate::testing::test_pipeline_runtime_services(),
                         )
                         .await
@@ -1575,10 +1543,10 @@ mod tests {
                 processor_task.abort();
                 let _ = processor_task.await;
 
-                let [MetricValue::U64(consumed_items)] = snapshot.get_metrics() else {
+                let [MetricValue::U64(input_items)] = snapshot.get_metrics() else {
                     panic!("expected one flow input-item metric");
                 };
-                assert_eq!(*consumed_items, 1);
+                assert_eq!(*input_items, 1);
 
                 let snapshot =
                     tokio::time::timeout(Duration::from_secs(1), metrics_rx.recv_async())
@@ -1602,12 +1570,216 @@ mod tests {
                         .await
                         .expect("flow output-item metric should be reported")
                         .expect("metrics channel should remain open");
-                let [MetricValue::U64(produced_items)] = snapshot.get_metrics() else {
+                let [MetricValue::U64(output_items)] = snapshot.get_metrics() else {
                     panic!("expected flow output-item metric");
                 };
-                assert_eq!(*produced_items, 1);
+                assert_eq!(*output_items, 1);
             })
             .await;
+    }
+
+    struct DelayedProcessor {
+        started: Option<tokio::sync::oneshot::Sender<()>>,
+        fail_before_final_metrics: bool,
+    }
+
+    #[async_trait(?Send)]
+    impl local::Processor<FlowMetricTestPData> for DelayedProcessor {
+        async fn process(
+            &mut self,
+            msg: Message<FlowMetricTestPData>,
+            effect_handler: &mut local::EffectHandler<FlowMetricTestPData>,
+        ) -> Result<(), Error> {
+            if let Message::PData(pdata) = msg {
+                self.started.take().expect("first batch").send(()).unwrap();
+                if self.fail_before_final_metrics {
+                    return Err(Error::ProcessorError {
+                        processor: test_node("test_processor"),
+                        kind: ProcessorErrorKind::Other,
+                        error: "error before shutdown deadline".to_owned(),
+                        source_detail: String::new(),
+                    });
+                }
+                tokio::time::sleep(Duration::from_secs(10)).await;
+                effect_handler.send_message(pdata).await?;
+            } else if self.fail_before_final_metrics
+                && matches!(
+                    msg,
+                    Message::Control(NodeControlMsg::CollectTelemetry { .. })
+                )
+            {
+                std::future::pending::<()>().await;
+            }
+            Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl shared::Processor<FlowMetricTestPData> for DelayedProcessor {
+        async fn process(
+            &mut self,
+            msg: Message<FlowMetricTestPData>,
+            effect_handler: &mut shared::EffectHandler<FlowMetricTestPData>,
+        ) -> Result<(), Error> {
+            if let Message::PData(pdata) = msg {
+                self.started.take().expect("first batch").send(()).unwrap();
+                if self.fail_before_final_metrics {
+                    return Err(Error::ProcessorError {
+                        processor: test_node("test_processor"),
+                        kind: ProcessorErrorKind::Other,
+                        error: "error before shutdown deadline".to_owned(),
+                        source_detail: String::new(),
+                    });
+                }
+                tokio::time::sleep(Duration::from_secs(10)).await;
+                effect_handler.send_message(pdata).await?;
+            } else if self.fail_before_final_metrics
+                && matches!(
+                    msg,
+                    Message::Control(NodeControlMsg::CollectTelemetry { .. })
+                )
+            {
+                std::future::pending::<()>().await;
+            }
+            Ok(())
+        }
+    }
+
+    async fn run_delayed_shutdown_scenario(
+        shared: bool,
+        deadline_secs: u64,
+        fail_before_final_metrics: bool,
+    ) {
+        let config = ProcessorConfig::new("test_processor");
+        let node_id = test_node(config.name.clone());
+        let user_config = Arc::new(NodeUserConfig::new_processor_config("test_processor"));
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let processor = DelayedProcessor {
+            started: Some(started_tx),
+            fail_before_final_metrics,
+        };
+        let mut wrapper = if shared {
+            ProcessorWrapper::shared(processor, node_id.clone(), user_config, &config)
+        } else {
+            ProcessorWrapper::local(processor, node_id.clone(), user_config, &config)
+        };
+        let (input_tx, input_rx) = tokio::sync::mpsc::channel(4);
+        let (output_tx, mut output_rx) = tokio::sync::mpsc::channel(4);
+        wrapper
+            .set_pdata_receiver(
+                node_id.clone(),
+                Receiver::Shared(SharedReceiver::mpsc(input_rx)),
+            )
+            .unwrap();
+        wrapper
+            .set_pdata_sender(
+                node_id,
+                "default".into(),
+                Sender::Shared(SharedSender::mpsc(output_tx)),
+            )
+            .unwrap();
+        input_tx.send(FlowMetricTestPData::default()).await.unwrap();
+        drop(input_tx);
+        let (_metrics_rx, reporter) =
+            otel_arrow_dfe_telemetry::reporter::MetricsReporter::create_new_and_receiver(16);
+        let (runtime_tx, _runtime_rx) = runtime_ctrl_msg_channel(4);
+        let (completion_tx, _completion_rx) = pipeline_completion_msg_channel(4);
+        let _control_keepalive = wrapper.control_sender();
+        let deadline = crate::terminal_state::TerminalMetricsDeadline::default();
+        let (forced_shutdown_trigger, forced_shutdown_signal) =
+            crate::forced_shutdown::ForcedShutdownTrigger::pair();
+        let start = tokio::time::Instant::now();
+        let run = wrapper.start_with_completion_metrics(
+            runtime_tx,
+            completion_tx,
+            reporter,
+            crate::Interests::empty(),
+            None,
+            false,
+            false,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+            false,
+            deadline.clone(),
+            forced_shutdown_signal,
+            crate::testing::test_pipeline_runtime_services(),
+        );
+        let shutdown = tokio::spawn(async move {
+            started_rx.await.expect("handler started before shutdown");
+            tokio::time::sleep_until(start + Duration::from_secs(deadline_secs)).await;
+            forced_shutdown_trigger.trigger();
+        });
+        let result = run.await;
+        shutdown.abort();
+        if fail_before_final_metrics {
+            let Error::ProcessorError { error, .. } = result.expect_err("original error survives")
+            else {
+                panic!("expected the original processor error");
+            };
+            assert_eq!(error, "error before shutdown deadline");
+        } else {
+            result.expect("shutdown must not become a processing error");
+        }
+        assert_eq!(start.elapsed(), Duration::from_secs(deadline_secs.min(10)));
+        if deadline_secs < 10 {
+            assert!(
+                output_rx.try_recv().is_err(),
+                "expired batch must not be forwarded"
+            );
+        } else {
+            let _ = output_rx
+                .try_recv()
+                .expect("graceful drain forwards the batch");
+        }
+    }
+
+    /// Scenario: A local processor is awaiting a ten-second handler when a two-second deadline is set.
+    /// Guarantees: Forced shutdown completes at the deadline without forwarding the pending batch.
+    #[tokio::test(start_paused = true)]
+    async fn local_processor_deadline_cancels_inflight_handler() {
+        run_delayed_shutdown_scenario(false, 2, false).await;
+    }
+
+    /// Scenario: A shared processor is awaiting a ten-second handler when a two-second deadline is set.
+    /// Guarantees: Forced shutdown completes at the deadline without forwarding the pending batch.
+    #[tokio::test(start_paused = true)]
+    async fn shared_processor_deadline_cancels_inflight_handler() {
+        run_delayed_shutdown_scenario(true, 2, false).await;
+    }
+
+    /// Scenario: A local processor finishes its delayed batch before the shutdown deadline.
+    /// Guarantees: Graceful drain still forwards the batch and completes without waiting for expiry.
+    #[tokio::test(start_paused = true)]
+    async fn local_processor_deadline_allows_graceful_completion() {
+        run_delayed_shutdown_scenario(false, 20, false).await;
+    }
+
+    /// Scenario: A shared processor finishes its delayed batch before the shutdown deadline.
+    /// Guarantees: Graceful drain still forwards the batch and completes without waiting for expiry.
+    #[tokio::test(start_paused = true)]
+    async fn shared_processor_deadline_allows_graceful_completion() {
+        run_delayed_shutdown_scenario(true, 20, false).await;
+    }
+
+    /// Scenario: A local processor fails before final metrics collection blocks past shutdown expiry.
+    /// Guarantees: Cancellation returns the original processing error at the deadline, not success.
+    #[tokio::test(start_paused = true)]
+    async fn local_processor_deadline_preserves_processing_error() {
+        run_delayed_shutdown_scenario(false, 2, true).await;
+    }
+
+    /// Scenario: A shared processor fails before final metrics collection blocks past shutdown expiry.
+    /// Guarantees: Cancellation returns the original processing error at the deadline, not success.
+    #[tokio::test(start_paused = true)]
+    async fn shared_processor_deadline_preserves_processing_error() {
+        run_delayed_shutdown_scenario(true, 2, true).await;
     }
 
     /// A processor that returns a deliberate error on every PData message and
@@ -1746,6 +1918,7 @@ mod tests {
 
         let _ctrl_keepalive = p.control_sender();
 
+        let (_, forced_shutdown_signal) = crate::forced_shutdown::ForcedShutdownTrigger::pair();
         let result = p
             .start_with_completion_metrics(
                 runtime_ctrl_tx,
@@ -1766,6 +1939,7 @@ mod tests {
                 true, // flow_metrics_active
                 false,
                 crate::terminal_state::TerminalMetricsDeadline::default(),
+                forced_shutdown_signal,
                 crate::testing::test_pipeline_runtime_services(),
             )
             .await;
@@ -1988,6 +2162,7 @@ mod tests {
         drop(input_tx);
         let _ctrl_keepalive = p.control_sender();
 
+        let (_, forced_shutdown_signal) = crate::forced_shutdown::ForcedShutdownTrigger::pair();
         let result = p
             .start_with_completion_metrics(
                 runtime_ctrl_tx,
@@ -2008,6 +2183,7 @@ mod tests {
                 true,
                 false,
                 crate::terminal_state::TerminalMetricsDeadline::default(),
+                forced_shutdown_signal,
                 crate::testing::test_pipeline_runtime_services(),
             )
             .await;

@@ -6,16 +6,17 @@
 use http::StatusCode;
 use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_engine::context::PipelineContext;
-use otel_arrow_dfe_otap::metrics::ExporterExportMetrics;
-use otel_arrow_dfe_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
+use otel_arrow_dfe_otap::http_client_auth::HttpClientAuthProvider;
+use otel_arrow_dfe_otap::metrics::ExporterMetrics;
+use otel_arrow_dfe_telemetry::diagnostics::{DiagnosticErrorKind, SignalDiagnostics, SignalSet};
 use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
-use otel_arrow_dfe_telemetry::instrument::Counter;
-use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSetSnapshot};
+use otel_arrow_dfe_telemetry::instrument::{Counter, UpDownCounter};
+use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSet, MetricSetSnapshot};
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use otel_arrow_dfe_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
-use std::time::Duration;
+use std::borrow::Cow;
 
-use super::agent_fed_auth::AgentFedAuthErrorType;
+use super::diagnostics::DeliveryDiagnostic;
 
 /// Actionable category for a failed OTLP HTTP export.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, AttributeEnum)]
@@ -65,6 +66,19 @@ impl OtlpHttpExporterErrorType {
             _ => Self::Other,
         }
     }
+
+    /// Returns whether the destination refused the attempt without an exporter failure.
+    #[must_use]
+    pub(super) const fn is_refusal(self) -> bool {
+        matches!(
+            self,
+            Self::Authentication
+                | Self::Authorization
+                | Self::Throttled
+                | Self::Rejected
+                | Self::PartialRejection
+        )
+    }
 }
 
 /// Signal and error dimensions for failed OTLP HTTP exports.
@@ -90,76 +104,80 @@ struct OtlpHttpExporterFailureMetrics {
     messages: Counter<u64>,
 }
 
-/// Failure reason for an agent-fed authentication lookup.
-#[attribute_set(item, measurement)]
-#[derive(Debug, Clone, Copy)]
-struct OtlpHttpAuthFailureAttributes {
-    /// Bounded reason the snapshot could not authenticate another request.
-    #[attribute_key = "error.type"]
-    error_type: AgentFedAuthErrorType,
+#[attribute_set(item, registration)]
+#[derive(Debug, Clone)]
+struct OtlpHttpAuthSourceAttributes {
+    source: Cow<'static, str>,
 }
 
-/// Agent-fed authentication failures, including failures before data admission.
+/// Current authentication readiness for a bound provider.
 #[metric_set(
     name = "exporter.otlp_http.authentication",
-    measurement_attributes = OtlpHttpAuthFailureAttributes
+    registration_attributes = OtlpHttpAuthSourceAttributes,
 )]
 #[derive(Debug, Default, Clone)]
 struct OtlpHttpExporterAuthMetrics {
-    /// Number of credential checks that failed to produce a usable snapshot.
-    #[metric(unit = "{attempt}")]
-    failures: Counter<u64>,
+    /// Whether authenticated progress is currently possible (0=false, 1=true).
+    #[metric(unit = "{1}")]
+    ready: UpDownCounter<u64>,
 }
 
 /// Terminal outcome and failure metrics emitted by an OTLP HTTP exporter.
 pub(super) struct OtlpHttpExporterMetrics {
-    pub(super) exports: MeasurementMetricSet<ExporterExportMetrics>,
+    /// Per-signal delivery state for bounded failure summaries and recovery confirmation.
+    pub(super) diagnostics: SignalSet<DeliveryDiagnostic>,
+    /// Per-signal preparation state that independently bounds encoding/compression failures.
+    pub(super) preparation: SignalDiagnostics<OtlpHttpExporterErrorType>,
+    /// Per-signal notification state that independently bounds Ack/Nack routing failures.
+    pub(super) notifications: SignalDiagnostics<DiagnosticErrorKind>,
+    pub(super) boundary: ExporterMetrics,
     failures: MeasurementMetricSet<OtlpHttpExporterFailureMetrics>,
-    auth: MeasurementMetricSet<OtlpHttpExporterAuthMetrics>,
+    auth: Option<MetricSet<OtlpHttpExporterAuthMetrics>>,
 }
 
 impl OtlpHttpExporterMetrics {
     /// Registers all OTLP HTTP exporter metric sets.
     #[must_use]
-    pub(super) fn register(pipeline_ctx: &PipelineContext) -> Self {
+    pub(super) fn register(
+        pipeline_ctx: &PipelineContext,
+        auth: Option<&dyn HttpClientAuthProvider>,
+    ) -> Self {
         Self {
-            exports: ExporterExportMetrics::register(pipeline_ctx),
+            diagnostics: SignalSet::default(),
+            preparation: SignalDiagnostics::default(),
+            notifications: SignalDiagnostics::default(),
+            boundary: ExporterMetrics::register(pipeline_ctx),
             failures: OtlpHttpExporterFailureMetrics::register(pipeline_ctx),
-            auth: OtlpHttpExporterAuthMetrics::register(pipeline_ctx),
+            auth: auth.map(|a| {
+                let mut metrics = OtlpHttpExporterAuthMetrics::register(
+                    pipeline_ctx,
+                    &OtlpHttpAuthSourceAttributes { source: a.name() },
+                );
+                if a.is_ready() {
+                    metrics.ready.inc();
+                }
+                metrics
+            }),
         }
     }
 
-    /// Records one agent-fed credential check failure.
-    pub(super) fn record_auth_failure(&mut self, error_type: AgentFedAuthErrorType) {
-        self.auth
-            .with(OtlpHttpAuthFailureAttributes { error_type })
-            .failures
-            .inc();
+    /// Records whether authenticated progress is currently possible.
+    pub(super) fn record_auth_readiness(&mut self, ready: bool) {
+        if let Some(auth) = self.auth.as_mut() {
+            match (auth.ready.get(), ready) {
+                (0, true) => auth.ready.inc(),
+                (1, false) => auth.ready.dec(),
+                _ => {}
+            }
+        }
     }
 
-    /// Records one successful terminal export.
-    pub(super) fn record_success(&mut self, signal: SignalType, duration: Duration) {
-        self.exports
-            .with(SignalOutcomeAttributes {
-                signal,
-                outcome: Outcome::Success,
-            })
-            .record(duration);
-    }
-
-    /// Records one failed terminal export and exactly one diagnostic category.
+    /// Records one failed terminal export diagnostic category.
     pub(super) fn record_failure(
         &mut self,
         signal: SignalType,
         error_type: OtlpHttpExporterErrorType,
-        duration: Duration,
     ) {
-        self.exports
-            .with(SignalOutcomeAttributes {
-                signal,
-                outcome: Outcome::Failure,
-            })
-            .record(duration);
         self.failures
             .with(OtlpHttpFailureAttributes { signal, error_type })
             .messages
@@ -168,18 +186,30 @@ impl OtlpHttpExporterMetrics {
 
     /// Reports all touched OTLP HTTP exporter metric buckets.
     pub(super) fn report(&mut self, reporter: &mut MetricsReporter) -> Result<(), TelemetryError> {
+        self.boundary.report(reporter)?;
         reporter
-            .report_measurement(&mut self.exports)
-            .and_then(|()| reporter.report_measurement(&mut self.failures))
-            .and_then(|()| reporter.report_measurement(&mut self.auth))
+            .report_measurement(&mut self.failures)
+            .and_then(|()| {
+                if let Some(auth) = self.auth.as_mut() {
+                    reporter.report(auth)
+                } else {
+                    Ok(())
+                }
+            })
     }
 
-    /// Takes terminal snapshots of all touched metric buckets.
+    /// Takes terminal snapshots after synchronizing authentication readiness.
     #[must_use]
-    pub(super) fn terminal_snapshots(&mut self) -> Vec<MetricSetSnapshot> {
-        let mut snapshots = self.exports.terminal_snapshots();
+    pub(super) fn terminal_snapshots(
+        &mut self,
+        auth: Option<&dyn HttpClientAuthProvider>,
+    ) -> Vec<MetricSetSnapshot> {
+        self.record_auth_readiness(auth.is_none_or(HttpClientAuthProvider::is_ready));
+        let mut snapshots = self.boundary.terminal_snapshots();
         snapshots.extend(self.failures.terminal_snapshots());
-        snapshots.extend(self.auth.terminal_snapshots());
+        if let Some(auth) = self.auth.as_mut() {
+            snapshots.extend(auth.terminal_snapshots());
+        }
         snapshots
     }
 }
@@ -187,16 +217,48 @@ impl OtlpHttpExporterMetrics {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otel_arrow_dfe_engine::context::ControllerContext;
-    use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
-    use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
+    use futures::future::poll_fn;
+    use otel_arrow_dfe_engine::Interests;
+    use otel_arrow_dfe_engine::testing::test_pipeline_ctx_with_interests;
+    use otel_arrow_dfe_otap::http_client_auth::test_support::MockHttpClientAuthProvider;
+    use otel_arrow_dfe_otap::metrics::ErrorWithOutcome;
 
     fn new_metrics() -> OtlpHttpExporterMetrics {
-        let registry = TelemetryRegistryHandle::new();
-        let controller = ControllerContext::new(registry);
-        let pipeline_ctx =
-            controller.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
-        OtlpHttpExporterMetrics::register(&pipeline_ctx)
+        let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(Interests::NODE_INPUT_METRICS);
+        OtlpHttpExporterMetrics::register(&pipeline_ctx, None)
+    }
+
+    /// Scenario: a bound auth provider becomes ready and is then invalidated
+    /// before the HTTP exporter's terminal snapshot.
+    /// Guarantees: terminal snapshots resample the provider and report its
+    /// current readiness rather than the last value observed by the main loop.
+    #[test]
+    fn terminal_snapshot_resamples_authentication_readiness() {
+        let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(Interests::NODE_INPUT_METRICS);
+        let mut auth = MockHttpClientAuthProvider::new(
+            http::header::AUTHORIZATION,
+            vec![("Bearer token".into(), None)],
+        );
+        let mut metrics = OtlpHttpExporterMetrics::register(&pipeline_ctx, Some(&auth));
+
+        futures::executor::block_on(poll_fn(|cx| {
+            auth.poll_refresh(cx, &super::super::HTTP_AUTH_EVENTS)
+        }));
+        let snapshots = metrics.terminal_snapshots(Some(&auth));
+        let auth_snapshot = snapshots
+            .iter()
+            .find(|snapshot| snapshot.descriptor().name == "exporter.otlp_http.authentication")
+            .expect("bound auth must register its authentication metric set");
+        assert_eq!(auth_snapshot.get_metrics()[0].to_u64_lossy(), 1);
+
+        auth.invalidate(1);
+
+        let snapshots = metrics.terminal_snapshots(Some(&auth));
+        let auth_snapshot = snapshots
+            .iter()
+            .find(|snapshot| snapshot.descriptor().name == "exporter.otlp_http.authentication")
+            .expect("bound auth must register its authentication metric set");
+        assert_eq!(auth_snapshot.get_metrics()[0].to_u64_lossy(), 0);
     }
 
     /// Scenario: Representative HTTP error statuses are classified by operator action.
@@ -250,35 +312,34 @@ mod tests {
     #[test]
     fn failure_classification_is_paired_with_the_terminal_outcome() {
         let mut metrics = new_metrics();
-        metrics.record_success(SignalType::Metrics, Duration::from_millis(10));
-        metrics.record_failure(
-            SignalType::Metrics,
-            OtlpHttpExporterErrorType::Throttled,
-            Duration::from_millis(20),
+        let completed = futures::executor::block_on(
+            metrics
+                .boundary
+                .attempt(SignalType::Metrics)
+                .run(async |_| Ok::<_, ErrorWithOutcome<OtlpHttpExporterErrorType>>(())),
         );
+        metrics.boundary.record(completed).unwrap();
+        let completed =
+            futures::executor::block_on(metrics.boundary.attempt(SignalType::Metrics).run(
+                async |attempt| Err::<(), _>(attempt.refused(OtlpHttpExporterErrorType::Throttled)),
+            ));
+        let error_type = metrics.boundary.record(completed).unwrap_err();
+        metrics.record_failure(SignalType::Metrics, error_type);
 
-        assert_eq!(
-            metrics
-                .exports
-                .get(SignalOutcomeAttributes {
-                    signal: SignalType::Metrics,
-                    outcome: Outcome::Success,
-                })
-                .messages
-                .get(),
-            1
-        );
-        assert_eq!(
-            metrics
-                .exports
-                .get(SignalOutcomeAttributes {
-                    signal: SignalType::Metrics,
-                    outcome: Outcome::Failure,
-                })
-                .messages
-                .get(),
-            1
-        );
+        let snapshots = metrics.boundary.terminal_snapshots();
+        for outcome in ["success", "refused"] {
+            assert!(snapshots.iter().any(|snapshot| {
+                snapshot.descriptor().name == "exporter.attempted"
+                    && snapshot.measurement_attribute_value("signal") == Some("metrics")
+                    && snapshot.measurement_attribute_value("outcome") == Some(outcome)
+                    && snapshot
+                        .descriptor()
+                        .metrics
+                        .iter()
+                        .position(|metric| metric.name == "messages")
+                        .is_some_and(|index| snapshot.get_metrics()[index].to_u64_lossy() == 1)
+            }));
+        }
         assert_eq!(
             metrics
                 .failures
@@ -290,43 +351,5 @@ mod tests {
                 .get(),
             1
         );
-    }
-
-    /// Scenario: Agent-fed checks fail for every bounded credential error category.
-    /// Guarantees: Each failure is counted independently without requiring a signal batch.
-    #[test]
-    fn agent_fed_auth_failures_are_counted_by_bounded_reason() {
-        let mut metrics = new_metrics();
-        let error_types = [
-            AgentFedAuthErrorType::CredentialUnavailable,
-            AgentFedAuthErrorType::LookupTimeout,
-            AgentFedAuthErrorType::EmptyToken,
-            AgentFedAuthErrorType::TokenNearExpiry,
-            AgentFedAuthErrorType::InvalidToken,
-            AgentFedAuthErrorType::RejectedCredentialUnchanged,
-        ];
-
-        for error_type in error_types {
-            metrics.record_auth_failure(error_type);
-            assert_eq!(
-                metrics
-                    .auth
-                    .get(OtlpHttpAuthFailureAttributes { error_type })
-                    .failures
-                    .get(),
-                1
-            );
-        }
-    }
-
-    /// Scenario: Authentication metrics are handed to a periodic metrics reporter.
-    /// Guarantees: The authentication metric set participates in normal reporting.
-    #[test]
-    fn reports_agent_fed_auth_metrics() {
-        let mut metrics = new_metrics();
-        metrics.record_auth_failure(AgentFedAuthErrorType::LookupTimeout);
-        let (_receiver, mut reporter) = MetricsReporter::create_new_and_receiver(3);
-
-        metrics.report(&mut reporter).unwrap();
     }
 }

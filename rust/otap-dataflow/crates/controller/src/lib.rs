@@ -46,7 +46,7 @@ use crate::thread_task::{ThreadLocalTaskHandle, spawn_thread_local_task};
 use core_affinity::CoreId;
 use otel_arrow_dfe_admin::ControlPlane;
 use otel_arrow_dfe_config::engine::{
-    OtelDataflowSpec, ResolvedPipelineConfig, ResolvedPipelineRole,
+    OtelDataflowSpec, ResolvedOtelDataflowSpec, ResolvedPipelineConfig, ResolvedPipelineRole,
     SYSTEM_OBSERVABILITY_PIPELINE_ID, SYSTEM_PIPELINE_GROUP_ID,
 };
 use otel_arrow_dfe_config::extension::{ExtensionUrn, ExtensionUserConfig};
@@ -62,7 +62,6 @@ use otel_arrow_dfe_config::topic::{
     TopicAckPropagationMode, TopicBackendKind, TopicBroadcastAckMode, TopicBroadcastOnLagPolicy,
     TopicImplSelectionPolicy, TopicSpec,
 };
-use otel_arrow_dfe_config::transport_headers_policy::TransportHeadersPolicy;
 use otel_arrow_dfe_config::{
     DeployedPipelineKey, ExtensionId, PipelineGroupId, PipelineId, PipelineKey,
     SubscriptionGroupName, TopicName, pipeline::PipelineConfig,
@@ -71,6 +70,9 @@ use otel_arrow_dfe_engine::PipelineFactory;
 use otel_arrow_dfe_engine::ReceivedAtNode;
 use otel_arrow_dfe_engine::Unwindable;
 use otel_arrow_dfe_engine::context::{ControllerContext, PipelineContext};
+use otel_arrow_dfe_engine::context_declaration::{
+    CompiledContextBindings, ContextRuntimeRequirements,
+};
 use otel_arrow_dfe_engine::control::{
     PipelineAdminSender, PipelineCompletionMsgReceiver, PipelineCompletionMsgSender,
     RuntimeCtrlMsgReceiver, RuntimeCtrlMsgSender, pipeline_completion_msg_channel,
@@ -103,7 +105,6 @@ use otel_arrow_dfe_telemetry::{
 use smallvec::smallvec;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::future::Future;
-use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::mpsc as std_mpsc;
@@ -142,10 +143,7 @@ pub use controller_monitor::{
     register_builtin_controller_extensions,
 };
 
-use live_control::{
-    ControllerRuntime, LaunchedPipelineThread, PanicReport, RuntimeInstanceError,
-    RuntimeInstanceExit,
-};
+use live_control::{ControllerRuntime, LaunchedPipelineThread, LogicalPipelineDeployment};
 use placement::{CorePlacement, PipelinePlacement, PlacementPlanner, PlacementSnapshot};
 
 use otel_arrow_dfe_engine::component_inventory;
@@ -1302,8 +1300,23 @@ impl<
             },
         })?;
 
+        // Synchronous startup, before any pipeline or controller extension starts.
+        // Retain this capability in every context across restarts and live rollouts.
+        let state_directory = engine_config
+            .engine
+            .state_dir
+            .as_deref()
+            .map(otel_arrow_dfe_engine::state_dir::StateDirectory::provision)
+            .transpose()?;
+
         let num_pipeline_groups = engine_config.groups.len();
         let resolved_config = engine_config.resolve();
+        let context = self
+            .pipeline_factory
+            .compile_initial_context(&resolved_config)
+            .map_err(|source| Error::PipelineRuntimeError {
+                source: Box::new(source),
+            })?;
         let (mut engine, pipelines, observability_pipeline) = resolved_config.into_parts();
         let observability_pipeline =
             observability_pipeline.ok_or_else(|| Error::PipelineRuntimeError {
@@ -1319,6 +1332,10 @@ impl<
         // controller context below.
         let telemetry_registry = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(telemetry_registry.clone());
+        let controller_ctx = match state_directory {
+            Some(root) => controller_ctx.with_state_directory(root),
+            None => controller_ctx,
+        };
 
         // Inject auto-detected resource attributes into the telemetry resource map so
         // they surface on the OTLP Resource / Prometheus target_info. Precedence is
@@ -1510,8 +1527,6 @@ impl<
             observability_pipeline.policies.health.clone(),
         );
         let topology = NumaTopology::detect();
-        let observability_numa_node_id =
-            topology.numa_node_or_zero(observability_core.id as u32) as usize;
         otel_info!(
             "controller.numa_topology.detected",
             completeness = format!("{:?}", topology.completeness()),
@@ -1520,6 +1535,18 @@ impl<
         );
         let placement_snapshot =
             Self::preflight_pipeline_placement(&pipelines, &all_cores, &topology)?;
+        let observability_placement = PipelinePlacement {
+            pipeline_group_id: observability_pipeline.pipeline_group_id.clone(),
+            pipeline_id: observability_pipeline.pipeline_id.clone(),
+            cores: vec![CorePlacement::from_core_id(observability_core, &topology)],
+        };
+        let observability_deployment = LogicalPipelineDeployment::new(
+            observability_pipeline,
+            Arc::clone(&context.bindings),
+            0,
+            observability_placement,
+            Arc::new(ListenerGroupSnapshot::empty()),
+        );
 
         let runtime = Arc::new(ControllerRuntime::new(
             self.pipeline_factory,
@@ -1529,6 +1556,8 @@ impl<
             engine_evt_reporter.clone(),
             metrics_reporter.clone(),
             declared_topics,
+            context.runtime_requirements,
+            Arc::clone(&context.bindings),
             all_cores.clone(),
             topology,
             telemetry_system.engine_tracing_setup(),
@@ -1570,24 +1599,12 @@ impl<
             Error::from(otel_arrow_dfe_telemetry::error::Error::MetricsCollectorNotRunning)
         })?;
 
-        // Pipeline threads receive only a Weak handle back to the controller runtime. That lets
-        // them report their terminal exit without becoming owners that keep the runtime alive
-        // during shutdown.
         let observability_pipeline_handle = Self::spawn_observability_pipeline(
-            Arc::downgrade(&runtime),
-            observability_key.clone(),
-            observability_core,
-            observability_pipeline,
-            &engine_config,
+            &runtime,
+            &observability_deployment,
+            observability_core.id,
             &telemetry_system,
-            self.pipeline_factory,
-            &controller_ctx,
-            &engine_evt_reporter,
-            &metrics_reporter,
-            telemetry_reporting_interval,
-            &memory_pressure_tx,
             internal_tracing_setup,
-            observability_numa_node_id,
         )?;
 
         // Initialize the global subscriber AFTER the observability pipeline has signaled
@@ -1674,6 +1691,13 @@ impl<
                 pipeline_placement,
                 placement_snapshot.generation,
             ));
+            let deployment = LogicalPipelineDeployment::new(
+                pipeline_entry.clone(),
+                Arc::clone(&context.bindings),
+                0,
+                pipeline_placement.clone(),
+                listener_group_snapshot,
+            );
 
             let core_allocation = pipeline_entry
                 .policies
@@ -1706,37 +1730,12 @@ impl<
             );
 
             for placement in &pipeline_placement.cores {
-                // Pass a Weak runtime handle into each pipeline thread. The thread upgrades it
-                // only when it needs to report Success/Error/Panic on exit, and silently skips
-                // that late report if shutdown has already dropped the runtime.
-                let launched = Self::launch_pipeline_thread(
-                    self.pipeline_factory,
-                    DeployedPipelineKey {
-                        pipeline_group_id: pipeline_entry.pipeline_group_id.clone(),
-                        pipeline_id: pipeline_entry.pipeline_id.clone(),
-                        core_id: placement.core_id.id,
-                        deployment_generation: placement_snapshot.generation,
-                    },
-                    placement.core_id,
-                    placement.numa_node_id,
-                    Arc::clone(&listener_group_snapshot),
-                    num_cores,
-                    pipeline_entry.pipeline.clone(),
-                    pipeline_entry.policies.channel_capacity.clone(),
-                    pipeline_entry.policies.telemetry.clone(),
-                    pipeline_entry.policies.transport_headers.clone(),
-                    pipeline_entry.policies.rate_limiters.clone(),
-                    pipeline_entry.policies.rate_limiter_scope.clone(),
-                    controller_ctx.clone(),
-                    metrics_reporter.clone(),
-                    engine_evt_reporter.clone(),
-                    telemetry_system.engine_tracing_setup(),
-                    telemetry_reporting_interval,
-                    memory_pressure_tx.clone(),
-                    &engine_config,
-                    runtime.declared_topics(),
-                    Arc::downgrade(&runtime),
+                let launched = runtime.launch_pipeline_thread(
+                    &deployment,
+                    placement.core_id.id,
+                    placement_snapshot.generation,
                     runtime.next_thread_id(),
+                    telemetry_system.engine_tracing_setup(),
                     None,
                 )?;
                 runtime.register_launched_instance(launched);
@@ -2537,190 +2536,24 @@ impl<
         }
     }
 
-    /// Launches one pipeline OS thread and wires its terminal exit back into the controller.
-    ///
-    /// The spawned thread owns the actual pipeline execution and maps success, runtime error, or
-    /// panic into RuntimeInstanceExit. `runtime` is a Weak handle on purpose: the pipeline thread
-    /// should be able to report its exit, but it must not become an owner that prolongs the
-    /// controller runtime during shutdown.
-    #[allow(clippy::too_many_arguments)]
-    fn launch_pipeline_thread(
-        pipeline_factory: &'static PipelineFactory<PData>,
-        pipeline_key: DeployedPipelineKey,
-        core_id: CoreId,
-        numa_node_id: usize,
-        listener_group_snapshot: Arc<ListenerGroupSnapshot>,
-        num_cores: usize,
-        pipeline_config: PipelineConfig,
-        channel_capacity_policy: ChannelCapacityPolicy,
-        telemetry_policy: TelemetryPolicy,
-        transport_headers_policy: Option<TransportHeadersPolicy>,
-        rate_limiter_policies: BTreeMap<String, RateLimiterPolicy>,
-        rate_limiter_scope: Option<otel_arrow_dfe_config::policy::RateLimiterDeclarationScope>,
-        controller_ctx: ControllerContext,
-        metrics_reporter: MetricsReporter,
-        engine_evt_reporter: ObservedEventReporter,
-        tracing_setup: TracingSetup,
-        telemetry_reporting_interval: Duration,
-        memory_pressure_tx: tokio::sync::watch::Sender<MemoryPressureChanged>,
-        config: &OtelDataflowSpec,
-        declared_topics: &DeclaredTopics<PData>,
-        runtime: std::sync::Weak<ControllerRuntime<PData>>,
-        thread_id: usize,
-        internal_telemetry: Option<(
-            InternalTelemetrySettings,
-            std_mpsc::SyncSender<Result<(), EngineError>>,
-        )>,
-    ) -> Result<LaunchedPipelineThread<PData>, Error> {
-        let mut pipeline_ctx = controller_ctx.pipeline_context_with_placement(
-            pipeline_key.pipeline_group_id.clone(),
-            pipeline_key.pipeline_id.clone(),
-            pipeline_key.core_id,
-            num_cores,
-            thread_id,
-            pipeline_key.deployment_generation,
-            numa_node_id,
-        );
-        let topic_set = Self::build_pipeline_topic_set(
-            config,
-            declared_topics,
-            &pipeline_key.pipeline_group_id,
-            &pipeline_key.pipeline_id,
-            pipeline_key.core_id,
-        )?;
-        pipeline_ctx.set_topic_set(topic_set);
-        pipeline_ctx.set_listener_group_snapshot_arc(listener_group_snapshot);
-        let (runtime_ctrl_msg_tx, runtime_ctrl_msg_rx) =
-            runtime_ctrl_msg_channel(channel_capacity_policy.control.pipeline);
-        let (pipeline_completion_msg_tx, pipeline_completion_msg_rx) =
-            pipeline_completion_msg_channel(channel_capacity_policy.control.completion);
-        let control_sender: Arc<dyn PipelineAdminSender> = Arc::new(runtime_ctrl_msg_tx.clone());
-        let memory_pressure_rx = memory_pressure_tx.subscribe();
-        let thread_name = format!(
-            "pipeline-{}-{}-core-{}-gen-{}",
-            pipeline_key.pipeline_group_id.as_ref(),
-            pipeline_key.pipeline_id.as_ref(),
-            pipeline_key.core_id,
-            pipeline_key.deployment_generation
-        );
-        let run_key = pipeline_key.clone();
-        let runtime_key = pipeline_key.clone();
-        let runtime_thread_name = thread_name.clone();
-        let _handle = thread::Builder::new()
-            .name(thread_name.clone())
-            .spawn(move || {
-                let exit = match catch_unwind(AssertUnwindSafe(|| {
-                    Self::run_pipeline_thread(
-                        run_key,
-                        core_id,
-                        pipeline_config,
-                        channel_capacity_policy,
-                        telemetry_policy,
-                        transport_headers_policy,
-                        rate_limiter_policies,
-                        rate_limiter_scope,
-                        telemetry_reporting_interval,
-                        pipeline_factory,
-                        pipeline_ctx,
-                        engine_evt_reporter,
-                        metrics_reporter,
-                        runtime_ctrl_msg_tx,
-                        runtime_ctrl_msg_rx,
-                        pipeline_completion_msg_tx,
-                        pipeline_completion_msg_rx,
-                        memory_pressure_rx,
-                        tracing_setup,
-                        internal_telemetry,
-                    )
-                })) {
-                    Ok(Ok(_)) => RuntimeInstanceExit::Success,
-                    Ok(Err(err)) => {
-                        RuntimeInstanceExit::Error(RuntimeInstanceError::runtime(err.to_string()))
-                    }
-                    Err(panic) => RuntimeInstanceExit::Error(RuntimeInstanceError::from_panic(
-                        PanicReport::capture(
-                            "runtime thread",
-                            panic,
-                            Some(runtime_thread_name),
-                            Some(thread_id),
-                            Some(runtime_key.core_id),
-                        ),
-                    )),
-                };
-                if let Some(runtime) = runtime.upgrade() {
-                    runtime.note_instance_exit(runtime_key, exit);
-                }
-                // The controller runtime may already be gone during teardown. In that case there
-                // is nothing left to update, so late exit reporting is intentionally best-effort.
-            })
-            .map_err(|e| Error::ThreadSpawnError {
-                thread_name: thread_name.clone(),
-                source: e,
-            })?;
-
-        Ok(LaunchedPipelineThread {
-            pipeline_key,
-            control_sender,
-            _marker: std::marker::PhantomData,
-        })
-    }
-
     /// Spawns the engine's mandatory observability pipeline and waits for startup.
-    #[allow(clippy::too_many_arguments)]
     fn spawn_observability_pipeline(
-        runtime: std::sync::Weak<ControllerRuntime<PData>>,
-        observability_key: DeployedPipelineKey,
-        observability_core: CoreId,
-        observability_pipeline: ResolvedPipelineConfig,
-        config: &OtelDataflowSpec,
+        runtime: &Arc<ControllerRuntime<PData>>,
+        deployment: &LogicalPipelineDeployment,
+        observability_core: usize,
         telemetry_system: &InternalTelemetrySystem,
-        pipeline_factory: &'static PipelineFactory<PData>,
-        controller_ctx: &ControllerContext,
-        engine_evt_reporter: &ObservedEventReporter,
-        metrics_reporter: &MetricsReporter,
-        telemetry_reporting_interval: Duration,
-        memory_pressure_tx: &tokio::sync::watch::Sender<MemoryPressureChanged>,
         tracing_setup: TracingSetup,
-        observability_numa_node_id: usize,
     ) -> Result<LaunchedPipelineThread<PData>, Error> {
-        debug_assert_eq!(
-            observability_pipeline.role,
-            ResolvedPipelineRole::ObservabilityInternal
-        );
-        let channel_capacity_policy = observability_pipeline.policies.channel_capacity;
-        let telemetry_policy = observability_pipeline.policies.telemetry;
-        let pipeline_config = observability_pipeline.pipeline;
-
         let internal_telemetry_settings = telemetry_system.internal_telemetry_settings();
 
         // Create a channel to signal startup success/failure
         let (startup_tx, startup_rx) = std_mpsc::sync_channel::<Result<(), EngineError>>(1);
-        let launched = Self::launch_pipeline_thread(
-            pipeline_factory,
-            observability_key,
+        let launched = runtime.launch_pipeline_thread(
+            deployment,
             observability_core,
-            observability_numa_node_id,
-            Arc::new(ListenerGroupSnapshot::empty()),
-            1,
-            pipeline_config,
-            channel_capacity_policy,
-            telemetry_policy,
-            None,
-            BTreeMap::new(),
-            None,
-            controller_ctx.clone(),
-            metrics_reporter.clone(),
-            engine_evt_reporter.clone(),
-            tracing_setup,
-            telemetry_reporting_interval,
-            memory_pressure_tx.clone(),
-            config,
-            runtime
-                .upgrade()
-                .expect("controller runtime should exist while spawning observability pipeline")
-                .declared_topics(),
-            runtime,
             0,
+            0,
+            tracing_setup,
             Some((internal_telemetry_settings, startup_tx)),
         )?;
 
@@ -2756,7 +2589,6 @@ impl<
         pipeline_config: PipelineConfig,
         channel_capacity_policy: ChannelCapacityPolicy,
         telemetry_policy: TelemetryPolicy,
-        transport_headers_policy: Option<TransportHeadersPolicy>,
         rate_limiter_policies: BTreeMap<String, RateLimiterPolicy>,
         rate_limiter_scope: Option<otel_arrow_dfe_config::policy::RateLimiterDeclarationScope>,
         telemetry_reporting_interval: Duration,
@@ -2816,7 +2648,6 @@ impl<
                     pipeline_config.clone(),
                     channel_capacity_policy,
                     telemetry_policy,
-                    transport_headers_policy,
                     rate_limiter_policies,
                     rate_limiter_scope,
                     internal_telemetry_settings,
@@ -3271,16 +3102,27 @@ connections:
         ))
     }
 
-    static TEST_OBSERVABILITY_RECEIVERS: &[ReceiverFactory<()>] = &[ReceiverFactory {
-        name: "urn:otel:receiver:internal_telemetry",
-        create: create_test_observability_receiver,
-        wiring_contract: WiringContract::UNRESTRICTED,
-        validate_config: accept_any_test_config,
-    }];
+    static TEST_OBSERVABILITY_RECEIVERS: &[ReceiverFactory<()>] = &[
+        ReceiverFactory {
+            name: "urn:otel:receiver:internal_telemetry",
+            create: create_test_observability_receiver,
+            context_declarations: None,
+            wiring_contract: WiringContract::UNRESTRICTED,
+            validate_config: accept_any_test_config,
+        },
+        ReceiverFactory {
+            name: "urn:test:receiver:example",
+            create: create_test_observability_receiver,
+            context_declarations: None,
+            wiring_contract: WiringContract::UNRESTRICTED,
+            validate_config: accept_any_test_config,
+        },
+    ];
 
     static TEST_OBSERVABILITY_PROCESSORS: &[ProcessorFactory<()>] = &[ProcessorFactory {
         name: "urn:otel:processor:type_router",
         create: create_test_observability_processor,
+        context_declarations: None,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: accept_any_test_config,
     }];
@@ -3289,12 +3131,21 @@ connections:
         ExporterFactory {
             name: "urn:otel:exporter:console",
             create: create_test_observability_exporter,
+            context_declarations: None,
             wiring_contract: WiringContract::UNRESTRICTED,
             validate_config: accept_any_test_config,
         },
         ExporterFactory {
             name: "urn:otel:exporter:noop",
             create: create_test_observability_exporter,
+            context_declarations: None,
+            wiring_contract: WiringContract::UNRESTRICTED,
+            validate_config: accept_any_test_config,
+        },
+        ExporterFactory {
+            name: "urn:test:exporter:example",
+            create: create_test_observability_exporter,
+            context_declarations: None,
             wiring_contract: WiringContract::UNRESTRICTED,
             validate_config: accept_any_test_config,
         },
@@ -3307,6 +3158,175 @@ connections:
             TEST_OBSERVABILITY_EXPORTERS,
             &[],
         )))
+    }
+
+    #[cfg(target_os = "linux")]
+    mod state_directory_startup {
+        use super::*;
+        use std::os::fd::AsFd;
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        use std::path::PathBuf;
+
+        fn create_receiver(
+            context: PipelineContext,
+            node: otel_arrow_dfe_engine::node::NodeId,
+            node_config: Arc<NodeUserConfig>,
+            receiver_config: &ReceiverConfig,
+            _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities,
+        ) -> Result<ReceiverWrapper<()>, otel_arrow_dfe_config::error::Error> {
+            let expected: PathBuf = serde_json::from_value(node_config.config.clone()).unwrap();
+            let root = context
+                .state_directory()
+                .expect("controller must inject the state root");
+            assert_eq!(root.path(), expected);
+            let directory = std::fs::File::from(root.as_fd().try_clone_to_owned().unwrap());
+            let opened = directory.metadata().unwrap();
+            let configured = std::fs::metadata(&expected).unwrap();
+            assert_eq!(
+                (opened.dev(), opened.ino()),
+                (configured.dev(), configured.ino())
+            );
+            assert!(opened.is_dir());
+            assert_eq!(opened.permissions().mode() & 0o777, 0o700);
+            Ok(ReceiverWrapper::local(
+                TestObservabilityReceiver,
+                node,
+                node_config,
+                receiver_config,
+            ))
+        }
+
+        static FACTORY: PipelineFactory<()> = PipelineFactory::new(
+            &[
+                ReceiverFactory {
+                    name: "urn:test:receiver:state_directory",
+                    create: create_receiver,
+                    context_declarations: None,
+                    wiring_contract: WiringContract::UNRESTRICTED,
+                    validate_config: accept_any_test_config,
+                },
+                ReceiverFactory {
+                    name: "urn:otel:receiver:internal_telemetry",
+                    create: create_test_observability_receiver,
+                    context_declarations: None,
+                    wiring_contract: WiringContract::UNRESTRICTED,
+                    validate_config: accept_any_test_config,
+                },
+            ],
+            TEST_OBSERVABILITY_PROCESSORS,
+            TEST_OBSERVABILITY_EXPORTERS,
+            &[],
+        );
+
+        /// Scenario: controller startup provisions a missing state root.
+        /// Guarantees: the receiver gets the correct handle and shutdown completes.
+        #[test]
+        fn state_dir_reaches_receiver_through_controller_startup() {
+            // Shared temporary directories are deliberately outside the trust policy.
+            let parent = std::env::var_os("OTAP_STATE_DIR_TEST_PARENT")
+                .or_else(|| std::env::var_os("HOME"))
+                .expect("set OTAP_STATE_DIR_TEST_PARENT to a trusted test directory");
+            let temp = tempfile::Builder::new()
+                .prefix("otap-state-startup-")
+                .tempdir_in(parent)
+                .unwrap();
+            std::fs::set_permissions(temp.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+            let path = temp.path().join("state");
+            assert!(!path.exists());
+            const SHUTDOWN_EXTENSION: &str = "urn:test:extension:state_directory_shutdown";
+            let (control_tx, control_rx) = std_mpsc::sync_channel(1);
+            let mut extensions = ControllerExtensionRegistry::empty();
+            extensions.register(
+                SHUTDOWN_EXTENSION.into(),
+                move |context| {
+                    let control_tx = control_tx.clone();
+                    Ok(Box::new(move |_cancel| {
+                        Box::pin(async move {
+                            // Extension tasks start after pipeline instances are registered.
+                            control_tx.send(context.control_plane).unwrap();
+                            Ok(())
+                        })
+                    }))
+                },
+                accept_any_test_config,
+            );
+            let config_json = serde_json::json!({
+                "version": "otel_dataflow/v1",
+                "engine": {
+                    "state_dir": path,
+                    "http_admin": {
+                        "bind_address": "127.0.0.1:0"
+                    },
+                    "controller": {
+                        "extensions": {
+                            "shutdown": {
+                                "type": SHUTDOWN_EXTENSION
+                            }
+                        }
+                    }
+                },
+                "groups": {
+                    "g": {
+                        "pipelines": {
+                            "p": {
+                                "policies": {
+                                    "resources": {
+                                        "core_allocation": {
+                                            "type": "core_count",
+                                            "count": 1
+                                        }
+                                    }
+                                },
+                                "nodes": {
+                                    "receiver": {
+                                        "type": "urn:test:receiver:state_directory",
+                                        "config": path
+                                    },
+                                    "exporter": {
+                                        "type": "urn:test:exporter:example",
+                                        "config": null
+                                    }
+                                },
+                                "connections": [
+                                    {
+                                        "from": "receiver",
+                                        "to": "exporter"
+                                    }
+                                ]
+                            }
+                        }
+                    }
+                }
+            });
+            let config = OtelDataflowSpec::from_json(&config_json.to_string()).unwrap();
+            let (result_tx, result_rx) = std_mpsc::sync_channel(1);
+            let controller_thread = thread::spawn(move || {
+                let result = Controller::new(&FACTORY).run_till_shutdown_with_options(
+                    config,
+                    ControllerRunOptions {
+                        extensions,
+                        ..Default::default()
+                    },
+                );
+                result_tx
+                    .send(result.map_err(|error| error.to_string()))
+                    .unwrap();
+            });
+            let control_plane = control_rx
+                .recv_timeout(Duration::from_secs(10))
+                .expect("controller must register pipeline instances before shutdown");
+            control_plane
+                .shutdown_all(5)
+                .expect("bounded shutdown must be accepted");
+            result_rx
+                .recv_timeout(Duration::from_secs(15))
+                .expect("controller startup and shutdown must complete within the test deadline")
+                .expect("receiver must validate the provisioned state root");
+            controller_thread
+                .join()
+                .expect("controller thread must not panic");
+            assert!(path.is_dir());
+        }
     }
 
     const TEST_LINKED_CONTROLLER_EXTENSION_URN: &str = "urn:test:extension:controller_linked";

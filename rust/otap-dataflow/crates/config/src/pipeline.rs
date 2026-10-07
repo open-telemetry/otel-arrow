@@ -542,6 +542,16 @@ impl PipelineExtensions {
     pub fn keys(&self) -> impl Iterator<Item = &ExtensionId> {
         self.0.keys()
     }
+
+    /// Returns a clone with credential header values redacted for config snapshots.
+    #[must_use]
+    pub(crate) fn redacted_for_snapshot(&self) -> Self {
+        let mut redacted = self.clone();
+        for extension in redacted.0.values_mut() {
+            *extension = Arc::new(extension.redacted_for_snapshot());
+        }
+        redacted
+    }
 }
 
 impl IntoIterator for PipelineExtensions {
@@ -654,9 +664,7 @@ impl PipelineConfig {
         for node in redacted.nodes.0.values_mut() {
             *node = Arc::new(node.redacted_for_snapshot());
         }
-        for extension in redacted.extensions.0.values_mut() {
-            *extension = Arc::new(extension.redacted_for_snapshot());
-        }
+        redacted.extensions = redacted.extensions.redacted_for_snapshot();
         redacted
     }
 
@@ -782,13 +790,14 @@ impl PipelineConfig {
     pub fn for_observability_pipeline(
         policies: Option<Policies>,
         nodes: PipelineNodes,
+        extensions: PipelineExtensions,
         connections: Vec<PipelineConnection>,
     ) -> Self {
         Self {
             r#type: PipelineType::Otap,
             policies,
             nodes,
-            extensions: PipelineExtensions::default(),
+            extensions,
             connections,
         }
     }
@@ -820,9 +829,8 @@ impl PipelineConfig {
     ) -> Result<(), Error> {
         let mut errors = Vec::new();
 
-        // Validate node-level transport header policy fields.
         for (node_name, node_config) in self.nodes.iter() {
-            node_config.validate_transport_header_fields(node_name, &mut errors);
+            node_config.validate_transport_header_policies(node_name, &mut errors);
         }
 
         self.validate_connections(
@@ -2004,10 +2012,16 @@ sink:
         )
         .expect("connections should parse");
 
-        let config = super::PipelineConfig::for_observability_pipeline(None, nodes, connections);
+        let config = super::PipelineConfig::for_observability_pipeline(
+            None,
+            nodes,
+            super::PipelineExtensions::default(),
+            connections,
+        );
         assert_eq!(config.node_iter().count(), 2);
         assert_eq!(config.connection_iter().count(), 1);
         assert!(config.policies().is_none());
+        assert!(config.extensions().is_empty());
     }
 
     #[test]

@@ -45,14 +45,15 @@ mod state;
 use self::state::TERMINAL_OPERATION_RETENTION_TTL;
 use self::state::{
     ActiveRuntimeCoreState, CandidateRolloutPlan, CandidateShutdownPlan, ControllerRuntimeState,
-    LivePipelinePlacement, LogicalPipelineRecord, PipelineOperationKind,
-    PipelineOperationReservationState, RolloutAction, RolloutCoreProgress, RolloutExecutionError,
-    RolloutLifecycleState, RolloutRecord, RuntimeInstanceLifecycle, RuntimeInstanceRecord,
-    RuntimeRecoveryState, ShutdownCoreProgress, ShutdownLifecycleState, ShutdownRecord,
-    TERMINAL_ROLLOUT_RETENTION_LIMIT, TERMINAL_SHUTDOWN_RETENTION_LIMIT, TopicRuntimeProfile,
-    is_expired, timestamp_now,
+    PipelineOperationKind, PipelineOperationReservationState, RolloutAction, RolloutCoreProgress,
+    RolloutExecutionError, RolloutLifecycleState, RolloutRecord, RuntimeInstanceLifecycle,
+    RuntimeInstanceRecord, RuntimeRecoveryState, ShutdownCoreProgress, ShutdownLifecycleState,
+    ShutdownRecord, TERMINAL_ROLLOUT_RETENTION_LIMIT, TERMINAL_SHUTDOWN_RETENTION_LIMIT,
+    TopicRuntimeProfile, is_expired, timestamp_now,
 };
-pub(crate) use self::state::{PanicReport, RuntimeInstanceError, RuntimeInstanceExit};
+pub(crate) use self::state::{
+    LogicalPipelineDeployment, PanicReport, RuntimeInstanceError, RuntimeInstanceExit,
+};
 
 /// Bounded time for a runtime thread to finish after its graceful drain deadline.
 ///
@@ -94,6 +95,8 @@ pub(super) struct ControllerRuntime<PData: 'static + Clone + Send + Sync + std::
     metrics_reporter: MetricsReporter,
     /// Topic registry shared by all runtime instances.
     declared_topics: DeclaredTopics<PData>,
+    /// Immutable engine-wide requirements for transport-header representation.
+    context_runtime_requirements: ContextRuntimeRequirements,
     /// Controller-wide core ids available for policy-based allocation.
     available_core_ids: Vec<CoreId>,
     /// Controller-owned topology snapshot used for live rollout placement metadata.
@@ -127,6 +130,8 @@ pub(super) struct LaunchedPipelineThread<PData> {
     pub(super) pipeline_key: DeployedPipelineKey,
     /// Admin sender used by live control to send shutdown to the instance.
     pub(super) control_sender: Arc<dyn PipelineAdminSender>,
+    /// Compiled context bindings used by this runtime instance.
+    pub(super) context_bindings: Arc<CompiledContextBindings>,
     /// Keeps the launch result tied to the pipeline data type.
     pub(super) _marker: std::marker::PhantomData<PData>,
 }
@@ -145,6 +150,8 @@ impl<
         engine_event_reporter: ObservedEventReporter,
         metrics_reporter: MetricsReporter,
         declared_topics: DeclaredTopics<PData>,
+        context_runtime_requirements: ContextRuntimeRequirements,
+        context_bindings: Arc<CompiledContextBindings>,
         available_core_ids: Vec<CoreId>,
         topology: NumaTopology,
         engine_tracing_setup: TracingSetup,
@@ -162,6 +169,7 @@ impl<
             engine_event_reporter,
             metrics_reporter,
             declared_topics,
+            context_runtime_requirements,
             available_core_ids,
             topology,
             engine_tracing_setup,
@@ -171,6 +179,7 @@ impl<
             state: Mutex::new(ControllerRuntimeState {
                 live_config,
                 config_revision: 0,
+                latest_context_bindings: context_bindings,
                 logical_pipelines: HashMap::new(),
                 runtime_instances: HashMap::new(),
                 runtime_recoveries: HashMap::new(),
@@ -196,6 +205,7 @@ impl<
                 first_error: None,
                 instance_wait_released: false,
                 global_shutdown_requested: false,
+                global_shutdown_deadline: None,
                 global_shutdown_coordinators: 0,
             }),
             state_changed: Condvar::new(),
@@ -224,17 +234,22 @@ impl<
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let context_bindings = Arc::clone(&state.latest_context_bindings);
+        let listener_group_snapshot = Arc::new(listener_group::snapshot_for_pipeline(
+            &resolved, &placement, 0,
+        ));
         _ = state
             .generation_counters
             .insert(pipeline_key.clone(), generation + 1);
         _ = state.logical_pipelines.insert(
             pipeline_key,
-            LogicalPipelineRecord {
+            LogicalPipelineDeployment::new(
                 resolved,
-                active_generation: generation,
+                context_bindings,
+                generation,
                 placement,
-                placement_generation: 0,
-            },
+                listener_group_snapshot,
+            ),
         );
     }
 
@@ -500,6 +515,15 @@ impl<
         self.runtime.request_shutdown_all(timeout_secs)
     }
 
+    fn has_active_instances(&self) -> bool {
+        let state = self
+            .runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.has_pending_lifecycle_work()
+    }
+
     fn shutdown_pipeline(
         &self,
         pipeline_group_id: &str,
@@ -629,3 +653,11 @@ impl<
 #[cfg(test)]
 #[path = "../live_control_tests.rs"]
 mod tests;
+
+/// Constructs the real control plane for OpAMP state-directory invariant tests.
+#[cfg(test)]
+pub(crate) fn state_directory_test_control_plane(
+    config: &OtelDataflowSpec,
+) -> Arc<dyn ControlPlane> {
+    tests::test_runtime(config).control_plane()
+}

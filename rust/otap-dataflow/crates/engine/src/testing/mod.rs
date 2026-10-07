@@ -20,7 +20,12 @@ use crate::context::{ControllerContext, ExtensionContext, PipelineContext};
 use crate::control::NodeControlMsg;
 use crate::runtime_services::PipelineRuntimeServices;
 use otel_arrow_dfe_channel::mpsc;
+use otel_arrow_dfe_config::engine::{
+    ResolvedOtelDataflowSpec, ResolvedPipelineConfig, ResolvedPipelineRole,
+};
 use otel_arrow_dfe_config::node::NodeKind;
+use otel_arrow_dfe_config::pipeline::PipelineConfig;
+use otel_arrow_dfe_config::policy::{DistributionTier, Policies};
 use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -74,6 +79,15 @@ pub fn test_pipeline_ctx() -> (PipelineContext, TelemetryRegistryHandle) {
 pub fn test_pipeline_ctx_with_interests(
     interests: Interests,
 ) -> (PipelineContext, TelemetryRegistryHandle) {
+    test_pipeline_ctx_with_interests_and_duration_distribution(interests, DistributionTier::Normal)
+}
+
+/// Create a minimal [`PipelineContext`] with explicit node interests and local duration tier.
+#[must_use]
+pub fn test_pipeline_ctx_with_interests_and_duration_distribution(
+    interests: Interests,
+    duration_distribution: DistributionTier,
+) -> (PipelineContext, TelemetryRegistryHandle) {
     let registry = TelemetryRegistryHandle::new();
     let controller = ControllerContext::new(registry.clone());
     let mut ctx = controller
@@ -85,7 +99,36 @@ pub fn test_pipeline_ctx_with_interests(
             HashMap::new(),
         );
     ctx.set_node_interests(interests);
+    ctx.set_node_duration_distribution(duration_distribution);
     (ctx, registry)
+}
+
+/// Compiles and installs bindings for one test pipeline.
+///
+/// Ignores engine and group policies.
+/// Compile the full engine configuration to test inheritance or multiple pipelines.
+///
+/// # Errors
+///
+/// Returns configuration or declaration errors.
+pub fn install_test_context_bindings<PData: 'static + Clone + std::fmt::Debug>(
+    pipeline_ctx: &mut PipelineContext,
+    factory: &crate::PipelineFactory<PData>,
+    pipeline: PipelineConfig,
+) -> Result<(), crate::error::Error> {
+    let resolved = ResolvedOtelDataflowSpec {
+        engine: Default::default(),
+        pipelines: vec![ResolvedPipelineConfig {
+            pipeline_group_id: pipeline_ctx.pipeline_group_id(),
+            pipeline_id: pipeline_ctx.pipeline_id(),
+            policies: Policies::resolve(pipeline.policies()),
+            pipeline,
+            role: ResolvedPipelineRole::Regular,
+        }],
+    };
+    pipeline_ctx
+        .set_compiled_context_bindings(factory.compile_initial_context(&resolved)?.bindings);
+    Ok(())
 }
 
 /// Create a minimal [`ExtensionContext`] suitable for unit tests of the
@@ -100,6 +143,20 @@ pub fn test_extension_ctx() -> (ExtensionContext, TelemetryRegistryHandle) {
         ..PipelineAttributeSet::default()
     });
     (ExtensionContext::new(controller, scope), registry)
+}
+
+/// Create a minimal extension effect handler for tests that run an extension directly.
+#[cfg(any(test, feature = "test-utils"))]
+#[must_use]
+pub fn test_extension_effect_handler(
+    name: otel_arrow_dfe_config::ExtensionId,
+) -> crate::extension::EffectHandler {
+    let (tx, _rx) = flume::bounded(1);
+    crate::extension::EffectHandler::new(
+        name,
+        otel_arrow_dfe_telemetry::reporter::MetricsReporter::new(tx),
+        None,
+    )
 }
 
 /// A test message type used in component tests.

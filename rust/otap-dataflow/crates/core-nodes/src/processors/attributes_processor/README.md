@@ -5,7 +5,7 @@
 ## Metadata
 
 - Type: `processor:attribute` (`urn:otel:processor:attribute`)
-- Feature gate: Default
+- Feature gate: Always enabled
 - Stability: Experimental
 
 ## Overview

@@ -12,14 +12,17 @@ rust-version.workspace = true
 arrow.workspace = true
 tokio.workspace = true
 serde_json.workspace = true
-otel-arrow-dfe-core-nodes = { workspace = true, features = ["bench"] }
+otel-arrow-dfe-core-nodes = { workspace = true, features = ["bench", "core-nodes"] }
 otel-arrow-dfe-dev-nodes = { workspace = true }
 otel-arrow-dfe-otap = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true, features = ["html_reports", "async_tokio"] }
+http = { workspace = true }
+serde_yaml = { workspace = true }
 tonic = { workspace = true }
 prost = { workspace = true }
+rdkafka.workspace = true
 
 otel-arrow-dfe-control-channel = { workspace = true }
 otel-arrow-dfe-config = { workspace = true }

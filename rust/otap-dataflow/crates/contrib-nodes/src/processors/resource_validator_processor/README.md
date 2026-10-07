@@ -3,7 +3,7 @@
 ## Metadata
 
 - Type: `processor:resource_validator` (`urn:otel:processor:resource_validator`)
-- Feature gate: `resource-validator-processor`
+- Feature gate: `resource-validator`
 - Stability: Experimental
 
 ## Overview
@@ -85,24 +85,20 @@ config:
 
 ## Metrics
 
-- `resource_validator_batches_accepted` - Batches that passed validation
-- `resource_validator_batches_rejected_missing` - Rejected: missing attribute
-- `resource_validator_batches_rejected_not_allowed` - Rejected: invalid value
-- `resource_validator_batches_rejected_invalid_type` - Rejected:
-  attribute not a string
-- `resource_validator_batches_rejected_conversion_error` - Rejected:
-  internal conversion error
-- `resource_validator_items_accepted` - Telemetry items accepted
-- `resource_validator_items_rejected` - Telemetry items rejected
+- `processor.resource_validator.failures` - Batches that failed validation,
+  partitioned by the bounded `error.type` reason.
+
+Generic message and item outcomes are reported by the engine-owned `node.input`
+metrics.
 
 ## Feature Flag
 
-This processor is experimental and requires the `resource-validator-processor`
+This processor is experimental and requires the `resource-validator`
 feature flag:
 
 ```toml
 [dependencies]
-otel-arrow-dfe-otap = { version = "...", features = ["resource-validator-processor"] }
+otel-arrow-dfe-otap = { version = "...", features = ["resource-validator"] }
 ```
 
 ## Extensibility for Dynamic Auth Context

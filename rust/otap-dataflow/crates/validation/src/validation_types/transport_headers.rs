@@ -13,6 +13,7 @@
 //! For **deny** checks, `None` entries are acceptable -- a signal without
 //! headers cannot contain a forbidden key.
 
+use otel_arrow_dfe_config::ContextEntryName;
 use otel_arrow_dfe_config::transport_headers::TransportHeaders;
 use serde::{Deserialize, Serialize};
 
@@ -20,7 +21,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TransportHeaderKeyValue {
     /// Header key (stored/logical name).
-    pub key: String,
+    pub key: ContextEntryName,
     /// Expected header value (UTF-8 text).
     pub value: String,
 }
@@ -28,11 +29,19 @@ pub struct TransportHeaderKeyValue {
 impl TransportHeaderKeyValue {
     /// Create a new transport header key/value pair.
     #[must_use]
-    pub fn new(key: impl Into<String>, value: impl Into<String>) -> Self {
+    pub fn new(key: ContextEntryName, value: impl Into<String>) -> Self {
         Self {
-            key: key.into(),
+            key,
             value: value.into(),
         }
+    }
+
+    /// Validates the header name before creating the pair.
+    pub fn try_new<K>(key: K, value: impl Into<String>) -> Result<Self, K::Error>
+    where
+        K: TryInto<ContextEntryName>,
+    {
+        Ok(Self::new(key.try_into()?, value))
     }
 }
 
@@ -48,7 +57,7 @@ impl TransportHeaderKeyValue {
 #[must_use]
 pub fn validate_transport_header_require_keys(
     suv: &[Option<TransportHeaders>],
-    keys: &[String],
+    keys: &[ContextEntryName],
 ) -> bool {
     if keys.is_empty() {
         return true;
@@ -64,7 +73,7 @@ pub fn validate_transport_header_require_keys(
         };
         for key in keys {
             // check that key exists
-            if headers.find_by_name(key).next().is_none() {
+            if headers.find_by_name(key.as_ref()).next().is_none() {
                 return false;
             }
         }
@@ -103,9 +112,9 @@ pub fn validate_transport_header_require_key_values(
             None => return false,
         };
         'pairs: for pair in pairs {
-            for header in headers.find_by_name(&pair.key) {
-                match std::str::from_utf8(&header.value) {
-                    Ok(value_str) if value_str == pair.value => continue 'pairs,
+            for header in headers.find_by_name(pair.key.as_ref()) {
+                match header.value_as_str() {
+                    Some(value_str) if value_str == pair.value => continue 'pairs,
                     _ => continue,
                 }
             }
@@ -124,7 +133,7 @@ pub fn validate_transport_header_require_key_values(
 #[must_use]
 pub fn validate_transport_header_deny_keys(
     suv: &[Option<TransportHeaders>],
-    keys: &[String],
+    keys: &[ContextEntryName],
 ) -> bool {
     if keys.is_empty() {
         return true;
@@ -132,7 +141,7 @@ pub fn validate_transport_header_deny_keys(
 
     for headers in suv.iter().flatten() {
         for key in keys {
-            if headers.find_by_name(key).next().is_some() {
+            if headers.find_by_name(key.as_ref()).next().is_some() {
                 return false;
             }
         }
@@ -146,10 +155,22 @@ mod tests {
     use super::*;
     use otel_arrow_dfe_config::transport_headers::{TransportHeader, TransportHeaders};
 
+    fn context_name(raw: &str) -> ContextEntryName {
+        ContextEntryName::try_from(raw).expect("valid test context entry name")
+    }
+
+    fn context_names(raw: &[&str]) -> Vec<ContextEntryName> {
+        raw.iter().map(|name| context_name(name)).collect()
+    }
+
+    fn key_value(key: &str, value: &str) -> TransportHeaderKeyValue {
+        TransportHeaderKeyValue::try_new(key, value).expect("valid test context entry name")
+    }
+
     fn make_headers(entries: &[(&str, &str)]) -> TransportHeaders {
         let mut headers = TransportHeaders::default();
         for (name, value) in entries {
-            headers.push(TransportHeader::text(*name, *name, value.as_bytes()));
+            headers.push(TransportHeader::text(context_name(name), value.as_bytes()));
         }
         headers
     }
@@ -160,7 +181,7 @@ mod tests {
         let suv = vec![Some(headers)];
         assert!(validate_transport_header_require_keys(
             &suv,
-            &["x-tenant-id".into(), "x-request-id".into()],
+            &context_names(&["x-tenant-id", "x-request-id"]),
         ));
     }
 
@@ -170,7 +191,7 @@ mod tests {
         let suv = vec![Some(headers)];
         assert!(!validate_transport_header_require_keys(
             &suv,
-            &["x-tenant-id".into(), "x-missing".into()],
+            &context_names(&["x-tenant-id", "x-missing"]),
         ));
     }
 
@@ -179,7 +200,7 @@ mod tests {
         let suv: Vec<Option<TransportHeaders>> = vec![None, None];
         assert!(!validate_transport_header_require_keys(
             &suv,
-            &["x-tenant-id".into()],
+            &context_names(&["x-tenant-id"]),
         ));
     }
 
@@ -189,7 +210,7 @@ mod tests {
         let suv = vec![Some(headers)];
         assert!(validate_transport_header_require_key_values(
             &suv,
-            &[TransportHeaderKeyValue::new("x-tenant-id", "acme")],
+            &[key_value("x-tenant-id", "acme")],
         ));
     }
 
@@ -199,7 +220,7 @@ mod tests {
         let suv = vec![Some(headers)];
         assert!(!validate_transport_header_require_key_values(
             &suv,
-            &[TransportHeaderKeyValue::new("x-tenant-id", "other")],
+            &[key_value("x-tenant-id", "other")],
         ));
     }
 
@@ -209,7 +230,7 @@ mod tests {
         let suv = vec![Some(headers)];
         assert!(!validate_transport_header_require_key_values(
             &suv,
-            &[TransportHeaderKeyValue::new("x-missing", "value")],
+            &[key_value("x-missing", "value")],
         ));
     }
 
@@ -219,7 +240,7 @@ mod tests {
         let suv = vec![Some(headers)];
         assert!(validate_transport_header_deny_keys(
             &suv,
-            &["x-secret".into()],
+            &context_names(&["x-secret"]),
         ));
     }
 
@@ -229,7 +250,7 @@ mod tests {
         let suv = vec![Some(headers)];
         assert!(!validate_transport_header_deny_keys(
             &suv,
-            &["x-tenant-id".into()],
+            &context_names(&["x-tenant-id"]),
         ));
     }
 
@@ -238,7 +259,7 @@ mod tests {
         let suv: Vec<Option<TransportHeaders>> = vec![None];
         assert!(validate_transport_header_deny_keys(
             &suv,
-            &["x-tenant-id".into()],
+            &context_names(&["x-tenant-id"]),
         ));
     }
 
@@ -257,7 +278,7 @@ mod tests {
         let suv = vec![Some(h1), Some(h2)];
         assert!(!validate_transport_header_require_keys(
             &suv,
-            &["x-tenant-id".into(), "x-request-id".into()],
+            &context_names(&["x-tenant-id", "x-request-id"]),
         ));
     }
 
@@ -267,7 +288,7 @@ mod tests {
         let suv = vec![Some(headers), None];
         assert!(!validate_transport_header_require_keys(
             &suv,
-            &["x-tenant-id".into()],
+            &context_names(&["x-tenant-id"]),
         ));
     }
 
@@ -277,7 +298,7 @@ mod tests {
         let suv = vec![Some(headers), None];
         assert!(!validate_transport_header_require_key_values(
             &suv,
-            &[TransportHeaderKeyValue::new("x-tenant-id", "acme")],
+            &[key_value("x-tenant-id", "acme")],
         ));
     }
 
@@ -286,7 +307,7 @@ mod tests {
         let suv: Vec<Option<TransportHeaders>> = vec![];
         assert!(!validate_transport_header_require_keys(
             &suv,
-            &["x-tenant-id".into()],
+            &context_names(&["x-tenant-id"]),
         ));
     }
 
@@ -295,7 +316,7 @@ mod tests {
         let suv: Vec<Option<TransportHeaders>> = vec![];
         assert!(!validate_transport_header_require_key_values(
             &suv,
-            &[TransportHeaderKeyValue::new("x-tenant-id", "acme")],
+            &[key_value("x-tenant-id", "acme")],
         ));
     }
 
@@ -305,7 +326,7 @@ mod tests {
         let suv = vec![Some(headers), None];
         assert!(validate_transport_header_deny_keys(
             &suv,
-            &["x-secret".into()],
+            &context_names(&["x-secret"]),
         ));
     }
 
@@ -317,7 +338,7 @@ mod tests {
         let suv = vec![Some(headers)];
         assert!(validate_transport_header_require_key_values(
             &suv,
-            &[TransportHeaderKeyValue::new("x-env", "production")],
+            &[key_value("x-env", "production")],
         ));
     }
 
@@ -327,7 +348,7 @@ mod tests {
         let suv = vec![Some(headers)];
         assert!(validate_transport_header_require_key_values(
             &suv,
-            &[TransportHeaderKeyValue::new("x-env", "staging")],
+            &[key_value("x-env", "staging")],
         ));
     }
 
@@ -337,7 +358,14 @@ mod tests {
         let suv = vec![Some(headers)];
         assert!(!validate_transport_header_require_key_values(
             &suv,
-            &[TransportHeaderKeyValue::new("x-env", "development")],
+            &[key_value("x-env", "development")],
         ));
+    }
+
+    /// Scenario: a header/value assertion uses an invalid stored name.
+    /// Guarantees: construction rejects whitespace in the context entry name.
+    #[test]
+    fn key_value_construction_rejects_invalid_name() {
+        assert!(TransportHeaderKeyValue::try_new("not valid", "value").is_err());
     }
 }

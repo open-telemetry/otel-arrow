@@ -1,0 +1,6 @@
+type: otlp
+status:
+  class: receiver
+  codeowners:
+    active:
+      - lquerel

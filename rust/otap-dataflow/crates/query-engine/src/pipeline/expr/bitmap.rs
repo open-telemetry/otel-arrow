@@ -7,23 +7,25 @@
 //! `IdMask` result. This is the efficient path for boolean predicates: the result stays
 //! in bitmap space, avoiding unnecessary materialization of intermediate arrays.
 
-use arrow::array::{Array, UInt16Array};
+use arrow::array::{Array, ArrayRef, AsArray, UInt16Array, UInt32Array};
+use arrow::datatypes::{DataType, UInt8Type, UInt16Type, UInt32Type};
 use arrow::util::bit_iterator::BitSliceIterator;
 use datafusion::common::cast::as_boolean_array;
 use datafusion::logical_expr::ColumnarValue;
-use datafusion::prelude::SessionContext;
 use datafusion::scalar::ScalarValue;
 use otel_arrow_dfe_pdata::OtapArrowRecords;
-use otel_arrow_dfe_pdata::otap::filter::IdBitmapPool;
+use otel_arrow_dfe_pdata::otap::filter::{IdBitmap, IdBitmapPool};
 use otel_arrow_dfe_pdata::schema::consts;
 
 use crate::error::{Error, Result};
-use crate::pipeline::expr::DataScope;
+use crate::pipeline::expr::eval::EvalContext;
+use crate::pipeline::expr::{DataScope, RecordScope};
 use crate::pipeline::id_mask::IdMask;
 
 use super::eval::{eval_datafusion_expr_value, invert_id_mask, join_and_eval_value};
 use super::{LeafEval, ScopedExpr, ScopedValue, ShortCircuitStrategy};
 
+#[derive(Debug)]
 pub struct ScopedIdMask {
     pub scope: Option<DataScope>,
     pub mask: IdMask,
@@ -38,31 +40,31 @@ impl ScopedExpr {
     pub(crate) fn execute_as_id_mask(
         &mut self,
         otap_batch: &OtapArrowRecords,
-        session_ctx: &SessionContext,
+        eval_ctx: &EvalContext<'_>,
         pool: &mut IdBitmapPool,
     ) -> Result<ScopedIdMask> {
         match self {
             Self::Eval { scope, eval } => {
-                execute_eval_as_id_mask(scope, eval, otap_batch, session_ctx, pool)
+                execute_eval_as_id_mask(scope, eval, otap_batch, eval_ctx, pool)
             }
             Self::JoinAndEval {
                 children,
                 eval,
                 default_null_children,
-                align_children_to_root,
+                align_children_to_record,
                 short_circuit,
             } => execute_join_and_eval_as_id_mask(
                 children.as_mut_slice(),
                 eval,
                 *default_null_children,
-                *align_children_to_root,
+                *align_children_to_record,
                 short_circuit.as_ref(),
                 otap_batch,
-                session_ctx,
+                eval_ctx,
                 pool,
             ),
             Self::BitmapAnd(left, right) => {
-                let left_result = left.execute_as_id_mask(otap_batch, session_ctx, pool)?;
+                let left_result = left.execute_as_id_mask(otap_batch, eval_ctx, pool)?;
 
                 // short-circuit: if left is None, the AND result is None regardless of right
                 if left_result.mask == IdMask::None {
@@ -72,7 +74,7 @@ impl ScopedExpr {
                     });
                 }
 
-                let right_result = right.execute_as_id_mask(otap_batch, session_ctx, pool)?;
+                let right_result = right.execute_as_id_mask(otap_batch, eval_ctx, pool)?;
                 let scope = combine_scope(left_result.scope, right_result.scope);
                 Ok(ScopedIdMask {
                     scope,
@@ -80,9 +82,10 @@ impl ScopedExpr {
                 })
             }
             Self::BitmapOr(left, right) => {
-                let left_result = left.execute_as_id_mask(otap_batch, session_ctx, pool)?;
+                let left_result = left.execute_as_id_mask(otap_batch, eval_ctx, pool)?;
 
                 // short-circuit: if left is All, the OR result is All regardless of right
+                // TODO - might be worth to check Some/NotSome variants as well?
                 if left_result.mask == IdMask::All {
                     return Ok(ScopedIdMask {
                         mask: IdMask::All,
@@ -90,7 +93,7 @@ impl ScopedExpr {
                     });
                 }
 
-                let right_result = right.execute_as_id_mask(otap_batch, session_ctx, pool)?;
+                let right_result = right.execute_as_id_mask(otap_batch, eval_ctx, pool)?;
                 let scope = combine_scope(left_result.scope, right_result.scope);
                 Ok(ScopedIdMask {
                     scope,
@@ -98,7 +101,7 @@ impl ScopedExpr {
                 })
             }
             Self::BitmapNot(child) => {
-                let child_result = child.execute_as_id_mask(otap_batch, session_ctx, pool)?;
+                let child_result = child.execute_as_id_mask(otap_batch, eval_ctx, pool)?;
                 Ok(ScopedIdMask {
                     mask: invert_id_mask(child_result.mask),
                     scope: child_result.scope,
@@ -124,8 +127,8 @@ pub fn combine_scope(left: Option<DataScope>, right: Option<DataScope>) -> Optio
     #[cfg(debug_assertions)]
     {
         if let (
-            Some(DataScope::Attribute(l_attr_id, _) | DataScope::AttributesAll(l_attr_id)),
-            Some(DataScope::Attribute(r_attr_id, _) | DataScope::AttributesAll(r_attr_id)),
+            Some(DataScope::Attribute(l_attr_id, _, _) | DataScope::AttributesAll(l_attr_id)),
+            Some(DataScope::Attribute(r_attr_id, _, _) | DataScope::AttributesAll(r_attr_id)),
         ) = (&left, &right)
         {
             debug_assert!(l_attr_id == r_attr_id);
@@ -140,7 +143,7 @@ fn execute_eval_as_id_mask(
     scope: &DataScope,
     eval: &mut LeafEval,
     otap_batch: &OtapArrowRecords,
-    session_ctx: &SessionContext,
+    eval_ctx: &EvalContext<'_>,
     pool: &mut IdBitmapPool,
 ) -> Result<ScopedIdMask> {
     let (mask, scope) = match eval {
@@ -154,7 +157,7 @@ fn execute_eval_as_id_mask(
         }
         LeafEval::DatafusionExpr { .. } => {
             // evaluate as value first, then convert to IdMask
-            let value_result = eval_datafusion_expr_value(scope, eval, otap_batch, session_ctx)?;
+            let value_result = eval_datafusion_expr_value(scope, eval, otap_batch, eval_ctx)?;
 
             match value_result {
                 None => (
@@ -181,7 +184,7 @@ fn execute_join_and_eval_as_id_mask(
     align_children_to_root: bool,
     short_circuit: Option<&ShortCircuitStrategy>,
     otap_batch: &OtapArrowRecords,
-    session_ctx: &SessionContext,
+    eval_ctx: &EvalContext<'_>,
     pool: &mut IdBitmapPool,
 ) -> Result<ScopedIdMask> {
     // JoinAndEval always materializes values (the join requires actual arrays),
@@ -193,7 +196,7 @@ fn execute_join_and_eval_as_id_mask(
         align_children_to_root,
         short_circuit,
         otap_batch,
-        session_ctx,
+        eval_ctx,
     )?;
 
     let (mask, scope) = match value_result {
@@ -221,20 +224,12 @@ fn scoped_value_to_id_mask(
                 // For attribute-scoped scalars, "all true" means "all rows that matched
                 // the key filter pass", not ALL rows in the batch. We need to build an
                 // IdMask from the parent_ids of the matching rows.
-                if matches!(sv.scope, DataScope::Attribute(_, _))
+                if matches!(sv.scope, DataScope::Attribute(_, _, _))
                     && let Some(parent_ids) = &sv.parent_ids
                 {
-                    let parent_id_col = parent_ids
-                        .as_any()
-                        .downcast_ref::<UInt16Array>()
-                        .ok_or_else(|| Error::ExecutionError {
-                            cause: format!(
-                                "expected parent_id to be UInt16, found {:?}",
-                                parent_ids.data_type()
-                            ),
-                        })?;
                     let mut bitmap = pool.acquire();
-                    bitmap.populate(parent_id_col.values().iter().map(|pid| *pid as u32));
+                    bitmap.try_populate_from_id_column(parent_ids)?;
+
                     return Ok(IdMask::Some(bitmap));
                 }
                 Ok(IdMask::All)
@@ -265,7 +260,7 @@ fn scoped_value_to_id_mask(
     })?;
 
     match &sv.scope {
-        DataScope::Root | DataScope::RootParent(_) => {
+        DataScope::Record(RecordScope::Signal) | DataScope::RootParent(_) => {
             // root-scoped: use the root batch's id column to build the IdMask
             let root_rb = otap_batch
                 .root_record_batch()
@@ -318,7 +313,16 @@ fn scoped_value_to_id_mask(
                 }
             }
         }
-        DataScope::Attribute(_, _) | DataScope::AttributesAll(_) => {
+
+        DataScope::Record(RecordScope::Child(_child)) => {
+            // we don't yet support expression evaluation that would need to convert
+            // the ID column from record batch representing a repeated child type
+            // (like metric data points) into an ID bitmap.
+            Err(Error::NotYetSupportedError {
+                message: "conversion of child record scoped expression values to bitmap".into(),
+            })
+        }
+        DataScope::Attribute(_, _, _) | DataScope::AttributesAll(_) => {
             // attribute-scoped: use parent_ids to populate an IdBitmap
             let parent_ids = sv
                 .parent_ids
@@ -327,25 +331,13 @@ fn scoped_value_to_id_mask(
                     cause: "attribute-scoped result missing parent_id column for IdMask conversion"
                         .into(),
                 })?;
-            // TODO - eventually we will handle u32 IDs.
-            let parent_id_col = parent_ids
-                .as_any()
-                .downcast_ref::<UInt16Array>()
-                .ok_or_else(|| Error::ExecutionError {
-                    cause: format!(
-                        "expected parent_id to be UInt16, found {:?}",
-                        parent_ids.data_type()
-                    ),
-                })?;
 
             let bool_values = boolean_arr.values();
             let mut bitmap = pool.acquire();
             for (start, end) in
                 BitSliceIterator::new(bool_values.inner().as_slice(), 0, boolean_arr.len())
             {
-                for idx in start..end {
-                    bitmap.insert(parent_id_col.value(idx) as u32);
-                }
+                insert_slice_into_id_bitmap(start, end, &mut bitmap, parent_ids)?;
             }
             Ok(IdMask::Some(bitmap))
         }
@@ -357,5 +349,76 @@ fn scoped_value_to_id_mask(
                 Ok(IdMask::None)
             }
         }
+    }
+}
+
+fn insert_slice_into_id_bitmap(
+    start: usize,
+    end: usize,
+    id_bitmap: &mut IdBitmap,
+    parent_id_col: &ArrayRef,
+) -> Result<()> {
+    match parent_id_col.data_type() {
+        DataType::UInt16 => {
+            let prim_arr = parent_id_col.as_primitive::<UInt16Type>();
+            prim_arr
+                .slice(start, end - start)
+                .iter()
+                .flatten()
+                .for_each(|i| id_bitmap.insert(i as u32));
+            Ok(())
+        }
+        DataType::UInt32 => {
+            let prim_arr = parent_id_col.as_primitive::<UInt32Type>();
+            prim_arr
+                .slice(start, end - start)
+                .iter()
+                .flatten()
+                .for_each(|i| id_bitmap.insert(i));
+            Ok(())
+        }
+        DataType::Dictionary(k, _) => match k.as_ref() {
+            DataType::UInt8 => {
+                let dict_arr = parent_id_col
+                    .as_dictionary::<UInt8Type>()
+                    .slice(start, end - start);
+                let Some(typed_dict) = dict_arr.downcast_dict::<UInt32Array>() else {
+                    return Err(otel_arrow_dfe_pdata::error::Error::InvalidIdColumnType {
+                        data_type: parent_id_col.data_type().clone(),
+                    }
+                    .into());
+                };
+                typed_dict
+                    .into_iter()
+                    .flatten()
+                    .for_each(|i| id_bitmap.insert(i));
+                Ok(())
+            }
+            DataType::UInt16 => {
+                let dict_arr = parent_id_col
+                    .as_dictionary::<UInt16Type>()
+                    .slice(start, end - start);
+                let Some(typed_dict) = dict_arr.downcast_dict::<UInt32Array>() else {
+                    return Err(otel_arrow_dfe_pdata::error::Error::InvalidIdColumnType {
+                        data_type: parent_id_col.data_type().clone(),
+                    }
+                    .into());
+                };
+                typed_dict
+                    .into_iter()
+                    .flatten()
+                    .for_each(|i| id_bitmap.insert(i));
+
+                Ok(())
+            }
+            other => Err(otel_arrow_dfe_pdata::error::Error::InvalidIdColumnType {
+                data_type: other.clone(),
+            }
+            .into()),
+        },
+        other => Err(otel_arrow_dfe_pdata::error::Error::InvalidIdColumnType {
+            data_type: other.clone(),
+        }
+        .into()),
     }
 }
