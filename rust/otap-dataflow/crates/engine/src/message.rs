@@ -827,12 +827,6 @@ impl<PData, ControlRx, PDataRx> ExporterInbox<PData, ControlRx, PDataRx> {
             core: InboxCore::new(control_rx, pdata_rx, None, node_id, interests),
         }
     }
-
-    /// Returns the pending shutdown deadline while the inbox is force-draining pdata.
-    #[must_use]
-    pub fn shutdown_deadline(&self) -> Option<Instant> {
-        self.core.shutting_down_deadline
-    }
 }
 
 #[allow(private_bounds)]

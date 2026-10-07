@@ -256,10 +256,7 @@ impl Exporter<OtapPdata> for GenevaMetricsExporter {
     ) -> Result<TerminalState, EngineError> {
         let margin_sleep = tokio::time::sleep_until(tokio::time::Instant::now());
         tokio::pin!(margin_sleep);
-        let shutdown_sleep = tokio::time::sleep_until(tokio::time::Instant::now());
-        tokio::pin!(shutdown_sleep);
         let mut armed_margin_deadline: Option<Instant> = None;
-        let mut armed_shutdown_deadline: Option<Instant> = None;
         let mut in_flight: Option<InFlightPublication> = None;
         let mut pending_completion: Option<CompletionFuture> = None;
 
@@ -276,34 +273,9 @@ impl Exporter<OtapPdata> for GenevaMetricsExporter {
                 }
                 armed_margin_deadline = auth_margin_deadline;
             }
-            let shutdown_deadline = msg_chan.shutdown_deadline();
-            if shutdown_deadline != armed_shutdown_deadline {
-                if let Some(deadline) = shutdown_deadline {
-                    shutdown_sleep
-                        .as_mut()
-                        .reset(tokio::time::Instant::from_std(deadline));
-                }
-                armed_shutdown_deadline = shutdown_deadline;
-            }
-            let poll_inbox = shutdown_deadline.is_none() || !has_pending_completion;
 
             let msg = tokio::select! {
                 biased;
-
-                () = &mut shutdown_sleep, if shutdown_deadline.is_some() => {
-                    if has_in_flight || has_pending_completion {
-                        otel_warn!(
-                            "geneva_metrics_exporter.shutdown.deadline_exceeded",
-                            in_flight_publication = has_in_flight,
-                            pending_completion = has_pending_completion,
-                            message = "publication work abandoned at the shutdown deadline"
-                        );
-                    }
-                    return Ok(TerminalState::new(
-                        shutdown_deadline.expect("shutdown timer branch must be guarded"),
-                        std::iter::empty::<MetricSetSnapshot>(),
-                    ));
-                }
 
                 () = &mut margin_sleep, if auth_margin_deadline.is_some() => {
                     continue;
@@ -347,7 +319,7 @@ impl Exporter<OtapPdata> for GenevaMetricsExporter {
                     continue;
                 }
 
-                msg = msg_chan.recv_when(accepting_pdata), if poll_inbox => msg?,
+                msg = msg_chan.recv_when(accepting_pdata) => msg?,
             };
 
             match msg {
