@@ -1,0 +1,55 @@
+{#-
+Shared `engine:` section that pushes the engine's internal metrics over
+OTLP/gRPC to the orchestrator's embedded metrics sink
+(see the `start_otlp_metrics_sink` hook).
+
+Required variables:
+  push_metrics_endpoint  - e.g. "http://host.docker.internal:14317"
+  push_service_name      - logical component name, set as service.name
+Optional variables:
+  push_test_name         - test name, set as the test.name resource attribute
+  push_metrics_interval  - export interval (default "1s")
+  engine_log_level       - when set, emits engine.telemetry.logs.level
+
+Pushed counters use delta temporality and the engine performs a final flush
+after all regular pipelines drain during graceful shutdown, so summing the
+deltas yields exact whole-run totals.
+-#}
+engine:
+  telemetry:
+    {%- if engine_log_level is defined and engine_log_level %}
+    logs:
+      level: {{ engine_log_level }}
+    {%- endif %}
+    resource:
+      service.name: "{{ push_service_name }}"
+      {%- if push_test_name is defined and push_test_name %}
+      test.name: "{{ push_test_name }}"
+      {%- endif %}
+  observability:
+    pipeline:
+      nodes:
+        internal_telemetry:
+          type: receiver:internal_telemetry
+          config:
+            signals: [logs, metrics]
+            metrics:
+              interval: {{ push_metrics_interval | default("1s") }}
+        signal_router:
+          type: processor:type_router
+          outputs: [logs, metrics]
+          config: {}
+        logs_console:
+          type: exporter:console
+          config: {}
+        metrics_otlp:
+          type: exporter:otlp_grpc
+          config:
+            grpc_endpoint: "{{ push_metrics_endpoint }}"
+      connections:
+        - from: internal_telemetry
+          to: signal_router
+        - from: signal_router["logs"]
+          to: logs_console
+        - from: signal_router["metrics"]
+          to: metrics_otlp
