@@ -74,8 +74,8 @@ impl Drop for CheckpointProcess {
     }
 }
 
-fn cursor(timestamp: &str, tie_breaker: i64) -> CompositeCursor {
-    CompositeCursor::new(timestamp.to_owned(), tie_breaker)
+fn cursor(timestamp: &str, tie_breaker: i64) -> Cursor {
+    Cursor::composite(timestamp.to_owned(), tie_breaker)
 }
 
 fn store(root: &Path, fingerprint: &str) -> CheckpointStore {
@@ -979,5 +979,29 @@ fn checkpoint_process_worker() {
             assert!(matches!(store.read(), Err(CheckpointError::Parse { .. })));
         }
         _ => panic!("unknown checkpoint process mode"),
+    }
+}
+
+/// Scenario: Each scalar type is acknowledged, persisted, and reopened in a new store instance.
+/// Guarantees: Restart preserves the type and exact value through checksums and revision cleanup.
+#[test]
+fn scalar_checkpoints_survive_restart() {
+    use crate::database::ScalarValue;
+    for value in [
+        ScalarValue::Int64(i64::MIN),
+        ScalarValue::UInt64(u64::MAX),
+        ScalarValue::String("key-\u{03bb}".into()),
+        ScalarValue::Timestamp("2026-01-01T00:00:00.123456789Z".into()),
+    ] {
+        let directory = tempfile::tempdir().expect("state directory");
+        let writer = store(directory.path(), "scalar-fingerprint");
+        let lease = SourceLease::acquire(writer.lease_key()).expect("lease");
+        let cursor = Cursor::Scalar(value);
+        let (state, _) = writer.write(0, &cursor).expect("persist scalar");
+        assert_eq!(state.cursor, cursor);
+        drop(lease);
+        drop(writer);
+        let reader = store(directory.path(), "scalar-fingerprint");
+        assert_eq!(reader.read().expect("reload"), Some(state));
     }
 }
