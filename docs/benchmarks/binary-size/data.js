@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791392925969,
+  "lastUpdate": 1791394176784,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -55156,6 +55156,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-amd64-binary-size",
             "value": 120.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 107.29,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "uros.stefanovic@databricks.com",
+            "name": "Uros Stefanovic",
+            "username": "uros-stefanovic-db"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "a189aa6274686a02e71c12475828a82d3412a09d",
+          "message": "fix(otap-exporter): propagate permanent batch rejections as permanent NACKs (#4168)\n\nThe OTAP exporter classifies a non-OK `BatchStatus` from the destination\n(`OtapExporterErrorType::from_batch_status`) but only uses that\nclassification for failure metrics. It then always NACKs with the\nnon-permanent `NackMsg::new(...)`, so a permanent rejection like\n`INVALID_ARGUMENT` (classified `Rejected`) is reported to the pipeline\nas retryable. With a retry processor configured, the batch is re-sent\neven though the server can never accept it, wasting work on both sides\nand risking duplicate delivery.\n\nThis adds `OtapExporterErrorType::is_permanent()` (true for `Rejected`,\n`PayloadConversion`, `Encoding`, `Authentication`, and `Authorization`,\nwhere resending the same payload cannot succeed). NACK retryability is\ndecided separately from the metric category, by the source of the\nfailure: a per-batch non-OK `BatchStatus` NACKs permanently only when\nits own status is permanent (so a per-batch `INVALID_ARGUMENT` is\npermanent for that batch alone), a client-side encoding failure NACKs\npermanently, and a stream-level failure (stream-open error,\nresponse-stream error or disconnect, shutdown) NACKs its outstanding\nbatches retryable, because the stream error does not identify which\nbatch was rejected. The classified category is still recorded for\nfailure metrics on every path. The retry processor already terminates\npermanent NACKs (`PermanentRefusal`) instead of re-queuing them, and\nthis matches the sibling OTLP gRPC exporter, which already NACKs\nnon-retryable statuses permanently. Transient statuses (`Unavailable`,\n`Timeout`, `Throttled`, `ServerError`, ...) stay retryable.\n\nThe OTLP gRPC exporter is aligned as well: its failure metrics\nclassified `OUT_OF_RANGE` as `Rejected` even though it retries that\nstatus per the OTLP spec. It is now `Unavailable`, as in the OTAP\nexporter, so the attempt is recorded as failed rather than refused.\n\nTests cover that `is_permanent()` marks only the unretryable categories\nas permanent, that a stream-level failure leaves an outstanding batch\nretryable, and that a per-batch `INVALID_ARGUMENT` permanently NACKs\nonly that batch while a sibling batch is still acked.\n\n---------\n\nSigned-off-by: Uros Stefanovic <uros.stefanovic@databricks.com>",
+          "timestamp": "2026-10-07T16:31:15Z",
+          "tree_id": "b3919f8d875d46d240e734abc88a14029fc5949d",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/a189aa6274686a02e71c12475828a82d3412a09d"
+        },
+        "date": 1791394155791,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 87,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.99,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.09,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.99,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.51,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 3.14,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.12,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 3.03,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.01,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.78,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 74.16,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 5.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.79,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.51,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.88,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.73,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.68,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.5,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.44,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.35,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 120.2,
             "unit": "MB"
           },
           {
