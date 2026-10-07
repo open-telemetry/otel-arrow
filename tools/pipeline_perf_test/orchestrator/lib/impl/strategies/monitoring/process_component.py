@@ -199,7 +199,7 @@ components:
             return
         self.stop_event.set()
 
-        # Wait for `invterval` because the thread might be asleep that long
+        # Wait for `interval` because the thread might be asleep that long
         # plus some time for it to complete the work.
         join_timeout = (self.config.interval or 1.0) + 30.0
         monitoring_runtime.thread.join(timeout=join_timeout)

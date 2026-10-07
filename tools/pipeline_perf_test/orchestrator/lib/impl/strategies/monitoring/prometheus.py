@@ -167,14 +167,15 @@ components:
         # Bound the join so a wedged scrape thread cannot hang the whole
         # orchestrator during teardown. The scrape itself is bounded by
         # request_timeout, so this is a defensive upper bound.
-        monitoring_runtime.thread.join(timeout=self.join_timeout())
+        join_timeout = self.join_timeout()
+        monitoring_runtime.thread.join(timeout=join_timeout)
         if monitoring_runtime.thread.is_alive():
             logger.warning(
                 f"Monitoring thread for {component.name} did not stop within "
                 f"{join_timeout:.0f}s; abandoning it (daemon thread will exit with the process)."
             )
 
-    def join_timeout(self) -> int:
+    def join_timeout(self) -> float:
         """
         Compute the join timeout.
         """
