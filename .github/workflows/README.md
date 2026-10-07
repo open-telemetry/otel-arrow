@@ -2,9 +2,8 @@
 
 This directory contains the repository's main CI workflows:
 
-- [`rust-ci.yml`](rust-ci.yml): Rust validation.
-- [`database-receiver-integration.yml`](database-receiver-integration.yml):
-  Path-aware database receiver integration testing, currently covering Oracle.
+- [`rust-ci.yml`](rust-ci.yml): Rust validation, including contrib receiver
+  smoke tests.
 - [`go-ci.yml`](go-ci.yml): Go validation and CodeQL.
 - [`repo-lint.yaml`](repo-lint.yaml): Repository lint and sanity checks.
 - [`changelog.yml`](changelog.yml): Changelog validation.
@@ -12,11 +11,11 @@ This directory contains the repository's main CI workflows:
 
 ## Event model
 
-| Event | Rust | Database receivers | Go | Repository |
-| --- | --- | --- | --- | --- |
-| Pull request | Required and non-required jobs | Required for Oracle changes | Required jobs | Lint and changelog |
-| Merge queue | Required jobs and coverage | Required for Oracle changes | Required jobs | Lint and changelog |
-| Merge to `main` | Shared-cache maintenance | - | CodeQL | - |
+| Event | Rust | Go | Repository |
+| --- | --- | --- | --- |
+| Pull request | Required and non-required jobs | Required jobs | Lint and changelog |
+| Merge queue | Required jobs and coverage | Required jobs | Lint and changelog |
+| Merge to `main` | Shared-cache maintenance | CodeQL | - |
 
 Pull requests provide broad feedback. Merge-queue runs validate what is
 required for merging and upload complete Rust and Go coverage for the commit
@@ -27,7 +26,8 @@ already passed in the merge queue.
 
 The aggregate Rust and Go status jobs define required validation through their
 `needs` lists. Treat those lists as the source of truth when adding or removing
-required jobs.
+required jobs. New external integration jobs can remain non-required while
+their reliability is established.
 
 ## Caching and artifacts
 
