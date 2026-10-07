@@ -89,46 +89,44 @@ class TestProcessDeployment(unittest.TestCase):
         with self.assertRaises(FileNotFoundError):
             process_deployment.start(mock_component, MagicMock())
 
-    @patch("lib.impl.strategies.deployment.process.terminate_process_tree")
+    # Scenario: stop() is called on a running process-based component.
+    # Guarantees: the component's whole process tree is waited on / terminated via
+    # wait_or_terminate_process_tree with the process's PID, so descendants are not
+    # left orphaned.
+    @patch("lib.impl.strategies.deployment.process.wait_or_terminate_process_tree")
     @patch("lib.impl.strategies.deployment.process.subprocess.Popen")
     @patch("lib.impl.strategies.deployment.process.Component.get_or_create_runtime")
     @patch("lib.impl.strategies.deployment.process.Component.set_runtime_data")
     @patch("lib.impl.strategies.deployment.process.StepContext.get_logger")
-    def test_stop_process_timeout(
+    def test_stop_process_terminates_tree(
         self,
         mock_get_logger,
         mock_set_runtime_data,
         mock_get_or_create_runtime,
         mock_popen,
-        mock_terminate_tree,
+        mock_wait_or_terminate_tree,
     ):
         # Setup mocks
         mock_logger = MagicMock()
         mock_get_logger.return_value = mock_logger
 
-        # Mock the component runtime with a process that will timeout
+        # Mock the component runtime with a running process
         mock_component = MagicMock()
         mock_runtime = MagicMock()
         mock_process = MagicMock()
         mock_process.pid = 1234
-        mock_process.terminate.side_effect = (
-            None  # Mock terminate to simulate a graceful shutdown
-        )
-        mock_process.wait.side_effect = subprocess.TimeoutExpired(
-            "Process timed out", 5
-        )  # Simulate a timeout
         mock_runtime.process = mock_process
         mock_component.get_or_create_runtime.return_value = mock_runtime
 
-        # Ensure the process tree is killed after a timeout
+        # Ensure the process tree is waited on / terminated
         process_deployment = ProcessDeployment(
             config=ProcessDeploymentConfig(command="echo 'hello world'")
         )
         process_deployment.stop(mock_component, MagicMock())
 
-        # Assert the whole process tree was force-killed after the timeout.
-        mock_terminate_tree.assert_called_once()
-        self.assertEqual(mock_terminate_tree.call_args.args[0], 1234)
+        # Assert the whole process tree was handled via the helper.
+        mock_wait_or_terminate_tree.assert_called_once()
+        self.assertEqual(mock_wait_or_terminate_tree.call_args.args[0], 1234)
 
     @patch("lib.impl.strategies.deployment.process.subprocess.Popen")
     @patch("lib.impl.strategies.deployment.process.Component.get_or_create_runtime")
@@ -212,6 +210,10 @@ class TestProcessDeployment(unittest.TestCase):
             env=os.environ,
         )
 
+    # Scenario: stop() is called on a running process-based component.
+    # Guarantees: the process is asked to stop gracefully (terminate) and its tree
+    # is waited on / terminated, and its stdout/stderr are drained via communicate.
+    @patch("lib.impl.strategies.deployment.process.wait_or_terminate_process_tree")
     @patch("lib.impl.strategies.deployment.process.subprocess.Popen")
     @patch("lib.impl.strategies.deployment.process.Component.get_or_create_runtime")
     @patch("lib.impl.strategies.deployment.process.Component.set_runtime_data")
@@ -222,6 +224,7 @@ class TestProcessDeployment(unittest.TestCase):
         mock_set_runtime_data,
         mock_get_or_create_runtime,
         mock_popen,
+        mock_wait_or_terminate_tree,
     ):
         # Setup mocks
         mock_logger = MagicMock()
@@ -237,7 +240,6 @@ class TestProcessDeployment(unittest.TestCase):
 
         # Simulate successful process termination
         mock_process.terminate.return_value = None
-        mock_process.wait.return_value = None  # Simulate successful process wait
 
         # Call stop method
         process_deployment = ProcessDeployment(
@@ -245,38 +247,36 @@ class TestProcessDeployment(unittest.TestCase):
         )
         process_deployment.stop(mock_component, MagicMock())
 
-        # Check that terminate() was called and process was cleaned up
+        # Check that terminate() was called and the tree was cleaned up.
         mock_process.terminate.assert_called_once()
-        mock_process.wait.assert_called_once()
+        mock_wait_or_terminate_tree.assert_called_once()
+        mock_process.communicate.assert_called_once()
 
-    @patch("lib.impl.strategies.deployment.process.terminate_process_tree")
+    # Scenario: stop() delegates process-tree teardown to the shared helper.
+    # Guarantees: wait_or_terminate_process_tree is invoked with the process PID so
+    # the configured normal/graceful escalation (not just a direct-child kill) runs.
+    @patch("lib.impl.strategies.deployment.process.wait_or_terminate_process_tree")
     @patch("lib.impl.strategies.deployment.process.subprocess.Popen")
     @patch("lib.impl.strategies.deployment.process.Component.get_or_create_runtime")
     @patch("lib.impl.strategies.deployment.process.Component.set_runtime_data")
     @patch("lib.impl.strategies.deployment.process.StepContext.get_logger")
-    def test_stop_timeout(
+    def test_stop_waits_on_tree_with_pid(
         self,
         mock_get_logger,
         mock_set_runtime_data,
         mock_get_or_create_runtime,
         mock_popen,
-        mock_terminate_tree,
+        mock_wait_or_terminate_tree,
     ):
         # Setup mocks
         mock_logger = MagicMock()
         mock_get_logger.return_value = mock_logger
 
-        # Mock the component runtime with a process that will timeout
+        # Mock the component runtime with a running process
         mock_component = MagicMock()
         mock_runtime = MagicMock()
         mock_process = MagicMock()
         mock_process.pid = 1234
-        mock_process.terminate.side_effect = (
-            None  # Mock terminate to simulate a graceful shutdown
-        )
-        mock_process.wait.side_effect = subprocess.TimeoutExpired(
-            "Process timed out", 5
-        )  # Simulate a timeout
         mock_runtime.process = mock_process
         mock_component.get_or_create_runtime.return_value = mock_runtime
 
@@ -286,9 +286,9 @@ class TestProcessDeployment(unittest.TestCase):
         )
         process_deployment.stop(mock_component, MagicMock())
 
-        # Assert the whole process tree was force-killed after the timeout.
-        mock_terminate_tree.assert_called_once()
-        self.assertEqual(mock_terminate_tree.call_args.args[0], 1234)
+        # Assert the helper was called with the process PID.
+        mock_wait_or_terminate_tree.assert_called_once()
+        self.assertEqual(mock_wait_or_terminate_tree.call_args.args[0], 1234)
 
     @patch("lib.impl.strategies.deployment.process.subprocess.Popen")
     @patch("lib.impl.strategies.deployment.process.Component.get_or_create_runtime")

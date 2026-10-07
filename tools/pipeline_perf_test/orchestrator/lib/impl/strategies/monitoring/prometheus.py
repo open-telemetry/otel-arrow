@@ -17,7 +17,6 @@ from ....runner.registry import monitoring_registry, PluginMeta
 from ....core.component.component import Component
 from ....core.context.framework_element_contexts import StepContext, ScenarioContext
 
-
 STRATEGY_NAME = "prometheus"
 
 
@@ -51,9 +50,10 @@ class PrometheusMonitoringConfig(MonitoringStrategyConfig):
         count (Optional[int]): The number of times to scrape metrics before stopping. A value of 0 means unlimited. Default is 0.
         include (Optional[List[str]]): List of metric names to explicitly include. If empty, all metrics are included by default.
         exclude (Optional[List[str]]): List of metric names to exclude from scraping.
-        request_timeout (Optional[float]): Per-request timeout in seconds for scraping the
+        request_timeout (float): Per-request timeout in seconds for scraping the
             endpoint. Bounds how long a single scrape can block so the monitoring thread stays
-            responsive to the stop signal even when the target hangs. Default is 10.0.
+            responsive to the stop signal even when the target hangs. Must be a positive number;
+            null/None is rejected so the bound cannot be disabled. Default is 10.0.
     """
 
     endpoint: str
@@ -61,7 +61,7 @@ class PrometheusMonitoringConfig(MonitoringStrategyConfig):
     count: Optional[int] = 0
     include: Optional[List[str]] = []
     exclude: Optional[List[str]] = []
-    request_timeout: Optional[float] = 10.0
+    request_timeout: float = 10.0
 
 
 @monitoring_registry.register_class(STRATEGY_NAME)
@@ -179,7 +179,7 @@ components:
         """
         Compute the join timeout.
         """
-        req_time = self.config.request_timeout or 10
+        req_time = self.config.request_timeout
         interval_time = self.config.interval or 1.0
         buffer = 5.0
         return req_time + interval_time + buffer

@@ -19,13 +19,12 @@ Warnings:
 """
 
 import subprocess
-from typing import Optional
 
 from ....core.strategies.hook_strategy import HookStrategy, HookStrategyConfig
 from ....core.context.base import BaseContext
 from ....core.context import ComponentHookContext, FrameworkElementHookContext
 from ....runner.registry import hook_registry, PluginMeta
-from ..common.process import terminate_process_tree
+from ..common.process import wait_or_terminate_process_tree
 
 
 @hook_registry.register_config("run_command")
@@ -35,13 +34,14 @@ class RunCommandConfig(HookStrategyConfig):
 
     Attributes:
         command (str): The shell command to be executed by the hook.
-        timeout (Optional[float]): Maximum time in seconds to allow the command to
-            run before it is killed and a TimeoutExpired error is raised. Prevents a
-            hung command from wedging the orchestrator. Default is 30.
+        timeout (float): Maximum time in seconds to allow the command to run before
+            it is killed and a TimeoutExpired error is raised. Prevents a hung
+            command from wedging the orchestrator. Must be a positive number;
+            null/None is rejected so the bound cannot be disabled. Default is 30.
     """
 
     command: str
-    timeout: Optional[float] = 30.0
+    timeout: float = 30.0
 
 
 @hook_registry.register_class("run_command")
@@ -117,9 +117,15 @@ tests:
                 f"Command timed out after {self.config.timeout}s; terminating "
                 f"process tree: {self.config.command}"
             )
-            terminate_process_tree(proc.pid, logger)
-            # Reap the direct child so it does not linger as a zombie.
-            proc.communicate()
+            # The command demonstrably did not finish, so skip the normal wait and
+            # go straight to graceful-then-force termination of the whole tree.
+            wait_or_terminate_process_tree(proc.pid, logger, normal_timeout=0)
+            # The helper already reaped the tree; finalize the direct child's
+            # returncode with a bounded wait so we never block here.
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
             raise
 
         # Preserve the previous check=True behavior: a non-zero exit fails the step.

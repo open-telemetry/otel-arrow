@@ -41,7 +41,10 @@ from ....core.strategies.deployment_strategy import (
     DeploymentStrategyConfig,
 )
 from ....runner.registry import deployment_registry, PluginMeta
-from ..common.process import ComponentProcessRuntime, terminate_process_tree
+from ..common.process import (
+    ComponentProcessRuntime,
+    wait_or_terminate_process_tree,
+)
 from ..hooks.process.ensure_process import EnsureProcess, EnsureProcessConfig
 
 STRATEGY_NAME = "process"
@@ -178,19 +181,15 @@ components:
 
         process = runtime.process
         try:
-            # Attempt to terminate the process gracefully
+            # Ask the process to stop gracefully, then wait for the whole tree
+            # (process + descendants) to exit. If the tree does not exit on its
+            # own it is terminated gracefully and finally force-killed, so nothing
+            # is left orphaned even when the direct child exits but a descendant
+            # lingers.
             process.terminate()
-            try:
-                # Wait for process to terminate with a timeout
-                process.wait(timeout=5)
-                logger.info(f"Process for {component.name} terminated successfully.")
-            except subprocess.TimeoutExpired:
-                logger.warning(
-                    f"Process for {component.name} did not terminate, killing it."
-                )
-                # Force-kill the whole tree (process + descendants), not just the
-                # direct child, so nothing is left orphaned.
-                terminate_process_tree(process.pid, logger)
+            wait_or_terminate_process_tree(
+                process.pid, logger, normal_timeout=5, graceful_timeout=3
+            )
 
             stdout_logs, stderr_logs = process.communicate()
             args = ctx.get_suite().get_runtime("args")

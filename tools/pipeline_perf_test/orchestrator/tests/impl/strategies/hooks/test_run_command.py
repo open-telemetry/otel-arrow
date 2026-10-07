@@ -50,20 +50,22 @@ def test_timeout_kills_descendants(tmp_path):
     )
     command = f'{sys.executable} -c "{script}"'
 
-    with pytest.raises(subprocess.TimeoutExpired):
-        _run(command, timeout=1.0)
+    child_pid = None
+    try:
+        with pytest.raises(subprocess.TimeoutExpired):
+            _run(command, timeout=1.0)
 
-    child_pid = int(pid_file.read_text().strip())
-    try:
-        child = psutil.Process(child_pid)
-    except psutil.NoSuchProcess:
-        return  # Already gone - descendant was reaped.
-    _, alive = psutil.wait_procs([child], timeout=5.0)
-    try:
+        child_pid = int(pid_file.read_text().strip())
+        try:
+            child = psutil.Process(child_pid)
+        except psutil.NoSuchProcess:
+            return  # Already gone - descendant was reaped.
+        _, alive = psutil.wait_procs([child], timeout=5.0)
         assert not alive, "spawned descendant was not terminated"
     finally:
-        for proc in alive:
+        # Safety net: never leak the spawned child if anything above fails.
+        if child_pid is not None:
             try:
-                proc.kill()
+                psutil.Process(child_pid).kill()
             except psutil.NoSuchProcess:
                 pass
