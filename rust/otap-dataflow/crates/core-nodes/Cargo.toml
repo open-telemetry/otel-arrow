@@ -158,6 +158,8 @@ http-body-util.workspace = true
 hyper.workspace = true
 hyper-util.workspace = true
 tokio-stream.workspace = true
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["registry", "std"] }
 zstd.workspace = true
 pretty_assertions.workspace = true
 tempfile.workspace = true

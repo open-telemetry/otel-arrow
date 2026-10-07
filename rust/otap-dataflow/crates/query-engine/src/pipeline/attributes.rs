@@ -14,8 +14,10 @@ use std::sync::Arc;
 
 use crate::error::{Error, Result};
 use crate::pipeline::PipelineStage;
-use crate::pipeline::expr::{ChildRecordKind, RecordScope};
-use crate::pipeline::planner::AttributesIdentifier;
+use crate::pipeline::expr::ChildRecordKind;
+use crate::pipeline::expr::RecordScope;
+use crate::pipeline::expr::types::MetricDataPointType;
+use crate::pipeline::planner::{AttributesIdentifier, RecordType};
 use crate::pipeline::state::ExecutionState;
 
 /// This pipeline stage can be used to rename and delete attributes according to the transformation
@@ -64,6 +66,38 @@ impl PipelineStage for AttributeTransformPipelineStage {
         _ = apply_attribute_transform(&mut otap_batch, attrs_payload_type, &self.transform, false)?;
 
         Ok(otap_batch)
+    }
+
+    async fn execute_on_metric_data_points(
+        &mut self,
+        mut otap_batch: OtapArrowRecords,
+        _session_ctx: &SessionContext,
+        _config_options: &ConfigOptions,
+        _task_context: Arc<TaskContext>,
+        _exec_state: &mut ExecutionState,
+    ) -> Result<OtapArrowRecords> {
+        for dp_type in MetricDataPointType::all() {
+            let dp_attrs_payload = dp_type.dp_attrs_payload_type();
+            if otap_batch.get(dp_attrs_payload).is_some() {
+                _ = apply_attribute_transform(
+                    &mut otap_batch,
+                    dp_attrs_payload,
+                    &self.transform,
+                    false,
+                )?;
+            }
+        }
+        Ok(otap_batch)
+    }
+
+    fn supports_exec_on(&self, record_type: &RecordType) -> bool {
+        match record_type {
+            RecordType::Signal(_) => true,
+            RecordType::DataPoint(_) => {
+                matches!(self.attrs_id, AttributesIdentifier::Record(_))
+            }
+            RecordType::Attributes => false,
+        }
     }
 }
 
@@ -402,7 +436,8 @@ mod test {
         ];
 
         for query in invalid_renames {
-            let mut pipeline = Pipeline::new(KqlParser::parse(query).unwrap().pipeline);
+            let mut pipeline =
+                Pipeline::try_new(KqlParser::parse(query).unwrap().pipeline).unwrap();
             let result = pipeline
                 .execute(OtapArrowRecords::Logs(Logs::default()))
                 .await;
@@ -422,7 +457,8 @@ mod test {
         ];
 
         for query in invalid_renames {
-            let mut pipeline = Pipeline::new(OplParser::parse(query).unwrap().pipeline);
+            let mut pipeline =
+                Pipeline::try_new(OplParser::parse(query).unwrap().pipeline).unwrap();
             let result = pipeline
                 .execute(OtapArrowRecords::Logs(Logs::default()))
                 .await;
@@ -546,7 +582,7 @@ mod test {
             project-away attributes[\"x\"], attributes[\"x2\"]
         ";
         let parser_result = P::parse(query).unwrap();
-        let mut pipeline = Pipeline::new(parser_result.pipeline);
+        let mut pipeline = Pipeline::try_new(parser_result.pipeline).unwrap();
         let result = pipeline.execute(otap_batch).await.unwrap();
 
         assert!(
@@ -661,5 +697,225 @@ mod test {
     #[tokio::test]
     async fn test_insert_attributes_scopes_opl_parser() {
         test_insert_attributes_scopes::<OplParser>().await;
+    }
+
+    // --- Metric data-point attribute rename/delete tests ---
+
+    mod data_point_attrs {
+        use otel_arrow_contrib_data_engine_kql_parser::Parser;
+        use otel_arrow_dfe_pdata::{
+            proto::{
+                OtlpProtoMessage,
+                opentelemetry::{
+                    arrow::v1::ArrowPayloadType,
+                    common::v1::{AnyValue, KeyValue},
+                    metrics::v1::{
+                        ExponentialHistogram, ExponentialHistogramDataPoint, Gauge, Histogram,
+                        HistogramDataPoint, Metric, MetricsData, NumberDataPoint, Sum, Summary,
+                        SummaryDataPoint, metric::Data,
+                    },
+                },
+            },
+            testing::round_trip::{otap_to_otlp, otlp_to_otap, to_metrics_data},
+        };
+        use otel_arrow_dfe_query_engine_languages::opl::parser::OplParser;
+
+        use crate::{parser::default_parser_options, pipeline::Pipeline};
+
+        /// Build metrics with one data point per metric type, all sharing the same attributes.
+        fn all_metric_types_with_attrs(attrs: Vec<KeyValue>) -> Vec<Metric> {
+            vec![
+                Metric::build()
+                    .name("gauge")
+                    .data_gauge(Gauge {
+                        data_points: vec![
+                            NumberDataPoint::build().attributes(attrs.clone()).finish(),
+                        ],
+                    })
+                    .finish(),
+                Metric::build()
+                    .name("sum")
+                    .data_sum(Sum {
+                        data_points: vec![
+                            NumberDataPoint::build().attributes(attrs.clone()).finish(),
+                        ],
+                        ..Default::default()
+                    })
+                    .finish(),
+                Metric::build()
+                    .name("histogram")
+                    .data_histogram(Histogram {
+                        data_points: vec![
+                            HistogramDataPoint::build()
+                                .attributes(attrs.clone())
+                                .finish(),
+                        ],
+                        ..Default::default()
+                    })
+                    .finish(),
+                Metric::build()
+                    .name("exp_histogram")
+                    .data_exponential_histogram(ExponentialHistogram {
+                        data_points: vec![
+                            ExponentialHistogramDataPoint::build()
+                                .attributes(attrs.clone())
+                                .finish(),
+                        ],
+                        ..Default::default()
+                    })
+                    .finish(),
+                Metric::build()
+                    .name("summary")
+                    .data_summary(Summary {
+                        data_points: vec![SummaryDataPoint::build().attributes(attrs).finish()],
+                    })
+                    .finish(),
+            ]
+        }
+
+        /// Execute a metrics pipeline and return the result as MetricsData.
+        async fn exec(query: &str, metrics: Vec<Metric>) -> MetricsData {
+            let pipeline_expr = OplParser::parse_with_options(query, default_parser_options())
+                .unwrap()
+                .pipeline;
+            let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
+            let input = otlp_to_otap(&OtlpProtoMessage::Metrics(to_metrics_data(metrics)));
+            let result = pipeline.execute(input).await.unwrap();
+            let OtlpProtoMessage::Metrics(md) = otap_to_otlp(&result) else {
+                panic!("expected metrics")
+            };
+            md
+        }
+
+        /// Extract the attribute list from each metric's first data point.
+        fn dp_attrs(md: &MetricsData) -> Vec<&[KeyValue]> {
+            md.resource_metrics[0].scope_metrics[0]
+                .metrics
+                .iter()
+                .map(|m| {
+                    let attrs: &[KeyValue] = match m.data.as_ref().unwrap() {
+                        Data::Gauge(g) => &g.data_points[0].attributes,
+                        Data::Sum(s) => &s.data_points[0].attributes,
+                        Data::Histogram(h) => &h.data_points[0].attributes,
+                        Data::ExponentialHistogram(h) => &h.data_points[0].attributes,
+                        Data::Summary(s) => &s.data_points[0].attributes,
+                    };
+                    attrs
+                })
+                .collect()
+        }
+
+        /// Scenario: Rename a data-point attribute across all metric types
+        /// Guarantees: The attribute key is renamed in every data-point type
+        #[tokio::test]
+        async fn test_rename_dp_attrs() {
+            let metrics = all_metric_types_with_attrs(vec![
+                KeyValue::new("old_key", AnyValue::new_string("v")),
+                KeyValue::new("keep", AnyValue::new_string("k")),
+            ]);
+
+            let result = exec(
+                r#"metrics | apply data_points { rename attributes "old_key" as "new_key" }"#,
+                metrics,
+            )
+            .await;
+
+            let expected = vec![
+                KeyValue::new("new_key", AnyValue::new_string("v")),
+                KeyValue::new("keep", AnyValue::new_string("k")),
+            ];
+            for attrs in dp_attrs(&result) {
+                assert_eq!(attrs, &expected);
+            }
+        }
+
+        /// Scenario: Delete a data-point attribute across all metric types
+        /// Guarantees: The specified attribute key is removed from every data-point type
+        #[tokio::test]
+        async fn test_delete_dp_attrs() {
+            let metrics = all_metric_types_with_attrs(vec![
+                KeyValue::new("remove_me", AnyValue::new_string("x")),
+                KeyValue::new("keep", AnyValue::new_string("k")),
+            ]);
+
+            let result = exec(
+                r#"metrics | apply data_points { remove attributes["remove_me"] }"#,
+                metrics,
+            )
+            .await;
+
+            let expected = vec![KeyValue::new("keep", AnyValue::new_string("k"))];
+            for attrs in dp_attrs(&result) {
+                assert_eq!(attrs, &expected);
+            }
+        }
+
+        /// Scenario: Rename when data points have no attributes
+        /// Guarantees: No-op -- the pipeline does not error
+        #[tokio::test]
+        async fn test_rename_dp_attrs_when_none_present() {
+            let metrics = all_metric_types_with_attrs(vec![]);
+
+            let result = exec(
+                r#"metrics | apply data_points { rename attributes "x" as "y" }"#,
+                metrics,
+            )
+            .await;
+
+            for attrs in dp_attrs(&result) {
+                assert!(attrs.is_empty());
+            }
+        }
+
+        /// Scenario: Delete all data-point attributes
+        /// Guarantees: The dp attrs batch is removed when every key is deleted
+        #[tokio::test]
+        async fn test_delete_all_dp_attrs() {
+            let metrics = all_metric_types_with_attrs(vec![
+                KeyValue::new("a", AnyValue::new_int(1)),
+                KeyValue::new("b", AnyValue::new_int(2)),
+            ]);
+
+            let query = r#"metrics | apply data_points { remove attributes["a"] | remove attributes["b"] }"#;
+
+            let pipeline_expr = OplParser::parse_with_options(query, default_parser_options())
+                .unwrap()
+                .pipeline;
+            let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
+            let input = otlp_to_otap(&OtlpProtoMessage::Metrics(to_metrics_data(metrics)));
+            let result = pipeline.execute(input).await.unwrap();
+
+            // all dp attrs payloads should be gone
+            assert!(result.get(ArrowPayloadType::NumberDpAttrs).is_none());
+            assert!(result.get(ArrowPayloadType::HistogramDpAttrs).is_none());
+            assert!(result.get(ArrowPayloadType::ExpHistogramDpAttrs).is_none());
+            assert!(result.get(ArrowPayloadType::SummaryDpAttrs).is_none());
+        }
+
+        /// Scenario: Rename multiple data-point attributes in one expression
+        /// Guarantees: All specified keys are renamed in a single pipeline pass
+        #[tokio::test]
+        async fn test_rename_multiple_dp_attrs() {
+            let metrics = all_metric_types_with_attrs(vec![
+                KeyValue::new("a", AnyValue::new_int(1)),
+                KeyValue::new("b", AnyValue::new_int(2)),
+                KeyValue::new("c", AnyValue::new_int(3)),
+            ]);
+
+            let result = exec(
+                r#"metrics | apply data_points { rename attributes "a" as "x", "b" as "y" }"#,
+                metrics,
+            )
+            .await;
+
+            let expected = vec![
+                KeyValue::new("x", AnyValue::new_int(1)),
+                KeyValue::new("y", AnyValue::new_int(2)),
+                KeyValue::new("c", AnyValue::new_int(3)),
+            ];
+            for attrs in dp_attrs(&result) {
+                assert_eq!(attrs, &expected);
+            }
+        }
     }
 }
