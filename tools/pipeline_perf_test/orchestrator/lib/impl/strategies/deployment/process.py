@@ -181,13 +181,6 @@ components:
 
         process = runtime.process
         try:
-            # Terminate the whole process tree (process + descendants). The helper
-            # snapshots the tree before signalling anything, so descendants are
-            # captured even if the root exits immediately; it then escalates
-            # gracefully and finally force-kills. We do not pre-terminate the root
-            # ourselves: doing so could let the root exit and reparent its children
-            # before the snapshot, orphaning them. normal_timeout=0 skips waiting on
-            # a process we have not yet asked to stop.
             wait_or_terminate_process_tree(
                 process.pid, logger, normal_timeout=0, graceful_timeout=5
             )
