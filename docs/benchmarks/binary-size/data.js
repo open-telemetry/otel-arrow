@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791355006892,
+  "lastUpdate": 1791384730628,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -54868,6 +54868,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-amd64-binary-size",
             "value": 120.2,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 107.29,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "a.lockett@f5.com",
+            "name": "albertlockett",
+            "username": "albertlockett"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c7539ed94cb99f68f4fd29aef8f0f9f50fc0b05b",
+          "message": "fix(query-engine): query-engine validate the type of batch it processes (#4278)\n\n# Change summary\n\n**PR part 1/2 to address #4070** (e.g. splitting the work into two PRs\nto make review easier).\n\nThis PR introduces a change to the OTAP query-engine's `Pipeline` type\nwhich makes it aware of the type of signals/metrics it expects to be\nprocessing.\n\nBefore this change, although we could write a query that expected to\nprocess some specific signal type / metric type (e.g. `logs | ...`,\n`histograms | ...`), once the query was parsed, the actual signal /\nmetric type was basically opaque to the actual query-engine's `Pipeline`\ninstance.\n\nFor #4070 we actually want to validate during pipeline planning that the\nfields referenced in various expressions in the pipeline are valid,\nwhich means that the query-engine's `Pipeline` (and the `Planner` it\nuses internally) now need to be aware of whether the pipeline was\nsupposed to process logs, traces, metrics (or some specific type of\nmetric), or all of the above.\n\nThis PR is primarily prep work for the planner / field validation\nchanges, which will happen in a followup PR.\n\nBut while this PR is mostly structural, it does introduce one important\nfunctional change to the existing `query_engine::Pipeline` API which is\nthat the `execute` method now validates that the passed batch is of the\nsignal type expected for the query.\n\nAnyway, as far as the other changes introduced:\n- `Pipeline`'s `options` field now contains `SignalContext` which is an\nenum specifying the signal type and, if metric, the type of metric\n(histogram, gauge, etc).\n- `Pipeline::new` changes to `Pipeline::try_new` where internally it\ntries to infer the signal type from the passed pipeline.\n- Since all the signal type inference now happens in the `query-engine`\ncrate all the logic/state related to this this was removed from\ntransform processor. The `Pipeline` now exposes a method to let the\ncaller know if it accepts the batch based on its signal type, which\ntransform processor uses to check if the transform can be applied to\nsome batch.\n- Since the `Pipeline` now knows if it's processing one specific type of\nmetric, when the query is something like `histograms | ...` we no longer\nneeds the OPL parser to sort this out and inject a conditional branch\ninstruction into the query-plan that does the filtering. The pipeline\nnow does this automatically itself based on the signal context (which is\nnice, because eventually we can optimize how we break out the\nrows/record batches for a specific metric type).\n- Puts some types in place in the pipeline planner that will be used in\nthe next PR (part 2) when we validate the fields referenced by the\nquery-plan are valid for the type of singal / metric / data point etc.\n\n## Related issue\n\n<!--We highly recommend correlation of every PR to an issue-->\n\n* Related to #4070 \n\n## Validation\n\n<!--How did you confirm your change has the intended effect?-->\n\nUnit tests\n\n## User-facing changes\n\n<!--\nDescribe the impact, or write `None`.\nUser-facing changes require a `.chloggen/*.yaml` entry. If no entry is\nneeded,\ninclude `chore` in the PR title. Documentation-only changes are exempt.\n-->\n\nNo, it's internal changes.",
+          "timestamp": "2026-10-07T13:59:38Z",
+          "tree_id": "cbd20eb3bbdca97967f0f43897c62dc818ade915",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/c7539ed94cb99f68f4fd29aef8f0f9f50fc0b05b"
+        },
+        "date": 1791384711651,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 86.98,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.99,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.11,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.99,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.51,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 3.14,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.12,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 3.03,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.01,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.78,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 74.13,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 5.07,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.79,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.54,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.88,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.73,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.68,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.5,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.44,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.35,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 120.17,
             "unit": "MB"
           },
           {
