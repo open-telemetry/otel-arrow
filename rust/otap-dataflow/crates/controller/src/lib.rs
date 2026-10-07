@@ -60,7 +60,7 @@ use otel_arrow_dfe_config::policy::{
 };
 use otel_arrow_dfe_config::topic::{
     TopicAckPropagationMode, TopicBackendKind, TopicBroadcastAckMode, TopicBroadcastOnLagPolicy,
-    TopicImplSelectionPolicy, TopicSpec,
+    TopicImplSelectionPolicy, TopicScope, TopicSpec,
 };
 use otel_arrow_dfe_config::{
     DeployedPipelineKey, ExtensionId, PipelineGroupId, PipelineId, PipelineKey,
@@ -379,8 +379,7 @@ struct PreparedControllerExtension {
 }
 
 struct DeclaredTopics<PData: 'static + Clone + Send + Sync + std::fmt::Debug> {
-    global_bindings: HashMap<TopicName, PipelineTopicBinding<PData>>,
-    group_bindings: HashMap<PipelineGroupId, HashMap<TopicName, PipelineTopicBinding<PData>>>,
+    bindings_by_scope: HashMap<TopicScope, HashMap<TopicName, PipelineTopicBinding<PData>>>,
     inferred_mode_reports: Vec<InferredTopicModeReport>,
 }
 
@@ -1156,9 +1155,9 @@ impl<
         let (inferred_modes, mut inferred_mode_reports) =
             Self::infer_topic_modes(config, &global_names, &group_names)?;
         let default_selection_policy = config.engine.topics.impl_selection;
-        let mut global_bindings = HashMap::new();
-        let mut group_bindings =
-            HashMap::<PipelineGroupId, HashMap<TopicName, PipelineTopicBinding<PData>>>::new();
+        let mut bindings_by_scope =
+            HashMap::<TopicScope, HashMap<TopicName, PipelineTopicBinding<PData>>>::new();
+        _ = bindings_by_scope.insert(TopicScope::GLOBAL, HashMap::new());
 
         for (topic_name, spec) in &config.topics {
             let declared_name = global_names
@@ -1186,10 +1185,16 @@ impl<
                 selected_mode,
             );
             let binding = Self::declare_topic(&broker, declared_name, spec, selected_mode)?;
-            _ = global_bindings.insert(topic_name.clone(), binding);
+            _ = bindings_by_scope
+                .get_mut(&TopicScope::GLOBAL)
+                .expect("global topic scope must be registered")
+                .insert(topic_name.clone(), binding);
         }
 
         for (group_id, group_cfg) in &config.groups {
+            let topic_scope = config
+                .resolve_topic_scope(group_id)
+                .expect("pipeline group from config must resolve");
             for (topic_name, spec) in &group_cfg.topics {
                 let declared_name = group_names
                     .get(&(group_id.clone(), topic_name.clone()))
@@ -1217,26 +1222,26 @@ impl<
                     selected_mode,
                 );
                 let binding = Self::declare_topic(&broker, declared_name, spec, selected_mode)?;
-                _ = group_bindings
-                    .entry(group_id.clone())
+                _ = bindings_by_scope
+                    .entry(topic_scope.clone())
                     .or_default()
                     .insert(topic_name.clone(), binding);
             }
         }
 
         Ok(DeclaredTopics {
-            global_bindings,
-            group_bindings,
+            bindings_by_scope,
             inferred_mode_reports,
         })
     }
 
     fn build_pipeline_topic_set(
         declared: &DeclaredTopics<PData>,
+        topic_scope: &TopicScope,
         pipeline_group_id: &PipelineGroupId,
         pipeline_id: &PipelineId,
         core_id: usize,
-    ) -> TopicSet<PData> {
+    ) -> Result<TopicSet<PData>, Error> {
         let set_name = format!(
             "{}::{}::core-{}",
             pipeline_group_id.as_ref(),
@@ -1245,18 +1250,32 @@ impl<
         );
         let set = TopicSet::new(set_name);
 
-        for (topic_name, binding) in &declared.global_bindings {
+        let global_bindings = declared
+            .bindings_by_scope
+            .get(&TopicScope::GLOBAL)
+            .expect("global topic scope must be registered");
+        for (topic_name, binding) in global_bindings {
             _ = set.insert(topic_name.clone(), binding.clone());
         }
 
-        if let Some(group_bindings) = declared.group_bindings.get(pipeline_group_id) {
-            for (topic_name, binding) in group_bindings {
-                // Group-local declarations override globals with the same local name.
+        if topic_scope != &TopicScope::GLOBAL {
+            let scoped_bindings = declared.bindings_by_scope.get(topic_scope).ok_or_else(|| {
+                Error::PipelineRuntimeError {
+                    source: Box::new(EngineError::InternalError {
+                        message: format!(
+                            "topic scope {topic_scope:?} is not registered for pipeline {}:{}",
+                            pipeline_group_id.as_ref(),
+                            pipeline_id.as_ref()
+                        ),
+                    }),
+                }
+            })?;
+            for (topic_name, binding) in scoped_bindings {
                 _ = set.insert(topic_name.clone(), binding.clone());
             }
         }
 
-        set
+        Ok(set)
     }
 
     fn run_with_mode(
@@ -3413,6 +3432,7 @@ groups: {{}}
             pipeline_group_id: pipeline_group_id.to_string().into(),
             pipeline_id: pipeline_id.to_string().into(),
             pipeline: minimal_pipeline_config(),
+            topic_scope: TopicScope::GLOBAL,
             policies: ResolvedPolicies {
                 resources: ResolvedResourcesPolicy {
                     core_allocation,
@@ -3429,7 +3449,9 @@ groups: {{}}
         topic_name: &str,
     ) -> otel_arrow_dfe_engine::topic::TopicHandle<()> {
         declared
-            .global_bindings
+            .bindings_by_scope
+            .get(&TopicScope::GLOBAL)
+            .expect("global topic scope must be declared")
             .get(topic_name)
             .expect("global topic must be declared")
             .handle()
@@ -3437,13 +3459,18 @@ groups: {{}}
     }
 
     fn group_topic_handle(
+        config: &OtelDataflowSpec,
         declared: &DeclaredTopics<()>,
         group_id: &str,
         topic_name: &str,
     ) -> otel_arrow_dfe_engine::topic::TopicHandle<()> {
+        let group_id: PipelineGroupId = group_id.to_owned().into();
+        let topic_scope = config
+            .resolve_topic_scope(&group_id)
+            .expect("pipeline group must resolve");
         declared
-            .group_bindings
-            .get(group_id)
+            .bindings_by_scope
+            .get(&topic_scope)
             .and_then(|bindings| bindings.get(topic_name))
             .expect("group topic must be declared")
             .handle()
@@ -4412,12 +4439,23 @@ groups:
         let config = OtelDataflowSpec::from_yaml(yaml).expect("test config should parse");
         let declared = Controller::<()>::declare_topics(&config).expect("topics should declare");
 
-        assert_eq!(declared.global_bindings.len(), 2);
-        assert_eq!(declared.group_bindings.len(), 1);
         assert_eq!(
             declared
-                .group_bindings
-                .get("g1")
+                .bindings_by_scope
+                .get(&TopicScope::GLOBAL)
+                .expect("global topic scope should exist")
+                .len(),
+            2
+        );
+        assert_eq!(declared.bindings_by_scope.len(), 2);
+        let group_id: PipelineGroupId = "g1".into();
+        let group_scope = config
+            .resolve_topic_scope(&group_id)
+            .expect("g1 topic scope should resolve");
+        assert_eq!(
+            declared
+                .bindings_by_scope
+                .get(&group_scope)
                 .expect("g1 topic bindings should exist")
                 .len(),
             2
@@ -5102,7 +5140,7 @@ groups:
         let config = OtelDataflowSpec::from_yaml(yaml).expect("test config should parse");
         let declared = Controller::<()>::declare_topics(&config).expect("topics should declare");
         let global_topic = global_topic_handle(&declared, "shared");
-        let group_topic = group_topic_handle(&declared, "g1", "shared");
+        let group_topic = group_topic_handle(&config, &declared, "g1", "shared");
 
         assert!(
             global_topic
@@ -5290,7 +5328,17 @@ groups:
         let declared = Controller::<()>::declare_topics(&config).expect("topics should declare");
         let group_id: PipelineGroupId = "g1".into();
         let pipeline_id: PipelineId = "p1".into();
-        let set = Controller::<()>::build_pipeline_topic_set(&declared, &group_id, &pipeline_id, 0);
+        let topic_scope = config
+            .resolve_topic_scope(&group_id)
+            .expect("g1 topic scope should resolve");
+        let set = Controller::<()>::build_pipeline_topic_set(
+            &declared,
+            &topic_scope,
+            &group_id,
+            &pipeline_id,
+            0,
+        )
+        .expect("topic set should build");
 
         let local_block = set
             .get_required(TopicName::from("local_block"))
@@ -5340,6 +5388,76 @@ groups:
             overridden.default_publish_outcome_config().timeout,
             Duration::from_secs(47)
         );
+    }
+
+    /// Scenario: a startup group shadows a global topic, then is deleted and recreated without
+    /// local topic declarations while the startup topic runtimes remain cached.
+    /// Guarantees: pipelines resolved from the recreated group use the global binding rather than
+    /// the stale startup group binding.
+    #[test]
+    fn recreated_empty_group_uses_global_topic_scope() {
+        let yaml = r#"
+version: otel_dataflow/v1
+topics:
+  shared: {}
+groups:
+  g1:
+    topics:
+      shared: {}
+    pipelines:
+      p1:
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#;
+
+        let startup_config =
+            OtelDataflowSpec::from_yaml(yaml).expect("startup config should parse");
+        let declared =
+            Controller::<()>::declare_topics(&startup_config).expect("topics should declare");
+        let group_id: PipelineGroupId = "g1".into();
+        let pipeline_id: PipelineId = "p1".into();
+        let startup_group_topic = group_topic_handle(&startup_config, &declared, "g1", "shared");
+
+        let mut recreated_config = startup_config.clone();
+        recreated_config
+            .groups
+            .get_mut(&group_id)
+            .expect("g1 should exist")
+            .topics
+            .clear();
+        let resolved = recreated_config
+            .resolve()
+            .pipelines
+            .into_iter()
+            .find(|pipeline| {
+                pipeline.pipeline_group_id == group_id && pipeline.pipeline_id == pipeline_id
+            })
+            .expect("p1 should resolve");
+        assert_eq!(resolved.topic_scope, TopicScope::GLOBAL);
+
+        let set = Controller::<()>::build_pipeline_topic_set(
+            &declared,
+            &resolved.topic_scope,
+            &group_id,
+            &pipeline_id,
+            0,
+        )
+        .expect("topic set should build");
+        let selected = set
+            .get_required(TopicName::from("shared"))
+            .expect("shared topic should resolve");
+        let global_topic = global_topic_handle(&declared, "shared");
+
+        assert_eq!(selected.name(), global_topic.name());
+        assert_ne!(selected.name(), startup_group_topic.name());
     }
 
     #[tokio::test]

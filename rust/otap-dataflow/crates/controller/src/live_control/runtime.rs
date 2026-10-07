@@ -117,10 +117,11 @@ impl<
         );
         let topic_set = Controller::<PData>::build_pipeline_topic_set(
             &self.declared_topics,
+            &deployment.resolved.topic_scope,
             &pipeline_key.pipeline_group_id,
             &pipeline_key.pipeline_id,
             pipeline_key.core_id,
-        );
+        )?;
         pipeline_ctx.set_topic_set(topic_set);
         pipeline_ctx
             .set_listener_group_snapshot_arc(Arc::clone(&deployment.listener_group_snapshot));
