@@ -26,6 +26,7 @@ groups:
             policies:
               telemetry:
                 item_counts: true
+                size: true
             config:
               data_source: {{ data_source | default("semantic_conventions") }}
               generation_strategy: {{ generation_strategy | default("pre_generated") }}

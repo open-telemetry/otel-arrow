@@ -94,6 +94,7 @@ queries:
               CASE
                 WHEN metric_name = 'items' AND "metric_attributes.otel_scope_name" = 'node.input' THEN 'logs'
                 WHEN metric_name = 'items' AND "metric_attributes.otel_scope_name" = 'node.output' THEN 'logs_produced'
+                WHEN metric_name = 'size' AND "metric_attributes.otel_scope_name" = 'node.output' THEN 'logs_bytes_produced'
                 ELSE metric_name
               END AS metric_name
             ),
@@ -106,9 +107,10 @@ queries:
               'bytes_sent',
               'sent',
               'late_batches',
-              'items'
+              'items',
+              'size'
             ) AND (
-              metric_name <> 'items'
+              metric_name NOT IN ('items', 'size')
               OR (
                 "metric_attributes.otel_scope_name" = 'node.input'
                 AND "metric_attributes.otel_scope_node_id" = 'perf'
