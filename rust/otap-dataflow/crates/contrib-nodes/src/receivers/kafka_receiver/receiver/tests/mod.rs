@@ -247,14 +247,21 @@ fn take_otlp_proto(pdata: &mut OtapPdata) -> OtlpProtoBytes {
         .expect("to OtlpProtoBytes")
 }
 
+/// Take an OTAP payload, assert its representation, and convert it to OTLP
+/// protobuf bytes for semantic assertions.
+fn take_otap_as_otlp_proto(pdata: &mut OtapPdata) -> OtlpProtoBytes {
+    let payload = pdata.take_payload();
+    assert!(matches!(payload.data(), PayloadData::OtapArrowRecords(_)));
+    payload
+        .try_into_with_default()
+        .expect("OTAP -> OTLP conversion")
+}
+
 /// Convert an `OtapPdata` (containing OTAP Arrow records) back to an OTLP
 /// `ExportTraceServiceRequest` so tests can assert against familiar protobuf
 /// structs instead of Arrow column internals.
 fn otap_pdata_to_traces(pdata: &mut OtapPdata) -> ExportTraceServiceRequest {
-    let otlp: OtlpProtoBytes = pdata
-        .take_payload()
-        .try_into_with_default()
-        .expect("OTAP -> OTLP conversion");
+    let otlp = take_otap_as_otlp_proto(pdata);
     ExportTraceServiceRequest::decode(otlp.as_bytes()).expect("decode OTLP traces")
 }
 

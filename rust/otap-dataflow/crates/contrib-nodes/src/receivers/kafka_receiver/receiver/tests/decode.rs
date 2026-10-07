@@ -55,8 +55,8 @@ fn decode_logs_payload_otlp_proto() {
 
 /// Scenario (routing and payload correctness): valid OTLP JSON requests are decoded
 /// for traces, metrics, and logs.
-/// Guarantees: each JSON document becomes the matching OTLP protobuf request variant
-/// while preserving representative signal data.
+/// Guarantees: each JSON document becomes the matching OTAP Arrow signal while
+/// preserving representative telemetry data.
 #[test]
 fn decode_otlp_json_payloads() {
     let cases = [
@@ -80,7 +80,7 @@ fn decode_otlp_json_payloads() {
     for (signal, json) in cases {
         let mut pdata = SignalDecoder::decode_signal_payload(signal, json, MessageFormat::OtlpJson)
             .expect("valid OTLP JSON should decode");
-        let proto = take_otlp_proto(&mut pdata);
+        let proto = take_otap_as_otlp_proto(&mut pdata);
 
         match (signal, proto) {
             (SignalType::Traces, OtlpProtoBytes::ExportTracesRequest(bytes)) => {
@@ -135,7 +135,7 @@ fn decode_otlp_json_accepts_empty_array_and_null_optional_field() {
     let mut pdata =
         SignalDecoder::decode_signal_payload(SignalType::Logs, json, MessageFormat::OtlpJson)
             .expect("valid OTLP JSON defaults should decode");
-    let proto = take_otlp_proto(&mut pdata);
+    let proto = take_otap_as_otlp_proto(&mut pdata);
     let request = ExportLogsServiceRequest::decode(proto.as_bytes()).expect("decode logs protobuf");
     let record = &request.resource_logs[0].scope_logs[0].log_records[0];
 

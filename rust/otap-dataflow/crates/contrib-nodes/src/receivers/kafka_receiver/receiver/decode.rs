@@ -16,9 +16,6 @@ use super::super::headers::HeaderExtractions;
 use super::super::identity::DeliveryGeneration;
 use crate::common::kafka::MessageFormat;
 use bytes::Bytes;
-use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
-use opentelemetry_proto::tonic::collector::metrics::v1::ExportMetricsServiceRequest;
-use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
 use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_core_nodes::receivers::syslog_cef_receiver::{
     MAX_MESSAGE_SIZE as MAX_SYSLOG_MESSAGE_SIZE,
@@ -30,8 +27,17 @@ use otel_arrow_dfe_engine::error::Error as EngineError;
 use otel_arrow_dfe_otap::pdata::{Context, OtapPdata};
 use otel_arrow_dfe_pdata::Consumer as PdataConsumer;
 use otel_arrow_dfe_pdata::OtlpProtoBytes;
+use otel_arrow_dfe_pdata::encode::{
+    encode_logs_otap_batch, encode_metrics_otap_batch, encode_spans_otap_batch,
+};
 use otel_arrow_dfe_pdata::otap::{OtapArrowRecords, from_record_messages};
 use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::BatchArrowRecords;
+use otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
+use otel_arrow_dfe_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
+use otel_arrow_dfe_pdata::proto::opentelemetry::collector::trace::v1::ExportTraceServiceRequest;
+use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::LogsData;
+use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::MetricsData;
+use otel_arrow_dfe_pdata::proto::opentelemetry::trace::v1::TracesData;
 use prost::Message;
 use rdkafka::message::BorrowedMessage;
 use smallvec::smallvec;
@@ -131,9 +137,9 @@ impl SignalDecoder {
         OtapPdata::new(Context::default(), otlp.into())
     }
 
-    /// Decode an OTLP JSON request and re-encode it as the equivalent OTLP
-    /// protobuf request used by the pipeline's existing pdata path.
-    fn decode_otlp_json(signal: SignalType, data: &[u8]) -> Result<Vec<u8>, EngineError> {
+    /// Decode OTLP JSON through the local OTLP object views into OTAP Arrow
+    /// records without an intermediate protobuf serialization.
+    fn decode_otlp_json(signal: SignalType, data: &[u8]) -> Result<OtapArrowRecords, EngineError> {
         fn remove_null_fields(value: &mut serde_json::Value) {
             match value {
                 serde_json::Value::Object(fields) => {
@@ -145,13 +151,6 @@ impl SignalDecoder {
                             true
                         }
                     });
-                    for wrapper in ["arrayValue", "kvlistValue"] {
-                        if let Some(serde_json::Value::Object(value)) = fields.get_mut(wrapper) {
-                            let _ = value
-                                .entry("values")
-                                .or_insert_with(|| serde_json::Value::Array(Vec::new()));
-                        }
-                    }
                 }
                 serde_json::Value::Array(values) => {
                     for value in values {
@@ -162,45 +161,57 @@ impl SignalDecoder {
             }
         }
 
-        fn decode<M>(signal: SignalType, data: &[u8]) -> Result<Vec<u8>, EngineError>
+        fn decode<M>(signal: SignalType, data: &[u8]) -> Result<M, EngineError>
         where
-            M: serde::de::DeserializeOwned + Message,
+            M: serde::de::DeserializeOwned,
         {
-            let request = match serde_json::from_slice::<M>(data) {
-                Ok(request) => request,
+            match serde_json::from_slice(data) {
+                Ok(message) => Ok(message),
                 Err(original_error) => {
-                    // ProtoJSON accepts null for any field and treats it as unset.
-                    // The generated serde types reject null for scalar fields, so
-                    // normalize only that valid representation and retry.
                     let normalized =
                         serde_json::from_slice::<serde_json::Value>(data).and_then(|mut value| {
                             remove_null_fields(&mut value);
                             serde_json::from_value(value)
                         });
-                    match normalized {
-                        Ok(request) => request,
-                        Err(_) => {
-                            return Err(EngineError::PdataConversionError {
-                                error: format!(
-                                    "Failed to decode OTLP JSON {} payload: {:?} error at line {} column {}",
-                                    SignalDecoder::label(signal),
-                                    original_error.classify(),
-                                    original_error.line(),
-                                    original_error.column(),
-                                ),
-                            });
-                        }
-                    }
+                    normalized.map_err(|_| EngineError::PdataConversionError {
+                        error: format!(
+                            "Failed to decode OTLP JSON {} payload: {:?} error at line {} column {}",
+                            SignalDecoder::label(signal),
+                            original_error.classify(),
+                            original_error.line(),
+                            original_error.column(),
+                        ),
+                    })
                 }
-            };
-            Ok(request.encode_to_vec())
+            }
         }
 
-        match signal {
-            SignalType::Traces => decode::<ExportTraceServiceRequest>(signal, data),
-            SignalType::Metrics => decode::<ExportMetricsServiceRequest>(signal, data),
-            SignalType::Logs => decode::<ExportLogsServiceRequest>(signal, data),
-        }
+        let records = match signal {
+            SignalType::Traces => {
+                let request = decode::<ExportTraceServiceRequest>(signal, data)?;
+                encode_spans_otap_batch(&TracesData {
+                    resource_spans: request.resource_spans,
+                })
+            }
+            SignalType::Metrics => {
+                let request = decode::<ExportMetricsServiceRequest>(signal, data)?;
+                encode_metrics_otap_batch(&MetricsData {
+                    resource_metrics: request.resource_metrics,
+                })
+            }
+            SignalType::Logs => {
+                let request = decode::<ExportLogsServiceRequest>(signal, data)?;
+                encode_logs_otap_batch(&LogsData {
+                    resource_logs: request.resource_logs,
+                })
+            }
+        };
+        records.map_err(|error| EngineError::PdataConversionError {
+            error: format!(
+                "Failed to encode OTLP JSON {} payload as OTAP: {error}",
+                Self::label(signal),
+            ),
+        })
     }
 
     /// Decode OTAP Arrow bytes into the [`OtapArrowRecords`] variant for
@@ -281,8 +292,8 @@ impl SignalDecoder {
         match message_format {
             MessageFormat::OtlpProto => Ok(Self::otlp_pdata(signal, data)),
             MessageFormat::OtlpJson => {
-                let proto = Self::decode_otlp_json(signal, data)?;
-                Ok(Self::otlp_pdata(signal, &proto))
+                let records = Self::decode_otlp_json(signal, data)?;
+                Ok(OtapPdata::new(Context::default(), records.into()))
             }
             MessageFormat::OtapProto => {
                 let records = Self::decode_otap(signal, data)?;
@@ -312,15 +323,16 @@ impl SignalDecoder {
         data: &[u8],
         message_format: MessageFormat,
     ) -> Result<OtapPdata, EngineError> {
-        let json_proto = if message_format == MessageFormat::OtlpJson {
-            Some(Self::decode_otlp_json(signal, data)?)
-        } else {
-            None
-        };
-        let (data, message_format) = match json_proto.as_deref() {
-            Some(proto) => (proto, MessageFormat::OtlpProto),
-            None => (data, message_format),
-        };
+        if message_format == MessageFormat::OtlpJson {
+            let records = Self::decode_otlp_json(signal, data)?;
+            if !extractors.is_empty() {
+                let extractions = HeaderExtractions::otap(kafka_message, extractors);
+                if extractions.has_any() {
+                    return extractions.apply_otap_resource_attrs(records);
+                }
+            }
+            return Ok(OtapPdata::new(Context::default(), records.into()));
+        }
 
         let apply_otlp: fn(&HeaderExtractions, &[u8]) -> Result<OtapPdata, EngineError> =
             match signal {
@@ -492,11 +504,7 @@ mod tests {
             .take_payload()
             .try_into_with_default()
             .expect("syslog logs convert to OTLP bytes");
-        let request =
-            otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest::decode(
-                proto.as_bytes(),
-            )
-            .expect("decode OTLP logs");
+        let request = ExportLogsServiceRequest::decode(proto.as_bytes()).expect("decode OTLP logs");
         assert_eq!(request.resource_logs.len(), 1);
     }
 

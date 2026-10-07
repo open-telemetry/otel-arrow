@@ -162,7 +162,7 @@ openssl = "0.10"
 # this dependency, as it means moving the derive macros used in our
 # tests upstream. This is currently used by experimental logs
 # exporters, hence the "logs" feature.
-opentelemetry-proto = { git = "https://github.com/open-telemetry/opentelemetry-rust.git", rev = "87929d788d71522609c61bdcf019ce89979af4b4", default-features = false, features = ["gen-tonic-messages", "logs", "trace"]}
+opentelemetry-proto = { version = "0.33", default-features = false, features = ["gen-tonic-messages", "logs", "trace"]}
 
 # Detector-only use: opentelemetry_sdk provides the `Resource` type and `ResourceDetector` trait;
 # opentelemetry provides the `Key`/`Value` types those resources hold. These dependencies use
@@ -291,6 +291,8 @@ otel-arrow-dfe-query-engine = { version = "0.59.0", path = 'crates/query-engine'
 otel-arrow-dfe-state = { version = "0.59.0", path = 'crates/state' }
 otel-arrow-dfe-telemetry-macros = { version = "0.59.0", path = 'crates/telemetry-macros' }
 prost-build = "0.14"
+pbjson = "0.9"
+pbjson-build = "0.9"
 ratatui = "0.30"
 testcontainers = "0.28"
 toml = "1.0.0"

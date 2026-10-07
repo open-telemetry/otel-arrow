@@ -30,6 +30,7 @@ hex = { workspace = true }
 nix = { workspace = true }
 num_enum = { workspace = true }
 paste = { workspace = true }
+pbjson = { workspace = true }
 pretty_assertions = { workspace = true }
 prost = { workspace = true }
 rand = { workspace = true }

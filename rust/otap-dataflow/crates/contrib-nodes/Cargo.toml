@@ -46,7 +46,7 @@ chrono = { workspace = true, optional = true }
 humantime-serde = { workspace = true, optional = true }
 itoa = { workspace = true, optional = true }
 geneva-uploader = { workspace = true, optional = true }
-opentelemetry-proto = { workspace = true, optional = true, features = ["metrics", "with-serde"] }
+opentelemetry-proto = { workspace = true, optional = true }
 futures-channel = { workspace = true, optional = true }
 futures-util = { workspace = true, optional = true }
 otel-arrow-contrib-data-engine-expressions = { workspace = true, optional = true }
@@ -120,7 +120,6 @@ contrib-exporters = [
 # Integrations with both sources and destinations.
 kafka = [
     "dep:otel-arrow-dfe-core-nodes",
-    "dep:opentelemetry-proto",
     # Kafka currently reuses the Syslog CEF parser. Upcoming codec extraction
     # work will remove the need to include the full Syslog CEF receiver.
     "otel-arrow-dfe-core-nodes/syslog-cef",

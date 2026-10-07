@@ -22,6 +22,7 @@ otel-arrow-dfe-component-inventory-syntax = { workspace = true }
 toml = { workspace = true }
 tonic-prost-build = { workspace = true, features = ["cleanup-markdown"] }
 prost-build = { workspace = true }
+pbjson-build = { workspace = true }
 otel-arrow-dfe-pdata-otlp-model = { workspace = true }
 
 [lints.rust]

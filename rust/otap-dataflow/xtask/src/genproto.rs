@@ -60,6 +60,10 @@ fn generate_otap_protos(out_dir: &Path, base: &str) {
 }
 
 fn generate_otlp_protos(out_dir: &Path, base: &str) {
+    let descriptor_path = out_dir.join("otlp_descriptor.bin");
+    let mut config = prost_cfg();
+    config.file_descriptor_set_path(&descriptor_path);
+
     // Configure the builder for OTLP protos
     let builder = tonic_prost_build::configure()
         .build_server(true)
@@ -72,7 +76,7 @@ fn generate_otlp_protos(out_dir: &Path, base: &str) {
 
     builder
         .compile_with_config(
-            prost_cfg(),
+            config,
             &[
                 "opentelemetry/proto/common/v1/common.proto",
                 "opentelemetry/proto/resource/v1/resource.proto",
@@ -88,6 +92,25 @@ fn generate_otlp_protos(out_dir: &Path, base: &str) {
             &[format!("{base}/../../../proto/opentelemetry-proto").as_str()],
         )
         .expect("Failed to compile OTLP protos.");
+
+    let descriptor_set =
+        std::fs::read(&descriptor_path).expect("Failed to read OTLP descriptor set.");
+    pbjson_build::Builder::new()
+        .out_dir(out_dir)
+        .register_descriptors(&descriptor_set)
+        .expect("Failed to register OTLP descriptors.")
+        .build(&[
+            ".opentelemetry.proto.common.v1",
+            ".opentelemetry.proto.resource.v1",
+            ".opentelemetry.proto.trace.v1",
+            ".opentelemetry.proto.metrics.v1",
+            ".opentelemetry.proto.logs.v1",
+            ".opentelemetry.proto.collector.trace.v1",
+            ".opentelemetry.proto.collector.metrics.v1",
+            ".opentelemetry.proto.collector.logs.v1",
+        ])
+        .expect("Failed to generate OTLP ProtoJSON implementations.");
+    std::fs::remove_file(descriptor_path).expect("Failed to remove OTLP descriptor set.");
 }
 
 fn generate_opamp_protos(out_dir: &Path, base: &str) {

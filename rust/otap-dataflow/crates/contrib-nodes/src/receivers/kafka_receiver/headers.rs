@@ -283,7 +283,7 @@ impl HeaderExtractions {
     }
 
     /// Shared OTAP logic: apply attribute transform to `ResourceAttrs`.
-    fn apply_otap_resource_attrs(
+    pub(crate) fn apply_otap_resource_attrs(
         &self,
         mut arrow_records: OtapArrowRecords,
     ) -> Result<OtapPdata, EngineError> {

@@ -147,7 +147,7 @@ version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
 dependencies = [
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -158,7 +158,7 @@ checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
 dependencies = [
  "anstyle",
  "once_cell_polyfill",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1963,18 +1963,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "const-hex"
-version = "1.19.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "33e2a781ebdf4467d1428dc4593067825fb646f6871475098d8577421af73558"
-dependencies = [
- "cfg-if",
- "cpufeatures 0.2.17",
- "proptest",
- "serde_core",
-]
-
-[[package]]
 name = "const-oid"
 version = "0.9.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2481,7 +2469,7 @@ dependencies = [
  "openssl-sys",
  "pkg-config",
  "vcpkg",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3444,7 +3432,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3589,7 +3577,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4016,7 +4004,7 @@ dependencies = [
  "hex",
  "lz4_flex 0.11.6",
  "md-5 0.11.0",
- "opentelemetry-proto 0.33.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "opentelemetry-proto",
  "otel-arrow-dfe-pdata-views",
  "p12-keystore",
  "reqwest 0.12.28",
@@ -7090,39 +7078,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "opentelemetry"
-version = "0.33.0"
-source = "git+https://github.com/open-telemetry/opentelemetry-rust.git?rev=87929d788d71522609c61bdcf019ce89979af4b4#87929d788d71522609c61bdcf019ce89979af4b4"
-dependencies = [
- "futures-core",
- "futures-sink",
- "js-sys",
- "pin-project-lite",
- "thiserror 2.0.21",
-]
-
-[[package]]
 name = "opentelemetry-proto"
 version = "0.33.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "25da1ac11a0aeccf38d7f77ee0348715adaf8340f65ad46c94a02c6b20e2f65d"
 dependencies = [
- "opentelemetry 0.33.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "opentelemetry_sdk 0.33.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "opentelemetry",
+ "opentelemetry_sdk",
  "prost 0.14.4",
-]
-
-[[package]]
-name = "opentelemetry-proto"
-version = "0.33.0"
-source = "git+https://github.com/open-telemetry/opentelemetry-rust.git?rev=87929d788d71522609c61bdcf019ce89979af4b4#87929d788d71522609c61bdcf019ce89979af4b4"
-dependencies = [
- "base64 0.22.1",
- "const-hex",
- "opentelemetry 0.33.0 (git+https://github.com/open-telemetry/opentelemetry-rust.git?rev=87929d788d71522609c61bdcf019ce89979af4b4)",
- "opentelemetry_sdk 0.33.0 (git+https://github.com/open-telemetry/opentelemetry-rust.git?rev=87929d788d71522609c61bdcf019ce89979af4b4)",
- "prost 0.14.4",
- "serde",
 ]
 
 [[package]]
@@ -7131,9 +7094,9 @@ version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "60ac54422fb2a7ed2e0325b5650bedff0b6e777e33dbbac7b49572d92d689a56"
 dependencies = [
- "opentelemetry 0.33.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "opentelemetry",
  "opentelemetry-semantic-conventions",
- "opentelemetry_sdk 0.33.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "opentelemetry_sdk",
 ]
 
 [[package]]
@@ -7151,22 +7114,7 @@ dependencies = [
  "futures-channel",
  "futures-executor",
  "futures-util",
- "opentelemetry 0.33.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "percent-encoding",
- "portable-atomic",
- "rand 0.9.5",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "opentelemetry_sdk"
-version = "0.33.0"
-source = "git+https://github.com/open-telemetry/opentelemetry-rust.git?rev=87929d788d71522609c61bdcf019ce89979af4b4#87929d788d71522609c61bdcf019ce89979af4b4"
-dependencies = [
- "futures-channel",
- "futures-executor",
- "futures-util",
- "opentelemetry 0.33.0 (git+https://github.com/open-telemetry/opentelemetry-rust.git?rev=87929d788d71522609c61bdcf019ce89979af4b4)",
+ "opentelemetry",
  "percent-encoding",
  "portable-atomic",
  "rand 0.9.5",
@@ -7492,7 +7440,7 @@ dependencies = [
  "itoa",
  "linkme",
  "one_collect",
- "opentelemetry-proto 0.33.0 (git+https://github.com/open-telemetry/opentelemetry-rust.git?rev=87929d788d71522609c61bdcf019ce89979af4b4)",
+ "opentelemetry-proto",
  "oracle",
  "otel-arrow-contrib-data-engine-expressions",
  "otel-arrow-contrib-data-engine-kql-parser",
@@ -7888,6 +7836,7 @@ dependencies = [
  "otel-arrow-dfe-pdata-views",
  "otel-arrow-dfe-test-net",
  "paste",
+ "pbjson",
  "pretty_assertions",
  "prost 0.14.4",
  "rand 0.10.3",
@@ -8094,9 +8043,9 @@ dependencies = [
  "chrono",
  "criterion",
  "flume",
- "opentelemetry 0.33.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "opentelemetry",
  "opentelemetry-resource-detectors",
- "opentelemetry_sdk 0.33.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "opentelemetry_sdk",
  "otel-arrow-dfe-config",
  "otel-arrow-dfe-expohisto",
  "otel-arrow-dfe-pdata",
@@ -8370,6 +8319,28 @@ name = "paste"
 version = "1.0.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
+
+[[package]]
+name = "pbjson"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e8edd1efdd8ab23ba9cb9ace3d9987a72663d5d7c9f74fa00b51d6213645cf6c"
+dependencies = [
+ "base64 0.22.1",
+ "serde",
+]
+
+[[package]]
+name = "pbjson-build"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2ed4d5c6ae95e08ac768883c8401cf0e8deb4e6e1d6a4e1fd3d2ec4f0ec63200"
+dependencies = [
+ "heck",
+ "itertools 0.14.0",
+ "prost 0.14.4",
+ "prost-types 0.14.4",
+]
 
 [[package]]
 name = "pbkdf2"
@@ -8815,21 +8786,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "proptest"
-version = "1.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4b45fcc2344c680f5025fe57779faef368840d0bd1f42f216291f0dc4ace4744"
-dependencies = [
- "bitflags 2.13.2",
- "num-traits",
- "rand 0.9.5",
- "rand_chacha 0.9.0",
- "rand_xorshift",
- "regex-syntax",
- "unarray",
-]
-
-[[package]]
 name = "prost"
 version = "0.12.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9061,7 +9017,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -9168,15 +9124,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "caa0f4137e1c0a72f4c651489402276c8e8e1cf081f3b0ba156d2cbeef09e86a"
 dependencies = [
  "rand_core 0.10.1",
-]
-
-[[package]]
-name = "rand_xorshift"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "513962919efc330f829edb2535844d1b912b0fbe2ca165d613e4e8788bb05a5a"
-dependencies = [
- "rand_core 0.9.5",
 ]
 
 [[package]]
@@ -9672,7 +9619,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -9745,7 +9692,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -10376,7 +10323,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -10699,10 +10646,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -10724,7 +10671,7 @@ dependencies = [
  "parking_lot",
  "rustix",
  "signal-hook",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -10734,7 +10681,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "230a1b821ccbd75b185820a1f1ff7b14d21da1e442e22c0863ea5f08771a8874"
 dependencies = [
  "rustix",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -11583,12 +11530,6 @@ checksum = "7c8a2469e56e6e5095c82ccd3afb98dad95f7af7929aab6d8ba8d6e0f73657da"
 dependencies = [
  "arrayvec",
 ]
-
-[[package]]
-name = "unarray"
-version = "0.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eaea85b334db583fe3274d12b4cd1880032beab409c0d774be044d4480ab9a94"
 
 [[package]]
 name = "unicase"
@@ -12448,7 +12389,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -12888,6 +12829,7 @@ dependencies = [
  "anyhow",
  "otel-arrow-dfe-component-inventory-syntax",
  "otel-arrow-dfe-pdata-otlp-model",
+ "pbjson-build",
  "proc-macro2",
  "prost-build 0.14.4",
  "semver",

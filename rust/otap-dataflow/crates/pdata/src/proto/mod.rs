@@ -13,6 +13,7 @@
 // disable some of the rust/clippy lints that we are not able to control via prost codegen
 #![allow(
     clippy::must_use_candidate,
+    clippy::useless_borrows_in_formatting,
     unused_qualifications,
     missing_docs,
     unused_results
@@ -25,28 +26,38 @@ pub mod consts;
 pub mod opentelemetry {
     #[path = "."]
     pub mod trace {
-        #[path = "opentelemetry.proto.trace.v1.rs"]
-        pub mod v1;
+        pub mod v1 {
+            include!("opentelemetry.proto.trace.v1.rs");
+            include!("opentelemetry.proto.trace.v1.serde.rs");
+        }
     }
     #[path = "."]
     pub mod logs {
-        #[path = "opentelemetry.proto.logs.v1.rs"]
-        pub mod v1;
+        pub mod v1 {
+            include!("opentelemetry.proto.logs.v1.rs");
+            include!("opentelemetry.proto.logs.v1.serde.rs");
+        }
     }
     #[path = "."]
     pub mod metrics {
-        #[path = "opentelemetry.proto.metrics.v1.rs"]
-        pub mod v1;
+        pub mod v1 {
+            include!("opentelemetry.proto.metrics.v1.rs");
+            include!("opentelemetry.proto.metrics.v1.serde.rs");
+        }
     }
     #[path = "."]
     pub mod common {
-        #[path = "opentelemetry.proto.common.v1.rs"]
-        pub mod v1;
+        pub mod v1 {
+            include!("opentelemetry.proto.common.v1.rs");
+            include!("opentelemetry.proto.common.v1.serde.rs");
+        }
     }
     #[path = "."]
     pub mod resource {
-        #[path = "opentelemetry.proto.resource.v1.rs"]
-        pub mod v1;
+        pub mod v1 {
+            include!("opentelemetry.proto.resource.v1.rs");
+            include!("opentelemetry.proto.resource.v1.serde.rs");
+        }
     }
     #[path = "."]
     pub mod profiles {
@@ -57,18 +68,24 @@ pub mod opentelemetry {
     pub mod collector {
         #[path = "."]
         pub mod trace {
-            #[path = "opentelemetry.proto.collector.trace.v1.rs"]
-            pub mod v1;
+            pub mod v1 {
+                include!("opentelemetry.proto.collector.trace.v1.rs");
+                include!("opentelemetry.proto.collector.trace.v1.serde.rs");
+            }
         }
         #[path = "."]
         pub mod logs {
-            #[path = "opentelemetry.proto.collector.logs.v1.rs"]
-            pub mod v1;
+            pub mod v1 {
+                include!("opentelemetry.proto.collector.logs.v1.rs");
+                include!("opentelemetry.proto.collector.logs.v1.serde.rs");
+            }
         }
         #[path = "."]
         pub mod metrics {
-            #[path = "opentelemetry.proto.collector.metrics.v1.rs"]
-            pub mod v1;
+            pub mod v1 {
+                include!("opentelemetry.proto.collector.metrics.v1.rs");
+                include!("opentelemetry.proto.collector.metrics.v1.serde.rs");
+            }
         }
         #[path = "."]
         pub mod profiles {

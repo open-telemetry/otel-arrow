@@ -148,9 +148,7 @@ async fn test_kafka_receiver_otlp_json_header_extraction() {
             let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
 
             let mut pdata = receiver.recv_pdata().await;
-            let proto = take_otlp_proto(&mut pdata);
-            let request =
-                ExportTraceServiceRequest::decode(proto.as_bytes()).expect("decode traces");
+            let request = otap_pdata_to_traces(&mut pdata);
             let resource = request.resource_spans[0]
                 .resource
                 .as_ref()
