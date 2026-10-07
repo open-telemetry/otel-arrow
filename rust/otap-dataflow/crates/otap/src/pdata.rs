@@ -1048,12 +1048,22 @@ impl From<OtapArrowPdata> for OtapPdata {
 #[error(transparent)]
 pub struct OtapPdataDecodeError(Box<OtapPdataDecodeErrorInner>);
 
-#[derive(Debug, thiserror::Error)]
+#[derive(thiserror::Error)]
 #[error("{source}")]
 struct OtapPdataDecodeErrorInner {
     #[source]
     source: CodecError,
     pdata: OtapPdata,
+}
+
+// Neither retained telemetry nor delivery context belongs in diagnostics.
+impl fmt::Debug for OtapPdataDecodeErrorInner {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("OtapPdataDecodeErrorInner")
+            .field("source", &self.source)
+            .finish_non_exhaustive()
+    }
 }
 
 impl OtapPdataDecodeError {
@@ -1911,14 +1921,15 @@ mod test {
     }
 
     /// Scenario: Malformed encoded pdata carries delivery context through failed conversion.
-    /// Guarantees: Recovery preserves peer address, codec identity, bytes, signal, and item count.
+    /// Guarantees: Diagnostics omit telemetry and context; recovery preserves peer address,
+    /// codec identity, bytes, signal, and item count.
     #[test]
     fn encoded_conversion_failure_preserves_delivery_ownership() {
         use bytes::Bytes;
         use otel_arrow_dfe_pdata_codec::{CodecService, PdataEncoding, PdataFormat};
 
         let peer = "127.0.0.1:4317".parse().expect("peer address");
-        let bytes = Bytes::from_static(&[0x0a, 0x05, 0x01]);
+        let bytes = Bytes::from_static(b"\x0a\xff\xffSECRET_TELEMETRY_VALUE");
         let pointer = bytes.as_ptr();
         let service = CodecService::new().expect("valid codec registry");
         let codec = service
@@ -1936,6 +1947,15 @@ mod test {
         let error = pdata
             .try_into_otap(&service)
             .expect_err("malformed OTLP must fail");
+        assert_eq!(error.to_string(), error.error().to_string());
+        for diagnostic in [
+            error.to_string(),
+            format!("{error:?}"),
+            format!("{error:#?}"),
+        ] {
+            assert!(!diagnostic.contains("SECRET_TELEMETRY_VALUE"));
+            assert!(!diagnostic.contains("127.0.0.1"));
+        }
         let (_, recovered) = error.into_parts();
         assert_eq!(recovered.peer_addr(), Some(peer));
         assert_eq!(

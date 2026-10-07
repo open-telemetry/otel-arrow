@@ -443,7 +443,7 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
                             Ok(arrow_records) => arrow_records,
                             Err(e) => {
                                 let reason =
-                                    format!("Failed to convert payload to OtapArrowRecords: {e:?}");
+                                    format!("Failed to convert payload to OtapArrowRecords: {e}");
                                 self.pdata_metrics
                                     .with(SignalOutcomeAttributes {
                                         signal: signal_type,

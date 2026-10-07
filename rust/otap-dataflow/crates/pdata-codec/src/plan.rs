@@ -9,7 +9,8 @@ use crate::{CodecError, CodecRegistry, PdataEncoding, ResolvedCodec};
 /// Representation-neutral policy applied to independently encoded output.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub struct EncodePolicy {
-    /// Maximum encoded batch size when a codec can enforce it directly.
+    /// Maximum encoded batch size, checked on matching-format forwarding and
+    /// passed to encoders that can enforce it during encoding.
     pub max_encoded_size: Option<NonZeroUsize>,
 }
 
@@ -51,6 +52,20 @@ impl EncodingPlan {
     #[must_use]
     pub const fn policy(self) -> EncodePolicy {
         self.policy
+    }
+
+    /// Checks forwarded bytes without allocating or instantiating an encoder.
+    pub(crate) fn validate_encoded_size(self, actual: usize) -> Result<(), CodecError> {
+        if let Some(limit) = self.policy.max_encoded_size
+            && actual > limit.get()
+        {
+            return Err(CodecError::EncodedSizeLimitExceeded {
+                encoding: self.codec.encoding().clone(),
+                actual,
+                limit: limit.get(),
+            });
+        }
+        Ok(())
     }
 }
 

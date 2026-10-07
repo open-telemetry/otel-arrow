@@ -101,6 +101,16 @@ pub enum CodecError {
         #[source]
         source: Box<dyn StdError + Send + Sync>,
     },
+    /// An encoded batch exceeds the output plan's size limit.
+    #[error("pdata codec `{encoding}` output size {actual} exceeds limit {limit}")]
+    EncodedSizeLimitExceeded {
+        /// Output codec identity.
+        encoding: PdataEncoding,
+        /// Actual encoded size in bytes.
+        actual: usize,
+        /// Maximum permitted encoded size in bytes.
+        limit: usize,
+    },
     /// A decoder returned a different signal from the admitted envelope.
     #[error("pdata codec `{encoding}` decoded {actual:?}, expected {expected:?}")]
     SignalChanged {

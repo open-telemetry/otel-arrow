@@ -129,12 +129,22 @@ pub type PayloadData = PayloadStorage;
 #[error(transparent)]
 pub struct PdataPayloadDecodeError(Box<PdataPayloadDecodeErrorInner>);
 
-#[derive(Debug, thiserror::Error)]
+#[derive(thiserror::Error)]
 #[error("{source}")]
 struct PdataPayloadDecodeErrorInner {
     #[source]
     source: CodecError,
     payload: PdataPayload,
+}
+
+// Diagnostics may be logged or sent upstream; retained telemetry is for recovery only.
+impl std::fmt::Debug for PdataPayloadDecodeErrorInner {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PdataPayloadDecodeErrorInner")
+            .field("source", &self.source)
+            .finish_non_exhaustive()
+    }
 }
 
 impl PdataPayloadDecodeError {
@@ -432,12 +442,17 @@ impl PdataPayload {
         plan.codec().require_encoder(self.signal_type())?;
         match &mut self.storage {
             PayloadStorage::OtlpBytes(bytes) if otlp_codec(bytes.signal_type()) == plan.codec() => {
+                plan.validate_encoded_size(bytes.bytes().len())?;
                 Ok(consume(EncodeOutput::bytes(bytes.clone_bytes())))
             }
             PayloadStorage::Encoded(encoded) if encoded.codec() == plan.codec() => {
+                plan.validate_encoded_size(encoded.bytes().len())?;
                 Ok(consume(EncodeOutput::bytes(encoded.bytes().clone())))
             }
             PayloadStorage::OtapArrowRecords(records) => {
+                // Encoders can normalize transport IDs even when encoding fails.
+                // Invalidate before exposing mutable records, not just on success.
+                self.size = CachedMeasurement::unknown();
                 codecs.with_encoded_output(records, plan, consume)
             }
             PayloadStorage::OtlpBytes(bytes) => {
@@ -615,11 +630,30 @@ impl TryFrom<OtlpProtoMessage> for PdataPayload {
 #[cfg(test)]
 mod tests {
     use std::mem::size_of;
+    use std::num::NonZeroUsize;
     use std::sync::Arc;
 
     use super::*;
-    use crate::{CodecMetadata, CodecRegistration};
+    use crate::{
+        CodecMetadata, CodecRegistration, CodecServiceBuilder, DecodePolicy, DecodeValidation,
+        EncodePolicy,
+    };
+    use otel_arrow_dfe_pdata::arrow::{
+        array::RecordBatch,
+        compute::cast,
+        datatypes::{DataType, Schema},
+    };
     use otel_arrow_dfe_pdata::otap::Logs;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::{
+        arrow::v1::ArrowPayloadType,
+        common::v1::{AnyValue, KeyValue},
+        metrics::v1::metric::Data,
+    };
+    use otel_arrow_dfe_pdata::schema::consts::PARENT_ID;
+    use otel_arrow_dfe_pdata::testing::fixtures::{
+        logs_with_full_resource_and_scope, metrics_sum_with_full_resource_and_scope,
+        traces_with_full_resource_and_scope,
+    };
 
     const UNCOUNTABLE_ENCODING: PdataEncoding = PdataEncoding::new("uncountable-test-v1");
     static UNCOUNTABLE_METADATA: CodecMetadata =
@@ -680,5 +714,179 @@ mod tests {
 
         assert_eq!(payload.num_items(), 0);
         assert_eq!(payload.known_item_count(), None);
+    }
+
+    /// Scenario: Legacy and generalized encoded OTLP fail conversion with private telemetry.
+    /// Guarantees: Display and Debug omit the retained body while recovery preserves its buffer.
+    #[test]
+    fn decode_error_diagnostics_omit_recoverable_payload() {
+        let service = CodecService::new().unwrap();
+        let codec = service.registry().resolve(&PdataEncoding::OTLP).unwrap();
+        let bytes = Bytes::from_static(b"\x0a\xff\xffSECRET_TELEMETRY_VALUE");
+        for payload in [
+            PdataPayload::from(OtlpProtoBytes::ExportTracesRequest(bytes.clone())),
+            PdataPayload::from(codec.admit(SignalType::Traces, bytes.clone()).unwrap()),
+        ] {
+            let error = payload.try_into_otap(&service).unwrap_err();
+            assert_eq!(error.to_string(), error.error().to_string());
+            for diagnostic in [
+                error.to_string(),
+                format!("{error:?}"),
+                format!("{error:#?}"),
+            ] {
+                assert!(!diagnostic.contains("SECRET_TELEMETRY_VALUE"));
+            }
+            assert_eq!(error.payload().encoded_bytes().unwrap(), &bytes);
+            let (_, recovered) = error.into_parts();
+            assert_eq!(recovered.encoded_bytes().unwrap().as_ptr(), bytes.as_ptr());
+        }
+    }
+
+    /// Scenario: Both OTLP byte representations are forwarded with bounded and unbounded plans.
+    /// Guarantees: Oversized output never reaches the consumer; accepted output shares bytes
+    /// without creating codec instances, in either validation mode and for every signal.
+    #[test]
+    fn matching_forwarding_enforces_size_without_creating_codecs() {
+        let inputs = [
+            OtlpProtoBytes::ExportLogsRequest(
+                logs_with_full_resource_and_scope().encode_to_vec().into(),
+            ),
+            OtlpProtoBytes::ExportMetricsRequest(
+                metrics_sum_with_full_resource_and_scope()
+                    .encode_to_vec()
+                    .into(),
+            ),
+            OtlpProtoBytes::ExportTracesRequest(
+                traces_with_full_resource_and_scope().encode_to_vec().into(),
+            ),
+        ];
+        for validation in [DecodeValidation::BestEffort, DecodeValidation::Strict] {
+            let service = CodecServiceBuilder::from_global_registry()
+                .unwrap()
+                .with_decode_policy(DecodePolicy::new(validation))
+                .build();
+            let codec = service.registry().resolve(&PdataEncoding::OTLP).unwrap();
+            for input in &inputs {
+                let bytes = input.bytes();
+                let encoded = codec.admit(input.signal_type(), bytes.clone()).unwrap();
+                for mut payload in [PdataPayload::from(input.clone()), encoded.into()] {
+                    let items = payload.num_items();
+                    let size = payload.num_bytes();
+                    for limit in [
+                        Some(bytes.len() - 1),
+                        Some(bytes.len()),
+                        Some(bytes.len() + 1),
+                        None,
+                    ] {
+                        let plan = EncodingPlan::new(
+                            codec,
+                            EncodePolicy {
+                                max_encoded_size: limit.and_then(NonZeroUsize::new),
+                            },
+                        )
+                        .unwrap();
+                        let mut consumed = false;
+                        let result = payload.with_encoded_output(&service, &plan, |output| {
+                            consumed = true;
+                            output.into_bytes()
+                        });
+                        if let Some(limit) = limit.filter(|limit| *limit < bytes.len()) {
+                            assert!(matches!(result, Err(CodecError::EncodedSizeLimitExceeded {
+                                encoding, actual, limit: reported_limit,
+                            }) if encoding == PdataEncoding::OTLP && actual == bytes.len() && reported_limit == limit));
+                            assert!(!consumed);
+                        } else {
+                            let output = result.unwrap();
+                            assert!(consumed);
+                            assert_eq!(&output, bytes);
+                            assert_eq!(output.as_ptr(), bytes.as_ptr());
+                        }
+                        assert_eq!(payload.encoded_bytes().unwrap().as_ptr(), bytes.as_ptr());
+                        assert_eq!(payload.num_items(), items);
+                        assert_eq!(payload.num_bytes(), size);
+                        assert_eq!(service.test_instance_count().unwrap(), 0);
+                    }
+                }
+            }
+        }
+    }
+
+    // A transport-optimized attribute batch whose dictionary grows when OTLP
+    // encoding reconstructs absolute parent IDs. This changes its logical size.
+    fn metrics_with_dictionary_parent_ids(service: &CodecService) -> OtapArrowRecords {
+        let mut metrics = metrics_sum_with_full_resource_and_scope();
+        let Some(Data::Sum(sum)) =
+            &mut metrics.resource_metrics[0].scope_metrics[0].metrics[0].data
+        else {
+            unreachable!("fixture contains a sum");
+        };
+        let mut point = sum.data_points[0].clone();
+        point.attributes = vec![KeyValue::new(
+            "same-key",
+            AnyValue::new_string("same-value"),
+        )];
+        sum.data_points = (0..100)
+            .map(|i| {
+                let mut point = point.clone();
+                point.time_unix_nano = i + 1;
+                point
+            })
+            .collect();
+        let codec = service.registry().resolve(&PdataEncoding::OTLP).unwrap();
+        let encoded = codec
+            .admit(SignalType::Metrics, metrics.encode_to_vec().into())
+            .unwrap();
+        let mut records = service.decode(&encoded).unwrap();
+        records.encode_transport_optimized().unwrap();
+        let attrs = records.get(ArrowPayloadType::NumberDpAttrs).unwrap();
+        let index = attrs.schema().index_of(PARENT_ID).unwrap();
+        let dtype = DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::UInt32));
+        let mut columns = attrs.columns().to_vec();
+        columns[index] = cast(&columns[index], &dtype).unwrap();
+        let mut fields = attrs.schema().fields().to_vec();
+        fields[index] = Arc::new(fields[index].as_ref().clone().with_data_type(dtype));
+        let attrs = RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap();
+        records.set(ArrowPayloadType::NumberDpAttrs, attrs).unwrap();
+        records
+    }
+
+    /// Scenario: OTLP encoding normalizes native IDs, either succeeding or exceeding its limit.
+    /// Guarantees: Size caches refresh on both outcomes, clones stay isolated, and retry succeeds.
+    #[test]
+    fn native_encoding_invalidates_size_cache_even_on_failure() {
+        let service = CodecService::new().unwrap();
+        let codec = service.registry().resolve(&PdataEncoding::OTLP).unwrap();
+        let normal = EncodingPlan::new(codec, EncodePolicy::default()).unwrap();
+        for limit in [None, NonZeroUsize::new(1)] {
+            let mut payload = PdataPayload::from(metrics_with_dictionary_parent_ids(&service));
+            let before = payload.num_bytes();
+            let count = payload.num_items();
+            let mut untouched = payload.clone();
+            let plan = EncodingPlan::new(
+                codec,
+                EncodePolicy {
+                    max_encoded_size: limit,
+                },
+            )
+            .unwrap();
+            let result = payload.encode_bytes(&service, &plan);
+            assert_eq!(result.is_err(), limit.is_some());
+            assert!(payload.size.get().is_none());
+            let actual = payload.otap_ref().unwrap().num_bytes();
+            assert_ne!(
+                actual, before,
+                "fixture must exercise a logical size change"
+            );
+            assert_eq!(payload.num_bytes(), actual);
+            assert_eq!(payload.num_items(), count);
+            assert_eq!(untouched.size.get(), before);
+            assert_eq!(untouched.num_bytes(), before);
+            assert_eq!(untouched.otap_ref().unwrap().num_bytes(), before);
+
+            let output = payload.encode_bytes(&service, &normal).unwrap();
+            let encoded = codec.admit(SignalType::Metrics, output).unwrap();
+            assert_eq!(service.decode(&encoded).unwrap().num_items(), count);
+            assert_eq!(payload.num_bytes(), payload.otap_ref().unwrap().num_bytes());
+        }
     }
 }
