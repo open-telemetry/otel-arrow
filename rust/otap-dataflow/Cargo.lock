@@ -7323,6 +7323,7 @@ dependencies = [
 name = "otel-arrow-dfe-component-inventory"
 version = "0.60.0"
 dependencies = [
+ "otel-arrow-dfe-contrib-extensions",
  "otel-arrow-dfe-contrib-nodes",
  "otel-arrow-dfe-core-nodes",
  "otel-arrow-dfe-dev-nodes",
