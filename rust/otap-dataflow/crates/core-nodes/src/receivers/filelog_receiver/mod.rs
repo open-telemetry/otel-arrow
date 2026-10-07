@@ -6,6 +6,7 @@
 //! This module does not register a receiver.
 
 pub mod decoder;
+pub mod framer;
 
 /// Linux source-file access.
 #[cfg(target_os = "linux")]
