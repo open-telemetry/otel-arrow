@@ -364,7 +364,6 @@ impl Exporter<OtapPdata> for GenevaMetricsExporter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bytes::Bytes;
     use futures::StreamExt;
     use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
     use otel_arrow_dfe_channel::mpsc;
@@ -379,14 +378,14 @@ mod tests {
     use otel_arrow_dfe_engine::message::Receiver;
     use otel_arrow_dfe_engine::node::NodeId;
     use otel_arrow_dfe_otap::testing::TestCallData;
-    use otel_arrow_dfe_pdata::OtlpProtoBytes;
+    use otel_arrow_dfe_pdata::OtapPayload;
+    use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
     use otel_arrow_dfe_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
     use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue, any_value};
     use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::{
         Gauge, Metric, NumberDataPoint, ResourceMetrics, ScopeMetrics, metric, number_data_point,
     };
     use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
-    use prost::Message as _;
     use std::cell::RefCell;
     use std::time::{Duration, Instant};
     use wiremock::matchers::{header, method};
@@ -507,16 +506,13 @@ mod tests {
                 schema_url: String::new(),
             }],
         };
-        let mut bytes = Vec::new();
-        request
-            .encode(&mut bytes)
+        let payload = OtapPayload::try_from(OtlpProtoMessage::Metrics(request.into()))
             .expect("request should serialize");
-        OtapPdata::new_default(OtlpProtoBytes::ExportMetricsRequest(Bytes::from(bytes)).into())
-            .test_subscribe_to(
-                Interests::ACKS | Interests::NACKS,
-                TestCallData::default().into(),
-                call_id,
-            )
+        OtapPdata::new_default(payload).test_subscribe_to(
+            Interests::ACKS | Interests::NACKS,
+            TestCallData::default().into(),
+            call_id,
+        )
     }
 
     fn completion_harness() -> (
