@@ -1,0 +1,6 @@
+change_type: breaking
+component: pipeline
+note: "Topic node metric names and boundaries now follow the shared receiver and exporter contracts."
+issues: [3530, 3822]
+subtext: |
+  Migration: Count receiver delivery via receiver.received.messages and exporter admission via exporter.attempted.*. Use reason/result attributes for rejections and tracked outcomes. Replace blocked-ms totals with receiver.topic.downstream.blocked.duration, a per-wait seconds distribution.

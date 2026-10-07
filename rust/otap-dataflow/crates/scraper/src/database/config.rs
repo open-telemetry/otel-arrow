@@ -60,12 +60,19 @@ pub struct PollingConfig {
 
 /// Watermark mode selected by the operator.
 ///
-/// Only `composite` is implemented. `scalar` and `snapshot` are deliberately
-/// absent from this enum so an operator configuring them receives a schema
-/// error instead of silently inheriting composite behavior.
+/// Scalar and composite modes are supported. Snapshot mode is not accepted.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
 pub enum WatermarkConfig {
+    /// One non-null, unique column with strictly increasing values.
+    Scalar {
+        /// Result column containing the scalar key.
+        column: String,
+        /// Named parameter carrying the key, without a leading colon.
+        bind: String,
+        /// Explicitly typed starting value; its type is fixed for this query.
+        initial: super::scalar::ScalarValue,
+    },
     /// Ordered timestamp plus a unique non-null `int64` tie-breaker.
     Composite {
         /// Timestamp cursor component.
@@ -261,10 +268,23 @@ impl CatchUpConfig {
 impl WatermarkConfig {
     /// Validates cursor identifiers, bind names, and timezone semantics.
     pub fn validate(&self) -> Result<(), ConfigError> {
-        let Self::Composite {
-            timestamp,
-            tie_breaker,
-        } = self;
+        let (timestamp, tie_breaker) = match self {
+            Self::Composite {
+                timestamp,
+                tie_breaker,
+            } => (timestamp, tie_breaker),
+            Self::Scalar {
+                column,
+                bind,
+                initial,
+            } => {
+                validate_name("watermark.column", column)?;
+                validate_bind("watermark.bind", bind)?;
+                return initial
+                    .validate()
+                    .map_err(|error| ConfigError::new(error.to_string()));
+            }
+        };
         validate_name("watermark.timestamp.column", &timestamp.column)?;
         validate_name("watermark.tie_breaker.column", &tie_breaker.column)?;
         validate_bind("watermark.timestamp.bind", &timestamp.bind)?;
@@ -290,16 +310,20 @@ impl WatermarkConfig {
 
     /// Returns the composite timestamp cursor component.
     #[must_use]
-    pub const fn timestamp(&self) -> &TimestampCursorConfig {
-        let Self::Composite { timestamp, .. } = self;
-        timestamp
+    pub const fn timestamp(&self) -> Option<&TimestampCursorConfig> {
+        match self {
+            Self::Composite { timestamp, .. } => Some(timestamp),
+            Self::Scalar { .. } => None,
+        }
     }
 
     /// Returns the composite tie-breaker cursor component.
     #[must_use]
-    pub const fn tie_breaker(&self) -> &TieBreakerCursorConfig {
-        let Self::Composite { tie_breaker, .. } = self;
-        tie_breaker
+    pub const fn tie_breaker(&self) -> Option<&TieBreakerCursorConfig> {
+        match self {
+            Self::Composite { tie_breaker, .. } => Some(tie_breaker),
+            Self::Scalar { .. } => None,
+        }
     }
 }
 
