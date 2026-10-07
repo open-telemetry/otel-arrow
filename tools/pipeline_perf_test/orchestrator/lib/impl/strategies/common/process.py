@@ -116,7 +116,21 @@ def wait_or_terminate_process_tree(
     # Reap the force-killed processes so they do not linger as zombies.
     _, alive = psutil.wait_procs(alive, timeout=graceful_timeout)
     if alive:
+        details = []
+        for proc in alive:
+            try:
+                info = (
+                    f"pid={proc.pid} name={proc.name()} status={proc.status()} "
+                    f"cmdline={' '.join(proc.cmdline())!r}"
+                )
+            except (
+                psutil.NoSuchProcess,
+                psutil.AccessDenied,
+                psutil.ZombieProcess,
+            ):
+                info = f"pid={proc.pid} (details unavailable)"
+            details.append(info)
         logger.warning(
             f"Process tree for {pid} still has {len(alive)} live process(es) "
-            "after force-kill."
+            f"after force-kill: {'; '.join(details)}"
         )
