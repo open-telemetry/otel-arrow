@@ -3,7 +3,7 @@
 ## Metadata
 
 - Type: Not registered
-- Feature gate: `geneva-metrics-exporter`
+- Feature gate: `geneva` (shared with `geneva_exporter`)
 - Stability: WIP; metrics support is under development
 
 ## Overview
@@ -27,7 +27,7 @@ Run the current Geneva metrics tests with:
 ```bash
 cargo test --manifest-path rust/otap-dataflow/Cargo.toml \
   -p otel-arrow-dfe-contrib-nodes \
-  --features geneva-metrics-exporter \
+  --features geneva \
   geneva_metrics_exporter
 ```
 

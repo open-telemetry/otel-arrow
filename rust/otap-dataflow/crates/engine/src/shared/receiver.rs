@@ -254,10 +254,11 @@ impl<PData> EffectHandler<PData> {
         self.core.tcp_listener(addr, self.receiver_id())
     }
 
-    /// Print an info message to stdout.
+    /// Print an info message to the engine's diagnostic stream (stderr).
     ///
     /// This method provides a standardized way for receivers to output
-    /// informational messages without blocking the async runtime.
+    /// informational messages. It never waits for the console: a full
+    /// diagnostic queue drops the message.
     pub async fn info(&self, message: &str) {
         self.core.info(message).await;
     }

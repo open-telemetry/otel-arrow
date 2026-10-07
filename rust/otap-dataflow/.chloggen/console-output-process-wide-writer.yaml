@@ -8,10 +8,10 @@ change_type: enhancement
 component: pipeline
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
-note: The batch processor now forwards requests already between min_size and max_size unchanged instead of re-batching them, and accepts min_size 0.
+note: Console output is now serialized by one process-wide writer per stream, so concurrent exporters can no longer interleave bytes inside a record.
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
-issues: [2115]
+issues: [3624]
 
 # (Optional) One or more lines of additional information to render under the primary note.
 # These lines will be padded with 2 spaces and then inserted directly into the document.
@@ -19,7 +19,7 @@ issues: [2115]
 # section with the specific action consumers must take. Keep notes to 200
 # characters and subtext to 300 characters.
 subtext: |
-  An unset min_size still defaults to max_size. Requests of at least min_size are
-  no longer merged with smaller buffered data and may be sent ahead of it. Set
-  min_size equal to max_size for uniform batches, or min_size 0 to only split
-  oversized requests. New metric: passthrough.batches.
+  Every record_json line now parses independently. The startup banner and engine
+  diagnostics now go to stderr. Queued output is bounded by bytes as well as frames,
+  so a slow console cannot retain unbounded memory. Console export stays
+  best-effort: an ACK does not guarantee a console write.

@@ -153,3 +153,68 @@ impl<'a> From<MapValueOrRef<'a>> for OwnedMapValue<'a> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::hash_map::DefaultHasher;
+
+    use super::*;
+
+    fn hash(value: &ValueOrRef<'_>) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        value.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    /// Scenario: Equal maps are built with different insertion orders and different owned/reference wrappers.
+    /// Guarantees: Map equality and hashing are independent of insertion order and storage representation.
+    #[test]
+    fn map_equality_and_hash_are_order_independent() {
+        let left = OwnedMapValue::from(MapValueOrRef::from([
+            ("first".into(), ValueOrRef::Integer(1)),
+            (
+                "second".into(),
+                ValueOrRef::String(StringValueOrRef::new_ref("two")),
+            ),
+        ]));
+        let right = OwnedMapValue::from(MapValueOrRef::from([
+            (
+                "second".into(),
+                ValueOrRef::String(StringValueOrRef::new_owned("two".to_string())),
+            ),
+            ("first".into(), ValueOrRef::Integer(1)),
+        ]));
+        let left = ValueOrRef::Map(MapValueOrRef::Ref(&left));
+        let right = ValueOrRef::Map(MapValueOrRef::Owned(Rc::new(right)));
+
+        assert_eq!(left, right);
+        assert_eq!(hash(&left), hash(&right));
+    }
+
+    /// Scenario: A map callback stops after its first item and a borrowed map is copied into owned storage.
+    /// Guarantees: Iteration propagates early termination and ownership conversion preserves all entries.
+    #[test]
+    fn map_iteration_and_ownership_conversion_preserve_contracts() {
+        let source = OwnedMapValue::from(MapValueOrRef::from([
+            ("a".into(), ValueOrRef::Integer(1)),
+            ("b".into(), ValueOrRef::Integer(2)),
+        ]));
+        let mut visits = 0;
+        assert!(!source.get_items(&mut |_, _| {
+            visits += 1;
+            false
+        }));
+        assert_eq!(visits, 1);
+
+        let copied = OwnedMapValue::from(&source as &dyn MapValue);
+        assert_eq!(copied.len(), 2);
+        assert_eq!(
+            copied.get("a").unwrap().to_value().convert_to_integer(),
+            Some(1)
+        );
+        assert_eq!(
+            copied.get("b").unwrap().to_value().convert_to_integer(),
+            Some(2)
+        );
+    }
+}

@@ -13,8 +13,8 @@ use otel_arrow_dfe_engine::capability::auth::basic_auth_provider::BASIC_AUTH_CRE
 use otel_arrow_dfe_engine::error::ReceiverErrorKind;
 use otel_arrow_dfe_engine::local::capability::auth::basic_auth_provider::BasicAuthProvider;
 use otel_arrow_dfe_scraper::database::{
-    CellValue, ColumnMetadata, CompiledQuery, CompositeCursor, CursorRow, DatabaseSystem,
-    DriverAdapter, DriverCancellation, QueryPage, Row,
+    CellValue, ColumnMetadata, CompiledQuery, CompiledWatermark, CompositeCursor, Cursor,
+    CursorRow, DatabaseSystem, DriverAdapter, DriverCancellation, QueryPage, Row, ScalarValue,
 };
 use std::mem::size_of;
 use std::str::FromStr;
@@ -57,9 +57,28 @@ struct OraclePreparedQuery {
     statement: oracle::Statement,
     columns: Vec<ColumnMetadata>,
     types: Vec<OracleType>,
-    timestamp_index: usize,
-    tie_breaker_index: usize,
-    timestamp_bind_type: OracleType,
+    cursor_columns: CursorColumns,
+    timestamp_bind_type: Option<OracleType>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ScalarKind {
+    Int64,
+    UInt64,
+    String,
+    Timestamp,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CursorColumns {
+    Composite {
+        timestamp: usize,
+        tie_breaker: usize,
+    },
+    Scalar {
+        index: usize,
+        kind: ScalarKind,
+    },
 }
 
 impl OracleAdapter {
@@ -107,13 +126,13 @@ impl OracleAdapter {
     async fn run_blocking<T>(
         &mut self,
         query: &CompiledQuery,
-        cursor: &CompositeCursor,
+        cursor: &Cursor,
         operation: fn(
             Option<OracleSession>,
             &OracleAdapterConfig,
             &BasicAuthCredential,
             &CompiledQuery,
-            &CompositeCursor,
+            &Cursor,
             &OracleCancellation,
         ) -> Result<(OracleSession, T), OracleAdapterError>,
     ) -> Result<T, OracleAdapterError>
@@ -362,7 +381,7 @@ impl DriverAdapter for OracleAdapter {
     }
 
     async fn reconnect(&mut self, query: &CompiledQuery) -> Result<(), Self::Error> {
-        let initial = query.watermark().initial.clone();
+        let initial = query.watermark().initial();
         self.run_blocking(query, &initial, reconnect_blocking).await
     }
 
@@ -372,7 +391,7 @@ impl DriverAdapter for OracleAdapter {
         query: &CompiledQuery,
     ) -> Result<Vec<ColumnMetadata>, Self::Error> {
         // Native preparation and metadata inspection stay on the query worker.
-        let initial = query.watermark().initial.clone();
+        let initial = query.watermark().initial();
         self.run_blocking(query, &initial, validate_blocking).await
     }
 
@@ -380,7 +399,7 @@ impl DriverAdapter for OracleAdapter {
     async fn execute(
         &mut self,
         query: &CompiledQuery,
-        cursor: &CompositeCursor,
+        cursor: &Cursor,
     ) -> Result<QueryPage, Self::Error> {
         self.run_blocking(query, cursor, execute_blocking).await
     }
@@ -435,7 +454,10 @@ impl DriverAdapter for OracleAdapter {
             | OracleAdapterError::CursorTimestampPrecisionLoss { .. }
             | OracleAdapterError::NormalizedByteLimit { .. }
             | OracleAdapterError::ResultMetadataChanged
-            | OracleAdapterError::UnsupportedType => ReceiverErrorKind::Configuration,
+            | OracleAdapterError::UnsupportedType
+            | OracleAdapterError::UnsupportedScalarType
+            | OracleAdapterError::UnsupportedScalarCharset
+            | OracleAdapterError::InvalidScalarCursor => ReceiverErrorKind::Configuration,
             OracleAdapterError::Configure(_)
             | OracleAdapterError::Prepare(_)
             | OracleAdapterError::Query(_)
@@ -488,7 +510,7 @@ fn reconnect_blocking(
     config: &OracleAdapterConfig,
     credential: &BasicAuthCredential,
     query: &CompiledQuery,
-    _cursor: &CompositeCursor,
+    _cursor: &Cursor,
     cancellation: &OracleCancellation,
 ) -> Result<(OracleSession, ()), OracleAdapterError> {
     cancellation.ensure_not_requested()?;
@@ -504,7 +526,7 @@ fn validate_blocking(
     config: &OracleAdapterConfig,
     credential: &BasicAuthCredential,
     query: &CompiledQuery,
-    cursor: &CompositeCursor,
+    cursor: &Cursor,
     cancellation: &OracleCancellation,
 ) -> Result<(OracleSession, Vec<ColumnMetadata>), OracleAdapterError> {
     // Executing the prepared SELECT is required because Oracle exposes result
@@ -527,7 +549,7 @@ fn execute_blocking(
     config: &OracleAdapterConfig,
     credential: &BasicAuthCredential,
     query: &CompiledQuery,
-    cursor: &CompositeCursor,
+    cursor: &Cursor,
     cancellation: &OracleCancellation,
 ) -> Result<(OracleSession, QueryPage), OracleAdapterError> {
     let (mut session, _active) = prepare_session(session, config, credential, query, cancellation)?;
@@ -537,7 +559,7 @@ fn execute_blocking(
         &mut prepared.statement,
         query,
         cursor,
-        &prepared.timestamp_bind_type,
+        prepared.timestamp_bind_type.as_ref(),
         cancellation,
     )?;
     if !metadata_matches(result_set.column_info(), &prepared.columns, &prepared.types) {
@@ -554,11 +576,7 @@ fn execute_blocking(
         cancellation.ensure_not_requested()?;
         let normalized = normalize_row(&row, &prepared.types, cancellation)?;
         cancellation.ensure_not_requested()?;
-        let cursor = extract_normalized_cursor(
-            &normalized,
-            prepared.timestamp_index,
-            prepared.tie_breaker_index,
-        )?;
+        let cursor = extract_normalized_watermark(&normalized, prepared.cursor_columns)?;
         if !push_bounded_row(
             &mut rows,
             &mut payload_bytes,
@@ -592,7 +610,7 @@ fn push_bounded_row(
                 .normalized_size()
                 .saturating_sub(size_of::<Row>() as u64),
         )
-        .saturating_add(row.cursor.timestamp.capacity() as u64);
+        .saturating_add(cursor_heap_bytes(&row.cursor));
     let header = size_of::<Vec<CursorRow>>() as u64;
     let slot = size_of::<CursorRow>() as u64;
     let minimum = header
@@ -641,22 +659,46 @@ fn push_bounded_row(
 fn bind_cursor<'a>(
     statement: &'a mut oracle::Statement,
     query: &CompiledQuery,
-    cursor: &CompositeCursor,
-    timestamp_type: &OracleType,
+    cursor: &Cursor,
+    timestamp_type: Option<&OracleType>,
     cancellation: &OracleCancellation,
 ) -> Result<oracle::ResultSet<'a, OracleRow>, OracleAdapterError> {
     cancellation.ensure_not_requested()?;
-    let watermark = query.watermark();
-    let timestamp =
-        cursor_bind_timestamp(parse_cursor_timestamp(&cursor.timestamp)?, timestamp_type)?;
-    let timestamp_bind = (&timestamp, timestamp_type);
-    let tie_breaker = cursor.tie_breaker;
-    let result = statement
-        .query_named(&[
-            (watermark.timestamp_bind.as_str(), &timestamp_bind),
-            (watermark.tie_breaker_bind.as_str(), &tie_breaker),
-        ])
-        .map_err(|error| OracleAdapterError::Query(error.into()))?;
+    query
+        .watermark()
+        .validate_cursor(cursor)
+        .map_err(|_| OracleAdapterError::InvalidScalarCursor)?;
+    let result = match (query.watermark(), cursor) {
+        (CompiledWatermark::Composite(watermark), Cursor::Composite(cursor)) => {
+            let timestamp_type =
+                timestamp_type.ok_or(OracleAdapterError::UnsupportedCursorTimestamp)?;
+            let timestamp =
+                cursor_bind_timestamp(parse_cursor_timestamp(&cursor.timestamp)?, timestamp_type)?;
+            let timestamp_bind = (&timestamp, timestamp_type);
+            statement.query_named(&[
+                (watermark.timestamp_bind.as_str(), &timestamp_bind),
+                (watermark.tie_breaker_bind.as_str(), &cursor.tie_breaker),
+            ])
+        }
+        (CompiledWatermark::Scalar(watermark), Cursor::Scalar(value)) => {
+            validate_scalar_value(value)?;
+            let bind = watermark.bind.as_str();
+            match value {
+                ScalarValue::Int64(value) => statement.query_named(&[(bind, value)]),
+                ScalarValue::UInt64(value) => statement.query_named(&[(bind, value)]),
+                ScalarValue::String(value) => statement.query_named(&[(bind, value)]),
+                ScalarValue::Timestamp(value) => {
+                    let timestamp_type =
+                        timestamp_type.ok_or(OracleAdapterError::UnsupportedCursorTimestamp)?;
+                    let timestamp =
+                        cursor_bind_timestamp(parse_cursor_timestamp(value)?, timestamp_type)?;
+                    statement.query_named(&[(bind, &(&timestamp, timestamp_type))])
+                }
+            }
+        }
+        _ => return Err(OracleAdapterError::InvalidScalarCursor),
+    }
+    .map_err(|error| OracleAdapterError::Query(error.into()))?;
     cancellation.ensure_not_requested()?;
     Ok(result)
 }
@@ -774,7 +816,7 @@ fn cursor_bind_timestamp(
 fn ensure_prepared(
     session: &mut OracleSession,
     query: &CompiledQuery,
-    cursor: &CompositeCursor,
+    cursor: &Cursor,
     cancellation: &OracleCancellation,
 ) -> Result<(), OracleAdapterError> {
     cancellation.ensure_not_requested()?;
@@ -792,11 +834,16 @@ fn ensure_prepared(
         .build()
         .map_err(|error| OracleAdapterError::Prepare(error.into()))?;
     let discovery_type = discovery_cursor_bind_type();
-    let result_set = bind_cursor(&mut discovery, query, cursor, &discovery_type, cancellation)?;
+    let result_set = bind_cursor(
+        &mut discovery,
+        query,
+        cursor,
+        Some(&discovery_type),
+        cancellation,
+    )?;
     let (columns, types) = result_metadata(result_set.column_info())?;
-    let (timestamp_index, tie_breaker_index) =
-        validate_cursor_columns(result_set.column_info(), query)?;
-    let timestamp_bind_type = cursor_bind_type(&types[timestamp_index])?;
+    let cursor_columns = validate_cursor_columns(result_set.column_info(), query)?;
+    let timestamp_bind_type = timestamp_type_for_cursor(cursor_columns, &types)?;
     drop(result_set);
     drop(discovery);
 
@@ -815,8 +862,7 @@ fn ensure_prepared(
         statement,
         columns,
         types,
-        timestamp_index,
-        tie_breaker_index,
+        cursor_columns,
         timestamp_bind_type,
     });
     Ok(())
@@ -868,17 +914,141 @@ fn max_normalized_value_bytes(data_type: &OracleType) -> u64 {
 fn validate_cursor_columns(
     columns: &[oracle::ColumnInfo],
     query: &CompiledQuery,
-) -> Result<(usize, usize), OracleAdapterError> {
+) -> Result<CursorColumns, OracleAdapterError> {
     let described = columns
         .iter()
         .map(|column| (column.name().to_owned(), column.oracle_type().clone()))
         .collect::<Vec<_>>();
-    let (timestamp, tie_breaker) =
-        validate_described_cursor_columns(&described, query.watermark())?;
-    if columns[timestamp].nullable() || columns[tie_breaker].nullable() {
+    let plan = validate_described_watermark(&described, query.watermark())?;
+    let (first, second) = match plan {
+        CursorColumns::Composite {
+            timestamp,
+            tie_breaker,
+        } => (timestamp, Some(tie_breaker)),
+        CursorColumns::Scalar { index, .. } => (index, None),
+    };
+    if columns[first].nullable() || second.is_some_and(|index| columns[index].nullable()) {
         return Err(OracleAdapterError::NullableCursorColumn);
     }
-    Ok((timestamp, tie_breaker))
+    Ok(plan)
+}
+
+fn validate_described_watermark(
+    columns: &[(String, OracleType)],
+    watermark: &CompiledWatermark,
+) -> Result<CursorColumns, OracleAdapterError> {
+    match watermark {
+        CompiledWatermark::Composite(spec) => {
+            let (timestamp, tie_breaker) = validate_described_cursor_columns(columns, spec)?;
+            Ok(CursorColumns::Composite {
+                timestamp,
+                tie_breaker,
+            })
+        }
+        CompiledWatermark::Scalar(spec) => {
+            let index = cursor_column_index(columns, &spec.column)?;
+            let kind = match (&spec.initial, &columns[index].1) {
+                (ScalarValue::Int64(_), OracleType::Int64 | OracleType::Number(1..=19, 0)) => {
+                    ScalarKind::Int64
+                }
+                (ScalarValue::UInt64(_), OracleType::UInt64 | OracleType::Number(1..=20, 0)) => {
+                    ScalarKind::UInt64
+                }
+                (ScalarValue::String(_), OracleType::Varchar2(_)) => ScalarKind::String,
+                (
+                    ScalarValue::Timestamp(_),
+                    OracleType::Date
+                    | OracleType::Timestamp(_)
+                    | OracleType::TimestampTZ(_)
+                    | OracleType::TimestampLTZ(_),
+                ) => ScalarKind::Timestamp,
+                _ => return Err(OracleAdapterError::UnsupportedScalarType),
+            };
+            Ok(CursorColumns::Scalar { index, kind })
+        }
+    }
+}
+
+/// Bounds scalar values and excludes Oracle's empty-string-as-NULL behavior.
+pub(super) fn validate_scalar_value(value: &ScalarValue) -> Result<(), OracleAdapterError> {
+    value
+        .validate()
+        .map_err(|_| OracleAdapterError::InvalidScalarCursor)?;
+    match value {
+        ScalarValue::String(text) if text.is_empty() || text.contains('\0') => {
+            Err(OracleAdapterError::InvalidScalarCursor)
+        }
+        ScalarValue::Timestamp(text) => parse_cursor_timestamp(text).map(|_| ()),
+        _ => Ok(()),
+    }
+}
+
+fn cursor_heap_bytes(cursor: &Cursor) -> u64 {
+    match cursor {
+        Cursor::Composite(value) => value.timestamp.capacity() as u64,
+        Cursor::Scalar(ScalarValue::String(value) | ScalarValue::Timestamp(value)) => {
+            value.capacity() as u64
+        }
+        Cursor::Scalar(ScalarValue::Int64(_) | ScalarValue::UInt64(_)) => 0,
+    }
+}
+
+/// Reuses the already-normalized values, avoiding a second Oracle row decode.
+fn extract_normalized_watermark(
+    row: &Row,
+    columns: CursorColumns,
+) -> Result<Cursor, OracleAdapterError> {
+    let (index, kind) = match columns {
+        CursorColumns::Composite {
+            timestamp,
+            tie_breaker,
+        } => {
+            return extract_normalized_cursor(row, timestamp, tie_breaker).map(Cursor::Composite);
+        }
+        CursorColumns::Scalar { index, kind } => (index, kind),
+    };
+    let value = match (kind, row.values.get(index)) {
+        (_, Some(CellValue::Null)) => return Err(OracleAdapterError::NullCursorValue),
+        (ScalarKind::Int64, Some(CellValue::Int64(value))) => ScalarValue::Int64(*value),
+        (ScalarKind::UInt64, Some(CellValue::UInt64(value))) => ScalarValue::UInt64(*value),
+        (ScalarKind::Int64, Some(CellValue::Decimal(value))) => ScalarValue::Int64(
+            value
+                .parse()
+                .map_err(|_| OracleAdapterError::InvalidCursorValue)?,
+        ),
+        (ScalarKind::UInt64, Some(CellValue::Decimal(value))) => ScalarValue::UInt64(
+            value
+                .parse()
+                .map_err(|_| OracleAdapterError::InvalidCursorValue)?,
+        ),
+        (ScalarKind::String, Some(CellValue::String(value))) => ScalarValue::String(value.clone()),
+        (
+            ScalarKind::Timestamp,
+            Some(CellValue::Timestamp(value) | CellValue::TimestampTz(value)),
+        ) => ScalarValue::Timestamp(value.clone()),
+        _ => return Err(OracleAdapterError::InvalidCursorValue),
+    };
+    validate_scalar_value(&value)?;
+    Ok(Cursor::Scalar(value))
+}
+
+/// Only temporal cursors need a metadata-derived timestamp bind type.
+fn timestamp_type_for_cursor(
+    columns: CursorColumns,
+    types: &[OracleType],
+) -> Result<Option<OracleType>, OracleAdapterError> {
+    let index = match columns {
+        CursorColumns::Composite { timestamp, .. } => timestamp,
+        CursorColumns::Scalar {
+            index,
+            kind: ScalarKind::Timestamp,
+        } => index,
+        CursorColumns::Scalar { .. } => return Ok(None),
+    };
+    let source_type = types
+        .get(index)
+        .ok_or(OracleAdapterError::MissingCursorColumn)?;
+    cursor_bind_type(source_type).map(Some)
 }
 
 /// Pure cursor-metadata validation over adapter-independent column descriptions.
@@ -977,9 +1147,28 @@ fn prepare_session(
             .map_err(|error| OracleAdapterError::Configure(error.into()))?;
         cancellation.ensure_not_requested()?;
     }
+    if new_connection
+        && matches!(query.watermark(), CompiledWatermark::Scalar(spec) if matches!(spec.initial, ScalarValue::String(_)))
+    {
+        let charset = cancellation.native_call(|| {
+            session.connection.query_row_as::<String>(
+            "SELECT VALUE FROM NLS_DATABASE_PARAMETERS WHERE PARAMETER = 'NLS_CHARACTERSET'", &[],
+        ).map_err(|error| OracleAdapterError::Configure(error.into()))
+        })?;
+        validate_scalar_charset(&charset)?;
+    }
     begin_read_only(&session.connection)?;
     cancellation.ensure_not_requested()?;
     Ok((session, active))
+}
+
+/// Explicit BINARY collation agrees with Rust UTF-8 order only with AL32UTF8 VARCHAR2 keys.
+fn validate_scalar_charset(charset: &str) -> Result<(), OracleAdapterError> {
+    if charset.eq_ignore_ascii_case("AL32UTF8") {
+        Ok(())
+    } else {
+        Err(OracleAdapterError::UnsupportedScalarCharset)
+    }
 }
 
 /// Compiles stable public metadata and the per-column Oracle decode types.
@@ -1324,6 +1513,15 @@ pub enum OracleAdapterError {
     /// Credential acquisition exceeded the configured query timeout.
     #[error("Oracle authentication provider acquisition timed out")]
     CredentialTimeout,
+    /// Declared scalar type cannot be fetched without coercion from the result column.
+    #[error("Oracle scalar watermark column has an incompatible type")]
+    UnsupportedScalarType,
+    /// String ordering cannot match shared UTF-8 comparison in this database.
+    #[error("Oracle string watermarks require AL32UTF8 database character set and VARCHAR2 keys")]
+    UnsupportedScalarCharset,
+    /// A typed position is malformed or incompatible with its compiled query.
+    #[error("invalid or incompatible Oracle scalar cursor")]
+    InvalidScalarCursor,
     /// Oracle client initialization failed.
     #[error("Oracle client initialization failed (OCI {oci:?}, DPI {dpi:?})", oci = .0.oci_code(), dpi = .0.dpi_code())]
     Initialize(OracleErrorCodes),
@@ -1395,10 +1593,10 @@ pub enum OracleAdapterError {
     )]
     UnsupportedCursorTieBreaker,
     /// A row's cursor component was SQL NULL.
-    #[error("a watermark cursor column returned NULL; composite cursors must be non-null")]
+    #[error("a watermark cursor column returned NULL; watermark cursors must be non-null")]
     NullCursorValue,
-    /// A cursor value failed its already-validated timestamp/integer contract.
-    #[error("a watermark cursor value cannot be represented by the composite cursor")]
+    /// A cursor value failed its already-validated watermark contract.
+    #[error("a watermark cursor value cannot be represented by its configured type")]
     InvalidCursorValue,
     /// The committed cursor timestamp cannot be bound to Oracle.
     #[error("committed watermark timestamp is not a valid Oracle timestamp")]
@@ -1446,3 +1644,7 @@ impl std::fmt::Debug for OracleAdapterError {
 
 #[cfg(test)]
 oracle_module_tests!(adapter);
+
+#[cfg(test)]
+#[path = "scalar_adapter_tests.rs"]
+mod scalar_tests;

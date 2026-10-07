@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Shared ACK-driven composite watermark receiver core.
+//! Shared ACK-driven scalar and composite watermark receiver core.
 //!
 //! Delivery is at least once. A page is emitted with a unique batch ID, and the
 //! durable cursor advances only after a matching ACK is followed by a
@@ -11,9 +11,8 @@
 
 use crate::checkpoint::{CheckpointState, CheckpointStore};
 use crate::database::{
-    CatchUpConfig, ColumnMetadata, CompiledQuery, CompositeCursor, DriverAdapter,
-    DriverCancellation, EncodedPage, OnPermanentNack, OtlpPageEncoder, parse_utc_timestamp,
-    validate_mapping,
+    CatchUpConfig, ColumnMetadata, CompiledQuery, Cursor, DriverAdapter, DriverCancellation,
+    EncodedPage, OnPermanentNack, OtlpPageEncoder, validate_mapping,
 };
 use crate::partition::{LeaseError, SourceLease};
 use crate::telemetry::DatabaseReceiverMetrics;
@@ -265,7 +264,7 @@ where
 #[derive(Clone, Debug)]
 struct PendingPage {
     id: u64,
-    candidate: CompositeCursor,
+    candidate: Cursor,
 }
 
 #[derive(Clone, Debug)]
@@ -283,7 +282,7 @@ struct RejectionState {
 /// Committed cursor plus in-flight and scheduling state.
 #[derive(Clone, Debug)]
 struct ReceiverState {
-    committed: CompositeCursor,
+    committed: Cursor,
     revision: u64,
     pending: Option<PendingPage>,
     next_batch_id: u64,
@@ -298,23 +297,27 @@ struct ReceiverState {
 enum ProgressError {
     #[error("database query returned a page that did not advance the committed cursor")]
     NonAdvancingCursor,
-    #[error("database cursor timestamp is not a supported UTC timestamp")]
-    InvalidTimestamp,
+    #[error(transparent)]
+    InvalidCursor(#[from] crate::database::CursorError),
 }
 
-fn ensure_cursor_advanced(
-    committed: &CompositeCursor,
-    candidate: &CompositeCursor,
-) -> Result<(), ProgressError> {
-    let candidate_time =
-        parse_utc_timestamp(&candidate.timestamp).map_err(|_| ProgressError::InvalidTimestamp)?;
-    let committed_time =
-        parse_utc_timestamp(&committed.timestamp).map_err(|_| ProgressError::InvalidTimestamp)?;
-    if (candidate_time, candidate.tie_breaker) <= (committed_time, committed.tie_breaker) {
-        Err(ProgressError::NonAdvancingCursor)
-    } else {
-        Ok(())
+fn ensure_cursor_advanced(committed: &Cursor, candidate: &Cursor) -> Result<(), ProgressError> {
+    if candidate.compare(committed)? != std::cmp::Ordering::Greater {
+        return Err(ProgressError::NonAdvancingCursor);
     }
+    Ok(())
+}
+
+fn ensure_page_advanced(
+    committed: &Cursor,
+    page: &crate::database::QueryPage,
+) -> Result<(), ProgressError> {
+    let mut previous = committed;
+    for row in &page.rows {
+        ensure_cursor_advanced(previous, &row.cursor)?;
+        previous = &row.cursor;
+    }
+    Ok(())
 }
 
 impl ReceiverState {
@@ -395,7 +398,7 @@ impl ReceiverState {
         }
     }
 
-    fn record_sent(&mut self, candidate: CompositeCursor) {
+    fn record_sent(&mut self, candidate: Cursor) {
         debug_assert!(self.pending.is_none());
         let id = self.next_batch_id;
         self.next_batch_id = self.next_batch_id.saturating_add(1);
@@ -403,7 +406,7 @@ impl ReceiverState {
     }
 
     /// Returns the candidate only when the feedback matches the in-flight page.
-    fn ack_candidate(&self, batch_id: u64) -> Option<CompositeCursor> {
+    fn ack_candidate(&self, batch_id: u64) -> Option<Cursor> {
         self.pending
             .as_ref()
             .filter(|pending| pending.id == batch_id)
@@ -519,11 +522,14 @@ where
         let mut state = ReceiverState::new(
             loaded.unwrap_or_else(|| CheckpointState {
                 revision: 0,
-                cursor: query.watermark().initial.clone(),
+                cursor: query.watermark().initial(),
             }),
             Instant::now(),
             query.catch_up(),
         );
+        query.watermark().validate_cursor(&state.committed).map_err(|error| {
+            receiver_error(&effect_handler, ReceiverErrorKind::Configuration, error)
+        })?;
         if let Some(metrics) = metrics.as_mut() {
             metrics.starts.add(1);
         }
@@ -819,8 +825,10 @@ where
                     // must not monopolize the thread-per-core engine runtime.
                     // Move the single-owner cache into the job and back, avoiding
                     // per-poll configuration clones or a shared mutable cache.
+                    let validation_cursor = state.committed.clone();
                     let encoding = worker.run(move || {
-                        let encoded = encoder.encode_page(page, observed_time, limit);
+                        let encoded = ensure_page_advanced(&validation_cursor, &page)
+                            .map(|()| encoder.encode_page(page, observed_time, limit));
                         (encoder, encoded)
                     }).map_err(|error| receiver_error(
                         &effect_handler, ReceiverErrorKind::Other, error,
@@ -837,6 +845,9 @@ where
                     if admission.state.should_shed_ingress() {
                         encoder.release_scratch();
                     }
+                    let encoded = encoded.map_err(|error| {
+                        receiver_error(&effect_handler, ReceiverErrorKind::Configuration, error)
+                    })?;
                     let encoded = match encoded {
                         Ok(Some(encoded)) => encoded,
                         Ok(None) => {
@@ -1269,7 +1280,7 @@ async fn commit_checkpoint(
     worker: &ScraperWorker,
     store: &CheckpointStore,
     revision: u64,
-    candidate: &CompositeCursor,
+    candidate: &Cursor,
     max_failures: u32,
     retry_backoff: Duration,
     consecutive_failures: &mut u32,

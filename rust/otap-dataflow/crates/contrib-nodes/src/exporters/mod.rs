@@ -6,7 +6,7 @@
 pub mod geneva_exporter;
 
 /// Geneva metrics protocol support.
-#[cfg(feature = "geneva-metrics-exporter")]
+#[cfg(feature = "geneva")]
 pub mod geneva_metrics_exporter;
 
 /// Azure Monitor Exporter for Azure Logs Ingestion API
