@@ -1,6 +1,8 @@
 """Offline matrix, group evidence and strict per-core capture regressions."""
 
 from datetime import datetime, timedelta, timezone
+import json
+import math
 import os
 from pathlib import Path
 import sys
@@ -352,6 +354,72 @@ class ScalingEvidenceTests(unittest.TestCase):
                     with self.assertRaises(subprocess.CalledProcessError):
                         scaling.prepare(Path(directory), ["syslog"], 1, 1, 100, "g")
                     kafka.assert_not_called()
+
+
+class RecordedScalingResultsTests(unittest.TestCase):
+    # Scenario: The compact October 7 artifact represents the approved eighteen runs.
+    # Guarantees: Every cell/rate, image identity and unchanged assignment is retained.
+    def test_recorded_matrix_provenance_and_partition_coverage(self):
+        result = json.loads(
+            (DASHBOARD / "results/kafka_syslog_scaling_20261007.json").read_text())
+        self.assertEqual(
+            result["source_commit"], "a60b22791862c5e90a5752c668c7dba4bc306748")
+        self.assertIsNone(result["engine_image_build_source_commit"])
+        self.assertEqual(set(result["images"]),
+                         {"load-generator", "kafka-broker", "kafka-consumer"})
+        cells = ((1, 1, 1), (2, 1, 1), (4, 1, 1), (1, 1, 2), (1, 1, 4),
+                 (2, 1, 2), (4, 1, 4), (4, 2, 2), (4, 4, 1))
+        expected = {(*cell, rate) for cell in cells for rate in (100000, 300000)}
+        actual = []
+        for row in result["cases"]:
+            config = row["topology"]
+            actual.append((config["cores"], len(config["topics"]),
+                           config["partitions_per_topic"],
+                           config["aggregate_target_rate"]))
+            self.assertTrue(row["assignment_unchanged_at_captures"])
+            self.assertEqual(config["rebalance_strategy"], "round_robin")
+            assigned = row["assigned_core_count_at_captures"]
+            self.assertEqual(assigned["before"], assigned["final"])
+            self.assertEqual(assigned["before"],
+                             min(config["cores"], config["total_partitions"]))
+            partitions = row["partition_progress"]
+            self.assertEqual(len(partitions), config["total_partitions"])
+            self.assertTrue(all(p["committed_progress"] > 0 for p in partitions))
+            counts = [p["records"] for p in row["producer_partition_counts"]]
+            self.assertEqual(sum(counts), row["final_producer_logs"])
+            self.assertLessEqual(max(counts) - min(counts), 1)
+        self.assertEqual(len(actual), 18)
+        self.assertEqual(set(actual), expected)
+
+    # Scenario: Idle controls have incomplete counts while other cores are measured.
+    # Guarantees: All four controls stay NA, complete sums and CPU normalization agree.
+    def test_recorded_null_coverage_and_aggregates(self):
+        result = json.loads(
+            (DASHBOARD / "results/kafka_syslog_scaling_20261007.json").read_text())
+        flagged = 0
+        for row in result["cases"]:
+            metrics, cores = row["metrics"], row["topology"]["cores"]
+            values = [metrics[f"logs_received_rate_core{i}"]
+                      for i in range(1, cores + 1)]
+            if None in values:
+                flagged += 1
+                self.assertEqual(row["status"], "flagged")
+                self.assertIsNone(metrics["logs_received_rate"])
+                self.assertIsNone(row["final_local_perf_logs"])
+                self.assertIsNone(row["final_not_observed_at_local_perf"])
+                self.assertTrue(all("Unassigned core" in flag for flag in row["flags"]))
+            else:
+                self.assertEqual(row["status"], "verified")
+                self.assertTrue(
+                    math.isclose(sum(values), metrics["logs_received_rate"]))
+                self.assertEqual(row["final_not_observed_at_local_perf"],
+                                 row["final_producer_logs"]
+                                 - row["final_local_perf_logs"])
+            self.assertTrue(math.isclose(metrics["cpu_percentage_total_avg"] / cores,
+                                         metrics["cpu_percentage_normalized_avg"]))
+            self.assertGreaterEqual(metrics["ram_mib_max"], metrics["ram_mib_avg"])
+            self.assertFalse(any(row["decode_error_series_present"]))
+        self.assertEqual(flagged, 4)
 
 
 if __name__ == "__main__":

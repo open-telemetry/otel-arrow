@@ -365,7 +365,7 @@ Use `20260930_234913/tests/100k/` for 100k, and
 | 800k | `20261001_000115` | `7bc058624d9b6ccb96ae56bf91ec925f9f6716955c6ef3ed5db7216395a0138e` | `a68803257157bab11a12e6a3369e5b564f60cf7d8325baa39a3243eb866a8939` |
 | 1000k | `20261001_000332` | `7ba23b99a46bb7e426039c167e4bdc989b3a6f74b3133921f187061d3fc989b5` | `9fd316203efd82a28d4cc16e67ff7704f92991b82d6f4ef43a90ec48129f07e4` |
 
-## Limits and next evidence
+## Historical sweep limits
 
 These are single, short local overload samples, not repeated-run medians or
 production certification. The target sweep does not establish a sustainable
@@ -387,9 +387,229 @@ or restart reliability.
 No receiver-only CPU profile was collected. Removing batch/export stages
 changes the work performed; historical CPU profiles cannot be reused as the
 cost breakdown of this receiver-only pipeline. Profiling, repeated steady-state
-runs, identity-based correctness checks, and controlled producer/partition
-scaling would be separate experiments, not results claimed here.
+runs and identity-based correctness checks remain separate experiments.
+The short core/topic/partition characterization below is separate from this
+historical overload sweep.
+
+## October 7 short core/topic/partition characterization
+
+**All 18 bounded runs completed. Fourteen have complete all-core item telemetry;
+four single-partition controls are intentionally flagged with an unavailable
+all-core aggregate.** Kafka group evidence showed exactly one assigned core in
+those controls, while the other configured members were unassigned and emitted
+no Perf item series. Their missing series were not replaced by zeros.
+
+This is **not sustained-load, soak, repeated-run or stable-capacity evidence**.
+It measures the same receiver -> local Perf endpoint, never a batcher, network
+exporter or backend. The historical seven runs and their hashes above are
+unchanged. No CPU profile or runtime performance optimization was added.
+
+### Method and differences from the historical suite
+
+The nine `(allocated cores, topics, partitions per topic)` cells were
+`(1,1,1)`, `(2,1,1)`, `(4,1,1)`, `(1,1,2)`, `(1,1,4)`, `(2,1,2)`,
+`(4,1,4)`, `(4,2,2)` and `(4,4,1)`. Each ran once at **100k and 300k aggregate
+configured records/s**. The target was not multiplied by cores, topics or
+partitions. Topic packing compared `1x4`, `2x2` and `4x1`: always four total
+partitions and four allocated cores.
+
+Each `coreN` pipeline was pinned to core index N and contained one Kafka receiver
+and local Perf exporter. Unique `dfe-kafka-syslog-coreN` client IDs joined the
+same consumer group. All 18 scaling runs explicitly used
+`rebalance_strategy: round_robin`. The new 1-core/1-partition controls are
+therefore **not bit-identical** to the historical default-assignor configuration.
+Topic names were `otel-syslog-1` through `otel-syslog-4`.
+
+The one-thread producer used deterministic topic-major round-robin routing over
+all configured topic/partition pairs. A queue-full retry did not advance the
+slot. Every broker-confirmed value was a raw, uncompressed 1024-byte RFC 5424
+record, with one log per value. Final per-partition delivery counters summed to
+the producer total and differed by at most one record. The producer image was
+newly built from the committed implementation and current exact dependency
+lock; it was not the historical producer binary.
+
+Every run used 10s warmup, 20s observation, producer stop/flush, a bounded 10s
+drain, live final metric captures, then shutdown. Kafka CLI member/offset scans
+ran before observation-start and after the final live metric captures.
+Consequently committed partition progress brackets observation **plus drain and
+scan overhead**, not the precise 20s throughput window. Group membership and
+assignments were unchanged at both captures; every configured partition showed
+positive committed progress. This does not establish uninterrupted ownership
+between captures or downstream acknowledgements.
+
+Per-core successful item deltas were computed independently over aligned sample
+spans before summing. Missing cores made the complete aggregate unavailable.
+CPU is the consumer container's aggregate core-percent, with a second measure
+divided by allocated cores; allocation is not a Docker CPU quota. RAM excludes
+Kafka, the generator and the rest of the host. Per-pipeline queue capacities,
+fetch and commit settings otherwise matched the baseline; total pipeline queue
+capacity grows with the number of pipelines.
+
+### Observed rates and resources
+
+Rates below are **thousands of logs/s**, rounded to one decimal. `T x P` means
+topics times partitions per topic. `CPU total / allocated` contains average
+aggregate CPU-percent and that value divided by configured core count.
+`RAM avg / peak` is MiB. `NA` is unavailable, not zero.
+
+#### 100k aggregate configured records/s
+
+| Cores | T x P | Total partitions | Assigned cores | Actual input | Complete Perf | CPU total / allocated | RAM avg / peak |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | 1 x 1 | 1 | 1 | 75.8 | 35.2 | 100.0 / 100.0 | 218.7 / 225.8 |
+| 1 | 1 x 2 | 2 | 1 | 75.1 | 31.6 | 100.3 / 100.3 | 199.8 / 207.1 |
+| 1 | 1 x 4 | 4 | 1 | 61.0 | 27.2 | 101.2 / 101.2 | 197.3 / 204.8 |
+| 2 | 1 x 1 | 1 | 1 | 69.5 | NA | 99.6 / 49.8 | 235.2 / 241.6 |
+| 2 | 1 x 2 | 2 | 2 | 70.1 | 71.9 | 198.6 / 99.3 | 389.2 / 397.6 |
+| 4 | 1 x 1 | 1 | 1 | 77.2 | NA | 100.5 / 25.1 | 265.4 / 276.6 |
+| 4 | 1 x 4 | 4 | 4 | 74.6 | 84.5 | 346.4 / 86.6 | 417.8 / 586.1 |
+| 4 | 2 x 2 | 4 | 4 | 72.7 | 74.3 | 289.2 / 72.3 | 367.2 / 529.2 |
+| 4 | 4 x 1 | 4 | 4 | 70.9 | 82.0 | 287.8 / 71.9 | 397.2 / 590.3 |
+
+#### 300k aggregate configured records/s
+
+| Cores | T x P | Total partitions | Assigned cores | Actual input | Complete Perf | CPU total / allocated | RAM avg / peak |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | 1 x 1 | 1 | 1 | 119.0 | 26.9 | 100.6 / 100.6 | 217.0 / 228.0 |
+| 1 | 1 x 2 | 2 | 1 | 100.7 | 27.0 | 99.6 / 99.6 | 218.0 / 233.4 |
+| 1 | 1 x 4 | 4 | 1 | 121.3 | 29.9 | 100.6 / 100.6 | 212.5 / 219.2 |
+| 2 | 1 x 1 | 1 | 1 | 130.3 | NA | 100.0 / 50.0 | 228.4 / 231.6 |
+| 2 | 1 x 2 | 2 | 2 | 97.9 | 72.6 | 201.0 / 100.5 | 401.4 / 409.3 |
+| 4 | 1 x 1 | 1 | 1 | 140.1 | NA | 100.2 / 25.1 | 257.9 / 261.6 |
+| 4 | 1 x 4 | 4 | 4 | 115.3 | 115.4 | 397.0 / 99.2 | 726.6 / 757.7 |
+| 4 | 2 x 2 | 4 | 4 | 121.0 | 117.3 | 400.0 / 100.0 | 726.3 / 752.4 |
+| 4 | 4 x 1 | 4 | 4 | 116.7 | 119.8 | 399.6 / 99.9 | 712.2 / 739.1 |
+
+#### Per-core rates
+
+Per-core Perf rates below are ordered **core1, core2, core3, core4**, including
+unavailable entries rather than assumed idle zeros. Rates from assigned cores
+in a flagged control are diagnostics, not a verified complete aggregate.
+
+| Cores / T x P | 100k target: per-core klogs/s | 300k target: per-core klogs/s |
+| --- | --- | --- |
+| 1 / 1 x 1 | 35.21 | 26.90 |
+| 1 / 1 x 2 | 31.55 | 27.02 |
+| 1 / 1 x 4 | 27.22 | 29.89 |
+| 2 / 1 x 1 | 37.20, NA | 37.65, NA |
+| 2 / 1 x 2 | 36.07, 35.84 | 36.69, 35.93 |
+| 4 / 1 x 1 | 40.90, NA, NA, NA | 36.58, NA, NA, NA |
+| 4 / 1 x 4 | 21.15, 21.25, 21.14, 20.92 | 29.77, 28.09, 28.41, 29.15 |
+| 4 / 2 x 2 | 18.49, 18.65, 18.55, 18.61 | 29.60, 29.48, 29.06, 29.16 |
+| 4 / 4 x 1 | 20.39, 20.56, 20.45, 20.61 | 30.58, 28.99, 30.39, 29.84 |
+
+#### Short observation charts
+
+The following charts use the 300k configured target. Bars are complete Perf
+rates; lines are actual broker-confirmed input. They are short observations,
+not capacity curves or confidence intervals.
+
+```mermaid
+xychart-beta
+    title "Matched core/partition layouts: short observation"
+    x-axis ["1 core / 1 partition", "2 cores / 2 partitions", "4 cores / 4 partitions"]
+    y-axis "Thousands of logs/s" 0 --> 130
+    bar [26.9, 72.6, 115.4]
+    line [119.0, 97.9, 115.3]
+```
+
+```mermaid
+xychart-beta
+    title "Topic packing: 4 cores and 4 total partitions"
+    x-axis ["1 topic x 4 partitions", "2 topics x 2 partitions", "4 topics x 1 partition"]
+    y-axis "Thousands of logs/s" 0 --> 130
+    bar [115.4, 117.3, 119.8]
+    line [115.3, 121.0, 116.7]
+```
+
+### Interpretation and cutoff evidence
+
+More configured cores alone did not create more partition parallelism:
+single-partition controls assigned only core1, at roughly one CPU core of
+aggregate usage. Matched two- and four-partition runs actually assigned two and
+four members, with successful Perf progress on each. The three four-partition
+packing layouts reached about 115.4k-119.8k Perf logs/s at the 300k target, using
+about four CPU cores. These single observations do not establish that one
+packing layout is superior.
+
+**Equal configured targets did not produce equal actual input.** The producer
+delivered 61.0k-77.2k/s at the 100k target and 97.9k-140.1k/s at the 300k target.
+It shared the host with Kafka and the consumer. This confounds causal throughput
+comparisons; no 100k or 300k sustained-input claim is justified. At 100k, some
+four-core cases used less than their full allocation. Windowed receiver rates
+can exceed windowed producer rates while draining warmup backlog.
+
+Seven complete cases had a positive final producer-minus-Perf cutoff deficit:
+all six one-core cases (1,238,820-3,205,853 records), plus the two-core/two-partition
+300k case (1,400,851). Seven complete cases reached final counter equality:
+two-core/two-partition at 100k and all six four-core/four-partition cases.
+The four single-partition multi-core controls retain an unavailable complete
+final count/deficit. No deficit is labeled proven loss; equality does not prove
+field fidelity, unique event identity, restart safety or stable capacity.
+Dedicated decode-error series were absent throughout and remain unavailable.
+
+### Source, images and reproducible evidence
+
+The tested, clean native Linux checkout was commit
+`a60b22791862c5e90a5752c668c7dba4bc306748`. Subsequent summary/data and
+recorded-data validation changes do not change which source was measured.
+A new producer image was built from
+that commit with its exact hash-locked dependencies; the engine and Kafka images
+were reused unchanged. The engine's build-source commit remains **unknown**.
+Compared with the historical producer, the current lock contains newer grpcio,
+opentelemetry-proto, pydantic and pydantic-core versions; no pins were changed to
+make the build succeed.
+
+| Component | Actual Docker image ID |
+| --- | --- |
+| Producer, revision label `a60b22791` | `sha256:1e0d9ebfdc127eb2ddc921ec886cbd002e2fce1d8bf3fe9bc62acb566fd16887` |
+| Retained engine | `sha256:be3432dd08060d6eb15299066f4993f7824a33b8f570b33491f58be7ca95af4d` |
+| Retained Kafka | `sha256:77e3df9054047a88b520d0cc46e16696d3b22022e1d580aeccd2632df6532837` |
+
+The original Docker dependency download failed TLS negotiation. The successful
+build used the existing Dockerfile's `wheelhouse` named context with
+`PIP_NO_INDEX=1`: twelve cached wheels were copied after SHA-256 checks and four
+missing exact versions were securely downloaded with `pip --require-hashes`.
+TLS verification was not disabled. The uniquely tagged producer did not replace
+the retained producer tag. No engine rebuild or concurrent benchmark occurred.
+
+The host again had 16 logical CPUs, about 31 GiB RAM and 25 GiB available before
+and after the sweep; Docker was 29.8.1. The reserved run window was approximately
+00:01:57-00:53:31 UTC on October 7. Setup, CLI scans, shutdown and monitoring
+teardown account for wall time beyond the 40 timed seconds per case. The
+pre-existing operator container was left running; benchmark containers were
+removed. Existing ports 3000/3001 were not disturbed.
+
+Paths below are relative to `tools/comparison_dashboard/.data/`:
+
+| Suite | Run ID | Cases |
+| --- | --- | --- |
+| `dfe_logs_kafka_syslog_scaling_1core` | `20261007_000424` | `t1p1`, `t1p2`, `t1p4`, each at `-100k` and `-300k` |
+| `dfe_logs_kafka_syslog_scaling_2cores` | `20261007_002322` | `t1p1`, `t1p2`, each at `-100k` and `-300k` |
+| `dfe_logs_kafka_syslog_scaling_4cores` | `20261007_000157` | `t1p4-100k`, first compatibility check, not repeated |
+| `dfe_logs_kafka_syslog_scaling_4cores` | `20261007_003433` | Remaining seven four-core cases |
+
+The checked-in [compact measured evidence][scaling-results] contains all 18
+cells, precise rates/resources, configured and assigned core counts, per-core
+coverage, partition assignments/progress, producer distribution, final counters,
+image IDs, tested source SHA, and report/verification/configuration hashes.
+It contains no raw database, private workspace paths, Word/PDF or binary charts.
+The full local raw archive contains 466 files (10,249,728 uncompressed bytes);
+its gzip file is 1,010,272 bytes with SHA-256
+`362f8e3ff53c258067995ee0c640661f27095eee9888d1bd96285497bedd67c9`.
+The independently retained static dashboard ZIP is 279,289 bytes with SHA-256
+`3dbe96d8fd6c1449157e1a9581df742263243b613b0e3972f174480fddbcbd86`.
+These local archives are not checked into the PR.
+
+Follow the [scaling run instructions][scaling-readme] to reproduce the workflow.
+The measured dashboard page is `/compare/kafka_receiver_syslog_scaling/`;
+per-case `scaling-evidence.yaml` exposes coverage flags and raw-capture
+provenance alongside the rendered configuration. Unrun combinations and missing
+metrics remain NA. The checked-in compact JSON does not automatically populate
+a fresh dashboard with historical measurements.
 
 [dashboard-readme]: tools/comparison_dashboard/README.md
 [loadgen-readme]: tools/pipeline_perf_test/load_generator/readme.md
 [receiver-suite]: tools/comparison_dashboard/suites/dfe/dfe-logs-kafka-syslog-receiver-only.yaml
+[scaling-readme]: tools/comparison_dashboard/README.md#short-receiver-only-core-and-topology-scaling
+[scaling-results]: tools/comparison_dashboard/results/kafka_syslog_scaling_20261007.json

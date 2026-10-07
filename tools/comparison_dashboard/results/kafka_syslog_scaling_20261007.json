@@ -1,0 +1,2548 @@
+{
+  "scope": "Short receiver-only characterization, not sustained/stable capacity",
+  "source_commit": "a60b22791862c5e90a5752c668c7dba4bc306748",
+  "producer_image_build_source_commit": "a60b22791862c5e90a5752c668c7dba4bc306748",
+  "engine_image_build_source_commit": null,
+  "images": {
+    "kafka-broker": "sha256:77e3df9054047a88b520d0cc46e16696d3b22022e1d580aeccd2632df6532837",
+    "kafka-consumer": "sha256:be3432dd08060d6eb15299066f4993f7824a33b8f570b33491f58be7ca95af4d",
+    "load-generator": "sha256:1e0d9ebfdc127eb2ddc921ec886cbd002e2fce1d8bf3fe9bc62acb566fd16887"
+  },
+  "phases_seconds": {
+    "warmup": 10,
+    "observation": 20,
+    "bounded_drain": 10
+  },
+  "assignment_policy": "round_robin, held constant across all eighteen cases",
+  "captured_at": "2026-10-07T00:54:44.876011+00:00",
+  "cases": [
+    {
+      "suite": "dfe_logs_kafka_syslog_scaling_1core",
+      "run_id": "20261007_000424",
+      "test": "t1p1-100k",
+      "topology": {
+        "topics": [
+          "otel-syslog-1"
+        ],
+        "partitions_per_topic": 1,
+        "total_partitions": 1,
+        "cores": 1,
+        "core_ids": [
+          1
+        ],
+        "group": "kafka-syslog-scaling",
+        "aggregate_target_rate": 100000,
+        "record_bytes": 1024,
+        "rebalance_strategy": "round_robin",
+        "client_ids": [
+          "dfe-kafka-syslog-core1"
+        ]
+      },
+      "status": "verified",
+      "flags": [],
+      "metrics": {
+        "logs_produced_rate": 75824.71235807428,
+        "logs_received_rate": 35207.05376450178,
+        "logs_received_rate_core1": 35207.05376450178,
+        "cpu_percentage_total_avg": 100.03787591382749,
+        "cpu_percentage_total_max": 102.14539786297925,
+        "cpu_percentage_normalized_avg": 100.03787591382749,
+        "cpu_percentage_normalized_max": 102.14539786297925,
+        "ram_mib_avg": 218.66623263888889,
+        "ram_mib_max": 225.77734375,
+        "test_duration": 20.002025
+      },
+      "assigned_core_count_at_captures": {
+        "before": 1,
+        "final": 1
+      },
+      "core_coverage": [
+        {
+          "core_id": 1,
+          "assigned_at_either_capture": true,
+          "item_series_complete": true,
+          "observed_item_delta": 717618
+        }
+      ],
+      "partition_progress": [
+        {
+          "topic": "otel-syslog-1",
+          "partition": 0,
+          "committed_offset": 1647018,
+          "log_end_offset": 2804965,
+          "committed_lag": 1157947,
+          "committed_progress": 1334862
+        }
+      ],
+      "producer_partition_counts": [
+        {
+          "topic": "otel-syslog-1",
+          "partition": 0,
+          "records": 2804965
+        }
+      ],
+      "final_producer_logs": 2804965,
+      "final_local_perf_logs": 1473671,
+      "final_not_observed_at_local_perf": 1331294,
+      "consumer_config_sha256": "4a0b23cb7d47becfe1301113e0d35f922f431174d03455c927f682aace7be447",
+      "sql_report_sha256": "6991eee7e5d2f2c5865faf677aeb71925529a2227d2ebe5bb2c8aa94efa7b683",
+      "verification_sha256": "6699d6e1412c2bcb9e8ee5e24a76c6912a98df8a04de4d20ce88926b21159e77",
+      "decode_error_series_present": [
+        false
+      ],
+      "assignment_unchanged_at_captures": true,
+      "assignment": [
+        {
+          "core_id": 1,
+          "client_id": "dfe-kafka-syslog-core1",
+          "partitions": [
+            {
+              "topic": "otel-syslog-1",
+              "partition": 0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "suite": "dfe_logs_kafka_syslog_scaling_1core",
+      "run_id": "20261007_000424",
+      "test": "t1p2-100k",
+      "topology": {
+        "topics": [
+          "otel-syslog-1"
+        ],
+        "partitions_per_topic": 2,
+        "total_partitions": 2,
+        "cores": 1,
+        "core_ids": [
+          1
+        ],
+        "group": "kafka-syslog-scaling",
+        "aggregate_target_rate": 100000,
+        "record_bytes": 1024,
+        "rebalance_strategy": "round_robin",
+        "client_ids": [
+          "dfe-kafka-syslog-core1"
+        ]
+      },
+      "status": "verified",
+      "flags": [],
+      "metrics": {
+        "logs_produced_rate": 75092.24620397594,
+        "logs_received_rate": 31552.66179054269,
+        "logs_received_rate_core1": 31552.66179054269,
+        "cpu_percentage_total_avg": 100.26928681564095,
+        "cpu_percentage_total_max": 101.60321608040202,
+        "cpu_percentage_normalized_avg": 100.26928681564095,
+        "cpu_percentage_normalized_max": 101.60321608040202,
+        "ram_mib_avg": 199.75,
+        "ram_mib_max": 207.125,
+        "test_duration": 20.003502
+      },
+      "assigned_core_count_at_captures": {
+        "before": 1,
+        "final": 1
+      },
+      "core_coverage": [
+        {
+          "core_id": 1,
+          "assigned_at_either_capture": true,
+          "item_series_complete": true,
+          "observed_item_delta": 640330
+        }
+      ],
+      "partition_progress": [
+        {
+          "topic": "otel-syslog-1",
+          "partition": 0,
+          "committed_offset": 742478,
+          "log_end_offset": 1358200,
+          "committed_lag": 615722,
+          "committed_progress": 586430
+        },
+        {
+          "topic": "otel-syslog-1",
+          "partition": 1,
+          "committed_offset": 723550,
+          "log_end_offset": 1358200,
+          "committed_lag": 634650,
+          "committed_progress": 570950
+        }
+      ],
+      "producer_partition_counts": [
+        {
+          "topic": "otel-syslog-1",
+          "partition": 0,
+          "records": 1358200
+        },
+        {
+          "topic": "otel-syslog-1",
+          "partition": 1,
+          "records": 1358200
+        }
+      ],
+      "final_producer_logs": 2716400,
+      "final_local_perf_logs": 1321499,
+      "final_not_observed_at_local_perf": 1394901,
+      "consumer_config_sha256": "4a0b23cb7d47becfe1301113e0d35f922f431174d03455c927f682aace7be447",
+      "sql_report_sha256": "82e7e5ddf31c6dc4634c0687cbca4b7ff4070680d61d3f7369f56b4ccadbef93",
+      "verification_sha256": "0dbf0050ffe4ca8e0a998a67e86cf8599f881e455ec60352cff731c86c41b8f8",
+      "decode_error_series_present": [
+        false
+      ],
+      "assignment_unchanged_at_captures": true,
+      "assignment": [
+        {
+          "core_id": 1,
+          "client_id": "dfe-kafka-syslog-core1",
+          "partitions": [
+            {
+              "topic": "otel-syslog-1",
+              "partition": 0
+            },
+            {
+              "topic": "otel-syslog-1",
+              "partition": 1
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "suite": "dfe_logs_kafka_syslog_scaling_1core",
+      "run_id": "20261007_000424",
+      "test": "t1p4-100k",
+      "topology": {
+        "topics": [
+          "otel-syslog-1"
+        ],
+        "partitions_per_topic": 4,
+        "total_partitions": 4,
+        "cores": 1,
+        "core_ids": [
+          1
+        ],
+        "group": "kafka-syslog-scaling",
+        "aggregate_target_rate": 100000,
+        "record_bytes": 1024,
+        "rebalance_strategy": "round_robin",
+        "client_ids": [
+          "dfe-kafka-syslog-core1"
+        ]
+      },
+      "status": "verified",
+      "flags": [],
+      "metrics": {
+        "logs_produced_rate": 60956.88922584261,
+        "logs_received_rate": 27219.815559079376,
+        "logs_received_rate_core1": 27219.815559079376,
+        "cpu_percentage_total_avg": 101.19099975006272,
+        "cpu_percentage_total_max": 102.76518295739348,
+        "cpu_percentage_normalized_avg": 101.19099975006272,
+        "cpu_percentage_normalized_max": 102.76518295739348,
+        "ram_mib_avg": 197.27783203125,
+        "ram_mib_max": 204.76171875,
+        "test_duration": 20.006332
+      },
+      "assigned_core_count_at_captures": {
+        "before": 1,
+        "final": 1
+      },
+      "core_coverage": [
+        {
+          "core_id": 1,
+          "assigned_at_either_capture": true,
+          "item_series_complete": true,
+          "observed_item_delta": 559518
+        }
+      ],
+      "partition_progress": [
+        {
+          "topic": "otel-syslog-1",
+          "partition": 0,
+          "committed_offset": 378202,
+          "log_end_offset": 628951,
+          "committed_lag": 250749,
+          "committed_progress": 297436
+        },
+        {
+          "topic": "otel-syslog-1",
+          "partition": 1,
+          "committed_offset": 364330,
+          "log_end_offset": 628950,
+          "committed_lag": 264620,
+          "committed_progress": 286265
+        },
+        {
+          "topic": "otel-syslog-1",
+          "partition": 2,
+          "committed_offset": 357701,
+          "log_end_offset": 628950,
+          "committed_lag": 271249,
+          "committed_progress": 280078
+        },
+        {
+          "topic": "otel-syslog-1",
+          "partition": 3,
+          "committed_offset": 351454,
+          "log_end_offset": 628950,
+          "committed_lag": 277496,
+          "committed_progress": 275015
+        }
+      ],
+      "producer_partition_counts": [
+        {
+          "topic": "otel-syslog-1",
+          "partition": 0,
+          "records": 628951
+        },
+        {
+          "topic": "otel-syslog-1",
+          "partition": 1,
+          "records": 628950
+        },
+        {
+          "topic": "otel-syslog-1",
+          "partition": 2,
+          "records": 628950
+        },
+        {
+          "topic": "otel-syslog-1",
+          "partition": 3,
+          "records": 628950
+        }
+      ],
+      "final_producer_logs": 2515801,
+      "final_local_perf_logs": 1276981,
+      "final_not_observed_at_local_perf": 1238820,
+      "consumer_config_sha256": "4a0b23cb7d47becfe1301113e0d35f922f431174d03455c927f682aace7be447",
+      "sql_report_sha256": "eb4082f86acdb58fcddc90cd1ca4624eef672c406f74a4db1fa6297f2d3fda8d",
+      "verification_sha256": "a747eebe5c733d653c0992d7722f23f3066531f2cc7780ed5a85958a5c667479",
+      "decode_error_series_present": [
+        false
+      ],
+      "assignment_unchanged_at_captures": true,
+      "assignment": [
+        {
+          "core_id": 1,
+          "client_id": "dfe-kafka-syslog-core1",
+          "partitions": [
+            {
+              "topic": "otel-syslog-1",
+              "partition": 0
+            },
+            {
+              "topic": "otel-syslog-1",
+              "partition": 1
+            },
+            {
+              "topic": "otel-syslog-1",
+              "partition": 2
+            },
+            {
+              "topic": "otel-syslog-1",
+              "partition": 3
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "suite": "dfe_logs_kafka_syslog_scaling_2cores",
+      "run_id": "20261007_002322",
+      "test": "t1p1-100k",
+      "topology": {
+        "topics": [
+          "otel-syslog-1"
+        ],
+        "partitions_per_topic": 1,
+        "total_partitions": 1,
+        "cores": 2,
+        "core_ids": [
+          1,
+          2
+        ],
+        "group": "kafka-syslog-scaling",
+        "aggregate_target_rate": 100000,
+        "record_bytes": 1024,
+        "rebalance_strategy": "round_robin",
+        "client_ids": [
+          "dfe-kafka-syslog-core1",
+          "dfe-kafka-syslog-core2"
+        ]
+      },
+      "status": "flagged",
+      "flags": [
+        "Unassigned core2 has no emitted Perf item series; all-core aggregate remains unavailable"
+      ],
+      "metrics": {
+        "logs_produced_rate": 69547.76530418296,
+        "logs_received_rate": null,
+        "logs_received_rate_core1": 37204.07509534095,
+        "logs_received_rate_core2": null,
+        "cpu_percentage_total_avg": 99.57990030192036,
+        "cpu_percentage_total_max": 101.25266095471237,
+        "cpu_percentage_normalized_avg": 49.78995015096018,
+        "cpu_percentage_normalized_max": 50.626330477356184,
+        "ram_mib_avg": 235.22734375,
+        "ram_mib_max": 241.59765625,
+        "test_duration": 20.003573
+      },
+      "assigned_core_count_at_captures": {
+        "before": 1,
+        "final": 1
+      },
+      "core_coverage": [
+        {
+          "core_id": 1,
+          "assigned_at_either_capture": true,
+          "item_series_complete": true,
+          "observed_item_delta": 722170
+        },
+        {
+          "core_id": 2,
+          "assigned_at_either_capture": false,
+          "item_series_complete": false,
+          "observed_item_delta": null
+        }
+      ],
+      "partition_progress": [
+        {
+          "topic": "otel-syslog-1",
+          "partition": 0,
+          "committed_offset": 1514596,
+          "log_end_offset": 2598400,
+          "committed_lag": 1083804,
+          "committed_progress": 1303318
+        }
+      ],
+      "producer_partition_counts": [
+        {
+          "topic": "otel-syslog-1",
+          "partition": 0,
+          "records": 2598400
+        }
+      ],
+      "final_producer_logs": 2598400,
+      "final_local_perf_logs": null,
+      "final_not_observed_at_local_perf": null,
+      "consumer_config_sha256": "357626dfea9496c3720c1eb8a6aa62062367dc5b9bcfff27d55d1393b7a8e65b",
+      "sql_report_sha256": "b7a0e7ba4266f26c4453ac3db762a8b347d654813991e363e17527d4ca70d995",
+      "verification_sha256": "fafbcf88616cb8582df001fbeb8b7f2d1817d9be58c78667504348cb7d8c14f0",
+      "decode_error_series_present": [
+        false,
+        false
+      ],
+      "assignment_unchanged_at_captures": true,
+      "assignment": [
+        {
+          "core_id": 1,
+          "client_id": "dfe-kafka-syslog-core1",
+          "partitions": [
+            {
+              "topic": "otel-syslog-1",
+              "partition": 0
+            }
+          ]
+        },
+        {
+          "core_id": 2,
+          "client_id": "dfe-kafka-syslog-core2",
+          "partitions": []
+        }
+      ]
+    },
+    {
+      "suite": "dfe_logs_kafka_syslog_scaling_2cores",
+      "run_id": "20261007_002322",
+      "test": "t1p2-100k",
+      "topology": {
+        "topics": [
+          "otel-syslog-1"
+        ],
+        "partitions_per_topic": 2,
+        "total_partitions": 2,
+        "cores": 2,
+        "core_ids": [
+          1,
+          2
+        ],
+        "group": "kafka-syslog-scaling",
+        "aggregate_target_rate": 100000,
+        "record_bytes": 1024,
+        "rebalance_strategy": "round_robin",
+        "client_ids": [
+          "dfe-kafka-syslog-core1",
+          "dfe-kafka-syslog-core2"
+        ]
+      },
+      "status": "verified",
+      "flags": [],
+      "metrics": {
+        "logs_produced_rate": 70140.88040809878,
+        "logs_received_rate": 71912.53637339215,
+        "logs_received_rate_core1": 36072.04763484978,
+        "logs_received_rate_core2": 35840.488738542364,
+        "cpu_percentage_total_avg": 198.5632382043508,
+        "cpu_percentage_total_max": 201.05296466212027,
+        "cpu_percentage_normalized_avg": 99.2816191021754,
+        "cpu_percentage_normalized_max": 100.52648233106014,
+        "ram_mib_avg": 389.233984375,
+        "ram_mib_max": 397.6171875,
+        "test_duration": 20.004114
+      },
+      "assigned_core_count_at_captures": {
+        "before": 2,
+        "final": 2
+      },
+      "core_coverage": [
+        {
+          "core_id": 1,
+          "assigned_at_either_capture": true,
+          "item_series_complete": true,
+          "observed_item_delta": 740204
+        },
+        {
+          "core_id": 2,
+          "assigned_at_either_capture": true,
+          "item_series_complete": true,
+          "observed_item_delta": 738151
+        }
+      ],
+      "partition_progress": [
+        {
+          "topic": "otel-syslog-1",
+          "partition": 1,
+          "committed_offset": 1326450,
+          "log_end_offset": 1326450,
+          "committed_lag": 0,
+          "committed_progress": 996905
+        },
+        {
+          "topic": "otel-syslog-1",
+          "partition": 0,
+          "committed_offset": 1326450,
+          "log_end_offset": 1326450,
+          "committed_lag": 0,
+          "committed_progress": 996380
+        }
+      ],
+      "producer_partition_counts": [
+        {
+          "topic": "otel-syslog-1",
+          "partition": 0,
+          "records": 1326450
+        },
+        {
+          "topic": "otel-syslog-1",
+          "partition": 1,
+          "records": 1326450
+        }
+      ],
+      "final_producer_logs": 2652900,
+      "final_local_perf_logs": 2652900,
+      "final_not_observed_at_local_perf": 0,
+      "consumer_config_sha256": "357626dfea9496c3720c1eb8a6aa62062367dc5b9bcfff27d55d1393b7a8e65b",
+      "sql_report_sha256": "f241b8aa63a1f0fbe0f381f8d00e2d0757f9d17fa5e67499e064ad224a2cec38",
+      "verification_sha256": "1cbda9aa051de248b8374450ddfb079e8ca35aff50e76cea0358d368de867029",
+      "decode_error_series_present": [
+        false,
+        false
+      ],
+      "assignment_unchanged_at_captures": true,
+      "assignment": [
+        {
+          "core_id": 1,
+          "client_id": "dfe-kafka-syslog-core1",
+          "partitions": [
+            {
+              "topic": "otel-syslog-1",
+              "partition": 0
+            }
+          ]
+        },
+        {
+          "core_id": 2,
+          "client_id": "dfe-kafka-syslog-core2",
+          "partitions": [
+            {
+              "topic": "otel-syslog-1",
+              "partition": 1
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "suite": "dfe_logs_kafka_syslog_scaling_4cores",
+      "run_id": "20261007_003433",
+      "test": "t1p1-100k",
+      "topology": {
+        "topics": [
+          "otel-syslog-1"
+        ],
+        "partitions_per_topic": 1,
+        "total_partitions": 1,
+        "cores": 4,
+        "core_ids": [
+          1,
+          2,
+          3,
+          4
+        ],
+        "group": "kafka-syslog-scaling",
+        "aggregate_target_rate": 100000,
+        "record_bytes": 1024,
+        "rebalance_strategy": "round_robin",
+        "client_ids": [
+          "dfe-kafka-syslog-core1",
+          "dfe-kafka-syslog-core2",
+          "dfe-kafka-syslog-core3",
+          "dfe-kafka-syslog-core4"
+        ]
+      },
+      "status": "flagged",
+      "flags": [
+        "Unassigned core2 has no emitted Perf item series; all-core aggregate remains unavailable",
+        "Unassigned core3 has no emitted Perf item series; all-core aggregate remains unavailable",
+        "Unassigned core4 has no emitted Perf item series; all-core aggregate remains unavailable"
+      ],
+      "metrics": {
+        "logs_produced_rate": 77239.17405044081,
+        "logs_received_rate": null,
+        "logs_received_rate_core1": 40904.11433033781,
+        "logs_received_rate_core2": null,
+        "logs_received_rate_core3": null,
+        "logs_received_rate_core4": null,
+        "cpu_percentage_total_avg": 100.44967368407399,
+        "cpu_percentage_total_max": 101.5800425798372,
+        "cpu_percentage_normalized_avg": 25.112418421018496,
+        "cpu_percentage_normalized_max": 25.3950106449593,
+        "ram_mib_avg": 265.382421875,
+        "ram_mib_max": 276.6328125,
+        "test_duration": 20.006532
+      },
+      "assigned_core_count_at_captures": {
+        "before": 1,
+        "final": 1
+      },
+      "core_coverage": [
+        {
+          "core_id": 1,
+          "assigned_at_either_capture": true,
+          "item_series_complete": true,
+          "observed_item_delta": 807175
+        },
+        {
+          "core_id": 2,
+          "assigned_at_either_capture": false,
+          "item_series_complete": false,
+          "observed_item_delta": null
+        },
+        {
+          "core_id": 3,
+          "assigned_at_either_capture": false,
+          "item_series_complete": false,
+          "observed_item_delta": null
+        },
+        {
+          "core_id": 4,
+          "assigned_at_either_capture": false,
+          "item_series_complete": false,
+          "observed_item_delta": null
+        }
+      ],
+      "partition_progress": [
+        {
+          "topic": "otel-syslog-1",
+          "partition": 0,
+          "committed_offset": 1691129,
+          "log_end_offset": 2735900,
+          "committed_lag": 1044771,
+          "committed_progress": 1445901
+        }
+      ],
+      "producer_partition_counts": [
+        {
+          "topic": "otel-syslog-1",
+          "partition": 0,
+          "records": 2735900
+        }
+      ],
+      "final_producer_logs": 2735900,
+      "final_local_perf_logs": null,
+      "final_not_observed_at_local_perf": null,
+      "consumer_config_sha256": "b69b768994e94ebd77c1465d867efd75d3d19534d3f101b9c515de56ee93ec99",
+      "sql_report_sha256": "2fd02a25735530fe3d88c8bcee8d202208491fa336b5f8f714d0802465aeb7f0",
+      "verification_sha256": "d930e392bb93d7097330109ad921cbaed4542061f7ce9af83495f6e2a5ba1891",
+      "decode_error_series_present": [
+        false,
+        false,
+        false,
+        false
+      ],
+      "assignment_unchanged_at_captures": true,
+      "assignment": [
+        {
+          "core_id": 1,
+          "client_id": "dfe-kafka-syslog-core1",
+          "partitions": [
+            {
+              "topic": "otel-syslog-1",
+              "partition": 0
+            }
+          ]
+        },
+        {
+          "core_id": 2,
+          "client_id": "dfe-kafka-syslog-core2",
+          "partitions": []
+        },
+        {
+          "core_id": 3,
+          "client_id": "dfe-kafka-syslog-core3",
+          "partitions": []
+        },
+        {
+          "core_id": 4,
+          "client_id": "dfe-kafka-syslog-core4",
+          "partitions": []
+        }
+      ]
+    },
+    {
+      "suite": "dfe_logs_kafka_syslog_scaling_4cores",
+      "run_id": "20261007_000157",
+      "test": "t1p4-100k",
+      "topology": {
+        "topics": [
+          "otel-syslog-1"
+        ],
+        "partitions_per_topic": 4,
+        "total_partitions": 4,
+        "cores": 4,
+        "core_ids": [
+          1,
+          2,
+          3,
+          4
+        ],
+        "group": "kafka-syslog-scaling",
+        "aggregate_target_rate": 100000,
+        "record_bytes": 1024,
+        "rebalance_strategy": "round_robin",
+        "client_ids": [
+          "dfe-kafka-syslog-core1",
+          "dfe-kafka-syslog-core2",
+          "dfe-kafka-syslog-core3",
+          "dfe-kafka-syslog-core4"
+        ]
+      },
+      "status": "verified",
+      "flags": [],
+      "metrics": {
+        "logs_produced_rate": 74561.28074360933,
+        "logs_received_rate": 84455.735559086,
+        "logs_received_rate_core1": 21145.962411819877,
+        "logs_received_rate_core2": 21254.289932520984,
+        "logs_received_rate_core3": 21138.667099137,
+        "logs_received_rate_core4": 20916.81611560814,
+        "cpu_percentage_total_avg": 346.3541064611293,
+        "cpu_percentage_total_max": 406.49692346298616,
+        "cpu_percentage_normalized_avg": 86.58852661528232,
+        "cpu_percentage_normalized_max": 101.62423086574654,
+        "ram_mib_avg": 417.809375,
+        "ram_mib_max": 586.078125,
+        "test_duration": 20.007881
+      },
+      "assigned_core_count_at_captures": {
+        "before": 4,
+        "final": 4
+      },
+      "core_coverage": [
+        {
+          "core_id": 1,
+          "assigned_at_either_capture": true,
+          "item_series_complete": true,
+          "observed_item_delta": 422178
+        },
+        {
+          "core_id": 2,
+          "assigned_at_either_capture": true,
+          "item_series_complete": true,
+          "observed_item_delta": 424188
+        },
+        {
+          "core_id": 3,
+          "assigned_at_either_capture": true,
+          "item_series_complete": true,
+          "observed_item_delta": 422003
+        },
+        {
+          "core_id": 4,
+          "assigned_at_either_capture": true,
+          "item_series_complete": true,
+          "observed_item_delta": 417679
+        }
+      ],
+      "partition_progress": [
+        {
+          "topic": "otel-syslog-1",
+          "partition": 2,
+          "committed_offset": 689650,
+          "log_end_offset": 689650,
+          "committed_lag": 0,
+          "committed_progress": 457135
+        },
+        {
+          "topic": "otel-syslog-1",
+          "partition": 3,
+          "committed_offset": 689650,
+          "log_end_offset": 689650,
+          "committed_lag": 0,
+          "committed_progress": 451558
+        },
+        {
+          "topic": "otel-syslog-1",
+          "partition": 1,
+          "committed_offset": 689650,
+          "log_end_offset": 689650,
+          "committed_lag": 0,
+          "committed_progress": 456474
+        },
+        {
+          "topic": "otel-syslog-1",
+          "partition": 0,
+          "committed_offset": 689650,
+          "log_end_offset": 689650,
+          "committed_lag": 0,
+          "committed_progress": 454017
+        }
+      ],
+      "producer_partition_counts": [
+        {
+          "topic": "otel-syslog-1",
+          "partition": 0,
+          "records": 689650
+        },
+        {
+          "topic": "otel-syslog-1",
+          "partition": 1,
+          "records": 689650
+        },
+        {
+          "topic": "otel-syslog-1",
+          "partition": 2,
+          "records": 689650
+        },
+        {
+          "topic": "otel-syslog-1",
+          "partition": 3,
+          "records": 689650
+        }
+      ],
+      "final_producer_logs": 2758600,
+      "final_local_perf_logs": 2758600,
+      "final_not_observed_at_local_perf": 0,
+      "consumer_config_sha256": "b69b768994e94ebd77c1465d867efd75d3d19534d3f101b9c515de56ee93ec99",
+      "sql_report_sha256": "75aab00c9ed1c7b9c0da10d2d94ff3a338780f0cdf69c95fbd8fdcb01384b2d5",
+      "verification_sha256": "23bdca0a3e5326bfa6635024411b30a90d32e532c09ebcff7bdde43b2b03fe56",
+      "decode_error_series_present": [
+        false,
+        false,
+        false,
+        false
+      ],
+      "assignment_unchanged_at_captures": true,
+      "assignment": [
+        {
+          "core_id": 1,
+          "client_id": "dfe-kafka-syslog-core1",
+          "partitions": [
+            {
+              "topic": "otel-syslog-1",
+              "partition": 0
+            }
+          ]
+        },
+        {
+          "core_id": 2,
+          "client_id": "dfe-kafka-syslog-core2",
+          "partitions": [
+            {
+              "topic": "otel-syslog-1",
+              "partition": 1
+            }
+          ]
+        },
+        {
+          "core_id": 3,
+          "client_id": "dfe-kafka-syslog-core3",
+          "partitions": [
+            {
+              "topic": "otel-syslog-1",
+              "partition": 2
+            }
+          ]
+        },
+        {
+          "core_id": 4,
+          "client_id": "dfe-kafka-syslog-core4",
+          "partitions": [
+            {
+              "topic": "otel-syslog-1",
+              "partition": 3
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "suite": "dfe_logs_kafka_syslog_scaling_4cores",
+      "run_id": "20261007_003433",
+      "test": "t2p2-100k",
+      "topology": {
+        "topics": [
+          "otel-syslog-1",
+          "otel-syslog-2"
+        ],
+        "partitions_per_topic": 2,
+        "total_partitions": 4,
+        "cores": 4,
+        "core_ids": [
+          1,
+          2,
+          3,
+          4
+        ],
+        "group": "kafka-syslog-scaling",
+        "aggregate_target_rate": 100000,
+        "record_bytes": 1024,
+        "rebalance_strategy": "round_robin",
+        "client_ids": [
+          "dfe-kafka-syslog-core1",
+          "dfe-kafka-syslog-core2",
+          "dfe-kafka-syslog-core3",
+          "dfe-kafka-syslog-core4"
+        ]
+      },
+      "status": "verified",
+      "flags": [],
+      "metrics": {
+        "logs_produced_rate": 72733.6548532767,
+        "logs_received_rate": 74304.81688914879,
+        "logs_received_rate_core1": 18493.30117088778,
+        "logs_received_rate_core2": 18653.82983478518,
+        "logs_received_rate_core3": 18549.226269694038,
+        "logs_received_rate_core4": 18608.459613781793,
+        "cpu_percentage_total_avg": 289.22456163488994,
+        "cpu_percentage_total_max": 399.14639503105593,
+        "cpu_percentage_normalized_avg": 72.30614040872248,
+        "cpu_percentage_normalized_max": 99.78659875776398,
+        "ram_mib_avg": 367.2203125,
+        "ram_mib_max": 529.25,
+        "test_duration": 20.001403
+      },
+      "assigned_core_count_at_captures": {
+        "before": 4,
+        "final": 4
+      },
+      "core_coverage": [
+        {
+          "core_id": 1,
+          "assigned_at_either_capture": true,
+          "item_series_complete": true,
+          "observed_item_delta": 376483
+        },
+        {
+          "core_id": 2,
+          "assigned_at_either_capture": true,
+          "item_series_complete": true,
+          "observed_item_delta": 379562
+        },
+        {
+          "core_id": 3,
+          "assigned_at_either_capture": true,
+          "item_series_complete": true,
+          "observed_item_delta": 377540
+        },
+        {
+          "core_id": 4,
+          "assigned_at_either_capture": true,
+          "item_series_complete": true,
+          "observed_item_delta": 380668
+        }
+      ],
+      "partition_progress": [
+        {
+          "topic": "otel-syslog-1",
+          "partition": 1,
+          "committed_offset": 671991,
+          "log_end_offset": 671991,
+          "committed_lag": 0,
+          "committed_progress": 398158
+        },
+        {
+          "topic": "otel-syslog-2",
+          "partition": 1,
+          "committed_offset": 671991,
+          "log_end_offset": 671991,
+          "committed_lag": 0,
+          "committed_progress": 397970
+        },
+        {
+          "topic": "otel-syslog-2",
+          "partition": 0,
+          "committed_offset": 671991,
+          "log_end_offset": 671991,
+          "committed_lag": 0,
+          "committed_progress": 395419
+        },
+        {
+          "topic": "otel-syslog-1",
+          "partition": 0,
+          "committed_offset": 671992,
+          "log_end_offset": 671992,
+          "committed_lag": 0,
+          "committed_progress": 394379
+        }
+      ],
+      "producer_partition_counts": [
+        {
+          "topic": "otel-syslog-1",
+          "partition": 0,
+          "records": 671992
+        },
+        {
+          "topic": "otel-syslog-1",
+          "partition": 1,
+          "records": 671991
+        },
+        {
+          "topic": "otel-syslog-2",
+          "partition": 0,
+          "records": 671991
+        },
+        {
+          "topic": "otel-syslog-2",
+          "partition": 1,
+          "records": 671991
+        }
+      ],
+      "final_producer_logs": 2687965,
+      "final_local_perf_logs": 2687965,
+      "final_not_observed_at_local_perf": 0,
+      "consumer_config_sha256": "7d82acc1ae6dbcbd7c861e9244ec178b4924a8012acefcb991b251a1e79893bf",
+      "sql_report_sha256": "4ba3348646a72b08ca7443b6ea6a5a877aa3fa5ef6f98f2517a580fc4f135a29",
+      "verification_sha256": "5f47551988aae3ef63c78c7794ff018671eb56dedb37d89cfb92f8d0a606285f",
+      "decode_error_series_present": [
+        false,
+        false,
+        false,
+        false
+      ],
+      "assignment_unchanged_at_captures": true,
+      "assignment": [
+        {
+          "core_id": 1,
+          "client_id": "dfe-kafka-syslog-core1",
+          "partitions": [
+            {
+              "topic": "otel-syslog-1",
+              "partition": 0
+            }
+          ]
+        },
+        {
+          "core_id": 2,
+          "client_id": "dfe-kafka-syslog-core2",
+          "partitions": [
+            {
+              "topic": "otel-syslog-1",
+              "partition": 1
+            }
+          ]
+        },
+        {
+          "core_id": 3,
+          "client_id": "dfe-kafka-syslog-core3",
+          "partitions": [
+            {
+              "topic": "otel-syslog-2",
+              "partition": 0
+            }
+          ]
+        },
+        {
+          "core_id": 4,
+          "client_id": "dfe-kafka-syslog-core4",
+          "partitions": [
+            {
+              "topic": "otel-syslog-2",
+              "partition": 1
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "suite": "dfe_logs_kafka_syslog_scaling_4cores",
+      "run_id": "20261007_003433",
+      "test": "t4p1-100k",
+      "topology": {
+        "topics": [
+          "otel-syslog-1",
+          "otel-syslog-2",
+          "otel-syslog-3",
+          "otel-syslog-4"
+        ],
+        "partitions_per_topic": 1,
+        "total_partitions": 4,
+        "cores": 4,
+        "core_ids": [
+          1,
+          2,
+          3,
+          4
+        ],
+        "group": "kafka-syslog-scaling",
+        "aggregate_target_rate": 100000,
+        "record_bytes": 1024,
+        "rebalance_strategy": "round_robin",
+        "client_ids": [
+          "dfe-kafka-syslog-core1",
+          "dfe-kafka-syslog-core2",
+          "dfe-kafka-syslog-core3",
+          "dfe-kafka-syslog-core4"
+        ]
+      },
+      "status": "verified",
+      "flags": [],
+      "metrics": {
+        "logs_produced_rate": 70945.89189573139,
+        "logs_received_rate": 81998.91330359838,
+        "logs_received_rate_core1": 20385.46259123382,
+        "logs_received_rate_core2": 20560.62855926706,
+        "logs_received_rate_core3": 20446.05825722415,
+        "logs_received_rate_core4": 20606.76389587334,
+        "cpu_percentage_total_avg": 287.7459021520588,
+        "cpu_percentage_total_max": 404.51484000000005,
+        "cpu_percentage_normalized_avg": 71.9364755380147,
+        "cpu_percentage_normalized_max": 101.12871000000001,
+        "ram_mib_avg": 397.209375,
+        "ram_mib_max": 590.3046875,
+        "test_duration": 20.001617
+      },
+      "assigned_core_count_at_captures": {
+        "before": 4,
+        "final": 4
+      },
+      "core_coverage": [
+        {
+          "core_id": 1,
+          "assigned_at_either_capture": true,
+          "item_series_complete": true,
+          "observed_item_delta": 403863
+        },
+        {
+          "core_id": 2,
+          "assigned_at_either_capture": true,
+          "item_series_complete": true,
+          "observed_item_delta": 431414
+        },
+        {
+          "core_id": 3,
+          "assigned_at_either_capture": true,
+          "item_series_complete": true,
+          "observed_item_delta": 429440
+        },
+        {
+          "core_id": 4,
+          "assigned_at_either_capture": true,
+          "item_series_complete": true,
+          "observed_item_delta": 434673
+        }
+      ],
+      "partition_progress": [
+        {
+          "topic": "otel-syslog-2",
+          "partition": 0,
+          "committed_offset": 666166,
+          "log_end_offset": 666166,
+          "committed_lag": 0,
+          "committed_progress": 437275
+        },
+        {
+          "topic": "otel-syslog-3",
+          "partition": 0,
+          "committed_offset": 666166,
+          "log_end_offset": 666166,
+          "committed_lag": 0,
+          "committed_progress": 436433
+        },
+        {
+          "topic": "otel-syslog-4",
+          "partition": 0,
+          "committed_offset": 666166,
+          "log_end_offset": 666166,
+          "committed_lag": 0,
+          "committed_progress": 440371
+        },
+        {
+          "topic": "otel-syslog-1",
+          "partition": 0,
+          "committed_offset": 666167,
+          "log_end_offset": 666167,
+          "committed_lag": 0,
+          "committed_progress": 434431
+        }
+      ],
+      "producer_partition_counts": [
+        {
+          "topic": "otel-syslog-1",
+          "partition": 0,
+          "records": 666167
+        },
+        {
+          "topic": "otel-syslog-2",
+          "partition": 0,
+          "records": 666166
+        },
+        {
+          "topic": "otel-syslog-3",
+          "partition": 0,
+          "records": 666166
+        },
+        {
+          "topic": "otel-syslog-4",
+          "partition": 0,
+          "records": 666166
+        }
+      ],
+      "final_producer_logs": 2664665,
+      "final_local_perf_logs": 2664665,
+      "final_not_observed_at_local_perf": 0,
+      "consumer_config_sha256": "694a947e0471ff268c6f71105229ea52ade6dbb4b70c9b3492248666048991e2",
+      "sql_report_sha256": "31667a23bee879ae1ef45db9a73f953517855e095887d9080a62d0ede63f50a8",
+      "verification_sha256": "40b5f97b37af5bfaa5b81ae919a7ce1aaace757670589619cad65eeba9c86755",
+      "decode_error_series_present": [
+        false,
+        false,
+        false,
+        false
+      ],
+      "assignment_unchanged_at_captures": true,
+      "assignment": [
+        {
+          "core_id": 1,
+          "client_id": "dfe-kafka-syslog-core1",
+          "partitions": [
+            {
+              "topic": "otel-syslog-1",
+              "partition": 0
+            }
+          ]
+        },
+        {
+          "core_id": 2,
+          "client_id": "dfe-kafka-syslog-core2",
+          "partitions": [
+            {
+              "topic": "otel-syslog-2",
+              "partition": 0
+            }
+          ]
+        },
+        {
+          "core_id": 3,
+          "client_id": "dfe-kafka-syslog-core3",
+          "partitions": [
+            {
+              "topic": "otel-syslog-3",
+              "partition": 0
+            }
+          ]
+        },
+        {
+          "core_id": 4,
+          "client_id": "dfe-kafka-syslog-core4",
+          "partitions": [
+            {
+              "topic": "otel-syslog-4",
+              "partition": 0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "suite": "dfe_logs_kafka_syslog_scaling_1core",
+      "run_id": "20261007_000424",
+      "test": "t1p1-300k",
+      "topology": {
+        "topics": [
+          "otel-syslog-1"
+        ],
+        "partitions_per_topic": 1,
+        "total_partitions": 1,
+        "cores": 1,
+        "core_ids": [
+          1
+        ],
+        "group": "kafka-syslog-scaling",
+        "aggregate_target_rate": 300000,
+        "record_bytes": 1024,
+        "rebalance_strategy": "round_robin",
+        "client_ids": [
+          "dfe-kafka-syslog-core1"
+        ]
+      },
+      "status": "verified",
+      "flags": [],
+      "metrics": {
+        "logs_produced_rate": 119041.16944178593,
+        "logs_received_rate": 26901.593847119333,
+        "logs_received_rate_core1": 26901.593847119333,
+        "cpu_percentage_total_avg": 100.57946840311733,
+        "cpu_percentage_total_max": 101.89979417234967,
+        "cpu_percentage_normalized_avg": 100.57946840311733,
+        "cpu_percentage_normalized_max": 101.89979417234967,
+        "ram_mib_avg": 216.995703125,
+        "ram_mib_max": 227.953125,
+        "test_duration": 20.005466
+      },
+      "assigned_core_count_at_captures": {
+        "before": 1,
+        "final": 1
+      },
+      "core_coverage": [
+        {
+          "core_id": 1,
+          "assigned_at_either_capture": true,
+          "item_series_complete": true,
+          "observed_item_delta": 518361
+        }
+      ],
+      "partition_progress": [
+        {
+          "topic": "otel-syslog-1",
+          "partition": 0,
+          "committed_offset": 1396727,
+          "log_end_offset": 4447865,
+          "committed_lag": 3051138,
+          "committed_progress": 1064237
+        }
+      ],
+      "producer_partition_counts": [
+        {
+          "topic": "otel-syslog-1",
+          "partition": 0,
+          "records": 4447865
+        }
+      ],
+      "final_producer_logs": 4447865,
+      "final_local_perf_logs": 1242012,
+      "final_not_observed_at_local_perf": 3205853,
+      "consumer_config_sha256": "4a0b23cb7d47becfe1301113e0d35f922f431174d03455c927f682aace7be447",
+      "sql_report_sha256": "46f5e04bc541cebec65c5c09159570e92668d54a8fe54e40ccd1c2c3ca4cdd57",
+      "verification_sha256": "51284917746164e371661a4b87277ca95b7e822726e330bf6c42c58b04557a33",
+      "decode_error_series_present": [
+        false
+      ],
+      "assignment_unchanged_at_captures": true,
+      "assignment": [
+        {
+          "core_id": 1,
+          "client_id": "dfe-kafka-syslog-core1",
+          "partitions": [
+            {
+              "topic": "otel-syslog-1",
+              "partition": 0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "suite": "dfe_logs_kafka_syslog_scaling_1core",
+      "run_id": "20261007_000424",
+      "test": "t1p2-300k",
+      "topology": {
+        "topics": [
+          "otel-syslog-1"
+        ],
+        "partitions_per_topic": 2,
+        "total_partitions": 2,
+        "cores": 1,
+        "core_ids": [
+          1
+        ],
+        "group": "kafka-syslog-scaling",
+        "aggregate_target_rate": 300000,
+        "record_bytes": 1024,
+        "rebalance_strategy": "round_robin",
+        "client_ids": [
+          "dfe-kafka-syslog-core1"
+        ]
+      },
+      "status": "verified",
+      "flags": [],
+      "metrics": {
+        "logs_produced_rate": 100697.79592033762,
+        "logs_received_rate": 27023.251897431834,
+        "logs_received_rate_core1": 27023.251897431834,
+        "cpu_percentage_total_avg": 99.64115224852031,
+        "cpu_percentage_total_max": 100.54666831377392,
+        "cpu_percentage_normalized_avg": 99.64115224852031,
+        "cpu_percentage_normalized_max": 100.54666831377392,
+        "ram_mib_avg": 218.02300347222223,
+        "ram_mib_max": 233.37890625,
+        "test_duration": 20.002187
+      },
+      "assigned_core_count_at_captures": {
+        "before": 1,
+        "final": 1
+      },
+      "core_coverage": [
+        {
+          "core_id": 1,
+          "assigned_at_either_capture": true,
+          "item_series_complete": true,
+          "observed_item_delta": 530483
+        }
+      ],
+      "partition_progress": [
+        {
+          "topic": "otel-syslog-1",
+          "partition": 0,
+          "committed_offset": 672043,
+          "log_end_offset": 1855983,
+          "committed_lag": 1183940,
+          "committed_progress": 550987
+        },
+        {
+          "topic": "otel-syslog-1",
+          "partition": 1,
+          "committed_offset": 654050,
+          "log_end_offset": 1855982,
+          "committed_lag": 1201932,
+          "committed_progress": 535576
+        }
+      ],
+      "producer_partition_counts": [
+        {
+          "topic": "otel-syslog-1",
+          "partition": 0,
+          "records": 1855983
+        },
+        {
+          "topic": "otel-syslog-1",
+          "partition": 1,
+          "records": 1855982
+        }
+      ],
+      "final_producer_logs": 3711965,
+      "final_local_perf_logs": 1152853,
+      "final_not_observed_at_local_perf": 2559112,
+      "consumer_config_sha256": "4a0b23cb7d47becfe1301113e0d35f922f431174d03455c927f682aace7be447",
+      "sql_report_sha256": "e63c3b14d73d612a21c24654acaee785fa10811fda32e07e08d6d12c627e5593",
+      "verification_sha256": "1dbafa9b18800157fc4ad74e3d90b3b74a2745065943f350df89acfa4bb71242",
+      "decode_error_series_present": [
+        false
+      ],
+      "assignment_unchanged_at_captures": true,
+      "assignment": [
+        {
+          "core_id": 1,
+          "client_id": "dfe-kafka-syslog-core1",
+          "partitions": [
+            {
+              "topic": "otel-syslog-1",
+              "partition": 0
+            },
+            {
+              "topic": "otel-syslog-1",
+              "partition": 1
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "suite": "dfe_logs_kafka_syslog_scaling_1core",
+      "run_id": "20261007_000424",
+      "test": "t1p4-300k",
+      "topology": {
+        "topics": [
+          "otel-syslog-1"
+        ],
+        "partitions_per_topic": 4,
+        "total_partitions": 4,
+        "cores": 1,
+        "core_ids": [
+          1
+        ],
+        "group": "kafka-syslog-scaling",
+        "aggregate_target_rate": 300000,
+        "record_bytes": 1024,
+        "rebalance_strategy": "round_robin",
+        "client_ids": [
+          "dfe-kafka-syslog-core1"
+        ]
+      },
+      "status": "verified",
+      "flags": [],
+      "metrics": {
+        "logs_produced_rate": 121266.4428307436,
+        "logs_received_rate": 29894.585581779,
+        "logs_received_rate_core1": 29894.585581779,
+        "cpu_percentage_total_avg": 100.58307902788937,
+        "cpu_percentage_total_max": 101.50533167701863,
+        "cpu_percentage_normalized_avg": 100.58307902788937,
+        "cpu_percentage_normalized_max": 101.50533167701863,
+        "ram_mib_avg": 212.45963541666666,
+        "ram_mib_max": 219.15234375,
+        "test_duration": 20.001772
+      },
+      "assigned_core_count_at_captures": {
+        "before": 1,
+        "final": 1
+      },
+      "core_coverage": [
+        {
+          "core_id": 1,
+          "assigned_at_either_capture": true,
+          "item_series_complete": true,
+          "observed_item_delta": 611975
+        }
+      ],
+      "partition_progress": [
+        {
+          "topic": "otel-syslog-1",
+          "partition": 0,
+          "committed_offset": 413338,
+          "log_end_offset": 1096500,
+          "committed_lag": 683162,
+          "committed_progress": 311139
+        },
+        {
+          "topic": "otel-syslog-1",
+          "partition": 1,
+          "committed_offset": 407028,
+          "log_end_offset": 1096500,
+          "committed_lag": 689472,
+          "committed_progress": 302307
+        },
+        {
+          "topic": "otel-syslog-1",
+          "partition": 2,
+          "committed_offset": 396565,
+          "log_end_offset": 1096500,
+          "committed_lag": 699935,
+          "committed_progress": 295436
+        },
+        {
+          "topic": "otel-syslog-1",
+          "partition": 3,
+          "committed_offset": 382472,
+          "log_end_offset": 1096500,
+          "committed_lag": 714028,
+          "committed_progress": 285681
+        }
+      ],
+      "producer_partition_counts": [
+        {
+          "topic": "otel-syslog-1",
+          "partition": 0,
+          "records": 1096500
+        },
+        {
+          "topic": "otel-syslog-1",
+          "partition": 1,
+          "records": 1096500
+        },
+        {
+          "topic": "otel-syslog-1",
+          "partition": 2,
+          "records": 1096500
+        },
+        {
+          "topic": "otel-syslog-1",
+          "partition": 3,
+          "records": 1096500
+        }
+      ],
+      "final_producer_logs": 4386000,
+      "final_local_perf_logs": 1426787,
+      "final_not_observed_at_local_perf": 2959213,
+      "consumer_config_sha256": "4a0b23cb7d47becfe1301113e0d35f922f431174d03455c927f682aace7be447",
+      "sql_report_sha256": "45397e22aa934136c901f6ca92f7a3885d3f84cfb41b636f5a520f4b4bcc8e63",
+      "verification_sha256": "f49be5b97cae4c12a58b1607a50f1616dbfc1086da29a140a1cd7b0028589ea2",
+      "decode_error_series_present": [
+        false
+      ],
+      "assignment_unchanged_at_captures": true,
+      "assignment": [
+        {
+          "core_id": 1,
+          "client_id": "dfe-kafka-syslog-core1",
+          "partitions": [
+            {
+              "topic": "otel-syslog-1",
+              "partition": 0
+            },
+            {
+              "topic": "otel-syslog-1",
+              "partition": 1
+            },
+            {
+              "topic": "otel-syslog-1",
+              "partition": 2
+            },
+            {
+              "topic": "otel-syslog-1",
+              "partition": 3
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "suite": "dfe_logs_kafka_syslog_scaling_2cores",
+      "run_id": "20261007_002322",
+      "test": "t1p1-300k",
+      "topology": {
+        "topics": [
+          "otel-syslog-1"
+        ],
+        "partitions_per_topic": 1,
+        "total_partitions": 1,
+        "cores": 2,
+        "core_ids": [
+          1,
+          2
+        ],
+        "group": "kafka-syslog-scaling",
+        "aggregate_target_rate": 300000,
+        "record_bytes": 1024,
+        "rebalance_strategy": "round_robin",
+        "client_ids": [
+          "dfe-kafka-syslog-core1",
+          "dfe-kafka-syslog-core2"
+        ]
+      },
+      "status": "flagged",
+      "flags": [
+        "Unassigned core2 has no emitted Perf item series; all-core aggregate remains unavailable"
+      ],
+      "metrics": {
+        "logs_produced_rate": 130276.80077623394,
+        "logs_received_rate": null,
+        "logs_received_rate_core1": 37652.44595134058,
+        "logs_received_rate_core2": null,
+        "cpu_percentage_total_avg": 100.02113434847955,
+        "cpu_percentage_total_max": 101.61239380804955,
+        "cpu_percentage_normalized_avg": 50.010567174239775,
+        "cpu_percentage_normalized_max": 50.80619690402477,
+        "ram_mib_avg": 228.41710069444446,
+        "ram_mib_max": 231.58203125,
+        "test_duration": 20.003816
+      },
+      "assigned_core_count_at_captures": {
+        "before": 1,
+        "final": 1
+      },
+      "core_coverage": [
+        {
+          "core_id": 1,
+          "assigned_at_either_capture": true,
+          "item_series_complete": true,
+          "observed_item_delta": 732261
+        },
+        {
+          "core_id": 2,
+          "assigned_at_either_capture": false,
+          "item_series_complete": false,
+          "observed_item_delta": null
+        }
+      ],
+      "partition_progress": [
+        {
+          "topic": "otel-syslog-1",
+          "partition": 0,
+          "committed_offset": 1655625,
+          "log_end_offset": 4683965,
+          "committed_lag": 3028340,
+          "committed_progress": 1349508
+        }
+      ],
+      "producer_partition_counts": [
+        {
+          "topic": "otel-syslog-1",
+          "partition": 0,
+          "records": 4683965
+        }
+      ],
+      "final_producer_logs": 4683965,
+      "final_local_perf_logs": null,
+      "final_not_observed_at_local_perf": null,
+      "consumer_config_sha256": "357626dfea9496c3720c1eb8a6aa62062367dc5b9bcfff27d55d1393b7a8e65b",
+      "sql_report_sha256": "53b4b9221323e381e2063ceee19e9a0e04287fa1c0eac2ffbd0a4b6328aa36b4",
+      "verification_sha256": "e3f08150ef51cdf02daced73e384f9cbc11dce229dfb100392bb263b49b3514c",
+      "decode_error_series_present": [
+        false,
+        false
+      ],
+      "assignment_unchanged_at_captures": true,
+      "assignment": [
+        {
+          "core_id": 1,
+          "client_id": "dfe-kafka-syslog-core1",
+          "partitions": [
+            {
+              "topic": "otel-syslog-1",
+              "partition": 0
+            }
+          ]
+        },
+        {
+          "core_id": 2,
+          "client_id": "dfe-kafka-syslog-core2",
+          "partitions": []
+        }
+      ]
+    },
+    {
+      "suite": "dfe_logs_kafka_syslog_scaling_2cores",
+      "run_id": "20261007_002322",
+      "test": "t1p2-300k",
+      "topology": {
+        "topics": [
+          "otel-syslog-1"
+        ],
+        "partitions_per_topic": 2,
+        "total_partitions": 2,
+        "cores": 2,
+        "core_ids": [
+          1,
+          2
+        ],
+        "group": "kafka-syslog-scaling",
+        "aggregate_target_rate": 300000,
+        "record_bytes": 1024,
+        "rebalance_strategy": "round_robin",
+        "client_ids": [
+          "dfe-kafka-syslog-core1",
+          "dfe-kafka-syslog-core2"
+        ]
+      },
+      "status": "verified",
+      "flags": [],
+      "metrics": {
+        "logs_produced_rate": 97909.67618354349,
+        "logs_received_rate": 72613.52734894163,
+        "logs_received_rate_core1": 36685.61872873774,
+        "logs_received_rate_core2": 35927.90862020388,
+        "cpu_percentage_total_avg": 201.03299767332268,
+        "cpu_percentage_total_max": 203.66748653725736,
+        "cpu_percentage_normalized_avg": 100.51649883666134,
+        "cpu_percentage_normalized_max": 101.83374326862868,
+        "ram_mib_avg": 401.357421875,
+        "ram_mib_max": 409.25390625,
+        "test_duration": 20.006396
+      },
+      "assigned_core_count_at_captures": {
+        "before": 2,
+        "final": 2
+      },
+      "core_coverage": [
+        {
+          "core_id": 1,
+          "assigned_at_either_capture": true,
+          "item_series_complete": true,
+          "observed_item_delta": 711465
+        },
+        {
+          "core_id": 2,
+          "assigned_at_either_capture": true,
+          "item_series_complete": true,
+          "observed_item_delta": 697353
+        }
+      ],
+      "partition_progress": [
+        {
+          "topic": "otel-syslog-1",
+          "partition": 0,
+          "committed_offset": 1522481,
+          "log_end_offset": 2036400,
+          "committed_lag": 513919,
+          "committed_progress": 1291780
+        },
+        {
+          "topic": "otel-syslog-1",
+          "partition": 1,
+          "committed_offset": 1502673,
+          "log_end_offset": 2036400,
+          "committed_lag": 533727,
+          "committed_progress": 1274646
+        }
+      ],
+      "producer_partition_counts": [
+        {
+          "topic": "otel-syslog-1",
+          "partition": 0,
+          "records": 2036400
+        },
+        {
+          "topic": "otel-syslog-1",
+          "partition": 1,
+          "records": 2036400
+        }
+      ],
+      "final_producer_logs": 4072800,
+      "final_local_perf_logs": 2671949,
+      "final_not_observed_at_local_perf": 1400851,
+      "consumer_config_sha256": "357626dfea9496c3720c1eb8a6aa62062367dc5b9bcfff27d55d1393b7a8e65b",
+      "sql_report_sha256": "3bc5ac944a1be37ceb9fcc17bd7a8e4a1402dcee19e761d3dee7c28fbd38baf0",
+      "verification_sha256": "22c95abbeab541a148c2c2febf5e20354d1eedbff9b5bb4872aec98eb7e64ebb",
+      "decode_error_series_present": [
+        false,
+        false
+      ],
+      "assignment_unchanged_at_captures": true,
+      "assignment": [
+        {
+          "core_id": 1,
+          "client_id": "dfe-kafka-syslog-core1",
+          "partitions": [
+            {
+              "topic": "otel-syslog-1",
+              "partition": 0
+            }
+          ]
+        },
+        {
+          "core_id": 2,
+          "client_id": "dfe-kafka-syslog-core2",
+          "partitions": [
+            {
+              "topic": "otel-syslog-1",
+              "partition": 1
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "suite": "dfe_logs_kafka_syslog_scaling_4cores",
+      "run_id": "20261007_003433",
+      "test": "t1p1-300k",
+      "topology": {
+        "topics": [
+          "otel-syslog-1"
+        ],
+        "partitions_per_topic": 1,
+        "total_partitions": 1,
+        "cores": 4,
+        "core_ids": [
+          1,
+          2,
+          3,
+          4
+        ],
+        "group": "kafka-syslog-scaling",
+        "aggregate_target_rate": 300000,
+        "record_bytes": 1024,
+        "rebalance_strategy": "round_robin",
+        "client_ids": [
+          "dfe-kafka-syslog-core1",
+          "dfe-kafka-syslog-core2",
+          "dfe-kafka-syslog-core3",
+          "dfe-kafka-syslog-core4"
+        ]
+      },
+      "status": "flagged",
+      "flags": [
+        "Unassigned core2 has no emitted Perf item series; all-core aggregate remains unavailable",
+        "Unassigned core3 has no emitted Perf item series; all-core aggregate remains unavailable",
+        "Unassigned core4 has no emitted Perf item series; all-core aggregate remains unavailable"
+      ],
+      "metrics": {
+        "logs_produced_rate": 140057.28370004057,
+        "logs_received_rate": null,
+        "logs_received_rate_core1": 36581.965281280616,
+        "logs_received_rate_core2": null,
+        "logs_received_rate_core3": null,
+        "logs_received_rate_core4": null,
+        "cpu_percentage_total_avg": 100.23214087806889,
+        "cpu_percentage_total_max": 101.3248732220161,
+        "cpu_percentage_normalized_avg": 25.058035219517222,
+        "cpu_percentage_normalized_max": 25.331218305504024,
+        "ram_mib_avg": 257.943359375,
+        "ram_mib_max": 261.609375,
+        "test_duration": 20.001374
+      },
+      "assigned_core_count_at_captures": {
+        "before": 1,
+        "final": 1
+      },
+      "core_coverage": [
+        {
+          "core_id": 1,
+          "assigned_at_either_capture": true,
+          "item_series_complete": true,
+          "observed_item_delta": 717673
+        },
+        {
+          "core_id": 2,
+          "assigned_at_either_capture": false,
+          "item_series_complete": false,
+          "observed_item_delta": null
+        },
+        {
+          "core_id": 3,
+          "assigned_at_either_capture": false,
+          "item_series_complete": false,
+          "observed_item_delta": null
+        },
+        {
+          "core_id": 4,
+          "assigned_at_either_capture": false,
+          "item_series_complete": false,
+          "observed_item_delta": null
+        }
+      ],
+      "partition_progress": [
+        {
+          "topic": "otel-syslog-1",
+          "partition": 0,
+          "committed_offset": 1649351,
+          "log_end_offset": 4978165,
+          "committed_lag": 3328814,
+          "committed_progress": 1418670
+        }
+      ],
+      "producer_partition_counts": [
+        {
+          "topic": "otel-syslog-1",
+          "partition": 0,
+          "records": 4978165
+        }
+      ],
+      "final_producer_logs": 4978165,
+      "final_local_perf_logs": null,
+      "final_not_observed_at_local_perf": null,
+      "consumer_config_sha256": "b69b768994e94ebd77c1465d867efd75d3d19534d3f101b9c515de56ee93ec99",
+      "sql_report_sha256": "d5595fbaca0afefaaa5e000595805204f8be825e664e212a6f15d622d2419d70",
+      "verification_sha256": "ec949edbb4422b8c95a78296be9cb2dcb38bbeb1ebf74bd3bb89c690b7dcc91b",
+      "decode_error_series_present": [
+        false,
+        false,
+        false,
+        false
+      ],
+      "assignment_unchanged_at_captures": true,
+      "assignment": [
+        {
+          "core_id": 1,
+          "client_id": "dfe-kafka-syslog-core1",
+          "partitions": [
+            {
+              "topic": "otel-syslog-1",
+              "partition": 0
+            }
+          ]
+        },
+        {
+          "core_id": 2,
+          "client_id": "dfe-kafka-syslog-core2",
+          "partitions": []
+        },
+        {
+          "core_id": 3,
+          "client_id": "dfe-kafka-syslog-core3",
+          "partitions": []
+        },
+        {
+          "core_id": 4,
+          "client_id": "dfe-kafka-syslog-core4",
+          "partitions": []
+        }
+      ]
+    },
+    {
+      "suite": "dfe_logs_kafka_syslog_scaling_4cores",
+      "run_id": "20261007_003433",
+      "test": "t1p4-300k",
+      "topology": {
+        "topics": [
+          "otel-syslog-1"
+        ],
+        "partitions_per_topic": 4,
+        "total_partitions": 4,
+        "cores": 4,
+        "core_ids": [
+          1,
+          2,
+          3,
+          4
+        ],
+        "group": "kafka-syslog-scaling",
+        "aggregate_target_rate": 300000,
+        "record_bytes": 1024,
+        "rebalance_strategy": "round_robin",
+        "client_ids": [
+          "dfe-kafka-syslog-core1",
+          "dfe-kafka-syslog-core2",
+          "dfe-kafka-syslog-core3",
+          "dfe-kafka-syslog-core4"
+        ]
+      },
+      "status": "verified",
+      "flags": [],
+      "metrics": {
+        "logs_produced_rate": 115276.59265058288,
+        "logs_received_rate": 115416.40138373576,
+        "logs_received_rate_core1": 29770.422552188462,
+        "logs_received_rate_core2": 28092.460053395782,
+        "logs_received_rate_core3": 28408.13531677278,
+        "logs_received_rate_core4": 29145.383461378748,
+        "cpu_percentage_total_avg": 396.9781410999377,
+        "cpu_percentage_total_max": 405.71831657355676,
+        "cpu_percentage_normalized_avg": 99.24453527498443,
+        "cpu_percentage_normalized_max": 101.42957914338919,
+        "ram_mib_avg": 726.61875,
+        "ram_mib_max": 757.7109375,
+        "test_duration": 20.002927
+      },
+      "assigned_core_count_at_captures": {
+        "before": 4,
+        "final": 4
+      },
+      "core_coverage": [
+        {
+          "core_id": 1,
+          "assigned_at_either_capture": true,
+          "item_series_complete": true,
+          "observed_item_delta": 634384
+        },
+        {
+          "core_id": 2,
+          "assigned_at_either_capture": true,
+          "item_series_complete": true,
+          "observed_item_delta": 601829
+        },
+        {
+          "core_id": 3,
+          "assigned_at_either_capture": true,
+          "item_series_complete": true,
+          "observed_item_delta": 611876
+        },
+        {
+          "core_id": 4,
+          "assigned_at_either_capture": true,
+          "item_series_complete": true,
+          "observed_item_delta": 622281
+        }
+      ],
+      "partition_progress": [
+        {
+          "topic": "otel-syslog-1",
+          "partition": 0,
+          "committed_offset": 1074450,
+          "log_end_offset": 1074450,
+          "committed_lag": 0,
+          "committed_progress": 799779
+        },
+        {
+          "topic": "otel-syslog-1",
+          "partition": 3,
+          "committed_offset": 1074450,
+          "log_end_offset": 1074450,
+          "committed_lag": 0,
+          "committed_progress": 800026
+        },
+        {
+          "topic": "otel-syslog-1",
+          "partition": 2,
+          "committed_offset": 1074450,
+          "log_end_offset": 1074450,
+          "committed_lag": 0,
+          "committed_progress": 796210
+        },
+        {
+          "topic": "otel-syslog-1",
+          "partition": 1,
+          "committed_offset": 1074450,
+          "log_end_offset": 1074450,
+          "committed_lag": 0,
+          "committed_progress": 804037
+        }
+      ],
+      "producer_partition_counts": [
+        {
+          "topic": "otel-syslog-1",
+          "partition": 0,
+          "records": 1074450
+        },
+        {
+          "topic": "otel-syslog-1",
+          "partition": 1,
+          "records": 1074450
+        },
+        {
+          "topic": "otel-syslog-1",
+          "partition": 2,
+          "records": 1074450
+        },
+        {
+          "topic": "otel-syslog-1",
+          "partition": 3,
+          "records": 1074450
+        }
+      ],
+      "final_producer_logs": 4297800,
+      "final_local_perf_logs": 4297800,
+      "final_not_observed_at_local_perf": 0,
+      "consumer_config_sha256": "b69b768994e94ebd77c1465d867efd75d3d19534d3f101b9c515de56ee93ec99",
+      "sql_report_sha256": "5fba224911a2a865f10e9a4bd3cb8fdac7c9406e9bcd02a200c1c328889053cc",
+      "verification_sha256": "156d4394337bb19c395ed01eb690939222243978970c5e41af15c4becc97e8e6",
+      "decode_error_series_present": [
+        false,
+        false,
+        false,
+        false
+      ],
+      "assignment_unchanged_at_captures": true,
+      "assignment": [
+        {
+          "core_id": 1,
+          "client_id": "dfe-kafka-syslog-core1",
+          "partitions": [
+            {
+              "topic": "otel-syslog-1",
+              "partition": 0
+            }
+          ]
+        },
+        {
+          "core_id": 2,
+          "client_id": "dfe-kafka-syslog-core2",
+          "partitions": [
+            {
+              "topic": "otel-syslog-1",
+              "partition": 1
+            }
+          ]
+        },
+        {
+          "core_id": 3,
+          "client_id": "dfe-kafka-syslog-core3",
+          "partitions": [
+            {
+              "topic": "otel-syslog-1",
+              "partition": 2
+            }
+          ]
+        },
+        {
+          "core_id": 4,
+          "client_id": "dfe-kafka-syslog-core4",
+          "partitions": [
+            {
+              "topic": "otel-syslog-1",
+              "partition": 3
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "suite": "dfe_logs_kafka_syslog_scaling_4cores",
+      "run_id": "20261007_003433",
+      "test": "t2p2-300k",
+      "topology": {
+        "topics": [
+          "otel-syslog-1",
+          "otel-syslog-2"
+        ],
+        "partitions_per_topic": 2,
+        "total_partitions": 4,
+        "cores": 4,
+        "core_ids": [
+          1,
+          2,
+          3,
+          4
+        ],
+        "group": "kafka-syslog-scaling",
+        "aggregate_target_rate": 300000,
+        "record_bytes": 1024,
+        "rebalance_strategy": "round_robin",
+        "client_ids": [
+          "dfe-kafka-syslog-core1",
+          "dfe-kafka-syslog-core2",
+          "dfe-kafka-syslog-core3",
+          "dfe-kafka-syslog-core4"
+        ]
+      },
+      "status": "verified",
+      "flags": [],
+      "metrics": {
+        "logs_produced_rate": 120980.18807678264,
+        "logs_received_rate": 117300.65969534262,
+        "logs_received_rate_core1": 29599.411938176443,
+        "logs_received_rate_core2": 29482.40476492997,
+        "logs_received_rate_core3": 29061.126589039864,
+        "logs_received_rate_core4": 29157.71640319635,
+        "cpu_percentage_total_avg": 400.0325151425483,
+        "cpu_percentage_total_max": 406.3484093711467,
+        "cpu_percentage_normalized_avg": 100.00812878563707,
+        "cpu_percentage_normalized_max": 101.58710234278668,
+        "ram_mib_avg": 726.2703993055555,
+        "ram_mib_max": 752.3984375,
+        "test_duration": 20.004224
+      },
+      "assigned_core_count_at_captures": {
+        "before": 4,
+        "final": 4
+      },
+      "core_coverage": [
+        {
+          "core_id": 1,
+          "assigned_at_either_capture": true,
+          "item_series_complete": true,
+          "observed_item_delta": 593890
+        },
+        {
+          "core_id": 2,
+          "assigned_at_either_capture": true,
+          "item_series_complete": true,
+          "observed_item_delta": 589543
+        },
+        {
+          "core_id": 3,
+          "assigned_at_either_capture": true,
+          "item_series_complete": true,
+          "observed_item_delta": 585509
+        },
+        {
+          "core_id": 4,
+          "assigned_at_either_capture": true,
+          "item_series_complete": true,
+          "observed_item_delta": 589402
+        }
+      ],
+      "partition_progress": [
+        {
+          "topic": "otel-syslog-1",
+          "partition": 0,
+          "committed_offset": 1103925,
+          "log_end_offset": 1103925,
+          "committed_lag": 0,
+          "committed_progress": 837685
+        },
+        {
+          "topic": "otel-syslog-1",
+          "partition": 1,
+          "committed_offset": 1103925,
+          "log_end_offset": 1103925,
+          "committed_lag": 0,
+          "committed_progress": 840688
+        },
+        {
+          "topic": "otel-syslog-2",
+          "partition": 0,
+          "committed_offset": 1103925,
+          "log_end_offset": 1103925,
+          "committed_lag": 0,
+          "committed_progress": 835525
+        },
+        {
+          "topic": "otel-syslog-2",
+          "partition": 1,
+          "committed_offset": 1103925,
+          "log_end_offset": 1103925,
+          "committed_lag": 0,
+          "committed_progress": 829407
+        }
+      ],
+      "producer_partition_counts": [
+        {
+          "topic": "otel-syslog-1",
+          "partition": 0,
+          "records": 1103925
+        },
+        {
+          "topic": "otel-syslog-1",
+          "partition": 1,
+          "records": 1103925
+        },
+        {
+          "topic": "otel-syslog-2",
+          "partition": 0,
+          "records": 1103925
+        },
+        {
+          "topic": "otel-syslog-2",
+          "partition": 1,
+          "records": 1103925
+        }
+      ],
+      "final_producer_logs": 4415700,
+      "final_local_perf_logs": 4415700,
+      "final_not_observed_at_local_perf": 0,
+      "consumer_config_sha256": "7d82acc1ae6dbcbd7c861e9244ec178b4924a8012acefcb991b251a1e79893bf",
+      "sql_report_sha256": "f5644e3011b8e51212c739cfe453df9168878abaab5d7fd2ce13df2012b410ac",
+      "verification_sha256": "fe4781d8bc3be18db49f39ec8066c8c2f5ad3defd15e6b1cc7c98e5e886448dc",
+      "decode_error_series_present": [
+        false,
+        false,
+        false,
+        false
+      ],
+      "assignment_unchanged_at_captures": true,
+      "assignment": [
+        {
+          "core_id": 1,
+          "client_id": "dfe-kafka-syslog-core1",
+          "partitions": [
+            {
+              "topic": "otel-syslog-1",
+              "partition": 0
+            }
+          ]
+        },
+        {
+          "core_id": 2,
+          "client_id": "dfe-kafka-syslog-core2",
+          "partitions": [
+            {
+              "topic": "otel-syslog-1",
+              "partition": 1
+            }
+          ]
+        },
+        {
+          "core_id": 3,
+          "client_id": "dfe-kafka-syslog-core3",
+          "partitions": [
+            {
+              "topic": "otel-syslog-2",
+              "partition": 0
+            }
+          ]
+        },
+        {
+          "core_id": 4,
+          "client_id": "dfe-kafka-syslog-core4",
+          "partitions": [
+            {
+              "topic": "otel-syslog-2",
+              "partition": 1
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "suite": "dfe_logs_kafka_syslog_scaling_4cores",
+      "run_id": "20261007_003433",
+      "test": "t4p1-300k",
+      "topology": {
+        "topics": [
+          "otel-syslog-1",
+          "otel-syslog-2",
+          "otel-syslog-3",
+          "otel-syslog-4"
+        ],
+        "partitions_per_topic": 1,
+        "total_partitions": 4,
+        "cores": 4,
+        "core_ids": [
+          1,
+          2,
+          3,
+          4
+        ],
+        "group": "kafka-syslog-scaling",
+        "aggregate_target_rate": 300000,
+        "record_bytes": 1024,
+        "rebalance_strategy": "round_robin",
+        "client_ids": [
+          "dfe-kafka-syslog-core1",
+          "dfe-kafka-syslog-core2",
+          "dfe-kafka-syslog-core3",
+          "dfe-kafka-syslog-core4"
+        ]
+      },
+      "status": "verified",
+      "flags": [],
+      "metrics": {
+        "logs_produced_rate": 116740.96913718458,
+        "logs_received_rate": 119797.25688425559,
+        "logs_received_rate_core1": 30577.706282595333,
+        "logs_received_rate_core2": 28991.310505957965,
+        "logs_received_rate_core3": 30385.435009285662,
+        "logs_received_rate_core4": 29842.805086416633,
+        "cpu_percentage_total_avg": 399.6459194221793,
+        "cpu_percentage_total_max": 407.2413848069738,
+        "cpu_percentage_normalized_avg": 99.91147985554483,
+        "cpu_percentage_normalized_max": 101.81034620174346,
+        "ram_mib_avg": 712.2417534722222,
+        "ram_mib_max": 739.09375,
+        "test_duration": 20.002394
+      },
+      "assigned_core_count_at_captures": {
+        "before": 4,
+        "final": 4
+      },
+      "core_coverage": [
+        {
+          "core_id": 1,
+          "assigned_at_either_capture": true,
+          "item_series_complete": true,
+          "observed_item_delta": 638132
+        },
+        {
+          "core_id": 2,
+          "assigned_at_either_capture": true,
+          "item_series_complete": true,
+          "observed_item_delta": 579665
+        },
+        {
+          "core_id": 3,
+          "assigned_at_either_capture": true,
+          "item_series_complete": true,
+          "observed_item_delta": 636572
+        },
+        {
+          "core_id": 4,
+          "assigned_at_either_capture": true,
+          "item_series_complete": true,
+          "observed_item_delta": 599783
+        }
+      ],
+      "partition_progress": [
+        {
+          "topic": "otel-syslog-4",
+          "partition": 0,
+          "committed_offset": 1081125,
+          "log_end_offset": 1081125,
+          "committed_lag": 0,
+          "committed_progress": 803723
+        },
+        {
+          "topic": "otel-syslog-2",
+          "partition": 0,
+          "committed_offset": 1081125,
+          "log_end_offset": 1081125,
+          "committed_lag": 0,
+          "committed_progress": 809736
+        },
+        {
+          "topic": "otel-syslog-1",
+          "partition": 0,
+          "committed_offset": 1081125,
+          "log_end_offset": 1081125,
+          "committed_lag": 0,
+          "committed_progress": 794282
+        },
+        {
+          "topic": "otel-syslog-3",
+          "partition": 0,
+          "committed_offset": 1081125,
+          "log_end_offset": 1081125,
+          "committed_lag": 0,
+          "committed_progress": 800914
+        }
+      ],
+      "producer_partition_counts": [
+        {
+          "topic": "otel-syslog-1",
+          "partition": 0,
+          "records": 1081125
+        },
+        {
+          "topic": "otel-syslog-2",
+          "partition": 0,
+          "records": 1081125
+        },
+        {
+          "topic": "otel-syslog-3",
+          "partition": 0,
+          "records": 1081125
+        },
+        {
+          "topic": "otel-syslog-4",
+          "partition": 0,
+          "records": 1081125
+        }
+      ],
+      "final_producer_logs": 4324500,
+      "final_local_perf_logs": 4324500,
+      "final_not_observed_at_local_perf": 0,
+      "consumer_config_sha256": "694a947e0471ff268c6f71105229ea52ade6dbb4b70c9b3492248666048991e2",
+      "sql_report_sha256": "e672ada1d1ac317344cf79719f18a5f1a526fe15f7bce6be8ca1b30860664514",
+      "verification_sha256": "0eed8496dc71fdf9b47154a1007340b94b66945190105e8f399b8f9c8bea709f",
+      "decode_error_series_present": [
+        false,
+        false,
+        false,
+        false
+      ],
+      "assignment_unchanged_at_captures": true,
+      "assignment": [
+        {
+          "core_id": 1,
+          "client_id": "dfe-kafka-syslog-core1",
+          "partitions": [
+            {
+              "topic": "otel-syslog-1",
+              "partition": 0
+            }
+          ]
+        },
+        {
+          "core_id": 2,
+          "client_id": "dfe-kafka-syslog-core2",
+          "partitions": [
+            {
+              "topic": "otel-syslog-2",
+              "partition": 0
+            }
+          ]
+        },
+        {
+          "core_id": 3,
+          "client_id": "dfe-kafka-syslog-core3",
+          "partitions": [
+            {
+              "topic": "otel-syslog-3",
+              "partition": 0
+            }
+          ]
+        },
+        {
+          "core_id": 4,
+          "client_id": "dfe-kafka-syslog-core4",
+          "partitions": [
+            {
+              "topic": "otel-syslog-4",
+              "partition": 0
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "notes": [
+    "Configured rates are aggregate, not per core/topic/partition; actual input differed.",
+    "Missing idle-core item series remain null; four control aggregates are inconclusive.",
+    "Partition commit progress covers bracketing group captures, not only observation.",
+    "Final successful Perf counts precede shutdown after the bounded producer-off drain.",
+    "A cutoff deficit is not proven loss; zero deficit does not prove capacity or fidelity.",
+    "Absent dedicated decode-error metrics are unavailable, not zero."
+  ]
+}
