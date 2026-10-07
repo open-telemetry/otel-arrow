@@ -10,7 +10,9 @@
 //! reported by the event itself.
 
 use super::super::xml::{Document, Node};
-use super::model::{Attribute, Content, DataEntry, Element, RenderingInfo, System, WindowsEvent};
+use super::model::{
+    Attribute, Content, DataEntry, Element, EventData, RenderingInfo, System, WindowsEvent,
+};
 
 const EVENT_NS: &str = "http://schemas.microsoft.com/win/2004/08/events/event";
 const MAX_USER_DATA_DEPTH: usize = 32;
@@ -96,25 +98,31 @@ fn parse_rendering(node: Node<'_, '_>) -> Result<RenderingInfo, String> {
 }
 
 /// Collect `EventData/Data` entries in source order, naming unnamed ones `paramN`.
-fn parse_event_data(root: Node<'_, '_>) -> Result<Vec<DataEntry>, String> {
+/// Collect the `EventData` payload, retaining `Data`, `ComplexData`, and `Binary`.
+///
+/// Unnamed `Data` entries are named `paramN` by their one-based element position.
+fn parse_event_data(root: Node<'_, '_>) -> Result<EventData, String> {
     let Some(data) = child(root, "EventData")? else {
-        return Ok(Vec::new());
+        return Ok(EventData::default());
     };
-    let mut entries = Vec::new();
+    let mut event_data = EventData::default();
     for (position, item) in data.children().filter(Node::is_element).enumerate() {
-        if !item.has_tag_name((EVENT_NS, "Data")) {
-            continue;
+        if item.has_tag_name((EVENT_NS, "Data")) {
+            let name = item
+                .attribute("Name")
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("param{}", position + 1));
+            event_data.entries.push(DataEntry {
+                name,
+                value: text(item)?,
+            });
+        } else if item.has_tag_name((EVENT_NS, "ComplexData")) {
+            event_data.complex.push(parse_element(item, 0)?);
+        } else if item.has_tag_name((EVENT_NS, "Binary")) {
+            event_data.binary = Some(text(item)?);
         }
-        let name = item
-            .attribute("Name")
-            .map(str::to_owned)
-            .unwrap_or_else(|| format!("param{}", position + 1));
-        entries.push(DataEntry {
-            name,
-            value: text(item)?,
-        });
     }
-    Ok(entries)
+    Ok(event_data)
 }
 
 /// Retain element/attribute names, namespaces, and ordered mixed content.
@@ -237,11 +245,13 @@ mod tests {
         );
         let names: Vec<_> = event
             .event_data
+            .entries
             .iter()
             .map(|entry| entry.name.as_str())
             .collect();
         let values: Vec<_> = event
             .event_data
+            .entries
             .iter()
             .map(|entry| entry.value.as_str())
             .collect();
@@ -281,8 +291,39 @@ mod tests {
         assert_eq!(event.system.level, 0);
         assert!(event.system.channel.is_none());
         assert!(event.rendering.is_none());
-        assert!(event.event_data.is_empty());
+        assert!(event.event_data.entries.is_empty());
+        assert!(event.event_data.complex.is_empty());
+        assert!(event.event_data.binary.is_none());
         assert!(event.user_data.is_none());
+    }
+
+    /// Scenario: EventData carries ComplexData and a Binary payload alongside Data entries.
+    /// Guarantees: every EventData variant is retained rather than silently dropped.
+    #[test]
+    fn retains_complex_and_binary_event_data() {
+        let xml = concat!(
+            "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'>",
+            "<System><EventID>1</EventID><TimeCreated SystemTime='2026-09-22T19:28:11Z'/></System>",
+            "<EventData>",
+            "<Data Name='a'>one</Data>",
+            "<ComplexData><Field k='v'>inner</Field></ComplexData>",
+            "<Binary>0102FF</Binary>",
+            "</EventData>",
+            "</Event>",
+        );
+        let event = from_document(&Document::parse(xml).unwrap()).unwrap();
+        assert_eq!(event.event_data.entries.len(), 1);
+        assert_eq!(event.event_data.entries[0].name, "a");
+        assert_eq!(event.event_data.binary.as_deref(), Some("0102FF"));
+        assert_eq!(event.event_data.complex.len(), 1);
+        let complex = &event.event_data.complex[0];
+        assert_eq!(complex.name, "ComplexData");
+        let Content::Element(field) = &complex.content[0] else {
+            panic!("expected nested Field element");
+        };
+        assert_eq!(field.name, "Field");
+        assert_eq!(field.attributes[0].name, "k");
+        assert_eq!(field.content[0], Content::Text("inner".into()));
     }
 
     /// Scenario: malformed documents miss required fields, carry bad numbers, or nest too deeply.

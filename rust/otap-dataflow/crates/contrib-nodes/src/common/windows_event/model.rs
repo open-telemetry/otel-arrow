@@ -15,8 +15,8 @@ pub struct WindowsEvent {
     pub system: System,
     /// Publisher-rendered message and level text, when present.
     pub rendering: Option<RenderingInfo>,
-    /// `EventData` entries in source order, retaining repeated names.
-    pub event_data: Vec<DataEntry>,
+    /// `EventData` payload: `Data` entries, `ComplexData`, and an optional `Binary`.
+    pub event_data: EventData,
     /// Namespace-aware `UserData` element tree, when present.
     pub user_data: Option<Element>,
 }
@@ -57,6 +57,17 @@ pub struct RenderingInfo {
     pub message: Option<String>,
     /// Localized level name usable as severity text.
     pub level: Option<String>,
+}
+
+/// `EventData` payload, retaining every variant rather than dropping unsupported ones.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct EventData {
+    /// `Data` entries in source order, retaining repeated names.
+    pub entries: Vec<DataEntry>,
+    /// `ComplexData` elements as namespace-aware trees, in source order.
+    pub complex: Vec<Element>,
+    /// `Binary` payload as its raw hex string, when present.
+    pub binary: Option<String>,
 }
 
 /// One `EventData/Data` entry. Unnamed entries use a one-based `paramN` name.
