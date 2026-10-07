@@ -2129,6 +2129,411 @@ async fn test_filter_data_point_by_attribute_with_dict_u16_parent_ids() {
     assert_metrics_eq(metrics_result, expected);
 }
 
+/// Helper function for nested attribute assignment tests on metric data points.
+///
+/// Runs the given query against all metric data point types, where each data point has the
+/// provided input attributes. After execution, asserts that all data points across all metric
+/// types have the expected attributes.
+async fn run_nested_attr_assign_to_all_data_point_type_test(
+    query: &str,
+    input_attributes: Vec<KeyValue>,
+    expected_attributes: Vec<KeyValue>,
+) {
+    let pipeline_expr = OplParser::parse_with_options(query, default_parser_options())
+        .unwrap()
+        .pipeline;
+    let mut pipeline = Pipeline::new(pipeline_expr);
+
+    let metrics = vec![
+        Metric::build()
+            .name("gauge_metric")
+            .data_gauge(Gauge {
+                data_points: vec![
+                    NumberDataPoint::build()
+                        .attributes(input_attributes.clone())
+                        .finish(),
+                ],
+            })
+            .finish(),
+        Metric::build()
+            .name("sum")
+            .data_sum(Sum {
+                data_points: vec![
+                    NumberDataPoint::build()
+                        .attributes(input_attributes.clone())
+                        .finish(),
+                ],
+                ..Default::default()
+            })
+            .finish(),
+        Metric::build()
+            .name("histogram")
+            .data_histogram(Histogram {
+                data_points: vec![
+                    HistogramDataPoint::build()
+                        .attributes(input_attributes.clone())
+                        .finish(),
+                ],
+                ..Default::default()
+            })
+            .finish(),
+        Metric::build()
+            .name("exp_histogram")
+            .data_exponential_histogram(ExponentialHistogram {
+                data_points: vec![
+                    ExponentialHistogramDataPoint::build()
+                        .attributes(input_attributes.clone())
+                        .finish(),
+                ],
+                ..Default::default()
+            })
+            .finish(),
+        Metric::build()
+            .name("summary")
+            .data_summary(Summary {
+                data_points: vec![
+                    SummaryDataPoint::build()
+                        .attributes(input_attributes)
+                        .finish(),
+                ],
+            })
+            .finish(),
+    ];
+
+    let input_batch = otlp_to_otap(&OtlpProtoMessage::Metrics(to_metrics_data(metrics)));
+    let result = pipeline.execute(input_batch).await.unwrap();
+
+    let OtlpProtoMessage::Metrics(metrics_result) = otap_to_otlp(&result) else {
+        panic!("invalid signal type")
+    };
+
+    assert_eq!(metrics_result.resource_metrics.len(), 1);
+    assert_eq!(metrics_result.resource_metrics[0].scope_metrics.len(), 1);
+    assert_eq!(
+        metrics_result.resource_metrics[0].scope_metrics[0]
+            .metrics
+            .len(),
+        5
+    );
+    for metric in metrics_result.resource_metrics[0].scope_metrics[0]
+        .metrics
+        .iter()
+    {
+        let attrs = match metric.data.as_ref().unwrap() {
+            Data::Gauge(g) => {
+                assert_eq!(g.data_points.len(), 1);
+                &g.data_points[0].attributes
+            }
+            Data::Sum(s) => {
+                assert_eq!(s.data_points.len(), 1);
+                &s.data_points[0].attributes
+            }
+            Data::Histogram(h) => {
+                assert_eq!(h.data_points.len(), 1);
+                &h.data_points[0].attributes
+            }
+            Data::ExponentialHistogram(h) => {
+                assert_eq!(h.data_points.len(), 1);
+                &h.data_points[0].attributes
+            }
+            Data::Summary(s) => {
+                assert_eq!(s.data_points.len(), 1);
+                &s.data_points[0].attributes
+            }
+        };
+
+        pretty_assertions::assert_eq!(
+            *attrs,
+            expected_attributes,
+            "attribute mismatch for metric {:?}",
+            metric.name
+        );
+    }
+}
+
+/// Scenario: set a nested attribute path on metric data points that have a Map-typed attribute
+/// Guarantees: the nested value is updated for all metric data point types
+#[tokio::test]
+async fn test_assign_nested_map_attribute_on_data_points() {
+    let query = r#"metrics | apply data_points {
+        set attributes["complex"]["child"]["name"] = "after"
+    }"#;
+
+    let input_attributes = vec![KeyValue::new(
+        "complex",
+        AnyValue::new_kvlist(vec![
+            KeyValue::new("existing", AnyValue::new_string("old")),
+            KeyValue::new(
+                "child",
+                AnyValue::new_kvlist(vec![KeyValue::new("name", AnyValue::new_string("before"))]),
+            ),
+        ]),
+    )];
+
+    let expected_attributes = vec![KeyValue::new(
+        "complex",
+        AnyValue::new_kvlist(vec![
+            KeyValue::new("existing", AnyValue::new_string("old")),
+            KeyValue::new(
+                "child",
+                AnyValue::new_kvlist(vec![KeyValue::new("name", AnyValue::new_string("after"))]),
+            ),
+        ]),
+    )];
+
+    run_nested_attr_assign_to_all_data_point_type_test(
+        query,
+        input_attributes,
+        expected_attributes,
+    )
+    .await;
+}
+
+/// Scenario: set a nested attribute path where the top-level key does not exist on data points
+/// Guarantees: the operation is a no-op -- existing attributes are not modified
+#[tokio::test]
+async fn test_assign_nested_attribute_missing_top_level_key_is_noop_on_data_points() {
+    let query = r#"metrics | apply data_points {
+        set attributes["missing"].child = "after"
+    }"#;
+
+    let input_attributes = vec![KeyValue::new("source", AnyValue::new_string("value"))];
+    let expected_attributes = vec![KeyValue::new("source", AnyValue::new_string("value"))];
+
+    run_nested_attr_assign_to_all_data_point_type_test(
+        query,
+        input_attributes,
+        expected_attributes,
+    )
+    .await;
+}
+
+/// Scenario: set multiple nested paths on the same top-level attribute key on data points
+/// Guarantees: all nested paths are updated correctly in a single operation
+#[tokio::test]
+async fn test_assign_multiple_nested_paths_on_data_points() {
+    let query = r#"metrics | apply data_points {
+        set attributes["complex"].child.name = "after",
+            attributes["complex"].child.count = 2
+    }"#;
+
+    let input_attributes = vec![KeyValue::new(
+        "complex",
+        AnyValue::new_kvlist(vec![KeyValue::new(
+            "child",
+            AnyValue::new_kvlist(vec![
+                KeyValue::new("name", AnyValue::new_string("before")),
+                KeyValue::new("count", AnyValue::new_int(1)),
+            ]),
+        )]),
+    )];
+
+    let expected_attributes = vec![KeyValue::new(
+        "complex",
+        AnyValue::new_kvlist(vec![KeyValue::new(
+            "child",
+            AnyValue::new_kvlist(vec![
+                KeyValue::new("name", AnyValue::new_string("after")),
+                KeyValue::new("count", AnyValue::new_int(2)),
+            ]),
+        )]),
+    )];
+
+    run_nested_attr_assign_to_all_data_point_type_test(
+        query,
+        input_attributes,
+        expected_attributes,
+    )
+    .await;
+}
+
+/// Scenario: set a nested attribute path from another attribute value on data points
+/// Guarantees: the nested attribute is updated with the value from the source attribute
+#[tokio::test]
+async fn test_assign_nested_path_from_attribute_rhs_on_data_points() {
+    let query = r#"metrics | apply data_points {
+        set attributes["complex"]["child"]["name"] = attributes["source"]
+    }"#;
+
+    let input_attributes = vec![
+        KeyValue::new(
+            "complex",
+            AnyValue::new_kvlist(vec![KeyValue::new(
+                "child",
+                AnyValue::new_kvlist(vec![KeyValue::new("name", AnyValue::new_string("before"))]),
+            )]),
+        ),
+        KeyValue::new("source", AnyValue::new_string("from_source")),
+    ];
+
+    let expected_attributes = vec![
+        KeyValue::new(
+            "complex",
+            AnyValue::new_kvlist(vec![KeyValue::new(
+                "child",
+                AnyValue::new_kvlist(vec![KeyValue::new(
+                    "name",
+                    AnyValue::new_string("from_source"),
+                )]),
+            )]),
+        ),
+        KeyValue::new("source", AnyValue::new_string("from_source")),
+    ];
+
+    run_nested_attr_assign_to_all_data_point_type_test(
+        query,
+        input_attributes,
+        expected_attributes,
+    )
+    .await;
+}
+
+/// Scenario: set a nested attribute path from a data point record field (flags)
+/// Guarantees: the nested value is updated with the value of the data point field for all
+/// metric data point types, exercising the Record(Child) -> Attribute join path
+#[tokio::test]
+async fn test_assign_nested_path_from_data_point_field_on_data_points() {
+    let query = r#"metrics | apply data_points {
+        set attributes["complex"]["child"]["value"] = flags as Integer
+    }"#;
+
+    let flags: u32 = 7;
+    let input_attributes = vec![KeyValue::new(
+        "complex",
+        AnyValue::new_kvlist(vec![KeyValue::new(
+            "child",
+            AnyValue::new_kvlist(vec![KeyValue::new("value", AnyValue::new_int(0))]),
+        )]),
+    )];
+
+    let expected_attributes = vec![KeyValue::new(
+        "complex",
+        AnyValue::new_kvlist(vec![KeyValue::new(
+            "child",
+            AnyValue::new_kvlist(vec![KeyValue::new(
+                "value",
+                AnyValue::new_int(flags as i64),
+            )]),
+        )]),
+    )];
+
+    let pipeline_expr = OplParser::parse_with_options(query, default_parser_options())
+        .unwrap()
+        .pipeline;
+    let mut pipeline = Pipeline::new(pipeline_expr);
+
+    let metrics = vec![
+        Metric::build()
+            .name("gauge_metric")
+            .data_gauge(Gauge {
+                data_points: vec![
+                    NumberDataPoint::build()
+                        .flags(flags)
+                        .attributes(input_attributes.clone())
+                        .finish(),
+                ],
+            })
+            .finish(),
+        Metric::build()
+            .name("sum")
+            .data_sum(Sum {
+                data_points: vec![
+                    NumberDataPoint::build()
+                        .flags(flags)
+                        .attributes(input_attributes.clone())
+                        .finish(),
+                ],
+                ..Default::default()
+            })
+            .finish(),
+        Metric::build()
+            .name("histogram")
+            .data_histogram(Histogram {
+                data_points: vec![
+                    HistogramDataPoint::build()
+                        .flags(flags)
+                        .attributes(input_attributes.clone())
+                        .finish(),
+                ],
+                ..Default::default()
+            })
+            .finish(),
+        Metric::build()
+            .name("exp_histogram")
+            .data_exponential_histogram(ExponentialHistogram {
+                data_points: vec![
+                    ExponentialHistogramDataPoint::build()
+                        .flags(flags)
+                        .attributes(input_attributes.clone())
+                        .finish(),
+                ],
+                ..Default::default()
+            })
+            .finish(),
+        Metric::build()
+            .name("summary")
+            .data_summary(Summary {
+                data_points: vec![
+                    SummaryDataPoint::build()
+                        .flags(flags)
+                        .attributes(input_attributes)
+                        .finish(),
+                ],
+            })
+            .finish(),
+    ];
+
+    let input_batch = otlp_to_otap(&OtlpProtoMessage::Metrics(to_metrics_data(metrics)));
+    let result = pipeline.execute(input_batch).await.unwrap();
+
+    let OtlpProtoMessage::Metrics(metrics_result) = otap_to_otlp(&result) else {
+        panic!("invalid signal type")
+    };
+
+    assert_eq!(metrics_result.resource_metrics.len(), 1);
+    assert_eq!(metrics_result.resource_metrics[0].scope_metrics.len(), 1);
+    assert_eq!(
+        metrics_result.resource_metrics[0].scope_metrics[0]
+            .metrics
+            .len(),
+        5
+    );
+    for metric in metrics_result.resource_metrics[0].scope_metrics[0]
+        .metrics
+        .iter()
+    {
+        let attrs = match metric.data.as_ref().unwrap() {
+            Data::Gauge(g) => {
+                assert_eq!(g.data_points.len(), 1);
+                &g.data_points[0].attributes
+            }
+            Data::Sum(s) => {
+                assert_eq!(s.data_points.len(), 1);
+                &s.data_points[0].attributes
+            }
+            Data::Histogram(h) => {
+                assert_eq!(h.data_points.len(), 1);
+                &h.data_points[0].attributes
+            }
+            Data::ExponentialHistogram(h) => {
+                assert_eq!(h.data_points.len(), 1);
+                &h.data_points[0].attributes
+            }
+            Data::Summary(s) => {
+                assert_eq!(s.data_points.len(), 1);
+                &s.data_points[0].attributes
+            }
+        };
+
+        pretty_assertions::assert_eq!(
+            *attrs,
+            expected_attributes,
+            "attribute mismatch for metric {:?}",
+            metric.name
+        );
+    }
+}
+
 /// Scenario: try to execute some queries that have valid syntax, but define operations that are
 /// not supported by this query engine (although most will be supported in future)
 /// Guarantees: that the operation returns an expected error instead of inadvertently evaluating

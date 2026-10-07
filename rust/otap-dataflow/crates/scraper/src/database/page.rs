@@ -3,9 +3,8 @@
 
 //! Database-neutral cursor and bounded page contracts.
 //!
-//! The first supported watermark mode is `composite`: an ordered timestamp
-//! paired with a non-null `int64` tie-breaker that is unique within each
-//! timestamp group. Scalar and snapshot modes require separate contract work.
+//! Scalar and composite positions retain their exact values across delivery
+//! and restart. Comparison is explicit and rejects incompatible cursor types.
 
 use super::row::{ColumnMetadata, Row};
 use serde::{Deserialize, Serialize};
@@ -64,7 +63,7 @@ pub struct CursorRow {
     /// Ordered values matching the page's result metadata.
     pub row: Row,
     /// Position of this row in the query's required ascending ordering.
-    pub cursor: CompositeCursor,
+    pub cursor: Cursor,
 }
 
 /// One bounded page fetched after a committed cursor.
@@ -81,5 +80,75 @@ impl QueryPage {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.rows.is_empty()
+    }
+}
+
+/// A typed position passed unchanged from the driver through durable delivery.
+///
+/// The untagged composite representation preserves version-1 checkpoint bytes.
+/// Scalar values have an explicit `type` tag and cannot be read as composites.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum Cursor {
+    /// Timestamp and signed tie-breaker position.
+    Composite(CompositeCursor),
+    /// Single-column, strictly ordered position.
+    Scalar(super::scalar::ScalarValue),
+}
+
+impl Cursor {
+    /// Creates a composite position.
+    #[must_use]
+    pub const fn composite(timestamp: String, tie_breaker: i64) -> Self {
+        Self::Composite(CompositeCursor::new(timestamp, tie_breaker))
+    }
+
+    /// Returns composite components, if this is a composite position.
+    #[must_use]
+    pub const fn as_composite(&self) -> Option<&CompositeCursor> {
+        match self {
+            Self::Composite(value) => Some(value),
+            Self::Scalar(_) => None,
+        }
+    }
+
+    /// Checks that the position is valid without exposing its values in errors.
+    pub fn validate(&self) -> Result<(), super::scalar::CursorError> {
+        match self {
+            Self::Composite(value) => super::otap::parse_utc_timestamp(&value.timestamp)
+                .map(|_| ())
+                .map_err(|_| super::scalar::CursorError::InvalidTimestamp),
+            Self::Scalar(value) => value.validate(),
+        }
+    }
+
+    /// Compares compatible positions using their declared ordering semantics.
+    ///
+    /// Unlike derived enum ordering, different modes or scalar types are errors.
+    pub fn compare(&self, other: &Self) -> Result<std::cmp::Ordering, super::scalar::CursorError> {
+        use super::scalar::CursorError;
+        match (self, other) {
+            (Self::Composite(left), Self::Composite(right)) => {
+                let left_time = super::otap::parse_utc_timestamp(&left.timestamp)
+                    .map_err(|_| CursorError::InvalidTimestamp)?;
+                let right_time = super::otap::parse_utc_timestamp(&right.timestamp)
+                    .map_err(|_| CursorError::InvalidTimestamp)?;
+                Ok((left_time, left.tie_breaker).cmp(&(right_time, right.tie_breaker)))
+            }
+            (Self::Scalar(left), Self::Scalar(right)) => left.compare(right),
+            _ => Err(CursorError::TypeMismatch),
+        }
+    }
+}
+
+impl From<CompositeCursor> for Cursor {
+    fn from(value: CompositeCursor) -> Self {
+        Self::Composite(value)
+    }
+}
+
+impl From<super::scalar::ScalarValue> for Cursor {
+    fn from(value: super::scalar::ScalarValue) -> Self {
+        Self::Scalar(value)
     }
 }

@@ -9,8 +9,8 @@ use super::*;
 fn rejects_older_timestamp_with_larger_tie_breaker() {
     assert!(
         ensure_cursor_advanced(
-            &CompositeCursor::new("2026-01-02 00:00:00".into(), 1),
-            &CompositeCursor::new("2026-01-01 00:00:00".into(), 100),
+            &Cursor::composite("2026-01-02 00:00:00".into(), 1),
+            &Cursor::composite("2026-01-01 00:00:00".into(), 100),
         )
         .is_err()
     );
@@ -68,7 +68,7 @@ fn closed_control_channel() -> local::ControlChannel<OtapPdata> {
 fn checkpoint(revision: u64, tie_breaker: i64) -> CheckpointState {
     CheckpointState {
         revision,
-        cursor: CompositeCursor::new("2026-01-01 00:00:00".to_owned(), tie_breaker),
+        cursor: Cursor::composite("2026-01-01 00:00:00".to_owned(), tie_breaker),
     }
 }
 
@@ -165,16 +165,28 @@ impl DriverAdapter for FakeAdapter {
     async fn execute(
         &mut self,
         _query: &CompiledQuery,
-        committed: &CompositeCursor,
+        committed: &Cursor,
     ) -> Result<QueryPage, Self::Error> {
-        let cursor =
-            CompositeCursor::new("2026-01-01 00:00:00".to_owned(), committed.tie_breaker + 1);
+        let cursor = Cursor::composite(
+            "2026-01-01 00:00:00".to_owned(),
+            committed
+                .as_composite()
+                .expect("composite fixture")
+                .tie_breaker
+                + 1,
+        );
         Ok(QueryPage {
             columns: fake_columns(),
             rows: vec![CursorRow {
                 row: Row {
                     values: vec![
-                        CellValue::Decimal(cursor.tie_breaker.to_string()),
+                        CellValue::Decimal(
+                            cursor
+                                .as_composite()
+                                .expect("composite fixture")
+                                .tie_breaker
+                                .to_string(),
+                        ),
                         CellValue::Timestamp("2026-01-01T00:00:00".to_owned()),
                     ],
                 },
@@ -390,7 +402,14 @@ fn ack_commit_advances_cursor_and_clears_pending() {
     });
 
     assert_eq!(state.revision, 4);
-    assert_eq!(state.committed.tie_breaker, 20);
+    assert_eq!(
+        state
+            .committed
+            .as_composite()
+            .expect("composite fixture")
+            .tie_breaker,
+        20
+    );
     assert!(state.pending.is_none());
     assert!(state.can_poll());
 }
@@ -407,7 +426,14 @@ fn nack_retains_cursor_and_schedules_replay() {
 
     assert!(state.nack(1, replay_at));
     assert_eq!(state.revision, 3);
-    assert_eq!(state.committed.tie_breaker, 10);
+    assert_eq!(
+        state
+            .committed
+            .as_composite()
+            .expect("composite fixture")
+            .tie_breaker,
+        10
+    );
     assert_eq!(state.next_poll, replay_at);
     assert!(state.pending.is_none());
 }
@@ -452,7 +478,14 @@ fn stale_feedback_does_not_change_state() {
     assert!(state.ack_candidate(2).is_none());
     assert!(!state.nack(2, now + Duration::from_secs(5)));
     assert_eq!(state.revision, 2);
-    assert_eq!(state.committed.tie_breaker, 10);
+    assert_eq!(
+        state
+            .committed
+            .as_composite()
+            .expect("composite fixture")
+            .tie_breaker,
+        10
+    );
     assert_eq!(state.next_poll, original_next_poll);
     assert_eq!(state.pending.as_ref().map(|pending| pending.id), Some(1));
 }
@@ -491,7 +524,7 @@ fn batch_id_round_trips_through_call_data() {
 /// Guarantees: The receiver fails fast instead of ACKing and checkpointing the same page forever.
 #[test]
 fn equal_candidate_is_rejected_as_non_advancing() {
-    let committed = CompositeCursor::new("2026-01-01 00:00:00".to_owned(), 7);
+    let committed = Cursor::composite("2026-01-01 00:00:00".to_owned(), 7);
 
     assert!(matches!(
         ensure_cursor_advanced(&committed, &committed),
@@ -500,7 +533,7 @@ fn equal_candidate_is_rejected_as_non_advancing() {
     assert!(matches!(
         ensure_cursor_advanced(
             &committed,
-            &CompositeCursor::new("2026-01-01 00:00:00".to_owned(), 6)
+            &Cursor::composite("2026-01-01 00:00:00".to_owned(), 6)
         ),
         Err(ProgressError::NonAdvancingCursor)
     ));
@@ -672,7 +705,14 @@ fn matching_acks_reuse_encoder_and_commit_pages_through_the_receiver_loop() {
         .expect("checkpoint should be readable")
         .expect("ACK should install a checkpoint");
     assert_eq!(committed.revision, 2);
-    assert_eq!(committed.cursor.tie_breaker, 2);
+    assert_eq!(
+        committed
+            .cursor
+            .as_composite()
+            .expect("composite fixture")
+            .tie_breaker,
+        2
+    );
     assert!(shutdown_joined.get());
     drop(SourceLease::acquire(store.lease_key()).expect("lease released after receiver shutdown"));
 }
@@ -1221,7 +1261,14 @@ fn stale_feedback_is_counted_and_retryable_nack_still_replays() {
         });
     let committed = store.read().expect("checkpoint").expect("ACKed first page");
     assert_eq!(committed.revision, 1);
-    assert_eq!(committed.cursor.tie_breaker, 1);
+    assert_eq!(
+        committed
+            .cursor
+            .as_composite()
+            .expect("composite fixture")
+            .tie_breaker,
+        1
+    );
     assert!(joined.get());
     drop(SourceLease::acquire(store.lease_key()).expect("lease released"));
 }
@@ -1279,7 +1326,7 @@ impl DriverAdapter for CleanupBudgetAdapter {
     async fn execute(
         &mut self,
         query: &CompiledQuery,
-        cursor: &CompositeCursor,
+        cursor: &Cursor,
     ) -> Result<QueryPage, Self::Error> {
         self.executing.set(true);
         if matches!(self.case, CleanupWaitCase::Operation) {
@@ -1815,7 +1862,7 @@ impl DriverAdapter for EmptyMetadataAdapter {
     async fn execute(
         &mut self,
         _query: &CompiledQuery,
-        _committed: &CompositeCursor,
+        _committed: &Cursor,
     ) -> Result<QueryPage, Self::Error> {
         self.executions.set(self.executions.get() + 1);
         Ok(QueryPage {
@@ -2288,22 +2335,22 @@ async fn dropped_receiver_future_quarantines_ownership() {
 fn cursor_ordering_uses_utc_instants() {
     assert!(
         ensure_cursor_advanced(
-            &CompositeCursor::new("2026-01-02 10:00:00".into(), 1),
-            &CompositeCursor::new("2026-01-01T11:00:00Z".into(), 2),
+            &Cursor::composite("2026-01-02 10:00:00".into(), 1),
+            &Cursor::composite("2026-01-01T11:00:00Z".into(), 2),
         )
         .is_err()
     );
     assert!(
         ensure_cursor_advanced(
-            &CompositeCursor::new("2026-01-01 10:00:00.0".into(), 1),
-            &CompositeCursor::new("2026-01-01T10:00:00Z".into(), 1),
+            &Cursor::composite("2026-01-01 10:00:00.0".into(), 1),
+            &Cursor::composite("2026-01-01T10:00:00Z".into(), 1),
         )
         .is_err()
     );
     assert!(
         ensure_cursor_advanced(
-            &CompositeCursor::new("2026-01-01T10:00:00.0Z".into(), 1),
-            &CompositeCursor::new("2026-01-01 10:00:00".into(), 2),
+            &Cursor::composite("2026-01-01T10:00:00.0Z".into(), 1),
+            &Cursor::composite("2026-01-01 10:00:00".into(), 2),
         )
         .is_ok()
     );
@@ -2313,15 +2360,19 @@ fn cursor_ordering_uses_utc_instants() {
 /// Guarantees: Invalid timestamp text fails closed rather than advancing by lexical order.
 #[test]
 fn invalid_cursor_timestamp_is_rejected() {
-    let valid = CompositeCursor::new("2026-01-01 00:00:00".into(), 1);
-    let invalid = CompositeCursor::new("not a timestamp".into(), 2);
+    let valid = Cursor::composite("2026-01-01 00:00:00".into(), 1);
+    let invalid = Cursor::composite("not a timestamp".into(), 2);
     assert!(matches!(
         ensure_cursor_advanced(&valid, &invalid),
-        Err(ProgressError::InvalidTimestamp)
+        Err(ProgressError::InvalidCursor(
+            crate::database::CursorError::InvalidTimestamp
+        ))
     ));
     assert!(matches!(
         ensure_cursor_advanced(&invalid, &valid),
-        Err(ProgressError::InvalidTimestamp)
+        Err(ProgressError::InvalidCursor(
+            crate::database::CursorError::InvalidTimestamp
+        ))
     ));
 }
 
@@ -2574,7 +2625,14 @@ fn catch_up_page_budget_is_ack_gated_and_exact() {
             state.begin_poll(now);
             state.record_sent(checkpoint(0, page as i64).cursor);
             assert!(!state.can_poll(), "no fetch before ACK");
-            assert_eq!(state.committed.tie_breaker, (page - 1) as i64);
+            assert_eq!(
+                state
+                    .committed
+                    .as_composite()
+                    .expect("composite fixture")
+                    .tie_breaker,
+                (page - 1) as i64
+            );
             assert_eq!(
                 state.next_poll, now,
                 "sending alone does not start an interval"
@@ -2630,7 +2688,14 @@ fn catch_up_elapsed_budget_includes_ack_wait() {
                     interval
                 }
         );
-        assert_eq!(state.committed.tie_breaker, 1);
+        assert_eq!(
+            state
+                .committed
+                .as_composite()
+                .expect("composite fixture")
+                .tie_breaker,
+            1
+        );
     }
 }
 
@@ -2670,7 +2735,11 @@ fn catch_up_empty_interruption_and_nack_reset_cycle() {
         assert!(state.cycle.is_none());
         assert_eq!(state.next_poll, now + delay);
         assert_eq!(
-            state.committed.tie_breaker,
+            state
+                .committed
+                .as_composite()
+                .expect("composite fixture")
+                .tie_breaker,
             i64::from(ending == "interrupted")
         );
         state.begin_poll(now + delay);
@@ -2919,16 +2988,26 @@ impl DriverAdapter for BacklogAdapter {
     async fn execute(
         &mut self,
         query: &CompiledQuery,
-        committed: &CompositeCursor,
+        committed: &Cursor,
     ) -> Result<QueryPage, Self::Error> {
-        self.fetched.borrow_mut().push(committed.tie_breaker);
+        self.fetched.borrow_mut().push(
+            committed
+                .as_composite()
+                .expect("composite fixture")
+                .tie_breaker,
+        );
         if let Some(release) = &self.release_query {
             while !release.get() {
                 tokio::task::yield_now().await;
             }
         }
         tokio::time::sleep(self.delay).await;
-        if committed.tie_breaker >= self.max_id {
+        if committed
+            .as_composite()
+            .expect("composite fixture")
+            .tie_breaker
+            >= self.max_id
+        {
             Ok(QueryPage {
                 columns: fake_columns(),
                 rows: Vec::new(),
@@ -3251,7 +3330,12 @@ fn run_catch_up_loop(case: LoopCase) {
     let committed = store.read().expect("checkpoint read").expect("durable ACK");
     assert_eq!(committed.revision, expected_pages, "{case:?}");
     assert_eq!(
-        committed.cursor.tie_breaker, expected_pages as i64,
+        committed
+            .cursor
+            .as_composite()
+            .expect("composite fixture")
+            .tie_breaker,
+        expected_pages as i64,
         "{case:?}"
     );
     assert!(shutdown_joined.get());
@@ -3509,3 +3593,6 @@ fn checkpoint_write_and_retry_wait_apply_pressure() {
         drop(lease);
     }
 }
+
+#[path = "controller_scalar_tests.rs"]
+mod scalar_tests;

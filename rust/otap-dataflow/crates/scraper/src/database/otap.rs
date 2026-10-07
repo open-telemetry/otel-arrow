@@ -3,7 +3,7 @@
 
 //! Shared typed database-row to OTLP log conversion.
 
-use super::page::{CompositeCursor, CursorRow, QueryPage};
+use super::page::{Cursor, CursorRow, QueryPage};
 use super::{CellValue, ColumnMetadata, DatabaseSystem, OutputConfig, Row};
 use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use otel_arrow_dfe_otap::pdata::OtapPdata;
@@ -307,7 +307,7 @@ pub struct EncodedPage {
     /// Serialized OTLP logs payload.
     pub pdata: OtapPdata,
     /// Cursor of the last row actually included in `pdata`.
-    pub candidate: CompositeCursor,
+    pub candidate: Cursor,
     /// Number of database rows encoded into `pdata`.
     pub row_count: usize,
     /// Exact serialized size of `pdata`.
@@ -592,7 +592,7 @@ mod cache_tests {
                     row: Row {
                         values: vec![value],
                     },
-                    cursor: CompositeCursor::new("2026-01-01T00:00:00Z".to_owned(), 1),
+                    cursor: Cursor::composite("2026-01-01T00:00:00Z".to_owned(), 1),
                 })
                 .collect(),
         }

@@ -3,7 +3,7 @@
 
 //! Contract between the shared polling core and database-specific drivers.
 
-use super::page::{CompositeCursor, QueryPage};
+use super::page::{Cursor, QueryPage};
 use super::query::CompiledQuery;
 use super::row::ColumnMetadata;
 use async_trait::async_trait;
@@ -87,12 +87,21 @@ pub trait DriverAdapter {
     ///
     /// - Require one read-only SELECT; reject extra statements and row-locking
     ///   forms such as `SELECT ... FOR UPDATE`.
-    /// - Verify both cursor binds are real parameters used by the full keyset
+    /// - Verify all configured cursor binds are real parameters used by the full keyset
     ///   predicate, which must select only rows strictly after the supplied cursor.
-    /// - Require deterministic ascending timestamp/tie-breaker ordering consistent
-    ///   with the predicate and selected cursor columns.
-    /// - Require present, non-null cursor columns compatible with the UTC timestamp
-    ///   and signed `int64` tie-breaker contract without lossy conversion.
+    /// - Require deterministic ascending ordering on the scalar key, or on the
+    ///   composite timestamp and tie-breaker, consistent with the predicate.
+    /// - Require present, non-null cursor columns compatible with the declared
+    ///   types without rounding, truncation, or signed/unsigned coercion.
+    /// - Scalar keys must be unique across the result, not merely within a page.
+    ///   String keys require binary UTF-8 ordering without case folding, locale
+    ///   collation, or trailing-space equivalence. Reject incompatible collations.
+    /// - Timestamp keys use UTC semantics; preserve precision and normalize
+    ///   timezone-less values in the adapter, never using the host timezone.
+    ///
+    /// Match every [`super::CompiledWatermark`] variant explicitly. An adapter
+    /// may reject unsupported scalar types but must never reinterpret them as
+    /// a timestamp or silently fall back to composite behavior.
     ///
     /// Reject unsupported or ambiguous forms. [`CompiledQuery::compile`]'s SELECT
     /// prefix check and a read-only account do not replace this validation.
@@ -119,7 +128,7 @@ pub trait DriverAdapter {
     async fn execute(
         &mut self,
         query: &CompiledQuery,
-        cursor: &CompositeCursor,
+        cursor: &Cursor,
     ) -> Result<QueryPage, Self::Error>;
 
     /// Stops the worker and destroys native resources off the pipeline thread.
