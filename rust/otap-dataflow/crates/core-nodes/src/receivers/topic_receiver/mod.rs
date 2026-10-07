@@ -39,7 +39,6 @@ use otel_arrow_dfe_otap::pdata::OtapPdata;
 use metrics::{
     BridgeControl, BridgeResult, LagEventAttributes, LagEventType, TopicReceiverMetrics,
 };
-use otel_arrow_dfe_telemetry::common_attributes::{Outcome, OutcomeAttributes};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use smallvec::smallvec;
@@ -422,25 +421,19 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                                     if let Some(message_id) = pending.tracked_message_id {
                                         _ = pending_tracked_message_ids.insert(message_id);
                                     }
-                                    metrics.forward.with(OutcomeAttributes { outcome: Outcome::Success }).messages.add(1);
                                     let blocked_for = pending.send_started_at.elapsed();
-                                    if blocked_for.as_millis() >= 500 {
-                                        metrics.general.downstream_backpressure_events.add(1);
-                                        metrics.general
-                                            .downstream_blocked_ms
-                                            .add(blocked_for.as_millis() as u64);
+                                    if metrics.record_downstream_blocked(blocked_for) {
                                         otel_warn!(
                                             "topic_receiver.downstream_backpressure",
                                             node = receiver_id.name.as_ref(),
                                             topic = config.topic.as_ref(),
-                                            blocked_ms = blocked_for.as_millis() as u64,
+                                            blocked_seconds = blocked_for.as_secs_f64(),
                                             message = "Topic receiver blocked while forwarding to downstream pipeline channel"
                                         );
                                     }
                                     tokio::task::consume_budget().await;
                                 }
                                 Err(e) => {
-                                    metrics.forward.with(OutcomeAttributes { outcome: Outcome::Failure }).messages.add(1);
                                     otel_warn!(
                                         "topic_receiver.forward_failed",
                                         node = receiver_id.name.as_ref(),
@@ -579,26 +572,35 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                     recv = subscription.recv_delivery(), if draining_deadline.is_none() => {
                         match recv {
                             Ok(RecvDelivery::Message(delivery)) => {
-                                // Topic hop is a transport boundary: reset in-process
-                                // Ack/Nack routing context before forwarding.
+                                let completed = metrics.boundary.processing().run(|_| {
+                                    let signal = delivery.envelope().payload.signal_type();
+                                    // Topic hop is a transport boundary: reset in-process
+                                    // Ack/Nack routing context before forwarding.
+                                    let mut pdata =
+                                        delivery.envelope().payload.clone_without_context();
+                                    let tracked_message_id =
+                                        (ack_propagation_mode == TopicAckPropagationMode::Auto
+                                            && delivery.tracked())
+                                            .then_some(delivery.message_id());
+                                    if tracked_message_id.is_some() {
+                                        let topic_message_calldata =
+                                            smallvec![Context8u8::from(delivery.message_id())];
+                                        effect_handler.subscribe_to(
+                                            Interests::ACKS | Interests::NACKS,
+                                            topic_message_calldata,
+                                            &mut pdata,
+                                        );
+                                    }
+                                    Ok::<_, otel_arrow_dfe_otap::metrics::ErrorWithOutcome<std::convert::Infallible>>((
+                                        signal,
+                                        (delivery, pdata, tracked_message_id),
+                                    ))
+                                });
+                                let (delivery, pdata, tracked_message_id) = metrics
+                                    .boundary
+                                    .record(completed)
+                                    .expect("topic message processing is infallible");
                                 // Use source-tag-aware send so fan-in wiring can attribute source node.
-                                let mut pdata = delivery.envelope().payload.clone_without_context();
-                                let tracked_message_id =
-                                    (ack_propagation_mode == TopicAckPropagationMode::Auto
-                                        && delivery.tracked())
-                                        .then_some(delivery.message_id());
-                                if ack_propagation_mode == TopicAckPropagationMode::Auto
-                                    && delivery.tracked()
-                                {
-                                    let topic_message_calldata =
-                                        smallvec![Context8u8::from(delivery.message_id())];
-                                    effect_handler.subscribe_to(
-                                        Interests::ACKS | Interests::NACKS,
-                                        topic_message_calldata,
-                                        &mut pdata,
-                                    );
-                                }
-                                let send_started_at = Instant::now();
                                 match effect_handler.try_send_message_with_source_node(pdata) {
                                     Ok(()) => {
                                         // Commit the topic delivery permit only after the
@@ -611,12 +613,12 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                                         if let Some(message_id) = tracked_message_id {
                                             _ = pending_tracked_message_ids.insert(message_id);
                                         }
-                                        metrics.forward.with(OutcomeAttributes { outcome: Outcome::Success }).messages.add(1);
                                         tokio::task::consume_budget().await;
                                     }
                                     Err(otel_arrow_dfe_engine::error::TypedError::ChannelSendError(
                                         SendError::Full(pdata),
                                     )) => {
+                                        let send_started_at = Instant::now();
                                         let effect_handler = effect_handler.clone();
                                         pending_forward = Some(PendingForward {
                                             delivery,
@@ -628,7 +630,6 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                                         });
                                     }
                                     Err(e) => {
-                                        metrics.forward.with(OutcomeAttributes { outcome: Outcome::Failure }).messages.add(1);
                                         otel_warn!(
                                             "topic_receiver.forward_failed",
                                             node = receiver_id.name.as_ref(),

@@ -93,17 +93,11 @@ impl ContextEntryDefinition {
         }
 
         for (index, part) in self.0.iter().enumerate() {
-            let (kind, entry, name) = match part {
-                ContextEntryPart::TransportHeader { name, store_as } => (
-                    ContextEntryPartKind::TransportHeader,
-                    name,
-                    store_as.as_ref().unwrap_or_else(|| name.name()),
-                ),
-                ContextEntryPart::AuthorizedIdentity { name, store_as } => (
-                    ContextEntryPartKind::AuthorizedIdentity,
-                    name,
-                    store_as.as_ref().unwrap_or_else(|| name.name()),
-                ),
+            let name = match part {
+                ContextEntryPart::TransportHeader { .. }
+                | ContextEntryPart::AuthorizedIdentity { .. } => part
+                    .member_name()
+                    .expect("value-bearing part has a member name"),
                 ContextEntryPart::TransportHeaderMatch { name, value } => {
                     if !conditions.insert((name, value)) {
                         errors.push(format!(
@@ -120,10 +114,10 @@ impl ContextEntryDefinition {
                     "{path_prefix}[{index}] produces duplicate member name `{name}`"
                 ));
             }
-            if !value_references.insert((kind, entry)) {
+            if !value_references.insert((part.domain(), part.reference())) {
                 errors.push(format!(
                     "{path_prefix}[{index}] repeats reference `{}`",
-                    entry
+                    part.reference()
                 ));
             }
         }
@@ -170,12 +164,49 @@ pub enum ContextEntryPart {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum ContextEntryPartKind {
+/// Context domains are separate areas of configuration and authority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ContextDomain {
+    /// Untrusted transport metadata.
     TransportHeader,
+    /// Verified authorization claim.
     AuthorizedIdentity,
 }
 
+impl ContextEntryPart {
+    /// Returns the authority domain required by this member or condition.
+    #[must_use]
+    pub fn domain(&self) -> ContextDomain {
+        match self {
+            Self::TransportHeader { .. } | Self::TransportHeaderMatch { .. } => {
+                ContextDomain::TransportHeader
+            }
+            Self::AuthorizedIdentity { .. } => ContextDomain::AuthorizedIdentity,
+        }
+    }
+
+    /// Returns the reference of a member or condition.
+    #[must_use]
+    pub fn reference(&self) -> &ContextEntryRef {
+        match self {
+            Self::TransportHeader { name, .. }
+            | Self::AuthorizedIdentity { name, .. }
+            | Self::TransportHeaderMatch { name, .. } => name,
+        }
+    }
+
+    /// Returns the resulting value-member name after applying `store_as`.
+    #[must_use]
+    pub fn member_name(&self) -> Option<&ContextEntryName> {
+        match self {
+            Self::TransportHeader { name, store_as }
+            | Self::AuthorizedIdentity { name, store_as } => {
+                Some(store_as.as_ref().unwrap_or_else(|| name.name()))
+            }
+            Self::TransportHeaderMatch { .. } => None,
+        }
+    }
+}
 // Most config types derive JsonSchema. This enum is manual only because the
 // config crate's test-only kube CRD generation requires a structural schema:
 // kube rejects the derived internally tagged enum when each variant gives the
