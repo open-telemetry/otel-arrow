@@ -149,7 +149,10 @@ oracle = [
 etw = ["dep:one_collect", "dep:humantime-serde"]
 # Windows Event Forwarding receiver. Gates the shared bounded XML parser; the
 # receiver's remaining optional dependencies land with the receiver itself.
-windows-event-forwarding = ["dep:quick-xml"]
+windows-event-forwarding = [
+    "dep:quick-xml",
+    "dep:chrono",
+]
 user-events = [
     "dep:base64",
     "dep:chrono",
