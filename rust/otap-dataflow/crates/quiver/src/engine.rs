@@ -5846,6 +5846,15 @@ mod tests {
         assert_eq!(engine.maintain().await.unwrap().deleted, 1);
         engine.ingest(&DummyBundle::with_rows(3)).await.unwrap();
         assert_eq!(engine.open_segment.lock().bundle_count(), 1);
+        // Make the WAL tail durable without finalizing it so reopen must replay
+        // the entry and exercise the progress-derived sequence floor.
+        engine
+            .wal_writer
+            .lock()
+            .await
+            .flush()
+            .await
+            .expect("flush WAL");
         drop(engine);
         let config = QuiverConfig::builder()
             .data_dir(dir.path())
@@ -6286,6 +6295,15 @@ mod tests {
                 .await
                 .expect("ingest");
             assert_eq!(engine.total_segments_written(), 0);
+            // Preserve the WAL-only restart state while ensuring the entry is
+            // durable before the first engine is dropped.
+            engine
+                .wal_writer
+                .lock()
+                .await
+                .flush()
+                .await
+                .expect("flush WAL");
         }
 
         let replay_config = QuiverConfig::builder()
@@ -6366,6 +6384,15 @@ mod tests {
                 .await
                 .expect("ingest");
             assert_eq!(engine.total_segments_written(), 0);
+            // Preserve the WAL-only restart state while ensuring the entry is
+            // durable before the first engine is dropped.
+            engine
+                .wal_writer
+                .lock()
+                .await
+                .flush()
+                .await
+                .expect("flush WAL");
         }
 
         let replay_config = QuiverConfig::builder()

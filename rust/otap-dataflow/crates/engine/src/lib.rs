@@ -65,6 +65,7 @@ pub mod exporter;
 pub mod extension;
 mod extension_lifecycle;
 mod extension_monitor;
+mod forced_shutdown;
 pub mod inventory;
 pub use otel_arrow_dfe_engine_macros::component_inventory;
 pub mod message;

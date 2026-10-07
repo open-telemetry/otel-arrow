@@ -41,6 +41,8 @@ pub mod collector;
 /// Reusable enum attributes for internal telemetry.
 pub mod common_attributes;
 pub mod descriptor;
+/// Bounded, local diagnostics for repeated operation failures and recovery.
+pub mod diagnostics;
 pub mod error;
 /// Event types for lifecycle and log events.
 pub mod event;
@@ -52,6 +54,7 @@ pub mod log_filter;
 /// Internal log tap for admin-side log queries.
 pub mod log_tap;
 pub mod metrics;
+pub mod output_service;
 pub mod registry;
 pub mod reporter;
 pub mod resource_detectors;

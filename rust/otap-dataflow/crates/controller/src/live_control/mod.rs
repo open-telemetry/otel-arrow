@@ -45,14 +45,15 @@ mod state;
 use self::state::TERMINAL_OPERATION_RETENTION_TTL;
 use self::state::{
     ActiveRuntimeCoreState, CandidateRolloutPlan, CandidateShutdownPlan, ControllerRuntimeState,
-    LivePipelinePlacement, LogicalPipelineRecord, PipelineOperationKind,
-    PipelineOperationReservationState, RolloutAction, RolloutCoreProgress, RolloutExecutionError,
-    RolloutLifecycleState, RolloutRecord, RuntimeInstanceLifecycle, RuntimeInstanceRecord,
-    RuntimeRecoveryState, ShutdownCoreProgress, ShutdownLifecycleState, ShutdownRecord,
-    TERMINAL_ROLLOUT_RETENTION_LIMIT, TERMINAL_SHUTDOWN_RETENTION_LIMIT, TopicRuntimeProfile,
-    is_expired, timestamp_now,
+    PipelineOperationKind, PipelineOperationReservationState, RolloutAction, RolloutCoreProgress,
+    RolloutExecutionError, RolloutLifecycleState, RolloutRecord, RuntimeInstanceLifecycle,
+    RuntimeInstanceRecord, RuntimeRecoveryState, ShutdownCoreProgress, ShutdownLifecycleState,
+    ShutdownRecord, TERMINAL_ROLLOUT_RETENTION_LIMIT, TERMINAL_SHUTDOWN_RETENTION_LIMIT,
+    TopicRuntimeProfile, is_expired, timestamp_now,
 };
-pub(crate) use self::state::{PanicReport, RuntimeInstanceError, RuntimeInstanceExit};
+pub(crate) use self::state::{
+    LogicalPipelineDeployment, PanicReport, RuntimeInstanceError, RuntimeInstanceExit,
+};
 
 /// Bounded time for a runtime thread to finish after its graceful drain deadline.
 ///
@@ -116,6 +117,31 @@ pub(super) struct ControllerRuntime<PData: 'static + Clone + Send + Sync + std::
     state_changed: Condvar,
 }
 
+/// Keeps observability alive until controller-owned telemetry has been handed off.
+///
+/// The existing runtime mutex and condition variable synchronize the controller
+/// with the global shutdown coordinator; dropping the guard also releases error paths.
+pub(super) struct ControllerTelemetryGuard<
+    'a,
+    PData: 'static + Clone + Send + Sync + std::fmt::Debug,
+> {
+    runtime: &'a ControllerRuntime<PData>,
+}
+
+impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Drop
+    for ControllerTelemetryGuard<'_, PData>
+{
+    fn drop(&mut self) {
+        let mut state = self
+            .runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.controller_telemetry_pending = false;
+        self.runtime.state_changed.notify_all();
+    }
+}
+
 /// Thin adapter that exposes `ControllerRuntime` through the admin trait.
 struct ControllerControlPlane<PData: 'static + Clone + Send + Sync + std::fmt::Debug> {
     runtime: Arc<ControllerRuntime<PData>>,
@@ -126,7 +152,6 @@ struct ControllerControlPlane<PData: 'static + Clone + Send + Sync + std::fmt::D
 /// The controller stores the `control_sender` while the instance is active and
 /// drops it after shutdown is requested so the pipeline can observe control
 /// channel closure once node tasks finish.
-#[cfg(test)]
 pub(super) struct LaunchedPipelineThread<PData> {
     /// Concrete deployed instance key for the launched runtime thread.
     pub(super) pipeline_key: DeployedPipelineKey,
@@ -215,6 +240,7 @@ impl<
                 observability_shutdown_deadline: None,
                 extension_scope_hosts_stopped: false,
                 global_shutdown_coordinators: 0,
+                controller_telemetry_pending: false,
             }),
             state_changed: Condvar::new(),
         }
@@ -263,19 +289,22 @@ impl<
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let context_bindings = Arc::clone(&state.latest_context_bindings);
+        let listener_group_snapshot = Arc::new(listener_group::snapshot_for_pipeline(
+            &resolved, &placement, 0,
+        ));
         _ = state
             .generation_counters
             .insert(pipeline_key.clone(), generation + 1);
         _ = state.logical_pipelines.insert(
             pipeline_key,
-            LogicalPipelineRecord {
+            LogicalPipelineDeployment::new(
                 resolved,
                 inherited_extensions,
                 context_bindings,
-                active_generation: generation,
+                generation,
                 placement,
-                placement_generation: 0,
-            },
+                listener_group_snapshot,
+            ),
         );
     }
 
@@ -559,6 +588,15 @@ impl<
 {
     fn shutdown_all(&self, timeout_secs: u64) -> Result<(), ControlPlaneError> {
         self.runtime.request_shutdown_all(timeout_secs)
+    }
+
+    fn has_active_instances(&self) -> bool {
+        let state = self
+            .runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.has_pending_lifecycle_work()
     }
 
     fn shutdown_pipeline(

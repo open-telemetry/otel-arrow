@@ -480,27 +480,40 @@ pub(super) struct RuntimeRecoveryState {
 }
 
 #[derive(Debug, Clone)]
-/// Committed logical pipeline config plus the active deployment generation.
-pub(super) struct LogicalPipelineRecord {
+/// Runtime-ready deployment description for a logical pipeline.
+pub(crate) struct LogicalPipelineDeployment {
     pub(super) resolved: ResolvedPipelineConfig,
     /// Inherited provider snapshot captured when this logical config was committed.
     pub(super) inherited_extensions: InheritedExtensionRegistrations,
     /// Compiled context bindings for this deployment generation.
     pub(super) context_bindings: Arc<CompiledContextBindings>,
-    /// Pipeline-wide config generation; recovered cores may serve newer generations.
-    pub(super) active_generation: u64,
+    /// Generation established by the create or replace rollout for this deployment.
+    pub(super) create_or_replace_generation: u64,
     pub(super) placement: PipelinePlacement,
     pub(super) placement_generation: u64,
-}
-
-#[derive(Debug, Clone)]
-/// Controller-resolved placement metadata used when launching live-control instances.
-pub(super) struct LivePipelinePlacement {
-    pub(super) placement: PipelinePlacement,
     pub(super) listener_group_snapshot: Arc<ListenerGroupSnapshot>,
 }
 
-impl LivePipelinePlacement {
+impl LogicalPipelineDeployment {
+    pub(crate) fn new(
+        resolved: ResolvedPipelineConfig,
+        inherited_extensions: InheritedExtensionRegistrations,
+        context_bindings: Arc<CompiledContextBindings>,
+        create_or_replace_generation: u64,
+        placement: PipelinePlacement,
+        listener_group_snapshot: Arc<ListenerGroupSnapshot>,
+    ) -> Self {
+        Self {
+            resolved,
+            inherited_extensions,
+            context_bindings,
+            create_or_replace_generation,
+            placement,
+            placement_generation: listener_group_snapshot.generation,
+            listener_group_snapshot,
+        }
+    }
+
     /// Returns placement metadata for one worker core.
     pub(super) fn core(&self, core_id: usize) -> Option<CorePlacement> {
         self.placement
@@ -533,7 +546,7 @@ pub(super) struct ControllerRuntimeState {
     /// Latest node-binding snapshot compiled for the committed live configuration.
     pub(super) latest_context_bindings: Arc<CompiledContextBindings>,
     /// Committed logical pipelines keyed by group/pipeline id.
-    pub(super) logical_pipelines: HashMap<PipelineKey, LogicalPipelineRecord>,
+    pub(super) logical_pipelines: HashMap<PipelineKey, LogicalPipelineDeployment>,
     /// Deployed runtime instances keyed by group/pipeline/core/generation.
     pub(super) runtime_instances: HashMap<DeployedPipelineKey, RuntimeInstanceRecord>,
     /// Reserved pipeline threads and their context snapshots before activation.
@@ -580,6 +593,8 @@ pub(super) struct ControllerRuntimeState {
     pub(super) extension_scope_hosts_stopped: bool,
     /// Number of phased global-shutdown coordinators still running.
     pub(super) global_shutdown_coordinators: usize,
+    /// Holds observability open while the controller hands off terminal telemetry.
+    pub(super) controller_telemetry_pending: bool,
     /// Active engine-scoped live operation, if any.
     pub(super) active_engine_operation: Option<String>,
     /// Monotonic full-config reconciliation id suffix.
@@ -627,6 +642,20 @@ impl ControllerRuntimeState {
                 .get(pipeline_key)
                 .is_some_and(|reservation| reservation.kind == PipelineOperationKind::Shutdown)
     }
+
+    /// Returns true if there is pending lifecycle work that prevents immediate shutdown completion.
+    pub(super) fn has_pending_lifecycle_work(&self) -> bool {
+        self.active_instances > 0
+            || self
+                .runtime_instances
+                .values()
+                .any(|instance| matches!(instance.lifecycle, RuntimeInstanceLifecycle::Active))
+            || !self.active_rollouts.is_empty()
+            || !self.active_shutdowns.is_empty()
+            || self.active_engine_operation.is_some()
+            || !self.pipeline_operation_reservations.is_empty()
+            || self.global_shutdown_coordinators > 0
+    }
 }
 
 #[derive(Debug)]
@@ -642,20 +671,12 @@ pub(super) struct CandidateRolloutPlan {
     pub(super) pipeline_id: PipelineId,
     /// Execution strategy selected by request classification.
     pub(super) action: RolloutAction,
-    /// Resolved target pipeline config after applying the request.
-    pub(super) resolved_pipeline: ResolvedPipelineConfig,
-    /// Inherited provider snapshot captured while this rollout was planned.
-    pub(super) target_inherited_extensions: InheritedExtensionRegistrations,
-    /// Compiled context bindings for the target runtime instances.
-    pub(super) context_bindings: Arc<CompiledContextBindings>,
     /// Runtime config revision used to build this plan.
     pub(super) base_config_revision: u64,
-    /// Current committed record, absent for create rollouts.
-    pub(super) current_record: Option<LogicalPipelineRecord>,
-    /// Placement metadata for the committed record, used by rollback launches.
-    pub(super) current_placement: Option<LivePipelinePlacement>,
-    /// Placement metadata for target launches.
-    pub(super) target_placement: LivePipelinePlacement,
+    /// Current committed deployment, absent for create rollouts.
+    pub(super) current_deployment: Option<LogicalPipelineDeployment>,
+    /// Prospective deployment installed only after the rollout succeeds.
+    pub(super) target_deployment: LogicalPipelineDeployment,
     /// Core allocation from the committed record.
     pub(super) current_assigned_cores: Vec<usize>,
     /// Core allocation requested by the candidate config.
@@ -672,8 +693,6 @@ pub(super) struct CandidateRolloutPlan {
     pub(super) resize_start_cores: Vec<usize>,
     /// Cores to drain for resize-only rollouts.
     pub(super) resize_stop_cores: Vec<usize>,
-    /// Deployment generation assigned to the target runtime instances.
-    pub(super) target_generation: u64,
     /// Initial rollout status record to insert before spawning a worker.
     pub(super) rollout: RolloutRecord,
     /// Per-step readiness timeout in seconds.

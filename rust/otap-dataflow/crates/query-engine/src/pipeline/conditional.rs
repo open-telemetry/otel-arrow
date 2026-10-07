@@ -9,14 +9,19 @@ use std::sync::Arc;
 use arrow::array::{BooleanArray, RecordBatch};
 use arrow::buffer::BooleanBuffer;
 use arrow::compute::{and, filter_record_batch, not, or};
+use arrow::datatypes::UInt16Type;
 use async_trait::async_trait;
 use datafusion::config::ConfigOptions;
 use datafusion::execution::TaskContext;
 use datafusion::prelude::SessionContext;
 use otel_arrow_dfe_pdata::OtapArrowRecords;
 
-use otel_arrow_dfe_pdata::otap::filter::{IdBitmapPool, filter_otap_batch};
+use otel_arrow_dfe_pdata::otap::filter::{
+    ChildBatchFilterIdHelper, IdBitmapPool, filter_otap_batch,
+};
 use otel_arrow_dfe_pdata::otap::transform::concatenate::ConcatOptions;
+use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+use otel_arrow_dfe_pdata::schema::consts;
 
 use crate::error::Result;
 use crate::pipeline::concat::{
@@ -27,7 +32,7 @@ use crate::pipeline::expr::{DataScope, ScopedExpr};
 use crate::pipeline::filter::{align_selection_to_root, scoped_value_to_boolean_array};
 use crate::pipeline::planner::RecordType;
 use crate::pipeline::state::ExecutionState;
-use crate::pipeline::{BoxedPipelineStage, PipelineStage};
+use crate::pipeline::{BoxedPipelineStage, ParentBehavior, PipelineStage};
 
 /// This [`PipelineStage`] implementation will conditionally apply child pipeline stages on rows
 /// which match some condition. This can be used to implement `if/else if/else` type control flow
@@ -93,6 +98,66 @@ impl ConditionalPipelineStageBranch {
     }
 }
 
+fn stages_require_parent_reindex(stages: &[BoxedPipelineStage]) -> bool {
+    stages
+        .iter()
+        .any(|stage| stage.parent_behavior().requires_reindex())
+}
+
+fn retain_shared_attribute_payload_once(
+    branch_results: &mut [OtapArrowRecords],
+    payload_type: ArrowPayloadType,
+    pool: &mut IdBitmapPool,
+) -> Result<()> {
+    let mut claimed_ids = pool.acquire();
+    let mut branch_ids = pool.acquire();
+
+    let result = (|| {
+        for branch_result in branch_results {
+            let Some(root_batch) = branch_result.root_record_batch() else {
+                _ = branch_result.remove(payload_type);
+                continue;
+            };
+            let Some(id_column) = UInt16Type::get_id_col_from_parent(root_batch, payload_type)?
+            else {
+                _ = branch_result.remove(payload_type);
+                continue;
+            };
+
+            branch_ids.populate(id_column.iter().flatten().map(u32::from));
+            branch_ids.difference_with(&claimed_ids);
+
+            if branch_ids.is_empty() {
+                _ = branch_result.remove(payload_type);
+                continue;
+            }
+
+            if let Some(attrs_batch) = branch_result.get(payload_type) {
+                let parent_ids =
+                    attrs_batch
+                        .column_by_name(consts::PARENT_ID)
+                        .ok_or_else(|| crate::error::Error::ExecutionError {
+                            cause: "attribute batch is missing parent_id".into(),
+                        })?;
+                let selection = UInt16Type::build_selection_vec(parent_ids, &branch_ids)?;
+                if selection.true_count() == 0 {
+                    _ = branch_result.remove(payload_type);
+                } else if selection.true_count() != attrs_batch.num_rows() {
+                    let filtered = filter_record_batch(attrs_batch, &selection)?;
+                    branch_result.set(payload_type, filtered)?;
+                }
+            }
+
+            claimed_ids.union_with(&branch_ids);
+        }
+        Ok(())
+    })();
+
+    pool.release(branch_ids);
+    pool.release(claimed_ids);
+    result
+}
+
 #[async_trait(?Send)]
 impl PipelineStage for ConditionalPipelineStage {
     async fn execute(
@@ -131,6 +196,7 @@ impl PipelineStage for ConditionalPipelineStage {
         let mut branch_results = Vec::with_capacity(
             self.branches.len() + if self.default_branch.is_some() { 1 } else { 0 },
         );
+        let mut reindex_branch_results = false;
 
         for branch in &mut self.branches {
             if already_selected_vec.true_count() == root_batch.num_rows() {
@@ -200,6 +266,7 @@ impl PipelineStage for ConditionalPipelineStage {
                     .await?;
             }
 
+            reindex_branch_results |= stages_require_parent_reindex(&branch.pipeline_stages);
             branch_results.push(branch_otap_batch);
         }
 
@@ -213,7 +280,7 @@ impl PipelineStage for ConditionalPipelineStage {
             )?;
 
             if let Some(default_branch) = self.default_branch.as_mut() {
-                for stage in default_branch {
+                for stage in default_branch.iter_mut() {
                     default_branch_batch = stage
                         .execute(
                             default_branch_batch,
@@ -224,8 +291,22 @@ impl PipelineStage for ConditionalPipelineStage {
                         )
                         .await?;
                 }
+                reindex_branch_results |= stages_require_parent_reindex(default_branch);
             }
             branch_results.push(default_branch_batch);
+        }
+
+        if !reindex_branch_results {
+            retain_shared_attribute_payload_once(
+                &mut branch_results,
+                ArrowPayloadType::ScopeAttrs,
+                &mut self.id_bitmap_pool,
+            )?;
+            retain_shared_attribute_payload_once(
+                &mut branch_results,
+                ArrowPayloadType::ResourceAttrs,
+                &mut self.id_bitmap_pool,
+            )?;
         }
 
         // give the pipeline stages within each branch the opportunity to clear any
@@ -242,16 +323,17 @@ impl PipelineStage for ConditionalPipelineStage {
         }
 
         // reconstruct the result with the results of each branch
+        let concat_options = if reindex_branch_results {
+            ConcatOptions::reindex()
+        } else {
+            ConcatOptions::preserve_ids()
+        };
         match otap_batch {
-            OtapArrowRecords::Logs(_) => {
-                concatenate_logs(&mut branch_results, ConcatOptions::preserve_ids())
-            }
+            OtapArrowRecords::Logs(_) => concatenate_logs(&mut branch_results, concat_options),
             OtapArrowRecords::Metrics(_) => {
-                concatenate_metrics(&mut branch_results, ConcatOptions::preserve_ids())
+                concatenate_metrics(&mut branch_results, concat_options)
             }
-            OtapArrowRecords::Traces(_) => {
-                concatenate_traces(&mut branch_results, ConcatOptions::preserve_ids())
-            }
+            OtapArrowRecords::Traces(_) => concatenate_traces(&mut branch_results, concat_options),
         }
     }
 
@@ -288,7 +370,7 @@ impl PipelineStage for ConditionalPipelineStage {
             // evaluate the branch condition directly on the attributes record batch
             let predicate = branch
                 .condition
-                .evaluate_on_batch(&attrs_record_batch, &EvalContext::new(session_ctx))?;
+                .evaluate_on_attrs_batch(&attrs_record_batch, &EvalContext::new(session_ctx))?;
             let predicate_selection_vec =
                 scoped_value_to_boolean_array(predicate, attrs_record_batch.num_rows())?;
 
@@ -347,7 +429,27 @@ impl PipelineStage for ConditionalPipelineStage {
     }
 
     fn supports_exec_on(&self, record_type: &RecordType) -> bool {
-        matches!(record_type, RecordType::Attributes | RecordType::Signal)
+        matches!(record_type, RecordType::Attributes | RecordType::Signal(_))
+    }
+
+    // Propagate parent splitting required by any nested conditional branch.
+    fn parent_behavior(&self) -> ParentBehavior {
+        let requires_reindex = self.branches.iter().any(|branch| {
+            branch
+                .pipeline_stages
+                .iter()
+                .any(|stage| stage.parent_behavior().requires_reindex())
+        }) || self.default_branch.as_ref().is_some_and(|branch| {
+            branch
+                .iter()
+                .any(|stage| stage.parent_behavior().requires_reindex())
+        });
+
+        if requires_reindex {
+            ParentBehavior::RequiresReindex
+        } else {
+            ParentBehavior::Preserves
+        }
     }
 }
 
@@ -375,9 +477,12 @@ mod test {
         proto::{
             OtlpProtoMessage,
             opentelemetry::{
-                common::v1::{AnyValue, KeyValue},
-                logs::v1::LogRecord,
+                common::v1::{AnyValue, InstrumentationScope, KeyValue},
+                logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs},
+                metrics::v1::{MetricsData, ResourceMetrics, ScopeMetrics},
+                resource::v1::Resource,
                 trace::v1::Span,
+                trace::v1::{ResourceSpans, ScopeSpans},
             },
         },
         testing::round_trip::{otlp_to_otap, to_metrics_data, to_traces_data},
@@ -385,6 +490,447 @@ mod test {
     use otel_arrow_dfe_query_engine_languages::opl::parser::OplParser;
 
     use super::*;
+
+    fn resource_with_id(id: &str) -> Resource {
+        Resource::build()
+            .attributes(vec![
+                KeyValue::new("resource.id", AnyValue::new_string(id)),
+                KeyValue::new("resource.keep", AnyValue::new_string("yes")),
+            ])
+            .finish()
+    }
+
+    fn shared_resource() -> Resource {
+        resource_with_id("r1")
+    }
+
+    fn scope_with_pipeline_id(id: &str) -> InstrumentationScope {
+        InstrumentationScope::build()
+            .attributes(vec![
+                KeyValue::new("pipeline.id", AnyValue::new_string(id)),
+                KeyValue::new("scope.keep", AnyValue::new_string("yes")),
+            ])
+            .finish()
+    }
+
+    fn shared_scope() -> InstrumentationScope {
+        scope_with_pipeline_id("p1")
+    }
+
+    /// Scenario: Log records sharing scope and resource attributes take different branches.
+    /// Guarantees: Shared non-record attributes are emitted once after branch concatenation.
+    #[tokio::test]
+    async fn test_conditional_deduplicates_shared_log_attributes() {
+        let input = LogsData::new(vec![ResourceLogs::new(
+            shared_resource(),
+            vec![ScopeLogs::new(
+                shared_scope(),
+                vec![
+                    LogRecord::build().severity_text("a").finish(),
+                    LogRecord::build().severity_text("b").finish(),
+                ],
+            )],
+        )]);
+
+        let result = exec_logs_pipeline::<OplParser>(
+            r#"logs | if (severity_text == "a") { extend attributes["x"] = 1 }"#,
+            input,
+        )
+        .await;
+
+        assert_eq!(
+            result.resource_logs[0].resource.as_ref().unwrap(),
+            &shared_resource()
+        );
+        assert_eq!(
+            result.resource_logs[0].scope_logs[0]
+                .scope
+                .as_ref()
+                .unwrap(),
+            &shared_scope()
+        );
+    }
+
+    /// Scenario: Metrics sharing scope and resource attributes take different branches.
+    /// Guarantees: Shared non-record attributes are emitted once after branch concatenation.
+    #[tokio::test]
+    async fn test_conditional_deduplicates_shared_metric_attributes() {
+        let input = MetricsData::new(vec![ResourceMetrics::new(
+            shared_resource(),
+            vec![ScopeMetrics::new(
+                shared_scope(),
+                vec![
+                    Metric::build().name("a").finish(),
+                    Metric::build().name("b").finish(),
+                ],
+            )],
+        )]);
+
+        let result = exec_metrics_pipeline::<OplParser>(
+            r#"metrics | if (name == "a") { set description = "selected" }"#,
+            input,
+        )
+        .await;
+
+        assert_eq!(
+            result.resource_metrics[0].resource.as_ref().unwrap(),
+            &shared_resource()
+        );
+        assert_eq!(
+            result.resource_metrics[0].scope_metrics[0]
+                .scope
+                .as_ref()
+                .unwrap(),
+            &shared_scope()
+        );
+    }
+
+    /// Scenario: Spans sharing scope and resource attributes take different branches.
+    /// Guarantees: Shared non-record attributes are emitted once after branch concatenation.
+    #[tokio::test]
+    async fn test_conditional_deduplicates_shared_trace_attributes() {
+        let input = otel_arrow_dfe_pdata::proto::opentelemetry::trace::v1::TracesData::new(vec![
+            ResourceSpans::new(
+                shared_resource(),
+                vec![ScopeSpans::new(
+                    shared_scope(),
+                    vec![
+                        Span::build()
+                            .name("a")
+                            .span_id([1; 8])
+                            .trace_id([1; 16])
+                            .status(Status::default())
+                            .finish(),
+                        Span::build()
+                            .name("b")
+                            .span_id([2; 8])
+                            .trace_id([2; 16])
+                            .status(Status::default())
+                            .finish(),
+                    ],
+                )],
+            ),
+        ]);
+
+        let result = exec_traces_pipeline::<OplParser>(
+            r#"traces | if (name == "a") { set kind = 1 }"#,
+            input,
+        )
+        .await;
+
+        assert_eq!(
+            result.resource_spans[0].resource.as_ref().unwrap(),
+            &shared_resource()
+        );
+        assert_eq!(
+            result.resource_spans[0].scope_spans[0]
+                .scope
+                .as_ref()
+                .unwrap(),
+            &shared_scope()
+        );
+    }
+
+    /// Scenario: A selected branch mutates attributes shared with records in the default branch.
+    /// Guarantees: The selected and default records use distinct parent identities and values.
+    #[tokio::test]
+    async fn test_conditional_preserves_shared_attribute_mutations() {
+        let input = LogsData::new(vec![ResourceLogs::new(
+            shared_resource(),
+            vec![ScopeLogs::new(
+                shared_scope(),
+                vec![
+                    LogRecord::build().severity_text("a").finish(),
+                    LogRecord::build().severity_text("b").finish(),
+                ],
+            )],
+        )]);
+
+        let result = exec_logs_pipeline::<OplParser>(
+            r#"
+            logs | if (severity_text == "a") {
+                set instrumentation_scope.attributes["pipeline.id"] = "modified" |
+                set resource.attributes["resource.id"] = "modified"
+            }"#,
+            input,
+        )
+        .await;
+
+        assert_eq!(result.resource_logs.len(), 2);
+        assert_eq!(
+            result.resource_logs[0].resource.as_ref().unwrap(),
+            &resource_with_id("modified")
+        );
+        assert_eq!(
+            result.resource_logs[0].scope_logs[0]
+                .scope
+                .as_ref()
+                .unwrap(),
+            &scope_with_pipeline_id("modified")
+        );
+        assert_eq!(
+            result.resource_logs[0].scope_logs[0].log_records[0].severity_text,
+            "a"
+        );
+        assert_eq!(
+            result.resource_logs[1].resource.as_ref().unwrap(),
+            &shared_resource()
+        );
+        assert_eq!(
+            result.resource_logs[1].scope_logs[0]
+                .scope
+                .as_ref()
+                .unwrap(),
+            &shared_scope()
+        );
+        assert_eq!(
+            result.resource_logs[1].scope_logs[0].log_records[0].severity_text,
+            "b"
+        );
+    }
+
+    /// Scenario: Only the default branch mutates attributes shared with a selected branch.
+    /// Guarantees: The default and selected records use distinct parent identities and values.
+    #[tokio::test]
+    async fn test_conditional_preserves_default_branch_attribute_mutations() {
+        let input = LogsData::new(vec![ResourceLogs::new(
+            shared_resource(),
+            vec![ScopeLogs::new(
+                shared_scope(),
+                vec![
+                    LogRecord::build().severity_text("a").finish(),
+                    LogRecord::build().severity_text("b").finish(),
+                ],
+            )],
+        )]);
+
+        let result = exec_logs_pipeline::<OplParser>(
+            r#"
+            logs | if (severity_text == "a") {
+                set severity_number = 1
+            } else {
+                set instrumentation_scope.attributes["pipeline.id"] = "p2" |
+                set resource.attributes["resource.id"] = "r2"
+            }"#,
+            input,
+        )
+        .await;
+
+        assert_eq!(result.resource_logs.len(), 2);
+        assert_eq!(
+            result.resource_logs[0].resource.as_ref().unwrap(),
+            &shared_resource()
+        );
+        assert_eq!(
+            result.resource_logs[0].scope_logs[0]
+                .scope
+                .as_ref()
+                .unwrap(),
+            &shared_scope()
+        );
+        assert_eq!(
+            result.resource_logs[0].scope_logs[0].log_records[0].severity_text,
+            "a"
+        );
+        assert_eq!(
+            result.resource_logs[1].resource.as_ref().unwrap(),
+            &resource_with_id("r2")
+        );
+        assert_eq!(
+            result.resource_logs[1].scope_logs[0]
+                .scope
+                .as_ref()
+                .unwrap(),
+            &scope_with_pipeline_id("p2")
+        );
+        assert_eq!(
+            result.resource_logs[1].scope_logs[0].log_records[0].severity_text,
+            "b"
+        );
+    }
+
+    /// Scenario: A branch assigns a resource attribute its existing value.
+    /// Guarantees: Conservative parent reindexing safely splits unchanged visible metadata.
+    #[tokio::test]
+    async fn test_conditional_allows_parent_reindex_false_positive() {
+        let input = LogsData::new(vec![ResourceLogs::new(
+            shared_resource(),
+            vec![ScopeLogs::new(
+                shared_scope(),
+                vec![
+                    LogRecord::build().severity_text("a").finish(),
+                    LogRecord::build().severity_text("b").finish(),
+                ],
+            )],
+        )]);
+
+        let result = exec_logs_pipeline::<OplParser>(
+            r#"
+            logs | if (severity_text == "a") {
+                set resource.attributes["resource.id"] = "r1"
+            }"#,
+            input,
+        )
+        .await;
+
+        assert_eq!(result.resource_logs.len(), 2);
+        for resource_logs in &result.resource_logs {
+            assert_eq!(resource_logs.resource.as_ref().unwrap(), &shared_resource());
+            assert_eq!(
+                resource_logs.scope_logs[0].scope.as_ref().unwrap(),
+                &shared_scope()
+            );
+        }
+        assert_eq!(
+            result.resource_logs[0].scope_logs[0].log_records[0].severity_text,
+            "a"
+        );
+        assert_eq!(
+            result.resource_logs[1].scope_logs[0].log_records[0].severity_text,
+            "b"
+        );
+    }
+
+    /// Scenario: A selected branch changes the instrumentation scope name stored in the root batch.
+    /// Guarantees: The selected and default records retain distinct scope metadata.
+    #[tokio::test]
+    async fn test_conditional_reindexes_scope_struct_field_assignment() {
+        let input = LogsData::new(vec![ResourceLogs::new(
+            shared_resource(),
+            vec![ScopeLogs::new(
+                shared_scope(),
+                vec![
+                    LogRecord::build().severity_text("a").finish(),
+                    LogRecord::build().severity_text("b").finish(),
+                ],
+            )],
+        )]);
+
+        let result = exec_logs_pipeline::<OplParser>(
+            r#"
+            logs | if (severity_text == "a") {
+                set instrumentation_scope.name = "changed"
+            }"#,
+            input,
+        )
+        .await;
+
+        assert_eq!(result.resource_logs.len(), 2);
+        assert_eq!(
+            result.resource_logs[0].scope_logs[0]
+                .scope
+                .as_ref()
+                .unwrap()
+                .name,
+            "changed"
+        );
+        assert_eq!(
+            result.resource_logs[1].scope_logs[0]
+                .scope
+                .as_ref()
+                .unwrap()
+                .name,
+            ""
+        );
+    }
+
+    /// Scenario: A selected branch changes the resource schema URL stored in a struct field.
+    /// Guarantees: The selected and default records retain distinct resource metadata.
+    #[tokio::test]
+    async fn test_conditional_reindexes_resource_struct_field_assignment() {
+        let input = LogsData::new(vec![ResourceLogs::new(
+            shared_resource(),
+            vec![ScopeLogs::new(
+                shared_scope(),
+                vec![
+                    LogRecord::build().severity_text("a").finish(),
+                    LogRecord::build().severity_text("b").finish(),
+                ],
+            )],
+        )]);
+
+        let result = exec_logs_pipeline::<OplParser>(
+            r#"
+            logs | if (severity_text == "a") {
+                set resource.schema_url = "changed"
+            }"#,
+            input,
+        )
+        .await;
+
+        assert_eq!(result.resource_logs.len(), 2);
+        assert_eq!(result.resource_logs[0].schema_url, "changed");
+        assert_eq!(result.resource_logs[1].schema_url, "");
+    }
+
+    /// Scenario: A bulk root assignment places scope schema_url after a record-only destination.
+    /// Guarantees: Every destination is inspected and the parent metadata remains branch-local.
+    #[tokio::test]
+    async fn test_conditional_reindexes_later_bulk_schema_url_assignment() {
+        let input = LogsData::new(vec![ResourceLogs::new(
+            shared_resource(),
+            vec![ScopeLogs::new(
+                shared_scope(),
+                vec![
+                    LogRecord::build().severity_text("a").finish(),
+                    LogRecord::build().severity_text("b").finish(),
+                ],
+            )],
+        )]);
+
+        let result = exec_logs_pipeline::<OplParser>(
+            r#"
+            logs | if (severity_text == "a") {
+                set severity_number = 1, schema_url = "changed"
+            }"#,
+            input,
+        )
+        .await;
+
+        assert_eq!(result.resource_logs.len(), 2);
+        assert_eq!(result.resource_logs[0].scope_logs[0].schema_url, "changed");
+        assert_eq!(result.resource_logs[1].scope_logs[0].schema_url, "");
+    }
+
+    /// Scenario: A conditional branch forks a record into multiple reindexed branch results.
+    /// Guarantees: Forked records and the conditional default retain distinct valid parents.
+    #[tokio::test]
+    async fn test_conditional_reindexes_forked_branch_results() {
+        let input = LogsData::new(vec![ResourceLogs::new(
+            shared_resource(),
+            vec![ScopeLogs::new(
+                shared_scope(),
+                vec![
+                    LogRecord::build().severity_text("a").finish(),
+                    LogRecord::build().severity_text("b").finish(),
+                ],
+            )],
+        )]);
+
+        let result = exec_logs_pipeline::<OplParser>(
+            r#"
+            logs | if (severity_text == "a") {
+                fork {
+                    set event_name = "left"
+                } {
+                    set event_name = "right"
+                }
+            }"#,
+            input,
+        )
+        .await;
+
+        let records = result
+            .resource_logs
+            .iter()
+            .flat_map(|resource| &resource.scope_logs)
+            .flat_map(|scope| &scope.log_records)
+            .map(|record| (record.severity_text.as_str(), record.event_name.as_str()))
+            .collect::<Vec<_>>();
+
+        assert_eq!(records, vec![("a", "left"), ("a", "right"), ("b", "")]);
+        assert_eq!(result.resource_logs.len(), 3);
+    }
 
     #[tokio::test]
     async fn test_conditional_no_default_branch() {
@@ -417,6 +963,39 @@ mod test {
                 .attributes(vec![KeyValue::new("x", AnyValue::new_string("test"))])
                 .finish(),
         ];
+
+        pretty_assertions::assert_eq!(result.resource_logs[0].scope_logs[0].log_records, expected)
+    }
+
+    /// Scenario: Evaluate a conditional branch using a nested serialized attribute leaf.
+    /// Guarantees: The branch updates only records whose nested leaf matches.
+    #[tokio::test]
+    async fn test_conditional_with_nested_serialized_attribute() {
+        let log_records = vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new(
+                    "complex",
+                    AnyValue::new_kvlist(vec![KeyValue::new("name", AnyValue::new_string("a"))]),
+                )])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new(
+                    "complex",
+                    AnyValue::new_kvlist(vec![KeyValue::new("name", AnyValue::new_string("b"))]),
+                )])
+                .finish(),
+        ];
+
+        let result = exec_logs_pipeline::<OplParser>(
+            r#"
+            logs | if (attributes["complex"]["name"] == "a") {
+                set severity_text = "MATCHED"
+            }"#,
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        let mut expected = log_records;
+        expected[0].severity_text = "MATCHED".into();
 
         pretty_assertions::assert_eq!(result.resource_logs[0].scope_logs[0].log_records, expected)
     }
@@ -617,7 +1196,7 @@ mod test {
         )
         .unwrap()
         .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = OtapArrowRecords::Logs(Logs::default());
         let result = pipeline.execute(input.clone()).await.unwrap();
@@ -681,7 +1260,7 @@ mod test {
             }
         "#;
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let mut execution_state = ExecutionState::new();
 
@@ -890,6 +1469,7 @@ mod test {
             pipeline_expr,
             PipelineOptions {
                 filter_attribute_keys_case_sensitive: false,
+                ..Default::default()
             },
         );
 

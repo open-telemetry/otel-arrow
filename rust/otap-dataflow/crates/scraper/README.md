@@ -40,7 +40,7 @@ implementations.
 
 The design is scheduled, read-only query polling, not Change Data Capture
 (CDC). The [database receiver RFC][database-rfc] remains broader than the initial
-single-query, composite-watermark runtime.
+single-query runtime with scalar and composite watermarks.
 
 ## Architecture and Responsibilities
 
@@ -64,7 +64,7 @@ Existing Dataflow host
 | Responsibility | Shared scraper | Vendor receiver / host |
 | --- | --- | --- |
 | Query policy | Common limits and validated plan | Operator-authored SQL and dialect-specific validation |
-| Cursor parameters | Logical bind names and a composite cursor | Binding through the driver's parameter API |
+| Cursor parameters | Logical bind names and a typed scalar or composite cursor | Binding through the driver's parameter API |
 | Row representation | Database-neutral values, metadata, and page contract | Native type inspection and precision-preserving conversion |
 | Timing and lifecycle | Common scheduling, control-message handling, and worker cleanup coordination | Native timeout, cancellation, and connection cleanup |
 | Progress | Common checkpoint policy, concrete file store, and source lease | Stable source identity and vendor-specific compatibility inputs |
@@ -190,9 +190,10 @@ meaning and bounds are unchanged.
 
 ### Watermark Configuration
 
-Only `mode: composite` is represented by the current enum. `scalar` and
-`snapshot` are RFC proposals, not supported modes. The RFC's conceptual
-`composite_watermark` spelling is not an accepted value for this schema.
+Both `mode: scalar` and `mode: composite` are supported by the shared runtime.
+Snapshot mode is not implemented. Vendor receivers must explicitly support
+and validate a mode before executing it; these examples are shared contract
+values, not complete runnable receiver configurations.
 
 ```yaml
 # A WatermarkConfig value.
@@ -210,7 +211,7 @@ tie_breaker:
 
 | Field | Type | Default | Validation / meaning |
 | --- | --- | --- | --- |
-| `mode` | string | **required** | Only `composite`. |
+| `mode` | string | **required** | `composite` for the fields below; `scalar` uses the separate schema below. |
 | `timestamp.column` | string | **required** | Non-empty result-column name. Must differ from the tie-breaker column, ignoring ASCII case. |
 | `timestamp.bind` | string | **required** | Logical bind name without a leading colon. Must differ from the tie-breaker bind, ignoring ASCII case. |
 | `timestamp.initial` | string | **required** | Non-empty initial timestamp text. Parsing and normalization are adapter responsibilities. |
@@ -225,6 +226,74 @@ representation and deterministic ordering.
 `CompositeCursor` deliberately has no `Ord` or `PartialOrd` implementation:
 timestamp strings with different offsets or fractional precision cannot be
 ordered safely as text. The polling controller compares validated UTC instants.
+
+#### Scalar Watermarks
+
+Scalar mode uses one non-null, unique, strictly increasing key. It does not
+manufacture a timestamp or a hidden tie-breaker. Configure the value type
+explicitly; integer-looking strings remain strings.
+
+```yaml
+mode: scalar
+column: EVENT_ID
+bind: last_key
+initial:
+  type: int64
+  value: 0
+```
+
+| Field | Requirement |
+| --- | --- |
+| `column` | Non-empty result-column name. |
+| `bind` | Named parameter without `:`; ASCII letters, digits, and underscores, starting with a letter or underscore. |
+| `initial.type` | One of `int64`, `uint64`, `string`, or `timestamp`. |
+| `initial.value` | Exact value of the declared type; required, never null. |
+
+| Type | Example initial value | Ordering |
+| --- | --- | --- |
+| `int64` | `-1` | Signed 64-bit numeric order. |
+| `uint64` | `18446744073709551615` | Unsigned 64-bit numeric order; no signed or floating-point conversion. |
+| `string` | `""` | Binary UTF-8 order, not numeric, locale-aware, or case-insensitive order. |
+| `timestamp` | `"2026-01-01T00:00:00.123456789Z"` | Chronological UTC instants; original text is retained for binding and checkpoints. |
+
+Text values are bounded to 1024 UTF-8 bytes. Empty strings are valid; malformed
+timestamps are not. Timestamp formats match the composite timestamp parser;
+timezone-less values have UTC semantics. Floating-point, decimal, boolean,
+binary, and null cursors are not supported by this scalar contract.
+
+For a dialect using colon-prefixed named parameters, an illustrative query is:
+
+```sql
+SELECT EVENT_ID, MESSAGE
+FROM EVENTS
+WHERE EVENT_ID > :last_key
+ORDER BY EVENT_ID ASC
+```
+
+The adapter must bind the native declared type, validate the complete read-only
+keyset predicate and ordering, check metadata and nullability, and reject any
+unsupported type or collation. String ordering must agree with Rust UTF-8 byte
+ordering, including trailing spaces. SQL text interpolation is never permitted.
+
+The initial value is an **exclusive** lower bound, so a source row equal to it
+is not collected. Scalar timestamps must be unique; use composite mode when
+several rows can share a timestamp. Uniqueness must hold over the result, not
+just the currently fetched page, because page or byte limits can split ties.
+Strictly increasing IDs alone do not prove commit-visible ordering: late commits
+below an acknowledged key can still be missed. Stable keys, source retention,
+and the existing downstream acknowledgement requirements continue to apply.
+
+Every returned row must advance beyond the prior cursor with the same type.
+Duplicate, backward, malformed, or mismatched positions fail closed, even if
+the final row would advance. The last **emitted** row is checkpointed only after
+ACK and durable write; NACK retains the committed position for replay.
+
+Existing composite checkpoints retain their version-1 representation and
+checksum. Scalar checkpoints carry explicit type tags and preserve full-width
+integers and timestamp text. Startup rejects a checkpoint with a different
+mode or scalar type before fetching rows. Receiver configuration fingerprints
+must include the mode, column, bind, and typed initial value; changing them
+requires an intentional checkpoint migration or a new checkpoint identity.
 
 ### Checkpoint Configuration
 
@@ -332,6 +401,8 @@ materializing an arbitrary result set.
 | `ColumnMetadata` | Column name, adapter-reported type name, and nullability, shared by the page. |
 | `Row` | Ordered values corresponding to the result metadata. |
 | `CompositeCursor` | Timestamp text plus a signed 64-bit tie-breaker. |
+| `Cursor` | Scalar or composite position carried through polling, encoding, and checkpointing. |
+| `ScalarValue` | Explicitly typed signed integer, unsigned integer, string, or timestamp position. |
 | `CursorRow` | A row paired with its own source position. |
 | `QueryPage` | Shared column metadata and an ordered vector of cursor-bearing rows. |
 
@@ -422,7 +493,7 @@ memory was much larger. The measured peak includes the test process and
 encoding allocations, not native database or downstream buffers. It is a
 workload-specific sizing example, not a portable peak-memory bound.
 
-`CellValue` and `CompositeCursor` debug output redact their values; nested
+`CellValue`, `ScalarValue`, and `CompositeCursor` debug output redact their values; nested
 cursor rows/pages therefore do not reveal the cursor through their debug
 representation. `CompiledQuery` also redacts SQL and its initial cursor.
 Timestamp and tie-breaker configuration debug output redacts `initial`,
@@ -750,9 +821,9 @@ error messages must not become metric dimensions.
 ## Limits
 
 - This is not a runnable generic receiver, SQL Agent binary, installer, or exporter.
-- Only composite cursor configuration and `on_nack: rewind` are accepted; permanent rejection separately supports `on_permanent_nack: pause | retry`.
+- Scalar and composite cursor configuration and `on_nack: rewind` are accepted; permanent rejection separately supports `on_permanent_nack: pause | retry`.
 - File checkpoints, leases, scheduling, mapping, and feedback are shared library functionality; database I/O and node registration remain vendor responsibilities.
-- Multiple named queries, jitter, snapshot/scalar polling, richer output mapping, collection of database metrics as an output signal, and CDC are not implemented. Internal runtime counters are implemented.
+- Multiple named queries, jitter, snapshot polling, richer output mapping, collection of database metrics as an output signal, and CDC are not implemented. Internal runtime counters are implemented.
 - Byte-limit validation does not bound RSS or native allocations. Local memory-pressure state gates new fetches, but full global `MemoryAdmission` accounting is not implemented.
 - Authentication capabilities, credential rotation, TLS configuration, distributed ownership, and automatic source partitioning require separate work.
 - Bounded immediate catch-up is the default, with configurable cycle budgets and memory-pressure new-fetch gating. Whole-poll and normal-operation ACK deadlines are not; elapsed catch-up budgets only gate the next fetch.
