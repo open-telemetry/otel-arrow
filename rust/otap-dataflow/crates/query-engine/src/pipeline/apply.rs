@@ -20,7 +20,7 @@ use crate::error::{Error, Result};
 use crate::pipeline::expr::{ChildRecordKind, RecordScope};
 use crate::pipeline::planner::AttributesIdentifier;
 use crate::pipeline::state::ExecutionState;
-use crate::pipeline::{ParentBehavior, PipelineStage};
+use crate::pipeline::{ParentBehavior, ParentPayloadMutations, PipelineStage};
 
 /// The source for which to apply the pipeline. Records belonging to this source data will be
 /// treated as the main record by execution of the child pipeline stages.
@@ -174,6 +174,17 @@ impl PipelineStage for ApplyPipelineStage {
             ParentBehavior::RequiresReindex
         } else {
             ParentBehavior::Preserves
+        }
+    }
+
+    fn parent_payload_mutations(&self) -> ParentPayloadMutations {
+        match self.source {
+            ApplySource::Attributes(AttributesIdentifier::NonRecord(payload_type)) => {
+                ParentPayloadMutations::from_payload_type(payload_type)
+            }
+            ApplySource::Attributes(AttributesIdentifier::Record(_)) | ApplySource::DataPoints => {
+                ParentPayloadMutations::none()
+            }
         }
     }
 }

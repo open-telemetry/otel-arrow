@@ -81,7 +81,7 @@ use crate::pipeline::project::anyval::{
     is_any_value_data_type, wrap_as_any_value_struct,
 };
 use crate::pipeline::state::ExecutionState;
-use crate::pipeline::{ParentBehavior, PipelineStage};
+use crate::pipeline::{ParentBehavior, ParentPayloadMutations, PipelineStage};
 
 /// Representation of assignment source and destination
 pub struct Assignment<'a> {
@@ -1486,6 +1486,29 @@ impl PipelineStage for AssignPipelineStage {
         } else {
             ParentBehavior::Preserves
         }
+    }
+
+    fn parent_payload_mutations(&self) -> ParentPayloadMutations {
+        self.dest_columns
+            .iter()
+            .fold(ParentPayloadMutations::none(), |mutations, dest| {
+                let payload_type = match dest {
+                    ColumnAccessor::Attributes(
+                        AttributesIdentifier::NonRecord(payload_type),
+                        _,
+                    )
+                    | ColumnAccessor::NestedAttribute(
+                        AttributesIdentifier::NonRecord(payload_type),
+                        _,
+                        _,
+                    ) => Some(*payload_type),
+                    _ => None,
+                };
+
+                payload_type.map_or(mutations, |payload_type| {
+                    mutations.union(ParentPayloadMutations::from_payload_type(payload_type))
+                })
+            })
     }
 
     fn init_state_for_conditional_branch(

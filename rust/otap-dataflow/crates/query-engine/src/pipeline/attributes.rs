@@ -18,7 +18,7 @@ use crate::pipeline::expr::RecordScope;
 use crate::pipeline::expr::types::MetricDataPointType;
 use crate::pipeline::planner::{AttributesIdentifier, RecordType};
 use crate::pipeline::state::ExecutionState;
-use crate::pipeline::{ParentBehavior, PipelineStage};
+use crate::pipeline::{ParentBehavior, ParentPayloadMutations, PipelineStage};
 
 /// This pipeline stage can be used to rename and delete attributes according to the transformation
 /// specified by the [`AttributesTransform`]
@@ -106,6 +106,15 @@ impl PipelineStage for AttributeTransformPipelineStage {
             ParentBehavior::RequiresReindex
         } else {
             ParentBehavior::Preserves
+        }
+    }
+
+    fn parent_payload_mutations(&self) -> ParentPayloadMutations {
+        match self.attrs_id {
+            AttributesIdentifier::NonRecord(payload_type) => {
+                ParentPayloadMutations::from_payload_type(payload_type)
+            }
+            AttributesIdentifier::Record(_) => ParentPayloadMutations::none(),
         }
     }
 }

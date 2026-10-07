@@ -70,5 +70,9 @@ required-features = ["bench"]
 name = "scale_metric"
 harness = false
 
+[[bench]]
+name = "conditional"
+harness = false
+
 [lints]
 workspace = true
