@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791330094923,
+  "lastUpdate": 1791332919939,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -54398,6 +54398,148 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
             "value": 3.53,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.89,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.73,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.68,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.5,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.44,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.35,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 120.14,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 107.23,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Ben Du",
+            "username": "bendu",
+            "email": "5668844+bendu@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "429aba21e536324b396aa2c4246bb41f10629e27",
+          "message": "feat(scraper): add scalar watermark support for SQL receivers (#4271)\n\n# Change summary\n\nAdd typed scalar watermark support to the shared SQL scraper and Oracle\nreceiver.\n\nScalar watermarks support signed integers, unsigned integers, strings,\nand\ntimestamps while preserving ACK-driven checkpoint advancement and replay\nbehavior. This change also adds configuration validation, documentation,\nand\ncoverage for scalar checkpointing and polling.\n\n## Related issue\n\n* Closes #4193\n\n## Validation\n\n* `cargo fmt --all -- --check`\n* `cargo check -p otel-arrow-dfe-scraper`\n* `cargo check -p otel-arrow-dfe-contrib-nodes --features oracle`\n* `npx --yes markdownlint-cli2\nrust/otap-dataflow/crates/contrib-nodes/src/receivers/oracle_receiver/README.md\nrust/otap-dataflow/crates/scraper/README.md`\n* `git diff --check origin/main...HEAD`\n\n## User-facing changes\n\nSQL receivers can use a single typed scalar value as their polling\nwatermark.\nThe Oracle receiver supports signed integer, unsigned integer, string,\nand\ntimestamp scalar watermarks in addition to composite watermarks.\n\nOracle string watermarks require nonempty `VARCHAR2` values, the\n`AL32UTF8`\ndatabase character set, and explicit binary collation. Existing\ncomposite\nwatermark configurations and checkpoints remain compatible.\n\nA changelog entry is included in\n`rust/otap-dataflow/.chloggen/scalar-watermarks.yaml`.\n\n---------\n\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>",
+          "timestamp": "2026-10-06T22:22:13Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/429aba21e536324b396aa2c4246bb41f10629e27"
+        },
+        "date": 1791332902414,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 86.95,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.98,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.13,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.99,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.51,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 3.14,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.12,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 3.03,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.01,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.77,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 74.02,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 5.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.79,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.56,
             "unit": "MB"
           },
           {
