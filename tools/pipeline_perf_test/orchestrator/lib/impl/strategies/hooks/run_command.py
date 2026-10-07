@@ -18,6 +18,8 @@ Warnings:
     input is not properly sanitized. Use caution when including user-supplied strings.
 """
 
+from typing import Optional
+
 from ....core.strategies.hook_strategy import HookStrategy, HookStrategyConfig
 from ....core.context.base import BaseContext
 from ....core.context import ComponentHookContext, FrameworkElementHookContext
@@ -31,9 +33,13 @@ class RunCommandConfig(HookStrategyConfig):
 
     Attributes:
         command (str): The shell command to be executed by the hook.
+        timeout (Optional[float]): Maximum time in seconds to allow the command to run before it
+            is killed and a TimeoutExpired error is raised. Prevents a hung command from wedging
+            the orchestrator. Default is 300.0.
     """
 
     command: str
+    timeout: Optional[float] = 300.0
 
 
 @hook_registry.register_class("run_command")
@@ -85,11 +91,18 @@ tests:
 
         Raises:
             subprocess.CalledProcessError: If the command returns a non-zero exit code.
+            subprocess.TimeoutExpired: If the command runs longer than the configured timeout.
         """
         import subprocess
 
         logger = ctx.get_logger(__name__)
 
         logger.debug(f"Running: {self.config.command}")
-        # Execute the command with shell=True, and raise an exception if it fails
-        subprocess.run([self.config.command], shell=True, check=True)
+        # Execute the command with shell=True, and raise an exception if it fails.
+        # A timeout bounds how long a hung command can block the orchestrator.
+        subprocess.run(
+            [self.config.command],
+            shell=True,
+            check=True,
+            timeout=self.config.timeout,
+        )

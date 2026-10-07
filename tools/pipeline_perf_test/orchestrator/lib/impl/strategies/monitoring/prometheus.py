@@ -51,6 +51,9 @@ class PrometheusMonitoringConfig(MonitoringStrategyConfig):
         count (Optional[int]): The number of times to scrape metrics before stopping. A value of 0 means unlimited. Default is 0.
         include (Optional[List[str]]): List of metric names to explicitly include. If empty, all metrics are included by default.
         exclude (Optional[List[str]]): List of metric names to exclude from scraping.
+        request_timeout (Optional[float]): Per-request timeout in seconds for scraping the
+            endpoint. Bounds how long a single scrape can block so the monitoring thread stays
+            responsive to the stop signal even when the target hangs. Default is 10.0.
     """
 
     endpoint: str
@@ -58,6 +61,7 @@ class PrometheusMonitoringConfig(MonitoringStrategyConfig):
     count: Optional[int] = 0
     include: Optional[List[str]] = []
     exclude: Optional[List[str]] = []
+    request_timeout: Optional[float] = 10.0
 
 
 @monitoring_registry.register_class(STRATEGY_NAME)
@@ -125,6 +129,7 @@ components:
             "count": self.config.count,
             "include": self.config.include,
             "exclude": self.config.exclude,
+            "request_timeout": self.config.request_timeout,
             "stop_event": monitoring_runtime.stop_event,
             "meter": meter,
             "logger": logger,
@@ -152,8 +157,23 @@ components:
                 PrometheusMonitoringRuntime.type, PrometheusMonitoringRuntime
             )
         )
+        if monitoring_runtime.stop_event is None or monitoring_runtime.thread is None:
+            # Monitoring was never started (e.g. deploy failed and teardown still
+            # runs the stop step); nothing to join.
+            return
         monitoring_runtime.stop_event.set()
-        monitoring_runtime.thread.join()
+        # Bound the join so a wedged scrape thread cannot hang the whole
+        # orchestrator during teardown. The scrape itself is bounded by
+        # request_timeout, so this is a defensive upper bound.
+        join_timeout = (self.config.request_timeout or 10.0) + (
+            self.config.interval or 1.0
+        ) + 5.0
+        monitoring_runtime.thread.join(timeout=join_timeout)
+        if monitoring_runtime.thread.is_alive():
+            logger.warning(
+                f"Monitoring thread for {component.name} did not stop within "
+                f"{join_timeout:.0f}s; abandoning it (daemon thread will exit with the process)."
+            )
 
     def collect(self, _component: Component, _ctx: ScenarioContext) -> dict:
         """
@@ -236,6 +256,7 @@ def scrape_and_convert_metrics(
     meter: Meter,
     include: list[str] = None,
     exclude: list[str] = None,
+    request_timeout: Optional[float] = 10.0,
 ):
     """
     Scrape metrics from a Prometheus endpoint, filter them, and record them to an OpenTelemetry meter.
@@ -253,6 +274,8 @@ def scrape_and_convert_metrics(
             with names in this list will be recorded. Defaults to None (include all).
         exclude (list[str], optional): List of metric names to exclude. If specified and
             include is None, metrics with names in this list will be skipped. Defaults to None.
+        request_timeout (float, optional): Per-request timeout in seconds passed to
+            requests.get so a hung endpoint cannot block the scrape indefinitely. Defaults to 10.0.
 
     Raises:
         requests.HTTPError: If the HTTP GET request to the endpoint fails or returns a bad status.
@@ -264,7 +287,7 @@ def scrape_and_convert_metrics(
           their original type.
         - Each metric sample is tagged with the component name as a label named 'component_name'.
     """
-    resp = requests.get(endpoint)
+    resp = requests.get(endpoint, timeout=request_timeout)
     resp.raise_for_status()
     metrics_text = resp.text
 
@@ -292,6 +315,7 @@ def monitor(
     meter: Meter,
     logger: LoggerAdapter,
     test_suite_context: ScenarioContext,
+    request_timeout: Optional[float] = 10.0,
 ):
     """
     Continuously scrape and record Prometheus metrics from a specified endpoint at regular intervals.
@@ -315,6 +339,8 @@ def monitor(
         meter (Meter): OpenTelemetry meter used to record metrics.
         logger (LoggerAdapter): Logger instance for error and debug messages.
         test_suite_context (ScenarioContext): Context providing tracing instrumentation and span.
+        request_timeout (float): Per-request timeout in seconds for each scrape, keeping the loop
+            responsive to `stop_event` even when the target endpoint hangs.
 
     Behavior:
         - Creates an OpenTelemetry producer span for the duration of monitoring.
@@ -338,7 +364,12 @@ def monitor(
         while not stop_event.is_set() and (remaining is None or remaining > 0):
             try:
                 scrape_and_convert_metrics(
-                    endpoint, component_name, meter, include=include, exclude=exclude
+                    endpoint,
+                    component_name,
+                    meter,
+                    include=include,
+                    exclude=exclude,
+                    request_timeout=request_timeout,
                 )
                 time.sleep(interval)
                 if remaining is not None:

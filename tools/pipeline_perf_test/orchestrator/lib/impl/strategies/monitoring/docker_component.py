@@ -218,8 +218,18 @@ components:
                 DockerComponentMonitoringRuntime.type, DockerComponentMonitoringRuntime
             )
         )
+        if self.stop_event is None or monitoring_runtime.thread is None:
+            # Monitoring was never started; nothing to join.
+            return
         self.stop_event.set()
-        monitoring_runtime.thread.join()
+        # Bound the join so a wedged stats thread cannot hang teardown forever.
+        join_timeout = (self.config.interval or 1.0) + 30.0
+        monitoring_runtime.thread.join(timeout=join_timeout)
+        if monitoring_runtime.thread.is_alive():
+            logger.warning(
+                f"Docker monitoring thread for {component.name} did not stop within "
+                f"{join_timeout:.0f}s; abandoning it (daemon thread will exit with the process)."
+            )
 
     def collect(self, _component: Component, _ctx: ScenarioContext) -> dict:
         """
