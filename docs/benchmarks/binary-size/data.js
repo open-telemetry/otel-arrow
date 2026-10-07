@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791332919939,
+  "lastUpdate": 1791343894413,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -54585,6 +54585,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 107.23,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "jmacd@users.noreply.github.com",
+            "name": "Joshua MacDonald",
+            "username": "jmacd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "512c7dc7cb9a74ebc2d87d07bef62db9ec960f12",
+          "message": "chore(context): add layout model and small-member benchmarks (#4251)\n\nThis changeset makes context declarations explicit about where context\nvalues come from: transport headers, authorized identity, or composite\nentry references. Context declarations cannot refer to a named field\nwithout specifying the domain. Context entries are \"prepared\", checking\nthat composite entry references can be found.\n\nCreates a layout model that represents the primitive fields, composite\nentries, and a map of names for each. Bindings are now explicitly one of\nthree types: primitive field, composite field, and whole composite.\nLayout is not integrated.\n\nThis has been shown in #4230.\n\n## Baseline benchmarks\n\nMean nanoseconds per propagation call, including consuming all outputs,\nat `50c3a56c5`:\n\n| Members / captured headers | Unqualified | Composite, no condition |\nCondition matches | Condition fails |\n| --- | ---: | ---: | ---: | ---: |\n| 0 | 1.9 | - | - | - |\n| 1 | 14.6 | 20.8 | 41.0 | 43.1 |\n| 2 | 31.3 | 55.4 | 79.9 | 108.2 |\n| 3 | 52.3 | 107.9 | 124.1 | 162.7 |\n| 4 | 60.4 | 116.6 | 143.3 | 271.4 |\n| 5 | 67.8 | 153.7 | 190.5 | 290.4 |\n\nIntel Core Ultra 7 165H, WSL2, Rust 1.98.1, optimized bench profile,\npinned to CPU 2;\n50 samples per case, 1 s warmup, 3 s measurement. Conditions use one\nexisting\nmember, with no extra captured headers. Local baseline only; no\noptimization comparison.\n\n## Related issue\n\nPart of #3919\n\n---------\n\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>\nCopilot-Session: 6bab15a9-c7e1-4ef9-b95a-11102a615fb6\nCopilot-Session: 8ca3a1dc-033d-4a64-87b0-a51f781113b5",
+          "timestamp": "2026-10-07T02:39:49Z",
+          "tree_id": "f36223d61603696429f757a4d07392606b9738df",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/512c7dc7cb9a74ebc2d87d07bef62db9ec960f12"
+        },
+        "date": 1791343878436,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 87,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.99,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.08,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.99,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.51,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 3.14,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.12,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 3.03,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.01,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.77,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 74.15,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 5.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.79,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.56,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.89,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.73,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.68,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.5,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.44,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.35,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 120.2,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 107.29,
             "unit": "MB"
           }
         ]
