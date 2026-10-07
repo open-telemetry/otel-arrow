@@ -3,60 +3,60 @@
     "extra": "OTC OTAP Baseline w/ Zstd (Traces)/100k - Dropped Spans %",
     "name": "dropped_spans_percentage",
     "unit": "%",
-    "value": 0.6132182478904724
+    "value": -0.44385263323783875
   },
   {
     "extra": "OTC OTAP Baseline w/ Zstd (Traces)/100k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 100.10976152332005
+    "value": 100.16426617936239
   },
   {
     "extra": "OTC OTAP Baseline w/ Zstd (Traces)/100k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 100.34057428214732
+    "value": 100.66621806853581
   },
   {
     "extra": "OTC OTAP Baseline w/ Zstd (Traces)/100k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 307.6860677083333
+    "value": 301.824609375
   },
   {
     "extra": "OTC OTAP Baseline w/ Zstd (Traces)/100k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 350.609375
+    "value": 317.0234375
   },
   {
     "extra": "OTC OTAP Baseline w/ Zstd (Traces)/100k - Span Throughput",
     "name": "spans_produced_rate",
     "unit": "spans/sec",
-    "value": 73609.66218849199
+    "value": 75241.76551847221
   },
   {
     "extra": "OTC OTAP Baseline w/ Zstd (Traces)/100k - Span Throughput",
     "name": "spans_received_rate",
     "unit": "spans/sec",
-    "value": 73652.10421840071
+    "value": 75958.8253489604
   },
   {
     "extra": "OTC OTAP Baseline w/ Zstd (Traces)/100k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000536
+    "value": 60.000574
   },
   {
     "extra": "OTC OTAP Baseline w/ Zstd (Traces)/100k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 2736555.1005129763
+    "value": 2870409.8122319933
   },
   {
     "extra": "OTC OTAP Baseline w/ Zstd (Traces)/100k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 3087892.8902887446
+    "value": 3268392.7037217533
   }
 ]

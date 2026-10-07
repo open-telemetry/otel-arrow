@@ -3,60 +3,60 @@
     "extra": "OTC OTAP Baseline (Metrics)/1000k - Dropped Metrics %",
     "name": "dropped_metrics_percentage",
     "unit": "%",
-    "value": -0.45224592089653015
+    "value": -1.9547522068023682
   },
   {
     "extra": "OTC OTAP Baseline (Metrics)/1000k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 99.96725042902685
+    "value": 100.11411061725708
   },
   {
     "extra": "OTC OTAP Baseline (Metrics)/1000k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 100.61741471048514
+    "value": 100.48209215442093
   },
   {
     "extra": "OTC OTAP Baseline (Metrics)/1000k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 1095.6028645833333
+    "value": 1120.3970052083334
   },
   {
     "extra": "OTC OTAP Baseline (Metrics)/1000k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 1113.57421875
+    "value": 1135.53515625
   },
   {
     "extra": "OTC OTAP Baseline (Metrics)/1000k - Metric Throughput",
     "name": "metrics_produced_rate",
     "unit": "metrics/sec",
-    "value": 221645.02093896447
+    "value": 263836.2391139228
   },
   {
     "extra": "OTC OTAP Baseline (Metrics)/1000k - Metric Throughput",
     "name": "metrics_received_rate",
     "unit": "metrics/sec",
-    "value": 219212.01168747115
+    "value": 265762.89906492824
   },
   {
     "extra": "OTC OTAP Baseline (Metrics)/1000k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000758
+    "value": 60.00064
   },
   {
     "extra": "OTC OTAP Baseline (Metrics)/1000k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 13160061.083366865
+    "value": 15951697.966574105
   },
   {
     "extra": "OTC OTAP Baseline (Metrics)/1000k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 19183359.473359503
+    "value": 22895273.556518085
   }
 ]

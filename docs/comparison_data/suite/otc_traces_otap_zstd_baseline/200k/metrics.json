@@ -3,60 +3,60 @@
     "extra": "OTC OTAP Baseline w/ Zstd (Traces)/200k - Dropped Spans %",
     "name": "dropped_spans_percentage",
     "unit": "%",
-    "value": 0.6199770569801331
+    "value": 0.3737085163593292
   },
   {
     "extra": "OTC OTAP Baseline w/ Zstd (Traces)/200k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 100.0229904879762
+    "value": 100.16720871116947
   },
   {
     "extra": "OTC OTAP Baseline w/ Zstd (Traces)/200k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 100.24092298097911
+    "value": 100.49942714819426
   },
   {
     "extra": "OTC OTAP Baseline w/ Zstd (Traces)/200k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 364.50989583333336
+    "value": 355.87578125
   },
   {
     "extra": "OTC OTAP Baseline w/ Zstd (Traces)/200k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 397.140625
+    "value": 388.22265625
   },
   {
     "extra": "OTC OTAP Baseline w/ Zstd (Traces)/200k - Span Throughput",
     "name": "spans_produced_rate",
     "unit": "spans/sec",
-    "value": 73624.55884012191
+    "value": 76840.37382765855
   },
   {
     "extra": "OTC OTAP Baseline w/ Zstd (Traces)/200k - Span Throughput",
     "name": "spans_received_rate",
     "unit": "spans/sec",
-    "value": 72918.88974790231
+    "value": 75905.98236787104
   },
   {
     "extra": "OTC OTAP Baseline w/ Zstd (Traces)/200k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000621
+    "value": 60.00056
   },
   {
     "extra": "OTC OTAP Baseline w/ Zstd (Traces)/200k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 2761964.905618877
+    "value": 2874241.7715917695
   },
   {
     "extra": "OTC OTAP Baseline w/ Zstd (Traces)/200k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 3113669.5469416506
+    "value": 3280360.0941153704
   }
 ]
