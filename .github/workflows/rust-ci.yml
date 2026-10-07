@@ -480,6 +480,9 @@ jobs:
       - name: Run cargo xtask for ${{ matrix.folder }}
         run: cargo xtask structure-check
         working-directory: ./rust/${{ matrix.folder }}
+      - name: Validate component inventory baseline
+        run: cargo xtask component-inventory --check components-baseline.json
+        working-directory: ./rust/${{ matrix.folder }}
       - name: Validate crates.io publish plan
         run: cargo xtask crates-publish check
         working-directory: ./rust/${{ matrix.folder }}

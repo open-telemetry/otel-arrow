@@ -19,6 +19,7 @@ use crate::{WakeupError, WakeupSetOutcome};
 use otel_arrow_dfe_channel::error::SendError;
 use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
 use otel_arrow_dfe_telemetry::metrics::{MetricSet, MetricSetHandler};
+use otel_arrow_dfe_telemetry::output_service::{Frame, OutputService, StreamHandle};
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
@@ -152,17 +153,13 @@ impl<PData> EffectHandlerCore<PData> {
         self.node_id.clone()
     }
 
-    /// Print an info message to stdout.
+    /// Print an info message to the engine's diagnostic stream.
     ///
     /// This method provides a standardized way for all nodes in the pipeline
-    /// to output informational messages without blocking the async runtime.
+    /// to output informational messages. It never waits for the console: a
+    /// full diagnostic queue drops the message.
     pub(crate) async fn info(&self, message: &str) {
-        use tokio::io::{AsyncWriteExt, stdout};
-        let mut out = stdout();
-        // Ignore write errors as they're typically not recoverable for stdout
-        let _ = out.write_all(message.as_bytes()).await;
-        let _ = out.write_all(b"\n").await;
-        let _ = out.flush().await;
+        submit_diagnostic(&OutputService::diagnostics(), message);
     }
 
     /// Creates a non-blocking TCP listener on the given address with socket options defined by the
@@ -524,5 +521,75 @@ impl<PData> TelemetryTimerCancelHandle<PData> {
                 _temp: std::marker::PhantomData,
             })
             .await
+    }
+}
+
+/// Queues one diagnostic line, one frame per message so the line is written whole.
+///
+/// A full queue drops the line and counts it in `diagnostics_dropped`, like the
+/// self-tracing writer, so console backpressure never stalls pipeline work.
+fn submit_diagnostic(stream: &StreamHandle, message: &str) {
+    let _ = stream.try_submit(Frame::line(message));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use otel_arrow_dfe_telemetry::output_service::{OutputSink, OutputStream, StreamId};
+    use std::io;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    /// Sink whose writes block until the test releases them.
+    struct StalledSink(Arc<AtomicBool>);
+
+    impl OutputSink for StalledSink {
+        fn write_frame(&mut self, _frame: &[u8]) -> io::Result<()> {
+            while self.0.load(Ordering::Acquire) {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Ok(())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Scenario: a node keeps emitting info messages while the diagnostic writer is stalled
+    /// and its one-frame queue is full.
+    /// Guarantees: every message returns at once, and the messages that did not fit are
+    /// counted as dropped diagnostics, so a stalled stderr reader cannot hold up the node.
+    #[test]
+    fn info_drops_instead_of_waiting_on_a_full_diagnostic_queue() {
+        const MESSAGES: u64 = 32;
+
+        let stalled = Arc::new(AtomicBool::new(true));
+        let stream = OutputStream::start(
+            StreamId::Stderr,
+            1,
+            1024 * 1024,
+            true,
+            Box::new(StalledSink(Arc::clone(&stalled))),
+        )
+        .expect("writer thread spawns");
+        let handle = stream.handle();
+
+        let started = Instant::now();
+        for _ in 0..MESSAGES {
+            submit_diagnostic(&handle, "diagnostic");
+        }
+        let elapsed = started.elapsed();
+
+        let stats = stream.stats();
+        // One frame can sit in the stalled write and one in the queue; the rest must drop.
+        assert!(stats.frames_submitted <= 2);
+        assert_eq!(stats.frames_submitted + stats.diagnostics_dropped, MESSAGES);
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "info must not wait for queue capacity"
+        );
+        stalled.store(false, Ordering::Release);
+        let _ = stream.shutdown(Duration::from_secs(5));
     }
 }

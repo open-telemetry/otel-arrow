@@ -1,17 +1,17 @@
 # Use this changelog template to create an entry for release notes.
 
 # One of 'breaking', 'deprecation', 'new_component', 'enhancement', 'bug_fix'
-change_type: new_component
+change_type: bug_fix
 
 # The name of the component, or a single word describing the area of concern, (e.g. engine, otap).
 # Must be one of the components listed in rust/otap-dataflow/.chloggen/config.yaml.
-component: pipeline
+component: observability
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
-note: "Add an opt-in Oracle receiver that polls a composite watermark and checkpoints acknowledged OTLP logs."
+note: "Fix silent loss of internal log message bodies when they overflow the encoding buffer."
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
-issues: [4163, 3918]
+issues: [1746]
 
 # (Optional) One or more lines of additional information to render under the primary note.
 # These lines will be padded with 2 spaces and then inserted directly into the document.
@@ -19,6 +19,7 @@ issues: [4163, 3918]
 # section with the specific action consumers must take. Keep notes to 200
 # characters and subtext to 300 characters.
 subtext: |
-  Enable the oracle build feature. Requires retained immutable rows and a unique, commit-visible timestamp/integer cursor.
-  Polling binds the discovered Oracle cursor type; use a matching composite index.
-  Transient failures retry locally; permanent downstream rejection pauses by default.
+  A bare &str log message body that overflowed the encoding buffer was
+  silently dropped in full with no truncation marker. It now truncates with
+  a "[...]" suffix, like Debug-formatted bodies and attribute fields already
+  did.

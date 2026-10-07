@@ -3,7 +3,7 @@
 ## Metadata
 
 - Type: Exporter
-- Feature gate: `geneva-metrics`
+- Feature gate: `geneva` (shared with `geneva_exporter`)
 - Stability: WIP; metrics support is under development
 
 ## Overview
@@ -25,6 +25,10 @@ The exporter requires `auth.type: bearer` and a bound
 supported, as are other bearer providers configured for the Geneva publication
 resource. The endpoint must use HTTPS.
 
+The `geneva` feature does not include a bearer token provider. To use Azure
+managed identity, also enable the `azure_identity_auth` extension, for example
+`--features geneva,azure-identity-auth`.
+
 The exporter currently supports one monitoring account per OTLP request.
 Requests whose resource or data point attributes select multiple accounts are
 rejected before publication.
@@ -36,7 +40,7 @@ Run the current Geneva metrics tests with:
 ```bash
 cargo test --manifest-path rust/otap-dataflow/Cargo.toml \
   -p otel-arrow-dfe-contrib-nodes \
-  --features geneva-metrics \
+  --features geneva \
   geneva_metrics_exporter
 ```
 

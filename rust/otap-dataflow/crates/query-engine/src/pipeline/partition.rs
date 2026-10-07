@@ -34,7 +34,7 @@ use crate::pipeline::Pipeline;
 use crate::pipeline::expr::eval::{EvalContext, align_value_to_record};
 use crate::pipeline::expr::planner::ExprPlanner;
 use crate::pipeline::expr::{RecordScope, ScopedExpr};
-use crate::pipeline::planner::RecordType;
+use crate::pipeline::planner::{RecordType, SignalContext};
 use crate::pipeline::project::anyval::is_any_value_data_type;
 
 /// Produces partitioned record batches by the results of some evaluated expression.
@@ -84,7 +84,7 @@ impl Partitioner {
         scalar_expr: ScalarExpression,
         functions: Vec<PipelineFunction>,
     ) -> Result<Self> {
-        let expr_planner = ExprPlanner::new(true, RecordType::Signal);
+        let expr_planner = ExprPlanner::new(true, RecordType::Signal(SignalContext::All));
         let planned_expr = expr_planner.plan_scalar(&scalar_expr, &functions)?;
 
         Ok(Self {
@@ -269,6 +269,8 @@ impl PartitionValue {
             | ScalarValue::FixedSizeList(_)
             | ScalarValue::List(_)
             | ScalarValue::LargeList(_)
+            | ScalarValue::ListView(_)
+            | ScalarValue::LargeListView(_)
             | ScalarValue::Map(_)
             | ScalarValue::Union(_, _, _) => {
                 return Err(Error::ExecutionError {
