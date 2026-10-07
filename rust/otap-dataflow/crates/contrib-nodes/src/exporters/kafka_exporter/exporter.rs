@@ -44,8 +44,8 @@ use otel_arrow_dfe_engine::config::ExporterConfig;
 use otel_arrow_dfe_engine::context::PipelineContext;
 use otel_arrow_dfe_engine::context_declaration::{
     ConfigNodeContextDeclaration, ContextConsumerSelector, ContextDeclaration,
-    ContextDeclarationProvider, ContextEntrySelector, ContextEntrySelectorForm,
-    NodeContextDeclarations,
+    ContextDeclarationProvider, ContextDomain, ContextEntrySelector, ContextEntrySelectorForm,
+    ContextEntryTarget, NodeContextDeclarations,
 };
 use otel_arrow_dfe_engine::control::{AckMsg, NackMsg, NodeControlMsg};
 use otel_arrow_dfe_engine::error::Error as EngineError;
@@ -368,7 +368,10 @@ impl ConfigNodeContextDeclaration for KafkaExporterConfig {
                         .map(|name| ContextDeclaration::Consumes {
                             selector: ContextConsumerSelector::Entries {
                                 entries: vec![ContextEntrySelector {
-                                    name: name.clone(),
+                                    target: ContextEntryTarget::Primitive {
+                                        domain: ContextDomain::TransportHeader,
+                                        name: name.clone(),
+                                    },
                                     form: ContextEntrySelectorForm::Value,
                                 }]
                                 .into_boxed_slice(),
@@ -376,7 +379,9 @@ impl ConfigNodeContextDeclaration for KafkaExporterConfig {
                         });
                 let partition = signal.partition_by_transport_headers().then_some(
                     ContextDeclaration::Consumes {
-                        selector: ContextConsumerSelector::AllStored,
+                        selector: ContextConsumerSelector::AllStored {
+                            domain: ContextDomain::TransportHeader,
+                        },
                     },
                 );
                 topic.into_iter().chain(partition)
@@ -1614,6 +1619,7 @@ pub mod test_support {
         use crate::common::kafka::test::{run_on_local_set, with_cluster};
 
         // Engine/telemetry helpers used by the header-propagation unit tests.
+        use otel_arrow_dfe_engine::context_declaration::CompiledHeaderPropagationPolicy;
         use otel_arrow_dfe_engine::local::exporter::EffectHandler;
         use otel_arrow_dfe_engine::testing::test_node;
         use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
@@ -1742,14 +1748,19 @@ pub mod test_support {
                 ContextDeclaration::Consumes {
                     selector: ContextConsumerSelector::Entries {
                         entries: vec![ContextEntrySelector {
-                            name: context_name("x-traces-topic"),
+                            target: ContextEntryTarget::Primitive {
+                                domain: ContextDomain::TransportHeader,
+                                name: context_name("x-traces-topic"),
+                            },
                             form: ContextEntrySelectorForm::Value,
                         }]
                         .into_boxed_slice(),
                     },
                 },
                 ContextDeclaration::Consumes {
-                    selector: ContextConsumerSelector::AllStored,
+                    selector: ContextConsumerSelector::AllStored {
+                        domain: ContextDomain::TransportHeader,
+                    },
                 },
             ]
             .into_iter()
@@ -7017,6 +7028,8 @@ pub mod test_support {
                 },
                 vec![],
             );
+            let policy = CompiledHeaderPropagationPolicy::compile(policy, &[])
+                .expect("propagation policy compiles");
             let (_rx, reporter) = MetricsReporter::create_new_and_receiver(1);
             let mut eh: EffectHandler<OtapPdata> = EffectHandler::new(
                 test_node("hdr-test"),

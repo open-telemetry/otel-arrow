@@ -288,7 +288,7 @@ impl PipelineStage for ConditionalPipelineStage {
             // evaluate the branch condition directly on the attributes record batch
             let predicate = branch
                 .condition
-                .evaluate_on_batch(&attrs_record_batch, &EvalContext::new(session_ctx))?;
+                .evaluate_on_attrs_batch(&attrs_record_batch, &EvalContext::new(session_ctx))?;
             let predicate_selection_vec =
                 scoped_value_to_boolean_array(predicate, attrs_record_batch.num_rows())?;
 
@@ -347,7 +347,7 @@ impl PipelineStage for ConditionalPipelineStage {
     }
 
     fn supports_exec_on(&self, record_type: &RecordType) -> bool {
-        matches!(record_type, RecordType::Attributes | RecordType::Signal)
+        matches!(record_type, RecordType::Attributes | RecordType::Signal(_))
     }
 }
 
@@ -417,6 +417,39 @@ mod test {
                 .attributes(vec![KeyValue::new("x", AnyValue::new_string("test"))])
                 .finish(),
         ];
+
+        pretty_assertions::assert_eq!(result.resource_logs[0].scope_logs[0].log_records, expected)
+    }
+
+    /// Scenario: Evaluate a conditional branch using a nested serialized attribute leaf.
+    /// Guarantees: The branch updates only records whose nested leaf matches.
+    #[tokio::test]
+    async fn test_conditional_with_nested_serialized_attribute() {
+        let log_records = vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new(
+                    "complex",
+                    AnyValue::new_kvlist(vec![KeyValue::new("name", AnyValue::new_string("a"))]),
+                )])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new(
+                    "complex",
+                    AnyValue::new_kvlist(vec![KeyValue::new("name", AnyValue::new_string("b"))]),
+                )])
+                .finish(),
+        ];
+
+        let result = exec_logs_pipeline::<OplParser>(
+            r#"
+            logs | if (attributes["complex"]["name"] == "a") {
+                set severity_text = "MATCHED"
+            }"#,
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        let mut expected = log_records;
+        expected[0].severity_text = "MATCHED".into();
 
         pretty_assertions::assert_eq!(result.resource_logs[0].scope_logs[0].log_records, expected)
     }
@@ -617,7 +650,7 @@ mod test {
         )
         .unwrap()
         .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = OtapArrowRecords::Logs(Logs::default());
         let result = pipeline.execute(input.clone()).await.unwrap();
@@ -681,7 +714,7 @@ mod test {
             }
         "#;
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let mut execution_state = ExecutionState::new();
 
@@ -890,6 +923,7 @@ mod test {
             pipeline_expr,
             PipelineOptions {
                 filter_attribute_keys_case_sensitive: false,
+                ..Default::default()
             },
         );
 

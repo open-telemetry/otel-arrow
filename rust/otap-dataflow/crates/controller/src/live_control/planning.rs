@@ -411,23 +411,6 @@ impl<
         }
     }
 
-    pub(super) fn live_pipeline_placement_from(
-        &self,
-        resolved_pipeline: &ResolvedPipelineConfig,
-        placement: PipelinePlacement,
-        placement_generation: u64,
-    ) -> LivePipelinePlacement {
-        let listener_group_snapshot = Arc::new(listener_group::snapshot_for_pipeline(
-            resolved_pipeline,
-            &placement,
-            placement_generation,
-        ));
-        LivePipelinePlacement {
-            placement,
-            listener_group_snapshot,
-        }
-    }
-
     /// Reports which active cores still belong to the current committed generation.
     pub(super) fn active_runtime_core_state(
         &self,
@@ -770,7 +753,7 @@ impl<
         let pipeline_id: PipelineId = pipeline_id.to_owned().into();
         let pipeline_key = PipelineKey::new(pipeline_group_id.clone(), pipeline_id.clone());
 
-        let (live_config, base_config_revision, current_record) = {
+        let (live_config, base_config_revision, current_deployment) = {
             let state = self
                 .state
                 .lock()
@@ -858,7 +841,7 @@ impl<
             .ok_or_else(|| ControlPlaneError::Internal {
                 message: "candidate pipeline disappeared during resolution".to_owned(),
             })?;
-        let current_pipeline_placement = current_record
+        let current_pipeline_placement = current_deployment
             .as_ref()
             .map(|record| record.placement.clone());
         let mut reserved_core_ids = self.reserved_core_ids_except(&pipeline_key);
@@ -887,9 +870,11 @@ impl<
         self.cancel_runtime_recoveries_for_pipeline(&pipeline_key);
         let current_core_set: HashSet<_> = current_assigned_cores.iter().copied().collect();
         let target_core_set: HashSet<_> = target_assigned_cores.iter().copied().collect();
-        let active_runtime_state = current_record
+        let active_runtime_state = current_deployment
             .as_ref()
-            .map(|record| self.active_runtime_core_state(&pipeline_key, record.active_generation))
+            .map(|record| {
+                self.active_runtime_core_state(&pipeline_key, record.create_or_replace_generation)
+            })
             .unwrap_or(ActiveRuntimeCoreState {
                 current_generation_cores: Vec::new(),
                 has_foreign_active_generations: false,
@@ -926,7 +911,7 @@ impl<
             .copied()
             .filter(|core_id| !target_core_set.contains(core_id))
             .collect();
-        let action = if let Some(record) = current_record.as_ref() {
+        let action = if let Some(record) = current_deployment.as_ref() {
             let identical_update = current_core_set == target_core_set
                 && active_core_set == target_core_set
                 && !active_runtime_state.has_foreign_active_generations
@@ -955,9 +940,9 @@ impl<
                 (Vec::new(), Vec::new())
             }
         };
-        let previous_generation = current_record
+        let previous_generation = current_deployment
             .as_ref()
-            .map(|record| record.active_generation);
+            .map(|record| record.create_or_replace_generation);
 
         let (rollout_id, target_generation, placement_generation) = {
             let mut state = self
@@ -993,7 +978,7 @@ impl<
                 }
             };
             let placement_generation = match action {
-                RolloutAction::NoOp => current_record
+                RolloutAction::NoOp => current_deployment
                     .as_ref()
                     .map(|record| record.placement_generation)
                     .ok_or_else(|| ControlPlaneError::Internal {
@@ -1012,22 +997,34 @@ impl<
             };
             (rollout_id, target_generation, placement_generation)
         };
-        let current_placement =
-            current_record
-                .as_ref()
-                .zip(current_pipeline_placement)
-                .map(|(record, placement)| {
-                    self.live_pipeline_placement_from(
-                        &record.resolved,
-                        placement,
-                        record.placement_generation,
-                    )
-                });
         target_listener_group_snapshot.generation = placement_generation;
-        let target_placement = LivePipelinePlacement {
-            placement: target_pipeline_placement,
-            listener_group_snapshot: Arc::new(target_listener_group_snapshot),
+        let target_listener_group_snapshot = if matches!(action, RolloutAction::NoOp) {
+            current_deployment
+                .as_ref()
+                .map(|deployment| Arc::clone(&deployment.listener_group_snapshot))
+                .ok_or_else(|| ControlPlaneError::Internal {
+                    message: "no-op rollout has no committed listener snapshot".to_owned(),
+                })?
+        } else {
+            Arc::new(target_listener_group_snapshot)
         };
+        let target_context_bindings = if matches!(action, RolloutAction::NoOp) {
+            current_deployment
+                .as_ref()
+                .map(|deployment| Arc::clone(&deployment.context_bindings))
+                .ok_or_else(|| ControlPlaneError::Internal {
+                    message: "no-op rollout has no committed context bindings".to_owned(),
+                })?
+        } else {
+            context_bindings
+        };
+        let target_deployment = LogicalPipelineDeployment::new(
+            resolved_pipeline,
+            target_context_bindings,
+            target_generation,
+            target_pipeline_placement,
+            target_listener_group_snapshot,
+        );
 
         let rollout_core_ids = match action {
             RolloutAction::NoOp => Vec::new(),
@@ -1074,17 +1071,18 @@ impl<
             pipeline_id.clone(),
             action,
             target_generation,
-            current_record
+            current_deployment
                 .as_ref()
-                .map(|record| record.active_generation),
+                .map(|record| record.create_or_replace_generation),
             drain_timeout_secs,
-            resolved_pipeline
+            target_deployment
+                .resolved
                 .policies
                 .resources
                 .core_allocation
                 .strategy
                 .clone(),
-            target_placement.placement.clone(),
+            target_deployment.placement.clone(),
             cores,
         );
 
@@ -1093,12 +1091,9 @@ impl<
             pipeline_group_id,
             pipeline_id,
             action,
-            resolved_pipeline,
-            context_bindings,
             base_config_revision,
-            current_record,
-            current_placement,
-            target_placement,
+            current_deployment,
+            target_deployment,
             current_assigned_cores,
             target_assigned_cores,
             current_serving_generations: active_runtime_state.serving_generations,
@@ -1107,7 +1102,6 @@ impl<
             removed_assigned_cores,
             resize_start_cores,
             resize_stop_cores,
-            target_generation,
             rollout,
             step_timeout_secs,
             drain_timeout_secs,
@@ -1275,12 +1269,8 @@ impl<
         }
     }
 
-    /// Commits the winning pipeline config and active generation into runtime state.
-    pub(super) fn commit_pipeline_record(
-        &self,
-        plan: &CandidateRolloutPlan,
-        active_generation: u64,
-    ) {
+    /// Commits the winning logical pipeline deployment into runtime state.
+    pub(super) fn commit_pipeline_deployment(&self, plan: &CandidateRolloutPlan) {
         {
             let mut state = self
                 .state
@@ -1294,30 +1284,14 @@ impl<
                 .pipelines
                 .insert(
                     plan.pipeline_id.clone(),
-                    plan.resolved_pipeline.pipeline.clone(),
+                    plan.target_deployment.resolved.pipeline.clone(),
                 );
-            let context_bindings = match plan.action {
-                RolloutAction::NoOp => plan
-                    .current_record
-                    .as_ref()
-                    .map(|record| Arc::clone(&record.context_bindings))
-                    .expect("no-op rollout has a committed record"),
-                RolloutAction::Create | RolloutAction::Resize | RolloutAction::Replace => {
-                    Arc::clone(&plan.context_bindings)
-                }
-            };
-            _ = state.logical_pipelines.insert(
-                plan.pipeline_key.clone(),
-                LogicalPipelineRecord {
-                    resolved: plan.resolved_pipeline.clone(),
-                    context_bindings: Arc::clone(&context_bindings),
-                    active_generation,
-                    placement: plan.target_placement.placement.clone(),
-                    placement_generation: plan.target_placement.listener_group_snapshot.generation,
-                },
-            );
+            _ = state
+                .logical_pipelines
+                .insert(plan.pipeline_key.clone(), plan.target_deployment.clone());
             if !matches!(plan.action, RolloutAction::NoOp) {
-                state.latest_context_bindings = context_bindings;
+                state.latest_context_bindings =
+                    Arc::clone(&plan.target_deployment.context_bindings);
             }
             state.config_revision += 1;
             state
@@ -1326,14 +1300,16 @@ impl<
         }
         self.observed_state_store.set_pipeline_active_cores(
             plan.pipeline_key.clone(),
-            plan.target_placement
+            plan.target_deployment
                 .placement
                 .cores
                 .iter()
                 .map(|core| core.core_id.id),
         );
-        self.observed_state_store
-            .set_pipeline_active_generation(plan.pipeline_key.clone(), active_generation);
+        self.observed_state_store.set_pipeline_active_generation(
+            plan.pipeline_key.clone(),
+            plan.target_deployment.create_or_replace_generation,
+        );
     }
 
     /// Selects the active instances targeted by a per-pipeline shutdown request.
@@ -1572,7 +1548,7 @@ impl<
         Ok(Some(PipelineDetails {
             pipeline_group_id: pipeline_key.pipeline_group_id().clone(),
             pipeline_id: pipeline_key.pipeline_id().clone(),
-            active_generation: Some(record.active_generation),
+            active_generation: Some(record.create_or_replace_generation),
             pipeline: record.resolved.pipeline.clone(),
             rollout,
         }))
@@ -2426,7 +2402,7 @@ impl<
                 .then_some(plan.base_config_revision),
         )?;
         if matches!(plan.action, RolloutAction::NoOp) {
-            self.commit_pipeline_record(&plan, plan.target_generation);
+            self.commit_pipeline_deployment(&plan);
             self.update_rollout(&pipeline_key, &rollout_id, |rollout| {
                 rollout.state = RolloutLifecycleState::Succeeded;
                 rollout.failure_reason = None;

@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Benchmarks transport-header propagation selector costs.
+//! `header_propagation_small` consumes propagated values for 0-5 captured headers,
+//! with at most one condition on an existing member (no extra condition headers).
 //!
 //! Run with:
 //!
@@ -16,8 +18,11 @@ use otel_arrow_dfe_config::context_policy::{
 };
 use otel_arrow_dfe_config::transport_headers::TransportHeaders;
 use otel_arrow_dfe_config::transport_headers_policy::{
-    CaptureDefaults, CaptureRule, HeaderCapturePolicy, HeaderPropagationPolicy,
+    CaptureDefaults, CaptureRule, HeaderCapturePolicy,
+    HeaderPropagationPolicy as HeaderPropagationConfig, PropagationDefault, PropagationSelector,
+    PropagationSelectorType,
 };
+use otel_arrow_dfe_engine::context_declaration::CompiledHeaderPropagationPolicy as HeaderPropagationPolicy;
 use std::hint::black_box;
 
 const HEADER_COUNTS: [usize; 4] = [1, 4, 16, 32];
@@ -28,6 +33,7 @@ const DUPLICATE_TOTAL_HEADERS: usize = 32;
 const SHARED_CONDITION_BINDING_COUNTS: [usize; 3] = [4, 5, 32];
 
 pub(super) fn benchmarks(c: &mut Criterion) {
+    small_composite_benchmarks(c);
     let mut group = c.benchmark_group("header_propagation");
 
     for header_count in HEADER_COUNTS {
@@ -121,6 +127,119 @@ pub(super) fn benchmarks(c: &mut Criterion) {
     binding_group.finish();
 }
 
+fn small_composite_benchmarks(c: &mut Criterion) {
+    let mut group = c.benchmark_group("header_propagation_small");
+    for member_count in 0..=5 {
+        let headers = small_composite_headers(member_count);
+        let unqualified = HeaderPropagationConfig::new(
+            PropagationDefault {
+                selector: PropagationSelector {
+                    selector_type: PropagationSelectorType::AllCaptured,
+                    named: None,
+                },
+                ..PropagationDefault::default()
+            },
+            vec![],
+        );
+        let policy = HeaderPropagationPolicy::compile(unqualified, &[]).expect("unqualified");
+        assert_eq!(policy.propagate(&headers).count(), member_count);
+        let _ = group.bench_with_input(
+            BenchmarkId::new("unqualified", format!("{member_count}_members")),
+            &headers,
+            |b, headers| {
+                b.iter(|| {
+                    for header in policy.propagate(black_box(headers)) {
+                        let _ = black_box(header);
+                    }
+                })
+            },
+        );
+        if member_count == 0 {
+            continue;
+        }
+        for (case, condition) in [
+            ("plain", None),
+            ("match", Some(true)),
+            ("miss", Some(false)),
+        ] {
+            let (config, declarations) = small_composite_config(member_count, condition);
+            let policy =
+                HeaderPropagationPolicy::compile(config, &declarations).expect("composite");
+            assert_eq!(
+                policy.propagate(&headers).count(),
+                if condition == Some(false) {
+                    0
+                } else {
+                    member_count
+                }
+            );
+            let _ = group.bench_with_input(
+                BenchmarkId::new(case, format!("{member_count}_members")),
+                &headers,
+                |b, headers| {
+                    b.iter(|| {
+                        for header in policy.propagate(black_box(headers)) {
+                            let _ = black_box(header);
+                        }
+                    })
+                },
+            );
+        }
+    }
+    group.finish();
+}
+
+fn small_composite_headers(member_count: usize) -> TransportHeaders {
+    if member_count == 0 {
+        return TransportHeaders::new();
+    }
+    packed_headers(
+        (0..member_count)
+            .map(|index| (format!("field_{index}"), "value".into()))
+            .collect(),
+    )
+}
+
+fn small_composite_config(
+    member_count: usize,
+    condition: Option<bool>,
+) -> (HeaderPropagationConfig, Vec<ContextEntryDeclaration>) {
+    let policy = HeaderPropagationConfig::new(
+        PropagationDefault {
+            selector: PropagationSelector {
+                selector_type: PropagationSelectorType::Named,
+                named: Some(
+                    (0..member_count)
+                        .map(|index| context_ref(&format!("composite:field_{index}")))
+                        .collect(),
+                ),
+            },
+            ..PropagationDefault::default()
+        },
+        vec![],
+    );
+    let mut parts = (0..member_count)
+        .map(|index| ContextEntryPart::TransportHeader {
+            name: context_ref(&format!("field_{index}")),
+            store_as: None,
+        })
+        .collect::<Vec<_>>();
+    if let Some(matches) = condition {
+        parts.push(ContextEntryPart::TransportHeaderMatch {
+            name: context_ref("field_0"),
+            value: if matches { "value" } else { "missing" }.into(),
+        });
+    }
+    (
+        policy,
+        vec![ContextEntryDeclaration {
+            scope: ContextScope::Engine,
+            name: context_name("composite"),
+            definition: ContextEntryDefinition(parts),
+        }],
+    )
+}
+
 fn headers(header_count: usize) -> TransportHeaders {
     packed_headers(
         (0..header_count)
@@ -130,7 +249,7 @@ fn headers(header_count: usize) -> TransportHeaders {
 }
 
 fn unqualified_policy(header_count: usize) -> HeaderPropagationPolicy {
-    serde_yaml::from_str(&format!(
+    let policy = serde_yaml::from_str(&format!(
         r#"
 default:
   selector:
@@ -139,7 +258,8 @@ default:
 "#,
         header_count - 1
     ))
-    .expect("valid unqualified propagation policy")
+    .expect("valid unqualified propagation policy");
+    HeaderPropagationPolicy::compile(policy, &[]).expect("propagation policy compiles")
 }
 
 fn conditional_policy(
@@ -147,7 +267,7 @@ fn conditional_policy(
     condition_count: usize,
     matches: bool,
 ) -> HeaderPropagationPolicy {
-    let policy: HeaderPropagationPolicy = serde_yaml::from_str(
+    let policy: HeaderPropagationConfig = serde_yaml::from_str(
         r#"
 default:
   selector:
@@ -156,13 +276,15 @@ default:
 "#,
     )
     .expect("valid conditional propagation policy");
-    policy
-        .compile_context(&[conditional_declaration(
+    HeaderPropagationPolicy::compile(
+        policy,
+        &[conditional_declaration(
             header_count,
             condition_count,
             matches,
-        )])
-        .expect("conditional propagation policy compiles")
+        )],
+    )
+    .expect("conditional propagation policy compiles")
 }
 
 fn conditional_declaration(
@@ -222,7 +344,7 @@ fn duplicate_source_headers(source_count: usize) -> TransportHeaders {
 }
 
 fn duplicate_source_policy(matches: bool) -> HeaderPropagationPolicy {
-    let policy: HeaderPropagationPolicy = serde_yaml::from_str(
+    let policy: HeaderPropagationConfig = serde_yaml::from_str(
         r#"
 default:
   selector:
@@ -245,13 +367,15 @@ default:
             },
         });
     }
-    policy
-        .compile_context(&[ContextEntryDeclaration {
+    HeaderPropagationPolicy::compile(
+        policy,
+        &[ContextEntryDeclaration {
             scope: ContextScope::Engine,
             name: context_name("composite"),
             definition: ContextEntryDefinition(parts),
-        }])
-        .expect("duplicate-source propagation policy compiles")
+        }],
+    )
+    .expect("duplicate-source propagation policy compiles")
 }
 
 fn shared_condition_headers(binding_count: usize) -> TransportHeaders {
@@ -270,7 +394,7 @@ fn shared_condition_policy(binding_count: usize, matches: bool) -> HeaderPropaga
         .map(|index| format!("composite:selected_{index}"))
         .collect::<Vec<_>>()
         .join(", ");
-    let policy: HeaderPropagationPolicy = serde_yaml::from_str(&format!(
+    let policy: HeaderPropagationConfig = serde_yaml::from_str(&format!(
         r#"
 default:
   selector:
@@ -296,13 +420,15 @@ default:
             },
         });
     }
-    policy
-        .compile_context(&[ContextEntryDeclaration {
+    HeaderPropagationPolicy::compile(
+        policy,
+        &[ContextEntryDeclaration {
             scope: ContextScope::Engine,
             name: context_name("composite"),
             definition: ContextEntryDefinition(parts),
-        }])
-        .expect("shared-condition propagation policy compiles")
+        }],
+    )
+    .expect("shared-condition propagation policy compiles")
 }
 
 fn packed_headers(headers: Vec<(String, String)>) -> TransportHeaders {

@@ -14,6 +14,7 @@ use otel_arrow_dfe_pdata::{
                 Exemplar, ExponentialHistogram, ExponentialHistogramDataPoint, Gauge, Histogram,
                 HistogramDataPoint, Metric, MetricsData, NumberDataPoint, Sum, Summary,
                 SummaryDataPoint, exponential_histogram_data_point::Buckets, metric::Data,
+                summary_data_point::ValueAtQuantile,
             },
         },
     },
@@ -22,7 +23,7 @@ use otel_arrow_dfe_pdata::{
 };
 use otel_arrow_dfe_query_engine_languages::opl::parser::OplParser;
 
-use crate::{parser::default_parser_options, pipeline::Pipeline};
+use crate::{error::Error, parser::default_parser_options, pipeline::Pipeline};
 
 /// Helper function to compare the metrics & their data points on left right data.
 ///
@@ -57,7 +58,7 @@ async fn test_simple_data_point_filter() {
     let pipeline_expr = OplParser::parse_with_options(query, default_parser_options())
         .unwrap()
         .pipeline;
-    let mut pipeline = Pipeline::new(pipeline_expr);
+    let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
     let metrics = vec![
         Metric::build()
@@ -373,7 +374,7 @@ async fn test_filter_data_points_by_scalar_true() {
     let pipeline_expr = OplParser::parse_with_options(query, default_parser_options())
         .unwrap()
         .pipeline;
-    let mut pipeline = Pipeline::new(pipeline_expr);
+    let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
     let metrics = vec![
         Metric::build()
@@ -492,7 +493,7 @@ async fn run_all_data_points_dropped_test(query: &'static str) {
     let pipeline_expr = OplParser::parse_with_options(query, default_parser_options())
         .unwrap()
         .pipeline;
-    let mut pipeline = Pipeline::new(pipeline_expr);
+    let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
     let metrics = vec![
         Metric::build()
             .name("gauge_metric")
@@ -664,7 +665,7 @@ async fn test_filter_data_points_null_predicate_result() {
     let pipeline_expr = OplParser::parse_with_options(query, default_parser_options())
         .unwrap()
         .pipeline;
-    let mut pipeline = Pipeline::new(pipeline_expr);
+    let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
     let metrics = vec![
         Metric::build()
             .name("gauge_metric")
@@ -841,7 +842,7 @@ async fn run_filter_all_data_point_types_test(
     let pipeline_expr = OplParser::parse_with_options(query, default_parser_options())
         .unwrap()
         .pipeline;
-    let mut pipeline = Pipeline::new(pipeline_expr);
+    let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
     let mut number_dps = Vec::new();
     let mut hist_dps = Vec::new();
@@ -1216,6 +1217,445 @@ async fn test_filter_data_point_by_attribute_is_null() {
     .await;
 }
 
+async fn run_scale_metric_test(query: &str, metrics: Vec<Metric>, expected: Vec<Metric>) {
+    let pipeline_expr = OplParser::parse_with_options(query, default_parser_options())
+        .unwrap()
+        .pipeline;
+    let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
+    let result = pipeline
+        .execute(otlp_to_otap(&OtlpProtoMessage::Metrics(to_metrics_data(
+            metrics,
+        ))))
+        .await
+        .unwrap();
+    let OtlpProtoMessage::Metrics(result) = otap_to_otlp(&result) else {
+        panic!("invalid result type")
+    };
+    assert_metrics_eq(result, to_metrics_data(expected));
+}
+
+/// Scenario: Scale integer and floating-point gauge values and their exemplars.
+/// Guarantees: Gauge values, exemplars, and unit are scaled together.
+#[tokio::test]
+async fn test_scale_metric_gauge() {
+    run_scale_metric_test(
+        "metrics | scale_metric 2 \"scaled\"",
+        vec![
+            Metric::build()
+                .name("gauge")
+                .unit("original")
+                .data_gauge(Gauge {
+                    data_points: vec![
+                        NumberDataPoint::build()
+                            .value_int(3)
+                            .exemplars(vec![
+                                Exemplar::build().value_int(2).finish(),
+                                Exemplar::build().value_double(2.5).finish(),
+                            ])
+                            .finish(),
+                        NumberDataPoint::build().value_double(1.5).finish(),
+                    ],
+                })
+                .finish(),
+        ],
+        vec![
+            Metric::build()
+                .name("gauge")
+                .unit("scaled")
+                .data_gauge(Gauge {
+                    data_points: vec![
+                        NumberDataPoint::build()
+                            .value_int(6)
+                            .exemplars(vec![
+                                Exemplar::build().value_int(4).finish(),
+                                Exemplar::build().value_double(5.0).finish(),
+                            ])
+                            .finish(),
+                        NumberDataPoint::build().value_double(3.0).finish(),
+                    ],
+                })
+                .finish(),
+        ],
+    )
+    .await;
+}
+
+/// Scenario: Scale an integer sum value and replace its unit.
+/// Guarantees: Sum data points use the same integer scaling behavior as gauge data points.
+#[tokio::test]
+async fn test_scale_metric_sum() {
+    run_scale_metric_test(
+        "metrics | scale_metric 2 \"scaled\"",
+        vec![
+            Metric::build()
+                .name("sum")
+                .unit("original")
+                .data_sum(Sum {
+                    data_points: vec![NumberDataPoint::build().value_int(-4).finish()],
+                    ..Default::default()
+                })
+                .finish(),
+        ],
+        vec![
+            Metric::build()
+                .name("sum")
+                .unit("scaled")
+                .data_sum(Sum {
+                    data_points: vec![NumberDataPoint::build().value_int(-8).finish()],
+                    ..Default::default()
+                })
+                .finish(),
+        ],
+    )
+    .await;
+}
+
+/// Scenario: Scale all value-bearing fields of an explicit histogram.
+/// Guarantees: Sum, min, max, bounds, exemplars, and unit change while counts remain unchanged.
+#[tokio::test]
+async fn test_scale_metric_histogram() {
+    run_scale_metric_test(
+        "metrics | scale_metric 2 \"scaled\"",
+        vec![
+            Metric::build()
+                .name("histogram")
+                .unit("original")
+                .data_histogram(Histogram {
+                    data_points: vec![
+                        HistogramDataPoint::build()
+                            .count(6u64)
+                            .sum(9.0)
+                            .min(1.0)
+                            .max(5.0)
+                            .bucket_counts([2, 4])
+                            .explicit_bounds([3.0])
+                            .exemplars(vec![
+                                Exemplar::build().value_int(2).finish(),
+                                Exemplar::build().value_double(2.5).finish(),
+                            ])
+                            .finish(),
+                    ],
+                    ..Default::default()
+                })
+                .finish(),
+        ],
+        vec![
+            Metric::build()
+                .name("histogram")
+                .unit("scaled")
+                .data_histogram(Histogram {
+                    data_points: vec![
+                        HistogramDataPoint::build()
+                            .count(6u64)
+                            .sum(18.0)
+                            .min(2.0)
+                            .max(10.0)
+                            .bucket_counts([2, 4])
+                            .explicit_bounds([6.0])
+                            .exemplars(vec![
+                                Exemplar::build().value_int(4).finish(),
+                                Exemplar::build().value_double(5.0).finish(),
+                            ])
+                            .finish(),
+                    ],
+                    ..Default::default()
+                })
+                .finish(),
+        ],
+    )
+    .await;
+}
+
+/// Scenario: Scale a summary's sum and quantile values.
+/// Guarantees: Summary values and unit change while count and quantile coordinates remain
+/// unchanged.
+#[tokio::test]
+async fn test_scale_metric_summary() {
+    run_scale_metric_test(
+        "metrics | scale_metric 2 \"scaled\"",
+        vec![
+            Metric::build()
+                .name("summary")
+                .unit("original")
+                .data_summary(Summary {
+                    data_points: vec![
+                        SummaryDataPoint::build()
+                            .count(8u64)
+                            .sum(12.0)
+                            .quantile_values(vec![ValueAtQuantile::new(0.5, 3.0)])
+                            .finish(),
+                    ],
+                })
+                .finish(),
+        ],
+        vec![
+            Metric::build()
+                .name("summary")
+                .unit("scaled")
+                .data_summary(Summary {
+                    data_points: vec![
+                        SummaryDataPoint::build()
+                            .count(8u64)
+                            .sum(24.0)
+                            .quantile_values(vec![ValueAtQuantile::new(0.5, 6.0)])
+                            .finish(),
+                    ],
+                })
+                .finish(),
+        ],
+    )
+    .await;
+}
+
+/// Scenario: Scale one conditionally selected metric in a batch.
+/// Guarantees: The selected metric is scaled while the unselected metric remains unchanged.
+#[tokio::test]
+async fn test_scale_metric_selection() {
+    run_scale_metric_test(
+        r#"metrics | if (name == "selected") {
+            scale_metric 2 "scaled"
+        }"#,
+        vec![
+            Metric::build()
+                .name("untouched")
+                .unit("original")
+                .data_gauge(Gauge {
+                    data_points: vec![NumberDataPoint::build().value_int(7).finish()],
+                })
+                .finish(),
+            Metric::build()
+                .name("selected")
+                .unit("original")
+                .data_gauge(Gauge {
+                    data_points: vec![NumberDataPoint::build().value_int(3).finish()],
+                })
+                .finish(),
+        ],
+        vec![
+            Metric::build()
+                .name("untouched")
+                .unit("original")
+                .data_gauge(Gauge {
+                    data_points: vec![NumberDataPoint::build().value_int(7).finish()],
+                })
+                .finish(),
+            Metric::build()
+                .name("selected")
+                .unit("scaled")
+                .data_gauge(Gauge {
+                    data_points: vec![NumberDataPoint::build().value_int(6).finish()],
+                })
+                .finish(),
+        ],
+    )
+    .await;
+}
+
+/// Scenario: Apply metric scaling to an exponential histogram.
+/// Guarantees: Exponential histograms are rejected because arbitrary scaling is not exact.
+#[tokio::test]
+async fn test_scale_metric_rejects_exponential_histogram() {
+    let metric = Metric::build()
+        .name("exponential_histogram")
+        .unit("original")
+        .data_exponential_histogram(ExponentialHistogram {
+            data_points: vec![
+                ExponentialHistogramDataPoint::build()
+                    .count(5u64)
+                    .sum(10.0)
+                    .scale(2)
+                    .positive(Buckets::new(1, vec![5]))
+                    .negative(Buckets::default())
+                    .finish(),
+            ],
+            ..Default::default()
+        })
+        .finish();
+
+    let pipeline_expr = OplParser::parse_with_options(
+        r#"metrics | scale_metric 2 "scaled""#,
+        default_parser_options(),
+    )
+    .unwrap()
+    .pipeline;
+    let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
+    let result = pipeline
+        .execute(otlp_to_otap(&OtlpProtoMessage::Metrics(to_metrics_data(
+            vec![metric],
+        ))))
+        .await;
+
+    assert!(matches!(
+        result,
+        Err(Error::ExecutionError { cause })
+            if cause == "exponential histograms are not supported by scale_metric"
+    ));
+}
+
+/// Scenario: Apply metric scaling to a metric without a data type.
+/// Guarantees: Empty metrics are rejected rather than silently passed through.
+#[tokio::test]
+async fn test_scale_metric_rejects_empty_metric() {
+    let pipeline_expr = OplParser::parse_with_options(
+        "metrics | scale_metric 2 \"scaled\"",
+        default_parser_options(),
+    )
+    .unwrap()
+    .pipeline;
+    let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
+    let result = pipeline
+        .execute(otlp_to_otap(&OtlpProtoMessage::Metrics(to_metrics_data(
+            vec![Metric::build().name("empty").unit("original").finish()],
+        ))))
+        .await;
+
+    assert!(matches!(
+        result,
+        Err(Error::ExecutionError { cause })
+            if cause == "scale_metric does not support empty metrics"
+    ));
+}
+
+/// Scenario: Scale integer values whose products exceed the i64 range.
+/// Guarantees: Integer scaling saturates deterministically at the corresponding i64 boundary.
+#[tokio::test]
+async fn test_scale_metric_integer_saturation() {
+    run_scale_metric_test(
+        "metrics | scale_metric 2",
+        vec![
+            Metric::build()
+                .name("gauge")
+                .data_gauge(Gauge {
+                    data_points: vec![
+                        NumberDataPoint::build().value_int(i64::MAX).finish(),
+                        NumberDataPoint::build().value_int(i64::MIN).finish(),
+                    ],
+                })
+                .finish(),
+        ],
+        vec![
+            Metric::build()
+                .name("gauge")
+                .data_gauge(Gauge {
+                    data_points: vec![
+                        NumberDataPoint::build().value_int(i64::MAX).finish(),
+                        NumberDataPoint::build().value_int(i64::MIN).finish(),
+                    ],
+                })
+                .finish(),
+        ],
+    )
+    .await;
+}
+
+/// Scenario: Scale integer, floating-point, and histogram values by a positive fraction without
+/// requesting a replacement unit.
+/// Guarantees: Integer results truncate toward zero, histogram bounds retain their original
+/// ordering, and the existing unit is preserved.
+#[tokio::test]
+async fn test_scale_metric_positive_fraction_without_unit() {
+    let pipeline_expr =
+        OplParser::parse_with_options("metrics | scale_metric 0.5", default_parser_options())
+            .unwrap()
+            .pipeline;
+    let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
+
+    let metrics = vec![
+        Metric::build()
+            .name("gauge")
+            .unit("widgets")
+            .data_gauge(Gauge {
+                data_points: vec![
+                    NumberDataPoint::build().value_int(5).finish(),
+                    NumberDataPoint::build().value_double(3.0).finish(),
+                ],
+            })
+            .finish(),
+        Metric::build()
+            .name("histogram")
+            .unit("widgets")
+            .data_histogram(Histogram {
+                data_points: vec![
+                    HistogramDataPoint::build()
+                        .count(6u64)
+                        .sum(8.0)
+                        .min(1.0)
+                        .max(5.0)
+                        .bucket_counts([2, 4])
+                        .explicit_bounds([1.0, 4.0])
+                        .exemplars(vec![Exemplar::build().value_int(5).finish()])
+                        .finish(),
+                ],
+                ..Default::default()
+            })
+            .finish(),
+    ];
+
+    let result = pipeline
+        .execute(otlp_to_otap(&OtlpProtoMessage::Metrics(to_metrics_data(
+            metrics,
+        ))))
+        .await
+        .unwrap();
+    let OtlpProtoMessage::Metrics(result) = otap_to_otlp(&result) else {
+        panic!("invalid result type")
+    };
+
+    let expected = vec![
+        Metric::build()
+            .name("gauge")
+            .unit("widgets")
+            .data_gauge(Gauge {
+                data_points: vec![
+                    NumberDataPoint::build().value_int(2).finish(),
+                    NumberDataPoint::build().value_double(1.5).finish(),
+                ],
+            })
+            .finish(),
+        Metric::build()
+            .name("histogram")
+            .unit("widgets")
+            .data_histogram(Histogram {
+                data_points: vec![
+                    HistogramDataPoint::build()
+                        .count(6u64)
+                        .sum(4.0)
+                        .min(0.5)
+                        .max(2.5)
+                        .bucket_counts([2, 4])
+                        .explicit_bounds([0.5, 2.0])
+                        .exemplars(vec![Exemplar::build().value_int(2).finish()])
+                        .finish(),
+                ],
+                ..Default::default()
+            })
+            .finish(),
+    ];
+    assert_metrics_eq(result, to_metrics_data(expected));
+}
+
+/// Scenario: Filter all metric data point types by a nested serialized attribute leaf.
+/// Guarantees: Only data points whose nested leaf matches are kept.
+#[tokio::test]
+async fn test_filter_data_point_by_nested_attribute() {
+    let query = "metrics | apply data_points {
+        where attributes[\"complex\"][\"x\"] == 5
+    }";
+    let complex = |x| {
+        Some(vec![KeyValue::new(
+            "complex",
+            AnyValue::new_kvlist(vec![KeyValue::new("x", AnyValue::new_int(x))]),
+        )])
+    };
+
+    run_filter_all_data_point_types_test(
+        query,
+        vec![(1u32, complex(6)), (2u32, complex(5)), (3u32, None)],
+        vec![1],
+    )
+    .await;
+}
+
 /// In a handful of tests below, we want to ensure that values are assigned to all data point types
 /// with the correct key / value from sources involving various types of expressions. This helper
 /// simply populates each type of data point, evaluates the expression, and ensures the correct
@@ -1231,7 +1671,7 @@ async fn run_assign_to_all_data_point_type_test(
     let pipeline_expr = OplParser::parse_with_options(query, default_parser_options())
         .unwrap()
         .pipeline;
-    let mut pipeline = Pipeline::new(pipeline_expr);
+    let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
     let metrics = vec![
         Metric::build()
@@ -1409,6 +1849,27 @@ async fn test_assign_to_data_point_attributes_copy_attribute() {
         query,
         Default::default(),
         Some(vec![KeyValue::new("y", AnyValue::new_int(5))]),
+        "x",
+        AnyValue::new_int(5),
+    )
+    .await;
+}
+
+/// Scenario: assign a data point attribute from a nested serialized data point attribute leaf
+/// Guarantees: every data point type receives the nested leaf value
+#[tokio::test]
+async fn test_assign_to_data_point_attributes_from_nested_attribute() {
+    let query = "metrics | apply data_points {
+        set attributes[\"x\"] = attributes[\"complex\"][\"y\"]
+    }";
+
+    run_assign_to_all_data_point_type_test(
+        query,
+        Default::default(),
+        Some(vec![KeyValue::new(
+            "complex",
+            AnyValue::new_kvlist(vec![KeyValue::new("y", AnyValue::new_int(5))]),
+        )]),
         "x",
         AnyValue::new_int(5),
     )
@@ -1594,7 +2055,7 @@ async fn test_filter_data_point_by_attribute_with_dict_u16_parent_ids() {
     let pipeline_expr = OplParser::parse_with_options(query, default_parser_options())
         .unwrap()
         .pipeline;
-    let mut pipeline = Pipeline::new(pipeline_expr);
+    let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
     // Create 300 data points, each with unique attribute values. This exceeds the 256
     // distinct value threshold for Dict<UInt8> keys, forcing the encoder to upgrade the
@@ -1668,6 +2129,411 @@ async fn test_filter_data_point_by_attribute_with_dict_u16_parent_ids() {
     assert_metrics_eq(metrics_result, expected);
 }
 
+/// Helper function for nested attribute assignment tests on metric data points.
+///
+/// Runs the given query against all metric data point types, where each data point has the
+/// provided input attributes. After execution, asserts that all data points across all metric
+/// types have the expected attributes.
+async fn run_nested_attr_assign_to_all_data_point_type_test(
+    query: &str,
+    input_attributes: Vec<KeyValue>,
+    expected_attributes: Vec<KeyValue>,
+) {
+    let pipeline_expr = OplParser::parse_with_options(query, default_parser_options())
+        .unwrap()
+        .pipeline;
+    let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
+
+    let metrics = vec![
+        Metric::build()
+            .name("gauge_metric")
+            .data_gauge(Gauge {
+                data_points: vec![
+                    NumberDataPoint::build()
+                        .attributes(input_attributes.clone())
+                        .finish(),
+                ],
+            })
+            .finish(),
+        Metric::build()
+            .name("sum")
+            .data_sum(Sum {
+                data_points: vec![
+                    NumberDataPoint::build()
+                        .attributes(input_attributes.clone())
+                        .finish(),
+                ],
+                ..Default::default()
+            })
+            .finish(),
+        Metric::build()
+            .name("histogram")
+            .data_histogram(Histogram {
+                data_points: vec![
+                    HistogramDataPoint::build()
+                        .attributes(input_attributes.clone())
+                        .finish(),
+                ],
+                ..Default::default()
+            })
+            .finish(),
+        Metric::build()
+            .name("exp_histogram")
+            .data_exponential_histogram(ExponentialHistogram {
+                data_points: vec![
+                    ExponentialHistogramDataPoint::build()
+                        .attributes(input_attributes.clone())
+                        .finish(),
+                ],
+                ..Default::default()
+            })
+            .finish(),
+        Metric::build()
+            .name("summary")
+            .data_summary(Summary {
+                data_points: vec![
+                    SummaryDataPoint::build()
+                        .attributes(input_attributes)
+                        .finish(),
+                ],
+            })
+            .finish(),
+    ];
+
+    let input_batch = otlp_to_otap(&OtlpProtoMessage::Metrics(to_metrics_data(metrics)));
+    let result = pipeline.execute(input_batch).await.unwrap();
+
+    let OtlpProtoMessage::Metrics(metrics_result) = otap_to_otlp(&result) else {
+        panic!("invalid signal type")
+    };
+
+    assert_eq!(metrics_result.resource_metrics.len(), 1);
+    assert_eq!(metrics_result.resource_metrics[0].scope_metrics.len(), 1);
+    assert_eq!(
+        metrics_result.resource_metrics[0].scope_metrics[0]
+            .metrics
+            .len(),
+        5
+    );
+    for metric in metrics_result.resource_metrics[0].scope_metrics[0]
+        .metrics
+        .iter()
+    {
+        let attrs = match metric.data.as_ref().unwrap() {
+            Data::Gauge(g) => {
+                assert_eq!(g.data_points.len(), 1);
+                &g.data_points[0].attributes
+            }
+            Data::Sum(s) => {
+                assert_eq!(s.data_points.len(), 1);
+                &s.data_points[0].attributes
+            }
+            Data::Histogram(h) => {
+                assert_eq!(h.data_points.len(), 1);
+                &h.data_points[0].attributes
+            }
+            Data::ExponentialHistogram(h) => {
+                assert_eq!(h.data_points.len(), 1);
+                &h.data_points[0].attributes
+            }
+            Data::Summary(s) => {
+                assert_eq!(s.data_points.len(), 1);
+                &s.data_points[0].attributes
+            }
+        };
+
+        pretty_assertions::assert_eq!(
+            *attrs,
+            expected_attributes,
+            "attribute mismatch for metric {:?}",
+            metric.name
+        );
+    }
+}
+
+/// Scenario: set a nested attribute path on metric data points that have a Map-typed attribute
+/// Guarantees: the nested value is updated for all metric data point types
+#[tokio::test]
+async fn test_assign_nested_map_attribute_on_data_points() {
+    let query = r#"metrics | apply data_points {
+        set attributes["complex"]["child"]["name"] = "after"
+    }"#;
+
+    let input_attributes = vec![KeyValue::new(
+        "complex",
+        AnyValue::new_kvlist(vec![
+            KeyValue::new("existing", AnyValue::new_string("old")),
+            KeyValue::new(
+                "child",
+                AnyValue::new_kvlist(vec![KeyValue::new("name", AnyValue::new_string("before"))]),
+            ),
+        ]),
+    )];
+
+    let expected_attributes = vec![KeyValue::new(
+        "complex",
+        AnyValue::new_kvlist(vec![
+            KeyValue::new("existing", AnyValue::new_string("old")),
+            KeyValue::new(
+                "child",
+                AnyValue::new_kvlist(vec![KeyValue::new("name", AnyValue::new_string("after"))]),
+            ),
+        ]),
+    )];
+
+    run_nested_attr_assign_to_all_data_point_type_test(
+        query,
+        input_attributes,
+        expected_attributes,
+    )
+    .await;
+}
+
+/// Scenario: set a nested attribute path where the top-level key does not exist on data points
+/// Guarantees: the operation is a no-op -- existing attributes are not modified
+#[tokio::test]
+async fn test_assign_nested_attribute_missing_top_level_key_is_noop_on_data_points() {
+    let query = r#"metrics | apply data_points {
+        set attributes["missing"].child = "after"
+    }"#;
+
+    let input_attributes = vec![KeyValue::new("source", AnyValue::new_string("value"))];
+    let expected_attributes = vec![KeyValue::new("source", AnyValue::new_string("value"))];
+
+    run_nested_attr_assign_to_all_data_point_type_test(
+        query,
+        input_attributes,
+        expected_attributes,
+    )
+    .await;
+}
+
+/// Scenario: set multiple nested paths on the same top-level attribute key on data points
+/// Guarantees: all nested paths are updated correctly in a single operation
+#[tokio::test]
+async fn test_assign_multiple_nested_paths_on_data_points() {
+    let query = r#"metrics | apply data_points {
+        set attributes["complex"].child.name = "after",
+            attributes["complex"].child.count = 2
+    }"#;
+
+    let input_attributes = vec![KeyValue::new(
+        "complex",
+        AnyValue::new_kvlist(vec![KeyValue::new(
+            "child",
+            AnyValue::new_kvlist(vec![
+                KeyValue::new("name", AnyValue::new_string("before")),
+                KeyValue::new("count", AnyValue::new_int(1)),
+            ]),
+        )]),
+    )];
+
+    let expected_attributes = vec![KeyValue::new(
+        "complex",
+        AnyValue::new_kvlist(vec![KeyValue::new(
+            "child",
+            AnyValue::new_kvlist(vec![
+                KeyValue::new("name", AnyValue::new_string("after")),
+                KeyValue::new("count", AnyValue::new_int(2)),
+            ]),
+        )]),
+    )];
+
+    run_nested_attr_assign_to_all_data_point_type_test(
+        query,
+        input_attributes,
+        expected_attributes,
+    )
+    .await;
+}
+
+/// Scenario: set a nested attribute path from another attribute value on data points
+/// Guarantees: the nested attribute is updated with the value from the source attribute
+#[tokio::test]
+async fn test_assign_nested_path_from_attribute_rhs_on_data_points() {
+    let query = r#"metrics | apply data_points {
+        set attributes["complex"]["child"]["name"] = attributes["source"]
+    }"#;
+
+    let input_attributes = vec![
+        KeyValue::new(
+            "complex",
+            AnyValue::new_kvlist(vec![KeyValue::new(
+                "child",
+                AnyValue::new_kvlist(vec![KeyValue::new("name", AnyValue::new_string("before"))]),
+            )]),
+        ),
+        KeyValue::new("source", AnyValue::new_string("from_source")),
+    ];
+
+    let expected_attributes = vec![
+        KeyValue::new(
+            "complex",
+            AnyValue::new_kvlist(vec![KeyValue::new(
+                "child",
+                AnyValue::new_kvlist(vec![KeyValue::new(
+                    "name",
+                    AnyValue::new_string("from_source"),
+                )]),
+            )]),
+        ),
+        KeyValue::new("source", AnyValue::new_string("from_source")),
+    ];
+
+    run_nested_attr_assign_to_all_data_point_type_test(
+        query,
+        input_attributes,
+        expected_attributes,
+    )
+    .await;
+}
+
+/// Scenario: set a nested attribute path from a data point record field (flags)
+/// Guarantees: the nested value is updated with the value of the data point field for all
+/// metric data point types, exercising the Record(Child) -> Attribute join path
+#[tokio::test]
+async fn test_assign_nested_path_from_data_point_field_on_data_points() {
+    let query = r#"metrics | apply data_points {
+        set attributes["complex"]["child"]["value"] = flags as Integer
+    }"#;
+
+    let flags: u32 = 7;
+    let input_attributes = vec![KeyValue::new(
+        "complex",
+        AnyValue::new_kvlist(vec![KeyValue::new(
+            "child",
+            AnyValue::new_kvlist(vec![KeyValue::new("value", AnyValue::new_int(0))]),
+        )]),
+    )];
+
+    let expected_attributes = vec![KeyValue::new(
+        "complex",
+        AnyValue::new_kvlist(vec![KeyValue::new(
+            "child",
+            AnyValue::new_kvlist(vec![KeyValue::new(
+                "value",
+                AnyValue::new_int(flags as i64),
+            )]),
+        )]),
+    )];
+
+    let pipeline_expr = OplParser::parse_with_options(query, default_parser_options())
+        .unwrap()
+        .pipeline;
+    let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
+
+    let metrics = vec![
+        Metric::build()
+            .name("gauge_metric")
+            .data_gauge(Gauge {
+                data_points: vec![
+                    NumberDataPoint::build()
+                        .flags(flags)
+                        .attributes(input_attributes.clone())
+                        .finish(),
+                ],
+            })
+            .finish(),
+        Metric::build()
+            .name("sum")
+            .data_sum(Sum {
+                data_points: vec![
+                    NumberDataPoint::build()
+                        .flags(flags)
+                        .attributes(input_attributes.clone())
+                        .finish(),
+                ],
+                ..Default::default()
+            })
+            .finish(),
+        Metric::build()
+            .name("histogram")
+            .data_histogram(Histogram {
+                data_points: vec![
+                    HistogramDataPoint::build()
+                        .flags(flags)
+                        .attributes(input_attributes.clone())
+                        .finish(),
+                ],
+                ..Default::default()
+            })
+            .finish(),
+        Metric::build()
+            .name("exp_histogram")
+            .data_exponential_histogram(ExponentialHistogram {
+                data_points: vec![
+                    ExponentialHistogramDataPoint::build()
+                        .flags(flags)
+                        .attributes(input_attributes.clone())
+                        .finish(),
+                ],
+                ..Default::default()
+            })
+            .finish(),
+        Metric::build()
+            .name("summary")
+            .data_summary(Summary {
+                data_points: vec![
+                    SummaryDataPoint::build()
+                        .flags(flags)
+                        .attributes(input_attributes)
+                        .finish(),
+                ],
+            })
+            .finish(),
+    ];
+
+    let input_batch = otlp_to_otap(&OtlpProtoMessage::Metrics(to_metrics_data(metrics)));
+    let result = pipeline.execute(input_batch).await.unwrap();
+
+    let OtlpProtoMessage::Metrics(metrics_result) = otap_to_otlp(&result) else {
+        panic!("invalid signal type")
+    };
+
+    assert_eq!(metrics_result.resource_metrics.len(), 1);
+    assert_eq!(metrics_result.resource_metrics[0].scope_metrics.len(), 1);
+    assert_eq!(
+        metrics_result.resource_metrics[0].scope_metrics[0]
+            .metrics
+            .len(),
+        5
+    );
+    for metric in metrics_result.resource_metrics[0].scope_metrics[0]
+        .metrics
+        .iter()
+    {
+        let attrs = match metric.data.as_ref().unwrap() {
+            Data::Gauge(g) => {
+                assert_eq!(g.data_points.len(), 1);
+                &g.data_points[0].attributes
+            }
+            Data::Sum(s) => {
+                assert_eq!(s.data_points.len(), 1);
+                &s.data_points[0].attributes
+            }
+            Data::Histogram(h) => {
+                assert_eq!(h.data_points.len(), 1);
+                &h.data_points[0].attributes
+            }
+            Data::ExponentialHistogram(h) => {
+                assert_eq!(h.data_points.len(), 1);
+                &h.data_points[0].attributes
+            }
+            Data::Summary(s) => {
+                assert_eq!(s.data_points.len(), 1);
+                &s.data_points[0].attributes
+            }
+        };
+
+        pretty_assertions::assert_eq!(
+            *attrs,
+            expected_attributes,
+            "attribute mismatch for metric {:?}",
+            metric.name
+        );
+    }
+}
+
 /// Scenario: try to execute some queries that have valid syntax, but define operations that are
 /// not supported by this query engine (although most will be supported in future)
 /// Guarantees: that the operation returns an expected error instead of inadvertently evaluating
@@ -1713,20 +2579,7 @@ async fn test_not_supported_queries_return_error() {
                     }
                 }",
         },
-        // assert that special attribute operations are not yet supported
-        TestCase {
-            query: "metrics | apply data_points {
-                rename attributes \"x\" as \"y\"
-            }",
-        },
-        TestCase {
-            query: "metrics | apply data_points {
-                remove attributes[\"x\"]
-            }",
-        },
-        // the following two cases, where we're accessing resource attributes for some data point
-        // should probably never be supported (instead, renaming attributes should be supported at
-        // the level metric itself).
+        // Accessing resource/scope attributes from a data-point pipeline is not supported.
         TestCase {
             query: "metrics | apply data_points {
                 rename resource.attributes \"x\" as \"y\"
@@ -1756,7 +2609,7 @@ async fn test_not_supported_queries_return_error() {
             OplParser::parse_with_options(test_case.query, default_parser_options())
                 .unwrap()
                 .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let input_batch = otlp_to_otap(&OtlpProtoMessage::Metrics(to_metrics_data(metrics)));
         if pipeline.execute(input_batch).await.is_ok() {
             panic!(
