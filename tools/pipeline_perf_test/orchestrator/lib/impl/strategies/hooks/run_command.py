@@ -35,11 +35,11 @@ class RunCommandConfig(HookStrategyConfig):
         command (str): The shell command to be executed by the hook.
         timeout (Optional[float]): Maximum time in seconds to allow the command to run before it
             is killed and a TimeoutExpired error is raised. Prevents a hung command from wedging
-            the orchestrator. Default is 300.0.
+            the orchestrator. Default is 30.
     """
 
     command: str
-    timeout: Optional[float] = 300.0
+    timeout: Optional[float] = 30.0
 
 
 @hook_registry.register_class("run_command")
@@ -99,7 +99,6 @@ tests:
 
         logger.debug(f"Running: {self.config.command}")
         # Execute the command with shell=True, and raise an exception if it fails.
-        # A timeout bounds how long a hung command can block the orchestrator.
         subprocess.run(
             [self.config.command],
             shell=True,

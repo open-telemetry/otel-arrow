@@ -198,7 +198,9 @@ components:
             # Monitoring was never started; nothing to join.
             return
         self.stop_event.set()
-        # Bound the join so a wedged poll thread cannot hang teardown forever.
+
+        # Wait for `invterval` because the thread might be asleep that long
+        # plus some time for it to complete the work.
         join_timeout = (self.config.interval or 1.0) + 30.0
         monitoring_runtime.thread.join(timeout=join_timeout)
         if monitoring_runtime.thread.is_alive():

@@ -228,7 +228,7 @@ components:
         if monitoring_runtime.thread.is_alive():
             logger.warning(
                 f"Docker monitoring thread for {component.name} did not stop within "
-                f"{join_timeout:.0f}s; abandoning it (daemon thread will exit with the process)."
+                f"{join_timeout:.0f}s; abandoning it (thread will exit with the process)."
             )
 
     def collect(self, _component: Component, _ctx: ScenarioContext) -> dict:

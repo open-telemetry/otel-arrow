@@ -157,23 +157,31 @@ components:
                 PrometheusMonitoringRuntime.type, PrometheusMonitoringRuntime
             )
         )
+
         if monitoring_runtime.stop_event is None or monitoring_runtime.thread is None:
             # Monitoring was never started (e.g. deploy failed and teardown still
             # runs the stop step); nothing to join.
             return
+
         monitoring_runtime.stop_event.set()
         # Bound the join so a wedged scrape thread cannot hang the whole
         # orchestrator during teardown. The scrape itself is bounded by
         # request_timeout, so this is a defensive upper bound.
-        join_timeout = (self.config.request_timeout or 10.0) + (
-            self.config.interval or 1.0
-        ) + 5.0
-        monitoring_runtime.thread.join(timeout=join_timeout)
+        monitoring_runtime.thread.join(timeout=self.join_timeout())
         if monitoring_runtime.thread.is_alive():
             logger.warning(
                 f"Monitoring thread for {component.name} did not stop within "
                 f"{join_timeout:.0f}s; abandoning it (daemon thread will exit with the process)."
             )
+
+    def join_timeout(self) -> int:
+        """
+        Compute the join timeout.
+        """
+        req_time = self.config.request_timeout or 10
+        interval_time = self.config.interval or 1.0
+        buffer = 5.0
+        return req_time + interval_time + buffer
 
     def collect(self, _component: Component, _ctx: ScenarioContext) -> dict:
         """
