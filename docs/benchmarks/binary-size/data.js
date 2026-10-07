@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791400773720,
+  "lastUpdate": 1791401915339,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -55444,6 +55444,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-amd64-binary-size",
             "value": 120.36,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 107.48,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "drewrelmas@gmail.com",
+            "name": "Drew Relmas",
+            "username": "drewrelmas"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "ff18ce40498ee5d34ae68f60f92633bc7fe9e5a0",
+          "message": "fix(query-engine): Fix conditional merging of shared scope and resource attributes (#4281)\n\n# Change summary\n\nFix conditional query pipelines duplicating scope and resource\nattributes when records sharing the same parent take different branches.\n\nRecord-only branches retain shared parents and emit unchanged attributes\nonce. Branches that may change scope or resource metadata are reindexed\ninto separate parent hierarchies.\n\n### Record-only change\n\n```text\nlogs | if (severity_text == \"a\") {\n    extend attributes[\"x\"] = 1\n}\n```\n\nObserved OTLP output, abbreviated to relevant fields:\n\n```yaml\nresource_logs:\n  - resource.attributes: { resource.id: \"r1\", resource.keep: \"yes\" }\n    scope_logs:\n      - scope.attributes: { pipeline.id: \"p1\", scope.keep: \"yes\" }\n        log_records:\n          - { severity_text: \"a\", attributes: { x: 1 } }\n          - { severity_text: \"b\", attributes: [] }\n```\n\n### Parent change\n\n```text\nlogs | if (severity_text == \"a\") {\n    set severity_number = 1\n} else {\n    set instrumentation_scope.attributes[\"pipeline.id\"] = \"p2\" |\n    set resource.attributes[\"resource.id\"] = \"r2\"\n}\n```\n\nObserved OTLP output, abbreviated to relevant fields:\n\n```yaml\nresource_logs:\n  - resource.attributes: { resource.id: \"r1\", resource.keep: \"yes\" }\n    scope_logs:\n      - scope.attributes: { pipeline.id: \"p1\", scope.keep: \"yes\" }\n        log_records:\n          - { severity_text: \"a\", severity_number: TRACE }\n  - resource.attributes: { resource.id: \"r2\", resource.keep: \"yes\" }\n    scope_logs:\n      - scope.attributes: { pipeline.id: \"p2\", scope.keep: \"yes\" }\n        log_records:\n          - { severity_text: \"b\", severity_number: UNSPECIFIED }\n```\n\n### Conservative handling\n\nEvery `PipelineStage` explicitly returns `ParentBehavior::Preserves` or\n`ParentBehavior::RequiresReindex`. The result depends on configuration:\nrecord destinations preserve parents, non-record resource/scope\ndestinations require reindexing, and composite stages propagate child\nbehavior.\n\nThis is conservative. Assigning an existing parent value still\nreindexes:\n\n```text\nlogs | if (severity_text == \"a\") {\n    set resource.attributes[\"resource.id\"] = \"r1\"\n}\n```\n\nObserved OTLP output, abbreviated to relevant fields:\n\n```yaml\nresource_logs:\n  - resource.attributes: { resource.id: \"r1\", resource.keep: \"yes\" }\n    scope_logs:\n      - scope.attributes: { pipeline.id: \"p1\", scope.keep: \"yes\" }\n        log_records: [{ severity_text: \"a\" }]\n  - resource.attributes: { resource.id: \"r1\", resource.keep: \"yes\" }\n    scope_logs:\n      - scope.attributes: { pipeline.id: \"p1\", scope.keep: \"yes\" }\n        log_records: [{ severity_text: \"b\" }]\n```\n\nThe visible metadata is identical, but the internal parent identities\nare separate. This safe false positive is preferable to a false negative\nthat merges different metadata or collides IDs.\n\n## Related issue\n\n* Closes #4277\n\n## Validation\n\n* Unit tests\n\n## User-facing changes\n\nConditional transforms no longer emit duplicate scope or resource\nattribute keys. Branch-local scope and resource mutations produce\nseparate parent groups instead of overwriting metadata shared by sibling\nrecords.",
+          "timestamp": "2026-10-07T18:19:38Z",
+          "tree_id": "58aa867a642b46e3d3178f16ed5f3d365dab4f0e",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/ff18ce40498ee5d34ae68f60f92633bc7fe9e5a0"
+        },
+        "date": 1791401898173,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 87.14,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 5.01,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.09,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.99,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 3.14,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.12,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 3.03,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.01,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.79,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 74.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 5.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.79,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.56,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.89,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.73,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.68,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.5,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.44,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.33,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 120.37,
             "unit": "MB"
           },
           {
