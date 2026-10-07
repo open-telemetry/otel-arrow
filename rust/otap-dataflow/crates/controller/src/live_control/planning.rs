@@ -2109,7 +2109,7 @@ impl<
     }
 
     /// Reconciles live controller state to a complete desired engine config.
-    pub(super) fn reconcile_engine_config(
+    pub(crate) fn reconcile_engine_config(
         self: &Arc<Self>,
         request: EngineConfigReconcileRequest,
     ) -> Result<EngineConfigReconcileStatus, ControlPlaneError> {

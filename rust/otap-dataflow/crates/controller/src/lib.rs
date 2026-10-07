@@ -44,7 +44,9 @@
 use crate::error::Error;
 use crate::thread_task::{ThreadLocalTaskHandle, spawn_thread_local_task};
 use core_affinity::CoreId;
-use otel_arrow_dfe_admin::ControlPlane;
+use otel_arrow_dfe_admin::{
+    ControlPlane, EngineConfigReconcileRequest, EngineConfigReconcileState,
+};
 use otel_arrow_dfe_config::engine::{
     OtelDataflowSpec, ResolvedOtelDataflowSpec, ResolvedPipelineConfig, ResolvedPipelineRole,
     SYSTEM_OBSERVABILITY_PIPELINE_ID, SYSTEM_PIPELINE_GROUP_ID,
@@ -147,7 +149,7 @@ pub use controller_monitor::{
 };
 
 use live_control::{ControllerRuntime, LaunchedPipelineThread, LogicalPipelineDeployment};
-use placement::{CorePlacement, PipelinePlacement, PlacementPlanner, PlacementSnapshot};
+use placement::{CorePlacement, PipelinePlacement, PlacementPlanner};
 
 use otel_arrow_dfe_engine::component_inventory;
 
@@ -1685,8 +1687,6 @@ impl<
             visible_cpu_count = topology.visible_cpus().len(),
             visible_node_count = topology.visible_nodes().len()
         );
-        let placement_snapshot =
-            Self::preflight_pipeline_placement(&pipelines, &all_cores, &topology)?;
         let observability_placement = PipelinePlacement {
             pipeline_group_id: observability_pipeline.pipeline_group_id.clone(),
             pipeline_id: observability_pipeline.pipeline_id.clone(),
@@ -1699,7 +1699,6 @@ impl<
             observability_placement,
             Arc::new(ListenerGroupSnapshot::empty()),
         );
-
         let runtime = Arc::new(ControllerRuntime::new(
             self.pipeline_factory,
             controller_ctx.clone(),
@@ -1831,63 +1830,26 @@ impl<
 
         runtime.register_launched_instance(observability_pipeline_handle);
 
-        for (pipeline_entry, pipeline_placement) in
-            pipelines.iter().zip(placement_snapshot.pipelines.iter())
-        {
-            let deployment = LogicalPipelineDeployment::new(
-                pipeline_entry.clone(),
-                Arc::clone(&context.bindings),
-                0,
-                pipeline_placement.clone(),
-                Arc::new(listener_group::snapshot_for_pipeline(
-                    pipeline_entry,
-                    pipeline_placement,
-                    placement_snapshot.generation,
-                )),
-            );
-            runtime.register_committed_pipeline(&deployment);
-            let num_cores = pipeline_placement.core_count();
-
-            let core_allocation = pipeline_entry
-                .policies
-                .resources
-                .core_allocation
-                .to_string();
-            let resolved_cores = pipeline_placement
-                .cores
-                .iter()
-                .map(|core| core.core_id.id.to_string())
-                .collect::<Vec<_>>()
-                .join(",");
-            let resolved_numa_nodes = pipeline_placement
-                .cores
-                .iter()
-                .map(|core| {
-                    core.known_numa_node_id
-                        .map_or_else(|| "unknown".to_owned(), |node| node.to_string())
-                })
-                .collect::<Vec<_>>()
-                .join(",");
-            otel_info!(
-                "pipeline.core_allocation",
-                pipeline_group_id = pipeline_entry.pipeline_group_id.as_ref(),
-                pipeline_id = pipeline_entry.pipeline_id.as_ref(),
-                num_cores = num_cores,
-                core_allocation = core_allocation,
-                resolved_cores = resolved_cores,
-                resolved_numa_nodes = resolved_numa_nodes
-            );
-
-            for placement in &pipeline_placement.cores {
-                let launched = runtime.launch_pipeline_thread(
-                    &deployment,
-                    placement.core_id.id,
-                    placement_snapshot.generation,
-                    runtime.next_thread_id(),
-                    telemetry_system.engine_tracing_setup(),
-                    None,
-                )?;
-                runtime.register_launched_instance(launched);
+        const STARTUP_RECONCILE_TIMEOUT_SECS: u64 = 30;
+        match runtime.reconcile_engine_config(EngineConfigReconcileRequest {
+            config: engine_config.clone(),
+            step_timeout_secs: STARTUP_RECONCILE_TIMEOUT_SECS,
+            drain_timeout_secs: STARTUP_RECONCILE_TIMEOUT_SECS,
+            delete_timeout_secs: STARTUP_RECONCILE_TIMEOUT_SECS,
+            delete_missing: true,
+        }) {
+            Ok(status) if status.state == EngineConfigReconcileState::Succeeded => {}
+            Ok(status) => {
+                return Err(Error::StartupReconciliationFailed {
+                    message: status
+                        .failure_reason
+                        .unwrap_or_else(|| "pipeline rollout did not succeed".to_owned()),
+                });
+            }
+            Err(source) => {
+                return Err(Error::StartupReconciliationFailed {
+                    message: source.to_string(),
+                });
             }
         }
 
@@ -2587,128 +2549,6 @@ impl<
         }
     }
 
-    fn add_pipeline_context_to_core_allocation_error(
-        err: Error,
-        pipeline_entry: &ResolvedPipelineConfig,
-    ) -> Error {
-        match err {
-            Error::InvalidCoreAllocation {
-                alloc,
-                message,
-                available,
-            } => Error::InvalidCoreAllocation {
-                alloc,
-                message: format!(
-                    "Pipeline {}:{} has invalid core allocation: {}",
-                    pipeline_entry.pipeline_group_id.as_ref(),
-                    pipeline_entry.pipeline_id.as_ref(),
-                    message
-                ),
-                available,
-            },
-            other => other,
-        }
-    }
-
-    /// Pre-resolves core assignments for all regular pipelines.
-    ///
-    /// This validates the full pipeline set before any pipeline thread is spawned.
-    fn preflight_pipeline_placement(
-        pipelines: &[ResolvedPipelineConfig],
-        available_core_ids: &[CoreId],
-        topology: &NumaTopology,
-    ) -> Result<PlacementSnapshot, Error> {
-        let mut reserved_core_ids = BTreeSet::new();
-        let mut placements = vec![None; pipelines.len()];
-
-        for (idx, pipeline_entry) in pipelines.iter().enumerate() {
-            if !matches!(
-                pipeline_entry.policies.resources.core_allocation.strategy,
-                CoreAllocationStrategy::CoreSet
-            ) {
-                continue;
-            }
-            let selected = Self::select_cores_for_allocation_with_placement(
-                available_core_ids.to_vec(),
-                &pipeline_entry.policies.resources.core_allocation,
-                topology,
-                &BTreeSet::new(),
-            )
-            .map_err(|err| {
-                Self::add_pipeline_context_to_core_allocation_error(err, pipeline_entry)
-            })?;
-            reserved_core_ids.extend(selected.iter().map(|core| core.id));
-            placements[idx] = Some(PipelinePlacement {
-                pipeline_group_id: pipeline_entry.pipeline_group_id.clone(),
-                pipeline_id: pipeline_entry.pipeline_id.clone(),
-                cores: selected
-                    .into_iter()
-                    .map(|core_id| CorePlacement::from_core_id(core_id, topology))
-                    .collect(),
-            });
-        }
-
-        for (idx, pipeline_entry) in pipelines.iter().enumerate() {
-            if placements[idx].is_some() {
-                continue;
-            }
-            let selected = Self::select_cores_for_allocation_with_placement(
-                available_core_ids.to_vec(),
-                &pipeline_entry.policies.resources.core_allocation,
-                topology,
-                &reserved_core_ids,
-            )
-            .map_err(|err| {
-                Self::add_pipeline_context_to_core_allocation_error(err, pipeline_entry)
-            })?;
-            if matches!(
-                pipeline_entry.policies.resources.core_allocation.strategy,
-                CoreAllocationStrategy::CoreCount
-            ) {
-                reserved_core_ids.extend(selected.iter().map(|core| core.id));
-            }
-            placements[idx] = Some(PipelinePlacement {
-                pipeline_group_id: pipeline_entry.pipeline_group_id.clone(),
-                pipeline_id: pipeline_entry.pipeline_id.clone(),
-                cores: selected
-                    .into_iter()
-                    .map(|core_id| CorePlacement::from_core_id(core_id, topology))
-                    .collect(),
-            });
-        }
-
-        Ok(PlacementSnapshot::from_assignments(
-            0,
-            placements
-                .into_iter()
-                .map(|placement| placement.expect("every pipeline placement is resolved"))
-                .collect(),
-        ))
-    }
-
-    /// Pre-resolves core assignments for compatibility tests.
-    #[cfg(test)]
-    fn preflight_pipeline_core_allocations(
-        pipelines: &[ResolvedPipelineConfig],
-        available_core_ids: &[CoreId],
-    ) -> Result<Vec<Vec<CoreId>>, Error> {
-        Ok(Self::preflight_pipeline_placement(
-            pipelines,
-            available_core_ids,
-            &NumaTopology::unknown(),
-        )?
-        .pipelines
-        .into_iter()
-        .map(|placement| {
-            placement
-                .cores
-                .into_iter()
-                .map(|core| core.core_id)
-                .collect()
-        })
-        .collect())
-    }
-
     fn observability_pipeline_key(core_id: CoreId) -> DeployedPipelineKey {
         DeployedPipelineKey {
             pipeline_group_id: SYSTEM_PIPELINE_GROUP_ID.into(),
@@ -3023,7 +2863,6 @@ impl Drop for ShutdownSignalListenerHandle {
 mod tests {
     use super::*;
     use async_trait::async_trait;
-    use otel_arrow_dfe_config::engine::{ResolvedPipelineConfig, ResolvedPipelineRole};
     use otel_arrow_dfe_config::node::NodeUserConfig;
 
     fn run_console_reporting_child(test_name: &str) {
@@ -3774,7 +3613,7 @@ groups: {}
         );
     }
 
-    use otel_arrow_dfe_config::policy::{CoreRange, ResolvedPolicies, ResolvedResourcesPolicy};
+    use otel_arrow_dfe_config::policy::CoreRange;
     use otel_arrow_dfe_config::topic::{TopicAckPropagationMode, TopicBroadcastOnLagPolicy};
     use otel_arrow_dfe_engine::config::{ExporterConfig, ProcessorConfig, ReceiverConfig};
     use otel_arrow_dfe_engine::control::NodeControlMsg;
@@ -3815,26 +3654,6 @@ groups: {}
                 .collect::<BTreeMap<_, _>>(),
             TopologyCompleteness::Complete,
         )
-    }
-
-    fn minimal_pipeline_config() -> PipelineConfig {
-        PipelineConfig::from_yaml(
-            "g".into(),
-            "p".into(),
-            r#"
-nodes:
-  receiver:
-    type: "urn:test:receiver:example"
-    config: null
-  exporter:
-    type: "urn:test:exporter:example"
-    config: null
-connections:
-  - from: receiver
-    to: exporter
-"#,
-        )
-        .expect("minimal test pipeline config should parse")
     }
 
     struct TestObservabilityReceiver;
@@ -3909,6 +3728,18 @@ connections:
         ))
     }
 
+    fn fail_test_receiver_creation(
+        _pipeline_ctx: PipelineContext,
+        _node: otel_arrow_dfe_engine::node::NodeId,
+        _node_config: Arc<NodeUserConfig>,
+        _receiver_config: &ReceiverConfig,
+        _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities,
+    ) -> Result<ReceiverWrapper<()>, otel_arrow_dfe_config::error::Error> {
+        Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
+            error: "simulated startup pipeline build failure".to_owned(),
+        })
+    }
+
     fn create_test_observability_processor(
         _pipeline_ctx: PipelineContext,
         node: otel_arrow_dfe_engine::node::NodeId,
@@ -3954,6 +3785,13 @@ connections:
             wiring_contract: WiringContract::UNRESTRICTED,
             validate_config: accept_any_test_config,
         },
+        ReceiverFactory {
+            name: "urn:test:receiver:build-fails",
+            create: fail_test_receiver_creation,
+            context_declarations: None,
+            wiring_contract: WiringContract::UNRESTRICTED,
+            validate_config: accept_any_test_config,
+        },
     ];
 
     static TEST_OBSERVABILITY_PROCESSORS: &[ProcessorFactory<()>] = &[ProcessorFactory {
@@ -3988,7 +3826,7 @@ connections:
         },
     ];
 
-    fn test_pipeline_factory() -> &'static PipelineFactory<()> {
+    pub(super) fn test_pipeline_factory() -> &'static PipelineFactory<()> {
         Box::leak(Box::new(PipelineFactory::new(
             TEST_OBSERVABILITY_RECEIVERS,
             TEST_OBSERVABILITY_PROCESSORS,
@@ -4270,27 +4108,6 @@ groups: {{}}
             extension_type, extension_type
         ))
         .expect("controller extension config should parse")
-    }
-
-    fn resolved_pipeline_with_core_allocation(
-        pipeline_group_id: &str,
-        pipeline_id: &str,
-        core_allocation: CoreAllocation,
-    ) -> ResolvedPipelineConfig {
-        ResolvedPipelineConfig {
-            pipeline_group_id: pipeline_group_id.to_string().into(),
-            pipeline_id: pipeline_id.to_string().into(),
-            pipeline: minimal_pipeline_config(),
-            topic_scope: TopicScope::GLOBAL,
-            policies: ResolvedPolicies {
-                resources: ResolvedResourcesPolicy {
-                    core_allocation,
-                    memory_limiter: None,
-                },
-                ..Default::default()
-            },
-            role: ResolvedPipelineRole::Regular,
-        }
     }
 
     fn global_topic_handle(
@@ -4801,7 +4618,7 @@ engine:
       failing:
         type: "{}"
 groups: {{}}
-        "#,
+      "#,
             FAILING_CONTROLLER_EXTENSION_URN
         ))
         .expect("failing controller extension config should parse");
@@ -5065,192 +4882,6 @@ groups: {{}}
                     message.contains("overlap"),
                     "Expected overlap error message, got: {}",
                     message
-                );
-            }
-            other => panic!("unexpected error: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn preflight_fails_fast_when_later_pipeline_allocation_is_invalid() {
-        let pipelines = vec![
-            resolved_pipeline_with_core_allocation("g1", "p1", CoreAllocation::core_count(2)),
-            resolved_pipeline_with_core_allocation(
-                "g1",
-                "p2",
-                CoreAllocation::core_set(vec![CoreRange {
-                    start: 999,
-                    end: 999,
-                }]),
-            ),
-        ];
-
-        let err = Controller::<()>::preflight_pipeline_core_allocations(
-            &pipelines,
-            &available_core_ids(),
-        )
-        .expect_err("preflight should fail");
-        match err {
-            Error::InvalidCoreAllocation { .. } => {}
-            other => panic!("unexpected error: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn preflight_succeeds_and_allows_cross_pipeline_core_overlap() {
-        let pipelines = vec![
-            resolved_pipeline_with_core_allocation(
-                "g1",
-                "p1",
-                CoreAllocation::core_set(vec![CoreRange { start: 1, end: 2 }]),
-            ),
-            resolved_pipeline_with_core_allocation(
-                "g1",
-                "p2",
-                CoreAllocation::core_set(vec![CoreRange { start: 2, end: 3 }]),
-            ),
-        ];
-
-        let assignments = Controller::<()>::preflight_pipeline_core_allocations(
-            &pipelines,
-            &available_core_ids(),
-        )
-        .expect("preflight should succeed");
-
-        assert_eq!(assignments.len(), 2);
-        assert_eq!(to_ids(&assignments[0]), vec![1, 2]);
-        assert_eq!(to_ids(&assignments[1]), vec![2, 3]);
-    }
-
-    #[test]
-    fn preflight_reserves_core_count_across_pipelines() {
-        let pipelines = vec![
-            resolved_pipeline_with_core_allocation("g1", "p1", CoreAllocation::core_count(5)),
-            resolved_pipeline_with_core_allocation("g1", "p2", CoreAllocation::core_count(5)),
-        ];
-
-        let err = Controller::<()>::preflight_pipeline_placement(
-            &pipelines,
-            &available_core_ids(),
-            &NumaTopology::unknown(),
-        )
-        .expect_err("core_count allocations should not oversubscribe implicit cores");
-
-        match err {
-            Error::InvalidCoreAllocation { message, .. } => {
-                assert!(
-                    message.contains(
-                        "Requested 5 cores but placement strategy could not produce a valid unreserved core set"
-                    ),
-                    "unexpected message: {message}"
-                );
-            }
-            other => panic!("unexpected error: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn preflight_reserves_explicit_core_set_before_later_core_count() {
-        let pipelines = vec![
-            resolved_pipeline_with_core_allocation(
-                "g1",
-                "p1",
-                CoreAllocation::core_set(vec![CoreRange { start: 0, end: 3 }]),
-            ),
-            resolved_pipeline_with_core_allocation("g1", "p2", CoreAllocation::core_count(2)),
-        ];
-
-        let placement = Controller::<()>::preflight_pipeline_placement(
-            &pipelines,
-            &available_core_ids(),
-            &NumaTopology::unknown(),
-        )
-        .expect("preflight should succeed");
-
-        assert_eq!(
-            to_ids(
-                &placement.pipelines[0]
-                    .cores
-                    .iter()
-                    .map(|core| core.core_id)
-                    .collect::<Vec<_>>()
-            ),
-            vec![0, 1, 2, 3]
-        );
-        assert_eq!(
-            to_ids(
-                &placement.pipelines[1]
-                    .cores
-                    .iter()
-                    .map(|core| core.core_id)
-                    .collect::<Vec<_>>()
-            ),
-            vec![4, 5]
-        );
-    }
-
-    #[test]
-    fn preflight_core_count_all_uses_only_unreserved_cores() {
-        let pipelines = vec![
-            resolved_pipeline_with_core_allocation(
-                "g1",
-                "p1",
-                CoreAllocation::core_set(vec![CoreRange { start: 0, end: 3 }]),
-            ),
-            resolved_pipeline_with_core_allocation("g1", "p2", CoreAllocation::core_count(0)),
-        ];
-
-        let placement = Controller::<()>::preflight_pipeline_placement(
-            &pipelines,
-            &available_core_ids(),
-            &NumaTopology::unknown(),
-        )
-        .expect("preflight should succeed");
-
-        assert_eq!(
-            to_ids(
-                &placement.pipelines[1]
-                    .cores
-                    .iter()
-                    .map(|core| core.core_id)
-                    .collect::<Vec<_>>()
-            ),
-            vec![4, 5, 6, 7]
-        );
-    }
-
-    #[test]
-    fn preflight_core_count_all_errors_when_no_unreserved_cores_remain() {
-        let pipelines = vec![
-            resolved_pipeline_with_core_allocation(
-                "g1",
-                "p1",
-                CoreAllocation::core_set(vec![CoreRange { start: 0, end: 7 }]),
-            ),
-            resolved_pipeline_with_core_allocation("g1", "p2", CoreAllocation::core_count(0)),
-        ];
-
-        let err = Controller::<()>::preflight_pipeline_placement(
-            &pipelines,
-            &available_core_ids(),
-            &NumaTopology::unknown(),
-        )
-        .expect_err("preflight should reject empty effective core_count placement");
-
-        match err {
-            Error::InvalidCoreAllocation {
-                message, available, ..
-            } => {
-                assert!(
-                    message.contains("no unreserved cores are available"),
-                    "unexpected message: {message}"
-                );
-                assert_eq!(
-                    available,
-                    available_core_ids()
-                        .iter()
-                        .map(|core| core.id)
-                        .collect::<Vec<_>>()
                 );
             }
             other => panic!("unexpected error: {other:?}"),
