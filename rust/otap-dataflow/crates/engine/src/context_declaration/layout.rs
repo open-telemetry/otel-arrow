@@ -380,7 +380,7 @@ impl ContextLayout {
             .filter(|declaration| requested.contains(&declaration.name))
             .cloned()
             .collect::<Vec<_>>();
-        let fields = selected
+        let required = selected
             .iter()
             .flat_map(|declaration| &declaration.definition.0)
             .map(|part| ContextFieldLayout {
@@ -388,6 +388,14 @@ impl ContextLayout {
                 domain: part.domain(),
             })
             .collect::<BTreeSet<_>>();
+        let mut fields = BTreeSet::new();
+        for field in required {
+            if !fields.iter().any(|existing: &ContextFieldLayout| {
+                existing.domain == field.domain && existing.matches_name(&field.name)
+            }) {
+                _ = fields.insert(field);
+            }
+        }
         Self::compile(fields, &selected)
     }
 
