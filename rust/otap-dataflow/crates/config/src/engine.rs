@@ -3519,9 +3519,11 @@ groups: {}
             serde_json::to_string(&OtelDataflow::crd()).expect("CRD should serialize to JSON");
 
         assert!(rendered.contains(
-            "self.type == 'transport_header_match' ? has(self.value) : !has(self.value)"
+            "self.type in ['constant', 'transport_header_match'] ? has(self.value) : !has(self.value)"
         ));
-        assert!(rendered.contains("self.type != 'transport_header_match' || !has(self.store_as)"));
+        assert!(rendered.contains(
+            "self.type in ['transport_header', 'authorized_identity'] || !has(self.store_as)"
+        ));
     }
 
     /// Scenario: the generated CRD includes named context entry selectors.

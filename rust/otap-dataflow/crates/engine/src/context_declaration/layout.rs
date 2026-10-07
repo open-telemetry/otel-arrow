@@ -3,7 +3,7 @@
 
 //! Logical layouts and projections for context declarations.
 //!
-//! A projection identifies selected fields and the enclosing composite whose
+//! A projection identifies selected values and the enclosing composite whose
 //! presence a consumer must establish. This module compiles and resolves that
 //! model; it does not evaluate message values or change header propagation.
 //!
@@ -80,8 +80,17 @@ pub struct ContextMember {
     /// Name is this member's store_as, falls back to the field's
     /// primitive name.
     pub name: ContextEntryName,
-    /// Primitive field
-    pub field: ContextFieldId,
+    /// Value source for this member.
+    pub source: ContextMemberSource,
+}
+
+/// Logical source of one composite member value.
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub enum ContextMemberSource {
+    /// Value supplied by one domain-scoped primitive field.
+    Field(ContextFieldId),
+    /// Inline UTF-8 value supplied by configuration.
+    Constant(Box<str>),
 }
 
 /// One conditional element
@@ -100,7 +109,7 @@ pub struct ContextEntryLayout {
     pub name: ContextEntryName,
     /// Declaring scope.
     pub scope: ContextScope,
-    /// Members in canonical name order; all must be present for this entry to exist.
+    /// Members in canonical name order; field sources must be present, while constants always are.
     pub members: Box<[ContextMember]>,
     /// Canonically ordered conditions; all must match for this entry to exist.
     pub conditions: Box<[ContextCondition]>,
@@ -115,8 +124,8 @@ pub enum ContextProjection {
     Composite {
         /// Composite whose members and conditions determine presence.
         entry: ContextEntryId,
-        /// Fields in canonical member-name order.
-        fields: Box<[ContextFieldId]>,
+        /// Members in canonical member-name order.
+        members: Box<[ContextMember]>,
     },
 }
 
@@ -130,12 +139,12 @@ impl ContextProjection {
         }
     }
 
-    /// Returns fields in canonical projection order.
+    /// Returns projected composite members in canonical name order.
     #[must_use]
-    pub fn fields(&self) -> &[ContextFieldId] {
+    pub fn members(&self) -> Option<&[ContextMember]> {
         match self {
-            Self::Primitive(field) => std::slice::from_ref(field),
-            Self::Composite { fields, .. } => fields,
+            Self::Primitive(_) => None,
+            Self::Composite { members, .. } => Some(members),
         }
     }
 }
@@ -153,12 +162,16 @@ pub(super) fn validate_definition(declaration: &ContextEntryDeclaration) -> Resu
     if !errors.is_empty() {
         return Err(invalid(errors.join("; ")));
     }
-    for part in &declaration.definition.0 {
-        if part.reference().scope().is_some() {
+    for reference in declaration
+        .definition
+        .0
+        .iter()
+        .filter_map(ContextEntryPart::reference)
+    {
+        if reference.scope().is_some() {
             return Err(invalid(format!(
                 "context entry `{}` cannot use nested reference `{}`",
-                declaration.name,
-                part.reference(),
+                declaration.name, reference,
             )));
         }
     }
@@ -204,8 +217,19 @@ impl ContextLayout {
             let mut members = Vec::with_capacity(declaration.definition.0.len());
             let mut conditions = Vec::new();
             for part in &declaration.definition.0 {
-                let domain = part.domain();
-                let reference = part.reference();
+                if let ContextEntryPart::Constant { name, value } = part {
+                    members.push(ContextMember {
+                        name: name.clone(),
+                        source: ContextMemberSource::Constant(value.clone().into_boxed_str()),
+                    });
+                    continue;
+                }
+                let domain = part
+                    .domain()
+                    .expect("referenced context part has an authority domain");
+                let reference = part
+                    .reference()
+                    .expect("referenced context part has a source reference");
                 let mut matching = fields.iter().enumerate().filter(|(_, field)| {
                     field.domain == domain && field.matches_name(reference.name())
                 });
@@ -236,16 +260,18 @@ impl ContextLayout {
                     .member_name()
                     .expect("value-bearing context part has a member name")
                     .clone();
-                if members
-                    .iter()
-                    .any(|member: &ContextMember| member.field == field)
-                {
+                if members.iter().any(|member: &ContextMember| {
+                    member.source == ContextMemberSource::Field(field)
+                }) {
                     return Err(invalid(format!(
                         "context entry `{}` repeats `{reference}`",
                         declaration.name
                     )));
                 }
-                members.push(ContextMember { name, field });
+                members.push(ContextMember {
+                    name,
+                    source: ContextMemberSource::Field(field),
+                });
             }
             members.sort_unstable_by(|left, right| left.name.cmp(&right.name));
             conditions.sort_unstable();
@@ -301,15 +327,15 @@ impl ContextLayout {
         member: &ContextEntryName,
     ) -> Result<ContextProjection, Error> {
         let entry = self.entry_id(composite)?;
-        let field = self.entries[entry.index()]
+        let member = self.entries[entry.index()]
             .members
             .iter()
             .find(|candidate| &candidate.name == member)
             .ok_or_else(|| invalid(format!("unknown context member `{composite}:{member}`")))?
-            .field;
+            .clone();
         Ok(ContextProjection::Composite {
             entry,
-            fields: Box::new([field]),
+            members: Box::new([member]),
         })
     }
 
@@ -321,11 +347,7 @@ impl ContextLayout {
         let entry = self.entry_id(composite)?;
         Ok(ContextProjection::Composite {
             entry,
-            fields: self.entries[entry.index()]
-                .members
-                .iter()
-                .map(|member| member.field)
-                .collect(),
+            members: self.entries[entry.index()].members.clone(),
         })
     }
 
@@ -439,13 +461,33 @@ mod tests {
 
     fn projection_names<'a>(
         layout: &'a ContextLayout,
-        projection: &ContextProjection,
+        projection: &'a ContextProjection,
     ) -> Vec<&'a str> {
-        projection
-            .fields()
-            .iter()
-            .map(|field| layout.fields()[field.index()].name.as_str())
-            .collect()
+        match projection {
+            ContextProjection::Primitive(field) => {
+                vec![layout.fields()[field.index()].name.as_str()]
+            }
+            ContextProjection::Composite { members, .. } => members
+                .iter()
+                .map(|member| match &member.source {
+                    ContextMemberSource::Field(field) => {
+                        layout.fields()[field.index()].name.as_str()
+                    }
+                    ContextMemberSource::Constant(_) => member.name.as_str(),
+                })
+                .collect(),
+        }
+    }
+
+    fn projection_sources(projection: &ContextProjection) -> Vec<ContextMemberSource> {
+        match projection {
+            ContextProjection::Primitive(field) => {
+                vec![ContextMemberSource::Field(*field)]
+            }
+            ContextProjection::Composite { members, .. } => {
+                members.iter().map(|member| member.source.clone()).collect()
+            }
+        }
     }
 
     /// Scenario: primitive, whole-composite, and qualified names select conditional or plain entries.
@@ -634,7 +676,7 @@ mod tests {
         let header = layout
             .resolve_primitive(ContextDomain::TransportHeader, &name("customer"))
             .expect("header");
-        assert_ne!(identity.fields(), header.fields());
+        assert_ne!(projection_sources(&identity), projection_sources(&header));
         let whole = layout
             .resolve_composite(&name("customer"))
             .expect("composite");
@@ -642,15 +684,22 @@ mod tests {
             let projection = layout
                 .resolve_member(&name("customer"), &name(member))
                 .expect("member");
-            assert_eq!(projection.fields(), primitive.fields());
+            assert_eq!(
+                projection_sources(&projection),
+                projection_sources(&primitive)
+            );
             assert_eq!(projection.presence(), whole.presence());
             assert_ne!(projection.presence(), primitive.presence());
         }
         assert_eq!(
             whole
-                .fields()
+                .members()
+                .expect("composite members")
                 .iter()
-                .map(|field| layout.fields()[field.index()].domain)
+                .map(|member| match &member.source {
+                    ContextMemberSource::Field(field) => layout.fields()[field.index()].domain,
+                    ContextMemberSource::Constant(_) => panic!("unexpected constant"),
+                })
                 .collect::<Vec<_>>(),
             [
                 ContextDomain::AuthorizedIdentity,
@@ -747,5 +796,66 @@ mod tests {
         let mut sources = fields();
         sources.push(field("WORKSPACE", ContextDomain::TransportHeader));
         assert_compile_error(sources, &[entry()], "ambiguous TransportHeader reference");
+    }
+
+    /// Scenario: a constant-only entry compiles without any primitive fields.
+    /// Guarantees: the literal is projected as an always-available member with composite presence.
+    #[test]
+    fn constant_only_entry_compiles_without_fields() {
+        let declaration = ContextEntryDeclaration {
+            scope: ContextScope::Engine,
+            name: name("route"),
+            definition: ContextEntryDefinition(vec![ContextEntryPart::Constant {
+                name: name("route_name"),
+                value: "otlp-http-json".to_owned(),
+            }]),
+        };
+
+        let layout = compile([], &[declaration]);
+        assert!(layout.fields().is_empty());
+        assert!(layout.entries()[0].conditions.is_empty());
+        let projection = layout
+            .resolve_member(&name("route"), &name("route_name"))
+            .expect("constant member");
+        assert_eq!(
+            projection.members().expect("composite members"),
+            [ContextMember {
+                name: name("route_name"),
+                source: ContextMemberSource::Constant("otlp-http-json".into()),
+            }]
+        );
+        assert_eq!(
+            projection.presence(),
+            ContextNameId::Composite(ContextEntryId(0))
+        );
+    }
+
+    /// Scenario: equivalent mixed composites reorder constant and field members.
+    /// Guarantees: constant values compile canonically while remaining binding-significant.
+    #[test]
+    fn constants_are_canonical_and_binding_significant() {
+        let mut declaration = entry();
+        declaration.definition.0.push(ContextEntryPart::Constant {
+            name: name("scheme"),
+            value: "ApiKey".to_owned(),
+        });
+        let mut reordered = declaration.clone();
+        reordered.definition.0.reverse();
+        assert_eq!(
+            compile(fields(), &[declaration.clone()]),
+            compile(fields(), &[reordered])
+        );
+
+        let mut changed = declaration.clone();
+        let ContextEntryPart::Constant { value, .. } =
+            changed.definition.0.last_mut().expect("constant member")
+        else {
+            panic!("last member must be constant");
+        };
+        *value = "Bearer".to_owned();
+        assert_ne!(
+            compile(fields(), &[declaration]),
+            compile(fields(), &[changed])
+        );
     }
 }

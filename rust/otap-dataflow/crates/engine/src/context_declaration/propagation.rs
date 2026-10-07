@@ -70,6 +70,13 @@ impl CompiledHeaderPropagationPolicy {
             let mut conditions = Vec::new();
             for part in &declaration.definition.0 {
                 match part {
+                    ContextEntryPart::Constant { name, .. } => {
+                        if name == reference.name() {
+                            return Err(format!(
+                                "context entry reference `{reference}` selects constant member `{name}`, which cannot be propagated until constant runtime integration is available"
+                            ));
+                        }
+                    }
                     ContextEntryPart::TransportHeader { name, store_as } => {
                         if store_as.as_ref().unwrap_or_else(|| name.name()) == reference.name() {
                             source_name = Some(unqualified_context_name(
@@ -659,6 +666,42 @@ default:
         let error = CompiledHeaderPropagationPolicy::compile(policy, &[])
             .expect_err("unknown composite must fail");
         assert!(error.contains("unknown composite context entry `missing`"));
+    }
+
+    /// Scenario: a qualified propagation selector names a configured constant member.
+    /// Guarantees: pre-integration compilation fails explicitly instead of silently dropping it.
+    #[test]
+    fn composite_transport_header_propagation_rejects_constant_member() {
+        let context: context_policy::ContextPolicy = serde_yaml::from_str(
+            r#"
+entries:
+  route:
+    - type: constant
+      name: route_name
+      value: otlp-http-json
+"#,
+        )
+        .expect("valid context policy");
+        let (name, definition) = context.entries.into_iter().next().expect("declaration");
+        let declaration = ContextEntryDeclaration {
+            scope: context_policy::ContextScope::Engine,
+            name,
+            definition,
+        };
+        let policy: HeaderPropagationPolicy = serde_yaml::from_str(
+            r#"
+default:
+  selector:
+    type: named
+    named: [route:route_name]
+"#,
+        )
+        .expect("valid propagation policy");
+
+        let error = CompiledHeaderPropagationPolicy::compile(policy, &[declaration])
+            .expect_err("constant propagation must wait for runtime integration");
+        assert!(error.contains("selects constant member `route_name`"));
+        assert!(error.contains("constant runtime integration"));
     }
 
     /// Scenario: a named selector repeats an unqualified header using identical and varied case.

@@ -20,7 +20,9 @@ use propagation::CompiledHeaderPropagationPolicy as HeaderPropagationPolicy;
 use crate::PipelineFactory;
 use crate::error::Error as EngineError;
 use otel_arrow_dfe_config::authorized_identity_policy::AuthorizedIdentityPolicy;
-use otel_arrow_dfe_config::context_policy::ContextEntryDeclaration as ConfigContextEntryDeclaration;
+use otel_arrow_dfe_config::context_policy::{
+    ContextEntryDeclaration as ConfigContextEntryDeclaration, ContextEntryPart,
+};
 use otel_arrow_dfe_config::engine::ResolvedOtelDataflowSpec;
 use otel_arrow_dfe_config::error::Error;
 use otel_arrow_dfe_config::node::{NodeKind, NodeUserConfig};
@@ -83,16 +85,50 @@ impl ContextEntryTarget {
                     .ok_or_else(|| {
                         invalid_context(format!("unknown context member `{composite}:{member}`"))
                     })?;
-                visit(part.domain(), part.reference().name())
+                if let (Some(domain), Some(reference)) = (part.domain(), part.reference()) {
+                    visit(domain, reference.name())?;
+                }
+                Ok(())
             }
             Self::Composite { name } => {
                 let declaration = composite_declaration(name, composites)?;
                 for part in &declaration.definition.0 {
-                    if part.member_name().is_some() {
-                        visit(part.domain(), part.reference().name())?;
+                    if part.member_name().is_some()
+                        && let (Some(domain), Some(reference)) = (part.domain(), part.reference())
+                    {
+                        visit(domain, reference.name())?;
                     }
                 }
                 Ok(())
+            }
+        }
+    }
+
+    /// Returns the first selected constant member name, if any.
+    fn constant_member_name<'a>(
+        &'a self,
+        composites: &'a [ConfigContextEntryDeclaration],
+    ) -> Result<Option<&'a ContextEntryName>, Error> {
+        match self {
+            Self::Primitive { .. } => Ok(None),
+            Self::CompositeMember { composite, member } => {
+                let declaration = composite_declaration(composite, composites)?;
+                let part = declaration
+                    .definition
+                    .0
+                    .iter()
+                    .find(|part| part.member_name() == Some(member))
+                    .ok_or_else(|| {
+                        invalid_context(format!("unknown context member `{composite}:{member}`"))
+                    })?;
+                Ok(matches!(part, ContextEntryPart::Constant { .. }).then_some(member))
+            }
+            Self::Composite { name } => {
+                let declaration = composite_declaration(name, composites)?;
+                Ok(declaration.definition.0.iter().find_map(|part| match part {
+                    ContextEntryPart::Constant { name, .. } => Some(name),
+                    _ => None,
+                }))
             }
         }
     }
@@ -206,6 +242,13 @@ impl ContextDeclaration {
                 selector: ContextConsumerSelector::Entries { entries },
             } => {
                 for entry in entries {
+                    if entry.form == ContextEntrySelectorForm::OriginalKeyValue
+                        && let Some(name) = entry.target.constant_member_name(composites)?
+                    {
+                        return Err(invalid_context(format!(
+                            "original wire name requested for constant context entry `{name}`; constants have no original wire names"
+                        )));
+                    }
                     entry.target.visit_sources(composites, |domain, name| {
                         if entry.form == ContextEntrySelectorForm::OriginalKeyValue {
                             if domain != ContextDomain::TransportHeader {
@@ -1210,6 +1253,21 @@ groups:
         }
     }
 
+    /// Builds a test composite containing one constant and one header member.
+    fn constant_composite() -> ConfigContextEntryDeclaration {
+        use otel_arrow_dfe_config::context_policy::{ContextEntryDefinition, ContextScope};
+
+        ConfigContextEntryDeclaration {
+            scope: ContextScope::Engine,
+            name: context_name("route"),
+            definition: serde_json::from_value::<ContextEntryDefinition>(serde_json::json!([
+                {"type": "constant", "name": "route_name", "value": "otlp-http-json"},
+                {"type": "transport_header", "name": "workspace"}
+            ]))
+            .expect("valid constant composite"),
+        }
+    }
+
     /// Scenario: same-name sources are declared in different domains for reads, writes, and all-stored.
     /// Guarantees: deduplication, node validation, and live binding comparison preserve the domain.
     #[test]
@@ -1353,6 +1411,55 @@ groups:
             !prepared
                 .requirements
                 .preserves_original_name(&context_name("environment"))
+        );
+    }
+
+    /// Scenario: a consumer selects constant and field members from one composite.
+    /// Guarantees: constants add no external source requirements and have no original wire name.
+    #[test]
+    fn constant_members_have_no_external_or_original_name_requirements() {
+        let context = [constant_composite()];
+        let whole = ContextEntryTarget::Composite {
+            name: context_name("route"),
+        };
+        let mut sources = Vec::new();
+        whole
+            .visit_sources(&context, |domain, name| {
+                sources.push((domain, name.clone()));
+                Ok(())
+            })
+            .expect("whole composite sources");
+        assert_eq!(
+            sources,
+            [(ContextDomain::TransportHeader, context_name("workspace"))]
+        );
+
+        let prepared = PreparedNodeContextDeclarations::new(
+            consumer(
+                member_target("route", "route_name"),
+                ContextEntrySelectorForm::Value,
+            ),
+            &context,
+        )
+        .expect("constant value selection");
+        assert!(
+            !prepared
+                .requirements
+                .preserves_original_name(&context_name("route_name"))
+        );
+        let error = PreparedNodeContextDeclarations::new(
+            consumer(
+                member_target("route", "route_name"),
+                ContextEntrySelectorForm::OriginalKeyValue,
+            ),
+            &context,
+        )
+        .expect_err("constant has no original wire name");
+        assert!(
+            error
+                .to_string()
+                .contains("original wire name requested for constant context entry `route_name`"),
+            "{error}"
         );
     }
 
