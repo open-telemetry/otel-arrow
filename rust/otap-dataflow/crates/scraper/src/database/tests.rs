@@ -247,14 +247,20 @@ fn watermark_debug_redacts_initial_values() {
     }))
     .expect("watermark configuration");
     config.validate().expect("valid watermark");
-    assert_eq!(config.timestamp().initial, timestamp);
-    assert_eq!(config.tie_breaker().initial, row_id);
+    assert_eq!(
+        config.timestamp().expect("composite fixture").initial,
+        timestamp
+    );
+    assert_eq!(
+        config.tie_breaker().expect("composite fixture").initial,
+        row_id
+    );
 
     for debug in [
-        format!("{:?}", config.timestamp()),
-        format!("{:#?}", config.timestamp()),
-        format!("{:?}", config.tie_breaker()),
-        format!("{:#?}", config.tie_breaker()),
+        format!("{:?}", config.timestamp().expect("composite fixture")),
+        format!("{:#?}", config.timestamp().expect("composite fixture")),
+        format!("{:?}", config.tie_breaker().expect("composite fixture")),
+        format!("{:#?}", config.tie_breaker().expect("composite fixture")),
         format!("{config:?}"),
         format!("{config:#?}"),
     ] {
@@ -271,8 +277,24 @@ fn watermark_debug_redacts_initial_values() {
         OutputConfig::default(),
     )
     .expect("compiled query");
-    assert_eq!(query.watermark().initial.timestamp, timestamp);
-    assert_eq!(query.watermark().initial.tie_breaker, row_id);
+    assert_eq!(
+        query
+            .watermark()
+            .as_composite()
+            .expect("composite fixture")
+            .initial
+            .timestamp,
+        timestamp
+    );
+    assert_eq!(
+        query
+            .watermark()
+            .as_composite()
+            .expect("composite fixture")
+            .initial
+            .tie_breaker,
+        row_id
+    );
 }
 
 /// Scenario: A query does not start with SELECT.
@@ -355,9 +377,8 @@ fn rejects_invalid_polling_bounds() {
     }
 }
 
-/// Scenario: watermark mode is configured as scalar or snapshot.
-/// Guarantees: unimplemented modes are rejected by the schema instead of silently inheriting
-/// composite behavior that they do not actually describe.
+/// Scenario: Scalar or snapshot mode is paired with composite-only fields.
+/// Guarantees: Mode-specific fields cannot silently select composite behavior.
 #[test]
 fn rejects_unsupported_watermark_modes() {
     for mode in ["scalar", "snapshot"] {
@@ -391,17 +412,23 @@ fn rejects_invalid_composite_watermarks() {
     let non_utc = WatermarkConfig::Composite {
         timestamp: TimestampCursorConfig {
             timezone: "America/New_York".to_owned(),
-            ..watermark().timestamp().clone()
+            ..watermark().timestamp().expect("composite fixture").clone()
         },
-        tie_breaker: watermark().tie_breaker().clone(),
+        tie_breaker: watermark()
+            .tie_breaker()
+            .expect("composite fixture")
+            .clone(),
     };
     assert!(non_utc.validate().is_err());
 
     let duplicate_bind = WatermarkConfig::Composite {
-        timestamp: watermark().timestamp().clone(),
+        timestamp: watermark().timestamp().expect("composite fixture").clone(),
         tie_breaker: TieBreakerCursorConfig {
             bind: "last_timestamp".to_owned(),
-            ..watermark().tie_breaker().clone()
+            ..watermark()
+                .tie_breaker()
+                .expect("composite fixture")
+                .clone()
         },
     };
     assert!(duplicate_bind.validate().is_err());
@@ -409,9 +436,12 @@ fn rejects_invalid_composite_watermarks() {
     let colon_bind = WatermarkConfig::Composite {
         timestamp: TimestampCursorConfig {
             bind: ":last_timestamp".to_owned(),
-            ..watermark().timestamp().clone()
+            ..watermark().timestamp().expect("composite fixture").clone()
         },
-        tie_breaker: watermark().tie_breaker().clone(),
+        tie_breaker: watermark()
+            .tie_breaker()
+            .expect("composite fixture")
+            .clone(),
     };
     assert!(colon_bind.validate().is_err());
 }
@@ -467,9 +497,31 @@ fn compiles_a_composite_query_plan() {
     )
     .expect("composite query should compile");
 
-    assert_eq!(query.watermark().timestamp_bind, "last_timestamp");
-    assert_eq!(query.watermark().tie_breaker_bind, "last_tie_breaker");
-    assert_eq!(query.watermark().initial.tie_breaker, 0);
+    assert_eq!(
+        query
+            .watermark()
+            .as_composite()
+            .expect("composite fixture")
+            .timestamp_bind,
+        "last_timestamp"
+    );
+    assert_eq!(
+        query
+            .watermark()
+            .as_composite()
+            .expect("composite fixture")
+            .tie_breaker_bind,
+        "last_tie_breaker"
+    );
+    assert_eq!(
+        query
+            .watermark()
+            .as_composite()
+            .expect("composite fixture")
+            .initial
+            .tie_breaker,
+        0
+    );
     assert_eq!(query.fetch_size_rows(), 100);
     assert!(format!("{query:?}").contains("fetch_size_rows: 100"));
     assert_eq!(query.max_batch_bytes(), 10 * 1024 * 1024);
@@ -513,7 +565,7 @@ fn normalized_size_includes_structural_allocations() {
 fn cursor_debug_redacts_nested_rows_pages_and_queries() {
     let timestamp = "2037-01-02 03:04:05.987654321";
     let tie_breaker = 834_592_176_004_i64;
-    let cursor = CompositeCursor::new(timestamp.to_owned(), tie_breaker);
+    let cursor = Cursor::composite(timestamp.to_owned(), tie_breaker);
     let serialized = serde_json::to_value(&cursor).expect("cursor JSON");
     assert_eq!(serialized["timestamp"], timestamp);
     assert_eq!(serialized["tie_breaker"], tie_breaker);
@@ -546,7 +598,10 @@ fn cursor_debug_redacts_nested_rows_pages_and_queries() {
     let WatermarkConfig::Composite {
         timestamp: configured_time,
         tie_breaker: configured_id,
-    } = &mut watermark;
+    } = &mut watermark
+    else {
+        panic!("composite fixture")
+    };
     configured_time.initial = timestamp.to_owned();
     configured_id.initial = tie_breaker;
     let query = CompiledQuery::compile(

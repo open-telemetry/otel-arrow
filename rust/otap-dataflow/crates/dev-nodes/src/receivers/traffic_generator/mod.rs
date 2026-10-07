@@ -22,7 +22,7 @@ use otel_arrow_dfe_engine::MessageSourceLocalEffectHandlerExtension;
 use otel_arrow_dfe_engine::config::ReceiverConfig;
 use otel_arrow_dfe_engine::context::PipelineContext;
 use otel_arrow_dfe_engine::context_declaration::{
-    ConfigNodeContextDeclaration, ContextDeclaration, ContextDeclarationProvider,
+    ConfigNodeContextDeclaration, ContextDeclaration, ContextDeclarationProvider, ContextDomain,
     NodeContextDeclarations,
 };
 use otel_arrow_dfe_engine::control::CallData;
@@ -775,7 +775,10 @@ impl ConfigNodeContextDeclaration for Config {
         self.transport_headers()
             .keys()
             .cloned()
-            .map(|entry| ContextDeclaration::Produces { entry })
+            .map(|entry| ContextDeclaration::Produces {
+                domain: ContextDomain::TransportHeader,
+                entry,
+            })
             .collect()
     }
 }
@@ -1899,7 +1902,7 @@ mod tests {
     }
 
     /// Scenario: a generator configures several transport headers.
-    /// Guarantees: declarations are sorted and match the emitted names.
+    /// Guarantees: declarations use the transport-header domain and match sorted emitted names.
     #[test]
     fn traffic_gen_declaration_sorted_headers() {
         let config = serde_json::json!({
@@ -1928,7 +1931,10 @@ mod tests {
         let names: Vec<&str> = decls
             .iter()
             .map(|d| match d {
-                ContextDeclaration::Produces { entry, .. } => entry.as_str(),
+                ContextDeclaration::Produces {
+                    domain: ContextDomain::TransportHeader,
+                    entry,
+                } => entry.as_str(),
                 other => panic!("unexpected declaration: {other:?}"),
             })
             .collect();
@@ -2020,7 +2026,10 @@ mod tests {
         let names = declarations
             .iter()
             .map(|declaration| match declaration {
-                ContextDeclaration::Produces { entry } => entry.as_str(),
+                ContextDeclaration::Produces {
+                    domain: ContextDomain::TransportHeader,
+                    entry,
+                } => entry.as_str(),
                 other => panic!("unexpected declaration: {other:?}"),
             })
             .collect::<Vec<_>>();
