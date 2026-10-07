@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791384730628,
+  "lastUpdate": 1791392925969,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -54912,6 +54912,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
             "value": 4.11,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.99,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.51,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 3.14,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.12,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 3.03,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.01,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.78,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 74.13,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 5.07,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.79,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.54,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.88,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.73,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.68,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.5,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.44,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.35,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 120.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 107.29,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "95833540+c-valdebenito@users.noreply.github.com",
+            "name": "c-valdebenito",
+            "username": "c-valdebenito"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "b10fede22ae22d6aa9db82d0f823b0ce2a0a7dd5",
+          "message": "chore(ci): validate component inventory baseline (#4270)\n\n## Description\n\nCloses #4268.\n\nRequired Rust CI currently runs `cargo xtask structure-check`, which\ndoes not compare annotated components with `components-baseline.json`.\nThis allowed component registrations in #4088 and #4177 to merge while\nthe baseline was stale; local `cargo xtask check` caught the drift\nlater.\n\nThis PR:\n\n- adds an explicit `cargo xtask component-inventory --check\ncomponents-baseline.json` step to the required Rust structure job;\n- links `otel-arrow-dfe-contrib-extensions` into the compiler-resolved\ncomponent inventory oracle;\n- refreshes the baseline with the missing flat-file API-key auth\nextension.\n\nThe source scanner remains responsible for complete\nfeature/target-independent coverage, while the expanded oracle verifies\ncompiler-resolved URNs for linked contrib extensions.\n\n## Validation\n\n- `cargo xtask component-inventory --check components-baseline.json`\n- `cargo test -p otel-arrow-dfe-component-inventory --test oracle`\n- `python3 tools/sanitycheck.py`\n- `cargo xtask check`\n\nNo changelog entry: this is a CI/test coverage correction with no\nuser-facing behavior change.\n\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>\nCo-authored-by: Drew Relmas <drewrelmas@gmail.com>",
+          "timestamp": "2026-10-07T16:15:12Z",
+          "tree_id": "03c40a7bc879500fd8405cbb95e064edeaec9ae4",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/b10fede22ae22d6aa9db82d0f823b0ce2a0a7dd5"
+        },
+        "date": 1791392908213,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 86.98,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.99,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.07,
             "unit": "MB"
           },
           {
