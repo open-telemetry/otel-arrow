@@ -123,10 +123,6 @@ pub(crate) mod test {
     }
 
     impl ScalarUDFImpl for AlwaysPanicUdf {
-        fn as_any(&self) -> &dyn std::any::Any {
-            self
-        }
-
         fn name(&self) -> &str {
             "always_panic"
         }

@@ -72,6 +72,7 @@ clickhouse-ext-arrow = { workspace = true, optional = true }
 secrecy = { workspace = true, optional = true }
 serde-transcode = { workspace = true, optional = true }
 serde_cbor = { workspace = true, optional = true }
+quick-xml = { workspace = true, optional = true }
 arrow-array = { workspace = true, optional = true }
 arrow-schema = { workspace = true, optional = true }
 paste = { workspace = true, optional = true }
@@ -104,12 +105,14 @@ contrib-receivers = [
     "etw",
     "kafka",
     "user-events",
+    "windows-event-forwarding",
 ]
 contrib-processors = [
     "condense-attributes",
     "recordset-kql",
     "resource-validator",
 ]
+
 contrib-exporters = [
     "azure-monitor",
     "clickhouse",
@@ -144,6 +147,9 @@ oracle = [
     "dep:secrecy",
 ]
 etw = ["dep:one_collect", "dep:humantime-serde"]
+# Windows Event Forwarding receiver. Gates the shared bounded XML parser; the
+# receiver's remaining optional dependencies land with the receiver itself.
+windows-event-forwarding = ["dep:quick-xml"]
 user-events = [
     "dep:base64",
     "dep:chrono",
