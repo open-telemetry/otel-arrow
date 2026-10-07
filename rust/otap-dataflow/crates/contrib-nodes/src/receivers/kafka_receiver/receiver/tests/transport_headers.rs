@@ -107,6 +107,68 @@ async fn test_kafka_receiver_traces_header_extraction() {
     .await;
 }
 
+/// Scenario (routing and payload correctness): an OTLP JSON trace record carries
+/// a Kafka header mapped to the `tenant.id` resource attribute.
+/// Guarantees: JSON normalization uses the existing OTLP header-extraction path
+/// and injects the configured attribute into the decoded resource.
+#[tokio::test]
+async fn test_kafka_receiver_otlp_json_header_extraction() {
+    const TOPIC: &str = "test-json-traces-headers";
+    with_cluster(
+        KafkaTestCluster::builder().topic(TOPIC),
+        |cluster| async move {
+            let producer = cluster.producer().build();
+            let payload = br#"{"resourceSpans":[{"resource":{},"scopeSpans":[{"spans":[{"traceId":"01010101010101010101010101010101","spanId":"0202020202020202","name":"operation"}]}]}]}"#;
+            let tenant_value = "acme-corp";
+
+            producer
+                .send_full(
+                    SendRecord::new(TOPIC, payload)
+                        .header("x-tenant-id", tenant_value.as_bytes()),
+                )
+                .await
+                .expect("send OTLP JSON trace");
+
+            let mut resource_attrs_from_headers = HashMap::new();
+            let _ = resource_attrs_from_headers.insert(
+                "x-tenant-id".to_string(),
+                HeaderExtraction {
+                    key: "tenant.id".to_string(),
+                    value_type: AttributeValueType::String,
+                },
+            );
+            let cfg = auto_config(
+                cluster.bootstrap_servers(),
+                &[TOPIC],
+                &[],
+                &[],
+                MessageFormat::OtlpJson,
+                resource_attrs_from_headers,
+            );
+            let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
+
+            let mut pdata = receiver.recv_pdata().await;
+            let proto = take_otlp_proto(&mut pdata);
+            let request =
+                ExportTraceServiceRequest::decode(proto.as_bytes()).expect("decode traces");
+            let resource = request.resource_spans[0]
+                .resource
+                .as_ref()
+                .expect("resource should exist");
+            assert!(resource.attributes.iter().any(|attribute| {
+                attribute.key == "tenant.id"
+                    && matches!(
+                        attribute.value.as_ref().and_then(|value| value.value.as_ref()),
+                        Some(any_value::Value::StringValue(value)) if value == tenant_value
+                    )
+            }));
+
+            shutdown_receiver(receiver).await;
+        },
+    )
+    .await;
+}
+
 /// Scenario (routing and payload correctness): an OTAP-Arrow trace record carries a Kafka header `x-tenant-id`
 /// plus the `MessageFormat` OTAP marker while the receiver maps that header
 /// to a resource attribute `tenant.id`.

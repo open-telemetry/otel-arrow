@@ -134,18 +134,66 @@ impl SignalDecoder {
     /// Decode an OTLP JSON request and re-encode it as the equivalent OTLP
     /// protobuf request used by the pipeline's existing pdata path.
     fn decode_otlp_json(signal: SignalType, data: &[u8]) -> Result<Vec<u8>, EngineError> {
+        fn remove_null_fields(value: &mut serde_json::Value) {
+            match value {
+                serde_json::Value::Object(fields) => {
+                    fields.retain(|_, value| {
+                        if value.is_null() {
+                            false
+                        } else {
+                            remove_null_fields(value);
+                            true
+                        }
+                    });
+                    for wrapper in ["arrayValue", "kvlistValue"] {
+                        if let Some(serde_json::Value::Object(value)) = fields.get_mut(wrapper) {
+                            let _ = value
+                                .entry("values")
+                                .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+                        }
+                    }
+                }
+                serde_json::Value::Array(values) => {
+                    for value in values {
+                        remove_null_fields(value);
+                    }
+                }
+                _ => {}
+            }
+        }
+
         fn decode<M>(signal: SignalType, data: &[u8]) -> Result<Vec<u8>, EngineError>
         where
             M: serde::de::DeserializeOwned + Message,
         {
-            serde_json::from_slice::<M>(data)
-                .map(|request| request.encode_to_vec())
-                .map_err(|error| EngineError::PdataConversionError {
-                    error: format!(
-                        "Failed to decode OTLP JSON {} payload: {error}",
-                        SignalDecoder::label(signal),
-                    ),
-                })
+            let request = match serde_json::from_slice::<M>(data) {
+                Ok(request) => request,
+                Err(original_error) => {
+                    // ProtoJSON accepts null for any field and treats it as unset.
+                    // The generated serde types reject null for scalar fields, so
+                    // normalize only that valid representation and retry.
+                    let normalized =
+                        serde_json::from_slice::<serde_json::Value>(data).and_then(|mut value| {
+                            remove_null_fields(&mut value);
+                            serde_json::from_value(value)
+                        });
+                    match normalized {
+                        Ok(request) => request,
+                        Err(_) => {
+                            return Err(EngineError::PdataConversionError {
+                                error: format!(
+                                    "Failed to decode OTLP JSON {} payload: {:?} error at line {} column {}",
+                                    SignalDecoder::label(signal),
+                                    original_error.classify(),
+                                    original_error.line(),
+                                    original_error.column(),
+                                ),
+                            });
+                        }
+                    }
+                }
+            };
+            Ok(request.encode_to_vec())
         }
 
         match signal {

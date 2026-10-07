@@ -162,7 +162,7 @@ openssl = "0.10"
 # this dependency, as it means moving the derive macros used in our
 # tests upstream. This is currently used by experimental logs
 # exporters, hence the "logs" feature.
-opentelemetry-proto = { version = "0.33", default-features = false, features = ["gen-tonic-messages", "logs", "trace"]}
+opentelemetry-proto = { git = "https://github.com/open-telemetry/opentelemetry-rust.git", rev = "87929d788d71522609c61bdcf019ce89979af4b4", default-features = false, features = ["gen-tonic-messages", "logs", "trace"]}
 
 # Detector-only use: opentelemetry_sdk provides the `Resource` type and `ResourceDetector` trait;
 # opentelemetry provides the `Key`/`Value` types those resources hold. These dependencies use

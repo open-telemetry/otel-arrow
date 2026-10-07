@@ -94,10 +94,22 @@ fn decode_otlp_json_payloads() {
             (SignalType::Metrics, OtlpProtoBytes::ExportMetricsRequest(bytes)) => {
                 let request =
                     ExportMetricsServiceRequest::decode(bytes).expect("decode metrics protobuf");
-                assert_eq!(
-                    request.resource_metrics[0].scope_metrics[0].metrics[0].name,
-                    "requests"
-                );
+                let metric = &request.resource_metrics[0].scope_metrics[0].metrics[0];
+                assert_eq!(metric.name, "requests");
+                let gauge = match metric.data.as_ref() {
+                    Some(otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::metric::Data::Gauge(
+                        gauge,
+                    )) => gauge,
+                    _ => panic!("metric should decode as a gauge"),
+                };
+                assert!(matches!(
+                    gauge.data_points[0].value,
+                    Some(
+                        otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::number_data_point::Value::AsInt(
+                            7
+                        )
+                    )
+                ));
             }
             (SignalType::Logs, OtlpProtoBytes::ExportLogsRequest(bytes)) => {
                 let request =
@@ -112,24 +124,46 @@ fn decode_otlp_json_payloads() {
     }
 }
 
+/// Scenario (routing and payload correctness): OTLP JSON logs contain an empty
+/// array body and an explicitly null optional enum field.
+/// Guarantees: the empty array is preserved and the null severity is treated as
+/// unset, matching ProtoJSON semantics.
+#[test]
+fn decode_otlp_json_accepts_empty_array_and_null_optional_field() {
+    let json = br#"{"resourceLogs":[{"scopeLogs":[{"logRecords":[{"severityNumber":null,"body":{"arrayValue":{}}}]}]}]}"#;
+
+    let mut pdata =
+        SignalDecoder::decode_signal_payload(SignalType::Logs, json, MessageFormat::OtlpJson)
+            .expect("valid OTLP JSON defaults should decode");
+    let proto = take_otlp_proto(&mut pdata);
+    let request = ExportLogsServiceRequest::decode(proto.as_bytes()).expect("decode logs protobuf");
+    let record = &request.resource_logs[0].scope_logs[0].log_records[0];
+
+    assert_eq!(record.severity_number, 0);
+    assert!(matches!(
+        record.body.as_ref().and_then(|body| body.value.as_ref()),
+        Some(any_value::Value::ArrayValue(array)) if array.values.is_empty()
+    ));
+}
+
 /// Scenario (routing and payload correctness): malformed JSON is received with the
 /// OTLP JSON message format.
 /// Guarantees: decoding returns a recoverable pdata conversion error instead of
-/// forwarding invalid bytes as an OTLP protobuf request.
+/// forwarding invalid bytes or exposing payload values in internal errors.
 #[test]
 fn decode_invalid_otlp_json_payload_returns_error() {
+    const SENSITIVE_VALUE: &str = "customer-secret-value";
+    let payload = format!(r#"{{"resourceLogs":"{SENSITIVE_VALUE}"}}"#);
     let error = SignalDecoder::decode_signal_payload(
         SignalType::Logs,
-        br#"{"resourceLogs":"invalid"}"#,
+        payload.as_bytes(),
         MessageFormat::OtlpJson,
     )
     .expect_err("invalid OTLP JSON must fail");
 
-    assert!(
-        error
-            .to_string()
-            .contains("Failed to decode OTLP JSON logs payload")
-    );
+    let message = error.to_string();
+    assert!(message.contains("Failed to decode OTLP JSON logs payload: Data error at line"));
+    assert!(!message.contains(SENSITIVE_VALUE));
 }
 
 /// Scenario (routing and payload correctness): OTAP-Arrow traces bytes are decoded.

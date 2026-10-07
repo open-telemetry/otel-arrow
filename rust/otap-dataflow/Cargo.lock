@@ -4016,7 +4016,7 @@ dependencies = [
  "hex",
  "lz4_flex 0.11.6",
  "md-5 0.11.0",
- "opentelemetry-proto",
+ "opentelemetry-proto 0.33.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "otel-arrow-dfe-pdata-views",
  "p12-keystore",
  "reqwest 0.12.28",
@@ -7090,15 +7090,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "opentelemetry"
+version = "0.33.0"
+source = "git+https://github.com/open-telemetry/opentelemetry-rust.git?rev=87929d788d71522609c61bdcf019ce89979af4b4#87929d788d71522609c61bdcf019ce89979af4b4"
+dependencies = [
+ "futures-core",
+ "futures-sink",
+ "js-sys",
+ "pin-project-lite",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "opentelemetry-proto"
 version = "0.33.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "25da1ac11a0aeccf38d7f77ee0348715adaf8340f65ad46c94a02c6b20e2f65d"
 dependencies = [
+ "opentelemetry 0.33.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "opentelemetry_sdk 0.33.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "prost 0.14.4",
+]
+
+[[package]]
+name = "opentelemetry-proto"
+version = "0.33.0"
+source = "git+https://github.com/open-telemetry/opentelemetry-rust.git?rev=87929d788d71522609c61bdcf019ce89979af4b4#87929d788d71522609c61bdcf019ce89979af4b4"
+dependencies = [
  "base64 0.22.1",
  "const-hex",
- "opentelemetry",
- "opentelemetry_sdk",
+ "opentelemetry 0.33.0 (git+https://github.com/open-telemetry/opentelemetry-rust.git?rev=87929d788d71522609c61bdcf019ce89979af4b4)",
+ "opentelemetry_sdk 0.33.0 (git+https://github.com/open-telemetry/opentelemetry-rust.git?rev=87929d788d71522609c61bdcf019ce89979af4b4)",
  "prost 0.14.4",
  "serde",
 ]
@@ -7109,9 +7131,9 @@ version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "60ac54422fb2a7ed2e0325b5650bedff0b6e777e33dbbac7b49572d92d689a56"
 dependencies = [
- "opentelemetry",
+ "opentelemetry 0.33.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "opentelemetry-semantic-conventions",
- "opentelemetry_sdk",
+ "opentelemetry_sdk 0.33.0 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
@@ -7129,7 +7151,22 @@ dependencies = [
  "futures-channel",
  "futures-executor",
  "futures-util",
- "opentelemetry",
+ "opentelemetry 0.33.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "percent-encoding",
+ "portable-atomic",
+ "rand 0.9.5",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "opentelemetry_sdk"
+version = "0.33.0"
+source = "git+https://github.com/open-telemetry/opentelemetry-rust.git?rev=87929d788d71522609c61bdcf019ce89979af4b4#87929d788d71522609c61bdcf019ce89979af4b4"
+dependencies = [
+ "futures-channel",
+ "futures-executor",
+ "futures-util",
+ "opentelemetry 0.33.0 (git+https://github.com/open-telemetry/opentelemetry-rust.git?rev=87929d788d71522609c61bdcf019ce89979af4b4)",
  "percent-encoding",
  "portable-atomic",
  "rand 0.9.5",
@@ -7455,7 +7492,7 @@ dependencies = [
  "itoa",
  "linkme",
  "one_collect",
- "opentelemetry-proto",
+ "opentelemetry-proto 0.33.0 (git+https://github.com/open-telemetry/opentelemetry-rust.git?rev=87929d788d71522609c61bdcf019ce89979af4b4)",
  "oracle",
  "otel-arrow-contrib-data-engine-expressions",
  "otel-arrow-contrib-data-engine-kql-parser",
@@ -8057,9 +8094,9 @@ dependencies = [
  "chrono",
  "criterion",
  "flume",
- "opentelemetry",
+ "opentelemetry 0.33.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "opentelemetry-resource-detectors",
- "opentelemetry_sdk",
+ "opentelemetry_sdk 0.33.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "otel-arrow-dfe-config",
  "otel-arrow-dfe-expohisto",
  "otel-arrow-dfe-pdata",
