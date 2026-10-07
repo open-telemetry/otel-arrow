@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import ClassVar, List, Literal, Optional
 from logging import LoggerAdapter
 import requests
+from pydantic import PositiveFloat
 from opentelemetry import trace
 from opentelemetry.sdk.metrics import Meter
 from opentelemetry.trace import SpanKind
@@ -46,22 +47,22 @@ class PrometheusMonitoringConfig(MonitoringStrategyConfig):
 
     Attributes:
         endpoint (str): The HTTP endpoint URL to scrape Prometheus metrics from.
-        interval (Optional[float]): The polling interval in seconds between metric scrapes. Default is 1.0.
+        interval (Optional[PositiveFloat]): The polling interval in seconds between metric scrapes. Must be positive when set. Default is 1.0.
         count (Optional[int]): The number of times to scrape metrics before stopping. A value of 0 means unlimited. Default is 0.
         include (Optional[List[str]]): List of metric names to explicitly include. If empty, all metrics are included by default.
         exclude (Optional[List[str]]): List of metric names to exclude from scraping.
-        request_timeout (float): Per-request timeout in seconds for scraping the
+        request_timeout (PositiveFloat): Per-request timeout in seconds for scraping the
             endpoint. Bounds how long a single scrape can block so the monitoring thread stays
             responsive to the stop signal even when the target hangs. Must be a positive number;
-            null/None is rejected so the bound cannot be disabled. Default is 10.0.
+            zero, negative, and null values are rejected so the bound cannot be disabled. Default is 10.0.
     """
 
     endpoint: str
-    interval: Optional[float] = 1.0
+    interval: Optional[PositiveFloat] = 1.0
     count: Optional[int] = 0
     include: Optional[List[str]] = []
     exclude: Optional[List[str]] = []
-    request_timeout: float = 10.0
+    request_timeout: PositiveFloat = 10.0
 
 
 @monitoring_registry.register_class(STRATEGY_NAME)

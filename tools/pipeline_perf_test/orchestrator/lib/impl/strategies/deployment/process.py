@@ -181,17 +181,27 @@ components:
 
         process = runtime.process
         try:
-            # Ask the process to stop gracefully, then wait for the whole tree
-            # (process + descendants) to exit. If the tree does not exit on its
-            # own it is terminated gracefully and finally force-killed, so nothing
-            # is left orphaned even when the direct child exits but a descendant
-            # lingers.
-            process.terminate()
+            # Terminate the whole process tree (process + descendants). The helper
+            # snapshots the tree before signalling anything, so descendants are
+            # captured even if the root exits immediately; it then escalates
+            # gracefully and finally force-kills. We do not pre-terminate the root
+            # ourselves: doing so could let the root exit and reparent its children
+            # before the snapshot, orphaning them. normal_timeout=0 skips waiting on
+            # a process we have not yet asked to stop.
             wait_or_terminate_process_tree(
-                process.pid, logger, normal_timeout=5, graceful_timeout=3
+                process.pid, logger, normal_timeout=0, graceful_timeout=3
             )
 
-            stdout_logs, stderr_logs = process.communicate()
+            # Bound output draining so a lingering descendant that still holds the
+            # inherited pipe descriptors cannot hang teardown indefinitely.
+            try:
+                stdout_logs, stderr_logs = process.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                logger.warning(
+                    f"Timed out draining output for {component.name}; "
+                    "skipping log capture."
+                )
+                stdout_logs, stderr_logs = None, None
             args = ctx.get_suite().get_runtime("args")
             if stdout_logs:
                 decoded = (

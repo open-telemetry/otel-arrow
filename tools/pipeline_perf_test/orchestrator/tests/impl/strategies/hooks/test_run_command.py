@@ -6,6 +6,7 @@ import sys
 
 import psutil
 import pytest
+from pydantic import ValidationError
 
 from lib.impl.strategies.hooks.run_command import RunCommandConfig, RunCommandHook
 
@@ -13,6 +14,21 @@ from lib.impl.strategies.hooks.run_command import RunCommandConfig, RunCommandHo
 class DummyContext:
     def get_logger(self, name):
         return logging.getLogger(name)
+
+
+# Scenario: a run_command config is created with a non-positive timeout.
+# Guarantees: zero and negative timeouts are rejected so the bound cannot be
+# disabled or made to fire immediately.
+@pytest.mark.parametrize("bad_timeout", [0, -1, -0.5])
+def test_rejects_non_positive_timeout(bad_timeout):
+    with pytest.raises(ValidationError):
+        RunCommandConfig(command="echo hi", timeout=bad_timeout)
+
+
+# Scenario: a run_command config is created with a valid positive timeout.
+# Guarantees: a positive timeout is accepted and stored.
+def test_accepts_positive_timeout():
+    assert RunCommandConfig(command="echo hi", timeout=5.0).timeout == 5.0
 
 
 def _run(command, timeout=30.0):

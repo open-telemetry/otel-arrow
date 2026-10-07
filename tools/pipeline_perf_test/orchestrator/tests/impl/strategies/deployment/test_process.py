@@ -211,8 +211,9 @@ class TestProcessDeployment(unittest.TestCase):
         )
 
     # Scenario: stop() is called on a running process-based component.
-    # Guarantees: the process is asked to stop gracefully (terminate) and its tree
-    # is waited on / terminated, and its stdout/stderr are drained via communicate.
+    # Guarantees: teardown is delegated to the tree helper (not a direct-child
+    # terminate), and stdout/stderr are drained with a bounded communicate so a
+    # lingering descendant cannot hang teardown.
     @patch("lib.impl.strategies.deployment.process.wait_or_terminate_process_tree")
     @patch("lib.impl.strategies.deployment.process.subprocess.Popen")
     @patch("lib.impl.strategies.deployment.process.Component.get_or_create_runtime")
@@ -235,11 +236,9 @@ class TestProcessDeployment(unittest.TestCase):
         mock_runtime = MagicMock()
         mock_process = MagicMock()
         mock_process.pid = 1234
+        mock_process.communicate.return_value = (b"", b"")
         mock_runtime.process = mock_process
         mock_component.get_or_create_runtime.return_value = mock_runtime
-
-        # Simulate successful process termination
-        mock_process.terminate.return_value = None
 
         # Call stop method
         process_deployment = ProcessDeployment(
@@ -247,14 +246,17 @@ class TestProcessDeployment(unittest.TestCase):
         )
         process_deployment.stop(mock_component, MagicMock())
 
-        # Check that terminate() was called and the tree was cleaned up.
-        mock_process.terminate.assert_called_once()
+        # The root is not pre-terminated (that could orphan descendants before the
+        # helper snapshots the tree); teardown goes through the helper instead.
+        mock_process.terminate.assert_not_called()
         mock_wait_or_terminate_tree.assert_called_once()
-        mock_process.communicate.assert_called_once()
+        # Output draining is bounded.
+        mock_process.communicate.assert_called_once_with(timeout=5)
 
     # Scenario: stop() delegates process-tree teardown to the shared helper.
-    # Guarantees: wait_or_terminate_process_tree is invoked with the process PID so
-    # the configured normal/graceful escalation (not just a direct-child kill) runs.
+    # Guarantees: wait_or_terminate_process_tree is invoked with the process PID and
+    # normal_timeout=0, so the tree is snapshotted and escalated to graceful/force
+    # termination without waiting on a process we have not asked to stop.
     @patch("lib.impl.strategies.deployment.process.wait_or_terminate_process_tree")
     @patch("lib.impl.strategies.deployment.process.subprocess.Popen")
     @patch("lib.impl.strategies.deployment.process.Component.get_or_create_runtime")
@@ -277,6 +279,7 @@ class TestProcessDeployment(unittest.TestCase):
         mock_runtime = MagicMock()
         mock_process = MagicMock()
         mock_process.pid = 1234
+        mock_process.communicate.return_value = (b"", b"")
         mock_runtime.process = mock_process
         mock_component.get_or_create_runtime.return_value = mock_runtime
 
@@ -286,9 +289,12 @@ class TestProcessDeployment(unittest.TestCase):
         )
         process_deployment.stop(mock_component, MagicMock())
 
-        # Assert the helper was called with the process PID.
+        # Assert the helper was called with the process PID and normal_timeout=0.
         mock_wait_or_terminate_tree.assert_called_once()
         self.assertEqual(mock_wait_or_terminate_tree.call_args.args[0], 1234)
+        self.assertEqual(
+            mock_wait_or_terminate_tree.call_args.kwargs["normal_timeout"], 0
+        )
 
     @patch("lib.impl.strategies.deployment.process.subprocess.Popen")
     @patch("lib.impl.strategies.deployment.process.Component.get_or_create_runtime")

@@ -20,6 +20,8 @@ Warnings:
 
 import subprocess
 
+from pydantic import PositiveFloat
+
 from ....core.strategies.hook_strategy import HookStrategy, HookStrategyConfig
 from ....core.context.base import BaseContext
 from ....core.context import ComponentHookContext, FrameworkElementHookContext
@@ -34,14 +36,15 @@ class RunCommandConfig(HookStrategyConfig):
 
     Attributes:
         command (str): The shell command to be executed by the hook.
-        timeout (float): Maximum time in seconds to allow the command to run before
-            it is killed and a TimeoutExpired error is raised. Prevents a hung
-            command from wedging the orchestrator. Must be a positive number;
-            null/None is rejected so the bound cannot be disabled. Default is 30.
+        timeout (PositiveFloat): Maximum time in seconds to allow the command to run
+            before it is killed and a TimeoutExpired error is raised. Prevents a hung
+            command from wedging the orchestrator. Must be a positive number; zero,
+            negative, and null values are rejected so the bound cannot be disabled.
+            Default is 30.
     """
 
     command: str
-    timeout: float = 30.0
+    timeout: PositiveFloat = 30.0
 
 
 @hook_registry.register_class("run_command")
