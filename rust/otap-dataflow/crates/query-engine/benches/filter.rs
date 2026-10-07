@@ -34,7 +34,7 @@ fn bench_log_pipeline(
                 let batch = generate_logs_batch(**batch_size);
                 let parser_result =
                     KqlParser::parse(bench_pipeline_kql).expect("can parse pipeline");
-                let mut pipeline = Pipeline::new(parser_result.pipeline);
+                let mut pipeline = Pipeline::try_new(parser_result.pipeline).expect("pipeline");
                 rt.block_on(async move {
                     // execute the query once to initiate planning
                     _ = pipeline.execute(batch.clone()).await.expect("doesn't fail");

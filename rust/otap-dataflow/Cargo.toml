@@ -44,6 +44,7 @@ otel-arrow-dfe-core-nodes = { workspace = true, default-features = false }
 otel-arrow-dfe-dev-nodes = { workspace = true, optional = true }
 otel-arrow-dfe-engine.workspace = true
 otel-arrow-dfe-otap.workspace = true
+otel-arrow-dfe-telemetry.workspace = true
 otel-arrow-dfe-wasm-host = { workspace = true, optional = true }
 clap.workspace = true
 mimalloc = { workspace = true, optional = true }
