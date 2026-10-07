@@ -11,13 +11,11 @@ mod histograms;
 use std::collections::HashMap;
 use std::str::{self, Utf8Error};
 
-use otel_arrow_dfe_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
 #[cfg(test)]
 use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::{
     Exemplar as OtlpExemplar, ExponentialHistogramDataPoint, HistogramDataPoint, NumberDataPoint,
     ScopeMetrics, exemplar, metric, number_data_point,
 };
-use otel_arrow_dfe_pdata::views::otlp::proto::metrics::{ObjResourceMetrics, ResourceMetricsIter};
 use otel_arrow_dfe_pdata_views::views::common::InstrumentationScopeView;
 use otel_arrow_dfe_pdata_views::views::metrics::{
     AggregationTemporality, DataType, DataView, ExemplarView, ExponentialHistogramDataPointView,
@@ -26,7 +24,6 @@ use otel_arrow_dfe_pdata_views::views::metrics::{
     Value,
 };
 use otel_arrow_dfe_pdata_views::views::resource::ResourceView;
-use prost::Message;
 use thiserror::Error;
 
 #[cfg(test)]
@@ -110,12 +107,9 @@ pub struct CardinalityOverflow {
     pub metric_name: String,
 }
 
-/// OTLP decoding or request-level mapping failure.
+/// Request-level mapping failure.
 #[derive(Debug, Error)]
 pub enum MappingError {
-    /// The serialized request is malformed.
-    #[error("invalid OTLP metrics request: {0}")]
-    Decode(#[from] prost::DecodeError),
     /// A string field contains invalid UTF-8.
     #[error("invalid UTF-8 in OTLP metrics request: {0}")]
     InvalidUtf8(#[from] Utf8Error),
@@ -165,48 +159,6 @@ impl MapPointResult {
             overflow,
         }
     }
-}
-
-struct ExportMetricsRequestView<'a> {
-    request: &'a ExportMetricsServiceRequest,
-}
-
-impl MetricsView for ExportMetricsRequestView<'_> {
-    type ResourceMetrics<'res>
-        = ObjResourceMetrics<'res>
-    where
-        Self: 'res;
-    type ResourceMetricsIter<'res>
-        = ResourceMetricsIter<'res>
-    where
-        Self: 'res;
-
-    fn resources(&self) -> Self::ResourceMetricsIter<'_> {
-        ResourceMetricsIter::new(self.request.resource_metrics.iter())
-    }
-}
-
-/// Decodes an OTLP export request and maps its supported data points.
-pub fn decode_and_map(
-    bytes: &[u8],
-    config: &Config,
-    receive_time_unix_nano: u64,
-) -> Result<MappingOutcome, MappingError> {
-    let request = ExportMetricsServiceRequest::decode(bytes)?;
-    map_request(&request, config, receive_time_unix_nano)
-}
-
-/// Maps a decoded OTLP export request into packets grouped by monitoring account.
-pub fn map_request(
-    request: &ExportMetricsServiceRequest,
-    config: &Config,
-    receive_time_unix_nano: u64,
-) -> Result<MappingOutcome, MappingError> {
-    map_metrics(
-        &ExportMetricsRequestView { request },
-        config,
-        receive_time_unix_nano,
-    )
 }
 
 /// Maps any OTLP or OTAP metrics view into packets grouped by monitoring account.
@@ -787,6 +739,7 @@ fn unix_nanos_to_dotnet_ticks(value: u64) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
     use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{
         AnyValue, InstrumentationScope, KeyValue, any_value,
     };
@@ -817,6 +770,26 @@ mod tests {
             honor_scope_attributes: false,
             disable_exemplars: false,
         }
+    }
+
+    fn serialize(request: &ExportMetricsServiceRequest) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        OtlpProtoMessage::Metrics(MetricsData::from(request.clone()))
+            .encode(&mut bytes)
+            .expect("OTLP request should serialize");
+        bytes
+    }
+
+    // Maps through the raw OTLP byte view used by the exporter runtime.
+    fn map_request(
+        request: &ExportMetricsServiceRequest,
+        config: &Config,
+        receive_time_unix_nano: u64,
+    ) -> Result<MappingOutcome, MappingError> {
+        let bytes = serialize(request);
+        let metrics =
+            RawMetricsData::try_new(&bytes).expect("serialized OTLP request should be framed");
+        map_metrics(&metrics, config, receive_time_unix_nano)
     }
 
     fn map_point_exemplars(
@@ -1920,7 +1893,7 @@ mod tests {
         assert!(mapped.publications.is_empty());
     }
 
-    /// Scenario: A serialized OTLP gauge request is decoded, mapped, and serialized as protocol v6.
+    /// Scenario: A serialized OTLP gauge request is read through the raw byte view, mapped, and serialized as protocol v6.
     /// Guarantees: The complete local OTLP-to-packet path produces a non-empty packet with one metric.
     #[test]
     fn decodes_and_encodes_otlp_request() {
@@ -1944,13 +1917,8 @@ mod tests {
             }],
             schema_url: String::new(),
         };
-        let mut bytes = Vec::new();
-        request(Vec::new(), scope)
-            .encode(&mut bytes)
-            .expect("request should encode");
-
-        let mapped =
-            decode_and_map(&bytes, &config(), TEST_TIME_NANOS).expect("request should map");
+        let mapped = map_request(&request(Vec::new(), scope), &config(), TEST_TIME_NANOS)
+            .expect("request should map");
         let encoded = super::super::encoder::encode(&mapped.publications[0].packet)
             .expect("packet should encode");
 
@@ -1958,20 +1926,8 @@ mod tests {
         assert!(!encoded.is_empty());
     }
 
-    /// Scenario: Known fields use invalid protobuf wire types at the request and nested resource levels.
-    /// Guarantees: The public byte entry point rejects malformed OTLP instead of returning an empty or partial outcome.
-    #[test]
-    fn rejects_malformed_nested_otlp_requests() {
-        for malformed in [&[0x08, 0x01][..], &[0x0a, 0x02, 0x08, 0x01][..]] {
-            assert!(matches!(
-                decode_and_map(malformed, &config(), TEST_TIME_NANOS),
-                Err(MappingError::Decode(_))
-            ));
-        }
-    }
-
-    /// Scenario: Equivalent metrics with all-zero exemplar IDs use strict decoding and all supported pdata views.
-    /// Guarantees: Owned OTLP, raw OTLP, and OTAP mapping agree while invalid zero identifiers are omitted.
+    /// Scenario: Equivalent metrics with all-zero exemplar IDs are mapped from owned OTLP, raw OTLP bytes, and OTAP records.
+    /// Guarantees: All supported pdata views produce the same outcome while invalid zero identifiers are omitted.
     #[test]
     fn maps_all_metrics_view_representations_consistently() {
         let mut point = gauge_point(vec![string_attribute("region", "eastus")]);
@@ -1986,29 +1942,17 @@ mod tests {
             vec![string_attribute("resource", "value")],
             scope_with_metrics(vec![gauge_metric("temperature", point)]),
         );
-        let owned = map_request(&request, &config(), TEST_TIME_NANOS)
-            .expect("owned OTLP request should map");
+        let raw =
+            map_request(&request, &config(), TEST_TIME_NANOS).expect("raw OTLP request should map");
 
-        let mut bytes = Vec::new();
-        request
-            .encode(&mut bytes)
-            .expect("OTLP request should encode");
-        let decoded = decode_and_map(&bytes, &config(), TEST_TIME_NANOS)
-            .expect("strictly decoded OTLP request should map");
-        let raw_view =
-            RawMetricsData::try_new(&bytes).expect("serialized OTLP request should be framed");
-        let raw = map_metrics(&raw_view, &config(), TEST_TIME_NANOS)
-            .expect("raw OTLP request should map");
-
-        let metrics = MetricsData {
-            resource_metrics: request.resource_metrics.clone(),
-        };
+        let metrics = MetricsData::from(request);
+        let owned = map_metrics(&metrics, &config(), TEST_TIME_NANOS)
+            .expect("owned OTLP metrics should map");
         let records = otlp_to_otap(&OtlpProtoMessage::Metrics(metrics));
         let view = OtapMetricsView::try_from(&records).expect("OTAP metrics view should build");
         let otap =
             map_metrics(&view, &config(), TEST_TIME_NANOS).expect("OTAP metrics view should map");
 
-        assert_eq!(decoded, owned);
         assert_eq!(raw, owned);
         assert_eq!(otap, owned);
         assert_eq!(
