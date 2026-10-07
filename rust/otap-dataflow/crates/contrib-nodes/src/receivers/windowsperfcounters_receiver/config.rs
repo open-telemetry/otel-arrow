@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Public configuration parsing, validation, and exact-path normalization.
+//! Configuration parsing, validation, and exact-path normalization.
 
 use otel_arrow_dfe_config::error::Error;
 use serde::Deserialize;
@@ -22,7 +22,7 @@ const RECEIVER_ATTRIBUTE_PREFIX: &str = "windows.perf_counter.";
 
 /// OTel metric kind used to project a performance counter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum MetricKind {
+pub(super) enum MetricKind {
     /// A point-in-time Gauge.
     Gauge,
     /// A cumulative, non-monotonic Sum representing an UpDownCounter.
@@ -31,33 +31,33 @@ pub enum MetricKind {
 
 /// One normalized exact counter path and its metric mapping.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CounterConfig {
+pub(super) struct CounterConfig {
     /// Exact configured PDH path.
-    pub path: String,
+    pub(super) path: String,
     /// OTel metric name.
-    pub name: String,
+    pub(super) name: String,
     /// OTel metric unit.
-    pub unit: String,
+    pub(super) unit: String,
     /// OTel metric description, shared by every counter mapped to this metric.
-    pub description: Arc<str>,
+    pub(super) description: Arc<str>,
     /// OTel metric kind.
-    pub kind: MetricKind,
+    pub(super) kind: MetricKind,
     /// Static attributes added to every point, shared by every path expanded
     /// from one counter mapping.
-    pub attributes: Arc<BTreeMap<String, String>>,
+    pub(super) attributes: Arc<BTreeMap<String, String>>,
     /// Base-10 scaling applied after PDH calculates the native value.
-    pub scale_power10: i32,
+    pub(super) scale_power10: i32,
 }
 
 /// Configuration normalized for exact Windows performance-counter collection.
 #[derive(Debug, Clone)]
-pub struct RuntimeConfig {
+pub(super) struct RuntimeConfig {
     /// Exact counters to collect.
-    pub counters: Vec<CounterConfig>,
+    pub(super) counters: Vec<CounterConfig>,
     /// Time between collections; defaults to 30 seconds.
-    pub collection_interval: Duration,
+    pub(super) collection_interval: Duration,
     /// Delay before the first collection request; defaults to one second.
-    pub initial_delay: Duration,
+    pub(super) initial_delay: Duration,
 }
 
 #[derive(Debug, Deserialize)]
@@ -292,7 +292,7 @@ fn validate_counter(counter: &CounterConfig) -> Result<(), Error> {
 
 impl RuntimeConfig {
     /// Parse, validate, and normalize the public configuration contract.
-    pub fn from_json(value: &serde_json::Value) -> Result<Self, Error> {
+    pub(super) fn from_json(value: &serde_json::Value) -> Result<Self, Error> {
         let user: Config =
             serde_json::from_value(value.clone()).map_err(|err| invalid(err.to_string()))?;
         // Every metric must be referenced, so the counter cap also bounds metric definitions.

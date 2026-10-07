@@ -4,4 +4,8 @@
 //! Windows performance-counter receiver.
 
 /// Configuration parsing, validation, and exact-path normalization.
-pub mod config;
+#[cfg_attr(
+    not(test),
+    allow(dead_code, reason = "consumed by the receiver runtime in a follow-up")
+)]
+mod config;
