@@ -141,6 +141,15 @@ pub trait PipelineStage {
         matches!(record_type, RecordType::Signal(_))
     }
 
+    /// Returns how this configured stage affects parent identities when its output is concatenated
+    /// with sibling conditional branches.
+    ///
+    /// Every implementation must classify its behavior explicitly and conservatively. Returning
+    /// [`ParentBehavior::RequiresReindex`] unnecessarily only causes additional parent splitting;
+    /// incorrectly returning [`ParentBehavior::Preserves`] can merge distinct values or collide
+    /// IDs.
+    fn parent_behavior(&self) -> ParentBehavior;
+
     /// When pipeline stages execute within the context of a conditional branch, they will only see
     /// the batch that is local to that branch. However, there may be cases where some global state
     /// may need to be maintained across branches. This method provides an opportunity to
@@ -163,6 +172,22 @@ pub trait PipelineStage {
     ) -> Result<()> {
         // default is to do nothing
         Ok(())
+    }
+}
+
+/// Describes whether a configured pipeline stage can share parent identities with sibling
+/// conditional branches.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ParentBehavior {
+    /// The stage preserves the parent hierarchy used by its input records.
+    Preserves,
+    /// The stage can change, duplicate, or reindex the parent hierarchy.
+    RequiresReindex,
+}
+
+impl ParentBehavior {
+    const fn requires_reindex(self) -> bool {
+        matches!(self, Self::RequiresReindex)
     }
 }
 
@@ -252,6 +277,18 @@ impl PipelineStage for DataFusionPipelineStage {
         };
 
         Ok(otap_batch)
+    }
+
+    // Generic plans only affect shared parents when they target a non-record attribute payload.
+    fn parent_behavior(&self) -> ParentBehavior {
+        if matches!(
+            self.payload_type,
+            ArrowPayloadType::ResourceAttrs | ArrowPayloadType::ScopeAttrs
+        ) {
+            ParentBehavior::RequiresReindex
+        } else {
+            ParentBehavior::Preserves
+        }
     }
 }
 

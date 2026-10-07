@@ -17,10 +17,10 @@ use otel_arrow_dfe_pdata::OtapArrowRecords;
 use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 
 use crate::error::{Error, Result};
-use crate::pipeline::PipelineStage;
 use crate::pipeline::expr::{ChildRecordKind, RecordScope};
 use crate::pipeline::planner::AttributesIdentifier;
 use crate::pipeline::state::ExecutionState;
+use crate::pipeline::{ParentBehavior, PipelineStage};
 
 /// The source for which to apply the pipeline. Records belonging to this source data will be
 /// treated as the main record by execution of the child pipeline stages.
@@ -162,6 +162,18 @@ impl PipelineStage for ApplyPipelineStage {
                 )
                 .await
             }
+        }
+    }
+
+    // Applying a nested pipeline to scope/resource attributes can rebuild that parent payload.
+    fn parent_behavior(&self) -> ParentBehavior {
+        if matches!(
+            self.source,
+            ApplySource::Attributes(AttributesIdentifier::NonRecord(_))
+        ) {
+            ParentBehavior::RequiresReindex
+        } else {
+            ParentBehavior::Preserves
         }
     }
 }
