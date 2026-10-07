@@ -162,7 +162,7 @@ impl PipelineStage for ScaleMetricPipelineStage {
     }
 
     fn supports_exec_on(&self, record_type: &RecordType) -> bool {
-        matches!(record_type, RecordType::Signal)
+        matches!(record_type, RecordType::Signal(_))
     }
 }
 

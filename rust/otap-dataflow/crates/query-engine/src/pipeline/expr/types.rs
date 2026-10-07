@@ -414,7 +414,7 @@ pub fn coerce_arithmetic(
 }
 
 /// identifier of metric data point type
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[allow(clippy::enum_variant_names)]
 pub enum MetricDataPointType {
     NumberDataPoint,

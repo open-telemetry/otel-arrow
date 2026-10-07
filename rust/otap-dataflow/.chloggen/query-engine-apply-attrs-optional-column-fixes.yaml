@@ -1,5 +1,0 @@
-change_type: bug_fix
-component: query-engine
-note: Fixes possible execution error when processing OTAP attributes due to optional columns causing the column order to change between batches.
-issues: [4152]
-
