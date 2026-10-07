@@ -189,7 +189,7 @@ components:
             # before the snapshot, orphaning them. normal_timeout=0 skips waiting on
             # a process we have not yet asked to stop.
             wait_or_terminate_process_tree(
-                process.pid, logger, normal_timeout=0, graceful_timeout=3
+                process.pid, logger, normal_timeout=0, graceful_timeout=5
             )
 
             # Bound output draining so a lingering descendant that still holds the

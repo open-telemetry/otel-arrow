@@ -254,9 +254,10 @@ class TestProcessDeployment(unittest.TestCase):
         mock_process.communicate.assert_called_once_with(timeout=5)
 
     # Scenario: stop() delegates process-tree teardown to the shared helper.
-    # Guarantees: wait_or_terminate_process_tree is invoked with the process PID and
-    # normal_timeout=0, so the tree is snapshotted and escalated to graceful/force
-    # termination without waiting on a process we have not asked to stop.
+    # Guarantees: wait_or_terminate_process_tree is invoked with the process PID,
+    # normal_timeout=0, and graceful_timeout=5, so the tree is snapshotted and
+    # escalated to graceful/force termination with the expected 5s SIGTERM->SIGKILL
+    # window and without waiting on a process we have not asked to stop.
     @patch("lib.impl.strategies.deployment.process.wait_or_terminate_process_tree")
     @patch("lib.impl.strategies.deployment.process.subprocess.Popen")
     @patch("lib.impl.strategies.deployment.process.Component.get_or_create_runtime")
@@ -289,11 +290,15 @@ class TestProcessDeployment(unittest.TestCase):
         )
         process_deployment.stop(mock_component, MagicMock())
 
-        # Assert the helper was called with the process PID and normal_timeout=0.
+        # Assert the helper was called with the process PID, normal_timeout=0, and
+        # the 5s graceful window.
         mock_wait_or_terminate_tree.assert_called_once()
         self.assertEqual(mock_wait_or_terminate_tree.call_args.args[0], 1234)
         self.assertEqual(
             mock_wait_or_terminate_tree.call_args.kwargs["normal_timeout"], 0
+        )
+        self.assertEqual(
+            mock_wait_or_terminate_tree.call_args.kwargs["graceful_timeout"], 5
         )
 
     @patch("lib.impl.strategies.deployment.process.subprocess.Popen")
