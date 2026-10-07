@@ -31,15 +31,17 @@ pub use formatter::{
 /// Initial heap capacity for `LogRecord::new()`'s encoding phase.
 ///
 /// Sized to the common case so the vast majority of log events need only one
-/// allocation and no `Vec` growth. After encoding the result is converted to
-/// `Bytes` via `Bytes::from(Vec<u8>)`, which is zero-copy.
+/// allocation and no `Vec` growth. Less common larger records use normal
+/// geometric `Vec` growth rather than making every record allocate the 2 KiB
+/// maximum. After encoding the result is converted to `Bytes` via
+/// `Bytes::from(Vec<u8>)`, which is zero-copy.
 pub const LOG_ARGUMENTS_ENCODE_INITIAL: usize = 256;
 
 /// Maximum size an encoded log event's body/attributes may grow to.
 ///
-/// Rare events that overflow `LOG_ARGUMENTS_ENCODE_INITIAL` are allowed to grow
-/// the `Vec` up to this limit rather than being truncated immediately; events
-/// that still don't fit are truncated and counted via
+/// Rare events that overflow `LOG_ARGUMENTS_ENCODE_INITIAL` use normal
+/// geometric `Vec` growth up to this limit rather than being truncated
+/// immediately. Events that still don't fit are truncated and counted via
 /// `dropped_attributes_count`, same as always.
 pub const LOG_ARGUMENTS_ENCODE_LIMIT: usize = 2048;
 
