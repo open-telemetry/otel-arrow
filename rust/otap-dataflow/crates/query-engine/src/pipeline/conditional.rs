@@ -644,7 +644,7 @@ mod test {
         )
         .unwrap()
         .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let result = pipeline.execute(input).await.unwrap();
 

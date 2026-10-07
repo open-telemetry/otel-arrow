@@ -123,7 +123,8 @@ fn bench_conditional_pipeline(
                         let parser_result =
                             OplParser::parse_with_options(query, default_parser_options())
                                 .expect("can parse conditional pipeline");
-                        let mut pipeline = Pipeline::new(parser_result.pipeline);
+                        let mut pipeline =
+                            Pipeline::try_new(parser_result.pipeline).expect("pipeline");
 
                         rt.block_on(async {
                             _ = pipeline
