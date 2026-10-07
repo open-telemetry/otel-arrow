@@ -63,7 +63,6 @@ use otel_arrow_dfe_pdata::schema::consts::metadata;
 use otel_arrow_dfe_pdata::schema::{consts, get_field_metadata, update_field_metadata};
 
 use crate::error::{Error, Result};
-use crate::pipeline::PipelineStage;
 use crate::pipeline::expr::eval::{EvalContext, scoped_value_to_join_input};
 use crate::pipeline::expr::join::JoinInput;
 use crate::pipeline::expr::join::{
@@ -75,15 +74,14 @@ use crate::pipeline::expr::types::{
     ExprLogicalType, MetricDataPointType, nested_struct_field_type,
     root_field_supports_dict_encoding, root_field_type,
 };
-use crate::pipeline::expr::{
-    ChildRecordKind, DataScope, RecordScope, RootParentStruct, ScopedExpr, ScopedValue,
-};
+use crate::pipeline::expr::{DataScope, RecordScope, RootParentStruct, ScopedExpr, ScopedValue};
 use crate::pipeline::planner::{AttributesIdentifier, ColumnAccessor, RecordType};
 use crate::pipeline::project::anyval::{
     attempt_coerce_value_column_from_any_value_struct_column, fill_null_type_as_empty,
     is_any_value_data_type, wrap_as_any_value_struct,
 };
 use crate::pipeline::state::ExecutionState;
+use crate::pipeline::{ParentBehavior, PipelineStage};
 
 /// Representation of assignment source and destination
 pub struct Assignment<'a> {
@@ -1466,10 +1464,28 @@ impl PipelineStage for AssignPipelineStage {
     fn supports_exec_on(&self, record_type: &RecordType) -> bool {
         matches!(
             record_type,
-            RecordType::Attributes
-                | RecordType::Signal
-                | RecordType::Child(ChildRecordKind::DataPoint)
+            RecordType::Attributes | RecordType::Signal(_) | RecordType::DataPoint(_)
         )
+    }
+
+    // Parent struct fields, scope schema URLs, and non-record attributes are shared metadata.
+    fn parent_behavior(&self) -> ParentBehavior {
+        let requires_reindex = self.dest_columns.iter().any(|dest| match dest {
+            ColumnAccessor::ColumnName(name) => name == consts::SCHEMA_URL,
+            ColumnAccessor::StructCol(struct_name, _) => {
+                matches!(*struct_name, consts::RESOURCE | consts::SCOPE)
+            }
+            ColumnAccessor::Attributes(AttributesIdentifier::NonRecord(_), _)
+            | ColumnAccessor::NestedAttribute(AttributesIdentifier::NonRecord(_), _, _) => true,
+            ColumnAccessor::Attributes(AttributesIdentifier::Record(_), _)
+            | ColumnAccessor::NestedAttribute(AttributesIdentifier::Record(_), _, _) => false,
+        });
+
+        if requires_reindex {
+            ParentBehavior::RequiresReindex
+        } else {
+            ParentBehavior::Preserves
+        }
     }
 
     fn init_state_for_conditional_branch(
@@ -2596,7 +2612,11 @@ mod test {
 
     use crate::{
         parser::default_parser_options,
-        pipeline::{Pipeline, planner::PipelinePlanner, test::exec_logs_pipeline},
+        pipeline::{
+            Pipeline, SignalContext, SignalKind,
+            planner::{PipelinePlanner, RecordType},
+            test::exec_logs_pipeline,
+        },
     };
 
     async fn test_insert_root_column_from_scalar<P: Parser>() {
@@ -2898,7 +2918,7 @@ mod test {
         let pipeline = P::parse("logs | extend event_name = 1").unwrap().pipeline;
         let session_ctx = Pipeline::create_session_context();
         let otap_batch = OtapArrowRecords::Logs(Logs::default());
-        let planner = PipelinePlanner::new();
+        let planner = PipelinePlanner::new(RecordType::Signal(SignalContext::All));
         let result = planner.plan_stages(&pipeline, &session_ctx, &otap_batch);
         match result {
             Err(e) => {
@@ -2928,7 +2948,8 @@ mod test {
         let pipeline = P::parse("logs | extend bad_column = 1").unwrap().pipeline;
         let session_ctx = Pipeline::create_session_context();
         let otap_batch = OtapArrowRecords::Logs(Logs::default());
-        let planner = PipelinePlanner::new();
+        let planner =
+            PipelinePlanner::new(RecordType::Signal(SignalContext::Single(SignalKind::Logs)));
         let result = planner.plan_stages(&pipeline, &session_ctx, &otap_batch);
         match result {
             Err(e) => {
@@ -2961,7 +2982,8 @@ mod test {
             .pipeline;
         let session_ctx = Pipeline::create_session_context();
         let otap_batch = OtapArrowRecords::Logs(Logs::default());
-        let planner = PipelinePlanner::new();
+        let planner =
+            PipelinePlanner::new(RecordType::Signal(SignalContext::Single(SignalKind::Logs)));
         let result = planner.plan_stages(&pipeline, &session_ctx, &otap_batch);
         match result {
             Err(e) => {
@@ -2984,7 +3006,8 @@ mod test {
             .pipeline;
         let session_ctx = Pipeline::create_session_context();
         let otap_batch = OtapArrowRecords::Logs(Logs::default());
-        let planner = PipelinePlanner::new();
+        let planner =
+            PipelinePlanner::new(RecordType::Signal(SignalContext::Single(SignalKind::Logs)));
         let result = planner.plan_stages(&pipeline, &session_ctx, &otap_batch);
         match result {
             Err(e) => {
@@ -3016,7 +3039,7 @@ mod test {
             .unwrap()
             .pipeline;
         let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let result = pipeline.execute(otap_batch).await;
 
         match result {
@@ -3051,7 +3074,7 @@ mod test {
             .unwrap()
             .pipeline;
         let input = OtapArrowRecords::Logs(Logs::default());
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let result = pipeline.execute(input.clone()).await.unwrap();
         assert_eq!(result, input)
     }
@@ -3062,7 +3085,7 @@ mod test {
             .unwrap()
             .pipeline;
         let input = OtapArrowRecords::Logs(Logs::default());
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let result = pipeline.execute(input.clone()).await.unwrap();
         assert_eq!(result, input)
     }
@@ -3074,7 +3097,7 @@ mod test {
         let pipeline_expr = OplParser::parse("logs | extend event_name = \"event\"")
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let result = pipeline.execute(otap_batch).await.unwrap();
         let logs = result.get(ArrowPayloadType::Logs).unwrap();
         assert_eq!(
@@ -3090,7 +3113,7 @@ mod test {
         let pipeline_expr = OplParser::parse("logs | extend dropped_attributes_count = 1")
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let result = pipeline.execute(otap_batch).await.unwrap();
         let logs = result.get(ArrowPayloadType::Logs).unwrap();
         assert_eq!(
@@ -3114,7 +3137,7 @@ mod test {
         let pipeline_expr = OplParser::parse("logs | extend severity_text = event_name")
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let result = pipeline.execute(otap_batch).await.unwrap();
         let logs = result.get(ArrowPayloadType::Logs).unwrap();
         assert_eq!(
@@ -3144,7 +3167,7 @@ mod test {
         let pipeline_expr = OplParser::parse("logs | extend severity_text = attributes[\"attr1\"]")
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let result = pipeline.execute(otap_batch).await.unwrap();
         let logs = result.get(ArrowPayloadType::Logs).unwrap();
         assert_eq!(
@@ -3183,7 +3206,7 @@ mod test {
         let pipeline_expr = OplParser::parse("logs | extend severity_text = attributes[\"attr1\"]")
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let result = pipeline.execute(otap_batch).await.unwrap();
         let logs = result.get(ArrowPayloadType::Logs).unwrap();
         assert_eq!(
@@ -3226,7 +3249,7 @@ mod test {
         let pipeline_expr = OplParser::parse("logs | extend severity_text = attributes[\"attr1\"]")
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let result = pipeline.execute(otap_batch).await.unwrap();
         let logs = result.get(ArrowPayloadType::Logs).unwrap();
         assert_eq!(
@@ -3269,7 +3292,7 @@ mod test {
         let pipeline_expr = OplParser::parse("logs | extend severity_text = attributes[\"attr1\"]")
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let result = pipeline.execute(otap_batch).await.unwrap();
         let logs = result.get(ArrowPayloadType::Logs).unwrap();
         assert_eq!(
@@ -3291,7 +3314,7 @@ mod test {
         let pipeline_expr = OplParser::parse("logs | set severity_text = attributes[\"x\"]")
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let result = pipeline.execute(otap_batch).await.unwrap();
 
         let logs = result.get(ArrowPayloadType::Logs).unwrap();
@@ -3312,7 +3335,7 @@ mod test {
         let pipeline_expr = OplParser::parse("logs | set body = severity_text")
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let result = pipeline.execute(otap_batch).await.unwrap();
 
         let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
@@ -3350,7 +3373,7 @@ mod test {
 
         let query = "logs | extend body = attributes[\"x\"]";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         for input_any_val in sources {
             let logs_data = to_logs_data(vec![
@@ -3419,7 +3442,7 @@ mod test {
 
         let query = "logs | extend body = attributes[\"x\"]";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
 
@@ -3499,7 +3522,7 @@ mod test {
 
         let query = "logs | extend body = attributes[\"x\"]";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
 
@@ -3558,7 +3581,7 @@ mod test {
 
         let query = "logs | extend body = attributes[\"x\"]";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
 
@@ -3611,7 +3634,7 @@ mod test {
 
         let query = "logs | extend attributes[\"x\"] = body";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
 
@@ -3662,7 +3685,7 @@ mod test {
 
         let query = "logs | extend body = body + body";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
 
@@ -3702,7 +3725,7 @@ mod test {
 
         let query = "logs | extend body = severity_text";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
 
@@ -3770,7 +3793,7 @@ mod test {
 
         let query = "logs | extend body = attributes[\"x\"]";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
 
@@ -3806,7 +3829,7 @@ mod test {
         let pipeline_expr = OplParser::parse("traces | set name = attributes[\"x\"]")
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         match pipeline.execute(otap_batch).await {
             Err(e) => {
@@ -3831,7 +3854,7 @@ mod test {
         let pipeline_expr = OplParser::parse("traces | set name = attributes[\"x\"]")
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         match pipeline.execute(otap_batch).await {
             Err(e) => {
@@ -3869,7 +3892,7 @@ mod test {
         let pipeline_expr = P::parse("logs | extend instrumentation_scope.name = \"new_name\"")
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let result = pipeline.execute(input_batch).await.unwrap();
 
         let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
@@ -3927,7 +3950,7 @@ mod test {
 
         let query = "logs | extend instrumentation_scope.name = resource.schema_url";
         let pipeline_expr = P::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -3973,7 +3996,7 @@ mod test {
 
         let query = "logs | extend resource.schema_url = instrumentation_scope.name";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let err = pipeline.execute(input).await.unwrap_err();
         assert!(
             err.to_string()
@@ -3990,7 +4013,7 @@ mod test {
 
         let query = "logs | extend instrumentation_scope.name = event_name";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let err = pipeline.execute(input).await.unwrap_err();
         assert!(
             err.to_string()
@@ -4024,7 +4047,7 @@ mod test {
         let query =
             "logs | extend instrumentation_scope.name = instrumentation_scope.attributes[\"key\"]";
         let pipeline_expr = P::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -4069,7 +4092,7 @@ mod test {
 
         let query = "logs | extend resource.schema_url = instrumentation_scope.attributes[\"key\"]";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let err = pipeline.execute(input).await.unwrap_err();
         assert!(
             err.to_string().contains(
@@ -4116,7 +4139,7 @@ mod test {
 
         let query = "logs | extend instrumentation_scope.name = resource.attributes[\"name\"]";
         let pipeline_expr = P::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -4161,7 +4184,7 @@ mod test {
 
         let query = "logs | extend instrumentation_scope.name = 42";
         let pipeline_expr = P::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let err = pipeline.execute(input).await.unwrap_err();
         assert!(
             err.to_string()
@@ -4199,7 +4222,7 @@ mod test {
 
         let query = "logs | extend instrumentation_scope.dropped_attributes_count = 42";
         let pipeline_expr = P::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let result = pipeline.execute(input).await.unwrap();
 
         let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
@@ -4254,7 +4277,7 @@ mod test {
         // which triggers assign_null_struct_field for the nullable schema_url field
         let query = "logs | extend resource.schema_url = resource.attributes[\"x\"]";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let result = pipeline.execute(input).await.unwrap();
 
         let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
@@ -4281,7 +4304,7 @@ mod test {
 
         let query = "logs | extend instrumentation_scope.name = substring(instrumentation_scope.name, 0, 6)";
         let pipeline_expr = P::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -4366,7 +4389,7 @@ mod test {
 
         let query = "logs | extend resource.schema_url = \"new_url\"";
         let pipeline_expr = P::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let result = pipeline.execute(input).await.unwrap();
 
         let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
@@ -4404,7 +4427,7 @@ mod test {
 
         let query = "logs | extend resource.schema_url = \"new_url\"";
         let pipeline_expr = P::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let result = pipeline.execute(input).await.unwrap();
 
         let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
@@ -4439,7 +4462,7 @@ mod test {
 
         let query = "logs | extend instrumentation_scope.name = \"new_name\", resource.schema_url = \"new_url\"";
         let pipeline_expr = P::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let result = pipeline.execute(input).await.unwrap();
 
         let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
@@ -4501,7 +4524,7 @@ mod test {
 
         let query = "logs | extend instrumentation_scope.name = resource.attributes[\"url\"]";
         let pipeline_expr = P::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -4552,7 +4575,7 @@ mod test {
         let query = "logs | extend instrumentation_scope.name = \"new_name\"";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
         let input = OtapArrowRecords::Logs(Logs::default());
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let result = pipeline.execute(input.clone()).await.unwrap();
         assert_eq!(result, input);
     }
@@ -4571,7 +4594,7 @@ mod test {
 
         let query = "logs | extend attributes[\"y\"] = event_name";
         let pipeline_expr = P::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -4621,7 +4644,7 @@ mod test {
 
         let query = "logs | extend attributes[\"x\"] = attributes[\"y\"]";
         let pipeline_expr = P::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -4671,7 +4694,7 @@ mod test {
 
         let query = "logs | extend attributes[\"x\"] = attributes[\"x\"] * 2";
         let pipeline_expr = P::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -4723,7 +4746,7 @@ mod test {
 
         let query = "logs | extend attributes[\"y\"] = attributes[\"x\"]";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
 
@@ -4783,7 +4806,7 @@ mod test {
         ]);
         let query = "traces | extend attributes[\"x\"] = \"hello\"";
         let pipeline_expr = P::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Traces(traces_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -4827,7 +4850,7 @@ mod test {
         ]);
         let query = "metrics | extend attributes[\"x\"] = \"hello\"";
         let pipeline_expr = P::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Metrics(metrics_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -4876,7 +4899,7 @@ mod test {
         // there is no attribute z
         let query = "logs | extend attributes[\"y\"] = attributes[\"z\"]";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -4913,7 +4936,7 @@ mod test {
         // there is no attribute z
         let query = "logs | extend attributes[\"y\"] = attributes[\"z\"]";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -4953,7 +4976,7 @@ mod test {
 
         let query = "logs | extend attributes[\"y\"] = attributes[\"x\"] * 2";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -5025,7 +5048,7 @@ mod test {
         // there is no attribute z
         let query = "logs | extend attributes[\"x\"] = attributes[\"z\"]";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -5076,7 +5099,7 @@ mod test {
             attributes[\"k_double\"] = 4.0
         ";
         let pipeline_expr = P::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -5155,7 +5178,7 @@ mod test {
             attributes[\"k_double2\"] = 6.0
         ";
         let pipeline_expr = P::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -5234,7 +5257,7 @@ mod test {
                 attributes[\"k_double2\"] = attributes[\"k_double\"]
         ";
         let pipeline_expr = P::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -5330,7 +5353,7 @@ mod test {
 
         let query = "logs | extend attributes[\"y\"] = resource.attributes[\"x\"]";
         let pipeline_expr = P::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -5388,7 +5411,7 @@ mod test {
 
         let query = "logs | extend attributes[\"y\"] = event_name";
         let pipeline_expr = P::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -5438,7 +5461,7 @@ mod test {
 
         let query = "logs | extend attributes[\"y\"] = \"hello\"";
         let pipeline_expr = P::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -5499,7 +5522,7 @@ mod test {
 
         let query = "logs | extend resource.attributes[\"y\"] = \"b\"";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -5549,7 +5572,7 @@ mod test {
 
         let query = "logs | extend resource.attributes[\"x\"] = resource.attributes[\"y\"]";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -5607,7 +5630,7 @@ mod test {
         let query =
             "logs | extend instrumentation_scope.attributes[\"x\"] = resource.attributes[\"y\"]";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -5659,7 +5682,7 @@ mod test {
 
         let query = "logs | extend resource.attributes[\"y\"] = \"b\"";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -5700,7 +5723,7 @@ mod test {
             | extend attributes[\"z\"] = \"c\"
             ";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(log_records)));
         assert!(input.get(ArrowPayloadType::LogAttrs).is_none());
 
@@ -5759,7 +5782,7 @@ mod test {
 
         let query = "logs | extend resource.attributes[\"y\"] = \"b\"";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         assert!(input.get(ArrowPayloadType::ResourceAttrs).is_none());
@@ -5798,7 +5821,7 @@ mod test {
 
         let query = "logs | extend attributes[\"y\"] = \"hello\"";
         let pipeline_expr = P::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -5842,7 +5865,7 @@ mod test {
 
         let query = "logs | extend attributes[\"y\"] = event_name";
         let pipeline_expr = P::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -5887,7 +5910,7 @@ mod test {
 
         let query = "logs | extend attributes[\"y\"] = event_name";
         let pipeline_expr = P::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -5934,7 +5957,7 @@ mod test {
 
         let query = "logs | extend attributes[\"y\"] = \"hello\"";
         let pipeline_expr = P::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -5989,7 +6012,7 @@ mod test {
 
         let query = "logs | extend attributes[\"complex\"].child.name = \"after\"";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -6023,7 +6046,8 @@ mod test {
             .pipeline;
         let session_ctx = Pipeline::create_session_context();
         let otap_batch = OtapArrowRecords::Logs(Logs::default());
-        let planner = PipelinePlanner::new();
+        let planner =
+            PipelinePlanner::new(RecordType::Signal(SignalContext::Single(SignalKind::Logs)));
 
         let result = planner.plan_stages(&pipeline, &session_ctx, &otap_batch);
         match result {
@@ -6059,7 +6083,7 @@ mod test {
 
         let query = "logs | extend attributes[\"complex\"].items[0].name = \"after\"";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -6102,7 +6126,7 @@ mod test {
 
         let query = "logs | extend attributes[\"complex\"].child.name = \"after\", attributes[\"complex\"].child.count = 2";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -6136,7 +6160,7 @@ mod test {
 
         let query = "logs | extend attributes[\"missing\"].child = \"after\"";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -6170,7 +6194,7 @@ mod test {
 
         let query = "logs | extend attributes[\"complex\"].missing.name = \"after\"";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -6216,7 +6240,7 @@ mod test {
 
         let query = "logs | extend attributes[\"complex\"].child.name = attributes[\"source\"]";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -6268,7 +6292,7 @@ mod test {
 
         let query = "logs | extend attributes[\"complex\"].child.name = attributes[\"source\"]";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -6337,7 +6361,7 @@ mod test {
 
         let query = "logs | extend attributes[\"complex\"].child.name = attributes[\"source\"]";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let err = pipeline.execute(input).await.expect_err("mixed RHS errors");
@@ -6361,7 +6385,7 @@ mod test {
 
         let query = "logs | extend attributes[\"complex\"].count = 0 - 1";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -6389,7 +6413,7 @@ mod test {
 
         let query = "logs | extend attributes[\"raw\"].name = \"after\"";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -6427,7 +6451,7 @@ mod test {
 
         let query = "logs | set resource.attributes[\"complex\"].child.name = \"after\"";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -6646,7 +6670,7 @@ mod test {
 
         let query = r#"traces | extend attributes["name"] = attributes["complex"]["name"]"#;
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let input = otlp_to_otap(&OtlpProtoMessage::Traces(traces_data));
         let result = pipeline.execute(input).await.unwrap();
 
@@ -6694,7 +6718,7 @@ mod test {
 
         let query = r#"logs | extend attributes["name"] = attributes["complex"]["name"]"#;
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let err = pipeline.execute(input).await.unwrap_err().to_string();
 
         assert!(
@@ -6717,7 +6741,7 @@ mod test {
 
         let query = "logs | extend attributes[\"y\"] = \"hello\", attributes[\"x\"] = \"world\"";
         let pipeline_expr = P::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -6762,7 +6786,7 @@ mod test {
 
         let query = "logs | extend attributes[\"y\"] = \"hello\"";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         assert!(input.get(ArrowPayloadType::LogAttrs).is_none());
@@ -6792,7 +6816,7 @@ mod test {
 
         let query = "logs | extend attributes[\"y\"] = \"hello\", attributes[\"x\"] = \"world\"";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         assert!(input.get(ArrowPayloadType::LogAttrs).is_none());
@@ -6829,7 +6853,7 @@ mod test {
 
         let query = "logs | extend resource.attributes[\"y\"] = event_name";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let err = pipeline.execute(input.clone()).await.unwrap_err();
         let err_msg = err.to_string();
         assert!(
@@ -6843,7 +6867,7 @@ mod test {
         // ensure we can't assign from attributes
         let query = "logs | extend resource.attributes[\"y\"] = attributes[\"x\"]";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let err = pipeline.execute(input.clone()).await.unwrap_err();
         let err_msg = err.to_string();
         assert!(
@@ -6856,7 +6880,7 @@ mod test {
         let query =
             "logs | extend resource.attributes[\"y\"] = instrumentation_scope.attributes[\"x\"]";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let err = pipeline.execute(input.clone()).await.unwrap_err();
         let err_msg = err.to_string();
         assert!(
@@ -6869,7 +6893,7 @@ mod test {
         // expression requiring join
         let query = "logs | extend resource.attributes[\"y\"] = resource.attributes[\"x\"] * attributes[\"y\"]";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let err = pipeline.execute(input.clone()).await.unwrap_err();
         let err_msg = err.to_string();
         assert!(
@@ -6889,7 +6913,7 @@ mod test {
 
         let query = "logs | extend instrumentation_scope.attributes[\"y\"] = event_name";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let err = pipeline.execute(input.clone()).await.unwrap_err();
         let err_msg = err.to_string();
         assert!(
@@ -6903,7 +6927,7 @@ mod test {
         // ensure we can't assign from attributes
         let query = "logs | extend instrumentation_scope.attributes[\"y\"] = attributes[\"x\"]";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let err = pipeline.execute(input.clone()).await.unwrap_err();
         let err_msg = err.to_string();
         assert!(
@@ -6925,7 +6949,7 @@ mod test {
 
         let query = "logs | extend attributes[\"x\"] = \"a\", attributes[\"x\"] = \"b\"";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let result = pipeline.execute(input).await.unwrap();
 
         // assert the end result is from the 2nd assignment
@@ -6962,7 +6986,7 @@ mod test {
 
         for query in queries {
             let pipeline_expr = P::parse(query).unwrap().pipeline;
-            let mut pipeline = Pipeline::new(pipeline_expr);
+            let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
             let result = pipeline.execute(input.clone()).await.unwrap();
 
             let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
@@ -7017,7 +7041,7 @@ mod test {
             set attributes["z"] = attributes["y"], attributes["w"] = attributes["y"]
         "#;
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
 
@@ -7103,7 +7127,7 @@ mod test {
 
         let query = "logs | extend attributes[\"x\"] = 1.0";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
 
@@ -7135,7 +7159,7 @@ mod test {
 
         let query = "logs | extend attributes[\"x\"] = attributes[\"z\"]";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
 
@@ -7174,7 +7198,7 @@ mod test {
         let pipeline_expr = P::parse_with_options(query, default_parser_options())
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
 
@@ -7231,7 +7255,7 @@ mod test {
         let pipeline_expr = P::parse_with_options(query, default_parser_options())
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
         let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
@@ -7276,7 +7300,7 @@ mod test {
         let pipeline_expr = P::parse_with_options(query, default_parser_options())
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -7311,7 +7335,7 @@ mod test {
         let pipeline_expr = P::parse_with_options(query, default_parser_options())
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -7369,7 +7393,7 @@ mod test {
         let pipeline_expr = P::parse_with_options(query, default_parser_options())
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -7413,7 +7437,7 @@ mod test {
         let pipeline_expr = P::parse_with_options(query, default_parser_options())
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -7456,7 +7480,7 @@ mod test {
         let pipeline_expr = P::parse_with_options(query, default_parser_options())
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -7499,7 +7523,7 @@ mod test {
         let pipeline_expr = P::parse_with_options(query, default_parser_options())
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -7540,7 +7564,7 @@ mod test {
         let pipeline_expr = P::parse_with_options(query, default_parser_options())
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -7595,7 +7619,7 @@ mod test {
         let pipeline_expr = P::parse_with_options(query, default_parser_options())
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
 
@@ -7645,7 +7669,7 @@ mod test {
         let pipeline_expr = P::parse_with_options(query, default_parser_options())
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
 
@@ -7693,7 +7717,7 @@ mod test {
         let pipeline_expr = P::parse_with_options(&query, default_parser_options())
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -7764,7 +7788,7 @@ mod test {
         let pipeline_expr = P::parse_with_options(&query, default_parser_options())
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
 
@@ -7816,7 +7840,7 @@ mod test {
         let pipeline_expr = P::parse_with_options(&query, default_parser_options())
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
 
@@ -7853,7 +7877,7 @@ mod test {
         let pipeline_expr = OplParser::parse_with_options(query, default_parser_options())
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
 
@@ -7889,7 +7913,7 @@ mod test {
         let pipeline_expr = OplParser::parse_with_options(query, default_parser_options())
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
 
@@ -7935,7 +7959,7 @@ mod test {
         let pipeline_expr = P::parse_with_options(&query, default_parser_options())
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
 
@@ -7978,7 +8002,7 @@ mod test {
         let pipeline_expr = P::parse_with_options(&query, default_parser_options())
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
 
@@ -8021,7 +8045,7 @@ mod test {
         let pipeline_expr = OplParser::parse_with_options(query, default_parser_options())
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
 
@@ -8061,7 +8085,7 @@ mod test {
         let pipeline_expr = P::parse_with_options(&query, default_parser_options())
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
 
@@ -8109,7 +8133,7 @@ mod test {
         let pipeline_expr = P::parse_with_options(&query, default_parser_options())
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
 
@@ -8153,7 +8177,7 @@ mod test {
         let pipeline_expr = P::parse_with_options(&query, default_parser_options())
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
 
@@ -8209,7 +8233,7 @@ mod test {
         let pipeline_expr = P::parse_with_options(&query, default_parser_options())
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
 
@@ -8279,7 +8303,7 @@ mod test {
         let pipeline_expr = P::parse_with_options(&query, default_parser_options())
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
 
@@ -8337,7 +8361,7 @@ mod test {
         let pipeline_expr = P::parse_with_options(query, default_parser_options())
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
 
@@ -8371,7 +8395,7 @@ mod test {
         let pipeline_expr = P::parse_with_options(query, default_parser_options())
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
 
@@ -8410,7 +8434,7 @@ mod test {
         let pipeline_expr = P::parse_with_options(query, default_parser_options())
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -8467,7 +8491,7 @@ mod test {
         let pipeline_expr = P::parse_with_options(query, default_parser_options())
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -8537,7 +8561,7 @@ mod test {
         let pipeline_expr = P::parse_with_options(query, default_parser_options())
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -8593,7 +8617,7 @@ mod test {
         let pipeline_expr = P::parse_with_options(query, default_parser_options())
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -8631,7 +8655,7 @@ mod test {
         let pipeline_expr = P::parse_with_options(query, default_parser_options())
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
 
@@ -8670,7 +8694,7 @@ mod test {
         let pipeline_expr = P::parse_with_options(query, default_parser_options())
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
 
@@ -8794,7 +8818,7 @@ mod test {
         )
         .unwrap()
         .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let result = pipeline
             .execute(otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(
@@ -9018,7 +9042,7 @@ mod test {
             let pipeline_expr = OplParser::parse_with_options(query, default_parser_options())
                 .unwrap()
                 .pipeline;
-            let mut pipeline = Pipeline::new(pipeline_expr);
+            let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
             let err = pipeline
                 .execute(otlp_to_otap(&OtlpProtoMessage::Logs(logs_data)))
                 .await

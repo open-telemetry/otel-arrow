@@ -15,10 +15,8 @@ use otel_arrow_dfe_contrib_extensions as _;
 use otel_arrow_dfe_contrib_nodes as _;
 use otel_arrow_dfe_controller::startup;
 use otel_arrow_dfe_controller::{BuildInfo, Controller, ControllerRunOptions};
-// Keep this side-effect import so the crate is linked and its `linkme`
-// distributed-slice registrations (core nodes) are visible
-// in `OTAP_PIPELINE_FACTORY` at runtime.
-use otel_arrow_dfe_core_nodes as _;
+// This item import also links the crate so its `linkme` registrations are visible.
+use otel_arrow_dfe_core_nodes::exporters::console_exporter::claim_structured_stdout;
 // Development nodes are omitted from builds that disable `dev-tools`.
 #[cfg(feature = "dev-tools")]
 use otel_arrow_dfe_dev_nodes as _;
@@ -29,6 +27,7 @@ use otel_arrow_dfe_otap::OTAP_PIPELINE_FACTORY;
 // only present when the `wasm` cargo feature is enabled.
 #[cfg(feature = "wasm")]
 use otel_arrow_dfe_wasm_host as _;
+
 /// Project license text (Apache-2.0), embedded at compile time.
 const LICENSE_TEXT: &str = include_str!("../LICENSE");
 
@@ -281,7 +280,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(0);
     }
 
-    println!(
+    // Emitted before the stdout claim is known, so it cannot use stdout: a
+    // record_json run must not find prose ahead of its first record.
+    eprintln!(
         "{}",
         startup::system_info(&OTAP_PIPELINE_FACTORY, memory_allocator_name())
     );
@@ -308,6 +309,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(0);
     }
 
+    // Applied to the accepted configuration before any pipeline starts, so a
+    // `pretty` console exporter never reaches a stdout that carries records.
+    claim_structured_stdout(&engine_cfg);
+
     let controller = Controller::new(&OTAP_PIPELINE_FACTORY);
     let result = controller.run_forever_with_options(engine_cfg, run_options);
     #[cfg(all(not(tarpaulin_include), feature = "dhat-heap"))]
@@ -315,16 +320,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         dhat_finish();
     }
 
-    match result {
-        Ok(_) => {
-            println!("Pipeline run successfully");
-            std::process::exit(0);
-        }
-        Err(e) => {
-            eprintln!("Pipeline failed to run: {e}");
-            std::process::exit(1);
-        }
-    }
+    // This process owns the console writers, so it stops them before reporting the
+    // final status: the controller only drains, because another run may follow it.
+    startup::shutdown_console_and_exit(&result)
 }
 
 #[cfg(test)]
