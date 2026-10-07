@@ -1,5 +1,0 @@
-change_type: enhancement 
-component: query-engine
-note: Rename and delete attribute operations now work inside `apply data_points { ... }` metric pipelines.
-issues: [4213]
-

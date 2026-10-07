@@ -48,7 +48,7 @@ async fn main() -> Result<()> {
     // simple example filtering logs by some property:
     let query = "logs | where severity_text == \"ERROR\"";
     let pipeline_expr = KqlParser::parse(query).expect("parses").pipeline;
-    let mut pipeline = Pipeline::new(pipeline_expr);
+    let mut pipeline = Pipeline::try_new(pipeline_expr)?;
 
     let otap_batch = otlp_to_otap(&otel_arrow_dfe_pdata::proto::OtlpProtoMessage::Logs(
         logs.clone(),
@@ -62,7 +62,7 @@ async fn main() -> Result<()> {
     // simple example filtering logs by attributes
     let query = "logs | where attributes[\"service.name\"] == \"my-app-2\"";
     let pipeline_expr = KqlParser::parse(query).expect("parses").pipeline;
-    let mut pipeline = Pipeline::new(pipeline_expr);
+    let mut pipeline = Pipeline::try_new(pipeline_expr)?;
 
     let otap_batch = otlp_to_otap(&otel_arrow_dfe_pdata::proto::OtlpProtoMessage::Logs(
         logs.clone(),

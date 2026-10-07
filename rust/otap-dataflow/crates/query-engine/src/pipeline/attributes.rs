@@ -92,8 +92,8 @@ impl PipelineStage for AttributeTransformPipelineStage {
 
     fn supports_exec_on(&self, record_type: &RecordType) -> bool {
         match record_type {
-            RecordType::Signal => true,
-            RecordType::Child(ChildRecordKind::DataPoint) => {
+            RecordType::Signal(_) => true,
+            RecordType::DataPoint(_) => {
                 matches!(self.attrs_id, AttributesIdentifier::Record(_))
             }
             RecordType::Attributes => false,
@@ -436,7 +436,8 @@ mod test {
         ];
 
         for query in invalid_renames {
-            let mut pipeline = Pipeline::new(KqlParser::parse(query).unwrap().pipeline);
+            let mut pipeline =
+                Pipeline::try_new(KqlParser::parse(query).unwrap().pipeline).unwrap();
             let result = pipeline
                 .execute(OtapArrowRecords::Logs(Logs::default()))
                 .await;
@@ -456,7 +457,8 @@ mod test {
         ];
 
         for query in invalid_renames {
-            let mut pipeline = Pipeline::new(OplParser::parse(query).unwrap().pipeline);
+            let mut pipeline =
+                Pipeline::try_new(OplParser::parse(query).unwrap().pipeline).unwrap();
             let result = pipeline
                 .execute(OtapArrowRecords::Logs(Logs::default()))
                 .await;
@@ -580,7 +582,7 @@ mod test {
             project-away attributes[\"x\"], attributes[\"x2\"]
         ";
         let parser_result = P::parse(query).unwrap();
-        let mut pipeline = Pipeline::new(parser_result.pipeline);
+        let mut pipeline = Pipeline::try_new(parser_result.pipeline).unwrap();
         let result = pipeline.execute(otap_batch).await.unwrap();
 
         assert!(
@@ -776,7 +778,7 @@ mod test {
             let pipeline_expr = OplParser::parse_with_options(query, default_parser_options())
                 .unwrap()
                 .pipeline;
-            let mut pipeline = Pipeline::new(pipeline_expr);
+            let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
             let input = otlp_to_otap(&OtlpProtoMessage::Metrics(to_metrics_data(metrics)));
             let result = pipeline.execute(input).await.unwrap();
             let OtlpProtoMessage::Metrics(md) = otap_to_otlp(&result) else {
@@ -879,7 +881,7 @@ mod test {
             let pipeline_expr = OplParser::parse_with_options(query, default_parser_options())
                 .unwrap()
                 .pipeline;
-            let mut pipeline = Pipeline::new(pipeline_expr);
+            let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
             let input = otlp_to_otap(&OtlpProtoMessage::Metrics(to_metrics_data(metrics)));
             let result = pipeline.execute(input).await.unwrap();
 

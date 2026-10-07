@@ -7,7 +7,8 @@ use super::config::{
     CatchUpConfig, CheckpointConfig, ConfigError, OnPermanentNack, OutputConfig, PollingConfig,
     WatermarkConfig,
 };
-use super::page::CompositeCursor;
+use super::page::{CompositeCursor, Cursor};
+use super::scalar::{CursorError, ScalarValue};
 use std::fmt;
 use std::time::Duration;
 
@@ -28,6 +29,56 @@ pub struct CompositeWatermark {
     pub initial: CompositeCursor,
 }
 
+/// Validated binds and columns for a single-column keyset query.
+#[derive(Clone, Debug)]
+pub struct ScalarWatermark {
+    /// Result column containing the ordered key.
+    pub column: String,
+    /// Named parameter bound without converting the value to SQL text.
+    pub bind: String,
+    /// Typed starting value used when no checkpoint exists.
+    pub initial: ScalarValue,
+}
+
+/// Mode-specific contract that adapters must validate before execution.
+#[derive(Clone, Debug)]
+pub enum CompiledWatermark {
+    /// Timestamp plus tie-breaker keyset.
+    Composite(CompositeWatermark),
+    /// One typed, unique, strictly ordered key.
+    Scalar(ScalarWatermark),
+}
+
+impl CompiledWatermark {
+    /// Returns an owned initial position for the receiver state.
+    #[must_use]
+    pub fn initial(&self) -> Cursor {
+        match self {
+            Self::Composite(value) => value.initial.clone().into(),
+            Self::Scalar(value) => value.initial.clone().into(),
+        }
+    }
+
+    /// Returns composite bind metadata only in composite mode.
+    #[must_use]
+    pub const fn as_composite(&self) -> Option<&CompositeWatermark> {
+        match self {
+            Self::Composite(value) => Some(value),
+            Self::Scalar(_) => None,
+        }
+    }
+
+    /// Rejects checkpoint or driver positions that do not match this query.
+    pub fn validate_cursor(&self, cursor: &Cursor) -> Result<(), CursorError> {
+        cursor.validate()?;
+        match (self, cursor) {
+            (Self::Composite(_), Cursor::Composite(_)) => Ok(()),
+            (Self::Scalar(spec), Cursor::Scalar(value)) if spec.initial.same_type(value) => Ok(()),
+            _ => Err(CursorError::TypeMismatch),
+        }
+    }
+}
+
 /// Immutable query plan passed to a database adapter.
 #[derive(Clone)]
 pub struct CompiledQuery {
@@ -39,12 +90,12 @@ pub struct CompiledQuery {
     max_batch_bytes: u64,
     catch_up: CatchUpConfig,
     on_permanent_nack: OnPermanentNack,
-    watermark: CompositeWatermark,
+    watermark: CompiledWatermark,
     output: OutputConfig,
 }
 
 impl CompiledQuery {
-    /// Validates and compiles one operator-authored composite watermark query.
+    /// Validates and compiles one operator-authored watermark query.
     ///
     /// SQL checks here cover length and a leading SELECT keyword only.
     /// Before execution, [`super::DriverAdapter::validate_query`] must validate
@@ -69,8 +120,27 @@ impl CompiledQuery {
         if !is_read_only(&sql) {
             return Err(QueryError::NotReadOnly);
         }
-        let timestamp = watermark.timestamp();
-        let tie_breaker = watermark.tie_breaker();
+        let watermark = match watermark {
+            WatermarkConfig::Composite {
+                timestamp,
+                tie_breaker,
+            } => CompiledWatermark::Composite(CompositeWatermark {
+                timestamp_column: timestamp.column.clone(),
+                timestamp_bind: timestamp.bind.clone(),
+                tie_breaker_column: tie_breaker.column.clone(),
+                tie_breaker_bind: tie_breaker.bind.clone(),
+                initial: CompositeCursor::new(timestamp.initial.clone(), tie_breaker.initial),
+            }),
+            WatermarkConfig::Scalar {
+                column,
+                bind,
+                initial,
+            } => CompiledWatermark::Scalar(ScalarWatermark {
+                column: column.clone(),
+                bind: bind.clone(),
+                initial: initial.clone(),
+            }),
+        };
         Ok(Self {
             sql,
             interval: config.interval,
@@ -80,13 +150,7 @@ impl CompiledQuery {
             max_batch_bytes: config.max_batch_bytes,
             catch_up: config.catch_up,
             on_permanent_nack: checkpoint.on_permanent_nack,
-            watermark: CompositeWatermark {
-                timestamp_column: timestamp.column.clone(),
-                timestamp_bind: timestamp.bind.clone(),
-                tie_breaker_column: tie_breaker.column.clone(),
-                tie_breaker_bind: tie_breaker.bind.clone(),
-                initial: CompositeCursor::new(timestamp.initial.clone(), tie_breaker.initial),
-            },
+            watermark,
             output,
         })
     }
@@ -148,9 +212,9 @@ impl CompiledQuery {
         self.max_batch_bytes
     }
 
-    /// Returns the composite cursor binds and columns.
+    /// Returns the mode-specific cursor binds and columns.
     #[must_use]
-    pub const fn watermark(&self) -> &CompositeWatermark {
+    pub const fn watermark(&self) -> &CompiledWatermark {
         &self.watermark
     }
 
