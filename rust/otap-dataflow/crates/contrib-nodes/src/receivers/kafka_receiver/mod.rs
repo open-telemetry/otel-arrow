@@ -24,3 +24,4 @@ pub mod receiver;
 mod retry;
 /// Shared retry-scheduling primitives (ordered deadline index + backoff).
 mod scheduling;
+mod text_transformation;

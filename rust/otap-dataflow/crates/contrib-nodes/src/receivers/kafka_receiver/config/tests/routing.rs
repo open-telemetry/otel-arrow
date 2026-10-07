@@ -41,6 +41,74 @@ fn validate_syslog_encoding_for_logs_is_valid() {
     assert!(KafkaReceiverConfig::try_from(cfg).is_ok());
 }
 
+/// Scenario: A logs signal selects text transformation and supplies a typed KQL query.
+/// Guarantees: Validation accepts the complete transform configuration.
+#[test]
+fn validate_text_transformation_with_query_is_valid() {
+    let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c").with_logs(
+        SignalConfig::new(vec!["logs-topic".to_string()])
+            .with_encoding(MessageFormat::TextTransformation)
+            .with_transformation_query_type(TextTransformationQueryType::Kql)
+            .with_transformation_query("source | project body = request_data"),
+    );
+    assert!(KafkaReceiverConfig::try_from(cfg).is_ok());
+}
+
+/// Scenario: A logs signal selects text transformation without a query type.
+/// Guarantees: Validation rejects the incomplete configuration before startup.
+#[test]
+fn validate_text_transformation_without_query_type_is_invalid() {
+    let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c").with_logs(
+        SignalConfig::new(vec!["logs-topic".to_string()])
+            .with_encoding(MessageFormat::TextTransformation)
+            .with_transformation_query("source | project body = request_data"),
+    );
+    let err = KafkaReceiverConfig::try_from(cfg).unwrap_err().to_string();
+    assert!(err.contains("logs.transformation_query_type is required"));
+}
+
+/// Scenario: A logs signal selects text transformation without a query.
+/// Guarantees: Validation rejects the incomplete configuration before startup.
+#[test]
+fn validate_text_transformation_without_query_is_invalid() {
+    let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c").with_logs(
+        SignalConfig::new(vec!["logs-topic".to_string()])
+            .with_encoding(MessageFormat::TextTransformation)
+            .with_transformation_query_type(TextTransformationQueryType::Kql),
+    );
+    let err = KafkaReceiverConfig::try_from(cfg).unwrap_err().to_string();
+    assert!(err.contains("logs.transformation_query must be non-empty"));
+}
+
+/// Scenario: A traces signal selects the currently logs-only text transformation encoding.
+/// Guarantees: Validation rejects the unsupported signal and reports its encoding.
+#[test]
+fn validate_text_transformation_for_traces_is_invalid() {
+    let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c").with_traces(
+        SignalConfig::new(vec!["traces-topic".to_string()])
+            .with_encoding(MessageFormat::TextTransformation)
+            .with_transformation_query_type(TextTransformationQueryType::Kql)
+            .with_transformation_query("source"),
+    );
+    let err = KafkaReceiverConfig::try_from(cfg).unwrap_err().to_string();
+    assert!(err.contains("text_transformation encoding is not supported for traces"));
+}
+
+/// Scenario: Transformation settings are supplied for an encoding that does not
+/// transform text.
+/// Guarantees: Validation rejects ignored transformation configuration.
+#[test]
+fn validate_query_without_text_transformation_is_invalid() {
+    let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c").with_logs(
+        SignalConfig::new(vec!["logs-topic".to_string()])
+            .with_transformation_query_type(TextTransformationQueryType::Kql)
+            .with_transformation_query("source | project body = request_data"),
+    );
+    let err = KafkaReceiverConfig::try_from(cfg).unwrap_err().to_string();
+    assert!(err.contains("logs.transformation_query_type"));
+    assert!(err.contains("only supported when encoding is text_transformation"));
+}
+
 /// Scenario (routing and payload correctness): a traces signal selects Syslog encoding.
 /// Guarantees: validation rejects the logs-only encoding before the receiver starts.
 #[test]

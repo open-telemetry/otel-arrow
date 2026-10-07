@@ -122,6 +122,7 @@ contrib-exporters = [
 
 # Integrations with both sources and destinations.
 kafka = [
+    "recordset-kql",
     "dep:otel-arrow-dfe-core-nodes",
     # Kafka currently reuses the Syslog CEF parser. Upcoming codec extraction
     # work will remove the need to include the full Syslog CEF receiver.

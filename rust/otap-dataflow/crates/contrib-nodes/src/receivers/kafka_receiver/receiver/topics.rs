@@ -8,7 +8,8 @@
 //! the per-message [`MessageFormat`] from a header, and assigns compact `u32`
 //! IDs to topic names for CallData routing.
 
-use crate::common::kafka::{MSG_FORMAT_OTAP, MSG_FORMAT_OTLP, MSG_FORMAT_SYSLOG, MessageFormat};
+use super::super::config::KafkaReceiverEncoding;
+use crate::common::kafka::{MSG_FORMAT_OTAP, MSG_FORMAT_OTLP, MSG_FORMAT_SYSLOG};
 use otel_arrow_dfe_config::error::Error as ConfigError;
 use rdkafka::Message as _;
 use rdkafka::message::{BorrowedMessage, Headers};
@@ -81,16 +82,16 @@ pub(super) fn matches_any_exclude(exclude_regexes: &[Regex], actual: &str) -> bo
 pub(super) fn detect_message_format(
     kafka_message: &BorrowedMessage<'_>,
     header_key: &str,
-    default: MessageFormat,
-) -> MessageFormat {
+    default: KafkaReceiverEncoding,
+) -> KafkaReceiverEncoding {
     match kafka_message
         .headers()
         .and_then(|hs| hs.iter().find(|h| h.key == header_key))
         .and_then(|h| h.value)
     {
-        value if value == Some(MSG_FORMAT_OTLP) => MessageFormat::OtlpProto,
-        value if value == Some(MSG_FORMAT_OTAP) => MessageFormat::OtapProto,
-        value if value == Some(MSG_FORMAT_SYSLOG) => MessageFormat::Syslog,
+        value if value == Some(MSG_FORMAT_OTLP) => KafkaReceiverEncoding::OtlpProto,
+        value if value == Some(MSG_FORMAT_OTAP) => KafkaReceiverEncoding::OtapProto,
+        value if value == Some(MSG_FORMAT_SYSLOG) => KafkaReceiverEncoding::Syslog,
         _ => default,
     }
 }

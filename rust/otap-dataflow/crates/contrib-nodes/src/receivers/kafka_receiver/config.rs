@@ -82,6 +82,17 @@ pub enum CommitMode {
     Manual,
 }
 
+/// Encoding used for messages consumed by the Kafka receiver.
+pub type KafkaReceiverEncoding = MessageFormat;
+
+/// Query language used to transform text Kafka records.
+#[derive(Copy, Clone, PartialEq, Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TextTransformationQueryType {
+    /// Kusto Query Language.
+    Kql,
+}
+
 /// Policy applied when a non-permanent NACK reaches the Kafka receiver.
 #[derive(Copy, Clone, PartialEq, Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -231,7 +242,13 @@ pub struct SignalConfig {
     /// Individual messages can override this via the message format header
     /// (defaults to `"MessageFormat"`).
     #[serde(default)]
-    encoding: MessageFormat,
+    encoding: KafkaReceiverEncoding,
+    /// Query language used when `encoding` is `text_transformation`.
+    #[serde(default)]
+    transformation_query_type: Option<TextTransformationQueryType>,
+    /// Query used when `encoding` is `text_transformation`.
+    #[serde(default)]
+    transformation_query: Option<String>,
 }
 
 impl SignalConfig {
@@ -258,8 +275,20 @@ impl SignalConfig {
 
     /// The encoding format for messages on this signal's topics.
     #[must_use]
-    pub fn encoding(&self) -> MessageFormat {
+    pub fn encoding(&self) -> KafkaReceiverEncoding {
         self.encoding
+    }
+
+    /// The configured text transformation query type.
+    #[must_use]
+    pub fn transformation_query_type(&self) -> Option<TextTransformationQueryType> {
+        self.transformation_query_type
+    }
+
+    /// The configured text transformation query.
+    #[must_use]
+    pub fn transformation_query(&self) -> Option<&str> {
+        self.transformation_query.as_deref()
     }
 
     /// Set the exclude topic patterns.
@@ -271,8 +300,25 @@ impl SignalConfig {
 
     /// Set the encoding format.
     #[must_use]
-    pub fn with_encoding(mut self, encoding: MessageFormat) -> Self {
+    pub fn with_encoding(mut self, encoding: KafkaReceiverEncoding) -> Self {
         self.encoding = encoding;
+        self
+    }
+
+    /// Set the text transformation query type.
+    #[must_use]
+    pub fn with_transformation_query_type(
+        mut self,
+        query_type: TextTransformationQueryType,
+    ) -> Self {
+        self.transformation_query_type = Some(query_type);
+        self
+    }
+
+    /// Set the text transformation query.
+    #[must_use]
+    pub fn with_transformation_query(mut self, query: impl Into<String>) -> Self {
+        self.transformation_query = Some(query.into());
         self
     }
 }
@@ -584,17 +630,54 @@ impl TryFrom<KafkaReceiverConfigBuilder> for KafkaReceiverConfig {
             return Err(KafkaReceiverError::ConfigNoSignalTopics);
         }
 
-        if builder.traces.encoding() == MessageFormat::Syslog {
+        if matches!(
+            builder.traces.encoding(),
+            KafkaReceiverEncoding::Syslog | KafkaReceiverEncoding::TextTransformation
+        ) {
             return Err(KafkaReceiverError::ConfigUnsupportedEncoding {
                 signal: "traces".to_string(),
-                encoding: "syslog".to_string(),
+                encoding: KafkaReceiverConfig::encoding_name(builder.traces.encoding()).to_string(),
             });
         }
-        if builder.metrics.encoding() == MessageFormat::Syslog {
+        if matches!(
+            builder.metrics.encoding(),
+            KafkaReceiverEncoding::Syslog | KafkaReceiverEncoding::TextTransformation
+        ) {
             return Err(KafkaReceiverError::ConfigUnsupportedEncoding {
                 signal: "metrics".to_string(),
-                encoding: "syslog".to_string(),
+                encoding: KafkaReceiverConfig::encoding_name(builder.metrics.encoding())
+                    .to_string(),
             });
+        }
+        for (name, signal) in [
+            ("traces", &builder.traces),
+            ("metrics", &builder.metrics),
+            ("logs", &builder.logs),
+        ] {
+            match (
+                signal.encoding(),
+                signal.transformation_query_type(),
+                signal.transformation_query(),
+            ) {
+                (KafkaReceiverEncoding::TextTransformation, None, _) => {
+                    return Err(KafkaReceiverError::ConfigMissingTextTransformationQueryType);
+                }
+                (KafkaReceiverEncoding::TextTransformation, Some(_), None | Some("")) => {
+                    return Err(KafkaReceiverError::ConfigMissingTextTransformationQuery);
+                }
+                (KafkaReceiverEncoding::TextTransformation, Some(_), Some(query))
+                    if query.trim().is_empty() =>
+                {
+                    return Err(KafkaReceiverError::ConfigMissingTextTransformationQuery);
+                }
+                (KafkaReceiverEncoding::TextTransformation, Some(_), Some(_)) | (_, None, None) => {
+                }
+                (_, _, _) => {
+                    return Err(KafkaReceiverError::ConfigUnexpectedTransformationQuery {
+                        signal: name.to_string(),
+                    });
+                }
+            }
         }
 
         // Topics must be disjoint across signals
@@ -1222,19 +1305,19 @@ impl KafkaReceiverConfig {
 
     /// Get the traces encoding.
     #[must_use]
-    pub fn traces_encoding(&self) -> MessageFormat {
+    pub fn traces_encoding(&self) -> KafkaReceiverEncoding {
         self.inner.traces.encoding
     }
 
     /// Get the metrics encoding.
     #[must_use]
-    pub fn metrics_encoding(&self) -> MessageFormat {
+    pub fn metrics_encoding(&self) -> KafkaReceiverEncoding {
         self.inner.metrics.encoding
     }
 
     /// Get the logs encoding.
     #[must_use]
-    pub fn logs_encoding(&self) -> MessageFormat {
+    pub fn logs_encoding(&self) -> KafkaReceiverEncoding {
         self.inner.logs.encoding
     }
 
@@ -1243,11 +1326,29 @@ impl KafkaReceiverConfig {
     /// Single signal-keyed accessor so callers (e.g. `detect_message_format`)
     /// need not select among the per-signal `*_encoding()` accessors.
     #[must_use]
-    pub fn encoding_for(&self, signal: SignalType) -> MessageFormat {
+    pub fn encoding_for(&self, signal: SignalType) -> KafkaReceiverEncoding {
         match signal {
             SignalType::Traces => self.inner.traces.encoding,
             SignalType::Metrics => self.inner.metrics.encoding,
             SignalType::Logs => self.inner.logs.encoding,
+        }
+    }
+
+    /// Get the configured text transformation query.
+    #[must_use]
+    pub fn text_transformation_query(&self) -> Option<(TextTransformationQueryType, &str)> {
+        self.inner
+            .logs
+            .transformation_query_type()
+            .zip(self.inner.logs.transformation_query())
+    }
+
+    const fn encoding_name(encoding: KafkaReceiverEncoding) -> &'static str {
+        match encoding {
+            KafkaReceiverEncoding::OtlpProto => "otlp_proto",
+            KafkaReceiverEncoding::OtapProto => "otap_proto",
+            KafkaReceiverEncoding::Syslog => "syslog",
+            KafkaReceiverEncoding::TextTransformation => "text_transformation",
         }
     }
 
