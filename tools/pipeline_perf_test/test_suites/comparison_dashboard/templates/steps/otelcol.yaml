@@ -119,6 +119,16 @@ steps:
               raise_for_status: false
     action:
       no_op: {}
+  - name: Stop Monitoring Collector
+    action:
+      component_action:
+        phase: stop_monitoring
+        target: go-collector
+  - name: Stop Collector
+    action:
+      component_action:
+        phase: destroy
+        target: go-collector
   - name: Stop Backend
     hooks:
       run:
@@ -139,14 +149,12 @@ steps:
         targets:
           - backend-service
           - load-generator
-          - go-collector
   - name: Destroy All
     action:
       multi_component_action:
         phase: destroy
         targets:
           - load-generator
-          - go-collector
           - backend-service
   - name: Run Report
     action:

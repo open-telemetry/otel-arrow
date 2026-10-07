@@ -194,7 +194,7 @@ impl CompiledHeaderPropagationPolicy {
             }
         }
 
-        let selected = self.default.selector.selects_unqualified_str(name)
+        let selected = self.default.selector.selects_primitive_header(name)
             || self
                 .compiled_named
                 .iter()
@@ -225,7 +225,7 @@ impl CompiledHeaderPropagationPolicy {
             }
         }
 
-        if self.default.selector.selects_unqualified_str(name) {
+        if self.default.selector.selects_primitive_header(name) {
             return (self.default.action, self.default.name, None);
         }
         for binding in &self.compiled_named {

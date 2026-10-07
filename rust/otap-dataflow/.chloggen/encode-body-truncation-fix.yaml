@@ -1,15 +1,17 @@
+# Use this changelog template to create an entry for release notes.
+
 # One of 'breaking', 'deprecation', 'new_component', 'enhancement', 'bug_fix'
 change_type: bug_fix
 
 # The name of the component, or a single word describing the area of concern, (e.g. engine, otap).
 # Must be one of the components listed in rust/otap-dataflow/.chloggen/config.yaml.
-component: pipeline
+component: observability
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
-note: "Geneva exporter now marks NACKs permanent for errors a retry can never fix, so retry processors stop retrying them"
+note: "Fix silent loss of internal log message bodies when they overflow the encoding buffer."
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
-issues: [4238]
+issues: [1746]
 
 # (Optional) One or more lines of additional information to render under the primary note.
 # These lines will be padded with 2 spaces and then inserted directly into the document.
@@ -17,7 +19,7 @@ issues: [4238]
 # section with the specific action consumers must take. Keep notes to 200
 # characters and subtext to 300 characters.
 subtext: |
-  Malformed payloads and non-retryable rejections fail fast. Request timeouts,
-  throttling, and missing agent-fed account groups remain retryable. Mixed
-  upload failures retain retries if any failure is transient. Exporter
-  credential and routing failures are not reported as invalid incoming telemetry.
+  A bare &str log message body that overflowed the encoding buffer was
+  silently dropped in full with no truncation marker. It now truncates with
+  a "[...]" suffix, like Debug-formatted bodies and attribute fields already
+  did.
