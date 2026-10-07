@@ -202,11 +202,12 @@ clickhouse = [
     "dep:ryu",
 ]
 clickhouse-bench = ["clickhouse"]
-geneva-metrics-exporter = ["dep:crc32fast"]
 geneva = [
     "dep:geneva-uploader",
     "dep:opentelemetry-proto",
     "dep:url",
+    # Geneva metrics exporter.
+    "dep:crc32fast",
 ]
 geneva-certificate-auth = [
     "geneva",
