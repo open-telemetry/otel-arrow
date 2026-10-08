@@ -2125,7 +2125,7 @@ mod test {
             .unwrap();
 
             let requests =
-                run_web_socket_test_with_config(responses, control_plane, 3, config).await;
+                run_web_socket_test_with_config(responses, control_plane, 3, config, None).await;
 
             let status = requests[2].remote_config_status.as_ref().unwrap();
             assert_eq!(status.status, RemoteConfigStatuses::Failed as i32);

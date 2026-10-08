@@ -648,20 +648,41 @@ impl<
         current_config: &OtelDataflowSpec,
         desired_config: &OtelDataflowSpec,
     ) -> Result<(), ControlPlaneError> {
-        let top_level_changed = current_config.policies != desired_config.policies;
+        // Context declarations are excluded from this comparison: they are
+        // validated separately via compiled context bindings, which already
+        // reject incompatible changes to pipelines that keep running. An
+        // absent group-level policy block is treated the same as one that
+        // only declares context entries, so moving context declarations
+        // between scopes is not mistaken for a shared-policy change.
+        fn normalized_group_policies(
+            policies: Option<&otel_arrow_dfe_config::policy::Policies>,
+        ) -> otel_arrow_dfe_config::policy::Policies {
+            policies
+                .map(otel_arrow_dfe_config::policy::Policies::without_context)
+                .unwrap_or_default()
+        }
+
+        let top_level_changed =
+            current_config.policies.without_context() != desired_config.policies.without_context();
         let group_policy_changed = desired_config
             .groups
             .iter()
-            .any(
-                |(group_id, desired_group)| match current_config.groups.get(group_id) {
+            .any(|(group_id, desired_group)| {
+                let desired_normalized = normalized_group_policies(desired_group.policies.as_ref());
+                match current_config.groups.get(group_id) {
                     Some(current_group) => {
-                        current_group.policies != desired_group.policies
+                        let current_normalized =
+                            normalized_group_policies(current_group.policies.as_ref());
+                        current_normalized != desired_normalized
                             && (!current_group.pipelines.is_empty()
                                 || !desired_group.pipelines.is_empty())
                     }
-                    None => desired_group.policies.is_some() && !desired_group.pipelines.is_empty(),
-                },
-            );
+                    None => {
+                        desired_normalized != otel_arrow_dfe_config::policy::Policies::default()
+                            && !desired_group.pipelines.is_empty()
+                    }
+                }
+            });
         if top_level_changed || group_policy_changed {
             return Err(ControlPlaneError::UnsupportedMutation {
                 message: "live reconciliation does not support changing top-level or group policy declarations; move the changes to pipeline-level policies and retry"
