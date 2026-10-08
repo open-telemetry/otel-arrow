@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791484516857,
+  "lastUpdate": 1791485507553,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -56599,6 +56599,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 107.48,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "drewrelmas@gmail.com",
+            "name": "Drew Relmas",
+            "username": "drewrelmas"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "43b95f58c167252ac5962435a6c9a78690dfc613",
+          "message": "chore(query-engine): Reuse resource and scope payloads when merging conditional branches when possible (#4295)\n\n# Chore Summary\n\n<!-- markdownlint-disable MD013 -->\n\n<!-- Briefly describe the maintenance work in this PR. -->\n\nReuse unchanged resource and scope attribute payloads when merging\nconditional branches instead of concatenating branch-local copies.\n\n## How it works\n\nLog records share resource and scope data. Previously, each conditional\nbranch copied that shared data and the merge joined all the copies back\ntogether.\n\n```text\nBefore\n\noriginal parent data\n     /       \\\n branch A   branch B\n  copy       copy\n     \\       /\n  merge the copies\n\nNow\n\noriginal parent data --------------------+\n     /       \\                           |\n branch A   branch B                     |\n records    records                      |\n     \\       /                           |\n    merge records                        |\n          +------------------------------+\n             reuse original parent data\n```\n\nEach pipeline stage reports whether its output requires parent\nreindexing. Parent mutations require reindexing, so when parent IDs can\nbe preserved the merge drops unchanged branch-local copies and reuses\nthe original data once. If records for a parent were all removed, that\nunused parent is filtered out before reuse.\n\nParent selection masks are allocated lazily. When every parent survives,\nthe original scope and resource attribute batches are reused without\ntemporary selection buffers.\n\n```text\nDoes any branch require parent reindexing?\n                  |\n           +------+------+\n           |             |\n          no            yes\n           |             |\ndiscard unchanged    use the existing\nparent copies and    concat/reindex path\nrestore originals    for both payloads\n```\n\nChanging either resource or scope attributes uses the existing\nconcat/reindex path for both payload types. Nested conditionals, forks,\nand apply stages propagate the same parent behavior contract.\n\n## Performance\n\n| Case | Example OPL query | Median change | Range |\n| --- | --- | ---: | ---: |\n| All parent-reuse cases | - | 8.0% faster | 3.2% slower to 25.7% faster\n|\n| Root-field mutation | `logs \\| if (severity_number > 10) { set\nseverity_text = \"selected\" }` | 9.0% faster | 7.0% to 25.7% faster |\n| Parent read | `logs \\| if (severity_number > 10) { set severity_text =\nresource.attributes[\"resource.id\"] }` | 11.1% faster | 2.6% slower to\n22.5% faster |\n| Record-attribute mutation | `logs \\| if (severity_number > 10) { set\nattributes[\"severe\"] = \"yes\" }` | 4.7% faster | 3.2% slower to 14.9%\nfaster |\n| Complete parent removal | `logs \\| if (severity_number > 10) { where\nseverity_number < 0 }` | 0.2% slower | 1.5% slower to 6.3% faster |\n| Unchanged reindex control | `logs \\| if (severity_number > 10) { set\nresource.attributes[\"branch\"] = \"selected\" }` | 1.0% faster | 4.5%\nslower to 8.1% faster |\n\nResults are median times from six Criterion `--quick` runs across\nmultiple batch sizes and selectivities. The root-field case provides the\nclearest signal because it isolates merge overhead. Results within the\nunchanged control's 4.5% slower to 8.1% faster range are\nnoise-sensitive.\n\n## Related issue\n\n<!-- Link the related issue if one exists. -->\n\nCloses #4284",
+          "timestamp": "2026-10-08T18:04:09Z",
+          "tree_id": "9d30758b260d72059de39e7a69388721f74d2742",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/43b95f58c167252ac5962435a6c9a78690dfc613"
+        },
+        "date": 1791485491049,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 87.16,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 5.02,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.13,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.99,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 3.14,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.12,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 3.03,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.01,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.79,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 74.31,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 5.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.79,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.56,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.29,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.89,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.73,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.68,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.5,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.44,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 120.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 107.54,
             "unit": "MB"
           }
         ]
