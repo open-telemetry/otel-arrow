@@ -347,13 +347,13 @@ jobs:
             exit 1
           fi
           echo "ORACLE_INSTANT_CLIENT_DIR=$client_dir" >> "$GITHUB_ENV"
-          echo "ORACLE_INSTANT_CLIENT_DIR=$client_dir" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$LD_LIBRARY_PATH" >> "$GITHUB_ENV"
       - name: Create Oracle credentials
         shell: bash
         run: |
           set -euo pipefail
-          set -euo pipefail
-          chmod 600 "$RUNNER_TEMP/oracle-password"
+          umask 077
+          printf '%s' "${ORACLE_PWD:?Oracle password is required}" > "$RUNNER_TEMP/oracle-password"
           chmod 600 "$RUNNER_TEMP/oracle-password"
           echo "ORACLE_PASSWORD_FILE=$RUNNER_TEMP/oracle-password" >> "$GITHUB_ENV"
       - name: Wait for Oracle
