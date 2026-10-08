@@ -96,9 +96,7 @@ def test_render_template_hook_rendering_error(mock_get_template):
 
 # Scenario: A template references the framework metadata via the implicit 'ctx'
 #   mapping while no explicit 'ctx' variable is configured.
-# Guarantees: render_template exposes the context's metadata to templates, so a
-#   rendered config can self-identify with the running test (e.g.
-#   ctx["test.name"]) without the suite repeating that value.
+# Guarantees: render_template exposes the context's metadata to templates.
 def test_render_template_exposes_ctx_metadata(tmp_path):
     template_path = tmp_path / "template.j2"
     output_path = tmp_path / "output.txt"
