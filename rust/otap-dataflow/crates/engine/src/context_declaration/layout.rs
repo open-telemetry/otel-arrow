@@ -389,10 +389,11 @@ impl ContextLayout {
             .iter()
             .flat_map(|declaration| &declaration.definition.0)
             .filter_map(|part| {
-                Some(ContextFieldLayout {
-                    name: part.source_name()?.clone(),
-                    domain: part.domain()?,
-                })
+                part.referenced_source()
+                    .map(|(domain, name)| ContextFieldLayout {
+                        name: name.clone(),
+                        domain,
+                    })
             })
             .collect::<BTreeSet<_>>();
         let mut fields = BTreeSet::new();
@@ -451,12 +452,9 @@ impl ContextLayout {
                     });
                     continue;
                 }
-                let domain = part
-                    .domain()
-                    .expect("referenced context part has an authority domain");
-                let source_name = part
-                    .source_name()
-                    .expect("referenced context part has a source name");
+                let (domain, source_name) = part
+                    .referenced_source()
+                    .expect("non-constant context part has a referenced source");
                 let mut matching = fields
                     .iter()
                     .enumerate()
