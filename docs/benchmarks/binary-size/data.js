@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791489011249,
+  "lastUpdate": 1791494565945,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -57031,6 +57031,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 107.54,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "pritishnahar@gmail.com",
+            "name": "Pritish Nahar",
+            "username": "pritishnahar95"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "d311a2de5634eddc6ce169e3dc763bcffb6b17df",
+          "message": "feat(query-engine): read resource and scope attributes from metric data points (#4298)\n\n# Change summary\n\nSupports reading resource and scope attributes in expressions applied to\nmetric data points.\n\n```kql\nmetrics | apply data_points {\n  set attributes[\"pipeline\"] = instrumentation_scope.attributes[\"pipeline.id\"] |\n  set attributes[\"instance\"] = resource.attributes[\"service.instance.id\"] |\n  // nested reads and function arguments also work\n  set attributes[\"component\"] = coalesce(\n    instrumentation_scope.attributes[\"custom\"][\"componentName\"],\n    instrumentation_scope.attributes[\"flow.id\"]\n  ) |\n  where resource.attributes[\"env\"] == \"prod\"\n}\n```\n\nEach data point takes the value from its parent metric's resource or\nscope.\n\n**Changes**\n\n- `ColumnAccessor::try_from_source_value_accessor` allows\n`resource.attributes[...]` and\n`instrumentation_scope.attributes[...]` for data points when the\naccessor is an expression\nsource. Destinations, `rename`, `remove`, and struct fields such as\n`instrumentation_scope.name`\n  are still rejected for data points.\n- The expression planner wraps these reads in a single-child\n`JoinAndEval` with\n`align_children_to_record`, so the value is data point scoped for\nassignment, comparison, and\n  function arguments.\n- Alignment resolves the attribute row once per metric, then gathers it\nfor each data point through\n`data_point.parent_id -> metric.id`. Only the needed `scope.id` or\n`resource.id` is read.\n- Comparing a resource or scope attribute to `null` from data points\nreturns\n`NotYetSupportedError` rather than falling back to an incorrect\ncomparison.\n\n## Related issue\n\n* Part of #3722 (resource and scope reads). \n\n`if` inside `apply data_points` remains unsupported.\n\n## Validation\n\n- New tests in `apply/test/data_point.rs` cover all five data point\ntypes across two resources\nwith two scopes each: resource and scope assignment, nested scope reads\nwith `coalesce`\nfallback, partially present scope attributes, filtering, and the\nunsupported cases.\n- New benchmark `data_point_parent_attrs` (16 scopes x 4 gauges).\nReading a parent attribute\ncosts 7-15% more than copying a data point attribute at 4096 points, and\nis within run-to-run\n  noise at 16384 points:\n\n| Data points | Data point attr | Scope attr | Nested scope attr |\nResource attr |\n  | --- | --- | --- | --- | --- |\n  | 512 | 39.5 us | 50.4 us | 59.4 us | 44.3 us |\n  | 4096 | 233 us | 264 us | 269 us | 250 us |\n  | 16384 | 0.97 ms | 1.06 ms | 1.05 ms | 1.04 ms |\n\n## User-facing changes\n\nResource and scope attributes can be read in transform queries applied\nto metric data points.\n\nCo - authored by @albertlockett\n\n---------\n\nCo-authored-by: albertlockett <a.lockett@f5.com>",
+          "timestamp": "2026-10-08T20:15:21Z",
+          "tree_id": "78476a9198904a799e9fb580162d0e84add259bb",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/d311a2de5634eddc6ce169e3dc763bcffb6b17df"
+        },
+        "date": 1791494543177,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 87.19,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 5.02,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.09,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.99,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 3.14,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.12,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 3.03,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.01,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.8,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 74.27,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 5.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.79,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.56,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.88,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.73,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.68,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.5,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.44,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.33,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 120.43,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 107.48,
             "unit": "MB"
           }
         ]
