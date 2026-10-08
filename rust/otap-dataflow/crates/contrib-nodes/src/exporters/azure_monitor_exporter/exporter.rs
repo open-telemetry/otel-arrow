@@ -1224,66 +1224,6 @@ mod tests {
         );
     }
 
-    /// Scenario: The exporter starts, processes both OTLP byte representations, and shuts down.
-    /// Guarantees: Its startup-resolved view handles repeated messages without creating codecs,
-    /// and empty batches retain their permanent NACK behavior.
-    #[tokio::test]
-    async fn startup_plan_preserves_encoded_inspection() {
-        let exporter = AzureMonitorExporter::new(
-            create_test_pipeline_ctx(),
-            create_test_config(),
-            Box::new(MockTokenProvider),
-        )
-        .unwrap();
-        let (effect_handler, mut completion_rx) = completion_harness();
-        let codecs = effect_handler.codec_service().clone();
-        let codec = codecs.registry().resolve(&PdataEncoding::OTLP).unwrap();
-        let inputs: [OtapPayload; 2] = [
-            OtlpProtoBytes::ExportLogsRequest(Bytes::new()).into(),
-            codec.admit(SignalType::Logs, Bytes::new()).unwrap().into(),
-        ];
-        let (control_tx, pdata_tx, inbox) = make_msg_channel(2);
-        let drive_messages = async {
-            for payload in inputs {
-                pdata_tx
-                    .send_async(
-                        OtapPdata::new(Context::default(), payload).test_subscribe_to(
-                            Interests::NACKS,
-                            TestCallData::default().into(),
-                            42,
-                        ),
-                    )
-                    .await
-                    .unwrap();
-                match completion_rx.recv().await.expect("receive completion") {
-                    PipelineCompletionMsg::DeliverNack { nack } => {
-                        assert!(nack.permanent);
-                        assert_eq!(nack.reason, "No valid log entries produced");
-                    }
-                    other => panic!("expected permanent NACK, got {other:?}"),
-                }
-                assert_eq!(codecs.test_instance_count().unwrap(), 0);
-            }
-            control_tx
-                .send_async(NodeControlMsg::Shutdown {
-                    deadline: Instant::now() + Duration::from_secs(1),
-                    reason: "test complete".to_owned(),
-                })
-                .await
-                .unwrap();
-            drop(pdata_tx);
-        };
-        let (result, ()) = tokio::time::timeout(Duration::from_secs(5), async {
-            tokio::join!(
-                Box::new(exporter).start(inbox, effect_handler),
-                drive_messages
-            )
-        })
-        .await
-        .expect("exporter processes input and shuts down");
-        let _terminal_state = result.unwrap();
-    }
-
     /// Scenario: pdata arrives before the bearer token provider has published a
     /// usable token.
     /// Guarantees: the message is refused instead of buffered, so the exporter
@@ -1319,9 +1259,9 @@ mod tests {
         assert!(exporter.state.msg_to_data.is_empty());
     }
 
-    /// Scenario: an empty logs batch arrives once a bearer token is cached.
-    /// Guarantees: the exporter permanently NACKs the batch so it cannot enter
-    /// a downstream retry loop.
+    /// Scenario: Empty legacy and generalized encoded OTLP logs arrive with a cached token.
+    /// Guarantees: Inspection creates no codecs, and each batch is permanently NACKed
+    /// without retaining pending state or entering a downstream retry loop.
     #[tokio::test]
     async fn empty_logs_batch_is_permanently_nacked() {
         let mut exporter = exporter_targeting("http://localhost".to_string()).await;
@@ -1331,36 +1271,45 @@ mod tests {
         let inspection_plan = effect_handler
             .resolve_inspection_plan(&[PdataEncoding::OTLP])
             .unwrap();
+        let codecs = effect_handler.codec_service();
+        let codec = codecs.registry().resolve(&PdataEncoding::OTLP).unwrap();
+        let inputs: [OtapPayload; 2] = [
+            OtlpProtoBytes::ExportLogsRequest(Bytes::new()).into(),
+            codec.admit(SignalType::Logs, Bytes::new()).unwrap().into(),
+        ];
         let mut msg_id = 0;
-        exporter
-            .handle_message(
-                &effect_handler,
-                &inspection_plan,
-                Ok(Message::PData(
-                    OtapPdata::new(
-                        Context::default(),
-                        OtlpProtoBytes::ExportLogsRequest(Bytes::new()).into(),
-                    )
-                    .test_subscribe_to(
-                        Interests::NACKS,
-                        TestCallData::default().into(),
-                        42,
-                    ),
-                )),
-                &mut msg_id,
-                &mut auth,
-            )
-            .await
-            .unwrap();
+        for (index, payload) in inputs.into_iter().enumerate() {
+            exporter
+                .handle_message(
+                    &effect_handler,
+                    &inspection_plan,
+                    Ok(Message::PData(
+                        OtapPdata::new(Context::default(), payload).test_subscribe_to(
+                            Interests::NACKS,
+                            TestCallData::default().into(),
+                            42,
+                        ),
+                    )),
+                    &mut msg_id,
+                    &mut auth,
+                )
+                .await
+                .unwrap();
 
-        assert_eq!(msg_id, 1, "admitted pdata consumes a message id");
-        assert!(exporter.state.msg_to_data.is_empty());
-        match completion_rx.recv().await.expect("receive completion") {
-            PipelineCompletionMsg::DeliverNack { nack } => {
-                assert!(nack.permanent);
-                assert_eq!(nack.reason, "No valid log entries produced");
+            assert_eq!(
+                msg_id,
+                (index + 1) as u64,
+                "each batch consumes a message id"
+            );
+            assert!(exporter.state.msg_to_data.is_empty());
+            match completion_rx.recv().await.expect("receive completion") {
+                PipelineCompletionMsg::DeliverNack { nack } => {
+                    assert!(nack.permanent);
+                    assert_eq!(nack.reason, "No valid log entries produced");
+                }
+                PipelineCompletionMsg::DeliverAck { .. } => panic!("expected permanent NACK"),
             }
-            PipelineCompletionMsg::DeliverAck { .. } => panic!("expected permanent NACK"),
+            assert_eq!(codecs.test_instance_count().unwrap(), 0);
         }
     }
 
