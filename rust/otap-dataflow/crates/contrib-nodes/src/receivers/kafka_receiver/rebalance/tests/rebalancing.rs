@@ -990,9 +990,8 @@ async fn handle_revoke_commits_before_revoke_reaches_broker() {
 }
 
 /// Scenario (commit-before-revoke accounting): a commit-before-revoke enqueues
-/// successfully (so no local enqueue failure occurs), then the broker rejects
-/// that commit -- delivered, as librdkafka does, through the shared
-/// `commit_callback`.
+/// successfully against a healthy broker (so no local enqueue failure occurs),
+/// then the broker rejects that commit.
 /// Guarantees: a broker rejection of the async commit-before-revoke is counted
 /// as a generic commit failure (`offset_commit_errors`) and NOT as a rebalance
 /// enqueue failure (`rebalance_commit_enqueue_errors`), which stays zero because
@@ -1026,12 +1025,8 @@ async fn broker_rejected_commit_before_revoke_counts_as_commit_error_not_enqueue
             let _ = revoke.add_partition(TOPIC, 0);
             state.handle_revoke(&consumer, &revoke);
 
-            // Simulate the broker rejecting that async commit-before-revoke: the
-            // outcome is delivered on the shared commit callback (the single
-            // source of truth for commit success/failure), exactly as librdkafka
-            // would report a rejected async commit.
-            let ctx = RebalancingConsumerContext::Default(Arc::clone(&state));
-            ctx.commit_callback(
+            // Simulate the broker rejecting that async commit-before-revoke.
+            consumer.context().commit_callback(
                 Err(rdkafka::error::KafkaError::ClientCreation(
                     "broker rejected commit".to_string(),
                 )),
@@ -1048,6 +1043,89 @@ async fn broker_rejected_commit_before_revoke_counts_as_commit_error_not_enqueue
                 "a broker-rejected commit-before-revoke must be counted as a \
                  generic commit failure (offset_commit_errors)",
             );
+        },
+    )
+    .await;
+}
+
+/// Scenario (commit-before-revoke accounting): the broker genuinely rejects the
+/// async commit-before-revoke. `handle_revoke` enqueues the commit against a
+/// live mock broker configured (via `fail_offset_commits`) to reject every
+/// OffsetCommit RPC, and the consumer queue is polled so the enqueued commit is
+/// forwarded to the broker.
+/// Guarantees: the rejected commit never persists -- the broker reports no
+/// committed offset at or beyond the committable watermark -- so a lost
+/// commit-before-revoke yields at-least-once (the new owner re-reads) rather
+/// than advancing committed state past un-persisted data; and
+/// `rebalance_commit_enqueue_errors` stays zero because the enqueue itself
+/// succeeded (only the broker rejected). 
+#[tokio::test]
+async fn broker_rejects_commit_before_revoke_offset_does_not_persist() {
+    const TOPIC: &str = "rebalance-revoke-reject-e2e-traces";
+    const GROUP: &str = "revoke-reject-e2e-group";
+    const COMMITTABLE: i64 = 5;
+    with_cluster(
+        KafkaTestCluster::builder().topic_with(TOPIC, 1, 1),
+        |cluster| async move {
+            let state = Arc::new(RebalanceState::new(false));
+            let consumer = mock_base_consumer(&cluster, GROUP, Arc::clone(&state));
+
+            // Own the partition with a committable offset so commit-before-revoke
+            // actually issues a commit.
+            let mut full = TopicPartitionList::new();
+            let _ = full.add_partition(TOPIC, 0);
+            state.set_assignment(&full);
+            let mut snapshot = HashMap::new();
+            let _ = snapshot.insert((TOPIC.to_string(), 0), COMMITTABLE);
+            state.set_committable_snapshot(snapshot);
+
+            // Make the broker reject every OffsetCommit RPC. A long error run
+            // blankets the commit-before-revoke and any follow-up attempts so no
+            // commit can persist for the duration of the poll window below.
+            cluster
+                .faults()
+                .fail_offset_commits(&[RDKafkaRespErr::RD_KAFKA_RESP_ERR_REQUEST_TIMED_OUT; 64]);
+
+            // Revoke the partition: commit-before-revoke enqueues a real async
+            // commit against the (rejecting) broker.
+            let mut revoke = TopicPartitionList::new();
+            let _ = revoke.add_partition(TOPIC, 0);
+            state.handle_revoke(&consumer, &revoke);
+
+            // Drive the consumer queue so the enqueued async commit is forwarded
+            // to the broker (and rejected). The committed-offset probe is the
+            // authoritative end-to-end signal: a rejected commit must leave the
+            // broker with no committed offset at or beyond the committable
+            // watermark. Poll for a bounded window; the predicate stays true the
+            // whole time (the commit can never persist while rejected), so this
+            // simply exercises the forward/reject round-trip before asserting.
+            let insp = cluster.inspect_group(GROUP);
+            let _ = poll_until(Duration::from_secs(2), Duration::from_millis(100), || {
+                let _ = consumer.poll(Duration::from_millis(0));
+                false
+            })
+            .await;
+
+            let committed = insp
+                .committed_offset(TOPIC, 0)
+                .expect("committed-offset probe failed");
+            assert!(
+                committed.is_none_or(|o| o < COMMITTABLE),
+                "a broker-rejected commit-before-revoke must not persist the \
+                 committable offset ({COMMITTABLE}); committed = {committed:?}",
+            );
+
+            // The enqueue succeeded; only the broker rejected, so the local
+            // enqueue-failure counter must stay zero.
+            assert_eq!(
+                state.drain_metrics().rebalance_commit_enqueue_errors,
+                0,
+                "a broker rejection must not be counted as a local enqueue failure",
+            );
+
+            // Clear the fault so the consumer close on drop does not stall
+            // teardown on the (now irrelevant) rejecting broker.
+            cluster.faults().clear_offset_commit_failures();
         },
     )
     .await;
