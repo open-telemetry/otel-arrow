@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791496498721,
+  "lastUpdate": 1791497697894,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -57274,6 +57274,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
             "value": 3.56,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.88,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.73,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.68,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.5,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.44,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.33,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 120.43,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 107.48,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "222020+pmariani@users.noreply.github.com",
+            "name": "pmariani",
+            "username": "pmariani"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "c25d3c57c88d2c8be5adc2f216821a5a79ff0e98",
+          "message": "[2/2] perf: single-pass allocation-free implementation of OtlpProtoBytes ... (#4114)\n\n...num_items() [2/2] (#2883)\n\nKey Metrics count data points optimization authored by @albertlockett.\n\n# Change summary\n\nThis PR is the second half of changes to address #2883 .\nThe first PR is #4113 and should be reviewed and merged first. Then I\nwill rebase this PR and it will show only its code changes.\n\nOtlpProtoBytes num_items() implementation is updated to perform an\nallocation-free single-pass over the data bytes and compute the count of\nitems for Logs, Traces and Metrics.\n\nBenchmark delta results are as follows, as computed on my development,\nWSL-based machine, and compared to baseline captured in #4113 .\n(`cargo bench -p benchmarks --bench payload_measurements -- \"PData OTLP\nnum_items overhead\" --baseline WITH-ALLOC`)\n\n### Logs\n\n| | 10 | 100 | 1000 |\n|--|--|--|--|\n| cached | -45% | -45%| -44%|\n| uncached| -36% | -50% | -50%| \n\n### Traces\n\n| | 10 | 100 | 1000 |\n|--|--|--|--|\n| cached | -45% | -45%| -45%|\n| uncached| -27% | -44% | -46%| \n\n### Metrics\n\n| | 10 | 100 | 1000 |\n|--|--|--|--|\n| cached | -46% | -46%| -45%|\n| uncached| -28% | -40% | -32%| \n\n## Related issue\n\n* Closes #2883 \n\n## Validation\n\n- `test_count_item_allocations` is now enabled and passing, showing that\nno heap allocation is performed by num_items() for Logs, Traces, and\nMetrics.\n- The performance benchmark produces the results described above.\n- Various permutations of Metrics `OneOf` fields are tested to assert\nthat the correct number of items is returned.\n- `cargo xtask check` and `cargo xtask check-benches` pass.  \n\n## User-facing changes\n\nThe PR includes a chloggen entry.\n\n---------\n\nCo-authored-by: albertlockett <a.lockett@f5.com>",
+          "timestamp": "2026-10-08T21:16:51Z",
+          "tree_id": "0896c21e86b9084d7e8b49b2949bd8552cc00332",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/c25d3c57c88d2c8be5adc2f216821a5a79ff0e98"
+        },
+        "date": 1791497675608,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 87.18,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 5.02,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.13,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.99,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 3.14,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.12,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 3.03,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.01,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.8,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 74.3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 5.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.79,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.53,
             "unit": "MB"
           },
           {
