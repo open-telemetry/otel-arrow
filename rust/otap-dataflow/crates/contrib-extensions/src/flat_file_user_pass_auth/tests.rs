@@ -37,7 +37,7 @@ fn config_defaults_apply() {
     }))
     .expect("config is valid");
     assert_eq!(
-        SecretString::expose_secret(&cfg.username),
+        SecretString::expose_secret(cfg.username.as_ref().expect("inline username")),
         "<test_username>"
     );
     assert_eq!(
@@ -151,7 +151,8 @@ fn config_password_secret_file_refresh_accepts_minimum() {
 #[test]
 fn config_password_secret_file_refresh_rejects_unsupported_maximum() {
     let cfg = Config {
-        username: "test".into(),
+        username: Some("test".into()),
+        username_file: None,
         password_secret: None,
         password_secret_file: Some("<test_secret_path>".into()),
         password_secret_file_refresh: Duration::from_secs(365 * 24 * 60 * 60 + 1),
@@ -248,7 +249,8 @@ fn create_rejects_an_invalid_config() {
 
 fn make_extension() -> FlatFileUserPassAuthExtension {
     make_extension_with_config(Config {
-        username: "test_user".into(),
+        username: Some("test_user".into()),
+        username_file: None,
         password_secret: Some("test_pass".into()),
         password_secret_file: None,
         password_secret_file_refresh: Duration::from_secs(60),
@@ -257,7 +259,7 @@ fn make_extension() -> FlatFileUserPassAuthExtension {
 
 fn make_extension_with_config(config: Config) -> FlatFileUserPassAuthExtension {
     let (tx, _rx) = watch::channel(None);
-    let refresh_policy = if config.password_secret_file.is_some() {
+    let refresh_policy = if config.has_file_source() {
         BackgroundProviderRefreshPolicy::periodic(config.password_secret_file_refresh)
             .expect("valid periodic refresh policy")
     } else {
@@ -298,7 +300,8 @@ async fn password_file_takes_precedence_over_inline_secret() {
     named_file.write_all(b"file_pass").expect("content written");
 
     let source = FlatFileUserPassAuth::new(Config {
-        username: "test_user".into(),
+        username: Some("test_user".into()),
+        username_file: None,
         password_secret: Some("inline_pass".into()),
         password_secret_file: Some(named_file.path().into()),
         password_secret_file_refresh: Duration::from_secs(300),
@@ -316,7 +319,8 @@ async fn password_file_rotation_takes_effect() {
     let password_path = dir.path().join("password");
     std::fs::write(&password_path, "password-1").expect("initial password written");
     let source = FlatFileUserPassAuth::new(Config {
-        username: "test_user".into(),
+        username: Some("test_user".into()),
+        username_file: None,
         password_secret: None,
         password_secret_file: Some(password_path.clone()),
         password_secret_file_refresh: Duration::from_secs(300),
@@ -338,7 +342,8 @@ async fn background_refresh_publishes_rotated_password() {
     let password_path = dir.path().join("password");
     std::fs::write(&password_path, "password-1").expect("initial password written");
     let extension = make_extension_with_config(Config {
-        username: "test_user".into(),
+        username: Some("test_user".into()),
+        username_file: None,
         password_secret: None,
         password_secret_file: Some(password_path.clone()),
         password_secret_file_refresh: Duration::from_secs(300),
@@ -380,7 +385,8 @@ async fn file_credential_does_not_inherit_polling_interval_as_expiry() {
     let mut named_file = NamedTempFile::new().expect("file created");
     named_file.write_all(b"test_pass").expect("content written");
     let source = FlatFileUserPassAuth::new(Config {
-        username: "test_user".into(),
+        username: Some("test_user".into()),
+        username_file: None,
         password_secret: None,
         password_secret_file: Some(named_file.path().into()),
         password_secret_file_refresh: Duration::from_secs(300),
@@ -401,7 +407,8 @@ async fn get_credential_file_rejects_invalid_password_content() {
             .expect("content written");
 
         let source = FlatFileUserPassAuth::new(Config {
-            username: "test_user".into(),
+            username: Some("test_user".into()),
+            username_file: None,
             password_secret: None,
             password_secret_file: Some(named_file.path().into()),
             password_secret_file_refresh: Duration::from_secs(10),
@@ -425,7 +432,8 @@ async fn password_file_failure_does_not_fallback_to_inline_secret() {
     let dir = tempfile::tempdir().expect("tempdir created");
     let missing_path = dir.path().join("missing-password");
     let source = FlatFileUserPassAuth::new(Config {
-        username: "test_user".into(),
+        username: Some("test_user".into()),
+        username_file: None,
         password_secret: Some("inline_pass".into()),
         password_secret_file: Some(missing_path.clone()),
         password_secret_file_refresh: Duration::from_secs(300),
@@ -449,7 +457,8 @@ async fn get_credential_file_failure() {
     let dir = tempfile::tempdir().expect("tempdir created");
     let missing_path = dir.path().join("missing-password");
     let source = FlatFileUserPassAuth::new(Config {
-        username: "test_user".into(),
+        username: Some("test_user".into()),
+        username_file: None,
         password_secret: None,
         password_secret_file: Some(missing_path.clone()),
         password_secret_file_refresh: Duration::from_secs(300),
@@ -497,4 +506,150 @@ async fn credential_stream_receives_later_acquisition() {
 
     assert_eq!(streamed.expose_username(), acquired.expose_username());
     assert_eq!(streamed.expose_password(), acquired.expose_password());
+}
+
+/// Scenario: A username file replaces the inline username and polling is configured.
+/// Guarantees: File-only usernames are accepted and the interval applies even with an inline password.
+#[test]
+fn config_accepts_username_file_and_validates_polling() {
+    let cfg = config_from_json(serde_json::json!({
+        "username_file": "username",
+        "password_secret": "password",
+        "password_secret_file_refresh": "10s"
+    }))
+    .expect("file username with inline password");
+    assert!(cfg.username.is_none());
+    assert!(cfg.has_file_source());
+
+    assert!(
+        config_from_json(serde_json::json!({
+            "username_file": "username",
+            "password_secret": "password",
+            "password_secret_file_refresh": "9s"
+        }))
+        .is_err()
+    );
+    for field in ["username_file", "password_secret_file"] {
+        let mut config = serde_json::json!({
+            "username": "user",
+            "password_secret": "password"
+        });
+        config[field] = serde_json::json!("");
+        assert!(config_from_json(config).is_err());
+    }
+}
+
+/// Scenario: Both file sources and invalid inline alternatives are configured.
+/// Guarantees: Static validation defers to the preferred files instead of rejecting unused inline values.
+#[test]
+fn config_file_sources_take_precedence() {
+    let _ = config_from_json(serde_json::json!({
+        "username": "invalid:username",
+        "username_file": "username",
+        "password_secret": "",
+        "password_secret_file": "password"
+    }))
+    .expect("preferred file values are validated at acquisition");
+}
+
+/// Scenario: Both credentials are stored in files and no inline values are configured.
+/// Guarantees: Basic Auth acquisition reads the complete pair and strips trailing line endings.
+#[tokio::test]
+async fn reads_both_credentials_from_files() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let username_path = directory.path().join("username");
+    let password_path = directory.path().join("password");
+    std::fs::write(&username_path, "db_user\r\n").expect("write username");
+    std::fs::write(&password_path, "db_password\n").expect("write password");
+    let config = config_from_json(serde_json::json!({
+        "username_file": username_path,
+        "password_secret_file": password_path
+    }))
+    .expect("file-only configuration");
+    let credential = make_extension_with_config(config)
+        .get_credential()
+        .await
+        .expect("file credentials");
+    assert_eq!(credential.expose_username(), "db_user");
+    assert_eq!(credential.expose_password(), "db_password");
+}
+
+/// Scenario: A configured username file is missing despite a valid inline username.
+/// Guarantees: Acquisition fails rather than falling back to the inline credential.
+#[tokio::test]
+async fn username_file_failure_does_not_fallback() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let path = directory.path().join("missing-username");
+    let source = FlatFileUserPassAuth::new(
+        config_from_json(serde_json::json!({
+            "username": "inline_user",
+            "username_file": path,
+            "password_secret": "inline_password"
+        }))
+        .expect("configuration"),
+    );
+    let error = source.fetch().await.expect_err("file read failure");
+    assert!(error.to_string().contains(&path.display().to_string()));
+    assert!(!error.to_string().contains("inline_user"));
+    assert!(!error.to_string().contains("inline_password"));
+}
+
+/// Scenario: Username file contents are empty, invalid UTF-8, or violate Basic Auth rules.
+/// Guarantees: File-derived usernames retain Basic Auth validation without leaking file contents.
+#[tokio::test]
+async fn username_file_rejects_invalid_contents() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let path = directory.path().join("username");
+    let source = FlatFileUserPassAuth::new(
+        config_from_json(serde_json::json!({
+            "username_file": path,
+            "password_secret": "password"
+        }))
+        .expect("configuration"),
+    );
+    for contents in [
+        b"\r\n".as_slice(),
+        b"invalid:username",
+        b"invalid\tusername",
+        &[0xff],
+    ] {
+        std::fs::write(&path, contents).expect("write invalid username");
+        let error = source.fetch().await.expect_err("invalid file rejected");
+        assert!(!format!("{error:?} {error}").contains("invalid:username"));
+        assert!(!format!("{error:?} {error}").contains("invalid\tusername"));
+    }
+}
+
+/// Scenario: Only the username comes from a file and it rotates during active polling.
+/// Guarantees: The existing refresh setting publishes the new username with the unchanged inline password.
+#[tokio::test(start_paused = true)]
+async fn background_refresh_publishes_rotated_username() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let path = directory.path().join("username");
+    std::fs::write(&path, "user-1").expect("initial username");
+    let extension = make_extension_with_config(
+        config_from_json(serde_json::json!({
+            "username_file": path,
+            "password_secret": "password",
+            "password_secret_file_refresh": "5m"
+        }))
+        .expect("configuration"),
+    );
+    let mut stream = extension.credential_stream();
+    let (control_tx, control_rx) = tokio::sync::mpsc::channel(1);
+    let (_shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let control = ControlChannel::new(SharedReceiver::mpsc(control_rx), shutdown_rx);
+    let effect = otel_arrow_dfe_engine::testing::test_extension_effect_handler("test-ext".into());
+    // Run the provider using its shared-extension task contract.
+    let task = tokio::spawn(Box::new(extension).start(control, effect));
+
+    let initial = stream.next().await.expect("initial credential");
+    assert_eq!(initial.expose_username(), "user-1");
+    std::fs::write(&path, "user-2").expect("rotated username");
+    tokio::time::advance(Duration::from_secs(300)).await;
+    let rotated = stream.next().await.expect("rotated credential");
+    assert_eq!(rotated.expose_username(), "user-2");
+    assert_eq!(rotated.expose_password(), "password");
+    drop(control_tx);
+    let _ = task.await.expect("task joins").expect("clean shutdown");
 }

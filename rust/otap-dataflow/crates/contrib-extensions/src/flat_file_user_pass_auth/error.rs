@@ -5,6 +5,9 @@
 
 use std::path::PathBuf;
 
+use crate::common::secret_file::ReadSecretFileError;
+use crate::common::user_pass_file::ReadUserPassError;
+
 /// Errors raised while building the token client or acquiring tokens.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -23,4 +26,26 @@ pub enum Error {
         /// Human-readable cause reported.
         message: String,
     },
+}
+
+impl From<ReadUserPassError> for Error {
+    fn from(error: ReadUserPassError) -> Self {
+        match error {
+            ReadUserPassError::ReadFile {
+                path,
+                source: ReadSecretFileError::Read(source),
+                ..
+            } => Self::ReadCredentialFile { path, source },
+            ReadUserPassError::ReadFile {
+                field,
+                source: ReadSecretFileError::InvalidUtf8,
+                ..
+            } => Self::CredentialAcquisition {
+                message: format!("`{field}` does not contain valid UTF-8"),
+            },
+            ReadUserPassError::MissingValue { .. } => Self::CredentialAcquisition {
+                message: error.to_string(),
+            },
+        }
+    }
 }

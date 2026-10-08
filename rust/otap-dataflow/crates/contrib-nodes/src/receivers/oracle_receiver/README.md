@@ -39,8 +39,8 @@ exactly once and does not implement every capability proposed in the
 2. Install [Oracle Instant Client](#oracle-instant-client-installation) on the
    engine host and provision a least-privileged account with read access to the
    selected data.
-3. Set the username in a shared credential extension's YAML and mount its
-   password file so the engine can read it. Provide a persistent, writable
+3. Mount username and password files for a shared credential extension so the
+   engine can read them. Provide a persistent, writable
    checkpoint directory and bind the receiver's `basic_auth_provider`
    capability to the extension.
 4. Adapt the [complete pipeline example](#full-configuration), then use the
@@ -104,10 +104,11 @@ is process-global.
 
 For mounted secrets, use the
 [flat-file username/password extension](../../../../contrib-extensions/src/flat_file_user_pass_auth/README.md)
-with `username` in YAML and `password_secret_file`.
+with `username_file` and `password_secret_file`. An inline `username` remains
+supported for existing deployments.
 
-The extension owns password-file loading, validation, caching, and periodic
-refresh. Configure the username and password-file path like the following example:
+The extension owns credential-file loading, validation, caching, and periodic
+refresh. Configure both file paths like the following example:
 
 ```yaml
 version: otel_dataflow/v1
@@ -125,7 +126,7 @@ groups:
           oracle-credentials:
             type: urn:otel:extension:flat_file_user_pass_auth
             config:
-              username: oracle_reader
+              username_file: '${env:ORACLE_USERNAME_FILE:-/run/oracle-secrets/username}'
               password_secret_file: '${env:ORACLE_PASSWORD_FILE:-/run/oracle-secrets/password}'
               password_secret_file_refresh: 1m
         nodes:
@@ -137,6 +138,9 @@ groups:
               source_id: oracle-audit
             ....
 ```
+
+Coordinate updates to the two files; separate reads do not provide an atomic
+credential snapshot.
 
 An already-open Oracle session is reused, not reauthenticated on each refresh.
 New connections and reconnects use the current provider snapshot. Password

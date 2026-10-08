@@ -108,13 +108,13 @@
     "attributes": {}
   },
   {
-    "id": "urn:otel:extension:flat_file_user_pass_auth",
+    "id": "urn:otel:extension:flat_file_sasl_auth",
     "category": "Extension",
     "description": null,
     "attributes": {}
   },
   {
-    "id": "urn:otel:extension:oauth2_client_auth",
+    "id": "urn:otel:extension:flat_file_user_pass_auth",
     "category": "Extension",
     "description": null,
     "attributes": {}
