@@ -36,6 +36,7 @@ prost.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+crc32fast = { workspace = true, optional = true }
 linkme.workspace = true
 tokio.workspace = true
 tracing.workspace = true
@@ -205,6 +206,8 @@ geneva = [
     "dep:geneva-uploader",
     "dep:opentelemetry-proto",
     "dep:url",
+    # Geneva metrics exporter.
+    "dep:crc32fast",
 ]
 geneva-certificate-auth = [
     "geneva",
