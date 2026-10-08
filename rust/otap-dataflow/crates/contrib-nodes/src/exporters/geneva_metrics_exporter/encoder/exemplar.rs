@@ -5,7 +5,7 @@
 
 use super::model::*;
 use super::numeric::{serializable_as_i64, write_double_or_long};
-use super::writer::Writer;
+use super::writer::{Writer, signed_base128_size, unsigned_base128_size};
 
 pub(crate) const MAX_EXEMPLAR_PAYLOAD_SIZE: usize = 512;
 const MAX_SINGLE_EXEMPLAR_SIZE: usize = 200;
@@ -229,25 +229,6 @@ pub(crate) fn encoded_exemplar_size_from_parts(
 fn checked_size_add(field: &'static str, left: usize, right: usize) -> Result<usize, EncodeError> {
     left.checked_add(right)
         .ok_or(EncodeError::LengthCalculationOverflow { field })
-}
-
-fn unsigned_base128_size(mut value: u64) -> usize {
-    let mut size = 1;
-    while value >= 0x80 {
-        value >>= 7;
-        size += 1;
-    }
-    size
-}
-
-fn signed_base128_size(value: i64) -> usize {
-    let mut remaining = value.unsigned_abs() >> 6;
-    let mut size = 1;
-    while remaining != 0 {
-        remaining >>= 7;
-        size += 1;
-    }
-    size
 }
 
 #[cfg(test)]
