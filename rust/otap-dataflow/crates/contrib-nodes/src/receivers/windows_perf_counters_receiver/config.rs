@@ -9,9 +9,10 @@ use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
+pub(super) const MIN_SCALE_POWER10: i32 = -18;
+pub(super) const MAX_SCALE_POWER10: i32 = 18;
+
 const MAX_COUNTER_PATH_LEN: usize = 2_047;
-const MIN_SCALE_POWER10: i32 = -18;
-const MAX_SCALE_POWER10: i32 = 18;
 const MIN_COLLECTION_INTERVAL: Duration = Duration::from_secs(1);
 const MAX_COLLECTION_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 const MAX_INITIAL_DELAY: Duration = Duration::from_secs(24 * 60 * 60);
