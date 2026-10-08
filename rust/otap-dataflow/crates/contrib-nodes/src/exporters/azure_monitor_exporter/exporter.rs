@@ -70,7 +70,6 @@ pub struct AzureMonitorExporter {
     last_batch_queued_at: tokio::time::Instant,
     heartbeat: Option<Heartbeat>,
     token_provider: Option<Box<dyn BearerTokenProvider>>,
-    inspection_plan: Option<InspectionPlan>,
 }
 
 impl AzureMonitorExporter {
@@ -119,7 +118,6 @@ impl AzureMonitorExporter {
             last_batch_queued_at: tokio::time::Instant::now(),
             heartbeat,
             token_provider: Some(token_provider),
-            inspection_plan: None,
         })
     }
 
@@ -461,6 +459,7 @@ impl AzureMonitorExporter {
     async fn handle_message(
         &mut self,
         effect_handler: &EffectHandler<OtapPdata>,
+        inspection_plan: &InspectionPlan,
         msg: Result<Message<OtapPdata>, RecvError>,
         msg_id: &mut u64,
         auth: &mut impl HttpClientAuthProvider,
@@ -475,15 +474,6 @@ impl AzureMonitorExporter {
                 }
                 *msg_id += 1;
                 let (context, payload) = pdata.into_parts();
-
-                if self.inspection_plan.is_none() {
-                    self.inspection_plan =
-                        Some(effect_handler.resolve_inspection_plan(&[PdataEncoding::OTLP])?);
-                }
-                let inspection_plan = self
-                    .inspection_plan
-                    .as_ref()
-                    .expect("view plan initialized");
 
                 let view = match effect_handler.view(&payload, inspection_plan).await {
                     Ok(view) => view,
@@ -560,6 +550,7 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
         mut msg_chan: ExporterInbox<OtapPdata>,
         effect_handler: EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, EngineError> {
+        let inspection_plan = effect_handler.resolve_inspection_plan(&[PdataEncoding::OTLP])?;
         otel_info!(
             "azure_monitor_exporter.start",
             endpoint = self.config.api.dcr_endpoint.as_str(),
@@ -695,7 +686,7 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                             ));
                         }
                         other => {
-                            self.handle_message(&effect_handler, other, &mut msg_id, &mut auth).await?;
+                            self.handle_message(&effect_handler, &inspection_plan, other, &mut msg_id, &mut auth).await?;
                         }
                     }
                 }
@@ -722,6 +713,7 @@ mod tests {
     use otel_arrow_dfe_engine::local::message::LocalReceiver;
     use otel_arrow_dfe_engine::message::Receiver;
     use otel_arrow_dfe_engine::node::NodeId;
+    use otel_arrow_dfe_engine::runtime_services::CodecEffectHandler;
     use otel_arrow_dfe_engine::testing::{test_node, test_pipeline_ctx_with_interests};
     use otel_arrow_dfe_otap::pdata::Context;
     use otel_arrow_dfe_otap::testing::TestCallData;
@@ -1232,6 +1224,66 @@ mod tests {
         );
     }
 
+    /// Scenario: The exporter starts, processes both OTLP byte representations, and shuts down.
+    /// Guarantees: Its startup-resolved view handles repeated messages without creating codecs,
+    /// and empty batches retain their permanent NACK behavior.
+    #[tokio::test]
+    async fn startup_plan_preserves_encoded_inspection() {
+        let exporter = AzureMonitorExporter::new(
+            create_test_pipeline_ctx(),
+            create_test_config(),
+            Box::new(MockTokenProvider),
+        )
+        .unwrap();
+        let (effect_handler, mut completion_rx) = completion_harness();
+        let codecs = effect_handler.codec_service().clone();
+        let codec = codecs.registry().resolve(&PdataEncoding::OTLP).unwrap();
+        let inputs: [OtapPayload; 2] = [
+            OtlpProtoBytes::ExportLogsRequest(Bytes::new()).into(),
+            codec.admit(SignalType::Logs, Bytes::new()).unwrap().into(),
+        ];
+        let (control_tx, pdata_tx, inbox) = make_msg_channel(2);
+        let drive_messages = async {
+            for payload in inputs {
+                pdata_tx
+                    .send_async(
+                        OtapPdata::new(Context::default(), payload).test_subscribe_to(
+                            Interests::NACKS,
+                            TestCallData::default().into(),
+                            42,
+                        ),
+                    )
+                    .await
+                    .unwrap();
+                match completion_rx.recv().await.expect("receive completion") {
+                    PipelineCompletionMsg::DeliverNack { nack } => {
+                        assert!(nack.permanent);
+                        assert_eq!(nack.reason, "No valid log entries produced");
+                    }
+                    other => panic!("expected permanent NACK, got {other:?}"),
+                }
+                assert_eq!(codecs.test_instance_count().unwrap(), 0);
+            }
+            control_tx
+                .send_async(NodeControlMsg::Shutdown {
+                    deadline: Instant::now() + Duration::from_secs(1),
+                    reason: "test complete".to_owned(),
+                })
+                .await
+                .unwrap();
+            drop(pdata_tx);
+        };
+        let (result, ()) = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(
+                Box::new(exporter).start(inbox, effect_handler),
+                drive_messages
+            )
+        })
+        .await
+        .expect("exporter processes input and shuts down");
+        let _terminal_state = result.unwrap();
+    }
+
     /// Scenario: pdata arrives before the bearer token provider has published a
     /// usable token.
     /// Guarantees: the message is refused instead of buffered, so the exporter
@@ -1244,10 +1296,15 @@ mod tests {
         assert!(!auth.is_ready(), "no token has been polled yet");
         assert!(!auth.not_ready_reason().is_empty());
 
+        let effect_handler = test_effect_handler();
+        let inspection_plan = effect_handler
+            .resolve_inspection_plan(&[PdataEncoding::OTLP])
+            .unwrap();
         let mut msg_id = 0;
         exporter
             .handle_message(
-                &test_effect_handler(),
+                &effect_handler,
+                &inspection_plan,
                 Ok(Message::PData(OtapPdata::new(
                     Context::default(),
                     OtlpProtoBytes::ExportLogsRequest(Bytes::new()).into(),
@@ -1271,10 +1328,14 @@ mod tests {
         let mut auth = auth_with_cached_token().await;
         let (effect_handler, mut completion_rx) = completion_harness();
 
+        let inspection_plan = effect_handler
+            .resolve_inspection_plan(&[PdataEncoding::OTLP])
+            .unwrap();
         let mut msg_id = 0;
         exporter
             .handle_message(
                 &effect_handler,
+                &inspection_plan,
                 Ok(Message::PData(
                     OtapPdata::new(
                         Context::default(),

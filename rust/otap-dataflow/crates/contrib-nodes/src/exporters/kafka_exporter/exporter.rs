@@ -329,7 +329,6 @@ pub struct KafkaExporter {
     traces_allowed_topics_regex: Option<Vec<Regex>>,
     metrics_allowed_topics_regex: Option<Vec<Regex>>,
     logs_allowed_topics_regex: Option<Vec<Regex>>,
-    encoding_plan: Option<EncodingPlan>,
 }
 
 /// Factory registration for the Kafka exporter.
@@ -449,7 +448,6 @@ impl KafkaExporter {
             traces_allowed_topics_regex,
             metrics_allowed_topics_regex,
             logs_allowed_topics_regex,
-            encoding_plan: None,
         })
     }
 
@@ -613,6 +611,7 @@ impl KafkaExporter {
         pdata: OtapPdata,
         reporter: &dyn AckNackReporter,
         effect_handler: Option<&EffectHandler<OtapPdata>>,
+        encoding_plan: &EncodingPlan,
     ) -> Result<Option<(ExporterDeliveryFuture, SendMeta)>, KafkaExporterError> {
         let export_start = Instant::now();
         let signal_type = pdata.signal_type();
@@ -695,9 +694,8 @@ impl KafkaExporter {
         let encode_result = match (encoding, effect_handler) {
             (MessageFormat::OtlpProto, Some(effect_handler)) => {
                 let mut encoding_payload = payload.clone();
-                let encoding_plan = self.encoding_plan.expect("encoding plan initialized");
                 effect_handler
-                    .encode_owned(&mut encoding_payload, &encoding_plan)
+                    .encode_owned(&mut encoding_payload, encoding_plan)
                     .await
                     .map(|bytes| bytes.to_vec())
                     .map_err(|error| KafkaExporterError::OtlpConversion(error.to_string()))
@@ -1202,9 +1200,8 @@ impl Exporter<OtapPdata> for KafkaExporter {
         mut inbox: ExporterInbox<OtapPdata>,
         effect_handler: EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, EngineError> {
-        self.encoding_plan = Some(
-            effect_handler.resolve_encoding_plan(&PdataEncoding::OTLP, EncodePolicy::default())?,
-        );
+        let encoding_plan =
+            effect_handler.resolve_encoding_plan(&PdataEncoding::OTLP, EncodePolicy::default())?;
         effect_handler
             .info(&format!(
                 "Starting Kafka exporter with brokers: {}",
@@ -1273,7 +1270,12 @@ impl Exporter<OtapPdata> for KafkaExporter {
                     // gate), it drains one completion and returns it so we can
                     // finalize its ack/nack here.
                     if let Ok(Some((delivery, meta))) = self
-                        .enqueue_pdata(pdata, &ack_nack_reporter, Some(&effect_handler))
+                        .enqueue_pdata(
+                            pdata,
+                            &ack_nack_reporter,
+                            Some(&effect_handler),
+                            &encoding_plan,
+                        )
                         .await
                         && let Some((done_meta, done_result)) = in_flight.push(delivery, meta).await
                     {
@@ -1597,7 +1599,17 @@ pub mod test_support {
         // Pre-send failures (unconfigured signal, invalid dynamic topic, encode
         // failure) and synchronous enqueue failures are already reported by
         // `enqueue_pdata`; propagate any error and stop.
-        let (delivery, meta) = match exporter.enqueue_pdata(pdata, reporter, None).await? {
+        let encoding_plan = EncodingPlan::resolve(
+            &otel_arrow_dfe_pdata_codec::CodecRegistry::global()
+                .expect("valid test codec registry"),
+            &PdataEncoding::OTLP,
+            EncodePolicy::default(),
+        )
+        .expect("OTLP encoder is registered");
+        let (delivery, meta) = match exporter
+            .enqueue_pdata(pdata, reporter, None, &encoding_plan)
+            .await?
+        {
             Some(send) => send,
             None => return Ok(()),
         };
