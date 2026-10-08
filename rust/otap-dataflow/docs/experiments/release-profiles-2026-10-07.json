@@ -114,7 +114,8 @@
         "receiver_ready_median_ms": 33.50689203944057,
         "both_delivered_median_ms": 143.71938141994178,
         "rss_median_mib": 24.17578125
-      }
+      },
+      "current_profile": "release-perf"
     },
     {
       "name": "x64-release-transform",
@@ -212,7 +213,8 @@
         "receiver_ready_median_ms": 34.620336489751935,
         "both_delivered_median_ms": 148.62192701548338,
         "rss_median_mib": 36.6015625
-      }
+      },
+      "current_profile": "release-perf"
     },
     {
       "name": "x64-release-balanced",
@@ -311,7 +313,8 @@
         "receiver_ready_median_ms": 34.31924537289888,
         "both_delivered_median_ms": 144.11448943428695,
         "rss_median_mib": 24.14453125
-      }
+      },
+      "current_profile": "release-balanced"
     },
     {
       "name": "x64-release-balanced-transform",
@@ -410,7 +413,8 @@
         "receiver_ready_median_ms": 36.35693003889173,
         "both_delivered_median_ms": 150.1898345304653,
         "rss_median_mib": 35.046875
-      }
+      },
+      "current_profile": "release-balanced"
     },
     {
       "name": "x64-release-size",
@@ -509,7 +513,8 @@
         "receiver_ready_median_ms": 34.21894053462893,
         "both_delivered_median_ms": 142.89307151921093,
         "rss_median_mib": 19.9453125
-      }
+      },
+      "current_profile": "release-size"
     },
     {
       "name": "x64-release-size-transform",
@@ -608,7 +613,8 @@
         "receiver_ready_median_ms": 37.331160390749574,
         "both_delivered_median_ms": 151.09235246200114,
         "rss_median_mib": 30.0
-      }
+      },
+      "current_profile": "release-size"
     },
     {
       "name": "arm64-release",
@@ -662,7 +668,8 @@
         "libm.so.6",
         "libc.so.6"
       ],
-      "max_glibc": "2.34"
+      "max_glibc": "2.34",
+      "current_profile": "release-perf"
     },
     {
       "name": "arm64-release-transform",
@@ -716,7 +723,8 @@
         "libm.so.6",
         "libc.so.6"
       ],
-      "max_glibc": "2.34"
+      "max_glibc": "2.34",
+      "current_profile": "release-perf"
     },
     {
       "name": "arm64-release-balanced",
@@ -771,7 +779,8 @@
         "libm.so.6",
         "libc.so.6"
       ],
-      "max_glibc": "2.34"
+      "max_glibc": "2.34",
+      "current_profile": "release-balanced"
     },
     {
       "name": "arm64-release-balanced-transform",
@@ -826,7 +835,8 @@
         "libm.so.6",
         "libc.so.6"
       ],
-      "max_glibc": "2.34"
+      "max_glibc": "2.34",
+      "current_profile": "release-balanced"
     },
     {
       "name": "arm64-release-size",
@@ -881,7 +891,8 @@
         "libm.so.6",
         "libc.so.6"
       ],
-      "max_glibc": "2.34"
+      "max_glibc": "2.34",
+      "current_profile": "release-size"
     },
     {
       "name": "arm64-release-size-transform",
@@ -936,7 +947,8 @@
         "libm.so.6",
         "libc.so.6"
       ],
-      "max_glibc": "2.34"
+      "max_glibc": "2.34",
+      "current_profile": "release-size"
     }
   ],
   "isolated_startup_comparison": [
@@ -1046,5 +1058,15 @@
     "arm64": "cross-built and ELF-inspected; not executed",
     "artifact_integrity": "SHA-256, ZIP payload/CRC/permissions, architecture, glibc symbols and declared libraries checked",
     "limits": "No TLS handshake, all-signal delivery, failure injection, sustained throughput, or Lambda lifecycle/cold-start validation"
+  },
+  "profile_mapping": {
+    "measured_profile_definitions_revision": "b98a4815f75c922abc15855a677dddb49c6c9a4b",
+    "measured_to_current": {
+      "release": "release-perf",
+      "release-balanced": "release-balanced",
+      "release-size": "release-size"
+    },
+    "effective_optimization_settings_verified": true,
+    "note": "Applies to variants only. Measurements were collected before the performance settings moved from release to release-perf. Original names, commands, source hashes and artifact data are preserved. Current labels do not imply that the artifacts were rebuilt or that the preserved default release profile was measured."
   }
 }

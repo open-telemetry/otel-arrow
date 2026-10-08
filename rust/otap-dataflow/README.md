@@ -24,10 +24,11 @@ data.
 
 ## Release builds
 
-Choose `release` for runtime performance, `release-balanced` for a compact
-binary with speed-oriented optimization, or `release-size` to prioritize
-binary size. See [release profiles](docs/release-profiles.md) for build commands,
-feature selection, and measurements with and without Transform.
+The existing `release` build settings are preserved. Opt in to `release-perf`
+for whole-program optimization, `release-balanced` for a compact binary with
+speed-oriented optimization, or `release-size` to prioritize binary size.
+See [release profiles](docs/release-profiles.md) for build commands, feature
+selection, and measurements with and without Transform.
 
 ## Architecture
 

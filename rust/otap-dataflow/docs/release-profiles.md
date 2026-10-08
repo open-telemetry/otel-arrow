@@ -1,21 +1,28 @@
 # DFE release build profiles
 
-DFE provides three release profiles for different binary-size and processing
-performance priorities. Choose the profile independently of the component
-features required by a pipeline.
+DFE preserves its existing `release` build settings and provides three opt-in
+profiles for different binary-size and processing performance priorities.
+Choose the profile independently of the component features required by a
+pipeline.
 
 | Profile | Priority | Optimization level | Debug information | Symbol stripping |
 | --- | --- | --- | --- | --- |
-| `release` | Runtime performance | `3` | Line tables for profiling | None |
+| `release` | Existing release build | `3` (Cargo default) | Line tables for profiling | None |
+| `release-perf` | Runtime performance | `3` | Line tables for profiling | None |
 | `release-balanced` | Compact binary with speed-oriented optimization | `2` | None | Symbols |
 | `release-size` | Minimum binary size, accepting potential throughput loss | `z` | None | Symbols |
 
-All three use fat LTO, one codegen unit, disabled incremental compilation, and
-`panic="unwind"`. Unwinding preserves the controller's supervised panic handling.
-The custom profiles inherit from `release`. Existing `profiling` and
-`release-debug` profiles also inherit its new LTO and codegen settings;
-`bench` already uses fat LTO and one codegen unit. Release builds will take
-longer to compile than the previous default without cross-crate LTO.
+All three custom profiles use fat LTO, one codegen unit, disabled incremental
+compilation, and `panic="unwind"`. Unwinding preserves the controller's
+supervised panic handling.
+`release-perf` inherits from `release`; `release-balanced` and `release-size`
+inherit from `release-perf`. Existing `release`, `profiling`, `bench`, and
+`release-debug` build settings are unchanged. The custom profiles take longer
+to compile than the default release build without cross-crate LTO.
+
+The default `release` profile is left unchanged for now. A future change could
+merge `release` and `release-perf` after evaluating throughput and build time
+on representative workloads.
 
 The balanced profile retains speed-oriented optimization and loop vectorization
 while avoiding some level-3 code expansion. The size profile prioritizes code
@@ -35,7 +42,8 @@ cargo build --locked -p otel-arrow-dfe --bin df_engine \
   --no-default-features --features otlp,otap,crypto-ring
 ```
 
-Replace `release-balanced` with `release` or `release-size` as appropriate.
+Replace `release-balanced` with `release-perf` or `release-size` as appropriate.
+Use `--release` for the existing default release build settings.
 Add `transform` to the feature list when the pipeline uses Transform. Batch and
 Fan-out are always available; the crypto feature retains TLS capability.
 The output is under `target/<profile>/`, or
@@ -45,8 +53,8 @@ The output is under `target/<profile>/`, or
 
 | Profile | Transform | x86_64 stripped (MiB) | x86_64 ZIP (MiB) | arm64 stripped (MiB) | arm64 ZIP (MiB) |
 | --- | --- | ---: | ---: | ---: | ---: |
-| `release` | No | 36.14 | 13.61 | 31.36 | 12.62 |
-| `release` | Yes | 72.10 | 26.35 | 62.09 | 24.42 |
+| `release-perf` | No | 36.14 | 13.61 | 31.36 | 12.62 |
+| `release-perf` | Yes | 72.10 | 26.35 | 62.09 | 24.42 |
 | `release-balanced` | No | 35.09 | 13.19 | 30.34 | 12.19 |
 | `release-balanced` | Yes | 69.64 | 25.39 | 59.14 | 23.40 |
 | `release-size` | No | 22.75 | 8.56 | 19.15 | 8.46 |
@@ -56,13 +64,13 @@ Normal Cargo output before any additional stripping:
 
 | Profile | x86_64 without Transform (MiB) | x86_64 with Transform (MiB) | arm64 without Transform (MiB) | arm64 with Transform (MiB) |
 | --- | ---: | ---: | ---: | ---: |
-| `release` | 170.35 | 385.07 | 176.28 | 401.63 |
+| `release-perf` | 170.35 | 385.07 | 176.28 | 401.63 |
 | `release-balanced` | 35.09 | 69.64 | 30.34 | 59.14 |
 | `release-size` | 22.75 | 41.36 | 19.15 | 32.32 |
 
 Without Transform, `release-balanced` reduces stripped size by about 3% versus
-`release`; `release-size` reduces it by 37-39%. Much of the reduction in normal
-Cargo output comes from removing debug and symbol information. These size
+`release-perf`; `release-size` reduces it by 37-39%. Much of the reduction in
+normal Cargo output comes from removing debug and symbol information. These size
 results do not establish a processing-throughput ranking.
 
 The pipeline is OTLP receiver -> optional Transform -> Batch -> Fan-out ->
@@ -71,13 +79,20 @@ severity text. Selecting this single statement still compiles the full
 Transform feature. The default feature bundle is disabled in every row.
 
 Measurements use Rust 1.98.1, cargo-zigbuild 0.23.4, Zig 0.15.2, and a glibc 2.34
-baseline. Each artifact is built with the named workspace profile, without
-experimental profile overrides. MiB means 1,048,576 bytes. ZIPs contain one
-executable and use DEFLATE level 9 with matching timestamps and permissions.
+baseline. Each artifact was built with a named workspace profile, without
+experimental profile overrides. The performance artifacts were measured with
+the optimized settings under the name `release`, before those settings moved
+to `release-perf`.
+The compact profiles retain the same effective optimization settings. These
+tables reuse those measurements; the raw results preserve the original profile
+names, commands, and source hashes alongside their current profile names.
+They do not measure the preserved default `release` build. MiB means 1,048,576
+bytes. ZIPs contain one executable and use DEFLATE level 9 with matching
+timestamps and permissions.
 
 The stripped columns make code-size comparisons consistent across profiles.
-`release` intentionally retains line tables and symbols in its normal build;
-its deployment copy was stripped separately for this table. The two custom
+`release-perf` intentionally retains line tables and symbols in its normal build;
+its deployment copy was stripped separately for this table. The two compact
 profiles already strip their normal output. Debug and symbol information
 changes package size without implying proportional startup or throughput gains.
 
@@ -124,8 +139,8 @@ initialization work independently of binary size.
 
 | Profile | Transform | Receiver ready median (ms) | Both exports delivered median (ms) | RSS median (MiB) |
 | --- | --- | ---: | ---: | ---: |
-| `release` | No | 33.5 | 143.7 | 24.2 |
-| `release` | Yes | 34.6 | 148.6 | 36.6 |
+| `release-perf` | No | 33.5 | 143.7 | 24.2 |
+| `release-perf` | Yes | 34.6 | 148.6 | 36.6 |
 | `release-balanced` | No | 34.3 | 144.1 | 24.1 |
 | `release-balanced` | Yes | 36.4 | 150.2 | 35.0 |
 | `release-size` | No | 34.2 | 142.9 | 19.9 |

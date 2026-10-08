@@ -488,8 +488,12 @@ broken_intra_doc_links = "deny"
 missing_crate_level_docs = "deny"
 
 [profile.release]
-opt-level = 3
 debug = "line-tables-only"  # minimum required for profiling
+
+# Opt in to whole-program optimization without changing the default release build.
+[profile.release-perf]
+inherits = "release"
+opt-level = 3
 strip = "none"
 lto = "fat"
 codegen-units = 1
@@ -498,14 +502,14 @@ incremental = false
 
 # Favor a compact binary while retaining speed-oriented optimizations.
 [profile.release-balanced]
-inherits = "release"
+inherits = "release-perf"
 opt-level = 2
 debug = 0
 strip = "symbols"
 
 # Favor the smallest binary, accepting potential processing throughput loss.
 [profile.release-size]
-inherits = "release"
+inherits = "release-perf"
 opt-level = "z"
 debug = 0
 strip = "symbols"
