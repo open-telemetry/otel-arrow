@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791494565945,
+  "lastUpdate": 1791496498721,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -57055,6 +57055,150 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/open-telemetry/otel-arrow/commit/d311a2de5634eddc6ce169e3dc763bcffb6b17df"
         },
         "date": 1791494543177,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 87.19,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 5.02,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.09,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.99,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 3.14,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.12,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 3.03,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.01,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.8,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 74.27,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 5.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.79,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.56,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.88,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.73,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.68,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.5,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.44,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.33,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 120.43,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 107.48,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "AaronRM@users.noreply.github.com",
+            "name": "Aaron Marten",
+            "username": "AaronRM"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "6c9634c8ddb348791b85be9b1d80fa22381f8868",
+          "message": "chore(tests): refactor WAL flush calls into a reusable test function, address additional flaky test (#4293)\n\n# Chore Summary\n\nMake Quiver WAL replay tests deterministic by explicitly flushing\nWAL-only fixtures before reopening the engine.\n\nThis applies the durability barrier introduced in #4219 to the remaining\nreplay, expiry, corruption, cursor-sidecar, rotated-WAL, and\nbackpressure tests. A shared test helper keeps entries durable without\nfinalizing their open segments.\n\nValidation:\n\n- `cargo test -p otel-arrow-dfe-quiver 'engine::tests::wal_replay_'` -\npassed\n- 100 consecutive runs of the complete 15-test WAL replay group - passed\n- `cargo check -p otel-arrow-dfe-quiver` - passed\n- `cargo clippy -p otel-arrow-dfe-quiver --all-targets -- -D warnings` -\npassed\n- `cargo fmt --all -- --check` - passed\n- `cargo xtask check` - blocked by unrelated component inventory drift\nfor `urn:otel:extension:flat_file_api_key_auth`\n\n## Related issue\n\n- Follow-up to #4219\n- Addresses\n`otel-arrow-dfe-quiver::engine::tests::wal_replay_finalized_segments_preserve_item_counts_for_expiry`\nreported in #2720",
+          "timestamp": "2026-10-08T20:34:35Z",
+          "tree_id": "01007727c2405c9b159daafbe0ef3f660ff793d0",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/6c9634c8ddb348791b85be9b1d80fa22381f8868"
+        },
+        "date": 1791496485620,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
