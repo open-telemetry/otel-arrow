@@ -528,11 +528,11 @@ impl KafkaExporter {
         .ok_or(KafkaExporterError::MissingTopic(signal_type))
     }
 
-    /// Builds the Kafka record headers (format header + propagated transport headers).
+    /// Builds the Kafka record headers (format header + propagated context).
     ///
     /// The encoding format (`otlp` or `otap`) is always written under the
-    /// `format_header_key`. Any propagated transport header with the same
-    /// name is skipped to avoid collision.
+    /// `format_header_key`. Any propagated header with the same name is skipped
+    /// to avoid collision.
     fn build_kafka_headers(
         encoding: MessageFormat,
         format_header_key: &str,
@@ -552,11 +552,8 @@ impl KafkaExporter {
             value: Some(format_value),
         });
 
-        // Propagate transport headers onto the Kafka record if a propagation
-        // policy is configured and the pdata context carries transport headers.
-        if let Some(policy) = effect_handler.and_then(|eh| eh.propagation_policy())
-            && context.transport_headers().is_some()
-        {
+        // Apply the configured propagation policy to the full pdata context.
+        if let Some(policy) = effect_handler.and_then(|eh| eh.propagation_policy()) {
             for propagated in policy.propagate(context) {
                 // Skip propagated headers that collide with the format header.
                 if propagated.header_name == format_header_key {
