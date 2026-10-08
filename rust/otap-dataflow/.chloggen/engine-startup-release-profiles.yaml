@@ -8,7 +8,7 @@ change_type: enhancement
 component: engine
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
-note: "Engine startup avoids unnecessary system discovery. New release-perf, release-balanced, and release-size build profiles offer performance and size tradeoffs."
+note: "Engine startup avoids unnecessary system discovery. New stripped release-perf, release-balanced, and release-size profiles offer performance and size tradeoffs."
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
 issues: [2674]
@@ -18,4 +18,4 @@ issues: [2674]
 # Use pipe (|) for multiline entries. Breaking entries must include a `Migration:`
 # section with the specific action consumers must take. Keep notes to 200
 # characters and subtext to 300 characters.
-subtext: "Use --profile to select an optimized build. The existing release build settings are unchanged. Custom release profiles retain panic recovery and use whole-program optimization, increasing build time."
+subtext: "Select optimized builds with --profile. The default release settings are unchanged. The profiling profile now uses the performance optimizations and retains debug information and symbols. All custom release profiles preserve panic recovery."

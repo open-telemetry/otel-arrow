@@ -494,7 +494,8 @@ debug = "line-tables-only"  # minimum required for profiling
 [profile.release-perf]
 inherits = "release"
 opt-level = 3
-strip = "none"
+debug = 0
+strip = "symbols"
 lto = "fat"
 codegen-units = 1
 panic = "unwind"
@@ -515,8 +516,9 @@ debug = 0
 strip = "symbols"
 
 [profile.profiling]
-inherits = "release"
+inherits = "release-perf"
 debug = 2
+strip = "none"
 
 [profile.bench]
 inherits = "release"

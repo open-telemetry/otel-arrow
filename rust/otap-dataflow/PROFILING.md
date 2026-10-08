@@ -2,6 +2,10 @@
 
 This section covers CPU and memory profiling for `df_engine`.
 
+The `profiling` build profile uses the level `3`, fat LTO, and single codegen
+unit settings from `release-perf`, while retaining full debug information and
+symbols. This enables profiling with the production optimization settings.
+
 ## CPU profiling (samply)
 
 **Requirements**:
