@@ -40,7 +40,14 @@ pub struct ContextLayout {
 
 /// A compact lookup for the small sets of configured propagation names.
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
-pub(super) struct HeaderLookup<T>(Box<[(u64, String, T)]>);
+pub(super) struct HeaderLookup<T>(Box<[HeaderLookupEntry<T>]>);
+
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+struct HeaderLookupEntry<T> {
+    rejection_key: u64,
+    name: String,
+    value: T,
+}
 
 fn header_key(name: &str) -> u64 {
     // This is only a rejection key; callers still compare the full names.
@@ -61,15 +68,22 @@ impl<T> HeaderLookup<T> {
         Self(
             entries
                 .into_iter()
-                .map(|(name, value)| (header_key(&name), name, value))
+                .map(|(name, value)| HeaderLookupEntry {
+                    rejection_key: header_key(&name),
+                    name,
+                    value,
+                })
                 .collect(),
         )
     }
 
     #[inline]
     pub(super) fn get(&self, name: &str) -> Option<&T> {
-        if let [(_, stored, value)] = self.0.as_ref() {
-            return stored.eq_ignore_ascii_case(name).then_some(value);
+        if let [entry] = self.0.as_ref() {
+            return entry
+                .name
+                .eq_ignore_ascii_case(name)
+                .then_some(&entry.value);
         }
         if self.0.is_empty() {
             return None;
@@ -77,8 +91,8 @@ impl<T> HeaderLookup<T> {
         let key = header_key(name);
         self.0
             .iter()
-            .find(|(stored_key, stored, _)| *stored_key == key && stored.eq_ignore_ascii_case(name))
-            .map(|(_, _, value)| value)
+            .find(|entry| entry.rejection_key == key && entry.name.eq_ignore_ascii_case(name))
+            .map(|entry| &entry.value)
     }
 }
 
