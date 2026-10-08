@@ -7,6 +7,11 @@
 //! build it (see [`super::parse`]); native Windows Event Log APIs can populate
 //! the same structure directly. Attribute naming, severity mapping, and OTAP
 //! encoding belong to the consuming receiver.
+//!
+//! The fields follow the Windows Event Schema (`Event`, `System`, `EventData`,
+//! `UserData`, `RenderingInfo`). See
+//! <https://learn.microsoft.com/en-us/windows/win32/wes/eventschema-eventtype-complextype>
+//! and <https://learn.microsoft.com/en-us/windows/win32/wes/eventschema-schema>.
 
 /// A decoded Windows event independent of its transport and output encoding.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
