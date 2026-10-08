@@ -875,6 +875,11 @@ original state.
 - Full-config reconciliation, group creation, group deletion, and pipeline
   deletion use an engine-scoped lifecycle guard and return `409 Conflict` when
   another guarded operation is active.
+- Full-config reconciliation also returns `409 Conflict` when any logical
+  pipeline has an active rollout, even one omitted from the desired config.
+  This prevents a reconcile request from committing a stale live-config
+  snapshot that reverts the in-flight rollout's eventual update once it
+  commits.
 - `GET /groups/{group}/pipelines/{id}` always returns the committed
   live config, not an uncommitted candidate.
 - `GET /groups/{group}/pipelines/{id}/status` is the best endpoint

@@ -5182,6 +5182,50 @@ fn reconcile_engine_config_does_not_publish_scaffold_on_conflict() {
     assert_eq!(log_filter_handle.effective_level().as_str(), "warn");
 }
 
+/// Scenario: full-config reconciliation is attempted while a pipeline not
+/// mentioned in the desired config (and therefore retained under
+/// `delete_missing: false`) has an active rollout in flight.
+/// Guarantees: reconciliation is rejected before `apply_reconcile_success`
+/// can overwrite the live config snapshot, so the in-flight rollout's
+/// eventual update to that pipeline cannot be silently reverted.
+#[test]
+fn reconcile_engine_config_rejects_when_omitted_pipeline_has_active_rollout() {
+    let mut config = engine_config_with_pipeline(simple_pipeline_yaml());
+    config.engine.telemetry.logs.level =
+        Some(serde_json::from_value(serde_json::json!("warn")).expect("warn level should parse"));
+    let (runtime, log_filter_handle, _log_filter) =
+        test_runtime_with_log_filter(&config, &TEST_PIPELINE_FACTORY);
+    let pipeline_key = PipelineKey::new("g1".into(), "p1".into());
+    {
+        let mut state = runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        _ = state
+            .active_rollouts
+            .insert(pipeline_key, "rollout-42".to_owned());
+    }
+
+    // The desired config omits g1/p1 entirely; with `delete_missing: false`
+    // this pipeline should be retained rather than deleted, but it still
+    // must not be silently re-snapshotted while its rollout is in flight.
+    let mut desired = empty_engine_config();
+    desired.engine.telemetry.logs.level =
+        Some(serde_json::from_value(serde_json::json!("info")).expect("info level should parse"));
+    _ = desired
+        .engine
+        .custom
+        .insert("desired".to_owned(), serde_json::json!({"enabled": true}));
+
+    let err = runtime
+        .reconcile_engine_config(reconcile_request(desired, false))
+        .expect_err("active rollout on an omitted pipeline should reject reconciliation");
+
+    assert_eq!(err, ControlPlaneError::RolloutConflict);
+    assert!(runtime.engine_config_snapshot().engine.custom.is_empty());
+    assert_eq!(log_filter_handle.effective_level().as_str(), "warn");
+}
+
 /// Scenario: full-config reconciliation would change an existing topic
 /// runtime profile.
 /// Guarantees: reconciliation rejects the request before starting rollout or

@@ -1,0 +1,5 @@
+change_type: bug_fix
+component: engine
+note: Reject full-config reconciliation while any pipeline has an in-flight rollout.
+issues: [3865]
+subtext: Previously a full-config reconcile that omitted a pipeline with an active rollout (delete_missing false) could overwrite the recorded config with a stale snapshot once the rollout completed. Such requests now fail with a rollout-conflict error instead.

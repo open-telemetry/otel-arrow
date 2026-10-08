@@ -141,6 +141,7 @@ impl<
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             if state.active_engine_operation.is_some()
                 || !state.pipeline_operation_reservations.is_empty()
+                || !state.active_rollouts.is_empty()
             {
                 return Err(ControlPlaneError::RolloutConflict);
             }
