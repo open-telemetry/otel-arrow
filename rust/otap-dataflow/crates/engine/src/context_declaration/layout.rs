@@ -44,13 +44,13 @@ pub(super) struct HeaderLookup<T>(Box<[HeaderLookupEntry<T>]>);
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 struct HeaderLookupEntry<T> {
-    rejection_key: u64,
+    name_hash: u64,
     name: String,
     value: T,
 }
 
-fn header_key(name: &str) -> u64 {
-    // This is only a rejection key; callers still compare the full names.
+fn header_name_hash(name: &str) -> u64 {
+    // This hash is only a rejection filter; callers still compare the full names.
     let bytes = name.as_bytes();
     ((name.len() as u64) << 16)
         | (u64::from(bytes.first().copied().unwrap_or(0).to_ascii_lowercase()) << 8)
@@ -69,7 +69,7 @@ impl<T> HeaderLookup<T> {
             entries
                 .into_iter()
                 .map(|(name, value)| HeaderLookupEntry {
-                    rejection_key: header_key(&name),
+                    name_hash: header_name_hash(&name),
                     name,
                     value,
                 })
@@ -88,10 +88,10 @@ impl<T> HeaderLookup<T> {
         if self.0.is_empty() {
             return None;
         }
-        let key = header_key(name);
+        let name_hash = header_name_hash(name);
         self.0
             .iter()
-            .find(|entry| entry.rejection_key == key && entry.name.eq_ignore_ascii_case(name))
+            .find(|entry| entry.name_hash == name_hash && entry.name.eq_ignore_ascii_case(name))
             .map(|entry| &entry.value)
     }
 }
@@ -99,7 +99,7 @@ impl<T> HeaderLookup<T> {
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 struct HeaderRequirement {
     name: String,
-    key: u64,
+    name_hash: u64,
     value: Option<Box<[u8]>>,
 }
 
@@ -156,7 +156,7 @@ impl EntryPresence {
             .into_iter()
             .flat_map(|(name, values)| {
                 values.into_iter().map(move |value| HeaderRequirement {
-                    key: header_key(&name),
+                    name_hash: header_name_hash(&name),
                     name: name.clone(),
                     value,
                 })
@@ -202,14 +202,14 @@ impl EntryPresence {
                 return false;
             };
             // Decode small packed inputs once rather than once per requirement.
-            let mut captured = [(header_key(first.name.as_str()), first); 5];
+            let mut captured = [(header_name_hash(first.name.as_str()), first); 5];
             for (slot, header) in captured[1..].iter_mut().zip(iter) {
-                *slot = (header_key(header.name.as_str()), header);
+                *slot = (header_name_hash(header.name.as_str()), header);
             }
             return self.headers.iter().all(|requirement| {
-                captured[..headers.len()]
-                    .iter()
-                    .any(|(key, header)| requirement.key == *key && requirement.matches(*header))
+                captured[..headers.len()].iter().any(|(name_hash, header)| {
+                    requirement.name_hash == *name_hash && requirement.matches(*header)
+                })
             });
         }
         self.headers.iter().all(|requirement| {
