@@ -5,10 +5,11 @@
 //!
 //! Primitive reads, writes, and all-stored selections always specify a source domain.
 //! Composite selections instead name the composite and optionally its member; the
-//! definition supplies each member's domain and the entire entry's presence gate.
+//! definition supplies each member's value source (a domain-backed field or configured
+//! constant) and the entire entry's presence gate.
 //! Original wire names are supported only for transport-header values.
 
-/// Compiles logical context layouts and resolves field projections.
+/// Compiles logical context layouts and resolves member projections.
 mod layout;
 /// Compiles and applies exporter transport-header propagation policies.
 mod propagation;

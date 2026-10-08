@@ -260,6 +260,10 @@ impl JsonSchema for ContextEntryPart {
                 {
                     "rule": "self.type in ['transport_header', 'authorized_identity'] || !has(self.store_as)",
                     "message": "`store_as` is allowed only for transport_header and authorized_identity"
+                },
+                {
+                    "rule": "self.type != 'constant' || self.name.matches('^[!-9;-~]+$')",
+                    "message": "`name` for constant must be a single printable ASCII name without `:`"
                 }
             ]
         })
@@ -551,7 +555,7 @@ entries:
         let validations = schema["x-kubernetes-validations"]
             .as_array()
             .expect("variant validation");
-        assert_eq!(validations.len(), 2);
+        assert_eq!(validations.len(), 3);
         assert_eq!(
             validations[0]["rule"],
             "self.type in ['constant', 'transport_header_match'] ? has(self.value) : !has(self.value)"
@@ -559,6 +563,10 @@ entries:
         assert_eq!(
             validations[1]["rule"],
             "self.type in ['transport_header', 'authorized_identity'] || !has(self.store_as)"
+        );
+        assert_eq!(
+            validations[2]["rule"],
+            "self.type != 'constant' || self.name.matches('^[!-9;-~]+$')"
         );
     }
 }

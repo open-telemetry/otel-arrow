@@ -77,8 +77,10 @@ pub enum ContextNameId {
 /// Member of a composite entry.
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct ContextMember {
-    /// Name is this member's store_as, falls back to the field's
-    /// primitive name.
+    /// Canonical member name.
+    ///
+    /// Field-backed members use `store_as` or the referenced primitive name;
+    /// constants use their configured name.
     pub name: ContextEntryName,
     /// Value source for this member.
     pub source: ContextMemberSource,
@@ -120,7 +122,7 @@ pub struct ContextEntryLayout {
 pub enum ContextProjection {
     /// One independent primitive field.
     Primitive(ContextFieldId),
-    /// All or selected fields from a composite entry.
+    /// All or selected members from a composite entry.
     Composite {
         /// Composite whose members and conditions determine presence.
         entry: ContextEntryId,
