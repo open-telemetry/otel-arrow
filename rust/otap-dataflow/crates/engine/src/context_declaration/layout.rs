@@ -809,6 +809,53 @@ mod tests {
         );
     }
 
+    /// Scenario: a constant member is guarded by a transport-header match condition.
+    /// Guarantees: the constant remains available without bypassing the composite condition gate.
+    #[test]
+    fn constant_member_retains_composite_condition_gate() {
+        let declaration = ContextEntryDeclaration {
+            scope: ContextScope::Engine,
+            name: name("route"),
+            definition: ContextEntryDefinition(vec![
+                ContextEntryPart::Constant {
+                    name: name("route_name"),
+                    value: "otlp-http-json".to_owned(),
+                },
+                ContextEntryPart::TransportHeaderMatch {
+                    name: name("environment"),
+                    value: "production".to_owned(),
+                },
+            ]),
+        };
+
+        let layout = compile(
+            [field("environment", ContextDomain::TransportHeader)],
+            &[declaration],
+        );
+        let projection = layout
+            .resolve_member(&name("route"), &name("route_name"))
+            .expect("constant member");
+        let ContextNameId::Composite(entry_id) = projection.presence() else {
+            panic!("constant member must retain composite presence");
+        };
+        let entry = &layout.entries()[entry_id.index()];
+        assert_eq!(
+            projection.members().expect("composite members"),
+            [ContextMember {
+                name: name("route_name"),
+                source: ContextMemberSource::Constant("otlp-http-json".into()),
+            }]
+        );
+        assert_eq!(entry.conditions.len(), 1);
+        assert_eq!(
+            layout.fields()[entry.conditions[0].field.index()]
+                .name
+                .as_str(),
+            "environment"
+        );
+        assert_eq!(entry.conditions[0].value.as_ref(), b"production");
+    }
+
     /// Scenario: equivalent mixed composites reorder constant and field members.
     /// Guarantees: constant values compile canonically while remaining binding-significant.
     #[test]
