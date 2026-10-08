@@ -1415,8 +1415,8 @@ groups:
         );
     }
 
-    /// Scenario: a consumer selects constant and field members from one composite.
-    /// Guarantees: constants add no external source requirements and have no original wire name.
+    /// Scenario: a consumer selects constant and field members or their entire composite.
+    /// Guarantees: constants add no external source requirements and reject original wire names.
     #[test]
     fn constant_members_have_no_external_or_original_name_requirements() {
         let context = [constant_composite()];
@@ -1448,20 +1448,19 @@ groups:
                 .requirements
                 .preserves_original_name(&context_name("route_name"))
         );
-        let error = PreparedNodeContextDeclarations::new(
-            consumer(
-                member_target("route", "route_name"),
-                ContextEntrySelectorForm::OriginalKeyValue,
-            ),
-            &context,
-        )
-        .expect_err("constant has no original wire name");
-        assert!(
-            error
-                .to_string()
-                .contains("original wire name requested for constant context entry `route_name`"),
-            "{error}"
-        );
+        for target in [member_target("route", "route_name"), whole] {
+            let error = PreparedNodeContextDeclarations::new(
+                consumer(target, ContextEntrySelectorForm::OriginalKeyValue),
+                &context,
+            )
+            .expect_err("constant has no original wire name");
+            assert!(
+                error.to_string().contains(
+                    "original wire name requested for constant context entry `route_name`"
+                ),
+                "{error}"
+            );
+        }
     }
 
     /// Scenario: consumer targets are missing, select conditions as values, or request identity wire names.
