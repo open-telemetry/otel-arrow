@@ -290,18 +290,26 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          oracle_username="OTAP$(openssl rand -hex 4 | tr '[:lower:]' '[:upper:]')"
+          oracle_password="CiA1_$(openssl rand -hex 10)"
+          echo "::add-mask::$oracle_password"
+
           docker run --detach \
             --name oracle-receiver-ci \
             --publish 127.0.0.1:1521:1521 \
             --env ORACLE_RANDOM_PASSWORD=true \
-            --env APP_USER=OTAPTEST \
-            --env APP_USER_PASSWORD=CiOraclePass_3821 \
+            --env APP_USER="$oracle_username" \
+            --env APP_USER_PASSWORD="$oracle_password" \
             --health-cmd healthcheck.sh \
             --health-interval 10s \
             --health-timeout 5s \
             --health-retries 60 \
             gvenzl/oracle-free@sha256:0489e0c1f20b2ca632075653c66f284234689ccff62c9a39809d9a5b3e7c1642
-          echo "ORACLE_CONNECT_STRING=//127.0.0.1:1521/FREEPDB1" >> "$GITHUB_ENV"
+          {
+            echo "ORACLE_CONNECT_STRING=//127.0.0.1:1521/FREEPDB1"
+            echo "ORACLE_USERNAME=$oracle_username"
+            echo "ORACLE_PWD=$oracle_password"
+          } >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
           toolchain: stable
@@ -332,21 +340,21 @@ jobs:
           unzip -q "$RUNNER_TEMP/instantclient.zip" -d "$RUNNER_TEMP"
 
           client_dir="$RUNNER_TEMP/instantclient_23_26"
+          export LD_LIBRARY_PATH="$client_dir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
           ldd "$client_dir/libclntsh.so" | tee "$RUNNER_TEMP/instant-client-ldd.txt"
           if grep -F 'not found' "$RUNNER_TEMP/instant-client-ldd.txt" > /dev/null; then
             echo "Oracle Instant Client has unresolved dependencies." >&2
             exit 1
           fi
-
           echo "ORACLE_INSTANT_CLIENT_DIR=$client_dir" >> "$GITHUB_ENV"
-          echo "LD_LIBRARY_PATH=$client_dir" >> "$GITHUB_ENV"
+          echo "ORACLE_INSTANT_CLIENT_DIR=$client_dir" >> "$GITHUB_ENV"
       - name: Create Oracle credentials
         shell: bash
         run: |
           set -euo pipefail
-          printf '%s' 'CiOraclePass_3821' > "$RUNNER_TEMP/oracle-password"
+          set -euo pipefail
           chmod 600 "$RUNNER_TEMP/oracle-password"
-          echo "ORACLE_USERNAME=OTAPTEST" >> "$GITHUB_ENV"
+          chmod 600 "$RUNNER_TEMP/oracle-password"
           echo "ORACLE_PASSWORD_FILE=$RUNNER_TEMP/oracle-password" >> "$GITHUB_ENV"
       - name: Wait for Oracle
         shell: bash
@@ -367,9 +375,6 @@ jobs:
           echo "Oracle did not become healthy." >&2
           exit 1
       - name: Seed Oracle source data
-        env:
-          ORACLE_USERNAME: OTAPTEST
-          ORACLE_PWD: CiOraclePass_3821
         shell: bash
         run: |
           cargo run --locked \
