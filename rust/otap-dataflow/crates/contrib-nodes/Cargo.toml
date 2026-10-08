@@ -36,6 +36,7 @@ prost.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+crc32fast = { workspace = true, optional = true }
 linkme.workspace = true
 tokio.workspace = true
 tracing.workspace = true
@@ -43,6 +44,7 @@ base64 = { workspace = true, optional = true }
 blake3 = { workspace = true, optional = true }
 oracle = { workspace = true, optional = true }
 chrono = { workspace = true, optional = true }
+humantime = { workspace = true, optional = true }
 humantime-serde = { workspace = true, optional = true }
 itoa = { workspace = true, optional = true }
 geneva-uploader = { workspace = true, optional = true }
@@ -105,6 +107,7 @@ contrib-receivers = [
     "etw",
     "kafka",
     "user-events",
+    "windows-perf-counters",
     "windows-event-forwarding",
 ]
 contrib-processors = [
@@ -157,6 +160,7 @@ user-events = [
     "dep:one_collect",
     "dep:tracepoint_decode",
 ]
+windows-perf-counters = ["dep:humantime", "dep:humantime-serde"]
 
 # Processors.
 condense-attributes = []
@@ -205,6 +209,8 @@ geneva = [
     "dep:geneva-uploader",
     "dep:opentelemetry-proto",
     "dep:url",
+    # Geneva metrics exporter.
+    "dep:crc32fast",
 ]
 geneva-certificate-auth = [
     "geneva",
