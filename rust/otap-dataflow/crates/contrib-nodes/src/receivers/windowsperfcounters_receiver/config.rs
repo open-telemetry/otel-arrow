@@ -180,6 +180,28 @@ fn validate_object_or_instance<'a>(field: &str, value: &'a str) -> Result<&'a st
     Ok(value)
 }
 
+/// Canonicalizes PDH's decimal instance index, where the first occurrence omits `#0`.
+fn normalize_instance<'a>(field: &str, value: &'a str) -> Result<(String, &'a str), Error> {
+    let value = validate_object_or_instance(field, value)?;
+    let Some((name, index)) = value.rsplit_once('#') else {
+        return Ok((value.to_owned(), value));
+    };
+    if index.is_empty() || !index.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Ok((value.to_owned(), value));
+    }
+    if name.is_empty() {
+        return Err(invalid(format!(
+            "{field} must include an instance name before its index"
+        )));
+    }
+    let index = index.trim_start_matches('0');
+    if index.is_empty() {
+        Ok((name.to_owned(), value))
+    } else {
+        Ok((format!("{name}#{index}"), value))
+    }
+}
+
 fn validate_counter_name<'a>(field: &str, value: &'a str) -> Result<&'a str, Error> {
     let value = value.trim();
     require_name(field, value)?;
@@ -370,16 +392,14 @@ impl RuntimeConfig {
                     instances
                         .iter()
                         .map(|instance| {
-                            let instance = validate_object_or_instance(
-                                &format!("{object_field}.instances"),
-                                instance,
-                            )?;
-                            if !unique.insert(instance.to_lowercase()) {
+                            let (normalized, instance) =
+                                normalize_instance(&format!("{object_field}.instances"), instance)?;
+                            if !unique.insert(normalized.to_lowercase()) {
                                 return Err(invalid(format!(
                                     "{object_field}.instances contains duplicate {instance:?}"
                                 )));
                             }
-                            Ok(Some(instance))
+                            Ok(Some(normalized))
                         })
                         .collect::<Result<Vec<_>, Error>>()?
                 }
@@ -944,6 +964,48 @@ mod tests {
             }),
             "perfcounters[0].instances contains duplicate \"APP\"",
         );
+    }
+
+    /// Scenario: Instance indexes use omitted, zero, or leading-zero spellings.
+    /// Guarantees: Equivalent PDH instance indexes normalize to one spelling before duplicate checks.
+    #[test]
+    fn normalizes_instance_indexes_before_duplicate_detection() {
+        for instances in [["app", "app#0"], ["app#1", "app#01"]] {
+            assert_config_error(
+                json!({
+                    "metrics": {"available": {
+                        "description": "Available physical memory.",
+                        "unit": "By",
+                        "gauge": {}
+                    }},
+                    "perfcounters": [{
+                        "object": "Process",
+                        "instances": instances,
+                        "counters": [{"name": "Private Bytes", "metric": "available"}]
+                    }]
+                }),
+                "perfcounters[0].instances contains duplicate",
+            );
+        }
+
+        let config = RuntimeConfig::from_json(&gauge_config(json!({
+            "object": "Process",
+            "instances": "app#001",
+            "counters": [{"name": "Private Bytes", "metric": "available"}]
+        })))
+        .unwrap();
+        assert_eq!(config.counters[0].path, r"\Process(app#1)\Private Bytes");
+
+        for instance in ["#0", "#1"] {
+            assert_config_error(
+                gauge_config(json!({
+                    "object": "Process",
+                    "instances": instance,
+                    "counters": [{"name": "Private Bytes", "metric": "available"}]
+                })),
+                "must include an instance name before its index",
+            );
+        }
     }
 
     /// Scenario: Object and counter names normalize to the same path with different casing.
