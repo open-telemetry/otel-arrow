@@ -533,7 +533,7 @@ impl KafkaExporter {
         encoding: MessageFormat,
         format_header_key: &str,
         context: &otel_arrow_dfe_otap::pdata::Context,
-        effect_handler: Option<&EffectHandler<OtapPdata>>,
+        effect_handler: &EffectHandler<OtapPdata>,
     ) -> OwnedHeaders {
         let mut headers = OwnedHeaders::new();
 
@@ -550,7 +550,7 @@ impl KafkaExporter {
 
         // Propagate transport headers onto the Kafka record if a propagation
         // policy is configured and the pdata context carries transport headers.
-        if let Some(policy) = effect_handler.and_then(|eh| eh.propagation_policy())
+        if let Some(policy) = effect_handler.propagation_policy()
             && let Some(transport_headers) = context.transport_headers()
         {
             for propagated in policy.propagate(transport_headers) {
@@ -610,7 +610,7 @@ impl KafkaExporter {
         &mut self,
         pdata: OtapPdata,
         reporter: &dyn AckNackReporter,
-        effect_handler: Option<&EffectHandler<OtapPdata>>,
+        effect_handler: &EffectHandler<OtapPdata>,
         encoding_plan: &EncodingPlan,
     ) -> Result<Option<(ExporterDeliveryFuture, SendMeta)>, KafkaExporterError> {
         let export_start = Instant::now();
@@ -691,8 +691,8 @@ impl KafkaExporter {
         // This block borrows &mut self.pdata_producer so it must complete
         // before we borrow self.config again for the topic reference below.
         let encoding_start = Instant::now();
-        let encode_result = match (encoding, effect_handler) {
-            (MessageFormat::OtlpProto, Some(effect_handler)) => {
+        let encode_result = match encoding {
+            MessageFormat::OtlpProto => {
                 let mut encoding_payload = payload.clone();
                 effect_handler
                     .encode_owned(&mut encoding_payload, encoding_plan)
@@ -700,39 +700,15 @@ impl KafkaExporter {
                     .map(|bytes| bytes.to_vec())
                     .map_err(|error| KafkaExporterError::OtlpConversion(error.to_string()))
             }
-            (MessageFormat::OtapProto, Some(effect_handler)) => effect_handler
+            MessageFormat::OtapProto => effect_handler
                 .try_payload_into_otap(payload.clone())
                 .await
                 .map_err(|error| KafkaExporterError::OtapArrowRecordsConversion(error.to_string()))
                 .and_then(|records| {
                     encoder::encode_to_batch_arrow_record_bytes(records, &mut self.pdata_producer)
                 }),
-            (MessageFormat::Syslog, _) => Err(KafkaExporterError::Configuration(
+            MessageFormat::Syslog => Err(KafkaExporterError::Configuration(
                 "syslog encoding is not supported by the Kafka exporter".to_string(),
-            )),
-            #[cfg(test)]
-            (MessageFormat::OtlpProto, None) => encoder::encode_to_otlp_bytes(payload.clone()),
-            #[cfg(test)]
-            (MessageFormat::OtapProto, None) => {
-                let service = otel_arrow_dfe_pdata_codec::CodecService::new().map_err(|error| {
-                    KafkaExporterError::OtapArrowRecordsConversion(error.to_string())
-                })?;
-                payload
-                    .clone()
-                    .try_into_otap(&service)
-                    .map_err(|error| {
-                        KafkaExporterError::OtapArrowRecordsConversion(error.to_string())
-                    })
-                    .and_then(|records| {
-                        encoder::encode_to_batch_arrow_record_bytes(
-                            records,
-                            &mut self.pdata_producer,
-                        )
-                    })
-            }
-            #[cfg(not(test))]
-            (_, None) => Err(KafkaExporterError::OtlpConversion(
-                "runtime codec service unavailable".to_string(),
             )),
         };
 
@@ -829,14 +805,13 @@ impl KafkaExporter {
                 } else {
                     reporter.nack(reason, refused).await
                 };
-                if let Err(e) = nack_result
-                    && let Some(eh) = effect_handler
-                {
-                    eh.info(&format!(
-                        "Failed to report nack for Kafka export enqueue failure: {}",
-                        e
-                    ))
-                    .await;
+                if let Err(e) = nack_result {
+                    effect_handler
+                        .info(&format!(
+                            "Failed to report nack for Kafka export enqueue failure: {}",
+                            e
+                        ))
+                        .await;
                 }
                 // Enqueue failure was reported synchronously; there is no
                 // in-flight delivery to track.
@@ -858,7 +833,7 @@ impl KafkaExporter {
         meta: SendMeta,
         result: Result<OwnedDeliveryResult, Canceled>,
         reporter: &dyn AckNackReporter,
-        effect_handler: Option<&EffectHandler<OtapPdata>>,
+        effect_handler: &EffectHandler<OtapPdata>,
     ) {
         let (intent, pdata) = self.record_completion_metrics(meta, result);
         Self::report_completion(intent, pdata, reporter, effect_handler).await;
@@ -940,7 +915,7 @@ impl KafkaExporter {
         intent: ReportIntent,
         pdata: OtapPdata,
         reporter: &dyn AckNackReporter,
-        effect_handler: Option<&EffectHandler<OtapPdata>>,
+        effect_handler: &EffectHandler<OtapPdata>,
     ) {
         let (report_result, _context) = match intent {
             ReportIntent::Ack => (
@@ -956,14 +931,13 @@ impl KafkaExporter {
                 (result, "nack for Kafka export failure")
             }
         };
-        if let Err(e) = report_result
-            && let Some(eh) = effect_handler
-        {
-            eh.info(&format!(
-                "Failed to report nack for Kafka export failure: {}",
-                e
-            ))
-            .await;
+        if let Err(e) = report_result {
+            effect_handler
+                .info(&format!(
+                    "Failed to report nack for Kafka export failure: {}",
+                    e
+                ))
+                .await;
         }
     }
 
@@ -1155,7 +1129,7 @@ impl KafkaExporter {
         // producer's delivery channels before it is dropped.
         while !in_flight.is_empty() {
             let (meta, result) = in_flight.next_completion().await;
-            self.finalize_send_completion(meta, result, reporter, Some(effect_handler))
+            self.finalize_send_completion(meta, result, reporter, effect_handler)
                 .await;
         }
 
@@ -1248,7 +1222,7 @@ impl Exporter<OtapPdata> for KafkaExporter {
                             meta,
                             result,
                             &ack_nack_reporter,
-                            Some(&effect_handler),
+                            &effect_handler,
                         )
                         .await;
                         continue;
@@ -1270,12 +1244,7 @@ impl Exporter<OtapPdata> for KafkaExporter {
                     // gate), it drains one completion and returns it so we can
                     // finalize its ack/nack here.
                     if let Ok(Some((delivery, meta))) = self
-                        .enqueue_pdata(
-                            pdata,
-                            &ack_nack_reporter,
-                            Some(&effect_handler),
-                            &encoding_plan,
-                        )
+                        .enqueue_pdata(pdata, &ack_nack_reporter, &effect_handler, &encoding_plan)
                         .await
                         && let Some((done_meta, done_result)) = in_flight.push(delivery, meta).await
                     {
@@ -1283,7 +1252,7 @@ impl Exporter<OtapPdata> for KafkaExporter {
                             done_meta,
                             done_result,
                             &ack_nack_reporter,
-                            Some(&effect_handler),
+                            &effect_handler,
                         )
                         .await;
                     }
@@ -1336,7 +1305,7 @@ impl Exporter<OtapPdata> for KafkaExporter {
                                 intent,
                                 pdata,
                                 &ack_nack_reporter,
-                                Some(&effect_handler),
+                                &effect_handler,
                             ),
                         )
                         .await
@@ -1591,23 +1560,20 @@ pub mod test_support {
     /// pipelines many deliveries via [`KafkaExporter::enqueue_pdata`] and
     /// [`KafkaExporter::finalize_send_completion`]; here they are chained inline
     /// so tests can assert the outcome synchronously.
+    /// Reuse the supplied effect handler and startup-resolved encoding plan for
+    /// successive sends in one test pipeline, just as the production loop does.
     pub async fn export_once(
         exporter: &mut KafkaExporter,
         pdata: OtapPdata,
         reporter: &dyn AckNackReporter,
+        effect_handler: &EffectHandler<OtapPdata>,
+        encoding_plan: &EncodingPlan,
     ) -> Result<(), KafkaExporterError> {
         // Pre-send failures (unconfigured signal, invalid dynamic topic, encode
         // failure) and synchronous enqueue failures are already reported by
         // `enqueue_pdata`; propagate any error and stop.
-        let encoding_plan = EncodingPlan::resolve(
-            &otel_arrow_dfe_pdata_codec::CodecRegistry::global()
-                .expect("valid test codec registry"),
-            &PdataEncoding::OTLP,
-            EncodePolicy::default(),
-        )
-        .expect("OTLP encoder is registered");
         let (delivery, meta) = match exporter
-            .enqueue_pdata(pdata, reporter, None, &encoding_plan)
+            .enqueue_pdata(pdata, reporter, effect_handler, encoding_plan)
             .await?
         {
             Some(send) => send,
@@ -1629,7 +1595,7 @@ pub mod test_support {
             )),
         };
         exporter
-            .finalize_send_completion(meta, result, reporter, None)
+            .finalize_send_completion(meta, result, reporter, effect_handler)
             .await;
         match delivery_err {
             Some(e) => Err(e),
@@ -1666,10 +1632,13 @@ pub mod test_support {
         use crate::common::kafka::test::message::count_by_partition;
         use crate::common::kafka::test::{run_on_local_set, with_cluster};
 
-        // Engine/telemetry helpers used by the header-propagation unit tests.
+        // Engine/telemetry helpers used by send and header-propagation tests.
         use otel_arrow_dfe_engine::context_declaration::CompiledHeaderPropagationPolicy;
         use otel_arrow_dfe_engine::local::exporter::EffectHandler;
-        use otel_arrow_dfe_engine::testing::test_node;
+        use otel_arrow_dfe_engine::runtime_services::{
+            CodecEffectHandler, PipelineRuntimeServices,
+        };
+        use otel_arrow_dfe_engine::testing::{test_node, test_pipeline_runtime_services};
         use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 
         // rdkafka helpers used across integration tests.
@@ -1694,7 +1663,23 @@ pub mod test_support {
         use otel_arrow_dfe_pdata::proto::opentelemetry::trace::v1::{
             ResourceSpans, ScopeSpans, Span,
         };
-        use otel_arrow_dfe_pdata_codec::OtapPayload;
+        use otel_arrow_dfe_pdata_codec::{DecodePolicy, DecodeValidation, OtapPayload};
+
+        // Construct once per test pipeline so sends share codec state and a startup plan.
+        fn test_runtime(
+            runtime_services: PipelineRuntimeServices,
+        ) -> (EffectHandler<OtapPdata>, EncodingPlan) {
+            let (_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+            let effect_handler = EffectHandler::new(
+                test_node("kafka-export-test"),
+                metrics_reporter,
+                runtime_services,
+            );
+            let encoding_plan = effect_handler
+                .resolve_encoding_plan(&PdataEncoding::OTLP, EncodePolicy::default())
+                .expect("OTLP encoder is registered");
+            (effect_handler, encoding_plan)
+        }
 
         fn context_name(raw: &str) -> ContextEntryName {
             raw.try_into().expect("valid test context entry name")
@@ -1714,57 +1699,81 @@ pub mod test_support {
             )
         }
 
-        /// Tests that payload is properly cloned for both OTLP and OTAP serialization formats.
-        /// This ensures no borrow-after-move errors occur when the encoder consumes the payload.
+        /// Scenario: OTAP export receives malformed nested OTLP, then valid legacy and encoded OTLP.
+        /// Guarantees: the pipeline's strict decoder permanently nacks the malformed batch and
+        /// is reused for successful subsequent sends without creating a separate codec service.
         #[tokio::test]
-        async fn test_export_otlp_format_payload_handling() {
-            let pipeline_ctx = pipeline_context();
-            let config = kafka_test_config("localhost:9092");
-            // logs signal uses OtlpProto by default in kafka_test_config
-            let mut exporter =
-                KafkaExporter::new(pipeline_ctx, config).expect("config should be valid");
+        async fn otap_export_uses_pipeline_decode_policy_and_reuses_decoder() {
+            let topic = "it-codec-strict";
+            with_cluster(
+                KafkaTestCluster::builder().topic(topic),
+                |cluster| async move {
+                    let consumer = cluster.consumer().subscribe(&[topic]);
+                    let config = logs_config(
+                        cluster.bootstrap_servers(),
+                        SignalConfig::new(topic.into(), MessageFormat::OtapProto),
+                    );
+                    let mut exporter = KafkaExporter::new(pipeline_context(), config).unwrap();
+                    let reporter = RecordingReporter::new();
+                    let services =
+                        PipelineRuntimeServices::new(DecodePolicy::new(DecodeValidation::Strict))
+                            .unwrap();
+                    let (effect_handler, encoding_plan) = test_runtime(services);
+                    let codecs = effect_handler.codec_service();
+                    let codec = codecs.registry().resolve(&PdataEncoding::OTLP).unwrap();
+                    let bytes = logs_request_bytes();
+                    let mut malformed = bytes.clone();
+                    // A framed resource whose nested field declares five bytes but contains one.
+                    malformed.extend_from_slice(&[0x0a, 0x03, 0x1a, 0x05, 0x00]);
+                    let pdata = OtapPdata::new_default(
+                        codec
+                            .admit(SignalType::Logs, malformed.into())
+                            .unwrap()
+                            .into(),
+                    );
 
-            let reporter = RecordingReporter::new();
-            let pdata = sample_pdata(SignalType::Logs);
+                    let result = export_once(
+                        &mut exporter,
+                        pdata,
+                        &reporter,
+                        &effect_handler,
+                        &encoding_plan,
+                    )
+                    .await;
+                    assert!(matches!(
+                        result,
+                        Err(KafkaExporterError::OtapArrowRecordsConversion(_))
+                    ));
+                    assert_eq!(reporter.permanent_nack_reasons().len(), 1);
+                    assert_eq!(reporter.ack_count(), 0);
+                    assert_eq!(codecs.test_instance_count().unwrap(), 1);
 
-            // This would fail with borrow-after-move if payload isn't cloned for encoder
-            let result = export_once(&mut exporter, pdata, &reporter).await;
-
-            // Expected to fail (no live broker) but should not have compilation/borrow errors
-            let _ = result;
-        }
-
-        /// Tests that payload is properly cloned for OTAP serialization format.
-        #[tokio::test]
-        async fn test_export_otap_format_payload_handling() {
-            let pipeline_ctx = pipeline_context();
-            let config: KafkaExporterConfig =
-                KafkaExporterConfigBuilder::new("localhost:9092", "test-client")
-                    .with_traces(SignalConfig::new(
-                        "test-traces".into(),
-                        MessageFormat::OtlpProto,
-                    ))
-                    .with_metrics(SignalConfig::new(
-                        "test-metrics".into(),
-                        MessageFormat::OtlpProto,
-                    ))
-                    .with_logs(SignalConfig::new(
-                        "test-logs".into(),
-                        MessageFormat::OtapProto,
-                    ))
-                    .try_into()
-                    .expect("test config should be valid");
-            let mut exporter =
-                KafkaExporter::new(pipeline_ctx, config).expect("config should be valid");
-
-            let reporter = RecordingReporter::new();
-            let pdata = sample_pdata(SignalType::Logs);
-
-            // This would fail with borrow-after-move if payload isn't cloned for encoder
-            let result = export_once(&mut exporter, pdata, &reporter).await;
-
-            // Expected to fail (no live broker) but should not have compilation/borrow errors
-            let _ = result;
+                    for pdata in [
+                        logs_pdata(bytes.clone(), None),
+                        OtapPdata::new_default(
+                            codec.admit(SignalType::Logs, bytes.into()).unwrap().into(),
+                        ),
+                    ] {
+                        export_once(
+                            &mut exporter,
+                            pdata,
+                            &reporter,
+                            &effect_handler,
+                            &encoding_plan,
+                        )
+                        .await
+                        .unwrap();
+                        let msg = consumer.recv().await;
+                        let _ = msg.assert_topic(topic).assert_format_otap();
+                        assert!(BatchArrowRecords::decode(msg.payload.as_deref().unwrap()).is_ok());
+                        assert_eq!(codecs.test_instance_count().unwrap(), 1);
+                    }
+                    assert_eq!(reporter.ack_count(), 2);
+                    assert_eq!(reporter.permanent_nack_reasons().len(), 1);
+                    assert!(reporter.nack_reasons().is_empty());
+                },
+            )
+            .await;
         }
 
         /// Scenario: signals route topics by one header and partition by all headers.
@@ -2089,9 +2098,17 @@ pub mod test_support {
                 KafkaExporter::new(pipeline_ctx, config).expect("config should be valid");
 
             let reporter = RecordingReporter::new();
+            let (effect_handler, encoding_plan) = test_runtime(test_pipeline_runtime_services());
             let pdata = sample_pdata(SignalType::Traces); // unconfigured signal type
 
-            let result = export_once(&mut exporter, pdata, &reporter).await;
+            let result = export_once(
+                &mut exporter,
+                pdata,
+                &reporter,
+                &effect_handler,
+                &encoding_plan,
+            )
+            .await;
             assert!(result.is_err());
             assert!(matches!(
                 result.unwrap_err(),
@@ -2159,11 +2176,19 @@ pub mod test_support {
                 KafkaExporter::new(pipeline_ctx, config).expect("config should be valid");
 
             let reporter = RecordingReporter::new();
+            let (effect_handler, encoding_plan) = test_runtime(test_pipeline_runtime_services());
             // Header supplies an invalid topic ("bad topic/name" contains a space and slash).
             let pdata =
                 sample_pdata_with_header(SignalType::Logs, "X-Target-Topic", "bad topic/name");
 
-            let result = export_once(&mut exporter, pdata, &reporter).await;
+            let result = export_once(
+                &mut exporter,
+                pdata,
+                &reporter,
+                &effect_handler,
+                &encoding_plan,
+            )
+            .await;
             assert!(result.is_err());
             assert!(
                 matches!(
@@ -2605,7 +2630,7 @@ pub mod test_support {
 
         // ---- Security: dynamic topic routing ----
 
-        /// Scenario (security: dynamic topic routing): a routing header requests a topic that is not permitted by
+        /// Scenario: a routing header requests a topic that is not permitted by
         /// the signal's operator-configured regex allowlist.
         /// Guarantees: the disallowed header topic is permanently nacked (never
         /// transiently retried) and is not routed to the static topic, so a
@@ -2626,11 +2651,19 @@ pub mod test_support {
                 KafkaExporter::new(pipeline_ctx, config).expect("config should be valid");
 
             let reporter = RecordingReporter::new();
+            let (effect_handler, encoding_plan) = test_runtime(test_pipeline_runtime_services());
             // Header requests a syntactically valid but disallowed topic.
             let pdata =
                 sample_pdata_with_header(SignalType::Logs, "X-Target-Topic", "evil-destination");
 
-            let result = export_once(&mut exporter, pdata, &reporter).await;
+            let result = export_once(
+                &mut exporter,
+                pdata,
+                &reporter,
+                &effect_handler,
+                &encoding_plan,
+            )
+            .await;
             assert!(result.is_err());
             assert!(
                 matches!(
@@ -5175,9 +5208,12 @@ pub mod test_support {
                         "the failure must be queue-full, not a delivery timeout"
                     );
                     assert_eq!(
-                        encoder::encode_to_otlp_bytes(nack.refused.payload())
-                            .expect("encode refused payload"),
-                        rejected,
+                        nack.refused
+                            .payload_ref()
+                            .encoded_bytes()
+                            .expect("refused payload stays encoded")
+                            .as_ref(),
+                        rejected.as_slice(),
                         "the NACK must return the rejected batch intact"
                     );
 
@@ -5264,7 +5300,7 @@ pub mod test_support {
 
         // ---- Retry correctness ----
 
-        /// Scenario (retry correctness): an OTAP-encoded signal whose OTLP bytes cannot be converted
+        /// Scenario: an OTAP-encoded signal whose OTLP bytes cannot be converted
         /// to `OtapArrowRecords` fails encoding before any send.
         /// Guarantees: an encoding failure is classified as a single permanent
         /// nack (never transient, no ack), so the retry processor drops it at
@@ -5288,9 +5324,17 @@ pub mod test_support {
                 KafkaExporter::new(pipeline_ctx, config).expect("config should be valid");
 
             let reporter = RecordingReporter::new();
+            let (effect_handler, encoding_plan) = test_runtime(test_pipeline_runtime_services());
             let pdata = logs_pdata(logs_request_bytes_invalid_utf8_array(), None);
 
-            let result = export_once(&mut exporter, pdata, &reporter).await;
+            let result = export_once(
+                &mut exporter,
+                pdata,
+                &reporter,
+                &effect_handler,
+                &encoding_plan,
+            )
+            .await;
             assert!(result.is_err(), "malformed OTAP encoding should error");
 
             assert_eq!(reporter.ack_count(), 0, "a failed encode must not ack");
@@ -5674,17 +5718,16 @@ pub mod test_support {
 
         // ---- Delivery semantics ----
 
-        /// Scenario (delivery semantics): a successful send to a live mock broker resolves the
-        /// delivery callback with success and the exporter reports an ack.
-        /// Guarantees: the success path increments the exported counter and
-        /// propagates exactly one ack with no nacks (ACK propagation on the
-        /// callback-resolved delivery).
+        /// Scenario: legacy and generalized OTLP batches are forwarded to a live mock broker.
+        /// Guarantees: both retain their bytes without creating codec instances, and each
+        /// successful delivery reports exactly one ack with no nacks.
         #[tokio::test]
         async fn send_success_reports_ack() {
             let topic = "it-delivery-ack";
             with_cluster(
                 KafkaTestCluster::builder().topic(topic),
                 |cluster| async move {
+                    let consumer = cluster.consumer().subscribe(&[topic]);
                     let pipeline_ctx = pipeline_context();
                     let cfg = logs_config(
                         cluster.bootstrap_servers(),
@@ -5693,13 +5736,43 @@ pub mod test_support {
                     let mut exporter =
                         KafkaExporter::new(pipeline_ctx, cfg).expect("config should be valid");
                     let reporter = RecordingReporter::new();
+                    let (effect_handler, encoding_plan) =
+                        test_runtime(test_pipeline_runtime_services());
 
-                    let pdata = logs_pdata(logs_request_bytes(), None);
-                    export_once(&mut exporter, pdata, &reporter)
+                    let codecs = effect_handler.codec_service();
+                    let codec = codecs.registry().resolve(&PdataEncoding::OTLP).unwrap();
+                    let bytes = logs_request_bytes();
+                    for pdata in [
+                        logs_pdata(bytes.clone(), None),
+                        OtapPdata::new_default(
+                            codec
+                                .admit(SignalType::Logs, Bytes::from(bytes.clone()))
+                                .unwrap()
+                                .into(),
+                        ),
+                    ] {
+                        export_once(
+                            &mut exporter,
+                            pdata,
+                            &reporter,
+                            &effect_handler,
+                            &encoding_plan,
+                        )
                         .await
                         .expect("send should succeed against the live mock broker");
+                        let _ = consumer
+                            .recv()
+                            .await
+                            .assert_topic(topic)
+                            .assert_payload(&bytes);
+                    }
 
-                    assert_eq!(reporter.ack_count(), 1, "successful send should ack once");
+                    assert_eq!(codecs.test_instance_count().unwrap(), 0);
+                    assert_eq!(
+                        reporter.ack_count(),
+                        2,
+                        "each successful send should ack once"
+                    );
                     assert!(
                         reporter.nack_reasons().is_empty()
                             && reporter.permanent_nack_reasons().is_empty(),
@@ -5710,7 +5783,7 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (delivery semantics): a send whose delivery callback resolves with a Kafka error
+        /// Scenario: a send whose delivery callback resolves with a Kafka error
         /// (unreachable broker, bounded by a short timeout).
         /// Guarantees: a send failure is classified as a single transient nack
         /// (not permanent) and produces no ack, so the retry processor can
@@ -5733,11 +5806,19 @@ pub mod test_support {
                 let mut exporter =
                     KafkaExporter::new(pipeline_ctx, cfg).expect("config should be valid");
                 let reporter = RecordingReporter::new();
+                let (effect_handler, encoding_plan) =
+                    test_runtime(test_pipeline_runtime_services());
 
                 let pdata = logs_pdata(logs_request_bytes(), None);
                 let result = tokio::time::timeout(
                     Duration::from_secs(10),
-                    export_once(&mut exporter, pdata, &reporter),
+                    export_once(
+                        &mut exporter,
+                        pdata,
+                        &reporter,
+                        &effect_handler,
+                        &encoding_plan,
+                    ),
                 )
                 .await
                 .expect("send must resolve within the bounded timeout");
@@ -5858,7 +5939,7 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (delivery semantics): the send targets a broker that never responds (unroutable
+        /// Scenario: the send targets a broker that never responds (unroutable
         /// address) with a short `timeout_ms`.
         /// Guarantees: the delivery await is bounded by `message.timeout.ms`
         /// (mapped from `timeout_ms`) and resolves as a failure well within a
@@ -5880,6 +5961,8 @@ pub mod test_support {
                 let mut exporter =
                     KafkaExporter::new(pipeline_ctx, cfg).expect("config should be valid");
                 let reporter = RecordingReporter::new();
+                let (effect_handler, encoding_plan) =
+                    test_runtime(test_pipeline_runtime_services());
 
                 let start = Instant::now();
                 let result = tokio::time::timeout(
@@ -5888,6 +5971,8 @@ pub mod test_support {
                         &mut exporter,
                         logs_pdata(logs_request_bytes(), None),
                         &reporter,
+                        &effect_handler,
+                        &encoding_plan,
                     ),
                 )
                 .await
@@ -7077,7 +7162,7 @@ pub mod test_support {
             let mut eh: EffectHandler<OtapPdata> = EffectHandler::new(
                 test_node("hdr-test"),
                 reporter,
-                otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+                test_pipeline_runtime_services(),
             );
             eh.set_propagation_policy(Some(policy));
 
@@ -7085,7 +7170,7 @@ pub mod test_support {
                 MessageFormat::OtlpProto,
                 MSG_FORMAT_HEADER,
                 &context,
-                Some(&eh),
+                &eh,
             );
 
             // Collect the produced (key, value) pairs.
@@ -7137,14 +7222,14 @@ pub mod test_support {
             let eh: EffectHandler<OtapPdata> = EffectHandler::new(
                 test_node("hdr-test-none"),
                 reporter,
-                otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+                test_pipeline_runtime_services(),
             );
 
             let headers = KafkaExporter::build_kafka_headers(
                 MessageFormat::OtlpProto,
                 MSG_FORMAT_HEADER,
                 &context,
-                Some(&eh),
+                &eh,
             );
 
             assert_eq!(
