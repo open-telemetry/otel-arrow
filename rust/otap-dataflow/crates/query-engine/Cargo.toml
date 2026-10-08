@@ -74,5 +74,9 @@ harness = false
 name = "conditional"
 harness = false
 
+[[bench]]
+name = "data_point_parent_attrs"
+harness = false
+
 [lints]
 workspace = true
