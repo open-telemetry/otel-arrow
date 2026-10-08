@@ -225,12 +225,15 @@ def identify_flaky_tests(test_results):
 
 
 def _find_job_url(job_url_map, run_id, meta):
-    """Find a job URL by checking that all metadata values appear in the name.
+    """Find a job URL using the metadata values present in its display name.
 
-    This avoids depending on the exact display-name format that GitHub
-    Actions generates for matrix jobs.
+    Required Linux/Windows jobs have only partition in their matrix; their
+    OS and folder metadata are fixed and absent from the display name.
     """
-    components = [str(v) for v in meta.values()]
+    if meta.get("job") in {"test_required_linux", "test_required_windows"}:
+        components = [f"{meta['job']} ({meta.get('partition')})"]
+    else:
+        components = [str(v) for v in meta.values()]
     for (rid, job_name), url in job_url_map.items():
         if rid != run_id:
             continue
@@ -242,10 +245,9 @@ def _find_job_url(job_url_map, run_id, meta):
 def lookup_job_urls(flaky_tests, repo_slug, artifact_metadata):
     """For each flaky test, resolve fail_artifacts to job HTML URLs.
 
-    Matches jobs by checking that all metadata field values (job key,
-    os, partition, folder) appear somewhere in the GitHub API job name.
-    Artifacts from older runs that lack metadata fall back to a plain
-    run-level link.
+    Matches job keys and matrix values from artifact metadata against the
+    GitHub API job name. Missing metadata, unmatched jobs, and failed job
+    lookups fall back to a plain run-level link.
 
     Makes one API call per unique run_id that contains flaky tests.
     Populates a "fail_job_links" list of (label, url) on each entry.
@@ -269,13 +271,13 @@ def lookup_job_urls(flaky_tests, repo_slug, artifact_metadata):
                     "--paginate",
                     "--jq", '.jobs[] | "\\(.name)\t\\(.html_url)"',
                 ],
-                capture_output=True, text=True, timeout=30,
+                capture_output=True, text=True, timeout=30, check=True,
             )
             for line in result.stdout.strip().splitlines():
                 if "\t" in line:
                     name, url = line.split("\t", 1)
                     job_url_map[(run_id, name)] = url
-        except Exception as e:
+        except (OSError, subprocess.SubprocessError) as e:
             print(
                 f"Warning: Could not fetch jobs for run {run_id}: {e}",
                 file=sys.stderr,
@@ -287,19 +289,23 @@ def lookup_job_urls(flaky_tests, repo_slug, artifact_metadata):
         seen_run_ids = set()
         for run_id, artifact_name in t["fail_artifacts"][:MAX_JOB_LINKS]:
             meta = artifact_metadata.get((run_id, artifact_name))
-            if not meta:
-                # No metadata — fall back to a run-level link (once per run)
+            url = _find_job_url(job_url_map, run_id, meta) if meta else None
+            if url:
+                label = artifact_name.removeprefix("junit-xml-")
+                links.append((label, url))
+            else:
+                if meta:
+                    print(
+                        f"Warning: Could not match {artifact_name} to a job "
+                        f"in run {run_id}; using a run-level link",
+                        file=sys.stderr,
+                    )
                 if run_id not in seen_run_ids and run_id != "unknown":
                     seen_run_ids.add(run_id)
                     links.append((
                         f"run #{run_id[-4:]}",
                         f"https://github.com/{repo_slug}/actions/runs/{run_id}",
                     ))
-                continue
-            url = _find_job_url(job_url_map, run_id, meta)
-            if url:
-                label = artifact_name.removeprefix("junit-xml-")
-                links.append((label, url))
         t["fail_job_links"] = links
 
 

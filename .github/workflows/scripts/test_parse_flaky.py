@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
-"""Tests for flaky-test report history and formatting."""
+"""Tests for flaky-test job links, report history, and formatting."""
 
 import importlib.util
+import io
+import subprocess
 import tempfile
 import unittest
+from contextlib import redirect_stderr
 from datetime import date
 from pathlib import Path
+from unittest.mock import patch
 
 
 MODULE_PATH = Path(__file__).with_name("parse_flaky.py")
@@ -28,6 +32,74 @@ def flaky_test(name):
         "fail_artifacts": [],
         "fail_job_links": [],
     }
+
+
+class FlakyJobLinkTests(unittest.TestCase):
+    # Scenario: Required jobs use partition-only or legacy full matrices.
+    # Guarantees: Required jobs resolve without breaking existing matrix jobs.
+    def test_required_job_names_match_current_and_legacy_metadata(self):
+        cases = [
+            ("test_required_linux", "ubuntu-latest",
+             "test_required_linux (2)"),
+            ("test_required_windows", "windows-latest",
+             "test_required_windows (2)"),
+            ("test_required", "ubuntu-latest",
+             "test_required (otap-dataflow, ubuntu-latest, 2)"),
+            ("test_nonrequired", "macos-latest",
+             "test_nonrequired (otap-dataflow, macos-latest, 2)"),
+        ]
+        for job, os_name, display_name in cases:
+            with self.subTest(job=job):
+                meta = {
+                    "job": job,
+                    "os": os_name,
+                    "partition": "2",
+                    "folder": "otap-dataflow",
+                }
+                jobs = {
+                    ("123", display_name.replace("2)", "3)")): "wrong",
+                    ("456", display_name): "wrong-run",
+                    ("123", display_name): "https://example.test/job/2",
+                }
+
+                self.assertEqual(
+                    PARSE_FLAKY._find_job_url(jobs, "123", meta),
+                    "https://example.test/job/2",
+                )
+
+    # Scenario: Job lookup returns no match or fails despite artifact metadata.
+    # Guarantees: A warning and one run link replace an empty Failed Jobs cell.
+    def test_unresolved_artifacts_fall_back_to_run_links(self):
+        current = flaky_test("crate::flaky")
+        current["fail_artifacts"] = [
+            ("123", "junit-xml-first"),
+            ("123", "junit-xml-second"),
+        ]
+        metadata = {
+            ("123", artifact): {"job": "renamed"}
+            for artifact in ("junit-xml-first", "junit-xml-second")
+        }
+        outcomes = [
+            subprocess.CompletedProcess([], 0, "", ""),
+            subprocess.CalledProcessError(1, ["gh"], stderr="API denied"),
+        ]
+        for outcome in outcomes:
+            with self.subTest(outcome=type(outcome).__name__):
+                with patch.object(
+                    PARSE_FLAKY.subprocess, "run",
+                    return_value=outcome,
+                    side_effect=outcome if isinstance(outcome, Exception) else None,
+                ) as api, redirect_stderr(io.StringIO()) as warnings:
+                    PARSE_FLAKY.lookup_job_urls(
+                        [current], "owner/repo", metadata,
+                    )
+
+                self.assertTrue(api.call_args.kwargs["check"])
+                self.assertIn("Warning:", warnings.getvalue())
+                self.assertEqual(current["fail_job_links"], [
+                    ("run #123",
+                     "https://github.com/owner/repo/actions/runs/123"),
+                ])
 
 
 class FlakyHistoryTests(unittest.TestCase):
