@@ -139,8 +139,7 @@ class FlakyHistoryTests(unittest.TestCase):
         )
 
         self.assertEqual(
-            parsed,
-            {"crate::legacy_test": date(2026, 10, 2)},
+            parsed["crate::legacy_test"]["last_seen"], date(2026, 10, 2),
         )
 
     # Scenario: Tests cross the seven-day retention boundary.
@@ -151,8 +150,8 @@ class FlakyHistoryTests(unittest.TestCase):
             50,
             "",
             {
-                "crate::recent_test": date(2026, 9, 25),
-                "crate::old_test": date(2026, 9, 24),
+                "crate::recent_test": {"last_seen": date(2026, 9, 25)},
+                "crate::old_test": {"last_seen": date(2026, 9, 24)},
             },
             date(2026, 10, 2),
             7,
@@ -165,7 +164,7 @@ class FlakyHistoryTests(unittest.TestCase):
             date(2026, 10, 2),
         )
         self.assertEqual(
-            parsed,
+            {name: entry["last_seen"] for name, entry in parsed.items()},
             {"crate::recent_test": date(2026, 9, 25)},
         )
 
@@ -187,7 +186,7 @@ class FlakyHistoryTests(unittest.TestCase):
             [current],
             50,
             "",
-            {"crate::recurring_test": date(2026, 9, 28)},
+            {"crate::recurring_test": {"last_seen": date(2026, 9, 28)}},
             date(2026, 10, 2),
             7,
             sample_metadata,
@@ -198,8 +197,7 @@ class FlakyHistoryTests(unittest.TestCase):
             date(2026, 10, 2),
         )
         self.assertEqual(
-            parsed,
-            {"crate::recurring_test": date(2026, 10, 1)},
+            parsed["crate::recurring_test"]["last_seen"], date(2026, 10, 1),
         )
 
     # Scenario: Current observations fill the visible table.
@@ -209,7 +207,8 @@ class FlakyHistoryTests(unittest.TestCase):
             flaky_test(f"crate::current_test_{index:02d}")
             for index in range(PARSE_FLAKY.MAX_REPORT_TESTS + 1)
         ]
-        previous = {"crate::retained_test": date(2026, 10, 1)}
+        current[-1]["fail_messages"] = ["hidden failure"]
+        previous = {"crate::retained_test": {"last_seen": date(2026, 10, 1)}}
 
         body = PARSE_FLAKY.format_issue_body(
             current,
@@ -228,6 +227,86 @@ class FlakyHistoryTests(unittest.TestCase):
         self.assertIn("crate::current_test_50", parsed)
         self.assertIn("crate::retained_test", parsed)
         self.assertIn("stored only in hidden history", body)
+        body = PARSE_FLAKY.format_issue_body(
+            [], 50, "", parsed, date(2026, 10, 6), 7,
+        )
+        parsed = PARSE_FLAKY.parse_flaky_history(body, date(2026, 10, 6))
+        self.assertEqual(
+            parsed["crate::current_test_50"]["fail_messages"], ["hidden failure"],
+        )
+
+    # Scenario: A flaky test disappears from two samples, then recurs.
+    # Guarantees: Diagnostics survive absences without stale counts or dates.
+    def test_retained_diagnostics_survive_and_refresh_on_recurrence(self):
+        current = flaky_test("crate::flaky")
+        current["all_os"] = ["ubuntu-latest", "windows-latest"]
+        current["fail_messages"] = ["old failure <detail>"]
+        current["fail_job_links"] = [
+            ("linux-1", "https://example.test/job/1"),
+        ]
+        body = PARSE_FLAKY.format_issue_body(
+            [current], 50, "", {}, date(2026, 10, 1), 7,
+        )
+        for day in (2, 3):
+            history = PARSE_FLAKY.parse_flaky_history(body, date(2026, 10, day))
+            body = PARSE_FLAKY.format_issue_body(
+                [], 50, "", history, date(2026, 10, day), 7,
+            )
+            self.assertIn(
+                "| ubuntu-latest | Not observed flaky in current sample"
+                " | 2026-10-01 | n/a | n/a"
+                " | [linux-1](https://example.test/job/1) |",
+                body,
+            )
+            self.assertIn("(last observed)", body)
+            self.assertIn("<pre>old failure &lt;detail&gt;</pre>", body)
+
+        history = PARSE_FLAKY.parse_flaky_history(body, date(2026, 10, 4))
+        current["fail_messages"] = ["new failure"]
+        current["fail_job_links"] = [("linux-2", "https://example.test/job/2")]
+        body = PARSE_FLAKY.format_issue_body(
+            [current], 50, "", history, date(2026, 10, 4), 7,
+        )
+        self.assertIn("| 2026-10-04 | 1 | 1 |", body)
+        self.assertIn("[linux-2](https://example.test/job/2)", body)
+        self.assertIn("<pre>new failure</pre>", body)
+        self.assertNotIn("old failure", body)
+        self.assertNotIn("(last observed)", body)
+
+    # Scenario: The previous report uses date-only history markers.
+    # Guarantees: Migration preserves dates without inventing lost diagnostics.
+    def test_date_only_history_remains_supported(self):
+        marker = PARSE_FLAKY.encode_flaky_history({"crate::flaky": "2026-10-01"})
+        history = PARSE_FLAKY.parse_flaky_history(
+            f"<!-- flaky-history: {marker} -->", date(2026, 10, 2),
+        )
+        body = PARSE_FLAKY.format_issue_body(
+            [], 50, "", history, date(2026, 10, 2), 7,
+        )
+        self.assertIn(
+            "| n/a | Not observed flaky in current sample"
+            " | 2026-10-01 | n/a | n/a | n/a |",
+            body,
+        )
+        self.assertEqual(
+            PARSE_FLAKY.parse_flaky_history(body, date(2026, 10, 2)), history,
+        )
+
+    # Scenario: Persisted diagnostics contain malformed messages or job links.
+    # Guarantees: Parsing fails explicitly instead of erasing history on update.
+    def test_invalid_diagnostics_are_rejected(self):
+        for details in (
+            {"fail_messages": "not a list"},
+            {"jobs": ["not formatted text"]},
+        ):
+            with self.subTest(details=details):
+                marker = PARSE_FLAKY.encode_flaky_history({
+                    "crate::flaky": {"last_seen": "2026-10-01", **details},
+                })
+                with self.assertRaisesRegex(ValueError, "Invalid flaky-history"):
+                    PARSE_FLAKY.parse_flaky_history(
+                        f"<!-- flaky-history: {marker} -->", date(2026, 10, 2),
+                    )
 
     # Scenario: Seven-day history exceeds its reserved issue-body budget.
     # Guarantees: Report generation fails instead of silently dropping tests.

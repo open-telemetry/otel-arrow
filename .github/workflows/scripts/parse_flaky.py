@@ -328,7 +328,7 @@ def encode_flaky_history(history):
 
 
 def parse_flaky_history(body, fallback_date):
-    """Parse last-seen history, migrating reports that predate the marker."""
+    """Read diagnostics and last-seen dates, accepting older date-only history."""
     marker = HISTORY_MARKER_RE.search(body)
     if marker:
         try:
@@ -340,10 +340,30 @@ def parse_flaky_history(body, fallback_date):
             raise ValueError("Flaky-history marker must contain an object")
 
         history = {}
-        for name, last_seen in raw_history.items():
-            if not isinstance(name, str) or not isinstance(last_seen, str):
+        for name, entry in raw_history.items():
+            if isinstance(entry, str):
+                entry = {"last_seen": entry}
+            if (
+                not isinstance(name, str)
+                or not isinstance(entry, dict)
+                or not all(
+                    isinstance(entry.get(field, "n/a"), str)
+                    for field in ("last_seen", "platform", "jobs")
+                )
+                or "last_seen" not in entry
+            ):
                 raise ValueError("Invalid flaky-history entry")
-            history[name] = date.fromisoformat(last_seen)
+            messages = entry.get("fail_messages", [])
+            if not isinstance(messages, list) or not all(
+                isinstance(message, str) for message in messages
+            ):
+                raise ValueError("Invalid flaky-history fail_messages")
+            history[name] = {
+                "last_seen": date.fromisoformat(entry["last_seen"]),
+                "platform": entry.get("platform", "n/a"),
+                "jobs": entry.get("jobs", "n/a"),
+                "fail_messages": messages,
+            }
         return history
 
     # Migrate both the HTML form and the earlier backtick form. Treat tests
@@ -354,7 +374,13 @@ def parse_flaky_history(body, fallback_date):
         for name in re.findall(r"\|\s*<code>(.*?)</code>\s*\|", body)
     }
     names.update(re.findall(r"\|\s*`([^`]+)`\s*\|", body))
-    return {name: fallback_date for name in names}
+    return {
+        name: {
+            "last_seen": fallback_date, "platform": "n/a",
+            "jobs": "n/a", "fail_messages": [],
+        }
+        for name in names
+    }
 
 
 def get_previous_flaky_history(issue_number, fallback_date):
@@ -445,27 +471,30 @@ def format_issue_body(
     retained_history = dict(
         sorted(
             (
-                (name, last_seen)
-                for name, last_seen in previous_history.items()
+                (name, entry)
+                for name, entry in previous_history.items()
                 if name not in current_names
-                and 0 <= (report_date - last_seen).days <= retention_days
+                and 0 <= (report_date - entry["last_seen"]).days
+                <= retention_days
             ),
-            key=lambda item: (-item[1].toordinal(), item[0]),
+            key=lambda item: (-item[1]["last_seen"].toordinal(), item[0]),
         )
     )
     new_names = current_names - set(previous_history)
 
     history = {
-        t["name"]: current_last_seen[t["name"]].isoformat()
+        t["name"]: {
+            "last_seen": current_last_seen[t["name"]].isoformat(),
+            "fail_messages": t["fail_messages"][:3],
+        }
         for t in flaky_tests
     }
     history.update(
         {
-            name: last_seen.isoformat()
-            for name, last_seen in retained_history.items()
+            name: {**entry, "last_seen": entry["last_seen"].isoformat()}
+            for name, entry in retained_history.items()
         }
     )
-    encoded_history = encode_flaky_history(history)
 
     current_tests = flaky_tests[:MAX_REPORT_TESTS]
     retained_tests = dict(
@@ -502,7 +531,7 @@ def format_issue_body(
             " if flaky tests are detected in future runs."
         )
         lines.append("")
-        lines.append(f"<!-- flaky-history: {encoded_history} -->")
+        lines.append(f"<!-- flaky-history: {encode_flaky_history(history)} -->")
         return "\n".join(lines)
 
     lines.append(
@@ -524,9 +553,11 @@ def format_issue_body(
         )
     lines.append("")
     lines.append(
-        ":hourglass_flowing_sand: means the test was not observed in the "
+        ":hourglass_flowing_sand: means the test was not observed flaky in the "
         "current sample but remains listed until its last-seen date is more "
-        f"than {retention_days} days old."
+        f"than {retention_days} days old. Its platform, job links, and failure "
+        "messages are from its last observation; current-sample counts "
+        "are unavailable."
     )
     lines.append("")
 
@@ -539,7 +570,7 @@ def format_issue_body(
         "|--------|------|----------|-----------|-----------|--------|----------|-------------|"
     )
 
-    for t in current_tests:
+    for index, t in enumerate(flaky_tests):
         name = t["name"]
         display_name = format_test_name(name)
 
@@ -559,12 +590,16 @@ def format_issue_body(
         job_links = t.get("fail_job_links", [])
         if job_links:
             run_links = ", ".join(
-                f"[{label}]({url})" for label, url in job_links[:5]
+                f"[{label}]({url})" for label, url in job_links[:MAX_JOB_LINKS]
             )
             if len(job_links) > MAX_JOB_LINKS:
                 run_links += f" (+{len(job_links) - MAX_JOB_LINKS} more)"
         else:
             run_links = "n/a"
+
+        history[name].update(platform=platform, jobs=run_links)
+        if index >= MAX_REPORT_TESTS:
+            continue
 
         lines.append(
             f"| {status} | <code>{display_name}</code> | {platform}"
@@ -573,16 +608,19 @@ def format_issue_body(
             f" | {t['fail_count']} | {run_links} |"
         )
 
-    for name, last_seen in retained_tests.items():
+    for name, entry in retained_tests.items():
         lines.append(
             f"| :hourglass_flowing_sand: | "
-            f"<code>{format_test_name(name)}</code> | n/a"
-            f" | Not observed in current sample | {last_seen.isoformat()}"
-            " | n/a | n/a | n/a |"
+            f"<code>{format_test_name(name)}</code> | {entry.get('platform', 'n/a')}"
+            f" | Not observed flaky in current sample | {entry['last_seen'].isoformat()}"
+            f" | n/a | n/a | {entry.get('jobs', 'n/a')} |"
         )
 
     # Failure message details (collapsible section)
-    tests_with_msgs = [t for t in current_tests if t["fail_messages"]]
+    tests_with_msgs = [t for t in current_tests if t["fail_messages"]] + [
+        {"name": name, **entry}
+        for name, entry in retained_tests.items() if entry.get("fail_messages")
+    ]
     if tests_with_msgs:
         lines.append("")
         lines.append("<details>")
@@ -592,7 +630,10 @@ def format_issue_body(
         lines.append("")
         for t in tests_with_msgs:
             name = format_test_name(t["name"])
-            lines.append(f"**<code>{name}</code>**")
+            historical = (
+                " (last observed)" if t["name"] not in current_names else ""
+            )
+            lines.append(f"**<code>{name}</code>**{historical}")
             for msg in t["fail_messages"]:
                 lines.append(f"<pre>{html.escape(msg)}</pre>")
             lines.append("")
@@ -626,7 +667,7 @@ def format_issue_body(
     )
     lines.append("")
     lines.append(
-        f"<!-- flaky-history: {encoded_history} -->"
+        f"<!-- flaky-history: {encode_flaky_history(history)} -->"
     )
 
     return "\n".join(lines)
