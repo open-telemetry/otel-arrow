@@ -1,0 +1,86 @@
+# ADX Exporter Configuration with OTLP Receiver
+#
+# Receives OTLP logs via gRPC and forwards them to Azure Data Explorer
+# via the Kusto streaming ingestion API.
+#
+# Run from rust/otap-dataflow:
+#   cargo run --release --features azure-data-explorer -- \
+#     --config crates/contrib-nodes/src/exporters/azure_data_explorer_exporter/otlp-adx.yaml \
+#     --num-cores 1
+#
+# Or, after building the binary:
+#   ./target/release/df_engine \
+#     --config crates/contrib-nodes/src/exporters/azure_data_explorer_exporter/otlp-adx.yaml \
+#     --num-cores 1
+#
+# Send data to this collector using:
+#   - OTLP/gRPC endpoint: localhost:4317
+
+version: otel_dataflow/v1
+
+policies:
+  channel_capacity:
+    control:
+      node: 100
+      pipeline: 100
+    pdata: 128
+
+engine: {}
+
+groups:
+  default:
+    pipelines:
+      main:
+        extensions:
+          azure-data-explorer-auth:
+            type: "urn:microsoft:extension:azure_identity_auth"
+            config:
+              scope: "https://example.kusto.windows.net/.default"
+              # Use "dev" for local development (Azure CLI),
+              # or "msi" for managed identity in production.
+              method: "dev"
+              # For user-assigned managed identity, uncomment:
+              # client_id: "YOUR-MANAGED-IDENTITY-CLIENT-ID"
+        nodes:
+          otlp-receiver:
+            type: "urn:otel:receiver:otlp"
+            config:
+              protocols:
+                grpc:
+                  listening_addr: "0.0.0.0:4317"
+
+          azure-data-explorer-exporter:
+            type: "urn:microsoft:exporter:azure_data_explorer"
+            capabilities:
+              bearer_token_provider: azure-data-explorer-auth
+            config:
+              # Required cluster URI. Do not use the Data Ingestion URI.
+              # Use the Cluster URI from the Azure portal Overview page.
+              # Use the cluster URI, not the Data Ingestion URI.
+              cluster_uri: "https://example.kusto.windows.net"
+
+              # Target database
+              db_name: "oteldb"
+
+              # Target tables (these are the defaults)
+              logs_table_name: "OTELLogs"
+              metrics_table_name: "OTELMetrics"
+              traces_table_name: "OTELTraces"
+
+              # Pre-created JSON mappings used by this ADX example
+              logs_table_json_mapping: "OTELLogsMapping"
+              metrics_table_json_mapping: "OTELMetricsMapping"
+              traces_table_json_mapping: "OTELTracesMapping"
+
+              # Compression level (0=none, 9=max, default=6)
+              gzip_compression_level: 6
+
+              # Serialized JSON row limit, including newline framing (default=900 KiB)
+              max_row_bytes: 921600
+
+              # Max concurrent in-flight export requests
+              max_in_flight: 16
+
+        connections:
+          - from: otlp-receiver
+            to: azure-data-explorer-exporter

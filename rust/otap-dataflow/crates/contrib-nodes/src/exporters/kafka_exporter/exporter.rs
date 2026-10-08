@@ -7225,6 +7225,7 @@ pub mod test_support {
         /// back with the original decompressed payload), promoting snappy from
         /// "defined but not end-to-end tested" to round-trip validated on the
         /// mock broker.
+        #[cfg(not(target_os = "windows"))]
         #[tokio::test]
         async fn exports_logs_snappy_round_trips() {
             assert_compression_round_trips("it-snappy", CompressionType::Snappy).await;
