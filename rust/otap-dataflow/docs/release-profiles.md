@@ -51,6 +51,26 @@ The output is under `target/<profile>/`, or
 
 ## Binary-size comparison
 
+Normal Cargo output, using each profile's configured debug and stripping settings:
+
+| Profile | x86_64 without Transform (MiB) | x86_64 with Transform (MiB) | arm64 without Transform (MiB) | arm64 with Transform (MiB) |
+| --- | ---: | ---: | ---: | ---: |
+| `release` (unchanged settings, pre-PR baseline) | 407.07 | Not measured | Not measured | Not measured |
+| `release-perf` | 170.35 | 385.07 | 176.28 | 401.63 |
+| `release-balanced` | 35.09 | 69.64 | 30.34 | 59.14 |
+| `release-size` | 22.75 | 41.36 | 19.15 | 32.32 |
+
+`release` and `release-perf` retain line tables and symbols; the compact profiles
+disable debug information and strip symbols. The `release` row is the historical
+native x86_64 build before this PR, using the same minimal feature selection and
+the release settings preserved by this PR. The custom-profile rows use
+cargo-zigbuild with a glibc 2.34 baseline. Therefore, the 407.07-to-170.35 MiB
+difference includes toolchain differences and cannot be attributed solely to LTO
+and one codegen unit. The default `release` has not been rebuilt in the custom
+profiles' toolchain matrix.
+
+Deployment copies after additional stripping, with binary-only ZIP sizes:
+
 | Profile | Transform | x86_64 stripped (MiB) | x86_64 ZIP (MiB) | arm64 stripped (MiB) | arm64 ZIP (MiB) |
 | --- | --- | ---: | ---: | ---: | ---: |
 | `release-perf` | No | 36.14 | 13.61 | 31.36 | 12.62 |
@@ -59,14 +79,6 @@ The output is under `target/<profile>/`, or
 | `release-balanced` | Yes | 69.64 | 25.39 | 59.14 | 23.40 |
 | `release-size` | No | 22.75 | 8.56 | 19.15 | 8.46 |
 | `release-size` | Yes | 41.36 | 15.26 | 32.32 | 14.90 |
-
-Normal Cargo output before any additional stripping:
-
-| Profile | x86_64 without Transform (MiB) | x86_64 with Transform (MiB) | arm64 without Transform (MiB) | arm64 with Transform (MiB) |
-| --- | ---: | ---: | ---: | ---: |
-| `release-perf` | 170.35 | 385.07 | 176.28 | 401.63 |
-| `release-balanced` | 35.09 | 69.64 | 30.34 | 59.14 |
-| `release-size` | 22.75 | 41.36 | 19.15 | 32.32 |
 
 Without Transform, `release-balanced` reduces stripped size by about 3% versus
 `release-perf`; `release-size` reduces it by 37-39%. Much of the reduction in
@@ -78,17 +90,17 @@ OTLP/gRPC and OTAP exporters. The Transform configuration uses OTTL to set log
 severity text. Selecting this single statement still compiles the full
 Transform feature. The default feature bundle is disabled in every row.
 
-Measurements use Rust 1.98.1, cargo-zigbuild 0.23.4, Zig 0.15.2, and a glibc 2.34
-baseline. Each artifact was built with a named workspace profile, without
-experimental profile overrides. The performance artifacts were measured with
-the optimized settings under the name `release`, before those settings moved
+Custom-profile measurements use Rust 1.98.1, cargo-zigbuild 0.23.4, Zig 0.15.2,
+and a glibc 2.34 baseline. Each artifact was built with a named workspace profile,
+without experimental profile overrides. The performance artifacts were measured
+with the optimized settings under the name `release`, before those settings moved
 to `release-perf`.
 The compact profiles retain the same effective optimization settings. These
 tables reuse those measurements; the raw results preserve the original profile
 names, commands, and source hashes alongside their current profile names.
-They do not measure the preserved default `release` build. MiB means 1,048,576
-bytes. ZIPs contain one executable and use DEFLATE level 9 with matching
-timestamps and permissions.
+The historical `release` baseline is recorded separately in the raw results.
+MiB means 1,048,576 bytes. ZIPs contain one executable and use DEFLATE level 9
+with matching timestamps and permissions.
 
 The stripped columns make code-size comparisons consistent across profiles.
 `release-perf` intentionally retains line tables and symbols in its normal build;
@@ -98,11 +110,12 @@ changes package size without implying proportional startup or throughput gains.
 
 [Raw results](experiments/release-profiles-2026-10-07.json) record exact sizes,
 profile settings, commands, source and lockfile hashes, executable hashes, and
-ELF requirements. The measurements include the startup fix below. They are
-engine binaries, not complete Lambda extension layers. Both targets declare
-only libc and libm dependencies; compatibility and behavior still need testing
-on the actual deployment image. Arm64 is cross-built and ELF-inspected, not
-executed locally.
+ELF requirements. The custom-profile measurements include the startup fix below;
+the historical `release` baseline predates it. They are engine binaries, not
+complete Lambda extension layers. Both custom-profile targets declare only libc
+and libm dependencies; compatibility and behavior still need testing on the
+actual deployment image. Arm64 is cross-built and ELF-inspected, not executed
+locally.
 
 To reproduce the cross builds, install the pinned Rust arm64 target,
 LLVM tools, Zig, and cargo-zigbuild. For example:

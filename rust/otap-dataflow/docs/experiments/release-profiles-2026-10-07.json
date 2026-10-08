@@ -1067,6 +1067,55 @@
       "release-size": "release-size"
     },
     "effective_optimization_settings_verified": true,
-    "note": "Applies to variants only. Measurements were collected before the performance settings moved from release to release-perf. Original names, commands, source hashes and artifact data are preserved. Current labels do not imply that the artifacts were rebuilt or that the preserved default release profile was measured."
+    "note": "Applies to variants only. Measurements were collected before the performance settings moved from release to release-perf. Original names, commands, source hashes and artifact data are preserved. Current labels do not imply that the artifacts were rebuilt or that default release was rebuilt in the same Zig toolchain matrix. Its historical native baseline is recorded separately."
+  },
+  "historical_release_baseline": {
+    "name": "minimal-release",
+    "target": "x86_64 (native)",
+    "features": "otlp,otap,crypto-ring",
+    "default_features": false,
+    "profile": "release",
+    "profile_overrides": {},
+    "command": [
+      "cargo",
+      "build",
+      "--locked",
+      "--profile",
+      "release",
+      "-p",
+      "otel-arrow-dfe",
+      "--bin",
+      "df_engine",
+      "--jobs",
+      "8",
+      "--no-default-features",
+      "--features",
+      "otlp,otap,crypto-ring"
+    ],
+    "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: x86_64-unknown-linux-gnu\nrelease: 1.98.1\nLLVM version: 22.1.8",
+    "revision": "feb15713c06a3ea51cef008e81ea541db02af761",
+    "lock_sha256": "37959f691284249d6c24717ffed3b45980189bed9ded65d066b68fecfd2ae45c",
+    "unstripped_bytes": 426845384,
+    "stripped_bytes": 47491512,
+    "zip_bytes": 16448514,
+    "sha256": "449db7a4f13856ba43797b177525d64efd8dda361dc4fddc4e1a6b387db8a45a",
+    "zip_sha256": "b320f67f578710fbc7142bd2c9df494fa8815031cf9d3334c738d61e84f3383a",
+    "elf_machine": "Advanced Micro Devices X86-64",
+    "needed_shared_libraries": [
+      "libgcc_s.so.1",
+      "libm.so.6",
+      "libc.so.6",
+      "ld-linux-x86-64.so.2"
+    ],
+    "max_glibc_version": "2.43",
+    "profile_definition": {
+      "debug": "line-tables-only"
+    },
+    "profile_definition_matches_current_release": true,
+    "transform": false,
+    "normal_output_sha256": "3b9fcf039f3825d7a5aeb54c3f42c79f4a61a81faf92b69b13b9e375d1dd9a8c",
+    "startup": "original System::new_all(), before the startup fix",
+    "linker_toolchain": "Native host toolchain; cargo build, not cargo-zigbuild",
+    "note": "Historical pre-PR baseline with the same minimal features and unchanged release settings. Different linker toolchain from the custom-profile variants; not a controlled profile-only comparison. Other release architecture/Transform combinations were not measured."
   }
 }
