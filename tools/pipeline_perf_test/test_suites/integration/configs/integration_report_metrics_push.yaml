@@ -9,7 +9,7 @@
 #     with a prefix i.e. "resource_attributes.my_attribute"
 #   * scope name is exposed as "scope_attributes.scope_name"
 queries:
-  - name: Filter superflous metadata
+  - name: Filter superfluous metadata
     sql: |
       CREATE VIEW metadata_filtered AS
       SELECT *
