@@ -4,7 +4,7 @@
 //! Compiled transport-header propagation and composite presence gates.
 
 use super::layout::HeaderLookup;
-use super::{ContextEntryId, ContextLayout, ContextNameId, ContextValues};
+use super::{ContextEntryId, ContextLayout, ContextMemberSource, ContextNameId, ContextValues};
 use otel_arrow_dfe_config::context_policy::{ContextDomain, ContextEntryDeclaration};
 use otel_arrow_dfe_config::transport_headers::{
     TransportHeaderRef, TransportHeaders, TransportHeadersIter,
@@ -83,13 +83,28 @@ impl CompiledHeaderPropagationPolicy {
             let ContextNameId::Composite(entry) = projection.presence() else {
                 unreachable!("qualified references resolve to composites");
             };
-            let field = &layout.fields()[projection.fields()[0].index()];
-            let source_name = field.name.clone();
-            if field.domain != ContextDomain::TransportHeader {
-                return Err(format!(
-                    "context entry reference `{reference}` selects authorized-identity member `{source_name}`, which cannot be propagated as a transport header"
-                ));
-            }
+            let member = projection
+                .members()
+                .and_then(|members| members.first())
+                .expect("qualified references resolve to one composite member");
+            let source_name = match member.source {
+                ContextMemberSource::Field(field) => {
+                    let field = &layout.fields()[field.index()];
+                    if field.domain != ContextDomain::TransportHeader {
+                        return Err(format!(
+                            "context entry reference `{reference}` selects authorized-identity member `{}`, which cannot be propagated as a transport header",
+                            field.name
+                        ));
+                    }
+                    field.name.clone()
+                }
+                ContextMemberSource::Constant(_) => {
+                    return Err(format!(
+                        "context entry reference `{reference}` selects constant member `{}`, which cannot be propagated until constant runtime integration is available",
+                        member.name
+                    ));
+                }
+            };
             register_named_source(&mut selected_sources, &source_name, reference)?;
             let entry_layout = &layout.entries()[entry.index()];
             // The selected header proves a sole, unconditional member is present.
@@ -982,6 +997,90 @@ default:
         let error = CompiledHeaderPropagationPolicy::compile(policy, &[])
             .expect_err("unknown composite must fail");
         assert!(error.contains("unknown composite context entry `missing`"));
+    }
+
+    /// Scenario: a qualified selector names a header in a composite that also has a constant.
+    /// Guarantees: the unrelated constant does not block compilation or header propagation.
+    #[test]
+    fn composite_transport_header_propagation_ignores_unselected_constant() {
+        let context: context_policy::ContextPolicy = serde_yaml::from_str(
+            r#"
+entries:
+  route:
+    - type: constant
+      name: route_name
+      value: otlp-http-json
+    - type: transport_header
+      name: workspace
+      store_as: workspace_id
+"#,
+        )
+        .expect("valid context policy");
+        let (name, definition) = context.entries.into_iter().next().expect("declaration");
+        let declaration = ContextEntryDeclaration {
+            scope: context_policy::ContextScope::Engine,
+            name,
+            definition,
+        };
+        let policy: HeaderPropagationPolicy = serde_yaml::from_str(
+            r#"
+default:
+  selector:
+    type: named
+    named: [route:workspace_id]
+  action: propagate
+  name: stored_name
+"#,
+        )
+        .expect("valid propagation policy");
+        let policy = CompiledHeaderPropagationPolicy::compile(policy, &[declaration])
+            .expect("header member compiles");
+        let mut headers = TransportHeaders::new();
+        headers.push(transport_headers::TransportHeader::text(
+            context_name("workspace"),
+            b"acme",
+        ));
+
+        let propagated = policy.propagate(&headers).collect::<Vec<_>>();
+        assert_eq!(propagated.len(), 1);
+        assert_eq!(propagated[0].header_name, "workspace_id");
+        assert_eq!(propagated[0].value, b"acme");
+    }
+
+    /// Scenario: a qualified propagation selector names a configured constant member.
+    /// Guarantees: pre-integration compilation fails explicitly instead of silently dropping it.
+    #[test]
+    fn composite_transport_header_propagation_rejects_constant_member() {
+        let context: context_policy::ContextPolicy = serde_yaml::from_str(
+            r#"
+entries:
+  route:
+    - type: constant
+      name: route_name
+      value: otlp-http-json
+"#,
+        )
+        .expect("valid context policy");
+        let (name, definition) = context.entries.into_iter().next().expect("declaration");
+        let declaration = ContextEntryDeclaration {
+            scope: context_policy::ContextScope::Engine,
+            name,
+            definition,
+        };
+        let policy: HeaderPropagationPolicy = serde_yaml::from_str(
+            r#"
+default:
+  selector:
+    type: named
+    named: [route:route_name]
+"#,
+        )
+        .expect("valid propagation policy");
+
+        let error = CompiledHeaderPropagationPolicy::compile(policy, &[declaration])
+            .expect_err("constant propagation must wait for runtime integration");
+        assert!(error.contains("selects constant member `route_name`"));
+        assert!(error.contains("constant runtime integration"));
     }
 
     /// Scenario: a named selector repeats an unqualified header using identical and varied case.

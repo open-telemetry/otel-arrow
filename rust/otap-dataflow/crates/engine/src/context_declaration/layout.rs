@@ -3,7 +3,7 @@
 
 //! Logical layouts and projections for context declarations.
 //!
-//! A projection identifies selected fields and the enclosing composite whose
+//! A projection identifies selected values and the enclosing composite whose
 //! presence a consumer must establish. This module compiles and resolves that
 //! model and evaluates atomic presence against existing message context.
 //!
@@ -111,7 +111,10 @@ impl EntryPresence {
         let mut headers = BTreeMap::<String, BTreeSet<Option<Box<[u8]>>>>::new();
         let mut identities = Vec::new();
         for member in &entry.members {
-            let field = &fields[member.field.index()];
+            let ContextMemberSource::Field(field) = member.source else {
+                continue;
+            };
+            let field = &fields[field.index()];
             match field.domain {
                 ContextDomain::TransportHeader => {
                     _ = headers
@@ -247,11 +250,22 @@ pub enum ContextNameId {
 /// Member of a composite entry.
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct ContextMember {
-    /// Name is this member's store_as, falls back to the field's
-    /// primitive name.
+    /// Canonical member name.
+    ///
+    /// Field-backed members use `store_as` or the referenced primitive name;
+    /// constants use their configured name.
     pub name: ContextEntryName,
-    /// Primitive field
-    pub field: ContextFieldId,
+    /// Value source for this member.
+    pub source: ContextMemberSource,
+}
+
+/// Logical source of one composite member value.
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub enum ContextMemberSource {
+    /// Value supplied by one domain-scoped primitive field.
+    Field(ContextFieldId),
+    /// Inline UTF-8 value supplied by configuration.
+    Constant(Box<str>),
 }
 
 /// One conditional element
@@ -270,7 +284,7 @@ pub struct ContextEntryLayout {
     pub name: ContextEntryName,
     /// Declaring scope.
     pub scope: ContextScope,
-    /// Members in canonical name order; all must be present for this entry to exist.
+    /// Members in canonical name order; field sources must be present, while constants always are.
     pub members: Box<[ContextMember]>,
     /// Canonically ordered conditions; all must match for this entry to exist.
     pub conditions: Box<[ContextCondition]>,
@@ -281,12 +295,12 @@ pub struct ContextEntryLayout {
 pub enum ContextProjection {
     /// One independent primitive field.
     Primitive(ContextFieldId),
-    /// All or selected fields from a composite entry.
+    /// All or selected members from a composite entry.
     Composite {
         /// Composite whose members and conditions determine presence.
         entry: ContextEntryId,
-        /// Fields in canonical member-name order.
-        fields: Box<[ContextFieldId]>,
+        /// Members in canonical member-name order.
+        members: Box<[ContextMember]>,
     },
 }
 
@@ -300,12 +314,12 @@ impl ContextProjection {
         }
     }
 
-    /// Returns fields in canonical projection order.
+    /// Returns projected composite members in canonical name order.
     #[must_use]
-    pub fn fields(&self) -> &[ContextFieldId] {
+    pub fn members(&self) -> Option<&[ContextMember]> {
         match self {
-            Self::Primitive(field) => std::slice::from_ref(field),
-            Self::Composite { fields, .. } => fields,
+            Self::Primitive(_) => None,
+            Self::Composite { members, .. } => Some(members),
         }
     }
 }
@@ -342,15 +356,6 @@ pub(super) fn validate_definition(declaration: &ContextEntryDeclaration) -> Resu
     if !errors.is_empty() {
         return Err(invalid(errors.join("; ")));
     }
-    for part in &declaration.definition.0 {
-        if part.reference().scope().is_some() {
-            return Err(invalid(format!(
-                "context entry `{}` cannot use nested reference `{}`",
-                declaration.name,
-                part.reference(),
-            )));
-        }
-    }
     Ok(())
 }
 
@@ -383,9 +388,11 @@ impl ContextLayout {
         let required = selected
             .iter()
             .flat_map(|declaration| &declaration.definition.0)
-            .map(|part| ContextFieldLayout {
-                name: part.reference().name().clone(),
-                domain: part.domain(),
+            .filter_map(|part| {
+                Some(ContextFieldLayout {
+                    name: part.source_name()?.clone(),
+                    domain: part.domain()?,
+                })
             })
             .collect::<BTreeSet<_>>();
         let mut fields = BTreeSet::new();
@@ -437,23 +444,35 @@ impl ContextLayout {
             let mut members = Vec::with_capacity(declaration.definition.0.len());
             let mut conditions = Vec::new();
             for part in &declaration.definition.0 {
-                let domain = part.domain();
-                let reference = part.reference();
-                let mut matching = fields.iter().enumerate().filter(|(_, field)| {
-                    field.domain == domain && field.matches_name(reference.name())
-                });
+                if let ContextEntryPart::Constant { name, value } = part {
+                    members.push(ContextMember {
+                        name: name.clone(),
+                        source: ContextMemberSource::Constant(value.clone().into_boxed_str()),
+                    });
+                    continue;
+                }
+                let domain = part
+                    .domain()
+                    .expect("referenced context part has an authority domain");
+                let source_name = part
+                    .source_name()
+                    .expect("referenced context part has a source name");
+                let mut matching = fields
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, field)| field.domain == domain && field.matches_name(source_name));
                 let field = matching
                     .next()
                     .map(|(index, _)| ContextFieldId(index))
                     .ok_or_else(|| {
                         invalid(format!(
-                            "context entry `{}` requires unavailable {:?} domain `{reference}`",
+                            "context entry `{}` requires unavailable {:?} domain `{source_name}`",
                             declaration.name, domain
                         ))
                     })?;
                 if matching.next().is_some() {
                     return Err(invalid(format!(
-                        "context entry `{}` has ambiguous {:?} reference `{reference}`",
+                        "context entry `{}` has ambiguous {:?} reference `{source_name}`",
                         declaration.name, domain
                     )));
                 }
@@ -469,16 +488,18 @@ impl ContextLayout {
                     .member_name()
                     .expect("value-bearing context part has a member name")
                     .clone();
-                if members
-                    .iter()
-                    .any(|member: &ContextMember| member.field == field)
-                {
+                if members.iter().any(|member: &ContextMember| {
+                    member.source == ContextMemberSource::Field(field)
+                }) {
                     return Err(invalid(format!(
-                        "context entry `{}` repeats `{reference}`",
+                        "context entry `{}` repeats `{source_name}`",
                         declaration.name
                     )));
                 }
-                members.push(ContextMember { name, field });
+                members.push(ContextMember {
+                    name,
+                    source: ContextMemberSource::Field(field),
+                });
             }
             members.sort_unstable_by(|left, right| left.name.cmp(&right.name));
             conditions.sort_unstable();
@@ -580,15 +601,15 @@ impl ContextLayout {
         member: &ContextEntryName,
     ) -> Result<ContextProjection, Error> {
         let entry = self.entry_id(composite)?;
-        let field = self.entries[entry.index()]
+        let member = self.entries[entry.index()]
             .members
             .iter()
             .find(|candidate| &candidate.name == member)
             .ok_or_else(|| invalid(format!("unknown context member `{composite}:{member}`")))?
-            .field;
+            .clone();
         Ok(ContextProjection::Composite {
             entry,
-            fields: Box::new([field]),
+            members: Box::new([member]),
         })
     }
 
@@ -600,11 +621,7 @@ impl ContextLayout {
         let entry = self.entry_id(composite)?;
         Ok(ContextProjection::Composite {
             entry,
-            fields: self.entries[entry.index()]
-                .members
-                .iter()
-                .map(|member| member.field)
-                .collect(),
+            members: self.entries[entry.index()].members.clone(),
         })
     }
 
@@ -630,7 +647,7 @@ impl ContextFieldLayout {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otel_arrow_dfe_config::context::ContextEntryRef;
+    use otel_arrow_dfe_config::ContextEntryRef;
     use otel_arrow_dfe_config::context_policy::ContextEntryDefinition;
 
     fn name(value: &str) -> ContextEntryName {
@@ -661,11 +678,11 @@ mod tests {
             name: name("product_user"),
             definition: ContextEntryDefinition(vec![
                 ContextEntryPart::AuthorizedIdentity {
-                    name: reference("customer"),
+                    name: name("customer"),
                     store_as: Some(name("customer_id")),
                 },
                 ContextEntryPart::TransportHeader {
-                    name: reference("workspace"),
+                    name: name("workspace"),
                     store_as: None,
                 },
             ]),
@@ -685,11 +702,11 @@ mod tests {
         let mut result = entry();
         result.definition.0.extend([
             ContextEntryPart::TransportHeaderMatch {
-                name: reference("region"),
+                name: name("region"),
                 value: "west".to_owned(),
             },
             ContextEntryPart::TransportHeaderMatch {
-                name: reference("environment"),
+                name: name("environment"),
                 value: "production".to_owned(),
             },
         ]);
@@ -718,13 +735,33 @@ mod tests {
 
     fn projection_names<'a>(
         layout: &'a ContextLayout,
-        projection: &ContextProjection,
+        projection: &'a ContextProjection,
     ) -> Vec<&'a str> {
-        projection
-            .fields()
-            .iter()
-            .map(|field| layout.fields()[field.index()].name.as_str())
-            .collect()
+        match projection {
+            ContextProjection::Primitive(field) => {
+                vec![layout.fields()[field.index()].name.as_str()]
+            }
+            ContextProjection::Composite { members, .. } => members
+                .iter()
+                .map(|member| match &member.source {
+                    ContextMemberSource::Field(field) => {
+                        layout.fields()[field.index()].name.as_str()
+                    }
+                    ContextMemberSource::Constant(_) => member.name.as_str(),
+                })
+                .collect(),
+        }
+    }
+
+    fn projection_sources(projection: &ContextProjection) -> Vec<ContextMemberSource> {
+        match projection {
+            ContextProjection::Primitive(field) => {
+                vec![ContextMemberSource::Field(*field)]
+            }
+            ContextProjection::Composite { members, .. } => {
+                members.iter().map(|member| member.source.clone()).collect()
+            }
+        }
     }
 
     /// Scenario: primitive, whole-composite, and qualified names select conditional or plain entries.
@@ -831,17 +868,12 @@ mod tests {
         );
     }
 
-    /// Scenario: declarations repeat composite names, nest derived references, or have no members.
+    /// Scenario: declarations repeat composite names or have no members.
     /// Guarantees: the compiler rejects ambiguous namespaces and invokes definition validation.
     #[test]
     fn invalid_declarations_are_rejected() {
         let mut second = entry();
         second.scope = ContextScope::Group("group".into());
-        let mut nested = entry();
-        nested.definition.0[0] = ContextEntryPart::AuthorizedIdentity {
-            name: reference("other:customer"),
-            store_as: None,
-        };
         let mut empty = entry();
         empty.definition.0.clear();
         for (declarations, expected) in [
@@ -849,7 +881,6 @@ mod tests {
                 vec![entry(), second],
                 "duplicate composite context entry `product_user`",
             ),
-            (vec![nested], "cannot use nested reference `other:customer`"),
             (vec![empty], "must contain at least one member"),
         ] {
             assert_compile_error(fields(), &declarations, expected);
@@ -903,7 +934,7 @@ mod tests {
         let mut declaration = entry();
         declaration.name = name("customer");
         declaration.definition.0[1] = ContextEntryPart::TransportHeader {
-            name: reference("customer"),
+            name: name("customer"),
             store_as: Some(name("header")),
         };
         let layout = compile(fields, &[declaration]);
@@ -913,7 +944,7 @@ mod tests {
         let header = layout
             .resolve_primitive(ContextDomain::TransportHeader, &name("customer"))
             .expect("header");
-        assert_ne!(identity.fields(), header.fields());
+        assert_ne!(projection_sources(&identity), projection_sources(&header));
         let whole = layout
             .resolve_composite(&name("customer"))
             .expect("composite");
@@ -921,15 +952,22 @@ mod tests {
             let projection = layout
                 .resolve_member(&name("customer"), &name(member))
                 .expect("member");
-            assert_eq!(projection.fields(), primitive.fields());
+            assert_eq!(
+                projection_sources(&projection),
+                projection_sources(&primitive)
+            );
             assert_eq!(projection.presence(), whole.presence());
             assert_ne!(projection.presence(), primitive.presence());
         }
         assert_eq!(
             whole
-                .fields()
+                .members()
+                .expect("composite members")
                 .iter()
-                .map(|field| layout.fields()[field.index()].domain)
+                .map(|member| match &member.source {
+                    ContextMemberSource::Field(field) => layout.fields()[field.index()].domain,
+                    ContextMemberSource::Constant(_) => panic!("unexpected constant"),
+                })
                 .collect::<Vec<_>>(),
             [
                 ContextDomain::AuthorizedIdentity,
@@ -945,11 +983,11 @@ mod tests {
         let mut conditional = entry();
         conditional.definition.0.extend([
             ContextEntryPart::TransportHeaderMatch {
-                name: reference("workspace"),
+                name: name("workspace"),
                 value: "production".to_owned(),
             },
             ContextEntryPart::TransportHeaderMatch {
-                name: reference("workspace"),
+                name: name("workspace"),
                 value: "staging".to_owned(),
             },
         ]);
@@ -1004,7 +1042,7 @@ mod tests {
     fn reference_matching_respects_source_domains() {
         let mut declaration = entry();
         declaration.definition.0[1] = ContextEntryPart::TransportHeader {
-            name: reference("WORKSPACE"),
+            name: name("WORKSPACE"),
             store_as: None,
         };
         let layout = compile(fields(), &[declaration.clone()]);
@@ -1013,7 +1051,7 @@ mod tests {
             .expect("member");
         assert_eq!(projection_names(&layout, &projection), ["workspace"]);
         declaration.definition.0[0] = ContextEntryPart::AuthorizedIdentity {
-            name: reference("CUSTOMER"),
+            name: name("CUSTOMER"),
             store_as: None,
         };
         assert_compile_error(fields(), &[declaration], "unavailable AuthorizedIdentity");
@@ -1028,14 +1066,14 @@ mod tests {
         assert_compile_error(sources, &[entry()], "ambiguous TransportHeader reference");
     }
 
-    /// Scenario: a pipeline consumes one composite while another has unsupported nested references.
-    /// Guarantees: only live references activate definitions, and external source slots may be absent.
+    /// Scenario: a pipeline consumes one composite while another has unrelated source members.
+    /// Guarantees: only live references activate definitions, and unused source slots remain absent.
     #[test]
     fn consumer_selection_leaves_unused_definitions_inert() {
         let mut unused = entry();
         unused.name = name("unused");
         unused.definition.0[0] = ContextEntryPart::AuthorizedIdentity {
-            name: reference("other:identity"),
+            name: name("other_identity"),
             store_as: None,
         };
         let selected = reference("product_user:workspace");
@@ -1059,7 +1097,7 @@ mod tests {
             .definition
             .0
             .push(ContextEntryPart::TransportHeaderMatch {
-                name: reference("WORKSPACE"),
+                name: name("WORKSPACE"),
                 value: "production".to_owned(),
             });
         let selected = reference("product_user:workspace");
@@ -1087,13 +1125,13 @@ mod tests {
             let mut parts = sources
                 .iter()
                 .map(|field| ContextEntryPart::TransportHeader {
-                    name: field.name.clone().into(),
+                    name: field.name.clone(),
                     store_as: None,
                 })
                 .collect::<Vec<_>>();
             parts.extend(
                 ["one", "two"].map(|value| ContextEntryPart::TransportHeaderMatch {
-                    name: reference("field_0"),
+                    name: name("field_0"),
                     value: value.into(),
                 }),
             );
@@ -1135,5 +1173,113 @@ mod tests {
             headers.push(TransportHeader::text(name("field_0"), b"two"));
             assert_present(&headers, true);
         }
+    }
+
+    /// Scenario: a constant-only entry compiles without any primitive fields.
+    /// Guarantees: the literal is projected as an always-available member with composite presence.
+    #[test]
+    fn constant_only_entry_compiles_without_fields() {
+        let declaration = ContextEntryDeclaration {
+            scope: ContextScope::Engine,
+            name: name("route"),
+            definition: ContextEntryDefinition(vec![ContextEntryPart::Constant {
+                name: name("route_name"),
+                value: "otlp-http-json".to_owned(),
+            }]),
+        };
+
+        let layout = compile([], &[declaration]);
+        assert!(layout.fields().is_empty());
+        assert!(layout.entries()[0].conditions.is_empty());
+        let projection = layout
+            .resolve_member(&name("route"), &name("route_name"))
+            .expect("constant member");
+        assert_eq!(
+            projection.members().expect("composite members"),
+            [ContextMember {
+                name: name("route_name"),
+                source: ContextMemberSource::Constant("otlp-http-json".into()),
+            }]
+        );
+        assert_eq!(
+            projection.presence(),
+            ContextNameId::Composite(ContextEntryId(0))
+        );
+    }
+
+    /// Scenario: a constant member is guarded by a transport-header match condition.
+    /// Guarantees: the constant remains available without bypassing the composite condition gate.
+    #[test]
+    fn constant_member_retains_composite_condition_gate() {
+        let declaration = ContextEntryDeclaration {
+            scope: ContextScope::Engine,
+            name: name("route"),
+            definition: ContextEntryDefinition(vec![
+                ContextEntryPart::Constant {
+                    name: name("route_name"),
+                    value: "otlp-http-json".to_owned(),
+                },
+                ContextEntryPart::TransportHeaderMatch {
+                    name: name("environment"),
+                    value: "production".to_owned(),
+                },
+            ]),
+        };
+
+        let layout = compile(
+            [field("environment", ContextDomain::TransportHeader)],
+            &[declaration],
+        );
+        let projection = layout
+            .resolve_member(&name("route"), &name("route_name"))
+            .expect("constant member");
+        let ContextNameId::Composite(entry_id) = projection.presence() else {
+            panic!("constant member must retain composite presence");
+        };
+        let entry = &layout.entries()[entry_id.index()];
+        assert_eq!(
+            projection.members().expect("composite members"),
+            [ContextMember {
+                name: name("route_name"),
+                source: ContextMemberSource::Constant("otlp-http-json".into()),
+            }]
+        );
+        assert_eq!(entry.conditions.len(), 1);
+        assert_eq!(
+            layout.fields()[entry.conditions[0].field.index()]
+                .name
+                .as_str(),
+            "environment"
+        );
+        assert_eq!(entry.conditions[0].value.as_ref(), b"production");
+    }
+
+    /// Scenario: equivalent mixed composites reorder constant and field members.
+    /// Guarantees: constant values compile canonically while remaining binding-significant.
+    #[test]
+    fn constants_are_canonical_and_binding_significant() {
+        let mut declaration = entry();
+        declaration.definition.0.push(ContextEntryPart::Constant {
+            name: name("scheme"),
+            value: "ApiKey".to_owned(),
+        });
+        let mut reordered = declaration.clone();
+        reordered.definition.0.reverse();
+        assert_eq!(
+            compile(fields(), &[declaration.clone()]),
+            compile(fields(), &[reordered])
+        );
+
+        let mut changed = declaration.clone();
+        let ContextEntryPart::Constant { value, .. } =
+            changed.definition.0.last_mut().expect("constant member")
+        else {
+            panic!("last member must be constant");
+        };
+        *value = "Bearer".to_owned();
+        assert_ne!(
+            compile(fields(), &[declaration]),
+            compile(fields(), &[changed])
+        );
     }
 }
