@@ -729,41 +729,29 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                         ))
                     }
                     //send data
-                    Message::PData(mut pdata) => {
+                    Message::PData(pdata) => {
                         let export_started_at = Instant::now();
                         let signal_type = pdata.signal_type();
 
-                        // Keep encoded input recoverable until decoding succeeds. Native OTAP
-                        // without return-data interests is still moved directly.
-                        let return_payload = pdata.context_mut().may_return_payload();
-                        let retain_for_conversion =
-                            return_payload || pdata.payload_ref().encoding().is_some();
-                        let payload = if retain_for_conversion {
-                            pdata.payload_ref().clone()
-                        } else {
-                            pdata.take_payload()
-                        };
-
-                        let message = match effect_handler
-                            .try_payload_into_otap(payload)
+                        let (completion, message) = match effect_handler
+                            .try_into_otap_with_completion(pdata)
                             .await
                         {
-                            Ok(m) => m,
-                            Err(e) => {
+                            Ok(prepared) => prepared,
+                            Err(error) => {
                                 self.metrics.record_failure(
                                     signal_type,
                                     OtapExporterErrorType::PayloadConversion,
                                     export_started_at.elapsed(),
                                 );
+                                let (error, pdata) = error.into_parts();
                                 effect_handler
-                                    .notify_nack(NackMsg::new_permanent(e.to_string(), pdata))
+                                    .notify_nack(NackMsg::new_permanent(error.to_string(), pdata))
                                     .await?;
                                 continue;
                             }
                         };
-                        if retain_for_conversion && !return_payload {
-                            drop(pdata.take_payload());
-                        }
+                        let pdata = completion.into_pdata();
 
                         // Route each batch to the stream with the smallest
                         // local backlog. This is intentionally based on queue

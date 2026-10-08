@@ -65,7 +65,7 @@ use otel_arrow_dfe_otap::{
         context::split_contexts::{Contexts, OutboundError},
         slots::Key,
     },
-    pdata::{Context, OtapPdata, PdataEffectHandlerExtension},
+    pdata::{OtapPdata, PdataCompletion, PdataEffectHandlerExtension},
 };
 #[cfg(test)]
 use otel_arrow_dfe_pdata::TryIntoWithOptions;
@@ -282,8 +282,7 @@ impl TransformProcessor {
     /// while managing subscriptions and context
     async fn handle_exec_result(
         &mut self,
-        inbound_payload: Option<OtapPayload>,
-        inbound_context: Context,
+        completion: PdataCompletion,
         signal: SignalType,
         pipeline_result: Result<OtapArrowRecords, TransformOperationError>,
         counters: ExecutionCounters,
@@ -334,7 +333,7 @@ impl TransformProcessor {
         // With no named outputs, preserve the direct-context fast path. A fully
         // empty transform result instead completes the original request locally.
         if router_impl.routed.is_empty() {
-            let mut pdata = OtapPdata::new(inbound_context, default_otap_batch.into());
+            let mut pdata = completion.with_payload(default_otap_batch.into());
             if default_has_data {
                 effect_handler
                     .send_message_with_source_node(pdata)
@@ -388,13 +387,13 @@ impl TransformProcessor {
 
         // Must be built before the context is moved into the slot map below. Holds no
         // frames, so cloning it per outbound batch is cheap.
-        let outbound_context = inbound_context.clone_detached();
+        let outbound_context = completion.context().clone_detached();
 
         // keep error reason if there was an error, so we can send it to upstream in Nack once
         // all routed outbound batches have been Ack/Nack'd
         let inbound_ctx_key = self
             .contexts
-            .insert_inbound(inbound_context, inbound_payload, None)
+            .insert_inbound(completion, None)
             .ok_or_else(|| {
                 TransformOperationError::new(
                     TransformErrorType::InboundCapacity,
@@ -513,15 +512,13 @@ impl TransformProcessor {
     async fn handle_ack_nack_inbound(
         &mut self,
         outbound_key: Key,
-        signal_type: SignalType,
         effect_handler: &mut EffectHandler<OtapPdata>,
     ) -> Result<(), EngineError> {
         // clear the outbound context.
         if let Some(inbound) = self.contexts.clear_outbound(outbound_key) {
             // if here, we have cleared the final outbound context for some inbound batch,
             // which means we can now Ack or Nack the inbound context
-            let payload = inbound.payload.unwrap_or(OtapPayload::empty(signal_type));
-            let pdata = OtapPdata::new(inbound.context, payload);
+            let pdata = inbound.completion.into_pdata();
             if let Some(error) = inbound.error {
                 let nack_msg = if inbound.outbound_all_transient_errors {
                     // this constructor creates a non-permanent Nack
@@ -597,12 +594,8 @@ impl Processor<OtapPdata> for TransformProcessor {
                     let outbound_key: Key = ack_message.unwind.route.calldata.try_into()?;
                     self.contexts
                         .set_outbound_all_transient_errors(outbound_key, false);
-                    self.handle_ack_nack_inbound(
-                        outbound_key,
-                        ack_message.accepted.signal_type(),
-                        effect_handler,
-                    )
-                    .await?;
+                    self.handle_ack_nack_inbound(outbound_key, effect_handler)
+                        .await?;
                 }
                 NodeControlMsg::Nack(nack_message) => {
                     let outbound_key: Key = nack_message.unwind.route.calldata.try_into()?;
@@ -617,170 +610,85 @@ impl Processor<OtapPdata> for TransformProcessor {
                         self.contexts
                             .set_outbound_all_transient_errors(outbound_key, false);
                     }
-                    self.handle_ack_nack_inbound(
-                        outbound_key,
-                        nack_message.refused.signal_type(),
-                        effect_handler,
-                    )
-                    .await?;
+                    self.handle_ack_nack_inbound(outbound_key, effect_handler)
+                        .await?;
                 }
                 _ => {
                     // other types of control messages are ignored for now
                 }
             },
             Message::PData(pdata) => {
-                let (context, payload) = pdata.into_parts();
-                let inbound_payload = context.may_return_payload().then_some(payload.clone());
-                let pdata_signal_type = payload.signal_type();
-                let mut payload = Some(payload);
-                let mut transformed = false;
-                let mut transform_error = None;
-
-                // Reset the engine's record-removal counters so that, after the
-                // transform loop, they reflect only the drops caused by this
-                // batch.
+                let signal = pdata.signal_type();
+                let applies = |scope: &SignalScope| match scope {
+                    SignalScope::All => true,
+                    SignalScope::Signal(selected) => signal == *selected,
+                };
                 self.execution_state.reset_counters();
-
-                // Execute all transforms. We skip transforms where the batch's signal type is not
-                // selected by the signal scope, and lazily convert the pdata payload to OTAP
-                // if/when we find a transform to apply. If any transform error occurs, break early
-                // and set transform_error to `Some`.
-                //
-                // State at the end of this loop:
-                // - Either payload or `transform_error` will be `Some`
-                // - If we applied any transform then:
-                //   - `transformed` will be set to `true`
-                //   - if payload is `Some` then contained payload variant will be OtelArrowRecords
-                for transform in &mut self.transforms {
-                    let should_process = match &transform.signal_scope {
-                        SignalScope::All => true,
-                        SignalScope::Signal(scope_signal_type) => {
-                            pdata_signal_type == *scope_signal_type
-                        }
-                    };
-
-                    if !should_process {
-                        // skip applying this transform as it does not select the signal type
-                        continue;
-                    }
-                    transformed = true;
-
-                    // convert payload to OTAP & remove delta encoded IDs.
-                    // safety: we know payload will have been initialized to Some either, before
-                    // entering the loop, or during the previous iteration.
-                    let conversion_result = effect_handler
-                        .try_payload_into_otap(payload.take().expect("payload initialized"))
-                        .await;
-                    let mut otap_batch = match conversion_result {
-                        Ok(otap_batch) => otap_batch,
+                let Some(first) = self
+                    .transforms
+                    .iter()
+                    .position(|t| applies(&t.signal_scope))
+                else {
+                    // Do not snapshot or decode messages that no transform selects.
+                    effect_handler.send_message_with_source_node(pdata).await?;
+                    return Ok(());
+                };
+                let (completion, records) =
+                    match effect_handler.try_into_otap_with_completion(pdata).await {
+                        Ok(prepared) => prepared,
                         Err(error) => {
-                            self.metrics.record_failure(
-                                pdata_signal_type,
-                                TransformErrorType::PayloadConversion,
-                            );
-                            let (error, payload) = error.into_parts();
+                            self.metrics
+                                .record_failure(signal, TransformErrorType::PayloadConversion);
+                            let (error, pdata) = error.into_parts();
                             effect_handler
-                                .notify_nack(NackMsg::new_permanent(
-                                    error.to_string(),
-                                    OtapPdata::new(context, payload),
-                                ))
+                                .notify_nack(NackMsg::new_permanent(error.to_string(), pdata))
                                 .await?;
                             return Ok(());
                         }
                     };
-                    if let Err(error) = otap_batch.decode_transport_optimized_ids() {
-                        transform_error = Some(TransformOperationError::new(
-                            TransformErrorType::IdDecode,
-                            error.into(),
-                        ));
-                        break;
-                    }
 
-                    let result = transform
-                        .pipeline
-                        .execute_with_state(otap_batch, &mut self.execution_state)
-                        .await
-                        .map_err(|e| {
-                            TransformOperationError::new(
-                                TransformErrorType::QueryExecution,
-                                EngineError::ProcessorError {
-                                    processor: effect_handler.processor_id(),
-                                    kind: ProcessorErrorKind::Other,
-                                    error: format!("Error executing query engine pipeline {e}"),
-                                    source_detail: e.to_string(),
-                                },
-                            )
-                        });
-
-                    match result {
-                        Ok(next_result) => {
-                            // initialize payload for the next loop iteration
-                            payload = Some(OtapPayload::from(next_result));
+                let result = async {
+                    let mut records = records;
+                    for transform in &mut self.transforms[first..] {
+                        if !applies(&transform.signal_scope) {
+                            continue;
                         }
-                        Err(e) => {
-                            transform_error = Some(e);
-                            break;
-                        }
-                    }
-                }
-
-                if transformed {
-                    let result = match transform_error {
-                        Some(e) => Err(e),
-                        None => {
-                            // safety: since error is `None`, we know payload must be `Some` based
-                            // on the logic in the loop above, so it is safe to expect here
-                            match effect_handler
-                                .try_payload_into_otap(
-                                    payload.take().expect("payload option initialized"),
+                        // Normalization remains explicit at each algorithm boundary.
+                        records.decode_transport_optimized_ids().map_err(|error| {
+                            TransformOperationError::new(TransformErrorType::IdDecode, error.into())
+                        })?;
+                        records = transform
+                            .pipeline
+                            .execute_with_state(records, &mut self.execution_state)
+                            .await
+                            .map_err(|error| {
+                                TransformOperationError::new(
+                                    TransformErrorType::QueryExecution,
+                                    EngineError::ProcessorError {
+                                        processor: effect_handler.processor_id(),
+                                        kind: ProcessorErrorKind::Other,
+                                        error: format!(
+                                            "Error executing query engine pipeline {error}"
+                                        ),
+                                        source_detail: error.to_string(),
+                                    },
                                 )
-                                .await
-                            {
-                                Ok(otap_batch) => Ok(otap_batch),
-                                Err(error) => {
-                                    let (error, payload) = error.into_parts();
-                                    effect_handler
-                                        .notify_nack(NackMsg::new_permanent(
-                                            error.to_string(),
-                                            OtapPdata::new(context, payload),
-                                        ))
-                                        .await?;
-                                    return Ok(());
-                                }
-                            }
-                        }
-                    };
-                    // Hand the engine's per-batch counters to the result handler,
-                    // which records the corresponding flow metrics.
-                    let counters = self.execution_state.counters();
-                    match self
-                        .handle_exec_result(
-                            inbound_payload,
-                            context,
-                            pdata_signal_type,
-                            result,
-                            counters,
-                            effect_handler,
-                        )
-                        .await
-                    {
-                        Ok(()) => self.metrics.record_success(pdata_signal_type),
-                        Err(operation_error) => {
-                            self.metrics
-                                .record_failure(pdata_signal_type, operation_error.error_type);
-                            return Err(operation_error.error);
-                        }
+                            })?;
                     }
-                } else {
-                    // safety: payload is initialized to Some, and only modified if any transforms
-                    // are applied. In this location, we know no transforms were applied so we can
-                    // safely expect take here to return Some
-                    let payload = payload.take().expect("payload option initialized");
-
-                    // all transforms were skipped for this pdata, just forward the original payload
-                    effect_handler
-                        .send_message_with_source_node(OtapPdata::new(context, payload))
-                        .await?;
+                    Ok(records)
+                }
+                .await;
+                let counters = self.execution_state.counters();
+                match self
+                    .handle_exec_result(completion, signal, result, counters, effect_handler)
+                    .await
+                {
+                    Ok(()) => self.metrics.record_success(signal),
+                    Err(operation_error) => {
+                        self.metrics
+                            .record_failure(signal, operation_error.error_type);
+                        return Err(operation_error.error);
+                    }
                 }
             }
         };
@@ -1602,8 +1510,9 @@ mod test {
         .expect("no process error")
     }
 
-    /// Scenario: A traces-scoped query receives one traces message and one metrics message.
-    /// Guarantees: Only the matching traces message produces a transform operation metric.
+    /// Scenario: A traces query receives native signals and opaque encoded metrics.
+    /// Guarantees: Skipped metrics retain their encoded bytes without decoding, and only
+    /// the matching traces message produces a transform operation metric.
     #[test]
     fn test_signal_scope() {
         // test ensure it will only operate on traces, but ignores other signals
@@ -1615,6 +1524,29 @@ mod test {
         runtime
             .set_processor(processor)
             .run_test(|mut ctx| async move {
+                use bytes::Bytes;
+                use otel_arrow_dfe_pdata_codec::{CodecService, PdataEncoding};
+
+                let services = CodecService::new().unwrap();
+                let codec = services.registry().resolve(&PdataEncoding::OTLP).unwrap();
+                // Invalid protobuf makes accidental decoding observable as a failure.
+                let bytes = Bytes::from_static(b"\x0a\xff\xff");
+                ctx.process(Message::PData(OtapPdata::new_default(
+                    codec
+                        .admit(SignalType::Metrics, bytes.clone())
+                        .unwrap()
+                        .into(),
+                )))
+                .await
+                .expect("skipped input must not decode");
+                let skipped = ctx.drain_pdata().await;
+                assert_eq!(skipped.len(), 1);
+                let view = skipped[0].payload_ref().encoded_view().unwrap();
+                assert_eq!(view.encoding(), &PdataEncoding::OTLP);
+                assert_eq!(view.signal_type(), SignalType::Metrics);
+                assert_eq!(view.bytes().as_ptr(), bytes.as_ptr());
+                assert_eq!(view.bytes(), bytes.as_ref());
+
                 send_one_traces_one_metrics_same_names(&mut ctx).await;
                 let mut processed_pdata = ctx
                     .drain_pdata()

@@ -44,6 +44,9 @@ use otel_arrow_dfe_pdata_codec::{
     PdataEncoding, PdataPayloadDecodeError, PdataView,
 };
 
+mod completion;
+pub use completion::{OtapPdataUpdateCause, OtapPdataUpdateError, PdataCompletion};
+
 const AUTHORIZED_ENTRY_LEN: usize = 20;
 const AUTHORIZED_VALUE_LEN: usize = 8;
 
@@ -1502,6 +1505,50 @@ pub trait PdataEffectHandlerExtension: CodecEffectHandler {
         payload: OtapPayload,
     ) -> Result<OtapArrowRecords, PdataPayloadDecodeError>;
 
+    /// Obtains native working records and separately owned completion state.
+    ///
+    /// A snapshot is retained only for RETURN_DATA subscribers.
+    /// A decode failure always returns the exact input, including its payload.
+    async fn try_into_otap_with_completion(
+        &self,
+        pdata: OtapPdata,
+    ) -> Result<(PdataCompletion, OtapArrowRecords), OtapPdataDecodeError> {
+        let (completion, payload) = pdata.into_work();
+        match self.try_payload_into_otap(payload).await {
+            Ok(records) => Ok((completion, records)),
+            Err(error) => {
+                let (source, payload) = error.into_parts();
+                Err(OtapPdataDecodeError(Box::new(OtapPdataDecodeErrorInner {
+                    source,
+                    pdata: completion.with_payload(payload),
+                })))
+            }
+        }
+    }
+
+    /// Applies a synchronous, fallible update without exposing snapshot bookkeeping.
+    ///
+    /// Processing failures recover the original payload only when RETURN_DATA is
+    /// requested; decoding failures always recover it. The caller chooses how to
+    /// report failures. No codec state is borrowed while the callback runs.
+    async fn try_update_otap<R, E>(
+        &self,
+        pdata: OtapPdata,
+        update: impl FnOnce(&mut OtapArrowRecords) -> Result<R, E>,
+    ) -> Result<(OtapArrowPdata, R), OtapPdataUpdateError<E>> {
+        let (completion, mut records) = self
+            .try_into_otap_with_completion(pdata)
+            .await
+            .map_err(OtapPdataUpdateError::decode)?;
+        match update(&mut records) {
+            Ok(value) => {
+                let (context, _) = completion.into_pdata().into_parts();
+                Ok((OtapArrowPdata::new(context, records), value))
+            }
+            Err(error) => Err(OtapPdataUpdateError::update(error, completion.into_pdata())),
+        }
+    }
+
     /// Borrows a read-only view through runtime-owned codec state.
     async fn view<'a>(
         &self,
@@ -1918,6 +1965,7 @@ mod test {
     fn legacy_otap_pdata_layout_is_stable() {
         assert_eq!(size_of::<OtapPdata>(), 152);
         assert!(size_of::<OtapArrowPdata>() <= size_of::<OtapPdata>());
+        assert_eq!(size_of::<PdataCompletion>(), size_of::<OtapPdata>());
     }
 
     /// Scenario: Malformed encoded pdata carries delivery context through failed conversion.
@@ -1968,6 +2016,252 @@ mod test {
             pointer
         );
         assert_eq!(recovered.signal_type(), SignalType::Logs);
+    }
+
+    fn completion_handler() -> LocalExporterEffectHandler<OtapPdata> {
+        let (_rx, metrics) = MetricsReporter::create_new_and_receiver(1);
+        LocalExporterEffectHandler::new(
+            otel_arrow_dfe_engine::testing::test_node("completion-test"),
+            metrics,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+        )
+    }
+
+    fn completion_inputs(handler: &LocalExporterEffectHandler<OtapPdata>) -> [OtapPayload; 3] {
+        let legacy = create_test_pdata().payload();
+        let codec = handler
+            .codec_service()
+            .registry()
+            .resolve(&PdataEncoding::OTLP)
+            .unwrap();
+        let encoded = codec
+            .admit(
+                legacy.signal_type(),
+                legacy.encoded_bytes().unwrap().clone(),
+            )
+            .unwrap();
+        [legacy, encoded.into(), create_test_otap_pdata().payload()]
+    }
+
+    /// Scenario: legacy, generalized encoded, and native inputs prepare work or completion.
+    /// Guarantees: only RETURN_DATA retains input, context and measurement caches survive,
+    /// and encoded snapshots share the original byte buffer without codec creation.
+    #[test]
+    fn completion_retention_preserves_input_and_caches() {
+        let handler = completion_handler();
+        for return_data in [false, true] {
+            for mut payload in completion_inputs(&handler) {
+                let count = payload.num_items();
+                let size = payload.num_bytes();
+                let pointer = payload.encoded_bytes().map(|bytes| bytes.as_ptr());
+                let format = payload.format();
+                let pdata = OtapPdata::new_default(payload)
+                    .test_subscribe_to(
+                        Interests::NACKS
+                            | if return_data {
+                                Interests::RETURN_DATA
+                            } else {
+                                Interests::empty()
+                            },
+                        TestCallData::default().into(),
+                        777,
+                    )
+                    .with_peer_addr("127.0.0.1:1234".parse().unwrap());
+                let expected_context = pdata.context.clone();
+                let (completion, mut work) = pdata.into_work();
+                assert_eq!(completion.context(), &expected_context);
+                assert_eq!(work.num_items(), count);
+                assert_eq!(work.num_bytes(), size);
+                assert_eq!(work.encoded_bytes().map(|bytes| bytes.as_ptr()), pointer);
+                // Use the same completion entry point as already-prepared exporters.
+                let mut returned = completion.into_pdata().into_completion().into_pdata();
+                assert_eq!(returned.context, expected_context);
+                if return_data {
+                    assert_eq!(returned.payload_ref().format(), format);
+                    assert_eq!(returned.num_items(), count);
+                    assert_eq!(returned.num_bytes(), size);
+                    assert_eq!(
+                        returned
+                            .payload_ref()
+                            .encoded_bytes()
+                            .map(|bytes| bytes.as_ptr()),
+                        pointer
+                    );
+                } else {
+                    assert!(returned.is_empty());
+                    assert_eq!(returned.signal_type(), work.signal_type());
+                }
+            }
+        }
+        assert_eq!(handler.codec_service().test_instance_count().unwrap(), 0);
+    }
+
+    /// Scenario: a native batch without RETURN_DATA enters recoverable processing.
+    /// Guarantees: its Arrow container moves directly, no codec is created, and success
+    /// forwards the original context with the updated records and callback result.
+    #[tokio::test]
+    async fn native_update_moves_records_without_snapshot() {
+        use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+        let handler = completion_handler();
+        let pdata = create_test_otap_pdata();
+        let pointer = pdata
+            .payload_ref()
+            .otap_ref()
+            .unwrap()
+            .get(ArrowPayloadType::Logs)
+            .unwrap() as *const arrow::record_batch::RecordBatch;
+        let schema_owners = Arc::strong_count(
+            &pdata
+                .payload_ref()
+                .otap_ref()
+                .unwrap()
+                .get(ArrowPayloadType::Logs)
+                .unwrap()
+                .schema(),
+        );
+        let (updated, value) = handler
+            .try_update_otap(pdata, |records| {
+                // A retained native snapshot would add a schema owner even if
+                // the working records themselves were moved without cloning.
+                assert_eq!(
+                    Arc::strong_count(&records.get(ArrowPayloadType::Logs).unwrap().schema()),
+                    schema_owners
+                );
+                assert_eq!(
+                    records.get(ArrowPayloadType::Logs).unwrap() as *const _,
+                    pointer
+                );
+                Ok::<_, std::io::Error>(17)
+            })
+            .await
+            .unwrap();
+        assert_eq!(value, 17);
+        assert_eq!(
+            updated.records().get(ArrowPayloadType::Logs).unwrap() as *const _,
+            pointer
+        );
+        assert_eq!(handler.codec_service().test_instance_count().unwrap(), 0);
+    }
+
+    /// Scenario: an update removes records and then fails for each storage representation.
+    /// Guarantees: RETURN_DATA recovers unmodified input and caches; without it only context
+    /// and signal survive, and neither Debug nor Display prints telemetry or peer addresses.
+    #[tokio::test]
+    async fn failed_update_recovers_input_after_partial_mutation() {
+        use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+        let handler = completion_handler();
+        for return_data in [false, true] {
+            for mut payload in completion_inputs(&handler) {
+                let count = payload.num_items();
+                let size = payload.num_bytes();
+                let format = payload.format();
+                let pointer = payload.encoded_bytes().map(|bytes| bytes.as_ptr());
+                let pdata = OtapPdata::new_default(payload)
+                    .test_subscribe_to(
+                        Interests::NACKS
+                            | if return_data {
+                                Interests::RETURN_DATA
+                            } else {
+                                Interests::empty()
+                            },
+                        TestCallData::default().into(),
+                        777,
+                    )
+                    .with_peer_addr("127.0.0.1:1234".parse().unwrap());
+                let context = pdata.context.clone();
+                let error = handler
+                    .try_update_otap(pdata, |records| {
+                        drop(records.remove(ArrowPayloadType::Logs));
+                        Err::<(), _>(std::io::Error::other("update failed"))
+                    })
+                    .await
+                    .unwrap_err();
+                assert!(!format!("{error:?}").contains("127.0.0.1"));
+                assert_eq!(error.to_string(), "update failed");
+                let (cause, mut returned) = error.into_parts();
+                assert!(matches!(cause, OtapPdataUpdateCause::Update(_)));
+                assert_eq!(returned.context, context);
+                if return_data {
+                    assert_eq!(returned.num_items(), count);
+                    assert_eq!(returned.num_bytes(), size);
+                    assert_eq!(returned.payload_ref().format(), format);
+                    assert_eq!(
+                        returned
+                            .payload_ref()
+                            .encoded_bytes()
+                            .map(|bytes| bytes.as_ptr()),
+                        pointer
+                    );
+                    if let Some(records) = returned.payload_ref().otap_ref() {
+                        assert!(records.get(ArrowPayloadType::Logs).is_some());
+                    }
+                } else {
+                    assert!(returned.is_empty());
+                    assert_eq!(returned.signal_type(), SignalType::Logs);
+                }
+            }
+        }
+    }
+
+    /// Scenario: malformed legacy or generalized OTLP enters an update without RETURN_DATA.
+    /// Guarantees: decoding never calls the updater and recovers exact bytes, cached count,
+    /// signal and context; the shared decoder remains usable for the next valid batch.
+    #[tokio::test]
+    async fn update_decode_failure_recovers_exact_input() {
+        use bytes::Bytes;
+        use otel_arrow_dfe_pdata::OtlpProtoBytes;
+        let handler = completion_handler();
+        let codec = handler
+            .codec_service()
+            .registry()
+            .resolve(&PdataEncoding::OTLP)
+            .unwrap();
+        for signal in [SignalType::Logs, SignalType::Metrics, SignalType::Traces] {
+            let bytes = Bytes::from_static(b"\x0a\xff\xffSECRET_TELEMETRY_VALUE");
+            let legacy = match signal {
+                SignalType::Logs => OtlpProtoBytes::ExportLogsRequest(bytes.clone()),
+                SignalType::Metrics => OtlpProtoBytes::ExportMetricsRequest(bytes.clone()),
+                SignalType::Traces => OtlpProtoBytes::ExportTracesRequest(bytes.clone()),
+            };
+            for payload in [
+                OtapPayload::from(legacy),
+                codec.admit(signal, bytes.clone()).unwrap().into(),
+            ] {
+                let pdata = OtapPdata::new_default(payload.with_item_count(9))
+                    .test_subscribe_to(Interests::NACKS, TestCallData::default().into(), 777)
+                    .with_peer_addr("127.0.0.1:1234".parse().unwrap());
+                let context = pdata.context.clone();
+                let format = pdata.payload_ref().format();
+                let error = handler
+                    .try_update_otap(pdata, |_| -> Result<(), std::io::Error> {
+                        panic!("decode failure must not run the update")
+                    })
+                    .await
+                    .unwrap_err();
+                assert!(matches!(error.error(), OtapPdataUpdateCause::Decode(_)));
+                assert!(!format!("{error:?}").contains("SECRET_TELEMETRY_VALUE"));
+                let (_, returned) = error.into_parts();
+                assert_eq!(returned.context, context);
+                assert_eq!(returned.payload_ref().format(), format);
+                assert_eq!(returned.payload_ref().encoded_bytes(), Some(&bytes));
+                assert_eq!(
+                    returned.payload_ref().encoded_bytes().unwrap().as_ptr(),
+                    bytes.as_ptr()
+                );
+                assert_eq!(returned.payload_ref().known_item_count(), Some(9));
+                assert_eq!(returned.signal_type(), signal);
+                assert_eq!(
+                    returned.peer_addr(),
+                    Some("127.0.0.1:1234".parse().unwrap())
+                );
+            }
+            let valid = OtapPdata::new_default(codec.admit(signal, Bytes::new()).unwrap().into());
+            let _ = handler
+                .try_update_otap(valid, |_| Ok::<_, std::io::Error>(()))
+                .await
+                .unwrap();
+        }
+        assert_eq!(handler.codec_service().test_instance_count().unwrap(), 1);
     }
 
     fn create_test() -> (TestCallData, OtapPdata) {

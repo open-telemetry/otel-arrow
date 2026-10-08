@@ -18,7 +18,9 @@ use otel_arrow_dfe_pdata::OtapArrowRecords;
 use otel_arrow_dfe_pdata::otlp::OtlpProtoBytes;
 use otel_arrow_dfe_pdata::views::otap::OtapLogsView;
 use otel_arrow_dfe_pdata::views::otlp::bytes::logs::RawLogsData;
-use otel_arrow_dfe_pdata_codec::{InspectionPlan, OtapPayload, PdataEncoding, PdataView};
+#[cfg(test)]
+use otel_arrow_dfe_pdata_codec::OtapPayload;
+use otel_arrow_dfe_pdata_codec::{InspectionPlan, PdataEncoding, PdataView};
 
 use super::client::LogsIngestionClientPool;
 use super::config::Config;
@@ -30,7 +32,7 @@ use super::in_flight_exports::{CompletedExport, InFlightExports};
 use super::metrics::AzureMonitorExporterMetricsRc;
 use super::state::AzureMonitorExporterState;
 use super::transformer::Transformer;
-use otel_arrow_dfe_otap::pdata::{Context, OtapPdata, PdataEffectHandlerExtension};
+use otel_arrow_dfe_otap::pdata::{OtapPdata, PdataCompletion, PdataEffectHandlerExtension};
 
 use otel_arrow_dfe_telemetry::common_attributes::{HttpResponse, Outcome};
 
@@ -213,9 +215,9 @@ impl AzureMonitorExporter {
             duration_ms = duration.as_millis() as u64
         );
 
-        for (_, context, payload) in completed_messages {
+        for (_, completion) in completed_messages {
             effect_handler
-                .notify_ack(AckMsg::new(OtapPdata::new(context, payload)))
+                .notify_ack(AckMsg::new(completion.into_pdata()))
                 .await?;
         }
         Ok(())
@@ -248,12 +250,9 @@ impl AzureMonitorExporter {
 
         otel_warn!("azure_monitor_exporter.export.failed", batch_id = batch_id, error = %error);
 
-        for (_, context, payload) in failed_messages {
+        for (_, completion) in failed_messages {
             effect_handler
-                .notify_nack(NackMsg::new(
-                    error.to_string(),
-                    OtapPdata::new(context, payload),
-                ))
+                .notify_nack(NackMsg::new(error.to_string(), completion.into_pdata()))
                 .await?;
         }
         Ok(())
@@ -321,18 +320,12 @@ impl AzureMonitorExporter {
     async fn handle_logs(
         &mut self,
         effect_handler: &EffectHandler<OtapPdata>,
-        context: Context,
-        payload: OtapPayload,
+        completion: PdataCompletion,
         log_entries: Vec<Bytes>,
         msg_id: u64,
         auth: &mut impl HttpClientAuthProvider,
     ) -> Result<(), EngineError> {
-        if context.may_return_payload() {
-            self.state.add_msg_to_data(msg_id, context, payload);
-        } else {
-            self.state
-                .add_msg_to_data(msg_id, context, OtapPayload::empty(SignalType::Logs));
-        }
+        self.state.add_msg_to_data(msg_id, completion);
 
         for log_entry in log_entries {
             let entry_len = log_entry.len();
@@ -354,12 +347,9 @@ impl AzureMonitorExporter {
                         msg_id = msg_id,
                         size_bytes = entry_len
                     );
-                    if let Some((context, payload)) = self.state.remove_msg_to_data(msg_id) {
+                    if let Some(completion) = self.state.remove_msg_to_data(msg_id) {
                         effect_handler
-                            .notify_nack(NackMsg::new(
-                                error.to_string(),
-                                OtapPdata::new(context, payload),
-                            ))
+                            .notify_nack(NackMsg::new(error.to_string(), completion.into_pdata()))
                             .await?;
                     }
                     return Err(EngineError::InternalError {
@@ -368,12 +358,9 @@ impl AzureMonitorExporter {
                 }
                 Err(error) => {
                     otel_error!("azure_monitor_exporter.message.batch_push_failed", msg_id = msg_id, error = %error);
-                    if let Some((context, payload)) = self.state.remove_msg_to_data(msg_id) {
+                    if let Some(completion) = self.state.remove_msg_to_data(msg_id) {
                         effect_handler
-                            .notify_nack(NackMsg::new(
-                                error.to_string(),
-                                OtapPdata::new(context, payload),
-                            ))
+                            .notify_nack(NackMsg::new(error.to_string(), completion.into_pdata()))
                             .await?;
                     }
                     return Err(EngineError::InternalError {
@@ -383,7 +370,7 @@ impl AzureMonitorExporter {
             }
         }
 
-        if let Some((context, payload)) = self.state.delete_msg_data_if_orphaned(msg_id) {
+        if let Some(completion) = self.state.delete_msg_data_if_orphaned(msg_id) {
             otel_debug!(
                 "azure_monitor_exporter.message.no_valid_entries",
                 msg_id = msg_id
@@ -391,7 +378,7 @@ impl AzureMonitorExporter {
             effect_handler
                 .notify_nack(NackMsg::new_permanent(
                     "No valid log entries produced",
-                    OtapPdata::new(context, payload),
+                    completion.into_pdata(),
                 ))
                 .await?;
         }
@@ -438,7 +425,7 @@ impl AzureMonitorExporter {
         }
         self.drain_in_flight_exports(effect_handler, auth).await?;
 
-        for (msg_id, context, payload) in self.state.drain_all() {
+        for (msg_id, completion) in self.state.drain_all() {
             otel_warn!(
                 "azure_monitor_exporter.shutdown.orphaned_message",
                 msg_id = msg_id
@@ -446,7 +433,7 @@ impl AzureMonitorExporter {
             effect_handler
                 .notify_nack(NackMsg::new(
                     "Shutdown before export completed",
-                    OtapPdata::new(context, payload),
+                    completion.into_pdata(),
                 ))
                 .await?;
         }
@@ -525,8 +512,14 @@ impl AzureMonitorExporter {
                 };
 
                 if let Some(log_entries) = log_entries {
-                    self.handle_logs(effect_handler, context, payload, log_entries, *msg_id, auth)
-                        .await?;
+                    self.handle_logs(
+                        effect_handler,
+                        OtapPdata::new(context, payload).into_completion(),
+                        log_entries,
+                        *msg_id,
+                        auth,
+                    )
+                    .await?;
                 }
             }
 
@@ -875,9 +868,10 @@ mod tests {
         let context = Context::default();
         let payload = OtapPayload::from(OtlpProtoBytes::ExportLogsRequest(Bytes::from("test")));
 
-        exporter
-            .state
-            .add_msg_to_data(msg_id, context.clone(), payload);
+        exporter.state.add_msg_to_data(
+            msg_id,
+            OtapPdata::new(context.clone(), payload).into_completion(),
+        );
         exporter.state.add_batch_msg_relationship(batch_id, msg_id);
 
         // This might fail due to missing sender in effect_handler, but state should be updated
@@ -921,9 +915,10 @@ mod tests {
         let context = Context::default();
         let payload = OtapPayload::from(OtlpProtoBytes::ExportLogsRequest(Bytes::from("test")));
 
-        exporter
-            .state
-            .add_msg_to_data(msg_id, context.clone(), payload);
+        exporter.state.add_msg_to_data(
+            msg_id,
+            OtapPdata::new(context.clone(), payload).into_completion(),
+        );
         exporter.state.add_batch_msg_relationship(batch_id, msg_id);
 
         let error = Error::ServerError {
@@ -974,9 +969,10 @@ mod tests {
         let context = Context::default();
         let payload = OtapPayload::from(OtlpProtoBytes::ExportLogsRequest(Bytes::from("test")));
 
-        exporter
-            .state
-            .add_msg_to_data(msg_id, context.clone(), payload);
+        exporter.state.add_msg_to_data(
+            msg_id,
+            OtapPdata::new(context.clone(), payload).into_completion(),
+        );
         exporter.state.add_batch_msg_relationship(batch_id, msg_id);
 
         // Retry-exhausted 429 refusal wrapped in `ExportFailed`, mirroring what
@@ -1334,8 +1330,7 @@ mod tests {
         exporter
             .handle_logs(
                 &effect_handler,
-                Context::default(),
-                OtapPayload::empty(SignalType::Logs),
+                OtapPdata::new_default(OtapPayload::empty(SignalType::Logs)).into_completion(),
                 vec![Bytes::from_static(br#"{"Message":"hello"}"#)],
                 1,
                 &mut auth,
@@ -1388,8 +1383,7 @@ mod tests {
         exporter
             .handle_logs(
                 &effect_handler,
-                Context::default(),
-                OtapPayload::empty(SignalType::Logs),
+                OtapPdata::new_default(OtapPayload::empty(SignalType::Logs)).into_completion(),
                 entries,
                 1,
                 &mut auth,
@@ -1428,9 +1422,11 @@ mod tests {
             new_http_client_auth_provider_from_bearer_token_provider(Box::new(MockTokenProvider));
         assert!(!auth.is_ready(), "no token has been polled yet");
 
-        exporter
-            .state
-            .add_msg_to_data(7, Context::default(), OtapPayload::empty(SignalType::Logs));
+        exporter.state.add_msg_to_data(
+            7,
+            OtapPdata::new(Context::default(), OtapPayload::empty(SignalType::Logs))
+                .into_completion(),
+        );
 
         exporter
             .handle_shutdown(&test_effect_handler(), &mut auth)

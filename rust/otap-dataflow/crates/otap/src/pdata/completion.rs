@@ -1,0 +1,172 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
+//! Explicit ownership of completion context and conditionally retained input.
+//!
+//! Working payloads may be consumed or modified independently of their completion.
+//! Keeping completion state does not schedule an Ack/Nack: nodes retain control of
+//! error classification, routing, and timing, including across asynchronous sends.
+
+use super::{Context, OtapPdata, OtapPdataDecodeError};
+use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_pdata_codec::{CodecError, OtapPayload};
+use std::fmt;
+
+/// Delivery context and the input retained for a later Ack/Nack.
+///
+/// This inline owner is deliberately not Clone. Consume it to forward an output
+/// or report completion once. Dropping it performs no I/O or automatic completion.
+/// Without RETURN_DATA, only an empty payload of the original signal is retained.
+#[must_use = "completion must be forwarded, reported, or explicitly discarded"]
+pub struct PdataCompletion {
+    pdata: OtapPdata,
+}
+
+impl fmt::Debug for PdataCompletion {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PdataCompletion").finish_non_exhaustive()
+    }
+}
+
+impl OtapPdata {
+    /// Separates a working payload from its completion owner.
+    ///
+    /// The working payload moves without cloning. When RETURN_DATA is requested,
+    /// a shallow snapshot retains encoded Bytes or shared Arrow buffers; Arrow
+    /// container metadata may still allocate. The delivery context never clones.
+    pub fn into_work(self) -> (PdataCompletion, OtapPayload) {
+        let saved = if self.context.may_return_payload() {
+            self.payload.clone()
+        } else {
+            OtapPayload::empty(self.signal_type())
+        };
+        let Self { context, payload } = self;
+        (
+            PdataCompletion {
+                pdata: Self::new(context, saved),
+            },
+            payload,
+        )
+    }
+
+    /// Retains this input for completion after preparation has succeeded.
+    ///
+    /// Moves the payload when RETURN_DATA is requested and discards it otherwise.
+    /// Unlike into_work, this never needs a snapshot or payload clone.
+    pub fn into_completion(mut self) -> PdataCompletion {
+        if !self.context.may_return_payload() {
+            self.payload = OtapPayload::empty(self.signal_type());
+        }
+        PdataCompletion { pdata: self }
+    }
+}
+
+impl PdataCompletion {
+    /// Borrows the original delivery context without duplicating ownership.
+    #[must_use]
+    pub const fn context(&self) -> &Context {
+        &self.pdata.context
+    }
+
+    /// Borrows context for routing, headers, and accounting updates.
+    pub const fn context_mut(&mut self) -> &mut Context {
+        &mut self.pdata.context
+    }
+
+    /// Returns the original signal even when the payload was not retained.
+    #[must_use]
+    pub fn signal_type(&self) -> SignalType {
+        self.pdata.signal_type()
+    }
+
+    /// Consumes the owner to report completion with the retained input, if any.
+    #[must_use]
+    pub fn into_pdata(self) -> OtapPdata {
+        self.pdata
+    }
+
+    /// Transfers the context to an output or a payload recovered from decoding.
+    /// Any retained snapshot is discarded. This does not send the resulting pdata.
+    #[must_use]
+    pub fn with_payload(self, payload: OtapPayload) -> OtapPdata {
+        OtapPdata::new(self.pdata.context, payload)
+    }
+}
+
+/// Distinguishes codec rejection from an algorithm's processing failure.
+#[derive(Debug, thiserror::Error)]
+pub enum OtapPdataUpdateCause<E> {
+    /// Native access could not be established; the exact input is recoverable.
+    #[error("{0}")]
+    Decode(CodecError),
+    /// Native processing failed; input retention follows RETURN_DATA.
+    #[error("{0}")]
+    Update(E),
+}
+
+/// A failed update with delivery ownership and any recoverable input.
+///
+/// Only the error path allocates. Diagnostics omit the retained telemetry and
+/// context; callers should also avoid embedding telemetry in their own error E.
+pub struct OtapPdataUpdateError<E>(Box<UpdateErrorInner<E>>);
+
+struct UpdateErrorInner<E> {
+    cause: OtapPdataUpdateCause<E>,
+    pdata: OtapPdata,
+}
+
+impl<E> OtapPdataUpdateError<E> {
+    pub(super) fn decode(error: OtapPdataDecodeError) -> Self {
+        let (error, pdata) = error.into_parts();
+        Self(Box::new(UpdateErrorInner {
+            cause: OtapPdataUpdateCause::Decode(error),
+            pdata,
+        }))
+    }
+
+    pub(super) fn update(error: E, pdata: OtapPdata) -> Self {
+        Self(Box::new(UpdateErrorInner {
+            cause: OtapPdataUpdateCause::Update(error),
+            pdata,
+        }))
+    }
+
+    /// Borrows the failure without exposing retained telemetry in diagnostics.
+    #[must_use]
+    pub const fn error(&self) -> &OtapPdataUpdateCause<E> {
+        &self.0.cause
+    }
+
+    /// Borrows the message available for recovery.
+    #[must_use]
+    pub const fn pdata(&self) -> &OtapPdata {
+        &self.0.pdata
+    }
+
+    /// Returns the failure classification and message for explicit error handling.
+    #[must_use]
+    pub fn into_parts(self) -> (OtapPdataUpdateCause<E>, OtapPdata) {
+        let inner = *self.0;
+        (inner.cause, inner.pdata)
+    }
+}
+
+impl<E: fmt::Debug> fmt::Debug for OtapPdataUpdateError<E> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OtapPdataUpdateError")
+            .field("cause", &self.0.cause)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<E: fmt::Display> fmt::Display for OtapPdataUpdateError<E> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.cause.fmt(f)
+    }
+}
+
+impl<E: std::error::Error + 'static> std::error::Error for OtapPdataUpdateError<E> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.0.cause)
+    }
+}
