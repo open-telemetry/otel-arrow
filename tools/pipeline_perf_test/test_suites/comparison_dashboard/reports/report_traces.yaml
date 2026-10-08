@@ -321,11 +321,14 @@ queries:
 
           UNION ALL
 
-          SELECT 'spans_received_rate' AS name, 'spans/sec' AS unit, spans_per_second AS value,
+          -- Always emit a row: an overwhelmed backend that receives zero spans
+          -- produces no 'spans' entry in span_throughput_rates, but a scraped 0
+          -- is a valid result and must be reported (not dropped).
+          SELECT 'spans_received_rate' AS name, 'spans/sec' AS unit,
+                COALESCE(str.spans_per_second, 0) AS value,
                 metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - Span Throughput' AS extra
-          FROM span_throughput_rates
-          CROSS JOIN metadata_row
-          WHERE metric_name = 'spans'
+          FROM metadata_row
+          LEFT JOIN span_throughput_rates str ON str.metric_name = 'spans'
 
           UNION ALL
 

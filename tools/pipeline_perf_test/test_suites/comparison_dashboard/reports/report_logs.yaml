@@ -322,11 +322,14 @@ queries:
 
           UNION ALL
 
-          SELECT 'logs_received_rate' AS name, 'logs/sec' AS unit, logs_per_second AS value,
+          -- Always emit a row: an overwhelmed backend that receives zero logs
+          -- produces no 'logs' entry in log_throughput_rates, but a scraped 0
+          -- is a valid result and must be reported (not dropped).
+          SELECT 'logs_received_rate' AS name, 'logs/sec' AS unit,
+                COALESCE(ltr.logs_per_second, 0) AS value,
                 metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - Log Throughput' AS extra
-          FROM log_throughput_rates
-          CROSS JOIN metadata_row
-          WHERE metric_name = 'logs'
+          FROM metadata_row
+          LEFT JOIN log_throughput_rates ltr ON ltr.metric_name = 'logs'
 
           UNION ALL
 
@@ -354,18 +357,21 @@ queries:
 
           UNION ALL
 
+          -- Always emit a row: when the backend receives zero logs the ratio
+          -- divides by zero, so report a finite 0 (a scraped 0 is a valid
+          -- result). LEFT JOINs keep the row even if the egress or logs rate
+          -- sources are missing under overwhelm.
           SELECT 'egress_bytes_per_log' AS name, 'bytes/log' AS unit,
-                CASE WHEN ltr.logs_per_second > 0
+                CASE WHEN COALESCE(ltr.logs_per_second, 0) > 0
                   THEN cnr.average_rate / ltr.logs_per_second
-                  ELSE NULL
+                  ELSE 0
                 END AS value,
                 metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - Egress Bytes Per Log' AS extra
-          FROM container_network_rates cnr
-          CROSS JOIN log_throughput_rates ltr
-          CROSS JOIN metadata_row
-          WHERE cnr.metric_name = 'container.network.tx'
+          FROM metadata_row
+          LEFT JOIN container_network_rates cnr
+            ON cnr.metric_name = 'container.network.tx'
             AND cnr.component_name IN ('df-engine', 'go-collector', 'fluent-bit', 'rotel', 'kafka-producer', 'kafka-consumer')
-            AND ltr.metric_name = 'logs'
+          LEFT JOIN log_throughput_rates ltr ON ltr.metric_name = 'logs'
 
           UNION ALL
 
