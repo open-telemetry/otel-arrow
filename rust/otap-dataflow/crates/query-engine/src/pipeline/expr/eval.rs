@@ -1259,6 +1259,43 @@ fn align_attrs_to_record(
     eval_ctx: &EvalContext<'_>,
 ) -> Result<ScopedValue> {
     match attrs_id {
+        // Non-record (resource/scope) attributes in a data-point context: align to data-point
+        // row order. For Attribute scope, the ChildRecordToNonRecordAttrsJoin handles the
+        // two-hop join directly. For AttributesAll scope (fused predicate results), we first
+        // align to the root batch then to data points, since the AttributesAllSelectionVecJoin
+        // only knows how to align against root records.
+        AttributesIdentifier::NonRecord(_) if eval_ctx.data_point_type.is_some() => {
+            let data_points_rb = eval_ctx
+                .data_point_type
+                .as_ref()
+                .and_then(|dp_type| otap_batch.get(dp_type.payload_type()));
+            let root_rb = otap_batch.root_record_batch();
+
+            match (&data_points_rb, &root_rb) {
+                (Some(dp_rb), Some(root_rb)) => {
+                    if matches!(value.scope, DataScope::AttributesAll(_)) {
+                        // Two-step: AttributesAll -> root -> data points
+                        let root_aligned =
+                            align_value_to_record(value, RecordScope::Signal, root_rb, otap_batch)?;
+                        align_value_to_record(
+                            root_aligned,
+                            RecordScope::Child(ChildRecordKind::DataPoint),
+                            dp_rb,
+                            otap_batch,
+                        )
+                    } else {
+                        // Direct two-hop join via ChildRecordToNonRecordAttrsJoin
+                        align_value_to_record(
+                            value,
+                            RecordScope::Child(ChildRecordKind::DataPoint),
+                            dp_rb,
+                            otap_batch,
+                        )
+                    }
+                }
+                _ => Ok(value),
+            }
+        }
         AttributesIdentifier::Record(RecordScope::Signal) | AttributesIdentifier::NonRecord(_) => {
             if let Some(root_rb) = otap_batch.root_record_batch() {
                 align_value_to_record(value, RecordScope::Signal, root_rb, otap_batch)
