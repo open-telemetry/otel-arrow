@@ -14,12 +14,12 @@
 //! the engine-owned TLS reload service can host it later without touching
 //! exporter code.
 //!
-//! Change detection is content-based. For one Kubernetes projected volume, the
+//! Change detection is content-based. For each Kubernetes projected volume, the
 //! loader resolves `..data` once per attempt and reads direct or nested files
-//! from that captured generation. Independent paths are read normally and
-//! rejected when validation detects an inconsistent candidate. A candidate is
-//! published only after it validates, including the certificate/key match
-//! check; on any failure the last-known-good generation is retained.
+//! from that captured generation. Independent paths are read normally. Changed
+//! candidates are parsed and validated before publication, including the full
+//! certificate chain and certificate/key match; on any failure the
+//! last-known-good generation is retained.
 //!
 //! Explicit `reload_interval: null` disables the loop, while zero is rejected
 //! for configurations that create a provider. Overlapping attempts are
@@ -39,7 +39,9 @@ use arc_swap::ArcSwap;
 use otel_arrow_dfe_config::tls::TlsClientConfig;
 use otel_arrow_dfe_telemetry::{otel_info, otel_warn};
 
-use crate::tls_utils::{ClientIdentityMaterial, LoadedClientTlsMaterial, load_client_tls_material};
+use crate::tls_utils::{
+    LoadedClientTlsMaterial, capture_client_tls_material, load_client_tls_material,
+};
 
 /// An immutable, validated generation of client TLS material.
 ///
@@ -167,22 +169,28 @@ impl ClientTlsProvider {
             return ReloadOutcome::Busy;
         };
 
-        match load_client_tls_material(self.config.as_ref(), &self.endpoint_uri).await {
-            Ok(Some(candidate)) => {
-                let current = self.current.load();
-                if materials_equal(&candidate, &current.material) {
-                    ReloadOutcome::Unchanged
-                } else {
+        match capture_client_tls_material(self.config.as_ref(), &self.endpoint_uri).await {
+            Ok(Some(candidate)) if candidate.matches(&self.current.load().material) => {
+                ReloadOutcome::Unchanged
+            }
+            Ok(Some(candidate)) => match candidate.validate() {
+                Ok(material) => {
                     let number = self.next_number.fetch_add(1, Ordering::Relaxed);
-                    self.current.store(Arc::new(ClientTlsGeneration {
-                        number,
-                        material: candidate,
-                    }));
+                    self.current
+                        .store(Arc::new(ClientTlsGeneration { number, material }));
                     let _previous_number = self.notify.send_replace(number);
                     otel_info!("tls.client_reload.updated", generation = number);
                     ReloadOutcome::Updated(number)
                 }
-            }
+                Err(error) => {
+                    otel_warn!(
+                        "tls.client_reload.failed",
+                        error = %error,
+                        message = "client TLS reload failed; keeping last-known-good"
+                    );
+                    ReloadOutcome::Failed
+                }
+            },
             Ok(None) => {
                 otel_warn!(
                     "tls.client_reload.became_plaintext",
@@ -235,26 +243,6 @@ impl ClientTlsProvider {
                 } => {}
             }
         }
-    }
-}
-
-/// Byte-for-byte content comparison of two material snapshots.
-fn materials_equal(a: &LoadedClientTlsMaterial, b: &LoadedClientTlsMaterial) -> bool {
-    a.server_name == b.server_name
-        && a.include_system_ca == b.include_system_ca
-        && a.ca_pems == b.ca_pems
-        && identities_equal(&a.client_identity, &b.client_identity)
-}
-
-/// Content comparison of two optional client identities.
-fn identities_equal(
-    a: &Option<ClientIdentityMaterial>,
-    b: &Option<ClientIdentityMaterial>,
-) -> bool {
-    match (a, b) {
-        (None, None) => true,
-        (Some(x), Some(y)) => x.cert_pem == y.cert_pem && x.key_pem == y.key_pem,
-        _ => false,
     }
 }
 
@@ -496,10 +484,64 @@ mod tests {
         assert_eq!(provider.poll_once().await, ReloadOutcome::Failed);
         let still = provider.current();
         assert_eq!(still.number, good.number);
-        assert!(identities_equal(
-            &still.material.client_identity,
-            &good.material.client_identity
-        ));
+        let still_identity = still
+            .material
+            .client_identity
+            .as_ref()
+            .expect("current identity");
+        let good_identity = good
+            .material
+            .client_identity
+            .as_ref()
+            .expect("last-known-good identity");
+        assert_eq!(still_identity.cert_pem, good_identity.cert_pem);
+        assert_eq!(still_identity.key_pem, good_identity.key_pem);
+    }
+
+    /// Scenario: append a PEM certificate containing malformed DER to an
+    /// otherwise valid client certificate chain, then poll.
+    /// Guarantees: every certificate in the chain is validated before
+    /// publication and a malformed intermediate cannot replace last-known-good
+    /// material.
+    #[tokio::test]
+    async fn poll_once_rejects_malformed_intermediate_certificate() {
+        crate::crypto::ensure_crypto_provider();
+        let dir = TempDir::new().expect("temp dir");
+        let config = write_material(dir.path(), "ca-1", "client-1");
+        let provider = ClientTlsProvider::new(Some(&config), ENDPOINT)
+            .await
+            .expect("load")
+            .expect("provider present");
+
+        let mut chain = fs::read_to_string(dir.path().join("tls.crt")).expect("read cert");
+        chain.push_str("-----BEGIN CERTIFICATE-----\nAQID\n-----END CERTIFICATE-----\n");
+        fs::write(dir.path().join("tls.crt"), chain).expect("append malformed intermediate");
+
+        assert_eq!(provider.poll_once().await, ReloadOutcome::Failed);
+        assert_eq!(provider.current().number, 0);
+    }
+
+    /// Scenario: prepend a PEM certificate containing invalid DER before a
+    /// valid client leaf certificate and matching key, then poll.
+    /// Guarantees: an invalid DER leaf is rejected instead of being treated as
+    /// an inconclusive key-match check and published.
+    #[tokio::test]
+    async fn poll_once_rejects_invalid_der_leaf_certificate() {
+        crate::crypto::ensure_crypto_provider();
+        let dir = TempDir::new().expect("temp dir");
+        let config = write_material(dir.path(), "ca-1", "client-1");
+        let provider = ClientTlsProvider::new(Some(&config), ENDPOINT)
+            .await
+            .expect("load")
+            .expect("provider present");
+
+        let valid_leaf = fs::read_to_string(dir.path().join("tls.crt")).expect("read cert");
+        let chain =
+            format!("-----BEGIN CERTIFICATE-----\nAQID\n-----END CERTIFICATE-----\n{valid_leaf}");
+        fs::write(dir.path().join("tls.crt"), chain).expect("prepend invalid leaf");
+
+        assert_eq!(provider.poll_once().await, ReloadOutcome::Failed);
+        assert_eq!(provider.current().number, 0);
     }
 
     /// Scenario: replace a valid configured CA file with an empty bundle, then
