@@ -611,6 +611,8 @@ jobs:
           # Keep one stable required-build namespace; platform and Rust hashes
           # still separate incompatible Linux and Windows artifacts.
           shared-key: build_required
+          # Bump in both Windows cache steps when the synchronized feature set changes.
+          key: windows-features-v2
           workspaces: ./rust/otap-dataflow
           cache-bin: false
           save-if: false
