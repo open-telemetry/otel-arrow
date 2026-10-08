@@ -1090,12 +1090,10 @@ fn build_grpc_metadata(
     static_metadata: Option<&MetadataMap>,
     auth_header: Option<(HeaderName, HeaderValue)>,
 ) -> Option<MetadataMap> {
-    let propagation = effect_handler
-        .propagation_policy()
-        .filter(|_| context.transport_headers().is_some());
+    let propagation_policy = effect_handler.propagation_policy();
 
     // Zero-alloc fast path: nothing static configured, nothing to propagate, no auth.
-    if static_metadata.is_none() && propagation.is_none() && auth_header.is_none() {
+    if static_metadata.is_none() && propagation_policy.is_none() && auth_header.is_none() {
         return None;
     }
 
@@ -1104,7 +1102,7 @@ fn build_grpc_metadata(
         None => MetadataMap::new(),
     };
 
-    if let Some(policy) = propagation {
+    if let Some(policy) = propagation_policy {
         for header in policy.propagate(context) {
             match header.value_kind {
                 ValueKind::Text => {
