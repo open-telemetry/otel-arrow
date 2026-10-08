@@ -40,9 +40,7 @@ class RenderTemplateConfig(HookStrategyConfig):
             directory is always searched first.
 
     Templates additionally receive a 'ctx' mapping with the current framework
-    metadata (e.g. '{{ ctx["test.name"] }}', '{{ ctx["test.suite"] }}'), so a
-    config can self-identify with the running test without the suite repeating
-    that value. Any key in 'variables' overrides the matching 'ctx' entry.
+    metadata (e.g. '{{ ctx["test.name"] }}', '{{ ctx["test.suite"] }}')
     """
 
     template_path: str

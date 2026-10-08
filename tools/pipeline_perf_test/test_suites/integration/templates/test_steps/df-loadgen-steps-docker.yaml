@@ -3,19 +3,14 @@ Load generator -> df-engine -> backend steps.
 
 Push-based metrics (opt-in):
   Set `push_metrics: true` to have the load generator, engine and backend push
-  their internal metrics over OTLP to the orchestrator's embedded sink (started
-  by the suite-level `start_otlp_metrics_sink` hook). When off (the default),
-  the rendered configs and the chosen report are identical to the scrape path,
-  so existing suites are unaffected.
+  their internal metrics over OTLP. When off (the default), metrics are exposed
+  over a prometheus endpoint for scraping instead. 
 
 Variables:
   - push_metrics: when true, enable the push wiring (default false).
   - push_metrics_endpoint: OTLP/gRPC endpoint the engines export to. Defaults to
     http://host.docker.internal:14317.
 
-Pushed metrics are tagged with the running test's name via the engine's
-test.name resource attribute, which the render_template hook supplies through
-ctx["test.name"]; the suite does not need to pass it.
 -#}
 {%- set push_metrics = push_metrics | default(false) %}
 {%- set push_endpoint = push_metrics_endpoint | default("http://host.docker.internal:14317") %}

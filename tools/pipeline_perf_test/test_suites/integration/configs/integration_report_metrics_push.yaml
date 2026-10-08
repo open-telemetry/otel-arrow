@@ -1,29 +1,12 @@
-# Integration report for metrics using engine-pushed metrics.
+# Integration report for logs using engine-pushed metrics.
 #
-# The load generator, engine and backend push their internal metrics over OTLP
-# to the orchestrator's embedded metrics receiver. Received points land in the
-# same `metrics` table used by the scrape-based reports, keeping the engine's
-# own OTLP metric names and attributes (no renaming). A run uses one collection
-# method, so when this report runs the `metrics` table holds OTLP-named rows.
-#
-# Pushed counters are deltas stamped by the engine, and each engine performs a
-# final flush after its pipelines drain during graceful shutdown. This gives:
-#
-#   * Loss: exact whole-run totals. SUM of every delta for the test (scoped by
-#     the engine resource attribute test.name), including the post-drain final
-#     flush. No sampling-window skew between sender and receiver, so loss can
-#     no longer go negative because of measurement artifacts.
-#   * Throughput: SUM of deltas whose engine-assigned interval end falls in the
-#     observation window, divided by the span those intervals cover. Windowing
-#     excludes warmup and cooldown.
-#
-# Container CPU / memory / network still come from the docker monitor (also the
-# `metrics` table) and are computed exactly as in integration_report_metrics.yaml.
+# The load generator, engine and backend previously had their metrics scraped,
+# however we're transitioning to push based metrics instead which have different
+# names and temporality and therefore require new reports. 
 #
 # Column notes (set by the OTLP receiver, see otlp_metrics_sink.py):
-#   * `timestamp`        - data point end time (interval end)
-#   * `start_timestamp`  - data point start time (interval start)
-#   * `temporality`      - 'delta' for counters
+#   * Resource/scope/signal attributes are all expanded to be top level columns
+#     with a prefix i.e. "resource_attributes.my_attribute"
 #   * scope name is exposed as "scope_attributes.scope_name"
 queries:
   - name: Filter superflous metadata

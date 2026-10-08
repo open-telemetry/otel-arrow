@@ -1,8 +1,4 @@
 name: Nightly - Batch Processor
-# Push-based variant: the load generator, engine and backend push internal
-# metrics over OTLP to an embedded sink in the orchestrator. Loss is computed
-# from exact whole-run totals (including the engines' final post-drain flush)
-# instead of scraped counters.
 hooks:
   run:
     pre:

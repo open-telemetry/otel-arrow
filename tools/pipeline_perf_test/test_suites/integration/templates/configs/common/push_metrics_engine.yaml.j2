@@ -1,7 +1,6 @@
 {#-
 Shared `engine:` section that pushes the engine's internal metrics over
-OTLP/gRPC to the orchestrator's embedded metrics sink
-(see the `start_otlp_metrics_sink` hook).
+OTLP/gRPC. (See the orchestrator's `start_otlp_metrics_sink` hook)
 
 Required variables:
   push_metrics_endpoint  - e.g. "http://host.docker.internal:14317"
@@ -11,14 +10,6 @@ Optional variables:
                            to the running test's name (ctx["test.name"])
   push_metrics_interval  - export interval (default "1s")
   engine_log_level       - when set, emits engine.telemetry.logs.level
-
-The test.name resource attribute scopes whole-run loss in the push reports, so
-rendering fails if no test name is available from push_test_name or the
-framework context.
-
-Pushed counters use delta temporality and the engine performs a final flush
-after all regular pipelines drain during graceful shutdown, so summing the
-deltas yields exact whole-run totals.
 -#}
 {%- set resolved_test_name = push_test_name | default(ctx["test.name"] if ctx is defined and "test.name" in ctx else "") %}
 {%- if not resolved_test_name %}
