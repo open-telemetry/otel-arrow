@@ -2877,6 +2877,56 @@ async fn test_filter_data_points_by_resource_and_scope_attributes() {
     assert_eq!(count, 5 * 2);
 }
 
+/// Scenario: Filter data points by checking whether a parent attribute is null.
+/// Guarantees: Data points under resources that lack the attribute pass the null check; those
+/// under resources that have it are dropped.
+#[tokio::test]
+async fn test_filter_data_points_by_null_comparison_on_parent_attr() {
+    // Only resource r0 has a "tag" attribute; r1 does not.
+    let input = MetricsData::new(
+        (0..2)
+            .map(|r| {
+                let mut attrs = vec![KeyValue::new(
+                    "res",
+                    AnyValue::new_string(format!("r{r}")),
+                )];
+                if r == 0 {
+                    attrs.push(KeyValue::new("tag", AnyValue::new_string("present")));
+                }
+                ResourceMetrics::new(
+                    Resource::build().attributes(attrs).finish(),
+                    vec![ScopeMetrics::new(
+                        InstrumentationScope::build()
+                            .name(format!("scope{r}"))
+                            .finish(),
+                        vec![Metric::build()
+                            .name("gauge")
+                            .data_gauge(Gauge {
+                                data_points: vec![NumberDataPoint::build().finish(); 2],
+                            })
+                            .finish()],
+                    )],
+                )
+            })
+            .collect::<Vec<_>>(),
+    );
+
+    // Keep only data points whose resource does NOT have the "tag" attribute.
+    let query = r#"metrics | apply data_points { where resource.attributes["tag"] == null }"#;
+    let result = exec_metrics_query(query, input).await;
+
+    let count = for_each_data_point(&result, |resource_attrs, _, _| {
+        // Only resource r1 (without "tag") should survive.
+        assert!(find_attr(resource_attrs, "tag").is_none());
+        assert_eq!(
+            find_attr(resource_attrs, "res"),
+            Some(&AnyValue::new_string("r1"))
+        );
+    });
+    // r1 has 1 scope * 1 metric * 2 data points
+    assert_eq!(count, 2);
+}
+
 /// Scenario: Use resource and scope attributes in places data point pipelines still reject.
 /// Guarantees: Struct fields and parent attribute mutations return errors.
 #[tokio::test]
