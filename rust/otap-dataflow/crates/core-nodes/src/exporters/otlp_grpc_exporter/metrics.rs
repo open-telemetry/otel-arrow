@@ -49,12 +49,11 @@ impl OtlpGrpcExporterErrorType {
             Code::PermissionDenied => Self::Authorization,
             Code::Cancelled | Code::DeadlineExceeded => Self::Timeout,
             Code::ResourceExhausted => Self::Throttled,
-            Code::Aborted | Code::Unavailable => Self::Unavailable,
+            Code::Aborted | Code::OutOfRange | Code::Unavailable => Self::Unavailable,
             Code::InvalidArgument
             | Code::NotFound
             | Code::AlreadyExists
             | Code::FailedPrecondition
-            | Code::OutOfRange
             | Code::Unimplemented => Self::Rejected,
             Code::Internal | Code::DataLoss => Self::ServerError,
             Code::Unknown => Self::Transport,
@@ -263,6 +262,7 @@ mod tests {
                 OtlpGrpcExporterErrorType::Throttled,
             ),
             (Code::Aborted, OtlpGrpcExporterErrorType::Unavailable),
+            (Code::OutOfRange, OtlpGrpcExporterErrorType::Unavailable),
             (Code::Unavailable, OtlpGrpcExporterErrorType::Unavailable),
             (Code::InvalidArgument, OtlpGrpcExporterErrorType::Rejected),
             (Code::NotFound, OtlpGrpcExporterErrorType::Rejected),
@@ -271,7 +271,6 @@ mod tests {
                 Code::FailedPrecondition,
                 OtlpGrpcExporterErrorType::Rejected,
             ),
-            (Code::OutOfRange, OtlpGrpcExporterErrorType::Rejected),
             (Code::Unimplemented, OtlpGrpcExporterErrorType::Rejected),
             (Code::Internal, OtlpGrpcExporterErrorType::ServerError),
             (Code::DataLoss, OtlpGrpcExporterErrorType::ServerError),

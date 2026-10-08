@@ -73,10 +73,10 @@ timeout, TCP keepalive, TLS, request-body compression, and static request
 
 `http.headers` is a map of header name to value applied to every outbound
 request (multi-tenant routing IDs, tracing-vendor headers, and similar). For
-request authentication, prefer the `bearer_token_provider` capability (see
-[Authentication](#authentication)) rather than hard-coding an `authorization`
-header here. Values are sent verbatim, so treat any secret in the rendered
-config as sensitive.
+request authentication, prefer one of the provider capabilities described in
+[Authentication](#authentication) rather than hard-coding credentials here.
+Values are sent verbatim, so treat any secret in the rendered config as
+sensitive.
 
 Validation at config load rejects:
 
@@ -91,11 +91,38 @@ Protocol headers always take precedence over configured headers.
 
 ## Authentication
 
+By default the exporter sends requests without any authentication.
+Authentication can be enabled by binding a [provider extension](../../../../contrib-extensions/README.md) to the exporter node
+via its `capabilities` map. The following providers are supported:
+
+- [`BearerTokenProvider`](#bearertokenprovider): Provides authentication via `Authorization: Bearer
+  <token>` HTTP header.
+- [`ApiKeyProvider`](#apikeyprovider): Provides authentication via a custom HTTP header in the form
+  `<header_name>: <optional_scheme> <api_key>`.
+- [`BasicAuthProvider`](#basicauthprovider): Provides authentication via `Authorization: Basic
+  <base64-encoded(username:password)>` HTTP header.
+- [`AgentFedCredentialProvider`](#agentfedcredentialprovider): Provides authentication using a credential
+  snapshot published by the embedding host as `Authorization: Bearer <token>`
+  HTTP header.
+
+> [!IMPORTANT]
+> Only one authentication provider can be bound to the exporter node at a time.
+> If multiple providers are bound, the exporter will reject the configuration.
+
+<!-- Separate consecutive admonitions. -->
+
+> [!NOTE]
+> Static authentication headers can be registered via the `http.headers`
+> configuration (for example, `http.headers.authorization: "Bearer <token>"`)
+> but this is NOT recommended because the credential remains embedded in the
+> rendered configuration and cannot be refreshed by a provider.
+
+### BearerTokenProvider
+
 The exporter can inject an OAuth `Authorization: Bearer <token>` on every
-outbound request by consuming the `bearer_token_provider` capability. Binding is
-optional and additive: without it the exporter sends no `authorization` header
-(the default); with it, the bound extension acquires and refreshes the token in
-the background so credentials rotate without restarting the exporter.
+outbound request by consuming the `bearer_token_provider` capability. The bound
+extension acquires and refreshes the token in the background so credentials
+rotate without restarting the exporter.
 
 Declare a provider extension in the pipeline's `extensions:` section and bind it
 on the exporter node via the node's `capabilities:` map. Any provider works and
@@ -131,28 +158,98 @@ groups:
               http: {}
 ```
 
-The bearer token is applied per request, so it takes precedence over any
-statically configured `authorization` header. The exporter subscribes to the
-provider's token stream and caches the built header, rebuilding it only when the
-provider refreshes the token, so credential work stays off the per-request path.
-When no usable token is cached yet -- before the provider's first publish, or in
-a degraded window where a refresh is failing and the cached token is within a
-small safety margin of expiring -- the exporter **stops accepting new batches**
-(back-pressures upstream) rather than sending an unauthenticated or soon-to-lapse
-request. It resumes as soon as a usable token arrives; nothing is dropped. (If
-buffered batches are force-drained during shutdown while no token is available,
-they are NACK'd as **retryable**.) A token is guaranteed to eventually arrive:
-the bound extension holds data-path startup until its first token publish, and
-its token stream stays live for the exporter's lifetime.
+The provider-generated Authorization header takes precedence over a statically
+configured header of the same name. Ensure that the provider's configured
+resource or scopes match the OTLP destination; a mismatch is reported by the
+destination as an authentication failure rather than detected at startup.
 
-### Agent-fed credentials
+### ApiKeyProvider
 
-An embedding host can instead bind `agent_fed_credential_provider`. The exporter
-loads and validates a current credential snapshot before accepting input, then
-caches its bearer header across export attempts. It refreshes the snapshot when
-the token reaches its expiry margin or after the destination rejects that
-snapshot with HTTP 401. Vendor attributes in the snapshot are not used by
-OTLP/HTTP because the configured OTLP endpoint remains authoritative.
+The `api_key_provider` capability supplies an API key together with the HTTP
+header name and an optional authentication scheme. The exporter sends either
+`<header_name>: <api_key>` or
+`<header_name>: <header_scheme> <api_key>`, depending on whether the provider
+sets `http.header_scheme`.
+
+The [`flat_file_api_key_auth`](../../../../contrib-extensions/src/flat_file_api_key_auth/README.md)
+extension can load the key from a file and poll for rotations. The
+`http.header_name` attribute is required for OTLP/HTTP; `http.header_scheme` is
+optional.
+
+```yaml
+groups:
+  default:
+    pipelines:
+      main:
+        extensions:
+          api_key:
+            type: "urn:otel:extension:flat_file_api_key_auth"
+            config:
+              key_secret_file: "/etc/secrets/otlp_api_key"
+              key_secret_file_refresh: 30m
+              attributes:
+                http.header_name: "x-api-key"
+                http.header_scheme: "ApiKey"
+
+        nodes:
+          otlp-http-exporter:
+            type: "urn:otel:exporter:otlp_http"
+            capabilities:
+              api_key_provider: api_key
+            config:
+              endpoint: "https://otlp.example.com:4318"
+              client_pool_size: 1
+              http: {}
+```
+
+Omit `http.header_scheme` when the destination expects the raw key, such as
+`x-api-key: <api_key>`. See the extension README for inline-key configuration
+and the complete field reference.
+
+### BasicAuthProvider
+
+The `basic_auth_provider` capability supplies a username and password. The
+exporter constructs the HTTP Basic authentication header from the current
+credential; the encoded header value is not configured directly.
+
+The [`flat_file_user_pass_auth`](../../../../contrib-extensions/src/flat_file_user_pass_auth/README.md)
+extension accepts a configured username and can load the password from a file
+that is polled for rotations.
+
+```yaml
+groups:
+  default:
+    pipelines:
+      main:
+        extensions:
+          basic_auth:
+            type: "urn:otel:extension:flat_file_user_pass_auth"
+            config:
+              username: "otlp-client"
+              password_secret_file: "/etc/secrets/otlp_password"
+              password_secret_file_refresh: 30m
+
+        nodes:
+          otlp-http-exporter:
+            type: "urn:otel:exporter:otlp_http"
+            capabilities:
+              basic_auth_provider: basic_auth
+            config:
+              endpoint: "https://otlp.example.com:4318"
+              client_pool_size: 1
+              http: {}
+```
+
+See the extension README for inline-password configuration, credential
+validation rules, and the complete field reference.
+
+### AgentFedCredentialProvider
+
+`agent_fed_credential_provider` is intended for deployments where the embedding
+host supplies a bearer token and vendor attributes as one credential snapshot.
+The exporter uses the snapshot's token for the HTTP Authorization header.
+Vendor attributes are ignored because the configured OTLP endpoint and headers
+remain authoritative.
 
 ```yaml
 nodes:
@@ -168,36 +265,27 @@ nodes:
       http: {}
 ```
 
-The host sets the token by publishing an `Arc<AgentFedCredentialSnapshot>`
-containing a `BearerToken`; there is no token field under the exporter. The host
-must return a clone of the same `Arc` while that snapshot is current and publish
-a new `Arc` when either the token or its generation changes. The exporter checks
-the provider at startup, at the token's expiry margin, and after HTTP 401. A
-usable cached snapshot requires no provider call, timeout setup, header
-allocation, or header parsing on the per-batch admission path. A non-expiring
-snapshot remains cached until it is rejected or the pipeline restarts.
+There is no agent-fed token field in the exporter configuration. The embedding
+host must register an extension instance that provides the capability and
+publish credential updates through that provider.
 
-An unavailable, malformed, empty, expired, or near-expiry token backpressures
-new input rather than sending an unauthenticated request. Each lookup has a
-fixed five-second timeout that remains in effect while the exporter processes
-telemetry controls or completed requests. Shutdown cancels a pending lookup.
-Failed lookups use a fixed one-second retry delay; both policies are
-intentionally internal rather than configurable. Repeated warnings are emitted
-only for consecutive failure counts 1, 2, 4, 8, and so on,
-and the count resets after recovery. A buffered batch that must be drained
-during shutdown is NACK'd as retryable.
+### Credential refresh and failures
 
-HTTP 401 is retryable. The exporter marks the exact snapshot generation used by
-that request as rejected and does not send it again. It continues checking at
-the one-second retry cadence and resumes only after the host publishes a
-different `Arc` snapshot. A delayed 401 for an older generation does not reject
-a newer snapshot that is already cached.
+For every provider type, the exporter subscribes to the provider's credential
+stream and caches the prepared HTTP header. Credential acquisition and encoding
+therefore stay off the per-request path.
 
-Bind either `agent_fed_credential_provider` or `bearer_token_provider`, not both.
-The exporter rejects an ambiguous configuration. With neither capability bound,
-the existing unauthenticated behavior is unchanged. A fixed token can still be
-set as `http.headers.authorization: "Bearer <token>"`, but it is not refreshed
-and should only be used when an auth extension is unavailable.
+The exporter stops accepting new batches when no usable credential is cached,
+including before the first credential arrives, when a credential is malformed,
+or when an expiring credential reaches its safety margin. This back-pressures
+upstream instead of sending an unauthenticated request. It resumes when the
+provider publishes a usable credential; buffered batches force-drained during
+shutdown are NACK'd as retryable.
+
+HTTP 401 responses invalidate the exact credential generation used by the
+rejected request and are treated as retryable. The exporter does not reuse that
+generation and resumes after the provider publishes a replacement. A delayed
+401 for an older generation does not invalidate a newer credential.
 
 ## Examples
 

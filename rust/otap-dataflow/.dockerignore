@@ -1,3 +1,6 @@
-target
+target/*
+!target/release/
+target/release/*
+!target/release/df_engine.exe
 docs
 configs

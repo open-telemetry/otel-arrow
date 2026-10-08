@@ -3,8 +3,8 @@
 
 //! Topic declarations for inter-pipeline communication.
 
-use crate::Description;
 use crate::error::Error;
+use crate::{Description, PipelineGroupId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -85,6 +85,26 @@ impl From<&TopicName> for Cow<'static, str> {
 impl From<&'static str> for TopicName {
     fn from(value: &'static str) -> Self {
         Self::parse(value).expect("invalid static topic name literal")
+    }
+}
+
+/// Opaque identity used to resolve pipeline-local topic names against declared bindings.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct TopicScope(TopicScopeKind);
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum TopicScopeKind {
+    Global,
+    /// Topics declared for this pipeline group ID in the startup configuration.
+    StartupGroup(PipelineGroupId),
+}
+
+impl TopicScope {
+    /// The global topic scope.
+    pub const GLOBAL: Self = Self(TopicScopeKind::Global);
+
+    pub(crate) fn startup_group(pipeline_group_id: PipelineGroupId) -> Self {
+        Self(TopicScopeKind::StartupGroup(pipeline_group_id))
     }
 }
 
