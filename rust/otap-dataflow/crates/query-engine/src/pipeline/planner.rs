@@ -1097,28 +1097,11 @@ impl PipelinePlanner {
             }
 
             // create new assignment argument
-            let dest_column = ColumnAccessor::try_from_value_accessor(
-                dest.get_value_accessor(),
-                &self.record_type,
-            )?;
-
-            // Data point expressions cannot write to parent (resource/scope) attributes.
-            if matches!(self.record_type, RecordType::DataPoint(_))
-                && matches!(
-                    &dest_column,
-                    ColumnAccessor::Attributes(AttributesIdentifier::NonRecord(_), _)
-                        | ColumnAccessor::NestedAttribute(AttributesIdentifier::NonRecord(_), _, _)
-                )
-            {
-                return Err(Error::NotYetSupportedError {
-                    message:
-                        "assigning to resource or scope attributes from data points is not supported"
-                            .into(),
-                });
-            }
-
             let assignment = Assignment {
-                dest_column,
+                dest_column: ColumnAccessor::try_from_value_accessor(
+                    dest.get_value_accessor(),
+                    &self.record_type,
+                )?,
                 source: scoped_planner.plan_scalar(set_expr.get_source(), functions)?,
                 dest_query_location: Some(dest.get_query_location()),
             };

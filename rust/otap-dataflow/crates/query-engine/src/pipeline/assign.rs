@@ -169,6 +169,7 @@ impl AssignPipelineStage {
                 &assignment.dest_column,
                 assignment.dest_query_location,
                 &assignment.source,
+                record_type,
             )?;
 
             dest_columns.push(assignment.dest_column);
@@ -2064,6 +2065,7 @@ fn validate_assign(
     dest_column: &ColumnAccessor,
     dest_query_location: Option<&QueryLocation>,
     source_plan: &PlannedOp,
+    record_type: &RecordType,
 ) -> Result<()> {
     match dest_column {
         ColumnAccessor::ColumnName(col_name) => {
@@ -2122,6 +2124,17 @@ fn validate_assign(
         }
         ColumnAccessor::Attributes(dest_attrs_id, _)
         | ColumnAccessor::NestedAttribute(dest_attrs_id, _, _) => {
+            // Data point expressions cannot write to parent (resource/scope) attributes.
+            if matches!(record_type, RecordType::DataPoint(_))
+                && matches!(dest_attrs_id, AttributesIdentifier::NonRecord(_))
+            {
+                return Err(Error::NotYetSupportedError {
+                    message:
+                        "assigning to resource or scope attributes from data points is not supported"
+                            .into(),
+                });
+            }
+
             if !can_assign_type(&ExprLogicalType::AnyValue, &source_plan.expr_type) {
                 return Err(Error::InvalidPipelineError {
                     cause: format!(
