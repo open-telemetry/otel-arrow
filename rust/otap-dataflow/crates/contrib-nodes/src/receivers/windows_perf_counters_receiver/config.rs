@@ -811,7 +811,7 @@ mod tests {
     #[test]
     fn rejects_invalid_metric_names() {
         let too_long = format!("a{}", "b".repeat(MAX_METRIC_NAME_LEN));
-        for name in ["1available", "avail able", "é", too_long.as_str()] {
+        for name in ["1available", "avail able", "\u{e9}", too_long.as_str()] {
             assert_config_error(
                 json!({
                     "metrics": {name: {"description": "Value.", "unit": "By", "gauge": {}}},
@@ -852,7 +852,7 @@ mod tests {
             })
         };
         let too_long = "a".repeat(MAX_METRIC_UNIT_LEN + 1);
-        for unit in ["µs", "B\ty", too_long.as_str()] {
+        for unit in ["\u{b5}s", "B\ty", too_long.as_str()] {
             assert_config_error(unit_config(unit), "metrics.m.unit must be printable ASCII");
         }
         let at_limit = "a".repeat(MAX_METRIC_UNIT_LEN);
