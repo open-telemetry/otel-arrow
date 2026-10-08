@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791487775384,
+  "lastUpdate": 1791489011249,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -56782,6 +56782,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
             "value": 4.13,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.99,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 3.14,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.12,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 3.03,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.01,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.79,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 74.31,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 5.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.79,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.29,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.89,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.73,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.68,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.5,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.44,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 120.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 107.54,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "157547602+adgrieco@users.noreply.github.com",
+            "name": "adgrieco",
+            "username": "adgrieco"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "79d41e1e561e9b45372c69e747e7d31c238c11c4",
+          "message": "chore(windows_perf_counters): add receiver skeleton and configuration (#4209)\n\n# Chore Summary\n\nAdds the initial skeleton and configuration model for the Windows\nperformance-counter receiver.\n\n- Adds the `windows_perf_counters` feature to\n`otel-arrow-dfe-contrib-nodes`. The receiver module is compiled only on\nWindows.\n- Defines metric metadata, object, instance, and counter mappings,\nstatic attributes, decimal scaling, collection intervals, and initial\ndelays.\n- Parses, validates, and normalizes the configuration into bounded exact\nPDH (\"Performance Data Helper\") paths mapped to `Gauge` or\n`UpDownCounter` metrics.\n- Validates metric metadata and references, rejects duplicate paths,\ninstances, and reserved attribute keys, and bounds timing, scaling, path\nlength, and expanded counter count.\n\nThis PR defines configuration parsing and normalization for explicitly\nnamed counters only. Receiver registration, PDH collection, value\nscaling, OTAP projection, scheduling, telemetry, wildcard expansion, and\nautomatic instance\ndiscovery remain follow-up work.\n\n## Example Configuration\n\nThe following YAML illustrates the configuration contract defined by\nthis PR. A runnable example will be added when the receiver is\nregistered.\n\n```yaml\nmetrics:\n  windows.memory.available:\n    description: Physical memory immediately available for allocation.\n    unit: MBy\n    gauge: {}\n\n  windows.process.thread_count:\n    description: Number of threads owned by all processes.\n    unit: \"{thread}\"\n    up_down_counter: {}\n\nperfcounters:\n  # Omitting instances creates an object-level counter path.\n  - object: Memory\n    counters:\n      - name: Available Bytes\n        metric: windows.memory.available\n        attributes:\n          memory.type: physical\n        scale_power10: -6\n\n  # Instances may be one exact string or a list of exact strings.\n  - object: Process\n    instances:\n      - _Total\n    counters:\n      - name: Thread Count\n        metric: windows.process.thread_count\n\ncollection_interval: 30s\ninitial_delay: 1s\n```\n\nThe configuration parser normalizes the above example into two counter\nmappings:\n\n| Exact PDH path | Metric | Kind | Unit | `scale_power10` | Attributes |\n|---|---|---|---|---:|---|\n| `\\Memory\\Available Bytes` | `windows.memory.available` | Gauge | `MBy`\n| `-6` | `memory.type=physical` |\n| `\\Process(_Total)\\Thread Count` | `windows.process.thread_count` |\nUpDownCounter | `{thread}` | `0` | none |\n\nThese mappings describe currently available physical memory in decimal\nmegabytes and the aggregate thread count across all processes.\n\nFor additional details see a [preview of the proposed\nREADME](https://github.com/adgrieco/otel-arrow/blob/11549c6e190e7e06cbe09f956aa633170841186f/rust/otap-dataflow/crates/contrib-nodes/src/receivers/windowsperfcounters_receiver/README.md)\nfor this receiver.\n\n## Related issue\n\nPart of #4074. This is the first incremental PR for the receiver; see\nthe issue for the overall receiver scope.\n\n---------\n\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>\nCopilot-Session: eb172bf0-479b-46d3-98fe-5aed7107529f",
+          "timestamp": "2026-10-08T18:36:12Z",
+          "tree_id": "3508103e85e0d27f8156482c226c0980e12befea",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/79d41e1e561e9b45372c69e747e7d31c238c11c4"
+        },
+        "date": 1791488993020,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 87.16,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 5.02,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.09,
             "unit": "MB"
           },
           {
