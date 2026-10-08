@@ -3,7 +3,7 @@
 
 //! Declarative context entry policies.
 
-use crate::context::{ContextEntryName, ContextEntryRef};
+use crate::context::ContextEntryName;
 use crate::{PipelineGroupId, PipelineId};
 use schemars::JsonSchema;
 use serde::de::{self, MapAccess, Visitor};
@@ -115,11 +115,11 @@ impl ContextEntryDefinition {
                     "{path_prefix}[{index}] produces duplicate member name `{name}`"
                 ));
             }
-            if let (Some(domain), Some(reference)) = (part.domain(), part.reference())
-                && !value_references.insert((domain, reference))
+            if let (Some(domain), Some(source_name)) = (part.domain(), part.source_name())
+                && !value_references.insert((domain, source_name))
             {
                 errors.push(format!(
-                    "{path_prefix}[{index}] repeats reference `{reference}`"
+                    "{path_prefix}[{index}] repeats reference `{source_name}`"
                 ));
             }
         }
@@ -146,16 +146,16 @@ pub enum ContextEntryPart {
     },
     /// Includes values from a transport-header entry.
     TransportHeader {
-        /// Exact source context entry reference.
-        name: ContextEntryRef,
+        /// Exact source context entry name.
+        name: ContextEntryName,
         /// Optional member name within the composite entry.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         store_as: Option<ContextEntryName>,
     },
     /// Includes values from a verified authorized-identity entry.
     AuthorizedIdentity {
-        /// Exact source context entry reference.
-        name: ContextEntryRef,
+        /// Exact source context entry name.
+        name: ContextEntryName,
         /// Optional member name within the composite entry.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         store_as: Option<ContextEntryName>,
@@ -166,8 +166,8 @@ pub enum ContextEntryPart {
     /// Values compare as exact UTF-8 bytes, and any matching duplicate value
     /// satisfies this condition.
     TransportHeaderMatch {
-        /// Exact source context entry reference.
-        name: ContextEntryRef,
+        /// Exact source context entry name.
+        name: ContextEntryName,
         /// Required text value.
         value: String,
     },
@@ -195,9 +195,9 @@ impl ContextEntryPart {
         }
     }
 
-    /// Returns the external reference of a member or condition.
+    /// Returns the external source name of a member or condition.
     #[must_use]
-    pub fn reference(&self) -> Option<&ContextEntryRef> {
+    pub fn source_name(&self) -> Option<&ContextEntryName> {
         match self {
             Self::TransportHeader { name, .. }
             | Self::AuthorizedIdentity { name, .. }
@@ -212,7 +212,7 @@ impl ContextEntryPart {
         match self {
             Self::TransportHeader { name, store_as }
             | Self::AuthorizedIdentity { name, store_as } => {
-                Some(store_as.as_ref().unwrap_or_else(|| name.name()))
+                Some(store_as.as_ref().unwrap_or(name))
             }
             Self::Constant { name, .. } => Some(name),
             Self::TransportHeaderMatch { .. } => None,
@@ -244,7 +244,7 @@ impl JsonSchema for ContextEntryPart {
                         "transport_header_match"
                     ]
                 },
-                "name": generator.subschema_for::<ContextEntryRef>(),
+                "name": generator.subschema_for::<ContextEntryName>(),
                 "store_as": generator.subschema_for::<ContextEntryName>(),
                 "value": {
                     "type": "string"
@@ -262,8 +262,8 @@ impl JsonSchema for ContextEntryPart {
                     "message": "`store_as` is allowed only for transport_header and authorized_identity"
                 },
                 {
-                    "rule": "self.type != 'constant' || self.name.matches('^[!-9;-~]+$')",
-                    "message": "`name` for constant must be a single printable ASCII name without `:`"
+                    "rule": "self.name.matches('^[!-9;-~]+$')",
+                    "message": "`name` must be a single printable ASCII name without `:`"
                 }
             ]
         })
@@ -297,7 +297,7 @@ mod tests {
     use super::*;
 
     /// Scenario: one composite entry mixes authorized-identity and transport-header members.
-    /// Guarantees: both supported variants, aliases, scoped names, and order are preserved.
+    /// Guarantees: both supported variants, aliases, source names, and order are preserved.
     #[test]
     fn parses_composite_entry_in_order() {
         let policy: ContextPolicy = serde_yaml::from_str(
@@ -308,7 +308,7 @@ entries:
       name: customer
       store_as: customer_id
     - type: transport_header
-      name: captured:workspace
+      name: workspace
 "#,
         )
         .expect("valid context policy");
@@ -325,9 +325,25 @@ entries:
         assert!(matches!(
             &parts[1],
             ContextEntryPart::TransportHeader { name, .. }
-                if name.scope().map(ContextEntryName::as_str) == Some("captured")
-                    && name.name().as_str() == "workspace"
+                if name.as_str() == "workspace"
         ));
+    }
+
+    /// Scenario: composite parts configure qualified source or member names.
+    /// Guarantees: every part name is rejected before semantic layout validation.
+    #[test]
+    fn rejects_qualified_part_names() {
+        for yaml in [
+            "entries: {tenant: [{type: constant, name: 'scope:id', value: value}]}",
+            "entries: {tenant: [{type: transport_header, name: 'scope:id'}]}",
+            "entries: {tenant: [{type: authorized_identity, name: 'scope:id'}]}",
+            "entries: {tenant: [{type: transport_header_match, name: 'scope:id', value: value}]}",
+        ] {
+            assert!(
+                serde_yaml::from_str::<ContextPolicy>(yaml).is_err(),
+                "{yaml}"
+            );
+        }
     }
 
     /// Scenario: a composite entry includes a configured constant member.
@@ -355,7 +371,7 @@ entries:
                 if name.as_str() == "http.header_scheme" && value == "ApiKey"
         ));
         assert!(parts[0].domain().is_none());
-        assert!(parts[0].reference().is_none());
+        assert!(parts[0].source_name().is_none());
         assert_eq!(
             parts[0].member_name().map(ContextEntryName::as_str),
             Some("http.header_scheme")
@@ -397,7 +413,7 @@ entries:
         assert!(matches!(
             &parts[1],
             ContextEntryPart::TransportHeaderMatch { name, value }
-                if name.name().as_str() == "environment" && value == "production"
+                if name.as_str() == "environment" && value == "production"
         ));
         assert!(policy.validation_errors("context").is_empty());
     }
@@ -438,7 +454,7 @@ entries:
     #[test]
     fn rejects_duplicate_output_member_names() {
         for yaml in [
-            "entries: {tenant: [{type: transport_header, name: first:id}, {type: authorized_identity, name: second:id}]}",
+            "entries: {tenant: [{type: transport_header, name: id}, {type: authorized_identity, name: id}]}",
             "entries: {tenant: [{type: transport_header, name: first, store_as: id}, {type: authorized_identity, name: second, store_as: id}]}",
             "entries: {tenant: [{type: constant, name: id, value: first}, {type: transport_header, name: id}]}",
         ] {
@@ -503,7 +519,6 @@ entries:
             "entries: {tenant: [{type: authorized_identity, name: id, value: prod}]}",
             "entries: {tenant: [{type: constant, name: id}]}",
             "entries: {tenant: [{type: constant, name: id, value: value, store_as: other}]}",
-            "entries: {tenant: [{type: constant, name: 'scope:id', value: value}]}",
             "entries: {tenant: [{type: transport_header, name: id, alias: other}]}",
             "entries: {tenant: [{type: transport_header_match, name: id}]}",
             "entries: {tenant: [{type: transport_header_match, name: id, store_as: other, value: prod}]}",
@@ -564,9 +579,6 @@ entries:
             validations[1]["rule"],
             "self.type in ['transport_header', 'authorized_identity'] || !has(self.store_as)"
         );
-        assert_eq!(
-            validations[2]["rule"],
-            "self.type != 'constant' || self.name.matches('^[!-9;-~]+$')"
-        );
+        assert_eq!(validations[2]["rule"], "self.name.matches('^[!-9;-~]+$')");
     }
 }

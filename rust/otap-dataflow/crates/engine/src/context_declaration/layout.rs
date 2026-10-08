@@ -164,19 +164,6 @@ pub(super) fn validate_definition(declaration: &ContextEntryDeclaration) -> Resu
     if !errors.is_empty() {
         return Err(invalid(errors.join("; ")));
     }
-    for reference in declaration
-        .definition
-        .0
-        .iter()
-        .filter_map(ContextEntryPart::reference)
-    {
-        if reference.scope().is_some() {
-            return Err(invalid(format!(
-                "context entry `{}` cannot use nested reference `{}`",
-                declaration.name, reference,
-            )));
-        }
-    }
     Ok(())
 }
 
@@ -229,24 +216,25 @@ impl ContextLayout {
                 let domain = part
                     .domain()
                     .expect("referenced context part has an authority domain");
-                let reference = part
-                    .reference()
-                    .expect("referenced context part has a source reference");
-                let mut matching = fields.iter().enumerate().filter(|(_, field)| {
-                    field.domain == domain && field.matches_name(reference.name())
-                });
+                let source_name = part
+                    .source_name()
+                    .expect("referenced context part has a source name");
+                let mut matching = fields
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, field)| field.domain == domain && field.matches_name(source_name));
                 let field = matching
                     .next()
                     .map(|(index, _)| ContextFieldId(index))
                     .ok_or_else(|| {
                         invalid(format!(
-                            "context entry `{}` requires unavailable {:?} domain `{reference}`",
+                            "context entry `{}` requires unavailable {:?} domain `{source_name}`",
                             declaration.name, domain
                         ))
                     })?;
                 if matching.next().is_some() {
                     return Err(invalid(format!(
-                        "context entry `{}` has ambiguous {:?} reference `{reference}`",
+                        "context entry `{}` has ambiguous {:?} reference `{source_name}`",
                         declaration.name, domain
                     )));
                 }
@@ -266,7 +254,7 @@ impl ContextLayout {
                     member.source == ContextMemberSource::Field(field)
                 }) {
                     return Err(invalid(format!(
-                        "context entry `{}` repeats `{reference}`",
+                        "context entry `{}` repeats `{source_name}`",
                         declaration.name
                     )));
                 }
@@ -375,15 +363,10 @@ impl ContextFieldLayout {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otel_arrow_dfe_config::context::ContextEntryRef;
     use otel_arrow_dfe_config::context_policy::ContextEntryDefinition;
 
     fn name(value: &str) -> ContextEntryName {
         value.try_into().expect("valid name")
-    }
-
-    fn reference(value: &str) -> ContextEntryRef {
-        value.try_into().expect("valid reference")
     }
 
     fn field(value: &str, domain: ContextDomain) -> ContextFieldLayout {
@@ -406,11 +389,11 @@ mod tests {
             name: name("product_user"),
             definition: ContextEntryDefinition(vec![
                 ContextEntryPart::AuthorizedIdentity {
-                    name: reference("customer"),
+                    name: name("customer"),
                     store_as: Some(name("customer_id")),
                 },
                 ContextEntryPart::TransportHeader {
-                    name: reference("workspace"),
+                    name: name("workspace"),
                     store_as: None,
                 },
             ]),
@@ -430,11 +413,11 @@ mod tests {
         let mut result = entry();
         result.definition.0.extend([
             ContextEntryPart::TransportHeaderMatch {
-                name: reference("region"),
+                name: name("region"),
                 value: "west".to_owned(),
             },
             ContextEntryPart::TransportHeaderMatch {
-                name: reference("environment"),
+                name: name("environment"),
                 value: "production".to_owned(),
             },
         ]);
@@ -596,17 +579,12 @@ mod tests {
         );
     }
 
-    /// Scenario: declarations repeat composite names, nest derived references, or have no members.
+    /// Scenario: declarations repeat composite names or have no members.
     /// Guarantees: the compiler rejects ambiguous namespaces and invokes definition validation.
     #[test]
     fn invalid_declarations_are_rejected() {
         let mut second = entry();
         second.scope = ContextScope::Group("group".into());
-        let mut nested = entry();
-        nested.definition.0[0] = ContextEntryPart::AuthorizedIdentity {
-            name: reference("other:customer"),
-            store_as: None,
-        };
         let mut empty = entry();
         empty.definition.0.clear();
         for (declarations, expected) in [
@@ -614,7 +592,6 @@ mod tests {
                 vec![entry(), second],
                 "duplicate composite context entry `product_user`",
             ),
-            (vec![nested], "cannot use nested reference `other:customer`"),
             (vec![empty], "must contain at least one member"),
         ] {
             assert_compile_error(fields(), &declarations, expected);
@@ -668,7 +645,7 @@ mod tests {
         let mut declaration = entry();
         declaration.name = name("customer");
         declaration.definition.0[1] = ContextEntryPart::TransportHeader {
-            name: reference("customer"),
+            name: name("customer"),
             store_as: Some(name("header")),
         };
         let layout = compile(fields, &[declaration]);
@@ -717,11 +694,11 @@ mod tests {
         let mut conditional = entry();
         conditional.definition.0.extend([
             ContextEntryPart::TransportHeaderMatch {
-                name: reference("workspace"),
+                name: name("workspace"),
                 value: "production".to_owned(),
             },
             ContextEntryPart::TransportHeaderMatch {
-                name: reference("workspace"),
+                name: name("workspace"),
                 value: "staging".to_owned(),
             },
         ]);
@@ -776,7 +753,7 @@ mod tests {
     fn reference_matching_respects_source_domains() {
         let mut declaration = entry();
         declaration.definition.0[1] = ContextEntryPart::TransportHeader {
-            name: reference("WORKSPACE"),
+            name: name("WORKSPACE"),
             store_as: None,
         };
         let layout = compile(fields(), &[declaration.clone()]);
@@ -785,7 +762,7 @@ mod tests {
             .expect("member");
         assert_eq!(projection_names(&layout, &projection), ["workspace"]);
         declaration.definition.0[0] = ContextEntryPart::AuthorizedIdentity {
-            name: reference("CUSTOMER"),
+            name: name("CUSTOMER"),
             store_as: None,
         };
         assert_compile_error(fields(), &[declaration], "unavailable AuthorizedIdentity");

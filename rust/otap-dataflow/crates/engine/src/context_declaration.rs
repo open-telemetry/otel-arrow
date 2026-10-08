@@ -73,10 +73,10 @@ impl<'a> SelectedSource<'a> {
         match part {
             ContextEntryPart::Constant { name, .. } => Some(Self::Constant(name)),
             ContextEntryPart::TransportHeader { name, .. } => {
-                Some(Self::Field(ContextDomain::TransportHeader, name.name()))
+                Some(Self::Field(ContextDomain::TransportHeader, name))
             }
             ContextEntryPart::AuthorizedIdentity { name, .. } => {
-                Some(Self::Field(ContextDomain::AuthorizedIdentity, name.name()))
+                Some(Self::Field(ContextDomain::AuthorizedIdentity, name))
             }
             ContextEntryPart::TransportHeaderMatch { .. } => None,
         }

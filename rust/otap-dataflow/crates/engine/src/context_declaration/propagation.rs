@@ -78,15 +78,12 @@ impl CompiledHeaderPropagationPolicy {
                         }
                     }
                     ContextEntryPart::TransportHeader { name, store_as } => {
-                        if store_as.as_ref().unwrap_or_else(|| name.name()) == reference.name() {
-                            source_name = Some(unqualified_context_name(
-                                name,
-                                "transport-header composite member",
-                            )?);
+                        if store_as.as_ref().unwrap_or(name) == reference.name() {
+                            source_name = Some(name.clone());
                         }
                     }
                     ContextEntryPart::AuthorizedIdentity { name, store_as } => {
-                        if store_as.as_ref().unwrap_or_else(|| name.name()) == reference.name() {
+                        if store_as.as_ref().unwrap_or(name) == reference.name() {
                             return Err(format!(
                                 "context entry reference `{reference}` selects authorized-identity member `{name}`, which cannot be propagated as a transport header"
                             ));
@@ -94,10 +91,7 @@ impl CompiledHeaderPropagationPolicy {
                     }
                     ContextEntryPart::TransportHeaderMatch { name, value } => {
                         conditions.push(CompiledTransportHeaderMatch {
-                            name: unqualified_context_name(
-                                name,
-                                "transport-header match condition",
-                            )?,
+                            name: name.clone(),
                             value: value.as_bytes().into(),
                         });
                     }
@@ -298,18 +292,6 @@ impl CompiledNamedPropagation {
             })
         })
     }
-}
-
-fn unqualified_context_name(
-    reference: &ContextEntryRef,
-    purpose: &str,
-) -> Result<ContextEntryName, String> {
-    if reference.scope().is_some() {
-        return Err(format!(
-            "{purpose} `{reference}` must reference a primitive context entry"
-        ));
-    }
-    Ok(reference.name().clone())
 }
 
 #[cfg(test)]
