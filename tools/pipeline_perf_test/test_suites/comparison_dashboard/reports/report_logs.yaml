@@ -235,7 +235,7 @@ queries:
     sql: |
       CREATE TABLE log_loss AS
       SELECT
-          (COALESCE(litems_total{otel_scope_pipeline_id="main",otel_scope_core_id="0",otel_scope_deployment_generation="0",otel_scope_name="node.input",otel_scope_node_id="debug",otel_scope_channel_type="mpsc",otel_scope_node_port="input",otel_scope_channel_kind="pdata",otel_scope_node_type="processor",signal="logs",otel_scope_channel_mode="local",otel_scope_numa_node_id="0",otel_scope_channel_id="hyperedge:764c1f6afd54fcfa",outcome="success",otel_scope_channel_impl="internal",otel_scope_node_urn="urn:otel:processor:debug",otel_scope_pipeline_group_id="default"} 1991400 1791484434407ogs_produced.total, 0) + COALESCE(failed.total, 0) - COALESCE(logs.total, 0)) AS logs_lost,
+          (COALESCE(logs_produced.total, 0) + COALESCE(failed.total, 0) - COALESCE(logs.total, 0)) AS logs_lost,
           CASE
               WHEN (COALESCE(logs_produced.total, 0) + COALESCE(failed.total, 0)) > 0 THEN
                   (COALESCE(logs_produced.total, 0) + COALESCE(failed.total, 0) - COALESCE(logs.total, 0)) * 1.0 /
