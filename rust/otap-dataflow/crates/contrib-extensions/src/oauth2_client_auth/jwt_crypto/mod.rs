@@ -11,14 +11,14 @@
 //! cryptographic library therefore does not get a second one linked in purely
 //! to sign assertions.
 //!
-//! | Feature           | Assertion-signing backend                         |
-//! |-------------------|---------------------------------------------------|
-//! | `crypto-ring`     | `ring`, in [`ring_backend`]                       |
-//! | `crypto-aws-lc`   | `aws-lc-rs`, through `jsonwebtoken`'s own provider |
-//! | `crypto-openssl`  | `openssl`, in [`openssl_backend`]                 |
-//! | `crypto-symcrypt` | selected Rustls provider, in [`rustls_backend`]    |
+//! | Feature           | Selected Rustls provider |
+//! |-------------------|--------------------------|
+//! | `crypto-ring`     | `ring`                   |
+//! | `crypto-aws-lc`   | `aws-lc-rs`              |
+//! | `crypto-openssl`  | `rustls-openssl`         |
+//! | `crypto-symcrypt` | `rustls-symcrypt`        |
 //!
-//! The SymCrypt path reuses the process's selected Rustls provider, whose public
+//! Every path reuses the process's selected Rustls provider, whose public
 //! extension points load the key, choose the RSA signature scheme, and sign or
 //! verify the unhashed JWT input. A build with no backend rejects the JWT-bearer
 //! grant when the extension is constructed instead of panicking at the first
@@ -31,47 +31,20 @@
 
 use std::sync::Once;
 
-// Every enabled backend is compiled, not just the selected one, so that
-// `cargo clippy --all-features` type-checks each of them and their tests run.
-// That leaves the unselected backend unreferenced in a non-test
-// `--all-features` build, hence the `dead_code` allowance.
-
-/// `ring`-backed provider. Also compiled into test builds that select no
-/// backend at all, so the crate's suite can sign without committing the library
-/// to one; `ring` is a dev-dependency for that case.
+/// Provider-neutral adapter over the selected Rustls implementation. It is also
+/// compiled in tests with no explicit backend, where OTAP's test fallback
+/// installs Ring.
 #[cfg(any(
     feature = "crypto-ring",
-    all(
-        test,
-        not(feature = "crypto-aws-lc"),
-        not(feature = "crypto-openssl"),
-        not(feature = "crypto-symcrypt")
-    )
+    feature = "crypto-aws-lc",
+    feature = "crypto-openssl",
+    feature = "crypto-symcrypt",
+    test
 ))]
-#[allow(dead_code, reason = "unselected when another crypto-* feature wins")]
-mod ring_backend;
-
-/// `openssl`-backed provider.
-#[cfg(feature = "crypto-openssl")]
-#[allow(dead_code, reason = "unselected when another crypto-* feature wins")]
-mod openssl_backend;
-
-/// Provider-neutral Rustls adapter, initially selected only for SymCrypt.
-#[cfg(feature = "crypto-symcrypt")]
-#[allow(dead_code, reason = "unselected when another crypto-* feature wins")]
 mod rustls_backend;
 
-/// Assertions shared by the backend test modules. Compiled only when at least
-/// one backend exists to exercise.
-#[cfg(all(
-    test,
-    any(
-        feature = "crypto-ring",
-        feature = "crypto-openssl",
-        feature = "crypto-symcrypt",
-        not(feature = "crypto-aws-lc")
-    )
-))]
+/// Assertions shared by the adapter tests.
+#[cfg(test)]
 mod test_support;
 
 /// Whether this build can sign JWT-bearer assertions.
@@ -91,58 +64,20 @@ pub(super) const NO_BACKEND_MESSAGE: &str = "this build has no JWT signing backe
 /// Installs the assertion-signing backend as the process-wide default, at most
 /// once per process.
 ///
-/// Installation is a no-op when `jsonwebtoken` already selects a backend from
-/// its own crate features, and when this build has no backend at all.
+/// Installation is a no-op when this build has no backend at all.
 pub(super) fn ensure_provider() {
     static INIT: Once = Once::new();
     INIT.call_once(install);
 }
 
-// Selection order mirrors `otel_arrow_dfe_otap::crypto::install_crypto_provider`, so a
-// build that enables several `crypto-*` features signs with the same library it
-// uses for TLS. The features are documented as mutually exclusive, but CI builds
-// with `--all-features`, so an order has to be defined.
-
-/// `ring` is selected when `crypto-ring` is on, and in test builds that pick no
-/// backend at all.
+/// Installs the provider-neutral adapter whenever a Rustls provider is
+/// available. Provider selection remains centralized in OTAP.
 #[cfg(any(
     feature = "crypto-ring",
-    all(
-        test,
-        not(feature = "crypto-aws-lc"),
-        not(feature = "crypto-openssl"),
-        not(feature = "crypto-symcrypt")
-    )
-))]
-fn install() {
-    // `install_default` reports an error only when a provider is already
-    // installed, which is benign: the first caller wins and both would have
-    // installed the same backend.
-    let _ = ring_backend::PROVIDER.install_default();
-}
-
-/// `jsonwebtoken` resolves its bundled `aws-lc-rs` provider from the
-/// `aws_lc_rs` crate feature that `crypto-aws-lc` turns on, so there is nothing
-/// to install here.
-#[cfg(all(feature = "crypto-aws-lc", not(feature = "crypto-ring")))]
-fn install() {}
-
-/// `openssl` is selected when it is the only backend enabled.
-#[cfg(all(
+    feature = "crypto-aws-lc",
     feature = "crypto-openssl",
-    not(feature = "crypto-ring"),
-    not(feature = "crypto-aws-lc")
-))]
-fn install() {
-    let _ = openssl_backend::PROVIDER.install_default();
-}
-
-/// The Rustls adapter is selected when SymCrypt is the only backend enabled.
-#[cfg(all(
     feature = "crypto-symcrypt",
-    not(feature = "crypto-ring"),
-    not(feature = "crypto-aws-lc"),
-    not(feature = "crypto-openssl")
+    test
 ))]
 fn install() {
     let _ = rustls_backend::PROVIDER.install_default();

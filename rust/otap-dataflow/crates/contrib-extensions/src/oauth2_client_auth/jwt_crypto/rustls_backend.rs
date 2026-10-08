@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Provider-neutral Rustls JWT signing, selected by `crypto-symcrypt`.
+//! Provider-neutral JWT signing through the selected Rustls crypto provider.
 
 use jsonwebtoken::crypto::{CryptoProvider, JwtSigner, JwtVerifier, KeyUtils};
 use jsonwebtoken::errors::{ErrorKind, Result as JwtResult};
@@ -122,6 +122,10 @@ mod tests {
 
     const MESSAGE: &[u8] = b"independently verified JWT signing input";
 
+    fn ensure_test_crypto_provider() {
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+    }
+
     fn test_keys() -> (EncodingKey, DecodingKey) {
         let (private_pem, public_pem) = super::super::super::tests::generate_test_rsa_keypair();
         (
@@ -132,10 +136,11 @@ mod tests {
 
     // Scenario: The Rustls-backed provider signs an assertion payload under
     // RS256, RS384 and RS512, verifies each signature, and rejects tampering.
-    // Guarantees: SymCrypt supports every JWT RSA algorithm exposed by the
-    // extension through the provider-neutral Rustls APIs.
+    // Guarantees: Every selectable Rustls provider supports each JWT RSA
+    // algorithm exposed by the extension through the same adapter.
     #[test]
     fn signs_and_verifies_every_supported_algorithm() {
+        ensure_test_crypto_provider();
         super::super::test_support::assert_round_trips(&PROVIDER);
     }
 
@@ -152,6 +157,7 @@ mod tests {
     // InvalidRsaKey error surface rather than becoming a signing failure.
     #[test]
     fn maps_private_key_loading_failures_to_invalid_rsa_key() {
+        ensure_test_crypto_provider();
         let key = EncodingKey::from_rsa_der(b"not a DER private key");
         let error = match signer_factory(&Algorithm::RS256, &key) {
             Ok(_) => panic!("malformed private key must be rejected"),
@@ -165,6 +171,7 @@ mod tests {
     // Guarantees: Invalid public-key encodings cannot verify a signature.
     #[test]
     fn rejects_malformed_public_key_der() {
+        ensure_test_crypto_provider();
         let key = DecodingKey::from_rsa_der(b"not a DER public key");
         let verifier =
             verifier_factory(&Algorithm::RS256, &key).expect("verifier construction succeeds");
@@ -177,6 +184,7 @@ mod tests {
     // instead of passing only same-provider round trips.
     #[test]
     fn interoperates_with_independent_ring_vectors() {
+        ensure_test_crypto_provider();
         let (encoding_key, decoding_key) = test_keys();
         let ring_key = RsaKeyPair::from_der(encoding_key.as_bytes()).expect("Ring private key");
         let random = SystemRandom::new();
