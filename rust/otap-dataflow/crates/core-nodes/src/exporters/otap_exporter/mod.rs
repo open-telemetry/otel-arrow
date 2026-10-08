@@ -744,7 +744,7 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                             pdata.take_payload()
                         };
 
-                        let message: OtapArrowRecords = match effect_handler
+                        let message = match effect_handler
                             .try_payload_into_otap(payload)
                             .await
                         {

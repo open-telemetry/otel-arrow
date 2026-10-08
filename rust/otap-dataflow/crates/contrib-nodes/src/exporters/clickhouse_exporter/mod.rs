@@ -51,7 +51,6 @@ use otel_arrow_dfe_engine::{ConsumerEffectHandlerExtension, ExporterFactory};
 use otel_arrow_dfe_otap::OTAP_EXPORTER_FACTORIES;
 use otel_arrow_dfe_otap::metrics::ExporterExportMetrics;
 use otel_arrow_dfe_otap::pdata::{OtapPdata, PdataEffectHandlerExtension};
-use otel_arrow_dfe_pdata::OtapArrowRecords;
 #[cfg(test)]
 use otel_arrow_dfe_pdata::OtlpProtoBytes;
 use otel_arrow_dfe_pdata::error::Error as PdataError;
@@ -429,7 +428,7 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
                     let write_batches = if let Some(batches) = direct_otlp_batches {
                         batches
                     } else {
-                        let mut arrow_records: OtapArrowRecords = match effect_handler
+                        let mut arrow_records = match effect_handler
                             .try_payload_into_otap(payload)
                             .await
                         {
@@ -541,6 +540,7 @@ mod tests {
     use otel_arrow_dfe_engine::control::{PipelineCompletionMsg, pipeline_completion_msg_channel};
     use otel_arrow_dfe_engine::testing::test_node;
     use otel_arrow_dfe_otap::testing::{TestCallData, create_test_pdata};
+    use otel_arrow_dfe_pdata::OtapArrowRecords;
     use otel_arrow_dfe_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
     use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::{
         Metric, ResourceMetrics, ScopeMetrics,
