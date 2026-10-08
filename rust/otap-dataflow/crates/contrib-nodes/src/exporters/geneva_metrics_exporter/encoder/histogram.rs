@@ -4,7 +4,7 @@
 //! Histogram encoding for the Geneva Metrics ingestion protocol.
 
 use super::model::*;
-use super::writer::Writer;
+use super::writer::{Writer, signed_base128_size, unsigned_base128_size};
 
 const MIN_EXPONENTIAL_HISTOGRAM_SCALE: i8 = i8::MIN;
 const MAX_EXPONENTIAL_HISTOGRAM_SCALE: i8 = 20;
@@ -12,7 +12,8 @@ const MAX_EXPONENTIAL_HISTOGRAM_BUCKETS_PER_RANGE: usize = 1_280;
 
 pub(super) fn validate_histogram_encoding(histogram: &MetricHistogram) -> Result<(), EncodeError> {
     match histogram {
-        MetricHistogram::Raw(_) | MetricHistogram::Explicit(_) => Ok(()),
+        MetricHistogram::Raw(_) => Err(EncodeError::UnsupportedRawHistogram),
+        MetricHistogram::Explicit(buckets) => validate_explicit_histogram(buckets),
         MetricHistogram::Exponential(histogram) => validate_exponential_histogram(histogram),
     }
 }
@@ -27,29 +28,12 @@ pub(super) fn write_histogram(
         METRIC_TYPE_CUMULATIVE_HISTOGRAM | METRIC_TYPE_CUMULATIVE_EXPONENTIAL_HISTOGRAM
     );
     match histogram {
-        MetricHistogram::Raw(buckets) => write_raw_histogram(writer, buckets),
+        MetricHistogram::Raw(_) => Err(EncodeError::UnsupportedRawHistogram),
         MetricHistogram::Explicit(buckets) => write_explicit_histogram(writer, buckets, cumulative),
         MetricHistogram::Exponential(histogram) => {
             write_exponential_histogram(writer, histogram, cumulative)
         }
     }
-}
-
-fn write_raw_histogram(writer: &mut Writer, buckets: &[(u64, u32)]) -> Result<(), EncodeError> {
-    let prefix_position = writer.reserve(size_of::<u32>());
-    writer.write_unsigned_base128(buckets.len() as u64);
-    let mut previous = None;
-    for &(key, count) in buckets {
-        if let Some((previous_key, previous_count)) = previous {
-            writer.write_unsigned_base128(key.wrapping_sub(previous_key));
-            writer.write_signed_base128(wrapping_i32_count_delta(count, previous_count));
-        } else {
-            writer.write_unsigned_base128(key);
-            writer.write_unsigned_base128(count as u64);
-        }
-        previous = Some((key, count));
-    }
-    finish_histogram_prefix(writer, prefix_position, 0)
 }
 
 fn write_explicit_histogram(
@@ -69,6 +53,10 @@ fn write_explicit_histogram(
         }
         previous_count = Some(count);
     }
+    debug_assert_eq!(
+        explicit_histogram_body_size(buckets),
+        Ok(writer.len() - prefix_position - size_of::<u32>())
+    );
     let format = HISTOGRAM_FORMAT_DOUBLE
         | if cumulative {
             HISTOGRAM_FORMAT_CUMULATIVE
@@ -76,6 +64,32 @@ fn write_explicit_histogram(
             0
         };
     finish_histogram_prefix(writer, prefix_position, format)
+}
+
+fn validate_explicit_histogram(buckets: &[(f64, u32)]) -> Result<(), EncodeError> {
+    validate_histogram_body_size(explicit_histogram_body_size(buckets)?)
+}
+
+/// Returns the exact explicit histogram body size written after the 4-byte prefix.
+fn explicit_histogram_body_size(buckets: &[(f64, u32)]) -> Result<usize, EncodeError> {
+    let mut size = buckets
+        .len()
+        .checked_mul(size_of::<f64>())
+        .and_then(|size| size.checked_add(unsigned_base128_size(buckets.len() as u64)))
+        .ok_or(EncodeError::LengthCalculationOverflow { field: "histogram" })?;
+    let mut previous_count = None;
+    for &(_, count) in buckets {
+        let count_size = if let Some(previous_count) = previous_count {
+            signed_base128_size(wrapping_i32_count_delta(count, previous_count))
+        } else {
+            unsigned_base128_size(count as u64)
+        };
+        size = size
+            .checked_add(count_size)
+            .ok_or(EncodeError::LengthCalculationOverflow { field: "histogram" })?;
+        previous_count = Some(count);
+    }
+    Ok(size)
 }
 
 fn write_exponential_histogram(
@@ -226,12 +240,7 @@ fn checked_i32_delta(field: &'static str, delta: i64) -> Result<i64, EncodeError
         .map_err(|_| EncodeError::HistogramDeltaOverflow { field, delta })
 }
 
-fn finish_histogram_prefix(
-    writer: &mut Writer,
-    prefix_position: usize,
-    format: u32,
-) -> Result<(), EncodeError> {
-    let length = writer.len() - prefix_position - size_of::<u32>();
+fn validate_histogram_body_size(length: usize) -> Result<(), EncodeError> {
     if length > HISTOGRAM_SIZE_MASK as usize {
         return Err(EncodeError::LengthOverflow {
             field: "histogram",
@@ -239,6 +248,16 @@ fn finish_histogram_prefix(
             maximum: HISTOGRAM_SIZE_MASK as usize,
         });
     }
+    Ok(())
+}
+
+fn finish_histogram_prefix(
+    writer: &mut Writer,
+    prefix_position: usize,
+    format: u32,
+) -> Result<(), EncodeError> {
+    let length = writer.len() - prefix_position - size_of::<u32>();
+    validate_histogram_body_size(length)?;
     writer.write_u32_at(prefix_position, format | length as u32);
     Ok(())
 }
@@ -249,45 +268,22 @@ mod tests {
     use super::super::writer::Writer;
     use super::*;
 
-    /// Scenario: A legacy raw histogram contains multiple ordered buckets with increasing and decreasing counts.
-    /// Guarantees: The first bucket is absolute and subsequent keys and counts use the Geneva delta representation.
+    /// Scenario: The protocol-defined legacy raw histogram is passed directly to histogram validation and writing.
+    /// Guarantees: Both paths return the unsupported-variant error and the writer emits no histogram bytes.
     #[test]
-    fn encodes_raw_histogram_bucket_deltas() {
+    fn rejects_unsupported_raw_histogram() {
+        let histogram = MetricHistogram::Raw(vec![(10, 5)]);
         let mut writer = Writer::default();
-
-        write_histogram(
-            &mut writer,
-            &MetricHistogram::Raw(vec![(10, 5), (15, 2), (142, 130)]),
-            0,
-        )
-        .expect("raw histogram should encode");
 
         assert_eq!(
-            writer.finish(),
-            vec![
-                0x08, 0x00, 0x00, 0x00, // Format and body length.
-                0x03, // Bucket count.
-                0x0a, 0x05, // First key and count.
-                0x05, 0x43, // Key delta 5 and count delta -3.
-                0x7f, 0x80, 0x02, // Key delta 127 and count delta 128.
-            ]
+            validate_histogram_encoding(&histogram),
+            Err(EncodeError::UnsupportedRawHistogram)
         );
-    }
-
-    /// Scenario: Consecutive raw histogram bucket counts span the full unsigned 32-bit range.
-    /// Guarantees: Count subtraction wraps to the signed 32-bit wire delta.
-    #[test]
-    fn wraps_raw_histogram_count_delta() {
-        let mut writer = Writer::default();
-
-        write_histogram(
-            &mut writer,
-            &MetricHistogram::Raw(vec![(0, 0), (1, u32::MAX)]),
-            0,
-        )
-        .expect("full-width count transition should encode");
-
-        assert_eq!(writer.finish().last(), Some(&0x41));
+        assert_eq!(
+            write_histogram(&mut writer, &histogram, 0),
+            Err(EncodeError::UnsupportedRawHistogram)
+        );
+        assert!(writer.bytes().is_empty());
     }
 
     /// Scenario: A cumulative explicit histogram contains multiple double boundaries and a decreasing count.
@@ -328,6 +324,62 @@ mod tests {
         .expect("full-width count transition should encode");
 
         assert_eq!(writer.finish().last(), Some(&0x41));
+    }
+
+    /// Scenario: Explicit histograms use multi-byte bucket counts, first counts, and positive, negative, and wrapping count deltas.
+    /// Guarantees: Pre-write validation calculates exactly the serialized body length and accepts these in-limit bodies.
+    #[test]
+    fn calculates_exact_explicit_histogram_body_size() {
+        let with_counts = |counts: &[u32]| {
+            counts
+                .iter()
+                .enumerate()
+                .map(|(index, count)| (index as f64, *count))
+                .collect::<Vec<_>>()
+        };
+        for buckets in [
+            Vec::new(),
+            with_counts(&[127]),
+            with_counts(&[128]),
+            with_counts(&[u32::MAX]),
+            // Count deltas +63, +64, -63, -64, +8191, and +8193 cross signed base-128 byte boundaries.
+            with_counts(&[0, 63, 127, 64, 0, 8_191, 16_384]),
+            // Count deltas wrap to -1, +1, and i32::MIN.
+            with_counts(&[0, u32::MAX, 0, 1 << 31]),
+            // A 128-bucket histogram needs a two-byte bucket count.
+            vec![(1.0, 1); 128],
+        ] {
+            let mut writer = Writer::default();
+            write_histogram(&mut writer, &MetricHistogram::Explicit(buckets.clone()), 0)
+                .expect("explicit histogram should encode");
+
+            assert_eq!(
+                explicit_histogram_body_size(&buckets),
+                Ok(writer.len() - size_of::<u32>()),
+                "{buckets:?}"
+            );
+            assert_eq!(
+                validate_histogram_encoding(&MetricHistogram::Explicit(buckets)),
+                Ok(())
+            );
+        }
+    }
+
+    /// Scenario: A histogram body is exactly the 28-bit protocol maximum or one byte larger.
+    /// Guarantees: The check shared by pre-write validation and prefix finalization accepts the maximum and rejects the larger body with LengthOverflow.
+    #[test]
+    fn validates_histogram_body_size_boundary() {
+        let maximum = HISTOGRAM_SIZE_MASK as usize;
+
+        assert_eq!(validate_histogram_body_size(maximum), Ok(()));
+        assert_eq!(
+            validate_histogram_body_size(maximum + 1),
+            Err(EncodeError::LengthOverflow {
+                field: "histogram",
+                length: maximum + 1,
+                maximum,
+            })
+        );
     }
 
     /// Scenario: A cumulative exponential histogram has zero, negative, positive, and empty sparse buckets.

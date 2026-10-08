@@ -1,0 +1,7 @@
+change_type: breaking
+component: pipeline
+note: >-
+  Migrated traffic generator receiver telemetry from flat counters to dimensioned metric populations with enum attributes.
+issues: [3530]
+subtext: |
+  Migration: Use `smooth.runs.terminations{outcome}` and `smooth.payload.sends.attempts{attempt, outcome}`. Replace `*_produced` with `node.output.items{signal, outcome}` and `completion.*` with `node.output.messages{signal, outcome}`.

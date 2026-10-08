@@ -228,11 +228,12 @@ pub(super) fn write_metric(writer: &mut Writer, metric: &Metric) -> Result<(), E
 }
 
 fn validated_sampling_type(metric: &Metric) -> Result<u32, EncodeError> {
-    let mut sampling_type = metric.sampling_type;
     let histogram = metric.values.histogram();
-    if histogram.is_none()
-        || matches!(histogram, Some(MetricHistogram::Raw(buckets)) if buckets.is_empty())
-    {
+    if matches!(histogram, Some(MetricHistogram::Raw(_))) {
+        return Err(EncodeError::UnsupportedRawHistogram);
+    }
+    let mut sampling_type = metric.sampling_type;
+    if histogram.is_none() {
         sampling_type &= !HISTOGRAM;
     }
     if metric.exemplars.is_empty() {
@@ -369,7 +370,7 @@ fn validate_histogram(
 
     let metric_type = sampling_type & METRIC_TYPE_MASK;
     let incompatible = match histogram {
-        Some(MetricHistogram::Raw(_)) => None,
+        Some(MetricHistogram::Raw(_)) => return Err(EncodeError::UnsupportedRawHistogram),
         Some(MetricHistogram::Explicit(_))
             if sampling_type & DOUBLE_VALUE_TYPE != 0
                 && matches!(
@@ -728,6 +729,59 @@ mod tests {
         );
     }
 
+    /// Scenario: Raw double metrics use high-resolution timestamps from the C++ DeserializeRawTypedMetricsWithMilliseconds inputs, excluding its unsupported legacy raw histogram entry, with a supplied count of 1, 7, or none.
+    /// Guarantees: Each metric writes a fixed count of 1 followed by its millisecond component, independent of the supplied count, and the packet matches the C++ protocol v6 fixture.
+    #[test]
+    fn matches_high_resolution_timestamp_fixture() {
+        let expected =
+            include_bytes!("fixtures/CompatibilityFixtureRawTypedMetricsWithMilliseconds.bin");
+        let metric = |values: [&str; 2], seconds: i64, sum: f64, milliseconds: u32| Metric {
+            time_bucket: DEFAULT_TIME_BUCKET as i64 + seconds,
+            namespace: "MetricNamespace".to_string(),
+            name: "MetricName".to_string(),
+            dimensions: vec![
+                dimension("DimensionName1", values[0]),
+                dimension("DimensionName2", values[1]),
+            ],
+            sampling_type: IS_RAW_DATA
+                | SUM
+                | COUNT
+                | DOUBLE_VALUE_TYPE
+                | HIGH_RESOLUTION_TIMESTAMP,
+            values: MetricValues::Double(NumericValues {
+                min: None,
+                max: None,
+                sum: Some(sum),
+                count: Some(1),
+                milliseconds: Some(milliseconds),
+                histogram: None,
+            }),
+            exemplars: Vec::new(),
+        };
+        // C++ rounds each event time up to a whole-second bucket and records the event's millisecond component separately.
+        let packet = Packet {
+            current_time_bucket: DEFAULT_TIME_BUCKET,
+            metrics: vec![
+                metric(["DimensionValue11", "DimensionValue21"], 2, 1.5, 450),
+                metric(["DimensionValue11", "DimensionValue21"], 30, 2.5, 0),
+                metric(["DimensionValue12", "DimensionValue22"], 62, 10.2, 0),
+                metric(["DimensionValue12", "DimensionValue22"], 62, 20.3, 500),
+            ],
+        };
+
+        // C++ always writes a count of 1 with millisecond precision, so the supplied count must not change the bytes.
+        for count in [Some(1), Some(7), None] {
+            let mut packet = packet.clone();
+            for metric in &mut packet.metrics {
+                let MetricValues::Double(values) = &mut metric.values else {
+                    unreachable!("test metric should use double values");
+                };
+                values.count = count;
+            }
+            assert_fixture(packet, expected);
+        }
+    }
+
     /// Scenario: A histogram sampling flag is present without histogram data.
     /// Guarantees: The encoder removes the empty histogram flag like the C++ serializer.
     #[test]
@@ -750,29 +804,50 @@ mod tests {
         );
     }
 
-    /// Scenario: An integral double metric supplies an empty legacy raw histogram.
-    /// Guarantees: The empty histogram flag is removed before compact double encoding is selected.
+    /// Scenario: A metric carries the protocol-defined legacy raw histogram with or without buckets and the histogram flag.
+    /// Guarantees: Validation and encoding return the unsupported-variant error instead of encoding or silently dropping the histogram.
     #[test]
-    fn removes_empty_raw_histogram_before_numeric_encoding() {
-        let metric = standard_metric(
-            MetricValues::Double(NumericValues {
-                min: None,
-                max: None,
-                sum: Some(1.0),
-                count: Some(1),
-                milliseconds: None,
-                histogram: Some(MetricHistogram::Raw(Vec::new())),
-            }),
-            SUM | COUNT | HISTOGRAM,
-        );
-        let mut writer = Writer::default();
+    fn rejects_unsupported_raw_histogram() {
+        let raw_metric = |buckets: Vec<(u64, u32)>, sampling_type: u32| {
+            standard_metric(
+                MetricValues::Unsigned(NumericValues {
+                    min: None,
+                    max: None,
+                    sum: Some(1),
+                    count: Some(1),
+                    milliseconds: None,
+                    histogram: Some(MetricHistogram::Raw(buckets)),
+                }),
+                sampling_type,
+            )
+        };
 
-        write_metric(&mut writer, &metric).expect("metric should encode");
-
-        assert_eq!(
-            read_unsigned_base128(writer.bytes()),
-            u64::from(SUM | COUNT | DOUBLE_VALUE_TYPE | DOUBLE_VALUE_STORED_AS_LONG_TYPE)
-        );
+        for (case, metric) in [
+            ("flagged", raw_metric(vec![(1, 1)], SUM | COUNT | HISTOGRAM)),
+            ("unflagged", raw_metric(vec![(1, 1)], SUM | COUNT)),
+            ("empty", raw_metric(Vec::new(), SUM | COUNT | HISTOGRAM)),
+        ] {
+            let mut writer = Writer::default();
+            assert_eq!(
+                write_metric(&mut writer, &metric),
+                Err(EncodeError::UnsupportedRawHistogram),
+                "{case}"
+            );
+            assert!(writer.bytes().is_empty(), "{case}");
+            assert_eq!(
+                validate_metric(&metric, DEFAULT_TIME_BUCKET),
+                Err(EncodeError::UnsupportedRawHistogram),
+                "{case}"
+            );
+            assert_eq!(
+                encode(&Packet {
+                    current_time_bucket: DEFAULT_TIME_BUCKET,
+                    metrics: vec![metric],
+                }),
+                Err(EncodeError::UnsupportedRawHistogram),
+                "{case}"
+            );
+        }
     }
 
     /// Scenario: Histogram bodies contradict their normalized numeric or histogram metric type.
