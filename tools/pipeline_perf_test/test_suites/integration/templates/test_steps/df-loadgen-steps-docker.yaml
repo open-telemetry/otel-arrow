@@ -4,7 +4,7 @@ Load generator -> df-engine -> backend steps.
 Push-based metrics (opt-in):
   Set `push_metrics: true` to have the load generator, engine and backend push
   their internal metrics over OTLP. When off (the default), metrics are exposed
-  over a prometheus endpoint for scraping instead. 
+  over a prometheus endpoint for scraping instead.
 
 Variables:
   - push_metrics: when true, enable the push wiring (default false).

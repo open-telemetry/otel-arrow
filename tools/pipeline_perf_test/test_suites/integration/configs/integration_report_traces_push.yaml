@@ -2,7 +2,7 @@
 #
 # The load generator, engine and backend previously had their metrics scraped,
 # however we're transitioning to push based metrics instead which have different
-# names and temporality and therefore require new reports. 
+# names and temporality and therefore require new reports.
 #
 # Column notes (set by the OTLP receiver, see otlp_metrics_sink.py):
 #   * Resource/scope/signal attributes are all expanded to be top level columns
