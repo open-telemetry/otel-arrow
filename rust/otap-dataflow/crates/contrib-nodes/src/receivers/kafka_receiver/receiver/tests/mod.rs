@@ -70,6 +70,7 @@ const REBALANCE_TEST_PARTITIONS: i32 = 2;
 const REBALANCE_RECORDS_PER_PARTITION: i32 = 5;
 
 mod construction;
+mod credentials;
 mod decode;
 mod lifecycle;
 mod offsets;

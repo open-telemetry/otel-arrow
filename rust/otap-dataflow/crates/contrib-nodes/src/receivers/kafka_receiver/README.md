@@ -530,6 +530,33 @@ config:
       password: "my-password"
 ```
 
+#### Capability-Provided Credentials
+
+PLAIN and both SCRAM mechanisms can acquire their initial username and password
+from a bound `sasl_credential_provider` capability instead of storing them
+inline:
+
+```yaml
+kafka-receiver:
+  type: urn:otel:receiver:kafka
+  capabilities:
+    sasl_credential_provider: kafka-credentials
+  config:
+    auth:
+      sasl:
+        mechanism: SCRAM-SHA-512
+        credential_source: capability
+```
+
+`credential_source` defaults to `inline`, preserving the existing configuration
+behavior. When set to `capability`, omit `username` and `password`; combining
+the two sources is invalid. Capability-provided credentials are supported only
+for `PLAIN`, `SCRAM-SHA-256`, and `SCRAM-SHA-512`.
+
+The receiver requests one usable credential during startup before creating the
+Kafka consumer. It rejects credentials that expire within 30 seconds. Runtime
+credential rotation and consumer recreation are not currently supported.
+
 #### AWS MSK IAM
 
 > **Note:** AWS MSK IAM authentication requires the `aws` feature to be

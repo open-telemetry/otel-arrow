@@ -24,10 +24,14 @@ use otel_arrow_dfe_config::transport_headers_policy::CompiledHeaderCapturePolicy
 #[cfg(test)]
 use otel_arrow_dfe_config::transport_headers_policy::HeaderCapturePolicy;
 use otel_arrow_dfe_config::validation::validate_typed_config;
+use otel_arrow_dfe_engine::capability::auth::sasl_credential_provider::{
+    SASL_CREDENTIAL_USABLE_MARGIN, SaslCredentialProvider as SaslCredentialProviderCapability,
+};
 use otel_arrow_dfe_engine::config::ReceiverConfig;
 use otel_arrow_dfe_engine::context::PipelineContext;
 use otel_arrow_dfe_engine::control::NodeControlMsg;
 use otel_arrow_dfe_engine::error::{Error as EngineError, ReceiverErrorKind, format_error_sources};
+use otel_arrow_dfe_engine::local::capability::auth::sasl_credential_provider::SaslCredentialProvider;
 use otel_arrow_dfe_engine::local::receiver as local;
 use otel_arrow_dfe_engine::node::NodeId;
 use otel_arrow_dfe_engine::receiver::ReceiverWrapper;
@@ -78,6 +82,7 @@ const MAX_GROUP_INSTANCE_ID_LEN: usize = 249;
 /// offset skipping when acknowledgements arrive out-of-order from the downstream pipeline.
 pub struct KafkaReceiver {
     config: KafkaReceiverConfig,
+    sasl_credential_provider: Option<Box<dyn SaslCredentialProvider>>,
     metrics: KafkaReceiverMetrics,
     /// Per-offset tracker. Only active when auto-commit is disabled.
     offset_tracker: OffsetTracker,
@@ -114,19 +119,30 @@ pub struct KafkaReceiver {
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
 pub static KAFKA_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
     name: KAFKA_RECEIVER_URN,
-    create:
-        |pipeline: PipelineContext,
-         node: NodeId,
-         node_config: Arc<NodeUserConfig>,
-         receiver_config: &ReceiverConfig,
-         _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities| {
-            Ok(ReceiverWrapper::local(
-                KafkaReceiver::from_config(pipeline, &node_config.config)?,
-                node,
-                node_config,
-                receiver_config,
-            ))
-        },
+    create: |pipeline: PipelineContext,
+             node: NodeId,
+             node_config: Arc<NodeUserConfig>,
+             receiver_config: &ReceiverConfig,
+             capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities| {
+        let receiver = KafkaReceiver::from_config(pipeline, &node_config.config)?;
+        let receiver = if receiver.config.uses_sasl_credential_provider() {
+            receiver.with_sasl_credential_provider(
+                capabilities
+                    .require_local::<SaslCredentialProviderCapability>()
+                    .map_err(|error| ConfigError::InvalidUserConfig {
+                        error: error.to_string(),
+                    })?,
+            )
+        } else {
+            receiver
+        };
+        Ok(ReceiverWrapper::local(
+            receiver,
+            node,
+            node_config,
+            receiver_config,
+        ))
+    },
     validate_config: validate_typed_config::<KafkaReceiverConfig>,
     context_declarations: None,
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
@@ -206,6 +222,7 @@ impl KafkaReceiver {
 
         Ok(Self {
             config,
+            sasl_credential_provider: None,
             metrics,
             offset_tracker: OffsetTracker::new(),
             retry_manager: RetryManager::new(),
@@ -228,6 +245,66 @@ impl KafkaReceiver {
                 error: e.to_string(),
             })?,
         )
+    }
+
+    fn with_sasl_credential_provider(mut self, provider: Box<dyn SaslCredentialProvider>) -> Self {
+        self.sasl_credential_provider = Some(provider);
+        self
+    }
+
+    async fn apply_initial_sasl_credential(
+        &self,
+        client_config: &mut rdkafka::ClientConfig,
+        receiver: &NodeId,
+    ) -> Result<(), EngineError> {
+        if !self.config.uses_sasl_credential_provider() {
+            return Ok(());
+        }
+
+        let provider =
+            self.sasl_credential_provider
+                .as_ref()
+                .ok_or_else(|| EngineError::ReceiverError {
+                    receiver: receiver.clone(),
+                    kind: ReceiverErrorKind::Configuration,
+                    error: "SASL capability credentials require a bound \
+                            'sasl_credential_provider'"
+                        .to_string(),
+                    source_detail: String::new(),
+                })?;
+
+        let credential =
+            provider
+                .get_credential()
+                .await
+                .map_err(|error| EngineError::ReceiverError {
+                    receiver: receiver.clone(),
+                    kind: ReceiverErrorKind::Configuration,
+                    error: format!(
+                        "failed to acquire the initial SASL credential from capability '{}' \
+                         on extension '{}'",
+                        error.capability, error.extension
+                    ),
+                    source_detail: String::new(),
+                })?;
+
+        if credential.expires_on().is_some_and(|expiry| {
+            expiry.saturating_duration_since(Instant::now()) <= SASL_CREDENTIAL_USABLE_MARGIN
+        }) {
+            return Err(EngineError::ReceiverError {
+                receiver: receiver.clone(),
+                kind: ReceiverErrorKind::Configuration,
+                error: format!(
+                    "the initial SASL credential is unusable because it expires within {} seconds",
+                    SASL_CREDENTIAL_USABLE_MARGIN.as_secs()
+                ),
+                source_detail: String::new(),
+            });
+        }
+
+        _ = client_config.set("sasl.username", credential.expose_username());
+        _ = client_config.set("sasl.password", credential.expose_password());
+        Ok(())
     }
 
     /// Returns the shared rebalance state for synchronization in component tests.
@@ -1001,7 +1078,10 @@ impl local::Receiver<OtapPdata> for KafkaReceiver {
         ctrl_msg_recv: local::ControlChannel<OtapPdata>,
         effect_handler: local::EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, EngineError> {
-        let client_config = self.config.build_client_config();
+        let mut client_config = self.config.build_client_config();
+        let receiver_id = effect_handler.receiver_id();
+        self.apply_initial_sasl_credential(&mut client_config, &receiver_id)
+            .await?;
 
         let map_kafka_client_err = |e: KafkaError| {
             let source_detail = format_error_sources(&e);
