@@ -668,6 +668,54 @@ default:
         assert!(error.contains("unknown composite context entry `missing`"));
     }
 
+    /// Scenario: a qualified selector names a header in a composite that also has a constant.
+    /// Guarantees: the unrelated constant does not block compilation or header propagation.
+    #[test]
+    fn composite_transport_header_propagation_ignores_unselected_constant() {
+        let context: context_policy::ContextPolicy = serde_yaml::from_str(
+            r#"
+entries:
+  route:
+    - type: constant
+      name: route_name
+      value: otlp-http-json
+    - type: transport_header
+      name: workspace
+      store_as: workspace_id
+"#,
+        )
+        .expect("valid context policy");
+        let (name, definition) = context.entries.into_iter().next().expect("declaration");
+        let declaration = ContextEntryDeclaration {
+            scope: context_policy::ContextScope::Engine,
+            name,
+            definition,
+        };
+        let policy: HeaderPropagationPolicy = serde_yaml::from_str(
+            r#"
+default:
+  selector:
+    type: named
+    named: [route:workspace_id]
+  action: propagate
+  name: stored_name
+"#,
+        )
+        .expect("valid propagation policy");
+        let policy = CompiledHeaderPropagationPolicy::compile(policy, &[declaration])
+            .expect("header member compiles");
+        let mut headers = TransportHeaders::new();
+        headers.push(transport_headers::TransportHeader::text(
+            context_name("workspace"),
+            b"acme",
+        ));
+
+        let propagated = policy.propagate(&headers).collect::<Vec<_>>();
+        assert_eq!(propagated.len(), 1);
+        assert_eq!(propagated[0].header_name, "workspace_id");
+        assert_eq!(propagated[0].value, b"acme");
+    }
+
     /// Scenario: a qualified propagation selector names a configured constant member.
     /// Guarantees: pre-integration compilation fails explicitly instead of silently dropping it.
     #[test]
