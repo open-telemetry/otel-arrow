@@ -398,12 +398,21 @@ impl OTAPExporter {
         effect_handler: &local::EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
         match update {
-            PDataMetricsUpdate::IncFailed(signal_type, pdata, export_duration, error_type) => {
+            PDataMetricsUpdate::IncFailed(
+                signal_type,
+                pdata,
+                export_duration,
+                error_type,
+                permanent,
+            ) => {
                 self.metrics
                     .record_failure(signal_type, error_type, export_duration);
-                effect_handler
-                    .notify_nack(NackMsg::new("export failed", pdata))
-                    .await?;
+                let nack = if permanent {
+                    NackMsg::new_permanent("export failed", pdata)
+                } else {
+                    NackMsg::new("export failed", pdata)
+                };
+                effect_handler.notify_nack(nack).await?;
             }
             PDataMetricsUpdate::IncExported(signal_type, pdata, export_duration) => {
                 self.metrics.record_success(signal_type, export_duration);
@@ -744,7 +753,7 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                                     OtapExporterErrorType::PayloadConversion,
                                     export_started_at.elapsed(),
                                 );
-                                effect_handler.notify_nack(NackMsg::new("payload conversion failed", pdata)).await?;
+                                effect_handler.notify_nack(NackMsg::new_permanent("payload conversion failed", pdata)).await?;
                                 return Err(e.into());
                             }
                         };
@@ -902,7 +911,7 @@ impl StreamingArrowService for ArrowTracesServiceClient<Channel> {
 
 enum PDataMetricsUpdate {
     IncExported(SignalType, OtapPdata, Duration),
-    IncFailed(SignalType, OtapPdata, Duration, OtapExporterErrorType),
+    IncFailed(SignalType, OtapPdata, Duration, OtapExporterErrorType, bool),
 }
 
 struct CorrelatedPdata {
@@ -1160,6 +1169,7 @@ async fn fail_stream_open_pdata(
                 correlated.pdata,
                 correlated.export_started_at.elapsed(),
                 error_type,
+                false,
             ))
             .await;
     }
@@ -1170,6 +1180,7 @@ async fn fail_stream_open_pdata(
                 first_pdata_fallback,
                 first_export_started_at.elapsed(),
                 error_type,
+                false,
             ))
             .await;
     }
@@ -1223,6 +1234,7 @@ fn create_req_stream(
                                 first_pdata,
                                 first_export_started_at.elapsed(),
                                 OtapExporterErrorType::Internal,
+                                false,
                             ))
                             .await;
                         _ = first_pdata_outcome_tx.send(FirstPdataOutcome::ReportedDirectly);
@@ -1235,6 +1247,7 @@ fn create_req_stream(
                     first_pdata,
                     first_export_started_at.elapsed(),
                     OtapExporterErrorType::Encoding,
+                    true,
                 )).await;
                 _ = first_pdata_outcome_tx.send(FirstPdataOutcome::ReportedDirectly);
             }
@@ -1275,6 +1288,7 @@ fn create_req_stream(
                                     pdata,
                                     export_started_at.elapsed(),
                                     OtapExporterErrorType::Internal,
+                                    false,
                                 ))
                                 .await;
                         }
@@ -1286,6 +1300,7 @@ fn create_req_stream(
                         pdata,
                         export_started_at.elapsed(),
                         OtapExporterErrorType::Encoding,
+                        true,
                     )).await;
                 }
             }
@@ -1337,14 +1352,16 @@ async fn handle_res_stream(
                                     status_message = status.status_message.as_str(),
                                     message = "OTAP server rejected exported batch"
                                 );
+                                let error_type = OtapExporterErrorType::from_batch_status(
+                                    status.status_code,
+                                );
                                 _ = pdata_metrics_tx
                                     .send(PDataMetricsUpdate::IncFailed(
                                         signal_type,
                                         correlated.pdata,
                                         correlated.export_started_at.elapsed(),
-                                        OtapExporterErrorType::from_batch_status(
-                                            status.status_code,
-                                        ),
+                                        error_type,
+                                        error_type.is_permanent(),
                                     ))
                                     .await;
                             }
@@ -1439,6 +1456,7 @@ async fn fail_correlated_pdata(
                 correlated.pdata,
                 correlated.export_started_at.elapsed(),
                 error_type,
+                false,
             ))
             .await;
     }
@@ -2365,6 +2383,83 @@ mod tests {
         }
     }
 
+    struct MockConsumeAndReject;
+
+    #[async_trait::async_trait]
+    impl super::StreamingArrowService for MockConsumeAndReject {
+        async fn handle_req_stream(
+            &mut self,
+            req_stream: impl IntoStreamingRequest<Message = BatchArrowRecords> + Send,
+        ) -> Result<Response<Streaming<BatchStatus>>, Status> {
+            use tokio_stream::StreamExt;
+            let mut stream = Box::pin(req_stream.into_streaming_request().into_inner());
+            let _ = stream.next().await;
+            Err(Status::invalid_argument(
+                "mock stream rejected without naming a batch",
+            ))
+        }
+    }
+
+    /// Scenario: an established stream fails with a permanent-category status that does not name a
+    /// batch, while a correlated batch is still outstanding.
+    /// Guarantees: the outstanding batch keeps the classified category for metrics but is Nacked
+    /// retryable, because the stream failure does not attribute the rejection to it.
+    #[tokio::test]
+    async fn test_stream_failure_leaves_outstanding_batches_retryable() {
+        use super::{OtapExporterErrorType, PDataMetricsUpdate, StreamBatch, stream_arrow_batches};
+
+        let (batches_tx, batches_rx) = tokio::sync::mpsc::channel(4);
+        let (metrics_tx, mut metrics_rx) = tokio::sync::mpsc::channel(4);
+        let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
+        let log_message = create_otap_batch(LOG_BATCH_ID, ArrowPayloadType::Logs);
+        let pdata = OtapPdata::new_default(log_message.into());
+        let payload = pdata.clone();
+        batches_tx
+            .send(StreamBatch {
+                pdata,
+                records: payload.payload().try_into_with_default().unwrap(),
+                export_started_at: Instant::now(),
+            })
+            .await
+            .unwrap();
+        drop(batches_tx);
+
+        stream_arrow_batches(
+            MockConsumeAndReject,
+            SignalType::Logs,
+            None,
+            batches_rx,
+            metrics_tx,
+            OtapStreamWorkerMetricsHandle::new(SignalType::Logs),
+            shutdown_rx,
+            None,
+        )
+        .await;
+
+        timeout(Duration::from_secs(1), async {
+            loop {
+                if let PDataMetricsUpdate::IncFailed(
+                    SignalType::Logs,
+                    _,
+                    _,
+                    error_type,
+                    permanent,
+                ) = metrics_rx.recv().await.expect("channel closed")
+                {
+                    assert_eq!(error_type, OtapExporterErrorType::Rejected);
+                    assert!(
+                        !permanent,
+                        "a stream-level failure must leave outstanding batches retryable"
+                    );
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("timed out waiting for IncFailed");
+    }
+
     /// Scenario: Stream creation fails after the request stream correlates its first PData batch.
     /// Guarantees: The correlated batch is drained and reported as a terminal export failure.
     #[tokio::test]
@@ -2405,7 +2500,7 @@ mod tests {
         // can be emitted before the failure update.
         timeout(Duration::from_secs(1), async {
             loop {
-                if let PDataMetricsUpdate::IncFailed(SignalType::Logs, _, _, error_type) =
+                if let PDataMetricsUpdate::IncFailed(SignalType::Logs, _, _, error_type, _) =
                     metrics_rx.recv().await.expect("channel closed")
                 {
                     assert_eq!(error_type, OtapExporterErrorType::Unavailable);
@@ -2483,6 +2578,7 @@ mod tests {
                 _,
                 _,
                 OtapExporterErrorType::Shutdown,
+                _,
             ) => {}
             _ => panic!("expected a single IncFailed update for the correlated pdata"),
         }
@@ -2575,6 +2671,7 @@ mod tests {
                 _,
                 _,
                 OtapExporterErrorType::Shutdown,
+                _,
             ) => {}
             _ => panic!("expected the fallback pdata to be reported as failed"),
         }
@@ -2640,7 +2737,7 @@ mod tests {
                 for attempt in 0..4 {
                     let update = metrics_rx.recv().await.expect("metrics channel closed");
                     match update {
-                        PDataMetricsUpdate::IncFailed(SignalType::Logs, _, _, error_type) => {
+                        PDataMetricsUpdate::IncFailed(SignalType::Logs, _, _, error_type, _) => {
                             assert_eq!(error_type, OtapExporterErrorType::Unavailable);
                         }
                         _ => {
@@ -2872,6 +2969,213 @@ mod tests {
                 assert_eq!(export_outcomes.get("failure"), Some(&1));
                 assert_eq!(duration_outcomes.get("success"), Some(&1));
                 assert_eq!(duration_outcomes.get("failure"), Some(&1));
+
+                control_sender
+                    .send(NodeControlMsg::Shutdown {
+                        deadline: Instant::now().add(Duration::from_millis(10)),
+                        reason: "test done".into(),
+                    })
+                    .await
+                    .unwrap();
+                server_shutdown_tx.send(true).unwrap();
+            })
+        });
+
+        tokio_rt
+            .block_on(server_handle)
+            .expect("server shutdown success");
+    }
+
+    /// gRPC service mock that accepts the first batch and rejects the second with a per-batch
+    /// InvalidArgument, naming each batch by id.
+    struct ArrowLogsServiceRejectSecondStatusMock;
+
+    #[tonic::async_trait]
+    impl otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::arrow_logs_service_server::ArrowLogsService
+        for ArrowLogsServiceRejectSecondStatusMock
+    {
+        type ArrowLogsStream = std::pin::Pin<
+            Box<dyn tokio_stream::Stream<Item = Result<BatchStatus, Status>> + Send + 'static>,
+        >;
+
+        async fn arrow_logs(
+            &self,
+            request: tonic::Request<Streaming<BatchArrowRecords>>,
+        ) -> Result<Response<Self::ArrowLogsStream>, Status> {
+            let mut input_stream = request.into_inner();
+            let (tx, rx) = tokio::sync::mpsc::channel(2);
+
+            _ = tokio::spawn(async move {
+                let first_batch = input_stream
+                    .message()
+                    .await
+                    .expect("first request should decode")
+                    .expect("first request should be present");
+                let second_batch = input_stream
+                    .message()
+                    .await
+                    .expect("second request should decode")
+                    .expect("second request should be present");
+
+                let _ = tx
+                    .send(Ok(BatchStatus {
+                        batch_id: first_batch.batch_id,
+                        status_code: StatusCode::Ok as i32,
+                        status_message: "first batch accepted".into(),
+                    }))
+                    .await;
+                let _ = tx
+                    .send(Ok(BatchStatus {
+                        batch_id: second_batch.batch_id,
+                        status_code: StatusCode::InvalidArgument as i32,
+                        status_message: "second batch rejected".into(),
+                    }))
+                    .await;
+            });
+
+            Ok(Response::new(
+                Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx)) as Self::ArrowLogsStream,
+            ))
+        }
+    }
+
+    /// Scenario: two batches share a stream and the server rejects one with a per-batch
+    /// InvalidArgument while accepting the other.
+    /// Guarantees: the accepted batch is Acked and only the rejected batch is Nacked, permanently.
+    #[test]
+    fn test_per_batch_invalid_argument_nacks_only_that_batch_permanently() {
+        use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::arrow_logs_service_server::ArrowLogsServiceServer;
+
+        let grpc_addr = "127.0.0.1";
+        let grpc_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
+        let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
+        let tokio_rt = Runtime::new().unwrap();
+
+        let test_runtime = TestRuntime::<OtapPdata>::new();
+        let node_config = Arc::new(NodeUserConfig::new_exporter_config(OTAP_EXPORTER_URN));
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle);
+        let node_id = test_node(test_runtime.config().name.clone());
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        let mut exporter = ExporterWrapper::local(
+            OTAPExporter::from_config(
+                pipeline_ctx,
+                &json!({
+                    "grpc_endpoint": grpc_endpoint,
+                    "compression_method": "none",
+                    "streams_per_signal": 1,
+                    "stream_queue_capacity": 4
+                }),
+            )
+            .unwrap(),
+            node_id.clone(),
+            node_config,
+            test_runtime.config(),
+        );
+
+        let control_sender = exporter.control_sender();
+        let (pdata_tx, pdata_rx) = create_not_send_channel::<OtapPdata>(2);
+        let pdata_tx = Sender::Local(LocalSender::mpsc(pdata_tx));
+        let pdata_rx = Receiver::Local(LocalReceiver::mpsc(pdata_rx));
+        let (runtime_ctrl_msg_tx, _runtime_ctrl_msg_rx) = runtime_ctrl_msg_channel(16);
+        let (pipeline_completion_msg_tx, mut pipeline_completion_msg_rx) =
+            pipeline_completion_msg_channel(16);
+        exporter
+            .set_pdata_receiver(node_id.clone(), pdata_rx)
+            .expect("Failed to set PData Receiver");
+
+        let (server_shutdown_tx, server_shutdown_rx) = tokio::sync::oneshot::channel();
+        let (server_ready_tx, server_ready_rx) = tokio::sync::oneshot::channel();
+
+        let listening_addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
+        let server_handle = tokio_rt.spawn(async move {
+            let tcp_listener = TcpListener::bind(listening_addr).await.unwrap();
+            let _ = server_ready_tx.send(());
+            let tcp_stream = TcpListenerStream::new(tcp_listener);
+            let service = ArrowLogsServiceServer::new(ArrowLogsServiceRejectSecondStatusMock);
+
+            Server::builder()
+                .add_service(service)
+                .serve_with_incoming_shutdown(tcp_stream, async {
+                    let _ = server_shutdown_rx.await;
+                })
+                .await
+                .expect("server failed");
+        });
+
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(16);
+
+        let _ = tokio_rt.block_on(async move {
+            let local_set = tokio::task::LocalSet::new();
+            let mr = metrics_reporter.clone();
+            let _exporter_fut = local_set.spawn_local(async move {
+                let _ = exporter
+                    .start(
+                        runtime_ctrl_msg_tx,
+                        pipeline_completion_msg_tx,
+                        mr,
+                        Interests::empty(),
+                        otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+                    )
+                    .await;
+            });
+
+            tokio::join!(local_set, async {
+                server_ready_rx
+                    .await
+                    .expect("server should bind before exporter traffic starts");
+
+                let first_id = 11_u64;
+                let first_message = create_otap_batch(LOG_BATCH_ID + 10, ArrowPayloadType::Logs);
+                let first_pdata = OtapPdata::new_default(first_message.into()).test_subscribe_to(
+                    Interests::ACKS | Interests::NACKS,
+                    calldata_with_id(first_id),
+                    0,
+                );
+
+                let second_id = 21_u64;
+                let second_message = create_otap_batch(LOG_BATCH_ID + 20, ArrowPayloadType::Logs);
+                let second_pdata = OtapPdata::new_default(second_message.into()).test_subscribe_to(
+                    Interests::ACKS | Interests::NACKS,
+                    calldata_with_id(second_id),
+                    0,
+                );
+
+                pdata_tx.send(first_pdata).await.expect("send first pdata");
+                pdata_tx
+                    .send(second_pdata)
+                    .await
+                    .expect("send second pdata");
+
+                let mut ack_id = None;
+                let mut nack_id = None;
+                let mut nack_permanent = None;
+                timeout(Duration::from_secs(5), async {
+                    while ack_id.is_none() || nack_id.is_none() {
+                        match pipeline_completion_msg_rx.recv().await {
+                            Ok(PipelineCompletionMsg::DeliverAck { ack }) => {
+                                ack_id = Some(calldata_id(&ack.accepted));
+                            }
+                            Ok(PipelineCompletionMsg::DeliverNack { nack }) => {
+                                nack_id = Some(calldata_id(&nack.refused));
+                                nack_permanent = Some(nack.permanent);
+                            }
+                            Err(_) => panic!("pipeline result channel closed"),
+                        }
+                    }
+                })
+                .await
+                .expect("timed out waiting for ACK and NACK");
+
+                assert_eq!(ack_id, Some(first_id));
+                assert_eq!(nack_id, Some(second_id));
+                assert_eq!(
+                    nack_permanent,
+                    Some(true),
+                    "a per-batch InvalidArgument must be Nacked permanently"
+                );
 
                 control_sender
                     .send(NodeControlMsg::Shutdown {
