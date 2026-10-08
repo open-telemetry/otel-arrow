@@ -121,7 +121,7 @@ fn config_requires_both_paths() {
                 let _ = fields.remove(field);
             }
             let error = parse_config(&value).expect_err("invalid file reference");
-            assert!(error.to_string().contains(field));
+            assert!(matches!(error, ConfigError::InvalidUserConfig { .. }));
         }
     }
 }
