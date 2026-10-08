@@ -24,6 +24,7 @@ import os
 from typing import ClassVar, Dict, List, Literal, Optional, Tuple, Union
 
 from docker.errors import DockerException
+from docker.types import Ulimit
 from pydantic import BaseModel, Field
 
 from ....core.context.framework_element_contexts import StepContext
@@ -113,6 +114,19 @@ class DockerVolumeMapping(BaseModel):
     read_only: Optional[bool] = False
 
 
+class DockerUlimit(BaseModel):
+    """
+    Defines a resource ulimit for a container (docker --ulimit).
+
+    Attributes:
+        soft (int): Soft limit value.
+        hard (int): Hard limit value.
+    """
+
+    soft: int
+    hard: int
+
+
 @deployment_registry.register_config(STRATEGY_NAME)
 class DockerDeploymentConfig(DeploymentStrategyConfig):
     """
@@ -132,6 +146,10 @@ class DockerDeploymentConfig(DeploymentStrategyConfig):
         volumes (Optional[List[Union[str, DockerVolumeMapping]]]): List of volume mounts,
             either as strings or structured DockerVolumeMapping objects.
         network (Optional[str]): Docker network to connect the container to.
+        ulimits (Optional[Dict[str, Union[int, DockerUlimit]]]): Resource ulimits to
+            apply to the container (docker --ulimit), keyed by limit name (e.g.
+            'nofile'). A bare int sets both the soft and hard limit; a
+            DockerUlimit object sets them independently.
     """
 
     image: str
@@ -153,6 +171,15 @@ class DockerDeploymentConfig(DeploymentStrategyConfig):
             "Additional /etc/hosts entries (docker --add-host), e.g. "
             "{'host.docker.internal': 'host-gateway'} to let the container "
             "reach services running on the docker host."
+        ),
+    )
+    ulimits: Optional[Dict[str, Union[int, DockerUlimit]]] = Field(
+        None,
+        description=(
+            "Resource ulimits applied to the container (docker --ulimit), keyed "
+            "by limit name (e.g. 'nofile'). A bare int sets both the soft and "
+            "hard limit to that value; an object with 'soft' and 'hard' sets "
+            "them independently."
         ),
     )
 
@@ -253,6 +280,8 @@ components:
             run_kwargs["cpuset_cpus"] = self.config.cpuset_cpus
         if self.config.extra_hosts:
             run_kwargs["extra_hosts"] = dict(self.config.extra_hosts)
+        if self.config.ulimits:
+            run_kwargs["ulimits"] = build_ulimits(self.config.ulimits)
 
         try:
             container = client.containers.run(**run_kwargs)
@@ -364,6 +393,39 @@ def build_volume_bindings(
 
         volume_dict[host_path] = {"bind": container_path, "mode": mode}
     return volume_dict
+
+
+def build_ulimits(
+    ulimits: Optional[Dict[str, Union[int, DockerUlimit]]],
+) -> List[Ulimit]:
+    """Map ulimit specs to the docker.types.Ulimit objects the SDK expects.
+
+    Args:
+        ulimits: mapping of limit name (e.g. 'nofile') to either a bare int
+            (applied to both soft and hard) or a DockerUlimit with explicit
+            soft/hard values.
+
+    Returns:
+        list: docker.types.Ulimit objects, one per limit name.
+    """
+    if not ulimits:
+        return []
+
+    built = []
+    for name, value in ulimits.items():
+        if isinstance(value, DockerUlimit):
+            soft, hard = value.soft, value.hard
+        elif isinstance(value, bool):
+            # bool is a subclass of int; reject it explicitly to avoid
+            # silently treating True/False as a limit value.
+            raise TypeError(f"Invalid ulimit value for '{name}': {type(value)}")
+        elif isinstance(value, int):
+            soft = hard = value
+        else:
+            raise TypeError(f"Invalid ulimit value for '{name}': {type(value)}")
+
+        built.append(Ulimit(name=name, soft=soft, hard=hard))
+    return built
 
 
 def build_port_bindings(
