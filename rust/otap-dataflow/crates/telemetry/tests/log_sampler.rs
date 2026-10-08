@@ -198,3 +198,70 @@ fn macro_forms() {
         assert_eq!(record.callsite().target(), "otel.exporter.logger_test");
     }
 }
+
+/// Scenario: Logger, sampler, and field expressions log under changing filters and sampling decisions.
+/// Guarantees: Nested logs survive; filtering skips the logger; sampling rejection skips fields.
+#[test]
+fn nested_logging_preserves_lazy_evaluation() {
+    struct Select(bool);
+    impl Sampler for Select {
+        fn should_sample(&mut self, _metadata: &Metadata<'_>) -> bool {
+            otel_warn!("test.decision");
+            self.0
+        }
+    }
+
+    struct Keep;
+    impl Sampler for Keep {}
+
+    let (other, _, other_receiver) = setup("warn");
+    let (setup, handle, receiver) = setup("off");
+    let loggers = Cell::new(0);
+    let emit = |keep| {
+        let sampler = Select(keep);
+        otel_warn!(
+            logger: {
+                loggers.set(loggers.get() + 1);
+                otel_warn!("test.logger");
+                sampler
+            },
+            "test.outer",
+            value = {
+                otel_warn!("test.field");
+                otel_warn!(logger: Keep, "test.nested.sampled");
+                42
+            }
+        );
+    };
+    other.with_subscriber(|| {
+        setup.with_subscriber(|| {
+            emit(true);
+            assert_eq!(loggers.get(), 0);
+            handle.apply(Some(&level("warn")));
+            emit(false);
+            emit(true);
+            handle.apply(Some(&level("error")));
+            emit(true);
+            assert_eq!(loggers.get(), 2);
+        });
+    });
+
+    let emitted = records(&receiver);
+    let names: Vec<_> = emitted
+        .iter()
+        .map(|record| record.callsite().name())
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "test.logger",
+            "test.decision",
+            "test.logger",
+            "test.decision",
+            "test.field",
+            "test.nested.sampled",
+            "test.outer",
+        ]
+    );
+    assert!(records(&other_receiver).is_empty());
+}

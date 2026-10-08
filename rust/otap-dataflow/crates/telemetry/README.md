@@ -118,6 +118,12 @@ supports custom logs sampling. After standard `tracing` filters, the macro
 mutably borrows the expression supplied as `logger:`, enabling stateful
 observation of the event before its body and attributes are evaluated.
 
+Filtering skips the logger expression and fields; sampling rejection skips
+the fields. Logger expressions, sampling decisions, and field-producing
+expressions can emit their own logs, just as field expressions can in ordinary
+`otel_*` calls. Emission and field encoding still run under tracing's recursion
+guard.
+
 Note the `otel_component_scope!` declaration is required to enable
 sampling in a given module.
 

@@ -13,20 +13,13 @@
 #[doc(hidden)]
 pub mod _private {
     pub use tracing::callsite::{Callsite, DefaultCallsite};
+    pub use tracing::dispatcher::get_default;
     pub use tracing::field::ValueSet;
     pub use tracing::metadata::Kind;
     pub use tracing::{Event, Level};
     pub use tracing::{
         callsite2, debug, error, info, level_enabled, trace, valueset, valueset_all, warn,
     };
-
-    /// Adapts tracing's `FnMut` callback to allow a logger expression to move an adapter.
-    pub fn with_dispatch<R>(f: impl FnOnce(&tracing::Dispatch) -> R) -> R {
-        let mut f = Some(f);
-        tracing::dispatcher::get_default(|dispatch| {
-            f.take().expect("get_default invokes its callback once")(dispatch)
-        })
-    }
 
     /// Compile-time validator for OpenTelemetry event names used by the
     /// `otel_info!` / `otel_warn!` / `otel_debug!` / `otel_error!` /
@@ -355,19 +348,21 @@ macro_rules! __otel_logger_event {
                 fields: $($($fields)+)?
             };
             let interest = __CALLSITE.interest();
-            if !interest.is_never() {
-                $crate::_private::with_dispatch(|dispatch| {
-                    let metadata = __CALLSITE.metadata();
-                    if interest.is_always() || dispatch.enabled(metadata) {
-                        let logger = &mut ($logger);
-                        if $crate::log_sampler::Sampler::should_sample(logger, metadata) {
-                            (|values: $crate::_private::ValueSet<'_>| {
-                                let event = $crate::_private::Event::new(metadata, &values);
-                                $crate::log_sampler::Sampler::emit(logger, &event, dispatch);
-                            })($crate::_private::valueset_all!(metadata.fields(), $($($fields)+)?));
-                        }
-                    }
-                });
+            let metadata = __CALLSITE.metadata();
+            if !interest.is_never()
+                && (interest.is_always()
+                    || $crate::_private::get_default(|dispatch| dispatch.enabled(metadata)))
+            {
+                // Evaluate the logger / should_sample / arguments before dispatch.
+                let logger = &mut ($logger);
+                if $crate::log_sampler::Sampler::should_sample(logger, metadata) {
+                    (|values: $crate::_private::ValueSet<'_>| {
+                        let event = $crate::_private::Event::new(metadata, &values);
+                        $crate::_private::get_default(|dispatch| {
+                            $crate::log_sampler::Sampler::emit(logger, &event, dispatch);
+                        });
+                    })($crate::_private::valueset_all!(metadata.fields(), $($($fields)+)?));
+                }
             }
         }
     }};
