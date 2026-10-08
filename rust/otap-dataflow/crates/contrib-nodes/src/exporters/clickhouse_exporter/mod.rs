@@ -209,18 +209,11 @@ fn transform_raw_otlp_logs(
     payload: &OtapPayload,
     transformer: &mut OtlpLogsTransformer,
 ) -> Option<Result<Option<arrow::array::RecordBatch>, error::ClickhouseExporterError>> {
-    if payload.signal_type() == SignalType::Logs && payload.encoding() == Some(&PdataEncoding::OTLP)
-    {
-        Some(
-            transformer.transform(
-                payload
-                    .encoded_bytes()
-                    .expect("OTLP format has encoded bytes"),
-            ),
-        )
-    } else {
-        None
+    let view = payload.encoded_view()?;
+    if view.signal_type() != SignalType::Logs || view.encoding() != &PdataEncoding::OTLP {
+        return None;
     }
+    Some(transformer.transform(view.bytes()))
 }
 
 fn is_invalid_protobuf(error: &error::ClickhouseExporterError) -> bool {
@@ -552,6 +545,7 @@ mod tests {
     use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::{
         Metric, ResourceMetrics, ScopeMetrics,
     };
+    use otel_arrow_dfe_pdata_codec::CodecRegistry;
     use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
     use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
     use prost::Message as _;
@@ -625,31 +619,50 @@ mod tests {
         assert_eq!(CLICKHOUSE_EXPORTER_URN, "urn:otel:exporter:clickhouse");
     }
 
-    /// Scenario: the exporter receives serialized OTLP logs or another payload representation.
-    /// Guarantees: only serialized OTLP log requests are selected for direct transformation.
+    /// Scenario: the exporter receives legacy or generalized OTLP of each signal, or native logs.
+    /// Guarantees: only encoded OTLP logs select direct transformation; native and other signals
+    /// remain fallback candidates.
     #[test]
     fn raw_otlp_log_routing_is_signal_and_format_specific() {
-        let logs = OtapPayload::from(OtlpProtoBytes::ExportLogsRequest(Bytes::new()));
-        let traces = OtapPayload::from(OtlpProtoBytes::ExportTracesRequest(Bytes::new()));
+        let codec = CodecRegistry::global()
+            .unwrap()
+            .resolve(&PdataEncoding::OTLP)
+            .unwrap();
         let mut transformer = OtlpLogsTransformer::default();
-
-        assert!(transform_raw_otlp_logs(&logs, &mut transformer).is_some());
-        assert!(transform_raw_otlp_logs(&traces, &mut transformer).is_none());
+        for signal in [SignalType::Logs, SignalType::Metrics, SignalType::Traces] {
+            for payload in [
+                OtapPayload::from(OtlpProtoBytes::new_from_bytes(signal, Bytes::new())),
+                OtapPayload::from(codec.admit(signal, Bytes::new()).unwrap()),
+            ] {
+                assert_eq!(
+                    transform_raw_otlp_logs(&payload, &mut transformer).is_some(),
+                    signal == SignalType::Logs,
+                );
+            }
+        }
+        let native = OtapPayload::from(OtapArrowRecords::Logs(Default::default()));
+        assert!(transform_raw_otlp_logs(&native, &mut transformer).is_none());
     }
 
-    /// Scenario: a raw OTLP logs request has malformed top-level protobuf framing.
+    /// Scenario: legacy and generalized OTLP logs have malformed top-level protobuf framing.
     /// Guarantees: the routing layer classifies it as invalid instead of using legacy fallback.
     #[test]
     fn malformed_raw_otlp_logs_are_not_fallback_candidates() {
-        let logs = OtapPayload::from(OtlpProtoBytes::ExportLogsRequest(Bytes::from_static(
-            b"\xff",
-        )));
+        let codec = CodecRegistry::global()
+            .unwrap()
+            .resolve(&PdataEncoding::OTLP)
+            .unwrap();
+        let bytes = Bytes::from_static(b"\xff");
         let mut transformer = OtlpLogsTransformer::default();
-        let error = transform_raw_otlp_logs(&logs, &mut transformer)
-            .expect("raw logs should select direct transformation")
-            .expect_err("malformed top-level protobuf must fail");
-
-        assert!(is_invalid_protobuf(&error));
+        for logs in [
+            OtapPayload::from(OtlpProtoBytes::ExportLogsRequest(bytes.clone())),
+            OtapPayload::from(codec.admit(SignalType::Logs, bytes).unwrap()),
+        ] {
+            let error = transform_raw_otlp_logs(&logs, &mut transformer)
+                .expect("raw logs should select direct transformation")
+                .expect_err("malformed top-level protobuf must fail");
+            assert!(is_invalid_protobuf(&error));
+        }
     }
 
     /// Scenario: the exporter classifies non-empty metrics, empty metrics, and logs before

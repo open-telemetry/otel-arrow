@@ -12,7 +12,7 @@ use otel_arrow_dfe_pdata::{OtapArrowRecords, OtapPayloadHelpers, OtlpProtoBytes}
 use prost::Message;
 
 use crate::{
-    CodecError, CodecRegistry, CodecService, EncodeOutput, EncodedPdata, EncodingPlan,
+    CodecError, CodecRegistry, CodecService, EncodeOutput, EncodedPdata, EncodedView, EncodingPlan,
     InspectionPlan, PdataEncoding, PdataView, ResolvedCodec,
 };
 
@@ -226,6 +226,31 @@ impl PdataPayload {
         match &self.storage {
             PayloadStorage::OtlpBytes(bytes) => Some(bytes.bytes()),
             PayloadStorage::Encoded(encoded) => Some(encoded.bytes()),
+            PayloadStorage::OtapArrowRecords(_) => None,
+        }
+    }
+
+    /// Borrows the existing encoding identity, signal, and bytes; returns `None` for native OTAP.
+    ///
+    /// This does not consult the registry, create a codec, validate or decode the
+    /// content, clone the buffer, or allocate. The caller must check the identity
+    /// and signal before interpreting the bytes. Use an [`InspectionPlan`] when
+    /// unsupported encodings should instead fall back to native OTAP decoding.
+    #[must_use]
+    pub fn encoded_view(&self) -> Option<EncodedView<'_>> {
+        // Legacy storage has no encoding field to borrow.
+        static OTLP_ENCODING: PdataEncoding = PdataEncoding::OTLP;
+        match &self.storage {
+            PayloadStorage::OtlpBytes(bytes) => Some(EncodedView::new(
+                &OTLP_ENCODING,
+                bytes.signal_type(),
+                bytes.bytes(),
+            )),
+            PayloadStorage::Encoded(encoded) => Some(EncodedView::new(
+                encoded.encoding(),
+                encoded.signal_type(),
+                encoded.bytes(),
+            )),
             PayloadStorage::OtapArrowRecords(_) => None,
         }
     }
@@ -673,6 +698,46 @@ mod tests {
         ) -> Result<OtapArrowRecords, CodecError> {
             unreachable!("item counting must not instantiate the decoder")
         }
+    }
+
+    /// Scenario: Legacy OTLP, generalized OTLP, and another encoding contain opaque bytes.
+    /// Guarantees: Direct views preserve identity, signal, and buffer without validation;
+    /// native OTAP has no encoded view.
+    #[test]
+    fn encoded_view_borrows_existing_storage() {
+        let otlp = CodecRegistry::global()
+            .unwrap()
+            .resolve(&PdataEncoding::OTLP)
+            .unwrap();
+        let registry = CodecRegistry::validate(&UNCOUNTABLE_REGISTRATIONS).unwrap();
+        let other = registry.resolve(&UNCOUNTABLE_ENCODING).unwrap();
+        // Invalid protobuf is still borrowable: a view does not validate content.
+        let bytes = Bytes::from_static(b"\xff");
+        for (payload, encoding, signal) in [
+            (
+                PdataPayload::from(OtlpProtoBytes::ExportMetricsRequest(bytes.clone())),
+                &PdataEncoding::OTLP,
+                SignalType::Metrics,
+            ),
+            (
+                PdataPayload::from(otlp.admit(SignalType::Traces, bytes.clone()).unwrap()),
+                &PdataEncoding::OTLP,
+                SignalType::Traces,
+            ),
+            (
+                PdataPayload::from(other.admit(SignalType::Logs, bytes.clone()).unwrap()),
+                &UNCOUNTABLE_ENCODING,
+                SignalType::Logs,
+            ),
+        ] {
+            let view = payload.encoded_view().unwrap();
+            assert_eq!(view.encoding(), encoding);
+            assert_eq!(view.signal_type(), signal);
+            assert_eq!(view.bytes(), bytes.as_ref());
+            assert_eq!(view.bytes().as_ptr(), bytes.as_ptr());
+        }
+        let native = PdataPayload::from(OtapArrowRecords::Logs(Logs::default()));
+        assert!(native.encoded_view().is_none());
     }
 
     /// Scenario: Transitional OTLP, generalized encoded, and native storage is built on 64 bit.

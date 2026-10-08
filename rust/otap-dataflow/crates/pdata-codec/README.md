@@ -58,6 +58,21 @@ Receivers, processors, and exporters in one pipeline receive clones of the same
 runtime-services handle. The registry is immutable after validation, while the
 service creates only the mutable codec state that the pipeline actually uses.
 
+### Direct borrowing and inspection plans
+
+`PdataPayload::encoded_view()` borrows the existing encoding identity, signal,
+and bytes together, or returns `None` for native OTAP. It performs no registry
+lookup, codec creation, validation, decoding, buffer cloning, or allocation.
+The consumer must check the encoding and signal before interpreting the bytes.
+An `EncodedView` guarantees that bytes are available, not that their content is
+valid or that the consumer accepts them.
+
+Use an `InspectionPlan` when a consumer supports selected encodings directly
+but also needs native fallback. Applying the plan returns a borrowed encoded
+view for an accepted encoding, borrows already-native records, or decodes an
+unsupported encoding to owned native OTAP. Accepting an encoded view through a
+plan does not validate its content either.
+
 ## Implement a codec
 
 Implement `PdataDecoder` to convert complete encoded batches to native OTAP.
