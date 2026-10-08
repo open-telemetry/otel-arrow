@@ -353,7 +353,7 @@ oracle = [
     "flat-file-user-pass-auth",
 ]
 user-events = ["otel-arrow-dfe-contrib-nodes/user-events"]
-windowsperfcounters = ["otel-arrow-dfe-contrib-nodes/windowsperfcounters"]
+windows-perf-counters = ["otel-arrow-dfe-contrib-nodes/windows-perf-counters"]
 
 # Contrib processors.
 condense-attributes = ["otel-arrow-dfe-contrib-nodes/condense-attributes"]

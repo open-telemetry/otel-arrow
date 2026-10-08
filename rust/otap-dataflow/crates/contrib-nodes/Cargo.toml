@@ -106,7 +106,7 @@ contrib-receivers = [
     "etw",
     "kafka",
     "user-events",
-    "windowsperfcounters",
+    "windows-perf-counters",
     "windows-event-forwarding",
 ]
 contrib-processors = [
@@ -159,7 +159,7 @@ user-events = [
     "dep:one_collect",
     "dep:tracepoint_decode",
 ]
-windowsperfcounters = ["dep:humantime", "dep:humantime-serde"]
+windows-perf-counters = ["dep:humantime", "dep:humantime-serde"]
 
 # Processors.
 condense-attributes = []

@@ -18,5 +18,5 @@ pub mod oracle_receiver;
 pub mod user_events_receiver;
 
 /// Windows performance-counter receiver.
-#[cfg(all(feature = "windowsperfcounters", target_os = "windows"))]
-pub mod windowsperfcounters_receiver;
+#[cfg(all(feature = "windows-perf-counters", target_os = "windows"))]
+pub mod windows_perf_counters_receiver;
