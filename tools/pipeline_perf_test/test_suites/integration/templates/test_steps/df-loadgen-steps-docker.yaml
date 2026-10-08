@@ -1,3 +1,28 @@
+{#-
+Load generator -> df-engine -> backend steps.
+
+Push-based metrics (opt-in):
+  Set `push_metrics: true` to have the load generator, engine and backend push
+  their internal metrics over OTLP to the orchestrator's embedded sink (started
+  by the suite-level `start_otlp_metrics_sink` hook). When off (the default),
+  the rendered configs and the chosen report are identical to the scrape path,
+  so existing suites are unaffected.
+
+Variables:
+  - push_metrics: when true, enable the push wiring (default false).
+  - push_metrics_endpoint: OTLP/gRPC endpoint the engines export to. Defaults to
+    http://host.docker.internal:14317.
+  - test_name: required when push_metrics is true. Tags pushed metrics via the
+    engine's test.name resource attribute.
+-#}
+{%- set push_metrics = push_metrics | default(false) %}
+{%- set push_endpoint = push_metrics_endpoint | default("http://host.docker.internal:14317") %}
+{%- if push_metrics and (test_name is not defined or not test_name) %}
+{#- Fail rendering loudly: push attribution needs a non-empty test_name.
+    Referencing an undefined name raises a Jinja UndefinedError whose message
+    names the identifier, which doubles as the failure explanation. -#}
+{{ test_name_is_required_when_push_metrics_is_true.error }}
+{%- endif %}
 steps:
   - name: Deploy Backend Engine
     action:
@@ -11,6 +36,8 @@ steps:
           - render_template:
               template_path: './test_suites/integration/templates/configs/backend/config.yaml.j2'
               output_path: ./test_suites/integration/configs/backend/config.rendered.yaml
+              search_paths:
+                - ./test_suites/integration/templates/configs/common
               variables:
                 # ----- General settings -----
                 # default_pipeline_ctrl_msg_channel_size: 100
@@ -21,6 +48,10 @@ steps:
                 # listening_addr: "0.0.0.0:1235"
                 # compression_method: zstd                # Default is 'zstd' for otap, 'gzip' for otlp
                 backend_receiver_type: '{{backend_receiver_type}}'
+                {%- if push_metrics %}
+                push_metrics_endpoint: '{{push_endpoint}}'
+                push_test_name: '{{test_name}}'
+                {%- endif %}
         post:
           # Wait for the telemetry endpoint to be active (TODO: switch to healthcheck endpoint when available).
           - ready_check_http:
@@ -39,8 +70,14 @@ steps:
           - render_template:
               template_path: '{{engine_config_template}}'
               output_path: ./test_suites/integration/configs/engine/config.rendered.yaml
+              search_paths:
+                - ./test_suites/integration/templates/configs/common
               variables:
                 backend_hostname: backend-service
+                {%- if push_metrics %}
+                push_metrics_endpoint: '{{push_endpoint}}'
+                push_test_name: '{{test_name}}'
+                {%- endif %}
         post:
           # Wait for the telemetry endpoint to be active (TODO: switch to healthcheck endpoint when available).
           - ready_check_http:
@@ -59,6 +96,8 @@ steps:
           - render_template:
               template_path: './test_suites/integration/templates/configs/loadgen/config.yaml.j2'
               output_path: ./test_suites/integration/configs/loadgen/config.rendered.yaml
+              search_paths:
+                - ./test_suites/integration/templates/configs/common
               variables:
                 # ----- General settings -----
                 # default_pipeline_ctrl_msg_channel_size: 100
@@ -79,6 +118,10 @@ steps:
                 # compression_method: zstd           # Default is 'zstd' for otap, 'gzip' for otlp
                 engine_hostname: df-engine
                 loadgen_exporter_type: '{{loadgen_exporter_type}}'
+                {%- if push_metrics %}
+                push_metrics_endpoint: '{{push_endpoint}}'
+                push_test_name: '{{test_name}}'
+                {%- endif %}
                 data_source: {{data_source | default("semantic_conventions")}}
                 {% if log_body_size_bytes is defined %}log_body_size_bytes: {{log_body_size_bytes}}{% endif %}
                 {% if num_connections is defined %}num_connections: {{num_connections}}{% endif %}
@@ -198,7 +241,11 @@ steps:
           - print_container_logs: {}
           - sql_report:
               name: Integration Report - Logs
+              {%- if push_metrics %}
+              report_config_file: {{report_config | default('./test_suites/integration/configs/integration_report_logs_push.yaml')}}
+              {%- else %}
               report_config_file: {{report_config | default('./test_suites/integration/configs/integration_report_logs.yaml')}}
+              {%- endif %}
               output:
                 - format:
                     template: {}

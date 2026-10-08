@@ -79,8 +79,9 @@ tests:
   # --- Logs ---
   - name: Logs-OTAP-BATCH-OTAP
     from_template:
-      path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker-push.yaml
+      path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
       variables:
+        push_metrics: true
         test_name: Logs-OTAP-BATCH-OTAP
         result_dir: nightly_batch_processor
         engine_config_template: test_suites/integration/templates/configs/engine/batch_processor/otap-batch-otap.yaml.j2
@@ -94,8 +95,9 @@ tests:
 
   - name: Logs-OTLP-BATCH-OTLP
     from_template:
-      path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker-push.yaml
+      path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
       variables:
+        push_metrics: true
         test_name: Logs-OTLP-BATCH-OTLP
         result_dir: nightly_batch_processor
         engine_config_template: test_suites/integration/templates/configs/engine/batch_processor/otlp-batch-otlp.yaml.j2
@@ -112,8 +114,9 @@ tests:
   # --- Metrics ---
   - name: Metrics-OTAP-BATCH-OTAP
     from_template:
-      path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker-push.yaml
+      path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
       variables:
+        push_metrics: true
         test_name: Metrics-OTAP-BATCH-OTAP
         result_dir: nightly_batch_processor
         engine_config_template: test_suites/integration/templates/configs/engine/batch_processor/otap-batch-otap.yaml.j2
@@ -128,8 +131,9 @@ tests:
 
   - name: Metrics-OTLP-BATCH-OTLP
     from_template:
-      path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker-push.yaml
+      path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
       variables:
+        push_metrics: true
         test_name: Metrics-OTLP-BATCH-OTLP
         result_dir: nightly_batch_processor
         engine_config_template: test_suites/integration/templates/configs/engine/batch_processor/otlp-batch-otlp.yaml.j2
@@ -147,8 +151,9 @@ tests:
   # --- Traces ---
   - name: Traces-OTAP-BATCH-OTAP
     from_template:
-      path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker-push.yaml
+      path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
       variables:
+        push_metrics: true
         test_name: Traces-OTAP-BATCH-OTAP
         result_dir: nightly_batch_processor
         engine_config_template: test_suites/integration/templates/configs/engine/batch_processor/otap-batch-otap.yaml.j2
@@ -163,8 +168,9 @@ tests:
 
   - name: Traces-OTLP-BATCH-OTLP
     from_template:
-      path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker-push.yaml
+      path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
       variables:
+        push_metrics: true
         test_name: Traces-OTLP-BATCH-OTLP
         result_dir: nightly_batch_processor
         engine_config_template: test_suites/integration/templates/configs/engine/batch_processor/otlp-batch-otlp.yaml.j2
